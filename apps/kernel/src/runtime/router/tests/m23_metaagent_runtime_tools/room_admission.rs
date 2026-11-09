@@ -23,6 +23,9 @@ async fn stale_delegated_prompt() {
     let peer = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("cold-peer"))
         .unwrap();
+    app.agents()
+        .set_parent_agent(peer.id(), Some(crate::agent::AgentRef::local(actor.id())))
+        .unwrap();
     crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
@@ -294,7 +297,7 @@ async fn regular_spawn_and_direct_child_control() {
         .unwrap();
     assert!(created.ok, "{created:?}");
     let child = &created.payload["response"]["agent"];
-    assert_eq!(child["spawned_by_agent_id"], a.id());
+    assert_eq!(child["parent_agent_id"], a.id());
     let alias = router
         .dispatch_authenticated_runtime_tool_call(
             &auth,
@@ -313,28 +316,6 @@ async fn regular_spawn_and_direct_child_control() {
         .await
         .unwrap();
     assert!(!self_delete.ok);
-}
-
-#[test]
-fn room_admission_legacy_controller_is_not_creator() {
-    let mut parent = crate::agent::AgentInstance::new(
-        "a",
-        "aaaa",
-        "room",
-        None,
-        "dev-stub",
-        None,
-        None,
-        None,
-        crate::agent::GridPosition::new(0, 0, 1, 1),
-    );
-    parent.set_controlled_by_metaagent_id(Some("legacy".into()));
-    let value = serde_json::to_value(&parent).unwrap();
-    assert!(
-        value.get("spawned_by_agent_id").is_some(),
-        "A01: lineage is an explicit unknown, never inferred from controller"
-    );
-    assert!(value["spawned_by_agent_id"].is_null());
 }
 
 #[test]
@@ -430,19 +411,21 @@ async fn room_boundaries() {
     };
     let grandchild = room_command(&router, &auth_b, "agent spawn d --provider dev-stub").await;
     assert!(grandchild.ok, "grandchild admission: {grandchild:?}");
-    for command in [
-        "agent alias d stolen",
-        "agent delete d",
-        "agent delete peer",
-        "agent focus peer",
-    ] {
+    // A01-S03: control is subtree membership at any depth, so the grandparent
+    // may rename d; a peer outside the subtree stays out of reach.
+    for command in ["agent delete peer", "agent focus peer"] {
         assert!(
             !room_command(&router, &auth_a, command).await.ok,
             "{command}"
         );
     }
     assert!(
-        room_command(&router, &auth_b, "agent alias d direct-child")
+        room_command(&router, &auth_a, "agent alias d by-grandparent")
+            .await
+            .ok
+    );
+    assert!(
+        room_command(&router, &auth_b, "agent alias by-grandparent direct-child")
             .await
             .ok
     );
@@ -647,7 +630,7 @@ fn room_admission_writer_failure_prevents_agent_creation() {
         CreateAgentRequest::new(session.id(), "dev-stub").with_alias("not-created"),
     )
     .unwrap();
-    value["spawned_by_agent_id"] = serde_json::json!(actor.id());
+    value["parent_agent_id"] = serde_json::json!({"agent_id": actor.id()});
     let request = serde_json::from_value(value).unwrap();
     let failed = crate::app::KernelSessionService::new(&mut app).spawn_agent(request);
     assert!(
@@ -662,7 +645,7 @@ fn room_admission_writer_failure_prevents_agent_creation() {
         CreateAgentRequest::new(session.id(), "dev-stub").with_alias("created-on-retry"),
     )
     .unwrap();
-    value["spawned_by_agent_id"] = serde_json::json!(actor.id());
+    value["parent_agent_id"] = serde_json::json!({"agent_id": actor.id()});
     let created = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(serde_json::from_value(value).unwrap())
         .unwrap();
@@ -676,7 +659,7 @@ fn room_admission_writer_failure_prevents_agent_creation() {
         .unwrap();
     assert_eq!(count, 1, "one committed creation intent after retry");
     let json = serde_json::to_value(created).unwrap();
-    assert_eq!(json["spawned_by_agent_id"], actor.id());
+    assert_eq!(json["parent_agent_id"]["agent_id"], actor.id());
 }
 
 // MP-08 / MP-11, A01/G10: a bounded trace wait cannot return on a replaced run.
@@ -791,7 +774,7 @@ fn assert_post_creation_failure_identifies_resource(kind: &str) {
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("created-despite-receipt-error")
-                .with_spawned_by_agent_id(actor.id()),
+                .with_parent_agent_id(actor.id()),
         )
         .unwrap_err();
     let child = app
@@ -829,7 +812,7 @@ fn room_admission_known_creation_rejection_records_failed_intent() {
     let request = || {
         CreateAgentRequest::new(session.id(), "dev-stub")
             .with_alias("duplicate")
-            .with_spawned_by_agent_id(actor.id())
+            .with_parent_agent_id(actor.id())
     };
     crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(request())

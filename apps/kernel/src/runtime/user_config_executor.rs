@@ -389,10 +389,13 @@ pub(crate) async fn execute_manage_credential_vault_request(
             "credential_vault_manage",
         )
         .await?;
-    let (status, action) = runtime_state
+    let managed = runtime_state
         .manage_credential_vault_unlock(&request.session_id, &agent_id)
         .await?;
-    Ok(LocalDaemonResponse::CredentialVaultManaged { status, action })
+    Ok(LocalDaemonResponse::CredentialVaultManaged {
+        status: managed.status,
+        action: managed.action,
+    })
 }
 
 fn credential_vault_status(

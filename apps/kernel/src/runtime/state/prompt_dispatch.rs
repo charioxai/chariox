@@ -730,6 +730,11 @@ impl KernelRuntimeState {
             )
             .await?;
             authorize()?;
+            self.limit_local_run_for_next_turn(
+                &prepared.session_id,
+                prepared.prompt.target_agent_id(),
+            )
+            .await?;
             self.with_external_command_authority(authority)
                 .refresh_project_prompt_provider(
                     &prepared.session_id,
@@ -1838,6 +1843,7 @@ mod tests {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("agent should be bound to the remote worker");

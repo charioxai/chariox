@@ -3187,6 +3187,7 @@ mod explicit_completion_tests {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("home projection agent should bind to its remote worker");
@@ -3487,6 +3488,7 @@ mod mp11_projection_admission_tests {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .unwrap();
@@ -3578,6 +3580,7 @@ mod mp11_projection_admission_tests {
             relay_peer_protocol_version: Some(
                 crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
             ),
+            worker_worktree_id: None,
         };
         app.agents
             .bind_remote_execution(agent.id(), binding.clone())

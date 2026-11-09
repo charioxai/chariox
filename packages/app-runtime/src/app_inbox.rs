@@ -410,17 +410,6 @@ pub fn generator_routes(connection: &Connection) -> Result<Vec<InboxRoute>> {
     Ok(routes)
 }
 
-/// The route an event service delivers under `binding_id`.
-pub fn route_by_binding(connection: &Connection, binding_id: &str) -> Result<Option<InboxRoute>> {
-    Ok(connection
-        .query_row(
-            &format!("SELECT {ROUTE_COLUMNS} FROM app_inbox_routes WHERE binding_id=?1"),
-            params![binding_id],
-            route_row,
-        )
-        .optional()?)
-}
-
 pub fn route(
     connection: &Connection,
     owner_id: &str,

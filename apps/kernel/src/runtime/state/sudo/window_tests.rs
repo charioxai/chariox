@@ -512,6 +512,7 @@ async fn sudo_window_end_starts_a_leased_agents_deferred_prompt() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();
@@ -957,6 +958,7 @@ fn sudo_fence_lets_correlated_wakes_pass_deferred_messages() {
             run: None,
             now: 1,
             work: work.map(str::to_owned),
+            through: 0,
         })
     };
     assert!(
@@ -973,6 +975,7 @@ fn sudo_fence_lets_correlated_wakes_pass_deferred_messages() {
         run: None,
         now: 1,
         work: Some("work".into()),
+        through: 0,
     });
     assert!(
         forged.is_err(),
@@ -1017,6 +1020,7 @@ async fn sudo_deferred_events_outlast_the_delivery_timeout_and_run_after_the_win
             run: None,
             now: stale,
             work: None,
+            through: 0,
         },
         Operation::Receipt {
             room: room.clone(),
@@ -1090,7 +1094,7 @@ async fn sudo_inbox_read_cannot_import_unrelated_peer_context() {
         .await
         .unwrap();
     assert!(
-        result.payload.as_array().unwrap().is_empty(),
+        result.payload["events"].as_array().unwrap().is_empty(),
         "unrelated events must stay outside the elevated context"
     );
     f.state

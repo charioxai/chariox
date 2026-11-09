@@ -105,6 +105,7 @@ async fn mp08_vault_restart_or_abandoned_wait_can_retry_before_the_pump() {
                 room: None,
             },
             agent,
+            &format!("vault-unlock-{}-{}", agent, rand::random::<u64>()),
             &crate::config::UserCredentialVaultConfig::default(),
             60,
         );
@@ -232,6 +233,7 @@ fn mp09_managed_kernel_registers_a_vault_prompt_without_hanging() {
                 room: None,
             },
             &agent,
+            &format!("vault-unlock-{}-{}", agent, rand::random::<u64>()),
             &crate::config::UserCredentialVaultConfig::default(),
             60,
         );
@@ -256,6 +258,7 @@ async fn mp11_vault_retry_cannot_replace_another_live_decision() {
             room: None,
         },
         agent,
+        &format!("vault-unlock-{}-{}", agent, rand::random::<u64>()),
         &crate::config::UserCredentialVaultConfig::default(),
         60,
     );

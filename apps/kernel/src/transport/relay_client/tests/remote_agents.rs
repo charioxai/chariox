@@ -345,6 +345,7 @@ async fn public_remote_completion_preserves_worker_termination_async(already_set
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("home agent should bind to worker");
@@ -1874,6 +1875,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                         session_id: session_id.clone(),
                         agent_id: Some(remote_agent_id.clone()),
                     }],
+                    sources: Vec::new(),
                 }),
             )
             .unwrap();

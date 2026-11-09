@@ -15,6 +15,7 @@ fn bind_projection_test_worker(app: &DaemonApp, agent_id: &str, run: &str) {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();
@@ -56,6 +57,7 @@ fn assert_stale_worker_snapshot_preserves_selected_profile(active_worker_run: Op
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();
@@ -186,6 +188,7 @@ fn native_worker_snapshot_can_establish_run_binding_without_home_dispatch() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();

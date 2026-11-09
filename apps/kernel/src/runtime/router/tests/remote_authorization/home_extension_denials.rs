@@ -28,6 +28,7 @@ async fn denied_home_extension_invocation_is_audited() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("agent should be remote-backed");
@@ -190,6 +191,7 @@ async fn forwarded_home_mcp_rejects_forged_dispatch_name() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("agent should be remote-backed");
@@ -297,6 +299,7 @@ async fn forwarded_home_extension_runtime_rejects_mcp_tools() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("agent should be remote-backed");

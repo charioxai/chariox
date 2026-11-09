@@ -206,8 +206,8 @@ function taskFor(session, metaagentId) {
 function ownedWorkers(session, metaagentId, controllerIds) {
   return (session.agents ?? []).filter((agent) => (
     !controllerIds.has(agent.id)
-    && (agent.controlled_by_metaagent_id === metaagentId
-      || agent.controlledByMetaagentId === metaagentId)
+    && (agent.parent_agent_id?.agent_id === metaagentId
+      || agent.parentAgentId?.agentId === metaagentId)
   ))
 }
 

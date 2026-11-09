@@ -1072,6 +1072,7 @@ async fn attach_remote_agent_does_not_resolve_worker_provider_run_locally() {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("remote binding should succeed");

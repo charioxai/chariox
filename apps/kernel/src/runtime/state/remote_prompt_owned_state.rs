@@ -781,6 +781,7 @@ mod tests {
             relay_peer_protocol_version: Some(
                 crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
             ),
+            worker_worktree_id: None,
         };
         app.agents
             .bind_remote_execution(agent.id(), binding.clone())
@@ -2368,6 +2369,7 @@ mod tests {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("agent should bind to remote execution");
@@ -2484,6 +2486,7 @@ mod tests {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("agent should bind to remote execution");
@@ -2546,6 +2549,7 @@ mod tests {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("agent should bind to remote execution");
@@ -2726,6 +2730,7 @@ mod tests {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("agent should bind to remote execution");

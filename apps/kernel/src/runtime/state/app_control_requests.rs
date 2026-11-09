@@ -62,19 +62,20 @@ impl KernelRuntimeState {
             };
             let room = match self.owned.session_store.get_session(room_id) {
                 Ok(room)
-                    if room.has_member(&caller)
+                    if self.is_room_member(&room, &caller)
                         && room.status() != crate::session::SessionStatus::Ended =>
                 {
                     room
                 }
                 _ => return Some(failed(AppRequestErrorCode::Unauthorized)),
             };
-            if room.owner_user_id() == caller && self.room_provider_origin.is_none() {
+            let room_caller = self.room_member_user_id_in(room.owner_user_id(), &caller);
+            if room.owner_user_id() == room_caller && self.room_provider_origin.is_none() {
                 // The owner can list every installation on this kernel.
                 return None;
             }
             return Some(
-                match self.list_room_notification_apps(list, &caller).await {
+                match self.list_room_notification_apps(list, &room_caller).await {
                     Ok(response) => response,
                     Err(code) => failed(code),
                 },
@@ -175,16 +176,17 @@ impl KernelRuntimeState {
             let Ok(room) = self.owned.session_store.get_session(room_id) else {
                 return Some(failed(AppRequestErrorCode::Unauthorized));
             };
-            if !room.has_member(&caller)
+            let room_caller = self.room_member_user_id_in(room.owner_user_id(), &caller);
+            if !room.has_member(&room_caller)
                 || room.status() == crate::session::SessionStatus::Ended
-                || ((caller != room.owner_user_id() || self.room_provider_origin.is_some())
+                || ((room_caller != room.owner_user_id() || self.room_provider_origin.is_some())
                     && !self.room_notification_apps(room_id).contains(installation))
             {
                 return Some(failed(AppRequestErrorCode::Unauthorized));
             }
             return Some(
                 self.scoped_app_automation_response(
-                    &caller,
+                    &room_caller,
                     room.owner_user_id(),
                     room_id,
                     installation,
@@ -194,23 +196,27 @@ impl KernelRuntimeState {
                 .unwrap_or_else(failed),
             );
         }
-        let owner = if let LocalDaemonRequest::ConfigureAppAutomation(configure) = request {
+        let (owner, caller) = if let LocalDaemonRequest::ConfigureAppAutomation(configure) = request
+        {
             let Ok(room) = self.owned.session_store.get_session(&configure.session_id) else {
                 return Some(failed(AppRequestErrorCode::NotFound));
             };
-            if !room.has_member(&caller) || room.status() == crate::session::SessionStatus::Ended {
+            let room_caller = self.room_member_user_id_in(room.owner_user_id(), &caller);
+            if !room.has_member(&room_caller)
+                || room.status() == crate::session::SessionStatus::Ended
+            {
                 return Some(failed(AppRequestErrorCode::Unauthorized));
             }
-            if (room.owner_user_id() != caller || self.room_provider_origin.is_some())
+            if (room.owner_user_id() != room_caller || self.room_provider_origin.is_some())
                 && !self
                     .room_notification_apps(room.id())
                     .contains(installation)
             {
                 return Some(failed(AppRequestErrorCode::Unauthorized));
             }
-            room.owner_user_id().to_owned()
+            (room.owner_user_id().to_owned(), room_caller)
         } else {
-            caller.clone()
+            (caller.clone(), caller)
         };
         if installation.is_empty()
             || installation.len() > 128

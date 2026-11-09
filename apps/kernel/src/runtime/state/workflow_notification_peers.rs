@@ -293,45 +293,43 @@ impl KernelRuntimeState {
                     "shared access cannot detach remote workflow notifications",
                 ));
             }
-            self.owned
-                .durable_state_store
-                .notify(NotificationOperation::Detach {
-                    subscription_id: sub.subscription_id.clone(),
-                    owner: owner.into(),
-                    kernel: sub.target_kernel_id.clone(),
-                })?;
-            if sub.source_kernel_id != sub.target_kernel_id {
-                let _ = self
-                    .notification_peer(
-                        owner,
-                        &sub.source_kernel_id,
-                        RelayPeerRequest::UnsubscribeWorkflowNotifications {
-                            protocol_version: VERSION,
-                            subscription_id: sub.subscription_id.clone(),
-                        },
-                    )
-                    .await;
+            // An agent listens through its trigger, which the room's pane shows: detaching the
+            // subscription removes the trigger, so no trigger is left that no longer fires.
+            let trigger = (sub.target_kind == WorkflowNotificationTargetKind::Agent)
+                .then_some(sub.trigger_id.as_deref())
+                .flatten()
+                .filter(|trigger_id| {
+                    self.owned
+                        .session_store
+                        .get_session(&sub.session_id)
+                        .is_ok_and(|session| {
+                            session
+                                .agent_triggers()
+                                .iter()
+                                .any(|trigger| trigger.id() == *trigger_id)
+                        })
+                });
+            if let Some(trigger_id) = trigger {
+                self.delete_agent_trigger(
+                    crate::local::DeleteAgentTriggerRequest {
+                        session_id: sub.session_id.clone(),
+                        trigger_id: trigger_id.into(),
+                    },
+                    owner,
+                )
+                .await?;
+            } else {
+                self.detach_notification_subscription(&sub).await?;
             }
             return Ok(LocalDaemonResponse::WorkflowNotificationDetached {
                 subscription_id: sub.subscription_id,
             });
         }
-        let result = self.execute_workflow_notification_request(request, owner)?;
+        let (result, installing) =
+            self.execute_workflow_notification_request_installing(request, owner)?;
         if let LocalDaemonResponse::WorkflowNotificationAttached { subscription } = result {
-            if subscription.source_kernel_id != subscription.target_kernel_id {
-                let response = self
-                    .notification_peer(
-                        owner,
-                        &subscription.source_kernel_id,
-                        RelayPeerRequest::SubscribeWorkflowNotifications {
-                            protocol_version: VERSION,
-                            source_id: subscription.source_id.clone(),
-                            target_ref: subscription.clone(),
-                        },
-                    )
-                    .await;
-                if !matches!(&response,Ok(RelayPeerResponse::WorkflowNotificationSubscribed {subscription:s}) if *s==subscription)
-                {
+            if let Some(generation) = installing {
+                if !self.install_on_source(&subscription, generation).await? {
                     let mut sources = self
                         .owned
                         .durable_state_store
@@ -403,6 +401,7 @@ impl KernelRuntimeState {
                         protocol_version: VERSION,
                         source_id,
                         target_ref,
+                        generation,
                     } => {
                         let (sources, _, _) = self
                             .owned
@@ -424,8 +423,9 @@ impl KernelRuntimeState {
                             return Err(store::error("notification owner mismatch"));
                         }
                         match self.owned.durable_state_store.notify(
-                            NotificationOperation::RemoteAttach {
+                            NotificationOperation::SourceAttach {
                                 subscription: target_ref,
+                                generation,
                             },
                         )? {
                             NotificationOutcome::Subscription(subscription) => {
@@ -433,22 +433,29 @@ impl KernelRuntimeState {
                                     subscription,
                                 })
                             }
+                            NotificationOutcome::Superseded { generation } => Ok(
+                                RelayPeerResponse::WorkflowNotificationSuperseded { generation },
+                            ),
                             _ => Err(store::error("notification subscription failed")),
                         }
                     }
                     RelayPeerRequest::UnsubscribeWorkflowNotifications {
                         protocol_version: VERSION,
                         subscription_id,
-                    } => {
-                        self.owned
-                            .durable_state_store
-                            .notify(NotificationOperation::Detach {
-                                subscription_id,
-                                owner: owner.into(),
-                                kernel: kernel.into(),
-                            })?;
-                        Ok(RelayPeerResponse::WorkflowNotificationUnsubscribed)
-                    }
+                        generation,
+                    } => match self.owned.durable_state_store.notify(
+                        NotificationOperation::SourceDetach {
+                            subscription_id,
+                            owner: owner.into(),
+                            kernel: kernel.into(),
+                            generation,
+                        },
+                    )? {
+                        NotificationOutcome::Superseded { generation } => {
+                            Ok(RelayPeerResponse::WorkflowNotificationSuperseded { generation })
+                        }
+                        _ => Ok(RelayPeerResponse::WorkflowNotificationUnsubscribed),
+                    },
                     RelayPeerRequest::DeliverWorkflowNotification {
                         protocol_version: VERSION,
                         subscription_id,
@@ -469,7 +476,9 @@ impl KernelRuntimeState {
                             .filter(|s| self.owned.notification_grant_live(s))
                             .ok_or_else(|| store::error("notification not attached"))?;
                         if sub.target_kind == WorkflowNotificationTargetKind::Agent {
-                            if !self.owned.agent_notification_target_live(&sub) {
+                            if !sessions.get_session(&sub.session_id).is_ok_and(|session| {
+                                self.owned.agent_notification_target_live(&session, &sub)
+                            }) {
                                 return Err(store::error("notification target changed"));
                             }
                         } else {
@@ -518,6 +527,7 @@ impl KernelRuntimeState {
             return;
         }
         let now = crate::session::unix_epoch_ms();
+        self.reconcile_remote_notification_installs(now).await;
         let home = self.owned.config_projection.snapshot().daemon_id;
         let Ok(candidates) = self
             .owned
@@ -589,7 +599,9 @@ impl KernelRuntimeState {
 
 #[cfg(test)]
 mod tests {
+    mod generation;
     mod local_access;
+    mod reconnect;
 
     use super::*;
     use crate::durable_state::workflow_notifications::tests::{cleanup, Fixture};
@@ -800,6 +812,30 @@ mod tests {
             )
             .is_err());
     }
+    // The run source kind travels in this response: a peer that does not know it must be refused at the
+    // protocol number, not answered with a variant it cannot read.
+    #[test]
+    fn a_peer_on_the_protocol_before_the_run_source_kind_is_refused() {
+        let mut f = Fixture::for_kernel("run-source-peer");
+        let (_, runtime, _) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
+        let ask = |protocol_version| {
+            runtime.receive_workflow_notification_peer(
+                "home-peer",
+                "local",
+                RelayPeerRequest::ListWorkflowNotificationSources { protocol_version },
+            )
+        };
+        assert!(
+            ask(438).is_err(),
+            "peer protocol 438 cannot read workflow_run"
+        );
+        assert!(matches!(
+            ask(VERSION),
+            Ok(RelayPeerResponse::WorkflowNotificationSources { protocol_version, .. })
+                if protocol_version == VERSION && protocol_version >= 439
+        ));
+    }
+
     fn machine_identity(subject: &str) -> chariox_relay::protocol::RelayCallerIdentity {
         chariox_relay::protocol::RelayCallerIdentity {
             realm_id: "wfnotify-fixture".into(),
@@ -1083,6 +1119,7 @@ mod tests {
                     protocol_version: VERSION,
                     source_id: source_record.source_id.clone(),
                     target_ref: bad,
+                    generation: 1,
                 }
             )
             .await
@@ -1308,10 +1345,12 @@ mod tests {
                 protocol_version: VERSION,
                 source_id: source_record.source_id.clone(),
                 target_ref: subscription.clone(),
+                generation: 1,
             },
             RelayPeerRequest::UnsubscribeWorkflowNotifications {
                 protocol_version: VERSION,
                 subscription_id: subscription.subscription_id.clone(),
+                generation: 2,
             },
             RelayPeerRequest::DeliverWorkflowNotification {
                 protocol_version: VERSION,

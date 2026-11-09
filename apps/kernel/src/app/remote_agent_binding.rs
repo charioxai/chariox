@@ -17,7 +17,7 @@ use crate::transport::relay_peer::{
 
 use super::remote_kernel_selection::{
     ensure_kernel_can_host_provider, kernel_presence_matches_ref,
-    no_remote_kernel_available_message, select_remote_kernel,
+    no_remote_kernel_available_message, select_remote_kernel, usable_kernel_refs_message,
 };
 
 mod cleanup;
@@ -116,7 +116,13 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
     let worker_worktree_id = plan
         .slice_recovery
         .as_ref()
-        .map(SliceBindingRecovery::worktree_id);
+        .map(SliceBindingRecovery::worktree_id)
+        .or_else(|| {
+            plan.agent
+                .remote_execution()
+                .and_then(|binding| binding.worker_worktree_id.clone())
+        })
+        .or_else(|| plan.agent.worktree_id().map(ToOwned::to_owned));
     let relay_config = plan.relay_config.clone();
     let use_connected_relay = hosted_shared_slice;
     remember_remote_worker_public_key_off_lock(&relay_config, &worker_kernel, &plan.relay_state)
@@ -362,8 +368,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
             execution_mode: Some(plan.execution_mode),
             permission_level: Some(plan.permission_level),
             workspace_live_sync_mode: Some(plan.workspace_live_sync_mode),
-            worktree_id: worker_worktree_id
-                .or_else(|| plan.agent.worktree_id().map(ToOwned::to_owned)),
+            worktree_id: worker_worktree_id.clone(),
             worktree_placement: None,
         },
         use_connected_relay,
@@ -416,6 +421,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
             .as_ref()
             .and_then(|config| config.relay_token.clone()),
         relay_peer_protocol_version: Some(relay_peer_protocol_version),
+        worker_worktree_id,
     };
     if let Err(error) = ensure_remote_skill_packages_off_lock(
         &plan,
@@ -715,13 +721,25 @@ impl DaemonApp {
         let relay_config = relay_override
             .clone()
             .unwrap_or_else(|| self.config.clone());
-        let discovery_config =
-            self.remote_worker_discovery_config(kernel_ref, relay_config.clone())?;
-        let worker_kernel = self.select_remote_kernel_by_ref_with_config(
-            kernel_ref,
-            &request.provider,
-            &discovery_config,
-        )?;
+        // Until a worker is chosen nothing exists over there: the caller may settle its obligation.
+        let unplaced = |error: DaemonError| match error {
+            error @ DaemonError::NoRemoteKernelAvailable { .. } => error,
+            error => DaemonError::NoRemoteKernelAvailable {
+                machine_ref: kernel_ref.to_string(),
+                provider: request.provider.clone(),
+                message: error.to_string(),
+            },
+        };
+        let discovery_config = self
+            .remote_worker_discovery_config(kernel_ref, relay_config.clone())
+            .map_err(unplaced)?;
+        let worker_kernel = self
+            .select_remote_kernel_by_ref_with_config(
+                kernel_ref,
+                &request.provider,
+                &discovery_config,
+            )
+            .map_err(unplaced)?;
         authorize()?;
         let worker_worktree_id =
             self.worker_worktree_id_for_kernel_ref(kernel_ref, request.worktree_id.clone());
@@ -766,12 +784,16 @@ impl DaemonApp {
         context: RemoteBindingContext<'_>,
     ) -> Result<AgentInstance, DaemonError> {
         authorize()?;
+        let worktree_id = worker_worktree_id.or_else(|| agent.worktree_id().map(ToOwned::to_owned));
         let relay_config = relay_override
             .clone()
             .unwrap_or_else(|| self.config.clone());
         let session = self.sessions().get_session(agent.session_id())?;
-        let effective_config =
-            crate::session::effective_agent_execution_config(&session, Some(agent));
+        let effective_config = crate::session::effective_agent_execution_config_in_tree(
+            &session,
+            agent,
+            &self.agents.get_session_agents(agent.session_id()),
+        );
         let workspace_live_sync_mode =
             crate::provider::provider_workspace_live_sync_mode_for_session(
                 agent.provider(),
@@ -1032,8 +1054,7 @@ impl DaemonApp {
                 execution_mode: Some(effective_config.mode),
                 permission_level: Some(effective_config.permission_level),
                 workspace_live_sync_mode: Some(workspace_live_sync_mode),
-                worktree_id: worker_worktree_id
-                    .or_else(|| agent.worktree_id().map(ToOwned::to_owned)),
+                worktree_id: worktree_id.clone(),
                 worktree_placement,
             },
             use_connected_relay,
@@ -1077,6 +1098,7 @@ impl DaemonApp {
                 .as_ref()
                 .and_then(|config| config.relay_token.clone()),
             relay_peer_protocol_version: Some(relay_peer_protocol_version),
+            worker_worktree_id: worktree_id,
         };
         let bound_result = if matches!(context, RemoteBindingContext::Recreated) {
             self.commit_recreated_remote_execution(agent, remote_execution)
@@ -1129,8 +1151,11 @@ impl DaemonApp {
             });
         }
         let session = self.sessions.get_session(agent.session_id())?;
-        let effective_config =
-            crate::session::effective_agent_execution_config(&session, Some(&agent));
+        let effective_config = crate::session::effective_agent_execution_config_in_tree(
+            &session,
+            &agent,
+            &self.agents.get_session_agents(agent.session_id()),
+        );
         let workspace_live_sync_mode =
             crate::provider::provider_workspace_live_sync_mode_for_session(
                 agent.provider(),
@@ -1244,10 +1269,12 @@ impl DaemonApp {
                 &discovery_config,
             )?,
         };
-        let worker_worktree_id = self.worker_worktree_id_for_rebound_worker(
-            &worker_kernel.kernel_id,
-            &worker_kernel.machine_id,
-        );
+        let worker_worktree_id = self
+            .worker_worktree_id_for_rebound_worker(
+                &worker_kernel.kernel_id,
+                &worker_kernel.machine_id,
+            )
+            .or_else(|| remote_execution.worker_worktree_id.clone());
         authorize()?;
         let rebound = self.bind_remote_agent_to_worker_authorized(
             &agent,
@@ -1310,10 +1337,12 @@ impl DaemonApp {
         let relay_config = self.relay_config_for_remote_execution(&remote_execution);
         let uses_remote_execution_relay =
             remote_execution.relay_url.is_some() && remote_execution.relay_token.is_some();
-        let worker_worktree_id = self.worker_worktree_id_for_rebound_worker(
-            &worker_kernel.kernel_id,
-            &worker_kernel.machine_id,
-        );
+        let worker_worktree_id = self
+            .worker_worktree_id_for_rebound_worker(
+                &worker_kernel.kernel_id,
+                &worker_kernel.machine_id,
+            )
+            .or_else(|| remote_execution.worker_worktree_id.clone());
         let rebound = self.bind_remote_agent_to_worker_authorized(
             &agent,
             worker_kernel,
@@ -1449,13 +1478,52 @@ impl DaemonApp {
             slice_recovery::recorded_slice_worker_id(&self.slices, kernel_ref)?;
         if self.can_use_connected_relay_inventory(kernel_ref, relay_config) {
             let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
-            if let Some(kernel) = projected_kernels.into_iter().find(|kernel| {
-                match expected_slice_worker.as_deref() {
-                    Some(expected) => kernel.kernel_id == expected,
-                    None => kernel_presence_matches_ref(kernel, kernel_ref),
+            if let Some(kernel) =
+                projected_kernels
+                    .iter()
+                    .find(|kernel| match expected_slice_worker.as_deref() {
+                        Some(expected) => kernel.kernel_id == expected,
+                        None => kernel_presence_matches_ref(kernel, kernel_ref),
+                    })
+            {
+                return ensure_kernel_can_host_provider(kernel.clone(), kernel_ref, provider);
+            }
+            // A machine name, as the machine and kernel pickers show it.
+            if expected_slice_worker.is_none() {
+                if let Some(kernel) = select_remote_kernel(
+                    slice_recovery::ordinary_machine_workers(&self.slices, projected_kernels),
+                    kernel_ref,
+                    provider,
+                ) {
+                    return Ok(kernel);
                 }
-            }) {
-                return ensure_kernel_can_host_provider(kernel, kernel_ref, provider);
+            }
+        }
+        // The relay resolves a machine name too, also before this kernel's own
+        // inventory has synced; a refusal is final and needs no waiting.
+        if expected_slice_worker.is_none() {
+            match self.block_on_relay_future(relay_discovery::list_live_kernels_for_machine(
+                relay_config,
+                kernel_ref,
+            )) {
+                Ok(kernels) => {
+                    if let Some(kernel) = select_remote_kernel(
+                        slice_recovery::ordinary_machine_workers(&self.slices, kernels),
+                        kernel_ref,
+                        provider,
+                    ) {
+                        return Ok(kernel);
+                    }
+                }
+                Err(error) if relay_discovery::is_admission_refusal(&error) => {
+                    return Err(self.kernel_ref_not_available(
+                        kernel_ref,
+                        provider,
+                        &error,
+                        Vec::new(),
+                    ));
+                }
+                Err(_) => {}
             }
         }
         let mut last_error = None;
@@ -1472,7 +1540,11 @@ impl DaemonApp {
                     return ensure_kernel_can_host_provider(kernel, kernel_ref, provider);
                 }
                 Err(error) => {
+                    let refused = relay_discovery::is_admission_refusal(&error);
                     last_error = Some(error);
+                    if refused {
+                        break;
+                    }
                     if attempt + 1 < REMOTE_KERNEL_REF_DISCOVERY_ATTEMPTS {
                         std::thread::sleep(Duration::from_millis(
                             REMOTE_KERNEL_REF_DISCOVERY_RETRY_DELAY_MS,
@@ -1481,10 +1553,35 @@ impl DaemonApp {
                 }
             }
         }
-        Err(last_error.unwrap_or_else(|| DaemonError::LocalTransport {
+        let error = last_error.unwrap_or_else(|| DaemonError::LocalTransport {
             operation: "select remote kernel",
             message: format!("kernel `{kernel_ref}` did not appear"),
-        }))
+        });
+        let machines = if relay_discovery::is_admission_refusal(&error) {
+            Vec::new()
+        } else {
+            self.block_on_relay_future(relay_discovery::list_live_machines(relay_config))
+                .unwrap_or_default()
+        };
+        Err(self.kernel_ref_not_available(kernel_ref, provider, &error, machines))
+    }
+
+    fn kernel_ref_not_available(
+        &self,
+        kernel_ref: &str,
+        provider: &str,
+        error: &DaemonError,
+        live_machines: Vec<chariox_relay::protocol::RelayMachinePresence>,
+    ) -> DaemonError {
+        let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
+        DaemonError::NoRemoteKernelAvailable {
+            machine_ref: kernel_ref.to_string(),
+            provider: provider.to_string(),
+            message: format!(
+                "{error}; {}",
+                usable_kernel_refs_message(&projected_kernels, &live_machines, provider)
+            ),
+        }
     }
 
     fn can_use_connected_relay_inventory(
@@ -2290,6 +2387,7 @@ mod tests {
             relay_url: None,
             relay_token: None,
             relay_peer_protocol_version: None,
+            worker_worktree_id: None,
         };
         assert!(!legacy.relay_peer_protocol_compatible());
         let stale = RemoteAgentBinding {
@@ -2459,6 +2557,7 @@ mod tests {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("agent should bind to worker");
@@ -3034,6 +3133,7 @@ mod tests {
             relay_peer_protocol_version: Some(
                 crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
             ),
+            worker_worktree_id: None,
         });
 
         assert_eq!(
@@ -3062,6 +3162,7 @@ mod tests {
             relay_peer_protocol_version: Some(
                 crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
             ),
+            worker_worktree_id: None,
         });
 
         assert_eq!(
@@ -3162,6 +3263,7 @@ mod cleanup_tests {
             relay_peer_protocol_version: Some(
                 crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
             ),
+            worker_worktree_id: None,
         };
         app.agents
             .bind_remote_execution(agent.id(), original.clone())
@@ -3197,6 +3299,70 @@ mod cleanup_tests {
         assert!(history
             .remote_lease_context_pending(session.id(), agent.id(), &replacement)
             .unwrap());
+    }
+
+    /// MP-08 / MP-09 / MP-10 / MP-11: a renewed binding launches the worker within the parent chain.
+    #[test]
+    fn binding_refresh_carries_the_parent_chain_limit() {
+        use crate::provider::{AgentExecutionMode as Mode, AgentPermissionLevel as Level};
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let (session, root) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "limit-workspace",
+                std::env::current_dir()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            ))
+            .unwrap();
+        crate::test_support::admit_room_test_turn(&mut app, session.id(), root.id());
+        let child = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_parent_agent_id(root.id()),
+            )
+            .unwrap();
+        for (agent, mode, level) in [
+            (root.id(), Mode::Plan, Level::Required),
+            (child.id(), Mode::Build, Level::Yolo),
+        ] {
+            app.agents()
+                .update_agent_config(agent, Some(Some(mode)), Some(Some(level)), None, None)
+                .unwrap();
+        }
+        let binding = RemoteAgentBinding {
+            worker_kernel_id: "limit-worker".into(),
+            worker_machine_id: "limit-machine".into(),
+            execution_lease_id: "limit-lease".into(),
+            leased_agent_id: "limit-leased-agent".into(),
+            active_worker_provider_run_id: None,
+            relay_url: None,
+            relay_token: None,
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
+            worker_worktree_id: None,
+        };
+        app.agents()
+            .bind_remote_execution(child.id(), binding)
+            .unwrap();
+        let binding = app
+            .agents()
+            .get_agent(child.id())
+            .unwrap()
+            .remote_execution()
+            .cloned()
+            .unwrap();
+
+        let plan = app
+            .prepare_remote_agent_binding_refresh(child.id(), &binding)
+            .unwrap();
+
+        assert_eq!(
+            (plan.execution_mode, plan.permission_level),
+            (Mode::Plan, Level::Required),
+            "a Yolo/Build child below a Required/Plan root is renewed at Required/Plan"
+        );
     }
 }
 

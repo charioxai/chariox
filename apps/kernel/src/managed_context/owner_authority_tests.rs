@@ -80,6 +80,7 @@ async fn owner_cloud_export_propagates_temporary_consumed_binding_failure() {
                 key_thumbprint: "public-thumbprint".into(),
             },
             context_selection: super::super::owner_managed::OwnerManagedContextSelection {
+                event_connections: Default::default(),
                 kernel_context: super::super::owner_managed::OwnerManagedKernelSelection::Empty,
                 development_setup:
                     super::super::owner_managed::OwnerManagedDevelopmentSelection::Empty,

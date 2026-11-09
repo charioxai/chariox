@@ -32,8 +32,9 @@ use crate::managed_context::outbound::{
 };
 use crate::managed_context::package::{
     export_managed_context_package, ManagedContextDevelopmentSelection,
-    ManagedContextGitCredentialSelection, ManagedContextKernelSelection,
-    ManagedContextPackageDevelopment, ManagedContextPackageExportRequest,
+    ManagedContextEventConnectionSelection, ManagedContextGitCredentialSelection,
+    ManagedContextKernelSelection, ManagedContextPackageDevelopment,
+    ManagedContextPackageEventConnections, ManagedContextPackageExportRequest,
     ManagedContextPackageGitCredentials, ManagedContextPackageKernel,
     ManagedContextPackageProviderAccounts, ManagedContextProviderAccountSelection,
     MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES,
@@ -89,6 +90,10 @@ pub struct ManagedContextOutboundImportReceipt {
     pub plan_digest: String,
     pub development: ManagedContextOutboundDevelopmentImportReceipt,
     pub kernel_context: ManagedContextOutboundKernelContextImportReceipt,
+    /// Selected logins the target left out; each names the account and what the owner does next.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omitted_provider_accounts:
+        Vec<crate::managed_context::package::ManagedContextOmittedProviderAccount>,
     pub receipt_sha256: String,
 }
 
@@ -152,6 +157,19 @@ impl From<RelayManagedContextImportReceipt> for ManagedContextOutboundImportRece
             plan_digest: receipt.plan_digest,
             development: receipt.development.into(),
             kernel_context: receipt.kernel_context.into(),
+            omitted_provider_accounts: receipt
+                .omitted_provider_accounts
+                .into_iter()
+                .map(|account| {
+                    crate::managed_context::package::ManagedContextOmittedProviderAccount {
+                        provider: account.provider,
+                        profile_id: account.profile_id,
+                        label: account.label,
+                        reason: account.reason,
+                        next_step: account.next_step,
+                    }
+                })
+                .collect(),
             receipt_sha256: receipt.receipt_sha256,
         }
     }
@@ -445,13 +463,21 @@ impl ManagedContextOutboundOperationStore {
     }
 }
 
+/// The kernel runtime and the user a transfer was started for.
+pub(crate) struct ManagedContextOutboundCaller {
+    pub runtime: crate::runtime::state::KernelRuntimeState,
+    pub user_id: String,
+    /// The session whose Vault unlock the export may take over.
+    pub session_id: Option<String>,
+}
+
 pub(crate) fn start_managed_context_outbound_operation(
     config: DaemonConfig,
     relay_state: Arc<RwLock<RelayClientState>>,
     store: ManagedContextOutboundOperationStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     ticket: ManagedContextTransferTicket,
-    runtime: Option<crate::runtime::state::KernelRuntimeState>,
+    caller: Option<ManagedContextOutboundCaller>,
     interactive: bool,
 ) -> Result<ManagedContextOutboundOperationStatus, DaemonError> {
     validate_ticket(&config, &ticket)?;
@@ -502,9 +528,10 @@ pub(crate) fn start_managed_context_outbound_operation(
             .destination
             .is_some();
         if owner_copy {
-            let review = match (runtime.as_ref(), interactive) {
-                (Some(runtime), true) => {
-                    runtime
+            let review = match (caller.as_ref(), interactive) {
+                (Some(caller), true) => {
+                    caller
+                        .runtime
                         .review_credential_free_owner_context(
                             &authoritative_ticket
                                 .context_plan
@@ -532,17 +559,51 @@ pub(crate) fn start_managed_context_outbound_operation(
                 return;
             }
         }
+        // The Vault login is read from the Vault, which preflight's unlock may no longer cover.
+        let vault_open = match caller.as_ref() {
+            Some(caller) => match package_export_reads_vault_login(
+                &config,
+                &store,
+                &provider_account_profiles,
+                &authoritative_ticket,
+            ) {
+                Ok(true) => caller
+                    .runtime
+                    .vault_for_login_export(caller.session_id.as_deref())
+                    .await
+                    .map(Some)
+                    .map_err(|_| vault_login_locked_error()),
+                Ok(false) => Ok(None),
+                Err(error) => Err(error),
+            },
+            None => Ok(None),
+        };
+        let _vault_open = match vault_open {
+            Ok(vault_open) => vault_open,
+            Err(error) => {
+                store.update(&context_id, |status| fail_status(status, &error));
+                return;
+            }
+        };
         let task_store = store.clone();
         let task_context_id = context_id.clone();
         let task_config = config.clone();
         let task_ticket = authoritative_ticket.clone();
         let task_provider_account_profiles = provider_account_profiles.clone();
+        let task_event_connections = caller.map(|caller| {
+            EventConnectionSource::new(
+                caller.runtime.event_connection_registry().clone(),
+                &config,
+                &caller.user_id,
+            )
+        });
         let package_store = task_store.clone();
         let package = tokio::task::spawn_blocking(move || {
             prepare_managed_context_package_for_ticket(
                 &task_config,
                 &package_store,
                 &task_provider_account_profiles,
+                task_event_connections.as_ref(),
                 &task_ticket,
             )
         })
@@ -734,13 +795,43 @@ fn prepare_managed_context_package(
     provider_account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
     ticket: &ManagedContextTransferTicket,
 ) -> Result<PreparedOutboundArtifact, DaemonError> {
-    prepare_managed_context_package_for_ticket(config, store, provider_account_profiles, ticket)
+    prepare_managed_context_package_for_ticket(
+        config,
+        store,
+        provider_account_profiles,
+        None,
+        ticket,
+    )
+}
+
+/// The registry that holds the event connections a transfer may copy, and the
+/// user they belong to.
+pub(crate) struct EventConnectionSource {
+    pub registry: crate::event_connection::EventConnectionRegistry,
+    pub owner_user_id: String,
+}
+
+impl EventConnectionSource {
+    pub(crate) fn new(
+        registry: crate::event_connection::EventConnectionRegistry,
+        config: &DaemonConfig,
+        caller_user_id: &str,
+    ) -> Self {
+        Self {
+            registry,
+            owner_user_id: crate::event_connection::event_connection_user_id(
+                config,
+                caller_user_id,
+            ),
+        }
+    }
 }
 
 fn prepare_managed_context_package_for_ticket(
     config: &DaemonConfig,
     store: &ManagedContextOutboundOperationStore,
     provider_account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    event_connections: Option<&EventConnectionSource>,
     ticket: &ManagedContextTransferTicket,
 ) -> Result<PreparedOutboundArtifact, DaemonError> {
     let plan = ticket.context_plan.package_binding();
@@ -827,23 +918,47 @@ fn prepare_managed_context_package_for_ticket(
     let provider_accounts = match &plan.provider_accounts {
         ManagedContextProviderAccountSelection::None => ManagedContextPackageProviderAccounts::None,
         ManagedContextProviderAccountSelection::Selected { accounts } => {
-            let cloud_user_id = config
-                .cloud_relay
-                .as_ref()
-                .map(|profile| profile.user_id.as_str())
-                .ok_or_else(|| {
-                    outbound_service_error(
-                        "source kernel has no Cloud owner for provider-account transfer",
-                        false,
-                    )
-                })?;
-            let owner_user_id = crate::account_profile::provider_account_authority_owner_user_id(
-                config,
-                cloud_user_id,
-            );
+            let owner_user_id = source_account_owner(config)?;
             let mut materializations = Vec::with_capacity(accounts.len());
+            let mut vault_logins = Vec::new();
             let mut serialized_component_bytes = 2u64;
             for account in accounts {
+                let unavailable = |_| {
+                    outbound_service_error(
+                        format!(
+                            "selected {} provider account `{}` has no transferable credentials",
+                            account.provider, account.account_profile
+                        ),
+                        false,
+                    )
+                };
+                if provider_account_profiles
+                    .login_is_vault_credential(
+                        &owner_user_id,
+                        &account.provider,
+                        &account.account_profile,
+                    )
+                    .map_err(unavailable)?
+                {
+                    vault_logins.push(
+                        provider_account_profiles
+                            .export_vault_login(
+                                config,
+                                &owner_user_id,
+                                &account.provider,
+                                &account.account_profile,
+                                &crate::account_profile::VaultLoginSeal {
+                                    source_private_key: &config.relay_private_key,
+                                    target_public_key: &ticket.target.relay_public_key,
+                                    context_id: &plan.context_id,
+                                    source_kernel_id: &config.daemon_id,
+                                    target_kernel_id: &ticket.target.kernel_id,
+                                },
+                            )
+                            .map_err(vault_login_export_error)?,
+                    );
+                    continue;
+                }
                 let materialization = provider_account_profiles
                     .export_managed_context_materialization(
                         &owner_user_id,
@@ -865,7 +980,10 @@ fn prepare_managed_context_package_for_ticket(
                     materialization,
                 )?;
             }
-            ManagedContextPackageProviderAccounts::Selected { materializations }
+            ManagedContextPackageProviderAccounts::Selected {
+                materializations,
+                vault_logins,
+            }
         }
     };
     let git_credentials = match &plan.git_credentials {
@@ -878,6 +996,24 @@ fn prepare_managed_context_package_for_ticket(
                 &command_context,
             )?;
             ManagedContextPackageGitCredentials::Selected { materializations }
+        }
+    };
+    let event_connections = match (&plan.event_connections, event_connections) {
+        (ManagedContextEventConnectionSelection::None, _) => {
+            ManagedContextPackageEventConnections::None
+        }
+        (selection, Some(source)) => ManagedContextPackageEventConnections::Selected {
+            records: crate::managed_context::event_connections::export_selected(
+                selection,
+                &source.registry,
+                &source.owner_user_id,
+            )?,
+        },
+        (_, None) => {
+            return Err(outbound_service_error(
+                "source kernel has no event connections to transfer",
+                false,
+            ))
         }
     };
     let source_key_thumbprint = public_key_thumbprint(&config.relay_public_key);
@@ -951,6 +1087,7 @@ fn prepare_managed_context_package_for_ticket(
         kernel_context,
         provider_accounts,
         git_credentials,
+        event_connections,
         package_path: artifact_root.join("managed-context.pkg"),
     })?;
     if let Some(path) = development_archive_path {
@@ -1708,6 +1845,70 @@ impl Drop for ArtifactRootCleanup {
     }
 }
 
+/// A locked Vault is the owner's to open and the same export is repeated afterwards.
+fn source_account_owner(config: &DaemonConfig) -> Result<String, DaemonError> {
+    let cloud_user_id = config
+        .cloud_relay
+        .as_ref()
+        .map(|profile| profile.user_id.as_str())
+        .ok_or_else(|| {
+            outbound_service_error(
+                "source kernel has no Cloud owner for provider-account transfer",
+                false,
+            )
+        })?;
+    Ok(crate::account_profile::provider_account_authority_owner_user_id(config, cloud_user_id))
+}
+
+fn vault_login_locked_error() -> DaemonError {
+    outbound_service_error(
+        "the Vault holding the selected provider login is locked",
+        true,
+    )
+}
+
+fn vault_login_export_error(error: DaemonError) -> DaemonError {
+    let locked = matches!(
+        &error,
+        DaemonError::LocalTransport { message, .. } if message.contains("vault is locked")
+    );
+    if locked {
+        vault_login_locked_error()
+    } else {
+        outbound_service_error(
+            "a selected provider login could not be read from the Vault",
+            false,
+        )
+    }
+}
+
+/// Whether preparing this package reads a Vault login, so the Vault must be open for it. A
+/// retry that finds its package already prepared reads nothing.
+fn package_export_reads_vault_login(
+    config: &DaemonConfig,
+    store: &ManagedContextOutboundOperationStore,
+    provider_account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    ticket: &ManagedContextTransferTicket,
+) -> Result<bool, DaemonError> {
+    let plan = ticket.context_plan.package_binding();
+    let ManagedContextProviderAccountSelection::Selected { accounts } = &plan.provider_accounts
+    else {
+        return Ok(false);
+    };
+    let owner_user_id = source_account_owner(config)?;
+    let mut uses_vault = false;
+    for account in accounts {
+        uses_vault |= provider_account_profiles
+            .login_is_vault_credential(&owner_user_id, &account.provider, &account.account_profile)
+            .unwrap_or(false);
+    }
+    let prepared = store
+        .artifact_parent(config)?
+        .join(&plan.context_id)
+        .join("state.json");
+    Ok(uses_vault && !path_entry_exists(&prepared)?)
+}
+
 fn outbound_service_error(message: impl Into<String>, retryable: bool) -> DaemonError {
     outbound_service_error_with_code("managed_context_source_unavailable", message, retryable)
 }
@@ -1743,6 +1944,290 @@ mod tests {
     };
     use crate::config::PersistedCloudRelayProfile;
     use crate::transport::relay_crypto;
+
+    /// Two real kernels on this host: the source prepares the package through the outbound
+    /// service for a ticket naming the new machine, whose Vault was created from the source's
+    /// sealed key seed (local 973); the new machine applies it. A fake token only; no provider call.
+    #[test]
+    fn a_vault_login_reaches_the_new_machines_own_vault_through_the_outbound_service() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        let _claude = crate::test_support::TestClaudeExecutable::new();
+        const TOKEN: &str = "sk-ant-oat01-FAKETWOKERNELPROOF-0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrs";
+        // A Cloud-owned kernel keeps its owner's accounts under the local account authority.
+        const OWNER: &str = crate::session::DEFAULT_LOCAL_USER_ID;
+        let root = std::env::temp_dir().join(format!(
+            "chariox-vault-carry-proof-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let kernel = |id: &str| {
+            let home = root.join(id);
+            std::fs::create_dir_all(&home).unwrap();
+            let mut config = DaemonConfig::new(id, id, "owner");
+            config.user_config.credential_vault.backend =
+                crate::config::CredentialVaultBackend::CharioxEncrypted;
+            config.user_config.credential_vault.path =
+                home.join("vault.json").display().to_string();
+            config.cloud_relay = Some(PersistedCloudRelayProfile {
+                user_id: "owner-a".into(),
+                realm_id: "realm".into(),
+                ..Default::default()
+            });
+            let profiles = crate::account_profile::ProviderAccountProfileRegistry::open(
+                home.join("accounts.json"),
+            )
+            .unwrap();
+            (home, config, profiles)
+        };
+        let (home_a, config_a, profiles_a) = kernel("kernel-a");
+        let (home_b, config_b, profiles_b) = kernel("kernel-b");
+
+        // Kernel A holds the Vault-backed profile.
+        std::env::set_var("CHARIOX_HOME", &home_a);
+        crate::secret::unlock_chariox_encrypted_vault(
+            Path::new(&config_a.user_config.credential_vault.path),
+            "two-kernel-proof-passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+        let profile = profiles_a
+            .create_managed(OWNER, "claude", "Vault token")
+            .unwrap();
+        crate::test_support::authenticate_provider_account(
+            &profiles_a,
+            OWNER,
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap();
+        crate::provider::store_provider_account_credential(
+            &config_a,
+            OWNER,
+            "claude",
+            &profile.profile_id,
+            TOKEN,
+            false,
+        )
+        .unwrap();
+        // The new machine's own Vault comes from A's sealed key (local 973).
+        let seed = crate::secret::export_vault_key_seed(
+            Path::new(&config_a.user_config.credential_vault.path),
+            &config_a.daemon_id,
+            &config_a.relay_private_key,
+            &config_b.daemon_id,
+            &config_b.relay_public_key,
+        )
+        .unwrap();
+        crate::secret::create_vault_from_key_seed(
+            Path::new(&config_b.user_config.credential_vault.path),
+            &seed,
+            &config_b.daemon_id,
+            &config_b.relay_private_key,
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+
+        let source_thumbprint = public_key_thumbprint(&config_a.relay_public_key);
+        let ticket = ManagedContextTransferTicket {
+            environment_id: "environment-b".into(),
+            context_plan: ManagedKernelContextPlan::provider_accounts_for_tests(
+                "context-two-kernels",
+                "kernel-a",
+                &source_thumbprint,
+                &[("claude", &profile.profile_id)],
+            ),
+            target: ManagedContextTransferTarget {
+                relay_realm_id: "realm".into(),
+                machine_id: "kernel-b".into(),
+                kernel_id: "kernel-b".into(),
+                key_thumbprint: public_key_thumbprint(&config_b.relay_public_key),
+                relay_public_key: config_b.relay_public_key.clone(),
+            },
+        };
+        let store = ManagedContextOutboundOperationStore::open(root.join("outbound")).unwrap();
+        std::env::set_var("CHARIOX_HOME", &home_a);
+        let prepared = prepare_managed_context_package(&config_a, &store, &profiles_a, &ticket)
+            .expect("the outbound service seals the Vault login for the new machine");
+        let package = std::fs::read(&prepared.package.package_path).unwrap();
+        assert!(!package
+            .windows(TOKEN.len())
+            .any(|window| window == TOKEN.as_bytes()));
+
+        // The new machine applies it.
+        std::env::set_var("CHARIOX_HOME", &home_b);
+        let receipt = crate::managed_context::package::apply_managed_context_package(
+            crate::managed_context::package::ManagedContextPackageApplicationRequest {
+                transfer_id: "ctx_two_kernels".into(),
+                package_path: prepared.package.package_path.clone(),
+                expected_package_sha256: prepared.package.package_sha256.clone(),
+                expected_binding: crate::managed_context::package::ManagedContextPackageBinding {
+                    plan: prepared.package.plan.clone(),
+                    target_environment_id: ticket.environment_id.clone(),
+                    source_kernel_id: config_a.daemon_id.clone(),
+                    source_key_thumbprint: source_thumbprint,
+                    target_kernel_id: config_b.daemon_id.clone(),
+                    target_key_thumbprint: ticket.target.key_thumbprint.clone(),
+                },
+                development_destination_root: root.join("unused-development"),
+                target_private_key: config_b.relay_private_key.clone(),
+                context_import_target: None,
+                provider_account_target: Some(
+                    crate::managed_context::package::ManagedContextProviderAccountImportTarget {
+                        registry: profiles_b.clone(),
+                        owner_user_id: OWNER.into(),
+                        config: config_b.clone(),
+                    },
+                ),
+                git_credential_target: None,
+                event_connection_target: None,
+            },
+        )
+        .expect("the new machine applies the package");
+
+        assert!(
+            !format!("{receipt:?}{}", serde_json::to_string(&receipt).unwrap()).contains(TOKEN)
+        );
+        let imported = profiles_b
+            .get(OWNER, "claude", &profile.profile_id)
+            .unwrap();
+        assert_eq!(
+            imported.auth_state,
+            crate::account_profile::ProviderAccountAuthState::Authenticated
+        );
+        assert!(
+            imported.last_validated_at_ms.is_some(),
+            "the verified marker"
+        );
+        let env = crate::provider::resolve_provider_account_credentials(
+            &config_b,
+            OWNER,
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap();
+        assert_eq!(
+            env.iter().map(|(_, value)| value).collect::<Vec<_>>(),
+            vec![TOKEN],
+            "B's own Vault holds the token under the same handle"
+        );
+        // Nothing either kernel left on disk holds the token: not the package, the receipt, the
+        // outbound state, the profile registries, the logs, nor the Vaults (sealed data only).
+        assert_eq!(
+            crate::test_support::secret_scan::files_holding_secret(&root, TOKEN),
+            Vec::new(),
+            "no file of the carry holds the token in plain, hex or base64 form"
+        );
+        // The same passphrase opens both Vaults; each kernel keeps its own file.
+        crate::secret::lock_chariox_encrypted_vault(&config_b.user_config.credential_vault.path)
+            .unwrap();
+        crate::secret::clear_vault_secret_process_cache().unwrap();
+        crate::secret::unlock_chariox_encrypted_vault(
+            Path::new(&config_b.user_config.credential_vault.path),
+            "two-kernel-proof-passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .expect("the same passphrase opens the new machine's Vault");
+        crate::secret::lock_chariox_encrypted_vault(&config_a.user_config.credential_vault.path)
+            .unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&config_b.user_config.credential_vault.path)
+            .unwrap();
+        retire_artifact_root(&prepared.artifact_root).unwrap();
+        std::env::remove_var("CHARIOX_HOME");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_export_opens_the_vault_only_for_a_vault_login_it_has_not_prepared_yet() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        const OWNER: &str = crate::session::DEFAULT_LOCAL_USER_ID;
+        let root = std::env::temp_dir().join(format!(
+            "chariox-vault-login-needed-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::env::set_var("CHARIOX_HOME", &root);
+        let mut config = DaemonConfig::new("kernel-a", "kernel-a", "owner");
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = root.join("vault.json").display().to_string();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            user_id: "owner-a".into(),
+            realm_id: "realm".into(),
+            ..Default::default()
+        });
+        let profiles = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("accounts.json"),
+        )
+        .unwrap();
+        crate::secret::unlock_chariox_encrypted_vault(
+            Path::new(&config.user_config.credential_vault.path),
+            "login-needed-passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+        let profile = profiles
+            .create_managed(OWNER, "claude", "Vault token")
+            .unwrap();
+        crate::test_support::authenticate_provider_account(
+            &profiles,
+            OWNER,
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap();
+        crate::provider::store_provider_account_credential(
+            &config,
+            OWNER,
+            "claude",
+            &profile.profile_id,
+            "FAKE-needed-token-0123456789",
+            false,
+        )
+        .unwrap();
+        let ticket = |accounts: &[(&str, &str)]| ManagedContextTransferTicket {
+            environment_id: "environment-b".into(),
+            context_plan: ManagedKernelContextPlan::provider_accounts_for_tests(
+                "context-needed",
+                "kernel-a",
+                &public_key_thumbprint(&config.relay_public_key),
+                accounts,
+            ),
+            target: ManagedContextTransferTarget {
+                relay_realm_id: "realm".into(),
+                machine_id: "kernel-b".into(),
+                kernel_id: "kernel-b".into(),
+                key_thumbprint: "thumbprint-b".into(),
+                relay_public_key: "key-b".into(),
+            },
+        };
+        let store = ManagedContextOutboundOperationStore::open(root.join("outbound")).unwrap();
+        let selected = ticket(&[("claude", &profile.profile_id)]);
+        assert!(
+            package_export_reads_vault_login(&config, &store, &profiles, &selected).unwrap(),
+            "a selected Vault login is read from the Vault"
+        );
+        assert!(
+            !package_export_reads_vault_login(&config, &store, &profiles, &ticket(&[])).unwrap(),
+            "no selected login reads nothing"
+        );
+        let prepared = store
+            .artifact_parent(&config)
+            .unwrap()
+            .join("context-needed");
+        std::fs::create_dir_all(&prepared).unwrap();
+        std::fs::write(prepared.join("state.json"), b"{}").unwrap();
+        assert!(
+            !package_export_reads_vault_login(&config, &store, &profiles, &selected).unwrap(),
+            "a retry that finds its package prepared reads nothing"
+        );
+        crate::secret::lock_chariox_encrypted_vault(&config.user_config.credential_vault.path)
+            .unwrap();
+        std::env::remove_var("CHARIOX_HOME");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn mp08_mp11_source_vault_seals_compound_shell_assignments_in_overlay() {
@@ -1845,6 +2330,7 @@ mod tests {
                 key_thumbprint: public_key_thumbprint(&config.relay_public_key),
             },
             context_selection: OwnerManagedContextSelection {
+                event_connections: Default::default(),
                 kernel_context: OwnerManagedKernelSelection::Empty,
                 development_setup: OwnerManagedDevelopmentSelection::SourceProject {
                     project_id: "project".into(),
@@ -2010,6 +2496,7 @@ mod tests {
                     plan_digest: plan.plan_digest.clone(),
                     development: RelayManagedDevelopmentContextImportReceipt::Empty,
                     kernel_context: RelayManagedKernelContextImportReceipt::Empty,
+                    omitted_provider_accounts: Vec::new(),
                     receipt_sha256: "d".repeat(64),
                 },
             },
@@ -2059,6 +2546,7 @@ mod tests {
             let selection = crate::managed_context::owner_managed::OwnerManagedTransfer {
                 target: ticket.target.clone(),
                 context_selection: crate::managed_context::owner_managed::OwnerManagedContextSelection {
+                    event_connections: Default::default(),
                     kernel_context: crate::managed_context::owner_managed::OwnerManagedKernelSelection::SourceKernelWithoutCredentials,
                     development_setup: crate::managed_context::owner_managed::OwnerManagedDevelopmentSelection::Empty,
                 },
@@ -2759,6 +3247,7 @@ mod tests {
         let selection = crate::managed_context::owner_managed::OwnerManagedTransfer {
             target: ticket.target.clone(),
             context_selection: crate::managed_context::owner_managed::OwnerManagedContextSelection {
+                event_connections: Default::default(),
                 kernel_context: crate::managed_context::owner_managed::OwnerManagedKernelSelection::Empty,
                 development_setup: crate::managed_context::owner_managed::OwnerManagedDevelopmentSelection::Empty,
             },

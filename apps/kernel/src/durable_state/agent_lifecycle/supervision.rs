@@ -29,6 +29,60 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             replies::recipient_lost(tx, &room, &agent, now, Some(&reason.answer(&agent)))?;
             Ok(Outcome::Saved)
         }
+        Operation::ReleaseSpawn { room, source } => {
+            for mut t in source_tasks(tx, &room, &source)? {
+                let mut released = Vec::new();
+                for o in &mut t.obligations {
+                    if o.kind == "delegate"
+                        && o.status == "open"
+                        && o.completion_task_id.is_none()
+                        && o.resource_id.as_deref() == Some(source.as_str())
+                    {
+                        o.status = "cancelled".into();
+                        o.dispatch_state = "cancelled".into();
+                        released.push(o.id.clone());
+                    }
+                }
+                if released.is_empty() {
+                    continue;
+                }
+                for mut reg in registrations(tx, &t.task_id)? {
+                    if reg.live
+                        && reg
+                            .obligation_id
+                            .as_ref()
+                            .is_some_and(|id| released.contains(id))
+                    {
+                        reg.live = false;
+                        tx.execute(
+                            "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+                            params![reg.id, encode(&reg)?],
+                        )
+                        .map_err(sql)?;
+                        // A task parked on the registration wakes to see it ended.
+                        if t.wait
+                            .as_ref()
+                            .is_some_and(|w| w.registration_ids.contains(&reg.id))
+                        {
+                            event(
+                                tx,
+                                occurrence(
+                                    &room,
+                                    &t.agent_id,
+                                    &source,
+                                    &format!("spawn-released-{}-{}", reg.id, t.revision),
+                                    "source_lost",
+                                    serde_json::json!({"task_id":t.task_id,"registration_id":reg.id}),
+                                ),
+                            )?;
+                        }
+                    }
+                }
+                t.revision += 1;
+                save(tx, &t)?;
+            }
+            Ok(Outcome::Saved)
+        }
         Operation::SourceOutcome {
             mut public_answer,
             room,
@@ -78,6 +132,13 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         continue;
                     }
                 };
+                // The owner was asked only because the turn ended with this work still open; its
+                // success answers that, and no model is left to acknowledge it.
+                let turn_end_block = success
+                    && t.state == ExecutionState::Blocked
+                    && t.reason == super::transitions::INVALID_TURN_END_REASON
+                    && t.goal.is_none()
+                    && t.wait.is_none();
                 let mut changed = false;
                 for o in &mut t.obligations {
                     if o.completion_source() == Some(&source)
@@ -89,6 +150,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     {
                         o.status = if t.state == ExecutionState::Cancelled {
                             "cancelled"
+                        } else if turn_end_block {
+                            "satisfied"
                         } else if success {
                             "settling"
                         } else {
@@ -111,6 +174,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         .map_err(sql)?;
                         changed = true;
                     }
+                }
+                if turn_end_block
+                    && !t
+                        .obligations
+                        .iter()
+                        .any(AgentObligation::requires_resolution)
+                {
+                    t.state = ExecutionState::Done;
+                    t.reason.clear();
                 }
                 if changed {
                     let e = occurrence(

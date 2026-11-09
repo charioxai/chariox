@@ -10,7 +10,8 @@ use crate::runtime::{
     app_view_authority::{self, AppViewAuthority},
     app_views::AppViewBinding,
     browser_controller_app_view::{
-        BrowserAppViewError as ViewError, BrowserAppViewRequest, ViewAgentAnswer, ViewAgentCallKind,
+        BrowserAppViewActor, BrowserAppViewError as ViewError, BrowserAppViewRequest,
+        ViewAgentAnswer, ViewAgentCallKind,
     },
     kernel_browser_host::KernelBrowserHost,
 };
@@ -334,12 +335,30 @@ impl KernelRuntimeState {
         let action =
             declared_actions::find_declared(&context.declared, name).map_err(action_error)?;
         declared_actions::check_input(action, &input).map_err(action_error)?;
+        self.check_view_claimed(agent, context)?;
         if action.effect == UiActionEffect::Approval {
             self.approve_view_action(run_id, agent, context, action, &input)
                 .await?;
         }
         let _turn = self.view_turn(context).await?;
         self.run_in_view(context, name, input).await
+    }
+
+    /// An owner's App Tab is driven only by an agent that claimed it. Checked
+    /// before any approval card, which would ask for an action that cannot run.
+    fn check_view_claimed(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        context: &ViewContext,
+    ) -> Result<(), ViewError> {
+        let ViewHost::User { owner, view_id, .. } = &context.host else {
+            return Ok(());
+        };
+        let actor = BrowserAppViewActor {
+            kind: "agent".into(),
+            id: agent.id().into(),
+        };
+        self.user_app_view_agent(owner, view_id, &actor).map(|_| ())
     }
 
     async fn view_batch(

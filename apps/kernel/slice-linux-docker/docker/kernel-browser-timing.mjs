@@ -1,5 +1,5 @@
 // MD-DISPLAY-02/04: opt-in local stage diagnostics. Never record page data or IDs.
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 export const timestamp = () => performance.timeOrigin + performance.now();
 /** `operation`'s result; a stage that took over a quarter second is named in the timing log (fixed labels only). */
@@ -15,6 +15,21 @@ export function roomDisplayTiming(environment=process.env) {
   return typeof root==='string'&&path.isAbsolute(root)?displayTiming(root):()=>{};
 }
 export function displayTiming(root) {
+  // The browser root is created by the first `start`, which can come after the first mark. A diagnostic must never
+  // end the controller (its flush runs in a timer, where a throw is fatal), so a record that cannot be written is
+  // dropped; the first drop is named once in the daemon log.
+  let reported=false;
+  const append=(name,data)=>{
+    const file=path.join(root,name);
+    try{appendFileSync(file,data,{mode:0o600});return true}
+    catch(error){
+      if(error.code==='ENOENT'){
+        try{mkdirSync(root,{recursive:true,mode:0o700});appendFileSync(file,data,{mode:0o600});return true}catch{}
+      }
+      if(!reported){reported=true;console.error('CHARIOX-LOG display_timing_unwritable');}
+      return false;
+    }
+  };
   // MP-08/MP-10: bounded control diagnostics, one append per frame interval.
   // Per-stage open/write/close otherwise dominates the Node control CPU sample.
   let pending=[],bytes=0,written=0,timer;
@@ -22,7 +37,7 @@ export function displayTiming(root) {
   const flush=()=>{
     clearTimeout(timer);timer=null;
     if(!pending.length)return;
-    if(written+bytes<=maxBytes){appendFileSync(path.join(root,'display-timing.jsonl'),pending.join(''),{mode:0o600});written+=bytes;}
+    if(written+bytes<=maxBytes&&append('display-timing.jsonl',pending.join('')))written+=bytes;
     pending=[];bytes=0;
   };
   const timing = (stage, started, finished) => {
@@ -44,7 +59,7 @@ export function displayTiming(root) {
   // MP-10/MP-11: private fixed-label driver diagnostics, never frame transport.
   timing.hardware = diagnostic => {
     if(process.env.CHARIOX_BROWSER_DISPLAY_TIMING!=='1'||typeof diagnostic!=='string'||diagnostic.length>4096)return;
-    appendFileSync(path.join(root,'display-hardware.jsonl'),JSON.stringify({diagnostic})+'\n',{mode:0o600});
+    append('display-hardware.jsonl',JSON.stringify({diagnostic})+'\n');
   };
   // MP-08/MP-10: per-input/per-frame join records (fixed stage, finite
   // numbers only) so input -> dispatch -> readback -> frame can be matched.

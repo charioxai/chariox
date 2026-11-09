@@ -269,8 +269,12 @@ impl KernelRuntimeState {
             interaction = interaction.with_view(view);
         }
         if args.wait == Some(false) {
+            let interaction_id = interaction.id().to_owned();
             let result = self.arm_interaction_wake(session_id, agent_id, interaction)?;
             self.resume_browser_region_cards();
+            // Its holder is told as for a question that blocks the turn.
+            self.announce_child_decision(session_id, &interaction_id)
+                .await?;
             return Ok(result);
         }
         let provider_run =

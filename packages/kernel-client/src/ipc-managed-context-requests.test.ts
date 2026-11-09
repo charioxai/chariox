@@ -8,6 +8,8 @@ import {
   startOwnerManagedContextTransferRequest,
   OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION,
   OWNER_MANAGED_CONTEXT_MINIMUM_RELAY_PROTOCOL_VERSION,
+  OWNER_MANAGED_EVENT_CONNECTIONS_MINIMUM_PROTOCOL_VERSION,
+  OWNER_MANAGED_EVENT_CONNECTIONS_MINIMUM_RELAY_PROTOCOL_VERSION,
 } from "./ipc-managed-context-requests.js"
 import type { ManagedContextTransferTicket } from "./ipc-managed-environment-requests.js"
 
@@ -64,4 +66,22 @@ test("MP-08 MP-11 owner-managed admission is interactive and carries inventory s
     StartManagedContextTransfer: { interactive: true, ownerManaged },
   })
   assert.equal("ticket" in startOwnerManagedContextTransferRequest(ownerManaged).StartManagedContextTransfer, false)
+})
+
+test("owner-managed admission carries an event connection selection by connection id only", () => {
+  assert.equal(OWNER_MANAGED_EVENT_CONNECTIONS_MINIMUM_PROTOCOL_VERSION, 1000)
+  assert.equal(OWNER_MANAGED_EVENT_CONNECTIONS_MINIMUM_RELAY_PROTOCOL_VERSION, 439)
+  const ownerManaged = {
+    target: { relayRealmId: "realm", machineId: "machine", kernelId: "kernel", relayPublicKey: "public", keyThumbprint: "pin" },
+    contextSelection: {
+      kernelContext: "empty" as const,
+      developmentSetup: { kind: "empty" as const },
+      eventConnections: { kind: "selected" as const, connectionIds: ["connection-a", "connection-b"] },
+    },
+  }
+  assert.deepEqual(startOwnerManagedContextTransferRequest(ownerManaged), {
+    StartManagedContextTransfer: { interactive: true, ownerManaged },
+  })
+  const selected = startOwnerManagedContextTransferRequest(ownerManaged).StartManagedContextTransfer.ownerManaged
+  assert.deepEqual(Object.keys(selected.contextSelection.eventConnections ?? {}).sort(), ["connectionIds", "kind"])
 })

@@ -74,6 +74,13 @@ impl WakeDriver for InteractionWakeDriver {
         } else if current.state != "running" {
             return Err(ledger::error("question is no longer pending"));
         }
+        if let Err(error) = self
+            .owned
+            .hand_on_decision_at_raise(&wake.room_id, &wake.id)
+        {
+            tracing::warn!(interaction_id=%wake.id, error=%crate::secret_redaction::redact_secrets(&error.to_string()),
+                "question keeps its holder at raise");
+        }
         Ok(())
     }
     fn cancel(&self, wake: &AgentWake) -> Result<Cancel, DaemonError> {
@@ -84,10 +91,10 @@ impl WakeDriver for InteractionWakeDriver {
         Ok(Cancel::Done)
     }
     fn recover(&self, wake: &AgentWake) -> Recovery {
-        match self.arm(wake) {
-            Ok(()) => Recovery::Reattached,
-            Err(error) => Recovery::Lost(error.to_string()),
+        if let Err(error) = self.arm(wake) {
+            return Recovery::Lost(error.to_string());
         }
+        Recovery::Reattached
     }
     fn liveness(&self, wake: &AgentWake) -> Liveness {
         match question(wake) {

@@ -55,33 +55,7 @@ wait_for_aeds_ready() {
   return 1
 }
 
-kernel_token="$(tr -d '\r\n' < "${deployment_dir}/secrets/local-kernel-token")"
-dummy_management_token="$(tr -d '\r\n' < "${deployment_dir}/secrets/dummy-aegs-management-token")"
 start_aegs dummy-aegs
-authorization="$(
-  curl --fail --silent \
-    -H "authorization: Bearer ${dummy_management_token}" \
-    -H "content-type: application/json" \
-    --data '{"generator_id":"dev.chariox.dummy"}' \
-    "http://127.0.0.1:${CHARIOX_DUMMY_AEGS_PORT}/v1/authorizations"
-)"
-if ! grep -q '"connection_id":"local-dummy"' <<< "${authorization}"; then
-  printf 'Dummy AEGS authorization did not return its opaque connection\n' >&2
-  exit 1
-fi
-resources="$(
-  curl --fail --silent \
-    -H "authorization: Bearer ${dummy_management_token}" \
-    -H "content-type: application/json" \
-    --data '{"generator_id":"dev.chariox.dummy","connection_id":"local-dummy","limit":20}' \
-    "http://127.0.0.1:${CHARIOX_DUMMY_AEGS_PORT}/v1/resources/query"
-)"
-if ! grep -q '"connection_scope":"default"' <<< "${resources}"; then
-  printf 'Dummy AEGS resource enumeration did not return its provider scope\n' >&2
-  exit 1
-fi
-
-CHARIOX_DRILL_KERNEL_TOKEN="${kernel_token}" \
 CHARIOX_DRILL_AEDS_URL="ws://127.0.0.1:${CHARIOX_AEDS_KERNEL_PORT}" \
 CHARIOX_DRILL_AEGS_URL="http://127.0.0.1:${CHARIOX_DUMMY_AEGS_PORT}/v1/emit" \
   cargo run --quiet --manifest-path "${aeds_repository}/Cargo.toml" \
@@ -103,10 +77,8 @@ if [[ "${core_only}" != "true" ]]; then
     start_aegs "${service}"
     env \
       CHARIOX_DRILL_PROVIDERS="${fixture}" \
-      CHARIOX_DRILL_KERNEL_TOKEN="${kernel_token}" \
       CHARIOX_DRILL_AEDS_URL="ws://127.0.0.1:${CHARIOX_AEDS_KERNEL_PORT}" \
       "CHARIOX_DRILL_${prefix}_AEGS_URL=http://127.0.0.1:${port}" \
-      "CHARIOX_DRILL_${prefix}_MANAGEMENT_TOKEN=$(tr -d '\r\n' < "${deployment_dir}/secrets/${secret_stem}-aegs-management-token")" \
       "CHARIOX_DRILL_${prefix}_WEBHOOK_SECRET=$(tr -d '\r\n' < "${deployment_dir}/secrets/${secret_stem}-aegs-webhook-secret")" \
       cargo run --quiet --manifest-path "${aeds_repository}/Cargo.toml" \
         --example first_wave_provider_drill

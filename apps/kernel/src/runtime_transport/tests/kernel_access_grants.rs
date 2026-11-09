@@ -127,6 +127,7 @@ fn kernel_access_child_server() {
                     relay_url: None,
                     relay_token: Some(outbound_credentials::CANARY.into()),
                     relay_peer_protocol_version: None,
+                    worker_worktree_id: None,
                 }));
                 app.agents_mut().restore_agent(remote);
             }

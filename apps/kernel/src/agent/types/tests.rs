@@ -241,3 +241,30 @@ fn workflow_runtime_materialization_preserves_config_without_live_state() {
     assert!(runtime.provider_resume_state().is_empty());
     assert!(!runtime.visible_in_freeform());
 }
+
+#[test]
+fn a_child_stored_by_the_previous_release_keeps_its_parent_edge() {
+    let mut legacy = serde_json::to_value(agent("claude", "claude-haiku-5-5")).unwrap();
+    legacy["controlled_by_metaagent_id"] = serde_json::json!("agent-parent");
+    legacy["spawned_by_agent_id"] = serde_json::json!("agent-parent");
+
+    let restored: AgentInstance = serde_json::from_value(legacy).expect("agent loads");
+
+    assert_eq!(restored.parent_agent_id(), Some("agent-parent"));
+    assert!(restored.is_sub_agent(), "the child stays out of the room");
+    let saved = serde_json::to_value(&restored).unwrap();
+    assert_eq!(saved["parent_agent_id"]["agent_id"], "agent-parent");
+    assert!(saved.get("controlled_by_metaagent_id").is_none());
+    assert!(saved.get("spawned_by_agent_id").is_none());
+}
+
+#[test]
+fn an_agent_the_previous_release_let_go_of_stays_a_room_member() {
+    let mut legacy = serde_json::to_value(agent("claude", "claude-haiku-5-5")).unwrap();
+    legacy["spawned_by_agent_id"] = serde_json::json!("agent-parent");
+
+    let restored: AgentInstance = serde_json::from_value(legacy).expect("agent loads");
+
+    assert_eq!(restored.parent_agent_id(), None);
+    assert!(!restored.is_sub_agent());
+}

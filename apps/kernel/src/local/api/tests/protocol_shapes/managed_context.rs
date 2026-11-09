@@ -221,6 +221,8 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
             extension_count: 1,
             dependency_count: 2,
         },
+        // A full import: the hash below proves the field stays out of its shape.
+        omitted_provider_accounts: Vec::new(),
         receipt_sha256: "e".repeat(64),
     };
     let relay_serialized = serde_json::to_value(&relay_receipt)
@@ -363,4 +365,76 @@ fn mp08_mp11_owner_managed_context_shapes_are_versioned() {
         format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap())),
         "07030d79fe7fc60ef4e5145cb8d73e53146d34b82362bd725caad55ed327b489"
     );
+}
+
+#[test]
+fn local_daemon_owner_managed_event_connection_selection_shape_is_versioned() {
+    use crate::managed_context::package::{
+        ManagedContextEventConnectionSelection, ManagedContextPlanBinding,
+    };
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("owner-managed-event-connections-1000.json")).unwrap();
+    assert_eq!(
+        fixture["local_protocol"],
+        serde_json::json!(LOCAL_DAEMON_PROTOCOL_VERSION)
+    );
+    assert_eq!(
+        fixture["peer_protocol"],
+        serde_json::json!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION)
+    );
+
+    let request: LocalDaemonRequest = serde_json::from_value(fixture["request"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(&request).unwrap(), fixture["request"]);
+    let LocalDaemonRequest::StartManagedContextTransfer(start) = &request else {
+        panic!("fixture request must start a managed-context transfer")
+    };
+    let selected = ManagedContextEventConnectionSelection::Selected {
+        connection_ids: vec!["connection-a".to_string(), "connection-b".to_string()],
+    };
+    assert_eq!(
+        start
+            .owner_managed
+            .as_ref()
+            .unwrap()
+            .context_selection
+            .event_connections,
+        selected
+    );
+
+    // The peer arm request carries the plan binding, selection included.
+    let plan: ManagedContextPlanBinding = serde_json::from_value(fixture["plan"].clone()).unwrap();
+    assert_eq!(plan.event_connections, selected);
+    assert_eq!(serde_json::to_value(&plan).unwrap(), fixture["plan"]);
+
+    // Requests and plans that do not use the item keep their earlier shape.
+    let mut without = fixture["request"].clone();
+    without["StartManagedContextTransfer"]["ownerManaged"]["contextSelection"]
+        .as_object_mut()
+        .unwrap()
+        .remove("eventConnections");
+    let request: LocalDaemonRequest = serde_json::from_value(without.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&request).unwrap(), without);
+    let mut plan_without = fixture["plan"].clone();
+    plan_without
+        .as_object_mut()
+        .unwrap()
+        .remove("eventConnections");
+    let plan: ManagedContextPlanBinding = serde_json::from_value(plan_without.clone()).unwrap();
+    assert!(plan.event_connections.is_none());
+    assert_eq!(serde_json::to_value(&plan).unwrap(), plan_without);
+
+    // The wire spelling is camelCase; the snake_case field is not accepted.
+    let mut misspelled = fixture["plan"].clone();
+    misspelled["eventConnections"] = serde_json::json!({
+        "kind": "selected", "connection_ids": ["connection-a"]
+    });
+    assert!(serde_json::from_value::<ManagedContextPlanBinding>(misspelled).is_err());
 }

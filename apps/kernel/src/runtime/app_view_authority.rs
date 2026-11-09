@@ -124,3 +124,11 @@ pub(crate) fn not_granted() -> BrowserAppViewError {
         message: "This agent has no grant for this App; the owner can grant it the App".into(),
     }
 }
+
+/// The owner granted the App, but this agent has not claimed this view yet.
+pub(crate) fn view_not_claimed() -> BrowserAppViewError {
+    BrowserAppViewError {
+        code: "AGENT_APP_NOT_GRANTED".into(),
+        message: "This agent holds the App but has not claimed this App view; load the kernel browser and click the App's Tab, then retry".into(),
+    }
+}

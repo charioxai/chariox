@@ -53,6 +53,12 @@ pub(crate) mod apps;
 mod apps_tests;
 pub(crate) mod browser_import;
 mod created_resources;
+mod decision_holders;
+pub(crate) use decision_holders::StoredDecisionHolder;
+mod event_connection_imports;
+pub(crate) use event_connection_imports::{
+    EventConnectionImportChange, EventConnectionImportClaims, IMPORTED_BY_TRANSFER_ID,
+};
 mod owner;
 mod retired_sessions;
 pub(crate) mod room_environment;
@@ -432,6 +438,16 @@ impl DurableKernelStateStore {
         created_resources::initialize(&connection).map_err(|_| DaemonError::LocalTransport {
             operation: "resource_register.initialize",
             message: "cannot initialize resource register".into(),
+        })?;
+        decision_holders::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.decision_holders",
+            message: error.to_string(),
+        })?;
+        event_connection_imports::initialize(&connection).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "durable_state.event_connection_imports",
+                message: error.to_string(),
+            }
         })?;
         retired_sessions::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.retired_sessions",
@@ -1473,7 +1489,8 @@ impl DurableStateWriter {
         let agent_faults = agent_lifecycle::faults::AgentFaults::from_env();
         let worker = std::thread::Builder::new()
             .name("chariox-durable-writer".to_string())
-            .stack_size(512 * 1024)
+            // Agent lifecycle operations nest their transition, wake and supervision steps here.
+            .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
             .spawn(move || {
                 run_durable_writer_with(
                     connection,
@@ -1912,6 +1929,8 @@ fn commit_durable_write_batch(
                     let sequence = transaction.last_insert_rowid().max(0) as u64;
                     retired_sessions::apply_event(&transaction, kind, payload_json)?;
                     created_resources::apply_event(&transaction, kind, payload_json)?;
+                    event_connection_imports::apply_event(&transaction, kind, payload_json)?;
+                    decision_holders::apply_event(&transaction, kind, payload_json)?;
                     if kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND {
                         workflow_notifications::agent_lineage::record_prompt_state_in(
                             &transaction,
@@ -2431,6 +2450,32 @@ mod quiescence_snapshot_retention_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sub-agent removal nests the lifecycle transitions, wake and supervision steps on the
+    /// writer, and a debug build overflowed a 512 KiB writer stack there and aborted the kernel.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn durable_writer_runs_on_the_kernel_runtime_stack() {
+        if !crate::test_support::rerun_without_min_stack(
+            "durable_state::tests::durable_writer_runs_on_the_kernel_runtime_stack",
+        ) {
+            return;
+        }
+        let directory =
+            std::env::temp_dir().join(format!("chariox-durable-writer-stack-{}", rand_suffix()));
+        std::fs::create_dir(&directory).unwrap();
+        let store = DurableKernelStateStore::open(directory.join("kernel.db")).unwrap();
+        let size = {
+            let worker = store.writer.worker.lock().unwrap();
+            crate::test_support::spawned_thread_stack_size(worker.as_ref().unwrap())
+        };
+        drop(store);
+        std::fs::remove_dir_all(&directory).unwrap();
+        assert!(
+            size >= crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE,
+            "durable writer stack is {size} bytes"
+        );
+    }
 
     #[test]
     fn durable_write_sync_overrides_weaker_connection_setting() {

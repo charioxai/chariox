@@ -255,6 +255,38 @@ impl KernelRuntimeOwnedState {
         terminal_answer: bool,
         answerer: Option<&crate::runtime::command::KernelCaller>,
     ) -> Result<(), DaemonError> {
+        self.resolve_runtime_interaction_routed(
+            session_id,
+            interaction_id,
+            choice_id,
+            custom_reply,
+            caller_user_id,
+            passkey_verified,
+            authorizing_terminal,
+            take_host,
+            terminal_answer,
+            answerer,
+            None,
+        )
+    }
+
+    /// `as_holder`: the agent answering as the decision's holder. It must still be the holder,
+    /// by the authority it has now, when the answer reaches the interaction lock.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn resolve_runtime_interaction_routed(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        choice_id: &str,
+        custom_reply: Option<&str>,
+        caller_user_id: Option<&str>,
+        passkey_verified: bool,
+        authorizing_terminal: Option<&str>,
+        take_host: bool,
+        terminal_answer: bool,
+        answerer: Option<&crate::runtime::command::KernelCaller>,
+        as_holder: Option<&str>,
+    ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
             .mutation
@@ -293,6 +325,11 @@ impl KernelRuntimeOwnedState {
             return Err(interaction_error(
                 "Agent interaction was withdrawn because its turn or agent ended",
             ));
+        }
+        if as_holder
+            .is_some_and(|agent| pending.holder != super::DecisionHolder::Agent(agent.into()))
+        {
+            return Err(interaction_error(super::decision_holder::HOLDER_CHANGED));
         }
         if pending
             .kernel_operation_owner
@@ -356,6 +393,13 @@ impl KernelRuntimeOwnedState {
                     .cloned()
             })
             .ok_or_else(|| interaction_error("interaction is not active"))?;
+        // The authority limit is rechecked here, under the interaction lock: an answer from an
+        // agent that no longer holds the decision by its current authority is refused.
+        if let (Some(agent), Some(session)) = (as_holder, session.as_ref()) {
+            if !self.holder_may_answer(session, &pending, &interaction, agent) {
+                return Err(interaction_error(super::decision_holder::HOLDER_CHANGED));
+            }
+        }
         if interaction.asking_task_id().is_some()
             && interaction.timeout_sec().is_some_and(|seconds| {
                 interaction
@@ -539,6 +583,21 @@ impl KernelRuntimeOwnedState {
                 message: format!("interaction {interaction_id} does not define choice {choice_id}"),
             });
         };
+        // A Vault passphrase is checked while its card stays on screen: the waiter
+        // closes the card when the Vault is open, or shows the refusal in it.
+        let holds_card = pending.terminal_credential_owner.is_some()
+            && interaction.id().starts_with("vault-unlock-")
+            && custom_reply.is_some()
+            && interaction
+                .choice(choice_id)
+                .is_none_or(|choice| choice.vault_unlock().is_some());
+        if holds_card
+            && pending
+                .checking_answer
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(interaction_error("The Vault is checking a passphrase"));
+        }
         // Validate the decision after waiting for the session writer. Its time
         // is pinned before publication so a slow commit cannot bank elevation.
         if pending
@@ -567,12 +626,14 @@ impl KernelRuntimeOwnedState {
         }
         let decision_at = (std::time::Instant::now(), crate::session::unix_epoch_ms());
         // Keep the decision and its responder available if the event commit fails.
-        if session.is_some() {
+        if session.is_some() && !holds_card {
             self.publish_outside_interaction(
                 session_id,
                 &interaction,
                 InteractionPhase::Resolved(crate::local::EventResolution {
-                    via: if terminal_answer || take_host {
+                    via: if as_holder.is_some() {
+                        crate::local::EventResolutionVia::ParentAgent
+                    } else if terminal_answer || take_host {
                         crate::local::EventResolutionVia::Terminal
                     } else {
                         crate::local::EventResolutionVia::ExternalAgent
@@ -585,11 +646,18 @@ impl KernelRuntimeOwnedState {
             self.persist_session_activity(session, decision_at.1)?;
         }
         self.answer_goal_native_approval(pending.goal_approval.as_ref())?;
-        let pending = self
-            .pending_interactions
-            .write()
-            .remove(interaction_id)
-            .ok_or_else(|| interaction_error("interaction is no longer pending"))?;
+        let pending = {
+            let mut store = self.pending_interactions.write();
+            if holds_card {
+                store.get(interaction_id).cloned()
+            } else {
+                store.remove(interaction_id)
+            }
+            .ok_or_else(|| interaction_error("interaction is no longer pending"))?
+        };
+        if !holds_card {
+            self.withdraw_settled_child_decision(session_id, interaction_id, &pending);
+        }
         // MP-08/MP-10/MP-11: pin time at the winning fresh decision, before
         // waking its consumer. Scheduler delays cannot bank elevation time.
         if passkey_verified
@@ -611,7 +679,9 @@ impl KernelRuntimeOwnedState {
                 .record_answered(session_id, interaction_id);
         }
         if let Some(mut session) = session.take() {
-            session.remove_active_interaction(interaction_id);
+            if !holds_card {
+                session.remove_active_interaction(interaction_id);
+            }
             sessions.restore_session(session);
         }
         // The count reads the Room store: record it only after this write lock is released.
@@ -653,6 +723,52 @@ impl KernelRuntimeOwnedState {
         interaction_id: &str,
     ) -> Result<(), DaemonError> {
         self.timeout_runtime_interaction_if_current(session_id, interaction_id, None)
+    }
+
+    /// A refused passphrase keeps its card: the same interaction takes the refusal
+    /// and a fresh responder, so no client ever sees it leave.
+    pub(super) fn rearm_vault_card(
+        &self,
+        session_id: &str,
+        refreshed: crate::session::RuntimeInteraction,
+    ) -> Result<tokio::sync::oneshot::Receiver<super::PendingInteractionResolution>, DaemonError>
+    {
+        let _mutation = self
+            .pending_interactions
+            .mutation
+            .lock()
+            .map_err(|_| interaction_error("Interaction store is unavailable"))?;
+        let pending = self
+            .pending_interactions
+            .write()
+            .get(refreshed.id())
+            .filter(|pending| {
+                pending.session_id == session_id && pending.belongs_to(&self.session_store)
+            })
+            .cloned()
+            .ok_or_else(|| interaction_error("interaction is no longer pending"))?;
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let mut sessions = self.session_store.write();
+        let mut session = sessions.get_session(session_id)?.clone();
+        if !session.replace_active_interaction(refreshed) {
+            return Err(interaction_error("interaction is not active"));
+        }
+        self.persist_session_activity(&mut session, crate::session::unix_epoch_ms())?;
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        *pending
+            .responder
+            .lock()
+            .expect("pending interaction responder mutex poisoned") = Some(sender);
+        pending
+            .checking_answer
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        sessions.restore_session(session);
+        drop(sessions);
+        activity_mutation.record();
+        self.session_snapshot(session_id)?;
+        self.terminal_stream
+            .notify_terminal_projection_change(session_id);
+        Ok(receiver)
     }
 
     /// The Vault was unlocked somewhere else: this unlock card is answered "unlocked"
@@ -793,6 +909,7 @@ impl KernelRuntimeOwnedState {
         }
         let consume = || {
             self.pending_interactions.write().remove(interaction_id);
+            self.withdraw_settled_child_decision(session_id, interaction_id, &pending);
             if pending.passkey_prompt.is_some() {
                 let reason = if pending
                     .kernel_operation_deadline

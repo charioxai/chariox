@@ -14,6 +14,10 @@ pub struct EventTarget {
 #[serde(deny_unknown_fields)]
 pub struct SubscribeEventsRequest {
     pub targets: Vec<EventTarget>,
+    /// Notification sources of this kernel (workflow exits and owner actions) by id. Their
+    /// occurrences reach the grant's own event stream; nothing else can receive them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,6 +25,8 @@ pub struct SubscribeEventsRequest {
 pub struct UnsubscribeEventsRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<EventTarget>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub all: bool,
 }
@@ -28,6 +34,11 @@ pub struct UnsubscribeEventsRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GetEventSubscriptionRequest {}
+
+/// The notification sources a grant may follow with `SubscribeEvents{sources}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListNotificationSourcesRequest {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -99,6 +110,9 @@ pub enum OutsideEventValue {
         /// How a resolved decision ended.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resolution: Option<EventResolution>,
+        /// A sub-agent's decision the user holds is shown in this agent's panel: the room agent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shown_in: Option<String>,
     },
     Terminal {
         exit_code: Option<u32>,
@@ -122,6 +136,12 @@ pub enum OutsideEventValue {
     Session {
         state: EventSessionState,
     },
+    /// A sub-agent tree below `root` changed: read `ListDescendants` again.
+    /// `rev` is the revision that read returns once it includes the change.
+    AgentTree {
+        root: String,
+        rev: u64,
+    },
     Gap {
         kernel: String,
         dropped: u64,
@@ -136,6 +156,16 @@ pub enum OutsideEventValue {
     },
     SubscriptionEnded {
         reason: String,
+    },
+    /// One occurrence of a notification source the grant follows. Delivered once per
+    /// occurrence until acknowledged; `deadline_ms` is when an unread one expires.
+    Notification {
+        source_id: String,
+        source_kind: NotificationSourceKind,
+        display_name: String,
+        occurrence_id: String,
+        output: crate::session::WorkflowOutputPayload,
+        deadline_ms: u64,
     },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,10 +209,23 @@ pub struct EventKernelIssue {
     pub code: String,
     pub message: String,
 }
+/// A notification source the grant follows. `available` turns false when the source can no
+/// longer emit (disabled, workflow or Room gone); the follow stays until the grant drops it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventSourceFollow {
+    pub source_id: String,
+    pub display_name: String,
+    pub kind: NotificationSourceKind,
+    pub session_id: String,
+    pub subscription_id: String,
+    pub available: bool,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventSubscription {
     pub subscription_id: String,
     pub targets: Vec<EventTarget>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<EventSourceFollow>,
     pub kernels: Vec<EventKernelHealth>,
     pub acknowledged_cursor: u64,
     pub ended: Option<String>,
@@ -244,6 +287,8 @@ pub struct EventResolution {
 pub enum EventResolutionVia {
     Terminal,
     ExternalAgent,
+    /// A parent agent answered its sub-agent's decision.
+    ParentAgent,
     Timeout,
     /// Withdrawn without an answer: the asker went away or a newer decision replaced it.
     Cancelled,

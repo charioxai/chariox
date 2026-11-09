@@ -1,5 +1,7 @@
 use super::*;
 
+mod vault_login;
+
 use crate::managed_context::kernel::{
     KernelContextCompatibility, KernelContextPayload, KernelContextSnapshot,
 };
@@ -53,6 +55,7 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
             },
             provider_accounts: ManagedContextProviderAccountSelection::None,
             git_credentials: ManagedContextGitCredentialSelection::None,
+            event_connections: Default::default(),
         },
         target_environment_id: "environment-empty-apply".to_string(),
         source_kernel_id: "source-kernel-empty-apply".to_string(),
@@ -74,6 +77,7 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
         kernel_context: ManagedContextPackageKernel::Empty,
         provider_accounts: ManagedContextPackageProviderAccounts::None,
         git_credentials: ManagedContextPackageGitCredentials::None,
+        event_connections: Default::default(),
         package_path: root.join("context.chariox"),
     })
     .expect("compose explicit Empty package");
@@ -87,6 +91,7 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
         context_import_target: None,
         provider_account_target: None,
         git_credential_target: None,
+        event_connection_target: None,
     })
     .expect("apply explicit Empty package");
     assert!(matches!(
@@ -270,6 +275,7 @@ fn package_applies_without_a_development_component_when_the_plan_selects_empty()
         context_import_target: None,
         provider_account_target: None,
         git_credential_target: None,
+        event_connection_target: None,
     })
     .expect("apply no-development package");
     assert!(matches!(
@@ -359,6 +365,7 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
     };
     export.provider_accounts = ManagedContextPackageProviderAccounts::Selected {
         materializations: vec![materialization],
+        vault_logins: Vec::new(),
     };
     assert!(!format!("{export:?}").contains("provider-package-secret"));
     let exported = export_managed_context_package(export).expect("export provider account package");
@@ -377,6 +384,7 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
     let provider_target = ManagedContextProviderAccountImportTarget {
         registry: target_registry.clone(),
         owner_user_id: "owner-a".to_string(),
+        config: crate::config::DaemonConfig::for_tests(),
     };
     let request = || ManagedContextPackageApplicationRequest {
         transfer_id: "ctx_provider_account".to_string(),
@@ -391,10 +399,12 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
         context_import_target: None,
         provider_account_target: Some(provider_target.clone()),
         git_credential_target: None,
+        event_connection_target: None,
     };
     assert!(!format!("{:?}", request()).contains("provider-package-secret"));
     let receipt = apply_managed_context_package(request()).expect("apply provider account package");
-    let ManagedContextImportedProviderAccounts::Selected { accounts } = &receipt.provider_accounts
+    let ManagedContextImportedProviderAccounts::Selected { accounts, .. } =
+        &receipt.provider_accounts
     else {
         panic!("selected provider account became None")
     };
@@ -431,6 +441,7 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
         "unused-for-empty-context",
         Some(&provider_target),
         None,
+        None,
     )
     .expect("roll back provider account package");
     let restored_environment = target_registry
@@ -445,6 +456,7 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
         &receipt,
         "unused-for-empty-context",
         Some(&provider_target),
+        None,
         None,
     )
     .expect("repeat provider-account rollback");
@@ -474,6 +486,7 @@ fn provider_account_package_rejects_payload_not_selected_by_the_plan() {
     let mut export = fixture.export_request(ManagedContextPackageKernel::Empty);
     export.provider_accounts = ManagedContextPackageProviderAccounts::Selected {
         materializations: vec![materialization],
+        vault_logins: Vec::new(),
     };
     let package_path = export.package_path.clone();
     let error = export_managed_context_package(export)
@@ -585,6 +598,7 @@ esac
         context_import_target: None,
         provider_account_target: None,
         git_credential_target: Some(target.clone()),
+        event_connection_target: None,
     };
     let receipt = apply_managed_context_package(request()).expect("apply Git credential package");
     let ManagedContextImportedGitCredentials::Selected { credentials } = &receipt.git_credentials
@@ -607,6 +621,7 @@ esac
         "unused-for-empty-context",
         None,
         Some(&target),
+        None,
     )
     .expect("roll back Git credential package");
     assert!(!target_home.join("token").exists());
@@ -659,10 +674,12 @@ fn provider_account_rollback_attempts_every_import_after_one_failure() {
     conflicting_receipt.materialization_sha256 = "b".repeat(64);
     let imported = ManagedContextImportedProviderAccounts::Selected {
         accounts: vec![receipts[0].clone(), conflicting_receipt],
+        omitted: Vec::new(),
     };
     let target_binding = ManagedContextProviderAccountImportTarget {
         registry: target.clone(),
         owner_user_id: "owner-a".to_string(),
+        config: crate::config::DaemonConfig::for_tests(),
     };
     rollback_imported_provider_accounts(Some(&target_binding), &imported)
         .expect_err("one conflicting receipt must report rollback failure");
@@ -758,6 +775,7 @@ fn receipt_capacity_is_rejected_before_context_publication() {
         context_import_target: None,
         provider_account_target: None,
         git_credential_target: None,
+        event_connection_target: None,
     };
     let error = apply_managed_context_package(request)
         .expect_err("oversized durable receipt must fail before publication");
@@ -904,6 +922,7 @@ impl PackageFixture {
                     },
                     provider_accounts: ManagedContextProviderAccountSelection::None,
                     git_credentials: ManagedContextGitCredentialSelection::None,
+                    event_connections: Default::default(),
                 },
                 target_environment_id: "environment-1".to_string(),
                 source_kernel_id: "source-kernel-1".to_string(),
@@ -939,6 +958,7 @@ impl PackageFixture {
             kernel_context,
             provider_accounts: ManagedContextPackageProviderAccounts::None,
             git_credentials: ManagedContextPackageGitCredentials::None,
+            event_connections: Default::default(),
             package_path: self.root.join("context.chariox"),
         }
     }
@@ -1028,4 +1048,1011 @@ impl Drop for FixtureProviderHomes {
             }
         }
     }
+}
+
+const SOURCE_OWNER: &str = "owner-source";
+const TARGET_OWNER: &str = "owner-target";
+
+fn event_registry(root: &Path, name: &str) -> crate::event_connection::EventConnectionRegistry {
+    fs::create_dir_all(root.join(name)).expect("create registry directory");
+    crate::event_connection::EventConnectionRegistry::new(
+        crate::durable_state::DurableKernelStateStore::open(root.join(name).join("state.sqlite3"))
+            .expect("open durable state"),
+    )
+}
+
+fn seed_connection(
+    registry: &crate::event_connection::EventConnectionRegistry,
+    owner: &str,
+    connection_id: &str,
+    event_owner_id: &str,
+    status: crate::local::EventConnectionStatus,
+) {
+    registry
+        .upsert(
+            owner,
+            event_owner_id,
+            chariox_event_protocol::AegsConnectionSummary {
+                generator_id: "dev.chariox.github".to_string(),
+                connection_id: connection_id.to_string(),
+                status,
+                metadata: serde_json::json!({}),
+                expires_at_ms: None,
+                updated_at_ms: 1,
+            },
+        )
+        .expect("seed connection");
+}
+
+fn event_selection(ids: &[&str]) -> ManagedContextEventConnectionSelection {
+    ManagedContextEventConnectionSelection::Selected {
+        connection_ids: ids.iter().map(|id| id.to_string()).collect(),
+    }
+}
+
+/// An owner-managed fixture that moves nothing but event connections.
+fn event_connection_fixture(label: &str, ids: &[&str]) -> PackageFixture {
+    let mut fixture = PackageFixture::new(label);
+    fixture.binding.plan.destination = Some(
+        crate::managed_context::owner_managed::OwnerManagedDestination::OwnerManagedMachine {
+            machine_id: "target-machine-1".to_string(),
+            kernel_id: fixture.binding.target_kernel_id.clone(),
+        },
+    );
+    fixture.binding.target_environment_id = String::new();
+    fixture.binding.plan.development = ManagedContextDevelopmentSelection::Empty;
+    fixture.binding.plan.event_connections = event_selection(ids);
+    fixture
+}
+
+fn event_export_request(
+    fixture: &PackageFixture,
+    source: &crate::event_connection::EventConnectionRegistry,
+) -> Result<ManagedContextPackageExportRequest, DaemonError> {
+    let records = event_connections::export_selected(
+        &fixture.binding.plan.event_connections,
+        source,
+        SOURCE_OWNER,
+    )?;
+    let mut export = fixture.export_request(ManagedContextPackageKernel::Empty);
+    export.development = ManagedContextPackageDevelopment::Empty;
+    export.event_connections = ManagedContextPackageEventConnections::Selected { records };
+    Ok(export)
+}
+
+fn event_apply_request(
+    fixture: &PackageFixture,
+    exported: &ManagedContextPackageExportResult,
+    target: &crate::event_connection::EventConnectionRegistry,
+) -> ManagedContextPackageApplicationRequest {
+    ManagedContextPackageApplicationRequest {
+        transfer_id: "ctx_event_connections".to_string(),
+        package_path: exported.package_path.clone(),
+        expected_package_sha256: exported.package_sha256.clone(),
+        expected_binding: ManagedContextPackageBinding {
+            plan: exported.plan.clone(),
+            ..fixture.binding.clone()
+        },
+        development_destination_root: fixture.root.join("unused-development"),
+        target_private_key: "unused-for-empty-context".to_string(),
+        context_import_target: None,
+        provider_account_target: None,
+        git_credential_target: None,
+        event_connection_target: Some(ManagedContextEventConnectionImportTarget {
+            registry: target.clone(),
+            owner_user_id: TARGET_OWNER.to_string(),
+        }),
+    }
+}
+
+#[test]
+fn event_connection_package_gives_a_second_kernel_the_same_connections() {
+    let fixture = event_connection_fixture("event-connections", &["connection-a", "connection-b"]);
+    let source = event_registry(&fixture.root, "source");
+    let target = event_registry(&fixture.root, "target");
+    for (connection_id, event_owner_id) in [
+        ("connection-a", "event-owner-secret-a"),
+        ("connection-b", "event-owner-secret-b"),
+        ("connection-unselected", "event-owner-secret-c"),
+    ] {
+        seed_connection(
+            &source,
+            SOURCE_OWNER,
+            connection_id,
+            event_owner_id,
+            crate::local::EventConnectionStatus::Ready,
+        );
+    }
+    let export = event_export_request(&fixture, &source).expect("export selected connections");
+    assert!(
+        !format!("{export:?}").contains("event-owner-secret"),
+        "the event owner id must not appear in Debug output"
+    );
+    let exported = export_managed_context_package(export).expect("export event connections");
+
+    let receipt = apply_managed_context_package(event_apply_request(&fixture, &exported, &target))
+        .expect("apply event connections");
+
+    for (connection_id, event_owner_id) in [
+        ("connection-a", "event-owner-secret-a"),
+        ("connection-b", "event-owner-secret-b"),
+    ] {
+        assert_eq!(
+            target
+                .connection_event_owner_id(TARGET_OWNER, connection_id)
+                .expect("read target owner id")
+                .as_deref(),
+            Some(event_owner_id)
+        );
+        assert_eq!(
+            target
+                .get(TARGET_OWNER, connection_id)
+                .expect("read target connection")
+                .expect("target holds the connection")
+                .status,
+            crate::local::EventConnectionStatus::Ready
+        );
+    }
+    assert!(target
+        .get(TARGET_OWNER, "connection-unselected")
+        .expect("read unselected connection")
+        .is_none());
+    let ManagedContextImportedEventConnections::Selected { connections } =
+        &receipt.event_connections
+    else {
+        panic!("selected event connections became None")
+    };
+    assert_eq!(
+        connections
+            .iter()
+            .map(|connection| connection.connection_id.as_str())
+            .collect::<Vec<_>>(),
+        ["connection-a", "connection-b"]
+    );
+    let serialized = serde_json::to_string(&receipt).expect("serialize receipt");
+    assert!(!serialized.contains("event-owner-secret"));
+    assert!(!format!("{receipt:?}").contains("event-owner-secret"));
+    fixture.cleanup();
+}
+
+#[test]
+fn event_connection_import_refuses_a_different_record_and_keeps_an_identical_one() {
+    let fixture = event_connection_fixture("event-conflict", &["connection-a", "connection-b"]);
+    let source = event_registry(&fixture.root, "source");
+    let target = event_registry(&fixture.root, "target");
+    for (connection_id, event_owner_id) in [
+        ("connection-a", "event-owner-secret-a"),
+        ("connection-b", "event-owner-secret-b"),
+    ] {
+        seed_connection(
+            &source,
+            SOURCE_OWNER,
+            connection_id,
+            event_owner_id,
+            crate::local::EventConnectionStatus::Ready,
+        );
+    }
+    let exported = export_managed_context_package(
+        event_export_request(&fixture, &source).expect("export selected connections"),
+    )
+    .expect("export event connections");
+
+    // Another record already uses connection-a: nothing is imported, nothing changes.
+    seed_connection(
+        &target,
+        TARGET_OWNER,
+        "connection-a",
+        "event-owner-other",
+        crate::local::EventConnectionStatus::Ready,
+    );
+    let error = apply_managed_context_package(event_apply_request(&fixture, &exported, &target))
+        .expect_err("a different record under the same connection id must be refused");
+    let DaemonError::ManagedContext {
+        code, retryable, ..
+    } = &error
+    else {
+        panic!("conflict must be a managed-context error")
+    };
+    assert_eq!(*code, "event_connection_conflict");
+    assert!(!retryable);
+    assert!(!error.to_string().contains("event-owner"));
+    assert_eq!(
+        target
+            .connection_event_owner_id(TARGET_OWNER, "connection-a")
+            .expect("read owner id")
+            .as_deref(),
+        Some("event-owner-other")
+    );
+    assert!(target
+        .get(TARGET_OWNER, "connection-b")
+        .expect("read connection-b")
+        .is_none());
+
+    // The identical record is kept, so replaying the import succeeds.
+    assert!(target.remove(TARGET_OWNER, "connection-a").expect("remove"));
+    seed_connection(
+        &target,
+        TARGET_OWNER,
+        "connection-a",
+        "event-owner-secret-a",
+        crate::local::EventConnectionStatus::Ready,
+    );
+    let receipt = apply_managed_context_package(event_apply_request(&fixture, &exported, &target))
+        .expect("identical record is idempotent");
+    let ManagedContextImportedEventConnections::Selected { connections } =
+        &receipt.event_connections
+    else {
+        panic!("selected event connections became None")
+    };
+    assert_eq!(
+        connections
+            .iter()
+            .map(|connection| (connection.connection_id.as_str(), connection.created))
+            .collect::<Vec<_>>(),
+        [("connection-a", false), ("connection-b", true)]
+    );
+
+    // A rollback removes only the record this import created.
+    let target_handle = ManagedContextEventConnectionImportTarget {
+        registry: target.clone(),
+        owner_user_id: TARGET_OWNER.to_string(),
+    };
+    rollback_managed_context_package_application(
+        &receipt,
+        "unused-for-empty-context",
+        None,
+        None,
+        Some(&target_handle),
+    )
+    .expect("roll back event connections");
+    assert!(target
+        .get(TARGET_OWNER, "connection-a")
+        .expect("read connection-a")
+        .is_some());
+    assert!(target
+        .get(TARGET_OWNER, "connection-b")
+        .expect("read connection-b")
+        .is_none());
+    fixture.cleanup();
+}
+
+#[test]
+fn event_connection_rollback_after_a_restart_removes_the_record_the_import_created() {
+    let fixture = event_connection_fixture("event-restart", &["connection-a"]);
+    let source = event_registry(&fixture.root, "source");
+    seed_connection(
+        &source,
+        SOURCE_OWNER,
+        "connection-a",
+        "event-owner-secret-a",
+        crate::local::EventConnectionStatus::Ready,
+    );
+    let exported = export_managed_context_package(
+        event_export_request(&fixture, &source).expect("export selected connection"),
+    )
+    .expect("export event connections");
+
+    // The first run imports the record, then Cloud fails retryably and the kernel restarts.
+    let before_restart = event_registry(&fixture.root, "target");
+    let first =
+        apply_managed_context_package(event_apply_request(&fixture, &exported, &before_restart))
+            .expect("first run imports the record");
+    drop(first);
+    drop(before_restart);
+
+    // The re-claimed run applies again on the restarted kernel, then Cloud rejects it.
+    let after_restart = event_registry(&fixture.root, "target");
+    let rerun =
+        apply_managed_context_package(event_apply_request(&fixture, &exported, &after_restart))
+            .expect("the re-claimed run applies again");
+    rollback_managed_context_package_application(
+        &rerun,
+        "unused-for-empty-context",
+        None,
+        None,
+        Some(&ManagedContextEventConnectionImportTarget {
+            registry: after_restart.clone(),
+            owner_user_id: TARGET_OWNER.to_string(),
+        }),
+    )
+    .expect("roll back the rejected import");
+
+    assert!(
+        after_restart
+            .get(TARGET_OWNER, "connection-a")
+            .expect("read connection-a")
+            .is_none(),
+        "the import created the record, so a rejected transfer must not leave the event owner id behind"
+    );
+    fixture.cleanup();
+}
+
+#[test]
+fn event_connection_export_refuses_a_connection_that_cannot_be_copied() {
+    let fixture = event_connection_fixture("event-preflight", &["connection-a"]);
+    let source = event_registry(&fixture.root, "source");
+    let refusal = |selection: &[&str]| match event_connections::export_selected(
+        &event_selection(selection),
+        &source,
+        SOURCE_OWNER,
+    ) {
+        Err(DaemonError::ManagedContext {
+            code, retryable, ..
+        }) => {
+            assert!(!retryable);
+            code
+        }
+        other => panic!("expected a typed refusal, got {other:?}"),
+    };
+    assert_eq!(refusal(&["connection-a"]), "event_connection_not_found");
+    seed_connection(
+        &source,
+        SOURCE_OWNER,
+        "connection-a",
+        "event-owner-secret-a",
+        crate::local::EventConnectionStatus::Pending,
+    );
+    assert_eq!(refusal(&["connection-a"]), "event_connection_not_ready");
+    seed_connection(
+        &source,
+        SOURCE_OWNER,
+        "connection-a",
+        "",
+        crate::local::EventConnectionStatus::Ready,
+    );
+    assert_eq!(refusal(&["connection-a"]), "event_connection_not_ready");
+    assert!(
+        !fixture.root.join("context.chariox").exists(),
+        "a refused selection must not write a package"
+    );
+    fixture.cleanup();
+}
+
+#[test]
+fn event_connection_package_rejects_a_selection_that_differs_from_the_plan() {
+    let fixture = event_connection_fixture("event-tamper", &["connection-a", "connection-b"]);
+    let source = event_registry(&fixture.root, "source");
+    for (connection_id, event_owner_id) in [
+        ("connection-a", "event-owner-secret-a"),
+        ("connection-b", "event-owner-secret-b"),
+    ] {
+        seed_connection(
+            &source,
+            SOURCE_OWNER,
+            connection_id,
+            event_owner_id,
+            crate::local::EventConnectionStatus::Ready,
+        );
+    }
+    let exported = export_managed_context_package(
+        event_export_request(&fixture, &source).expect("export selected connections"),
+    )
+    .expect("export event connections");
+    // The plan binding names a different selection than the package manifest.
+    let mut request = fixture.import_request(&exported);
+    request.expected_binding.plan.event_connections = event_selection(&["connection-a"]);
+    assert!(extract_managed_context_package(request).is_err());
+    let mut request = fixture.import_request(&exported);
+    request.expected_binding.plan.event_connections = ManagedContextEventConnectionSelection::None;
+    assert!(extract_managed_context_package(request).is_err());
+    // A flipped byte in the component breaks the manifest digest.
+    let mut bytes = fs::read(&exported.package_path).expect("read package");
+    let index = bytes.len() - PACKAGE_TRAILER.len() - 4;
+    bytes[index] ^= 1;
+    fs::write(&exported.package_path, bytes).expect("mutate package");
+    assert!(extract_managed_context_package(fixture.import_request(&exported)).is_err());
+    // The exporter will not build a package whose component and plan disagree.
+    let mut mismatched = event_export_request(&fixture, &source).expect("export request");
+    mismatched.plan.event_connections = event_selection(&["connection-a"]);
+    mismatched.package_path = fixture.root.join("mismatched.chariox");
+    assert!(export_managed_context_package(mismatched).is_err());
+    let mut omitted = event_export_request(&fixture, &source).expect("export request");
+    omitted.event_connections = ManagedContextPackageEventConnections::None;
+    omitted.package_path = fixture.root.join("omitted.chariox");
+    assert!(export_managed_context_package(omitted).is_err());
+    fixture.cleanup();
+}
+
+#[test]
+fn event_connections_need_an_owner_managed_destination() {
+    let mut fixture = event_connection_fixture("event-destination", &["connection-a"]);
+    fixture.binding.plan.destination = None;
+    fixture.binding.target_environment_id = "environment-1".to_string();
+    let source = event_registry(&fixture.root, "source");
+    seed_connection(
+        &source,
+        SOURCE_OWNER,
+        "connection-a",
+        "event-owner-secret-a",
+        crate::local::EventConnectionStatus::Ready,
+    );
+    assert!(export_managed_context_package(
+        event_export_request(&fixture, &source).expect("export request")
+    )
+    .is_err());
+    fixture.cleanup();
+}
+
+fn config_of_cloud_user(cloud_user_id: &str) -> crate::DaemonConfig {
+    let mut config = crate::DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: cloud_user_id.to_string(),
+        ..Default::default()
+    });
+    config
+}
+
+/// Copies one ready connection from `from` to `to` the way the transfer does:
+/// the source resolves the caller, the target resolves the owner it imports for.
+fn copy_connection(
+    fixture: &PackageFixture,
+    package_name: &str,
+    from: (
+        &crate::event_connection::EventConnectionRegistry,
+        &crate::DaemonConfig,
+        &str,
+    ),
+    to: (
+        &crate::event_connection::EventConnectionRegistry,
+        &crate::DaemonConfig,
+        &str,
+    ),
+) {
+    let source = crate::managed_context::outbound_service::EventConnectionSource::new(
+        from.0.clone(),
+        from.1,
+        from.2,
+    );
+    let records = event_connections::export_selected(
+        &fixture.binding.plan.event_connections,
+        &source.registry,
+        &source.owner_user_id,
+    )
+    .expect("export the record");
+    let mut export = fixture.export_request(ManagedContextPackageKernel::Empty);
+    export.development = ManagedContextPackageDevelopment::Empty;
+    export.event_connections = ManagedContextPackageEventConnections::Selected { records };
+    export.package_path = fixture.root.join(package_name);
+    let exported = export_managed_context_package(export).expect("package the record");
+    let mut request = event_apply_request(fixture, &exported, to.0);
+    request.event_connection_target = Some(ManagedContextEventConnectionImportTarget::new(
+        to.0.clone(),
+        to.1,
+        to.2,
+    ));
+    apply_managed_context_package(request).expect("import the record");
+}
+
+#[test]
+fn a_copy_between_kernels_of_different_cloud_ids_stays_the_local_users_connection() {
+    let fixture = event_connection_fixture("event-alias", &["connection-a"]);
+    let local = crate::session::DEFAULT_LOCAL_USER_ID;
+    let (config_a, config_b) = (
+        config_of_cloud_user("cloud-a"),
+        config_of_cloud_user("cloud-b"),
+    );
+    let (kernel_a, kernel_b) = (
+        event_registry(&fixture.root, "kernel-a"),
+        event_registry(&fixture.root, "kernel-b"),
+    );
+    // Made through the local CLI on A (the `local` user), moved by A's Cloud
+    // owner, it is the `local` user's connection on B.
+    seed_connection(
+        &kernel_a,
+        local,
+        "connection-a",
+        "event-owner-secret-a",
+        crate::local::EventConnectionStatus::Ready,
+    );
+    copy_connection(
+        &fixture,
+        "a-to-b.chariox",
+        (&kernel_a, &config_a, "cloud-a"),
+        (&kernel_b, &config_b, "cloud-b"),
+    );
+    let on_b = kernel_b
+        .get(local, "connection-a")
+        .expect("read B")
+        .expect("the local CLI on B lists the copy");
+    assert_eq!(on_b.status, crate::local::EventConnectionStatus::Ready);
+    assert_eq!(
+        kernel_b
+            .connection_event_owner_id(local, "connection-a")
+            .unwrap()
+            .as_deref(),
+        Some("event-owner-secret-a")
+    );
+    assert!(
+        kernel_b.get("cloud-b", "connection-a").unwrap().is_none()
+            && kernel_b.get("cloud-a", "connection-a").unwrap().is_none(),
+        "the record is not kept under any Cloud id"
+    );
+    // The reverse: made on B, moved back by the local CLI of B to A.
+    seed_connection(
+        &kernel_b,
+        local,
+        "connection-a",
+        "event-owner-secret-a",
+        crate::local::EventConnectionStatus::Ready,
+    );
+    assert!(kernel_a.remove(local, "connection-a").unwrap());
+    copy_connection(
+        &fixture,
+        "b-to-a.chariox",
+        (&kernel_b, &config_b, local),
+        (&kernel_a, &config_a, "cloud-a"),
+    );
+    assert!(kernel_a.get(local, "connection-a").unwrap().is_some());
+    // Another user of the kernel is not the owner, so it neither exports nor holds it.
+    let outsider = crate::managed_context::outbound_service::EventConnectionSource::new(
+        kernel_b.clone(),
+        &config_b,
+        "collaborator",
+    );
+    assert!(event_connections::export_selected(
+        &fixture.binding.plan.event_connections,
+        &outsider.registry,
+        &outsider.owner_user_id,
+    )
+    .is_err());
+    assert!(kernel_b
+        .get("collaborator", "connection-a")
+        .unwrap()
+        .is_none());
+    fixture.cleanup();
+}
+
+/// Driven by the two-kernel proof (`GHOWNER.md` section 4): kernel A installs a
+/// connection at a loopback event service through its local CLI path, A's Cloud
+/// owner moves the record to kernel B (its own registry, another Cloud user)
+/// through the real package export and import, B reads it from the event
+/// service and lists it through its own local CLI path. The owner ids go to a
+/// private file for the proof script (never printed).
+#[test]
+#[ignore = "driven by the two-kernel proof, which supplies the loopback event service"]
+fn two_kernel_proof_driver() {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let aegs_url = std::env::var("GHOWNER_PROOF_AEGS_URL").expect("event service url");
+    let owners_file = std::env::var("GHOWNER_PROOF_OWNERS_FILE").expect("owners file");
+    let kernel_config = |cloud_user_id: &str| {
+        let mut config = config_of_cloud_user(cloud_user_id);
+        config.event_registry_url = Some("https://registry.invalid".to_string());
+        config.event_generator_management_targets.insert(
+            "dev.chariox.dummy".to_string(),
+            crate::config::EventGeneratorManagementTarget {
+                url: aegs_url.clone(),
+                registry_discovered: false,
+            },
+        );
+        config
+    };
+    let (config_a, config_b) = (kernel_config("cloud-a"), kernel_config("cloud-b"));
+    let kernel_a =
+        crate::local::test_support::LocalRouterTestHarness::with_config(config_a.clone());
+    let kernel_b =
+        crate::local::test_support::LocalRouterTestHarness::with_config(config_b.clone());
+    kernel_a
+        .dispatch(crate::local::LocalDaemonRequest::InstallEventConnection(
+            crate::local::InstallEventConnectionRequest {
+                generator_id: "dev.chariox.dummy".to_string(),
+                return_url: None,
+            },
+        ))
+        .expect("kernel A installs the connection");
+    kernel_a.reconcile_pending_event_connections();
+    let local = crate::session::DEFAULT_LOCAL_USER_ID;
+    let list = |kernel: &crate::local::test_support::LocalRouterTestHarness| match kernel
+        .dispatch(crate::local::LocalDaemonRequest::ListEventConnections(
+            crate::local::ListEventConnectionsRequest {
+                generator_id: None,
+                cursor: None,
+                limit: 50,
+            },
+        ))
+        .expect("list through the local CLI path")
+    {
+        crate::local::LocalDaemonResponse::EventConnectionsPage { page } => page.connections,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    let connections = list(&kernel_a);
+    assert_eq!(connections.len(), 1, "kernel A lists the new connection");
+    let connection_id = connections[0].connection_id.clone();
+    assert_eq!(
+        connections[0].status,
+        crate::local::EventConnectionStatus::Ready
+    );
+    assert!(list(&kernel_b).is_empty(), "kernel B holds nothing yet");
+
+    let fixture = event_connection_fixture("proof", &[&connection_id]);
+    let source = crate::managed_context::outbound_service::EventConnectionSource::new(
+        kernel_a.runtime_state().event_connection_registry().clone(),
+        &config_a,
+        "cloud-a",
+    );
+    let records = event_connections::export_selected(
+        &fixture.binding.plan.event_connections,
+        &source.registry,
+        &source.owner_user_id,
+    )
+    .expect("export kernel A's record");
+    let mut export = fixture.export_request(ManagedContextPackageKernel::Empty);
+    export.development = ManagedContextPackageDevelopment::Empty;
+    export.event_connections = ManagedContextPackageEventConnections::Selected { records };
+    let exported = export_managed_context_package(export).expect("package kernel A's record");
+    let target = kernel_b.runtime_state().event_connection_registry().clone();
+    let mut request = event_apply_request(&fixture, &exported, &target);
+    request.event_connection_target = Some(ManagedContextEventConnectionImportTarget::new(
+        target.clone(),
+        &config_b,
+        "cloud-b",
+    ));
+    apply_managed_context_package(request).expect("kernel B imports the record");
+    kernel_b.load_imported_event_connections(local, std::slice::from_ref(&connection_id));
+
+    let on_b = list(&kernel_b);
+    assert_eq!(on_b.len(), 1, "kernel B's local CLI lists the copy");
+    assert_eq!(on_b[0].connection_id, connection_id);
+    assert_eq!(on_b[0].status, crate::local::EventConnectionStatus::Ready);
+    let on_a = list(&kernel_a);
+    assert_eq!(on_b[0].scopes, on_a[0].scopes, "B shows A's scopes");
+    assert_eq!(on_b[0].metadata, on_a[0].metadata, "B shows A's metadata");
+    let owner_a = kernel_a
+        .runtime_state()
+        .event_connection_registry()
+        .connection_event_owner_id(local, &connection_id)
+        .unwrap()
+        .expect("kernel A's owner");
+    let owner_b = target
+        .connection_event_owner_id(local, &connection_id)
+        .unwrap()
+        .expect("kernel B's owner");
+    assert_eq!(owner_a, owner_b, "the copy resolves the same owner");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(owners_file)
+        .expect("create the private owners file");
+    write!(
+        file,
+        "{}",
+        serde_json::json!({
+            "connection_id": connection_id,
+            "owner_a": owner_a,
+            "owner_b": owner_b,
+            "b_local_cli_lists_it": true,
+            "b_status_via_local_cli": format!("{:?}", on_b[0].status),
+            "b_scopes_equal_a": on_b[0].scopes == on_a[0].scopes,
+            "b_cloud_id_space_empty": target.get("cloud-b", &connection_id).unwrap().is_none(),
+        })
+    )
+    .expect("write owners");
+    fixture.cleanup();
+}
+
+const TRANSFER_A: &str = "ctx_transfer_a";
+const TRANSFER_B: &str = "ctx_transfer_b";
+
+/// Two owner-managed transfers to one kernel that share a connection record.
+struct SharedConnectionTransfers {
+    fixture: PackageFixture,
+    target: crate::event_connection::EventConnectionRegistry,
+    import_target: ManagedContextEventConnectionImportTarget,
+    records: Vec<event_connections::EventConnectionRecord>,
+}
+
+impl SharedConnectionTransfers {
+    fn new(label: &str) -> Self {
+        let fixture = event_connection_fixture(label, &["connection-a"]);
+        let source = event_registry(&fixture.root, "source");
+        let target = event_registry(&fixture.root, "target");
+        seed_connection(
+            &source,
+            SOURCE_OWNER,
+            "connection-a",
+            "event-owner-secret-a",
+            crate::local::EventConnectionStatus::Ready,
+        );
+        let records = event_connections::export_selected(
+            &fixture.binding.plan.event_connections,
+            &source,
+            SOURCE_OWNER,
+        )
+        .expect("export selected connection");
+        let import_target = ManagedContextEventConnectionImportTarget {
+            registry: target.clone(),
+            owner_user_id: TARGET_OWNER.to_string(),
+        };
+        Self {
+            fixture,
+            target,
+            import_target,
+            records,
+        }
+    }
+
+    fn holds_connection(&self) -> bool {
+        self.target
+            .get(TARGET_OWNER, "connection-a")
+            .expect("read target connection")
+            .is_some()
+    }
+}
+
+#[test]
+fn event_connection_rollback_keeps_a_record_a_completed_transfer_reused() {
+    let shared = SharedConnectionTransfers::new("event-shared-rollback");
+
+    // A installs the record and is still importing other components when B
+    // finds the identical record, reuses it and completes.
+    let transfer_a = event_connections::import(&shared.import_target, TRANSFER_A, &shared.records)
+        .expect("transfer A imports");
+    let transfer_b = event_connections::import(&shared.import_target, TRANSFER_B, &shared.records)
+        .expect("transfer B reuses the record");
+    assert!(transfer_a[0].created);
+    assert!(!transfer_b[0].created);
+
+    event_connections::rollback(&shared.import_target, TRANSFER_A, &transfer_a)
+        .expect("transfer A fails");
+
+    assert!(
+        shared.holds_connection(),
+        "B completed with this connection; A's rollback must not remove it"
+    );
+    shared.fixture.cleanup();
+}
+
+#[test]
+fn event_connection_rollback_removes_the_record_once_no_transfer_relies_on_it() {
+    let shared = SharedConnectionTransfers::new("event-shared-both-fail");
+    let transfer_a = event_connections::import(&shared.import_target, TRANSFER_A, &shared.records)
+        .expect("transfer A imports");
+    let transfer_b = event_connections::import(&shared.import_target, TRANSFER_B, &shared.records)
+        .expect("transfer B reuses the record");
+
+    event_connections::rollback(&shared.import_target, TRANSFER_A, &transfer_a)
+        .expect("transfer A fails");
+    assert!(shared.holds_connection(), "B still relies on the record");
+    event_connections::rollback(&shared.import_target, TRANSFER_B, &transfer_b)
+        .expect("transfer B fails");
+
+    assert!(
+        !shared.holds_connection(),
+        "neither transfer completed, so the record they created must not stay behind"
+    );
+    shared.fixture.cleanup();
+}
+
+#[test]
+fn event_connection_import_has_one_creator_when_two_transfers_race() {
+    for round in 0..40 {
+        let shared = SharedConnectionTransfers::new(&format!("event-race-{round}"));
+        let barrier = std::sync::Barrier::new(2);
+        let (barrier, shared_ref) = (&barrier, &shared);
+        let receipts = std::thread::scope(|scope| {
+            let imports = [TRANSFER_A, TRANSFER_B].map(|transfer_id| {
+                scope.spawn(move || {
+                    barrier.wait();
+                    event_connections::import(
+                        &shared_ref.import_target,
+                        transfer_id,
+                        &shared_ref.records,
+                    )
+                    .expect("transfer imports")
+                })
+            });
+            imports
+                .into_iter()
+                .map(|import| import.join().expect("import thread"))
+                .collect::<Vec<_>>()
+        });
+        let creators = receipts.iter().filter(|receipt| receipt[0].created).count();
+        assert_eq!(
+            creators, 1,
+            "round {round}: exactly one transfer creates the record"
+        );
+        shared.fixture.cleanup();
+    }
+}
+
+#[test]
+fn event_connection_rollback_removes_a_record_its_own_rerun_still_holds() {
+    let shared = SharedConnectionTransfers::new("event-rerun");
+    let first = event_connections::import(&shared.import_target, TRANSFER_A, &shared.records)
+        .expect("first run imports");
+    // A retry of the same transfer finds its own record.
+    let rerun = event_connections::import(&shared.import_target, TRANSFER_A, &shared.records)
+        .expect("rerun reuses the record");
+    assert!(first[0].created);
+    assert!(!rerun[0].created);
+
+    event_connections::rollback(&shared.import_target, TRANSFER_A, &rerun).expect("rerun fails");
+
+    assert!(!shared.holds_connection());
+    shared.fixture.cleanup();
+}
+
+#[test]
+fn event_connection_rollback_keeps_a_record_whose_creating_transfer_completed() {
+    let shared = SharedConnectionTransfers::new("event-completed");
+    let created = event_connections::import(&shared.import_target, TRANSFER_A, &shared.records)
+        .expect("transfer A imports");
+    assert!(created[0].created);
+    event_connections::complete(&shared.import_target, TRANSFER_A).expect("transfer A completes");
+    assert_eq!(
+        shared
+            .target
+            .import_claims(TARGET_OWNER, "connection-a")
+            .expect("read import claims"),
+        None,
+        "a completed transfer leaves no claim on the record it created"
+    );
+
+    // The record is the owner's now, after a restart as before it.
+    let restarted = event_registry(&shared.fixture.root, "target");
+    let import_target = ManagedContextEventConnectionImportTarget {
+        registry: restarted.clone(),
+        owner_user_id: TARGET_OWNER.to_string(),
+    };
+    let reused = event_connections::import(&import_target, TRANSFER_B, &shared.records)
+        .expect("transfer B reuses the record");
+    event_connections::rollback(&import_target, TRANSFER_B, &reused).expect("transfer B fails");
+    event_connections::rollback(&import_target, TRANSFER_A, &created)
+        .expect("a late rollback of the completed transfer");
+
+    assert!(shared.holds_connection());
+    shared.fixture.cleanup();
+}
+
+#[test]
+fn event_connection_rollback_after_a_restart_waits_for_every_sharing_transfer() {
+    let shared = SharedConnectionTransfers::new("event-restart-shared");
+    let transfer_a = event_connections::import(&shared.import_target, TRANSFER_A, &shared.records)
+        .expect("transfer A imports");
+    let transfer_b = event_connections::import(&shared.import_target, TRANSFER_B, &shared.records)
+        .expect("transfer B reuses the record");
+
+    let restarted = event_registry(&shared.fixture.root, "target");
+    let import_target = ManagedContextEventConnectionImportTarget {
+        registry: restarted.clone(),
+        owner_user_id: TARGET_OWNER.to_string(),
+    };
+    event_connections::rollback(&import_target, TRANSFER_A, &transfer_a).expect("transfer A fails");
+    assert!(
+        restarted
+            .get(TARGET_OWNER, "connection-a")
+            .expect("read connection-a")
+            .is_some(),
+        "B still relies on the record after the restart"
+    );
+    event_connections::rollback(&import_target, TRANSFER_B, &transfer_b).expect("transfer B fails");
+
+    assert!(restarted
+        .get(TARGET_OWNER, "connection-a")
+        .expect("read connection-a")
+        .is_none());
+    shared.fixture.cleanup();
+}
+
+/// A store written before the import ledger existed: the table is missing and
+/// an earlier import left its record without a ledger row.
+#[test]
+fn event_connection_ledger_fills_lazily_on_a_store_from_before_it() {
+    let shared = SharedConnectionTransfers::new("event-ledger-upgrade");
+    seed_connection(
+        &shared.target,
+        TARGET_OWNER,
+        "connection-a",
+        "event-owner-secret-a",
+        crate::local::EventConnectionStatus::Ready,
+    );
+    let state_path = shared.fixture.root.join("target").join("state.sqlite3");
+    rusqlite::Connection::open(&state_path)
+        .expect("open the store directly")
+        .execute_batch("DROP TABLE event_connection_imports;")
+        .expect("remove the ledger table");
+
+    let upgraded = event_registry(&shared.fixture.root, "target");
+    let import_target = ManagedContextEventConnectionImportTarget {
+        registry: upgraded.clone(),
+        owner_user_id: TARGET_OWNER.to_string(),
+    };
+    // The old record has no ledger row, so a rollback leaves it as before.
+    let reused = event_connections::import(&import_target, TRANSFER_A, &shared.records)
+        .expect("import on the upgraded store");
+    assert!(!reused[0].created);
+    event_connections::rollback(&import_target, TRANSFER_A, &reused).expect("rollback");
+    assert!(upgraded
+        .get(TARGET_OWNER, "connection-a")
+        .expect("read connection-a")
+        .is_some());
+
+    // A record imported after the upgrade is in the ledger and goes with its rollback.
+    upgraded
+        .remove(TARGET_OWNER, "connection-a")
+        .expect("the owner removes the old record");
+    let created = event_connections::import(&import_target, TRANSFER_B, &shared.records)
+        .expect("import after the upgrade");
+    assert!(created[0].created);
+    let restarted = event_registry(&shared.fixture.root, "target");
+    event_connections::rollback(
+        &ManagedContextEventConnectionImportTarget {
+            registry: restarted.clone(),
+            owner_user_id: TARGET_OWNER.to_string(),
+        },
+        TRANSFER_B,
+        &created,
+    )
+    .expect("rollback after a restart");
+    assert!(restarted
+        .get(TARGET_OWNER, "connection-a")
+        .expect("read connection-a")
+        .is_none());
+    shared.fixture.cleanup();
+}
+
+/// The previous release reads the same store back: its records decode without
+/// the ledger, which only adds a table, an event kind and one record field.
+#[test]
+fn event_connection_ledger_store_restores_through_the_record_shape_alone() {
+    let shared = SharedConnectionTransfers::new("event-ledger-rollback");
+    let created = event_connections::import(&shared.import_target, TRANSFER_A, &shared.records)
+        .expect("transfer A imports");
+    event_connections::import(&shared.import_target, TRANSFER_B, &shared.records)
+        .expect("transfer B joins");
+    assert!(created[0].created);
+    let state_path = shared.fixture.root.join("target").join("state.sqlite3");
+    let store = crate::durable_state::DurableKernelStateStore::open(state_path.clone())
+        .expect("reopen the store");
+    let upserted = store
+        .load_events_by_kind("event_connection.upserted")
+        .expect("load connection events");
+    assert!(upserted
+        .iter()
+        .any(|event| event.payload.get("imported_by_transfer_id").is_some()));
+    for event in upserted {
+        let fields = event.payload.as_object().expect("record object");
+        let unknown = fields
+            .keys()
+            .filter(|key| {
+                !matches!(
+                    key.as_str(),
+                    "owner_user_id" | "event_owner_id" | "connection" | "imported_by_transfer_id"
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(unknown.is_empty(), "unexpected record fields {unknown:?}");
+    }
+    drop(store);
+    // The registry restores from the record events alone, as a kernel that
+    // predates the ledger does.
+    let restored = event_registry(&shared.fixture.root, "target");
+    assert!(restored
+        .get(TARGET_OWNER, "connection-a")
+        .expect("records restore")
+        .is_some());
+    shared.fixture.cleanup();
+}
+
+#[test]
+fn event_connection_rollback_leaves_a_record_the_owner_already_held() {
+    let shared = SharedConnectionTransfers::new("event-owner-record");
+    seed_connection(
+        &shared.target,
+        TARGET_OWNER,
+        "connection-a",
+        "event-owner-secret-a",
+        crate::local::EventConnectionStatus::Ready,
+    );
+    let receipts = event_connections::import(&shared.import_target, TRANSFER_A, &shared.records)
+        .expect("import reuses the owner's record");
+    assert!(!receipts[0].created);
+
+    event_connections::rollback(&shared.import_target, TRANSFER_A, &receipts)
+        .expect("transfer fails");
+
+    assert!(shared.holds_connection());
+    shared.fixture.cleanup();
 }

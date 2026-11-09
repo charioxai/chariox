@@ -1,6 +1,8 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: home-owned task/inbox transactions.
 //! No provider I/O occurs here. Intent commits precede every dispatch.
 #[cfg(test)]
+mod batch_tests;
+#[cfg(test)]
 mod catalog_continuation_tests;
 pub(crate) mod completion;
 mod continuations;
@@ -11,6 +13,9 @@ mod delegation;
 mod delivery;
 mod leased_processes;
 pub(crate) use leased_processes::LeasedProcessMutation;
+#[cfg(test)]
+mod unread_steer_tests;
+mod unread_steers;
 mod worker_stops;
 pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
 pub(crate) use worker_stops::{UnstoppedWorkerRun, WorkerStopMutation};
@@ -50,6 +55,7 @@ use super::{DurableKernelStateStore, DurableWriterRequest};
 use crate::error::DaemonError;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
+use std::ops::ControlFlow;
 use std::sync::mpsc;
 use transitions::apply;
 pub(super) use types::Request;
@@ -96,6 +102,8 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     CREATE TABLE IF NOT EXISTS agent_source_occurrences(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,success INTEGER NOT NULL,public_answer TEXT,UNIQUE(room_id,source_id,occurrence_id));
     CREATE TABLE IF NOT EXISTS agent_inbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,agent_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,payload TEXT NOT NULL,UNIQUE(room_id,agent_id,source_id,occurrence_id));
     CREATE TABLE IF NOT EXISTS agent_inbox_refusals(sequence INTEGER PRIMARY KEY,first_refused_at_ms INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS agent_inbox_shown(sequence INTEGER PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS agent_inbox_unread_reverts(sequence INTEGER PRIMARY KEY,count INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_inbox_recipient ON agent_inbox(room_id,agent_id,sequence);").map_err(sql)?;
     let columns: Vec<String> = db
         .prepare("PRAGMA table_info(agent_source_occurrences)")
@@ -407,16 +415,113 @@ impl DurableKernelStateStore {
             .map_err(sql)?;
         rows.collect::<Result<_, _>>().map_err(sql)
     }
+    /// The batch a prompt delivered, in sequence order.
+    pub(crate) fn agent_events_for_prompt(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+    ) -> Result<Vec<InboxEvent>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.receipt")?;
+        let mut q=db.prepare("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id')=?3 ELSE 0 END ORDER BY sequence").map_err(sql)?;
+        let rows = q
+            .query_map(params![room, agent, prompt], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(sql)?;
+        rows.map(|row| {
+            let (seq, source, id, payload) = row.map_err(sql)?;
+            decode_inbox(seq, room, agent, &source, &id, &payload)
+        })
+        .collect()
+    }
+    /// The row that leads the batch of a prompt: its receipt is the batch's.
     pub(crate) fn agent_event_for_prompt(
         &self,
         room: &str,
         agent: &str,
         prompt: &str,
     ) -> Result<Option<InboxEvent>, DaemonError> {
-        let db = self.lock_connection("agent.lifecycle.receipt")?;
-        let row:Option<(i64,String,String,String)>=db.query_row("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id')=?3 ELSE 0 END",params![room,agent,prompt],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
-        row.map(|(seq, source, id, payload)| decode_inbox(seq, room, agent, &source, &id, &payload))
-            .transpose()
+        Ok(self
+            .agent_events_for_prompt(room, agent, prompt)?
+            .into_iter()
+            .next())
+    }
+    /// Pending rows after `lead` that one wake may carry with it, in order,
+    /// up to the first reply request (answered by a turn of its own).
+    pub(crate) fn agent_delivery_batch(
+        &self,
+        lead: &InboxEvent,
+        steer: bool,
+        work: Option<&str>,
+    ) -> Result<Vec<InboxEvent>, DaemonError> {
+        if lead.reply_requested {
+            return Ok(Vec::new());
+        }
+        let mut batch = Vec::new();
+        for event in self.agent_work_inbox(&lead.room_id, &lead.agent_id, lead.sequence, None)? {
+            if event.reply_requested {
+                break;
+            }
+            if delivery::batch_member(&event, steer, work) {
+                batch.push(event);
+            }
+        }
+        Ok(batch)
+    }
+    /// Where an agent starts reading for a wake led by `lead`: before the
+    /// oldest row still pending for it, so a message held for its running turn
+    /// is read with the urgent one that skips it (an ack through the urgent
+    /// row would settle the unread one).
+    pub(crate) fn agent_read_cursor(
+        &self,
+        lead: &InboxEvent,
+        work: Option<&str>,
+    ) -> Result<u64, DaemonError> {
+        let mut oldest = lead.sequence;
+        self.scan_agent_inbox(&lead.room_id, &lead.agent_id, 0, work, |event| {
+            if event.sequence >= lead.sequence {
+                return ControlFlow::Break(());
+            }
+            if event.state == "pending" {
+                oldest = event.sequence;
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        })?;
+        Ok(oldest.saturating_sub(1))
+    }
+    /// Visits an agent's inbox rows after `after` in order, page by page, until
+    /// `visit` breaks: closed rows are kept, so one page is not the inbox.
+    pub(crate) fn scan_agent_inbox(
+        &self,
+        room: &str,
+        agent: &str,
+        mut after: u64,
+        work: Option<&str>,
+        mut visit: impl FnMut(InboxEvent) -> ControlFlow<()>,
+    ) -> Result<(), DaemonError> {
+        loop {
+            let page = self.agent_work_inbox(room, agent, after, work)?;
+            let full = page.len() >= INBOX_PAGE;
+            let Some(last) = page.last().map(|event| event.sequence) else {
+                return Ok(());
+            };
+            for event in page {
+                if visit(event).is_break() {
+                    return Ok(());
+                }
+            }
+            if !full {
+                return Ok(());
+            }
+            after = last;
+        }
     }
     #[cfg(test)]
     pub(crate) fn agent_inbox(
@@ -437,7 +542,7 @@ impl DurableKernelStateStore {
     ) -> Result<Vec<InboxEvent>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.inbox")?;
         let correlated = WORK_CORRELATED.replace("?3", "?4");
-        let mut q=db.prepare(&format!("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND (?4 IS NULL OR {correlated}) ORDER BY sequence LIMIT 128")).map_err(sql)?;
+        let mut q=db.prepare(&format!("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND (?4 IS NULL OR {correlated}) ORDER BY sequence LIMIT {INBOX_PAGE}")).map_err(sql)?;
         let rows = q
             .query_map(params![room, agent, sql_integer(after)?, work], |r| {
                 Ok((
@@ -447,6 +552,39 @@ impl DurableKernelStateStore {
                     r.get::<_, String>(3)?,
                 ))
             })
+            .map_err(sql)?;
+        rows.map(|r| {
+            let (seq, source, id, payload) = r.map_err(sql)?;
+            decode_inbox(seq, room, agent, &source, &id, &payload)
+        })
+        .collect()
+    }
+
+    /// Open rows with `after < sequence <= upto` the agent was never shown by an inbox read, whatever
+    /// cursor it passed: the read state is the ledger's, not the agent's.
+    pub(crate) fn agent_unread_inbox(
+        &self,
+        room: &str,
+        agent: &str,
+        after: u64,
+        upto: u64,
+        work: Option<&str>,
+    ) -> Result<Vec<InboxEvent>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.inbox.unread")?;
+        let correlated = WORK_CORRELATED.replace("?3", "?5");
+        let mut q=db.prepare(&format!("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND sequence<=?4 AND NOT EXISTS(SELECT 1 FROM agent_inbox_shown s WHERE s.sequence=agent_inbox.sequence) AND json_extract(payload,'$.state') NOT IN ('acknowledged','handled','expired','failed') AND (?5 IS NULL OR {correlated}) ORDER BY sequence LIMIT {INBOX_PAGE}")).map_err(sql)?;
+        let rows = q
+            .query_map(
+                params![room, agent, sql_integer(after)?, sql_integer(upto)?, work],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                    ))
+                },
+            )
             .map_err(sql)?;
         rows.map(|r| {
             let (seq, source, id, payload) = r.map_err(sql)?;
@@ -981,10 +1119,27 @@ fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonEr
     if e.kind == "message" && count >= 1024 {
         return Err(error("inbox full; unacknowledged events retained"));
     }
+    // A child's end is told once, by its `child_finished`: a receipt of the same end arrives already handled.
+    if receipt_folded(tx, &e)? {
+        e.state = "handled".into();
+    }
     tx.execute("INSERT INTO agent_inbox(room_id,agent_id,source_id,occurrence_id,payload) VALUES(?1,?2,?3,?4,'{}')",params![e.room_id,e.agent_id,e.source_id,e.occurrence_id]).map_err(sql)?;
     e.sequence = tx.last_insert_rowid() as u64;
     save_event(tx, &e)?;
+    if let Some(task) = e.occurrence_id.strip_prefix("child-finished-") {
+        tx.execute("UPDATE agent_inbox SET payload=json_set(payload,'$.state','handled') WHERE room_id=?1 AND agent_id=?2 AND occurrence_id=?3 AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND json_extract(payload,'$.state')='pending'", params![room, agent, format!("task-terminal-{task}")]).map_err(sql)?;
+    }
     Ok(e)
+}
+/// The receipt `e` of a task's end, for a recipient that already has that task's `child_finished`.
+fn receipt_folded(tx: &Transaction<'_>, e: &InboxEvent) -> Result<bool, DaemonError> {
+    let Some(task) = e.occurrence_id.strip_prefix("task-terminal-") else {
+        return Ok(false);
+    };
+    if !matches!(e.kind.as_str(), "source_completed" | "source_lost") {
+        return Ok(false);
+    }
+    tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND occurrence_id=?3 AND json_extract(payload,'$.kind')='child_finished')", params![e.room_id, e.agent_id, format!("child-finished-{task}")], |r| r.get(0)).map_err(sql)
 }
 // Retain occurrence identity for replay dedup; age the delivered message window.
 // Source outcomes and unresolved reply links keep their handling authority.
@@ -1050,6 +1205,14 @@ fn get_event(
 }
 /// SQL predicate: the event is a kernel-correlated wake of task `?3`.
 pub(super) const WORK_CORRELATED: &str = "(json_extract(payload,'$.kind')<>'message' AND (json_extract(payload,'$.payload.task_id')=?3 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?3)))";
+
+/// Rows one inbox read returns at most.
+pub(crate) const INBOX_PAGE: usize = 128;
+
+/// A decision an agent must answer or pass before its event can be acknowledged.
+pub(crate) fn needs_answer(event: &InboxEvent) -> bool {
+    event.kind == "child_decision" && event.payload["answered"].as_bool() != Some(true)
+}
 
 pub(crate) fn work_correlated(event: &InboxEvent, work: &str) -> bool {
     event.kind != "message"

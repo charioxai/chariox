@@ -547,6 +547,7 @@ fn mcp_tool_progress_is_projected_into_tool_text() {
             output_stream: None,
             progress_messages: vec!["checking schema".to_string()],
             last_emitted: None,
+            pictures: None,
         },
         &crate::extension::RemoteExtensionManifest::default(),
     )
@@ -592,6 +593,7 @@ fn home_proxy_mcp_tool_is_projected_into_tool_placement() {
             output_stream: None,
             progress_messages: Vec::new(),
             last_emitted: None,
+            pictures: None,
         },
         &manifest,
     )
@@ -647,4 +649,49 @@ fn web_search_status_follows_the_started_and_completed_notifications() {
     assert_eq!(snapshots[0]["status"], "running");
     assert_eq!(snapshots[1]["status"], "completed");
     assert_eq!(snapshots[1]["input"], json!({"query": "svg viewbox"}));
+}
+
+// The notification the app-server sends when `view_image` finishes reaches the transcript with its picture.
+#[test]
+fn a_completed_view_image_notification_carries_the_picture_of_the_agents_working_directory() {
+    let workspace = std::env::temp_dir().canonicalize().unwrap().join(format!(
+        "chariox-view-image-notification-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&workspace).unwrap();
+    // A GIF header is enough for the content sniff.
+    std::fs::write(workspace.join("chart.gif"), b"GIF89a\x01\x00\x01\x00").unwrap();
+    let item = json!({"type": "imageView", "id": "iv-1", "path": workspace.join("chart.gif")});
+    let run = |workspace_root: Option<&std::path::Path>| {
+        let mut chunks = Vec::new();
+        crate::provider::codex_runtime::events::apply_notification_with_manifest(
+            CodexNotification::ItemCompleted { item: item.clone() },
+            &mut None,
+            &mut CodexTurnTracker::default(),
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+            &mut chunks,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut false,
+            &mut None,
+            &mut None,
+            &crate::extension::RemoteExtensionManifest::default(),
+            workspace_root,
+        );
+        let chunk = chunks.pop().expect("the call is shown");
+        serde_json::from_slice::<Value>(&chunk.bytes).unwrap()
+    };
+    let with_directory = run(Some(&workspace));
+    assert_eq!(with_directory["tool"], "view_image");
+    assert_eq!(with_directory["images"].as_array().map(Vec::len), Some(1));
+    assert!(with_directory["images"][0]
+        .as_str()
+        .unwrap()
+        .starts_with("data:image/gif;base64,"));
+    assert!(
+        run(None).get("images").is_none(),
+        "without a working directory nothing is read"
+    );
+    std::fs::remove_dir_all(workspace).unwrap();
 }

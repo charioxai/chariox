@@ -29,6 +29,7 @@ fn provider_actor_runtime() -> &'static tokio::runtime::Runtime {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("chariox-provider-actor")
+            .thread_stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
             .enable_all()
             .build()
             .expect("provider actor runtime should start")
@@ -287,5 +288,31 @@ impl ProviderRunWorkerDeps {
             ProviderRunActorCommand::Stop => return true,
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A steer into a Codex turn overflowed the actor's default 2 MiB stack and aborted the
+    /// kernel.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn provider_actor_workers_run_on_the_kernel_runtime_stack() {
+        use super::provider_actor_runtime;
+        use crate::test_support::{current_thread_stack_size, rerun_without_min_stack};
+
+        let test = "provider::run_actor::worker::tests::provider_actor_workers_run_on_the_kernel_runtime_stack";
+        if !rerun_without_min_stack(test) {
+            return;
+        }
+        let size = provider_actor_runtime().block_on(async {
+            tokio::spawn(async { current_thread_stack_size() })
+                .await
+                .unwrap()
+        });
+        assert!(
+            size >= crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE,
+            "provider actor worker stack is {size} bytes"
+        );
     }
 }

@@ -434,6 +434,7 @@ async fn delayed_leased_steer_ack_keeps_the_original_receipt_deadline_while_the_
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();
@@ -468,6 +469,7 @@ async fn delayed_leased_steer_ack_keeps_the_original_receipt_deadline_while_the_
             )),
             now: at,
             work: None,
+            through: 0,
         })
         .unwrap();
     // Drive the real worker entry and retain its ACK before recording it at home.
@@ -934,6 +936,7 @@ async fn refused_wake_after_dispatch_admission_is_retried_by_the_sweep() {
             run: None,
             work: None,
             now: crate::session::unix_epoch_ms(),
+            through: 0,
         })
         .unwrap();
     let agent = f.runtime.owned.agent_store.get_agent(&f.agent).unwrap();
@@ -1154,6 +1157,7 @@ async fn agent_deadline_stops_an_active_turn_and_fences_later_admission() {
                         session_id: f.room.clone(),
                         agent_id: Some(f.agent.clone()),
                     }],
+                    sources: Vec::new(),
                 },
             ),
         )
@@ -1161,11 +1165,14 @@ async fn agent_deadline_stops_an_active_turn_and_fences_later_admission() {
     f.begin(&f.prompt_id);
     let now = crate::session::unix_epoch_ms();
     f.runtime
-        .set_agent_deadline(crate::local::SetAgentDeadlineRequest {
-            session_id: f.room.clone(),
-            agent_id: f.agent.clone(),
-            deadline_ms: now - 1,
-        })
+        .set_agent_deadline(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::SetAgentDeadlineRequest {
+                session_id: f.room.clone(),
+                agent_id: f.agent.clone(),
+                deadline_ms: now - 1,
+            },
+        )
         .unwrap();
     f.runtime.tick_agent_deadlines(now).await.unwrap();
     let deadline = f
@@ -1247,11 +1254,14 @@ async fn agent_deadline_is_not_stopped_while_an_owned_source_is_still_stopping()
     f.arm(&task, "wake-resisting").unwrap();
     let now = crate::session::unix_epoch_ms();
     f.runtime
-        .set_agent_deadline(crate::local::SetAgentDeadlineRequest {
-            session_id: f.room.clone(),
-            agent_id: f.agent.clone(),
-            deadline_ms: now - 1,
-        })
+        .set_agent_deadline(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::SetAgentDeadlineRequest {
+                session_id: f.room.clone(),
+                agent_id: f.agent.clone(),
+                deadline_ms: now - 1,
+            },
+        )
         .unwrap();
     let error = f.runtime.tick_agent_deadlines(now).await.unwrap_err();
     assert!(
@@ -1296,11 +1306,14 @@ async fn pending_deadline_cleanup_does_not_stop_the_sweep_for_other_wakes() {
     f.arm(&task, "wake-resisting").unwrap();
     let now = crate::session::unix_epoch_ms();
     f.runtime
-        .set_agent_deadline(crate::local::SetAgentDeadlineRequest {
-            session_id: f.room.clone(),
-            agent_id: f.agent.clone(),
-            deadline_ms: now - 1,
-        })
+        .set_agent_deadline(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::SetAgentDeadlineRequest {
+                session_id: f.room.clone(),
+                agent_id: f.agent.clone(),
+                deadline_ms: now - 1,
+            },
+        )
         .unwrap();
 
     let other = "agent-other";
@@ -1955,7 +1968,7 @@ async fn a_rejected_terminal_occurrence_is_retried_until_the_ledger_commits() {
         loop {
             let input = std::fs::read_to_string(&received).unwrap();
             let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
-            if input.contains("RETRY-MARK") && events[0].state == "accepted" {
+            if input.contains("Inbox: at least 1 new event") && events[0].state == "accepted" {
                 assert_eq!(events.len(), 1, "exactly one delivered occurrence");
                 let woken = f.task(&task.task_id);
                 assert_eq!(woken.state, ExecutionState::Working);

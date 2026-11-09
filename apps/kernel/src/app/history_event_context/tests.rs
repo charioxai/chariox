@@ -87,6 +87,7 @@ fn history_context_requires_the_exact_local_session_agent_and_turn() {
                     relay_url: None,
                     relay_token: None,
                     relay_peer_protocol_version: None,
+                    worker_worktree_id: None,
                 },
             )
             .unwrap();

@@ -105,6 +105,7 @@ mod tests {
                 relay_url: None,
                 relay_token: None,
                 relay_peer_protocol_version: None,
+                worker_worktree_id: None,
             },
             room_id: "room".into(),
             agent_id: "agent".into(),

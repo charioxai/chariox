@@ -26,6 +26,7 @@ fn follow(turn: FailingTurn) -> FailingTurn {
             Some(crate::session::DEFAULT_LOCAL_USER_ID),
             &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
                 targets: vec![target],
+                sources: Vec::new(),
             }),
         )
         .unwrap();

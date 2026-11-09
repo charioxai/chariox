@@ -54,6 +54,9 @@ export type CliOverlayInteractionCompositionDeps = {
   describeRenderableDebug: AnyFn
   scheduleTimer: AnyFn
   hotkeysOpen: AnyFn
+  subAgentsOpen: AnyFn
+  closeSubAgents: AnyFn
+  subAgentsRows: AnyFn
   setHotkeysOpen: AnyFn
   terminalPairingOpen: AnyFn
   setTerminalPairingOpen: AnyFn
@@ -131,11 +134,13 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
       processesOpen: processController.isOpen(),
       environmentOpen: environmentController.isOpen(),
       hotkeysOpen: deps.hotkeysOpen(),
+      subAgentsOpen: deps.subAgentsOpen(),
       terminalPairingOpen: deps.terminalPairingOpen(),
       sessionBrowserOpen: deps.sessionBrowserOpen(),
       managedMachineOpen: deps.managedMachineDialogOpen(),
     }),
     closeProcesses: processController.close,
+    closeSubAgents: deps.closeSubAgents,
     closeEnvironment: environmentController.dismiss,
     getCurrentFocus: deps.currentFocusedRenderable,
     getPromptFocus: () => deps.promptInputRefController.current() as any,
@@ -170,6 +175,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
         processConfirmation: processController.confirming(),
         processLines: processController.visibleLines(),
         environmentView: environmentController.view(),
+        subAgentsRows: mode === "sub-agents" ? deps.subAgentsRows() : [],
         sessions: sessionBrowserSessions(),
         normalizeSessionBrowserIndex,
         sessionBrowserProject: sessionBrowserProjectionController.selectedProject(),

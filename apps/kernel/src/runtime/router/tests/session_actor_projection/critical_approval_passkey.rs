@@ -245,7 +245,8 @@ impl Fixture {
             );
             self.router.dispatch(command, request).await.unwrap();
         }
-        manage.await.unwrap()
+        let managed = manage.await.unwrap()?;
+        Ok((managed.status, managed.action))
     }
 
     fn rotations(&self) -> Vec<String> {

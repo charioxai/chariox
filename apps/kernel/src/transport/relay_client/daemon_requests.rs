@@ -3,6 +3,8 @@
 use super::request_errors::map_relay_error;
 #[cfg(test)]
 mod app_tests;
+#[cfg(test)]
+mod collaborator_gate_tests;
 mod prepare;
 pub(super) mod request_limits;
 pub(super) use prepare::{prepare_daemon_request, PreparedDaemonRequest};
@@ -1086,6 +1088,9 @@ async fn dispatch_relay_client_request(
             false,
         ));
     }
+    if let Err(error) = router.authorize_relay_collaborator_request(&command, &request) {
+        return cached_relay_dispatch_outcome(Box::new(None), Some(map_kernel_error(&error)));
+    }
     let browser_revision = match router
         .runtime_state()
         .kernel_browser_receipt_revision(&command, &request)
@@ -1343,6 +1348,7 @@ mod tests {
             relay_peer_protocol_version: Some(
                 crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
             ),
+            worker_worktree_id: None,
         }));
 
         let mut response = serde_json::to_value(LocalDaemonResponse::AgentMovedToRemote { agent })

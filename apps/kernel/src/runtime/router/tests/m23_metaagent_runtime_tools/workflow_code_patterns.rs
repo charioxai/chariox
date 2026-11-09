@@ -188,7 +188,7 @@ async fn metaagent_workflow_code_applies_and_runs_canonical_routing_pattern_inne
                             == Some("dev-stub")
                         && agent.get("model").and_then(serde_json::Value::as_str) == Some("default")
                         && agent
-                            .get("controlled_by_metaagent_id")
+                            .pointer("/parent_agent_id/agent_id")
                             .and_then(serde_json::Value::as_str)
                             == Some(metaagent.id())
                 })),
@@ -547,7 +547,7 @@ async fn metaagent_workflow_code_applies_canonical_fan_out_pattern_inner() {
                             == Some("dev-stub")
                         && agent.get("model").and_then(serde_json::Value::as_str) == Some("default")
                         && agent
-                            .get("controlled_by_metaagent_id")
+                            .pointer("/parent_agent_id/agent_id")
                             .and_then(serde_json::Value::as_str)
                             == Some(metaagent.id())
                 })),

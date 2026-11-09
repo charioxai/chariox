@@ -295,6 +295,40 @@ async fn agent_config_update_still_blocks_active_prompt_owner() {
     assert_active_turn_error(error, "update agent config");
 }
 
+#[tokio::test]
+async fn the_person_can_lower_a_running_agent_but_not_raise_it() {
+    use crate::provider::{
+        AgentExecutionMode::Plan,
+        AgentPermissionLevel::{Required, Yolo},
+    };
+    let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    let update = |mode, level| {
+        runtime.update_agent_config(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            mode,
+            level,
+            None,
+            None,
+        )
+    };
+    update(None, Some(Some(Yolo)))
+        .await
+        .expect("an idle agent can be raised");
+    sync_active_prompt(&app, &session_id, &agent_id).await;
+
+    let agent = update(Some(Some(Plan)), Some(Some(Required)))
+        .await
+        .expect("a running agent can be lowered");
+    assert_eq!(agent.permission_level_override(), Some(Required));
+
+    let error = update(None, Some(Some(Yolo)))
+        .await
+        .expect_err("a running agent cannot be raised");
+    assert_active_turn_error(error, "update agent config");
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_profile_request_the_relay_never_accepts_fails_instead_of_hanging() {
     // lpb3: after "Preparing the worker's profile change…" the home logged
@@ -407,6 +441,7 @@ async fn assert_remote_agent_profile_response(
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("agent should bind to remote execution");

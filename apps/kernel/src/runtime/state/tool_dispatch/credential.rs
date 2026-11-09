@@ -333,14 +333,13 @@ impl KernelRuntimeState {
                     None => service,
                 };
                 service.validate_http_request_target(&args.credential_id, &args.url)?;
-                service.record_vault_activity(
+                let attempt = service.begin_vault_use(
                     &args.credential_id,
                     &format!(
                         "Use attempted over HTTP by {}",
                         provider_run.agent_instance_id().unwrap_or("agent")
                     ),
                 )?;
-                let audit_id = args.credential_id.clone();
                 let request = crate::secret::CredentialHttpRequest {
                     credential_id: args.credential_id,
                     method: args.method,
@@ -371,13 +370,10 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_http_request_with_credential",
                     message: error.to_string(),
                 })??;
-                self.home_runtime_secret_service()?.record_vault_activity(
-                    &audit_id,
-                    &format!(
-                        "Used over HTTP by {}",
-                        provider_run.agent_instance_id().unwrap_or("agent")
-                    ),
-                )?;
+                attempt.finish(&format!(
+                    "Used over HTTP by {}",
+                    provider_run.agent_instance_id().unwrap_or("agent")
+                ))?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::to_value(response).map_err(|error| {
@@ -481,15 +477,12 @@ impl KernelRuntimeState {
                                 message: "provider run is not bound to an agent".to_string(),
                             }
                         })?;
-                        let (status, action) = self
+                        let managed = self
                             .manage_credential_vault_unlock(provider_run.session_id(), agent_id)
                             .await?;
                         Ok(crate::transport::runtime_tools::RuntimeToolResult {
                             ok: true,
-                            payload: serde_json::json!({
-                                "action": action,
-                                "status": status,
-                            }),
+                            payload: managed.tool_payload(),
                         })
                     }
                     other => Err(DaemonError::LocalTransport {
@@ -674,15 +667,12 @@ impl KernelRuntimeState {
                         })
                     }
                     "popup" => {
-                        let (status, action) = self
+                        let managed = self
                             .manage_credential_vault_unlock(&context.home_session_id, agent.id())
                             .await?;
                         Ok(crate::transport::runtime_tools::RuntimeToolResult {
                             ok: true,
-                            payload: serde_json::json!({
-                                "action": action,
-                                "status": status,
-                            }),
+                            payload: managed.tool_payload(),
                         })
                     }
                     other => Err(DaemonError::LocalTransport {

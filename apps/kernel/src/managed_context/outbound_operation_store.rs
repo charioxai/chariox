@@ -766,6 +766,7 @@ mod tests {
                 key_thumbprint: public_key_thumbprint(&config.relay_public_key),
             },
             context_selection: OwnerManagedContextSelection {
+                event_connections: Default::default(),
                 kernel_context: OwnerManagedKernelSelection::Empty,
                 development_setup: OwnerManagedDevelopmentSelection::Empty,
             },
@@ -861,6 +862,7 @@ mod tests {
                 key_thumbprint: public_key_thumbprint(&config.relay_public_key),
             },
             context_selection: OwnerManagedContextSelection {
+                event_connections: Default::default(),
                 kernel_context: OwnerManagedKernelSelection::Empty,
                 development_setup: OwnerManagedDevelopmentSelection::Empty,
             },
@@ -980,7 +982,8 @@ mod tests {
             );
             let error = crate::runtime::managed_context_outbound_control::execute_managed_context_outbound_request(
                 config.clone(), Arc::new(RwLock::new(RelayClientState::default())), store.clone(),
-                runtime.provider_account_profile_registry().clone(), runtime.clone(), "owner", request,
+                runtime.provider_account_profile_registry().clone(), runtime.clone(),
+                crate::runtime::managed_context_outbound_control::OutboundRequester { user_id: "owner", session_id: None }, request,
             ).unwrap_err();
             if interactive && include_owner && !include_ticket {
                 assert!(error

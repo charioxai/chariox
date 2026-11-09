@@ -4,6 +4,67 @@ use crate::local::OwnerVaultActivity;
 
 type Activity = BTreeMap<String, Vec<OwnerVaultActivity>>;
 static ACTIVITY_LOCK: Mutex<()> = Mutex::new(());
+/// Rows older than this belong to an earlier kernel process.
+static PROCESS_STARTED_AT_MS: std::sync::LazyLock<u64> =
+    std::sync::LazyLock::new(crate::session::unix_epoch_ms);
+const UNFINISHED_USE: &str = "Use failed: the kernel stopped before it finished";
+const ABANDONED_USE: &str = "Use failed: the action did not finish";
+
+/// An open "Use attempted" row of this kernel process. `finish` writes the
+/// result; a drop without it (the call errored, the turn was cancelled, the
+/// tab closed) closes the attempt as failed instead of leaving it open.
+pub(crate) struct VaultUseAttempt {
+    service: RuntimeSecretService,
+    id: String,
+    open: bool,
+}
+
+impl VaultUseAttempt {
+    pub(crate) fn finish(mut self, used: &str) -> Result<(), DaemonError> {
+        self.service.record_vault_activity(&self.id, used)?;
+        self.open = false;
+        Ok(())
+    }
+}
+
+impl Drop for VaultUseAttempt {
+    fn drop(&mut self) {
+        if self.open {
+            if let Err(error) = self.service.record_vault_activity(&self.id, ABANDONED_USE) {
+                tracing::warn!(%error, "Vault Activity could not close an unfinished use");
+            }
+        }
+    }
+}
+
+/// A kernel that stops between "Use attempted" and its result row cannot write
+/// the result; the attempt then reads as failed closed instead of staying open.
+fn close_unfinished_attempts(
+    events: Vec<OwnerVaultActivity>,
+    started_at_ms: u64,
+) -> Vec<OwnerVaultActivity> {
+    let mut closed = Vec::with_capacity(events.len());
+    let mut open: Option<u64> = None;
+    let fail_open = |closed: &mut Vec<OwnerVaultActivity>, open: &mut Option<u64>| {
+        if let Some(at_ms) = open.take().filter(|at_ms| *at_ms < started_at_ms) {
+            closed.push(OwnerVaultActivity {
+                at_ms,
+                event: UNFINISHED_USE.into(),
+            });
+        }
+    };
+    for event in events {
+        if event.event.starts_with("Use attempted") {
+            fail_open(&mut closed, &mut open);
+            open = Some(event.at_ms);
+        } else if event.event.starts_with("Used") || event.event.starts_with("Use failed") {
+            open = None;
+        }
+        closed.push(event);
+    }
+    fail_open(&mut closed, &mut open);
+    closed
+}
 
 impl RuntimeSecretService {
     fn read_vault_activity(&self) -> Result<Activity, DaemonError> {
@@ -29,7 +90,21 @@ impl RuntimeSecretService {
                 "Vault Activity is unavailable; restart the kernel".into(),
             )
         })?;
-        Ok(self.read_vault_activity()?.remove(id).unwrap_or_default())
+        let events = self.read_vault_activity()?.remove(id).unwrap_or_default();
+        Ok(close_unfinished_attempts(events, *PROCESS_STARTED_AT_MS))
+    }
+
+    pub(crate) fn begin_vault_use(
+        &self,
+        id: &str,
+        attempted: &str,
+    ) -> Result<VaultUseAttempt, DaemonError> {
+        self.record_vault_activity(id, attempted)?;
+        Ok(VaultUseAttempt {
+            service: self.clone(),
+            id: id.into(),
+            open: true,
+        })
     }
 
     pub(crate) fn record_vault_activity(&self, id: &str, event: &str) -> Result<(), DaemonError> {
@@ -39,6 +114,7 @@ impl RuntimeSecretService {
                 "Vault Activity is unavailable; restart the kernel".into(),
             )
         })?;
+        std::sync::LazyLock::force(&PROCESS_STARTED_AT_MS);
         let service = self.vault_service_name()?;
         let previous = self.vault_store.find_secret(service, VAULT_ACTIVITY_KEY)?;
         let mut activity = self.read_vault_activity()?;

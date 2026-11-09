@@ -108,9 +108,7 @@ impl<'a> KernelSessionService<'a> {
                         request = request.with_account_profile(account_profile.to_string());
                     }
                     if let Some(metaagent_id) = controlled_by_metaagent_id.as_deref() {
-                        request = request
-                            .with_spawned_by_agent_id(metaagent_id)
-                            .with_controlled_by_metaagent_id(metaagent_id.to_string());
+                        request = request.with_parent_agent_id(metaagent_id);
                     }
                     let created =
                         self.spawn_workflow_code_generated_agent(request, agent.alias.as_deref())?;
@@ -148,10 +146,13 @@ impl<'a> KernelSessionService<'a> {
                     if let Some(metaagent_id) = controlled_by_metaagent_id.as_deref() {
                         if self.app.config().room_agent_tools {
                             let actor = self.app.agents.get_agent(metaagent_id)?;
-                            crate::runtime::room_tool_admission::workflow_node(&actor, &agent)?;
+                            let agents = self.app.agents.get_session_agents(actor.session_id());
+                            crate::runtime::room_tool_admission::workflow_node(
+                                &actor, &agent, &agents,
+                            )?;
                         }
                         if !self.app.config().room_agent_tools
-                            && agent.controlled_by_metaagent_id() != Some(metaagent_id)
+                            && agent.parent_agent_id() != Some(metaagent_id)
                         {
                             return Err(DaemonError::LocalTransport {
                                 operation: "workflow_code.apply",
@@ -628,10 +629,11 @@ impl<'a> KernelSessionService<'a> {
                              } else if caller_metaagent_id.is_some_and(|actor_id| {
                                 if self.app.config().room_agent_tools {
                                     self.app.agents.get_agent(actor_id).map_or(true, |actor| {
-                                        crate::runtime::room_tool_admission::workflow_node(&actor, &agent).is_err()
+                                        let agents = self.app.agents.get_session_agents(actor.session_id());
+                                        crate::runtime::room_tool_admission::workflow_node(&actor, &agent, &agents).is_err()
                                     })
                                 } else {
-                                    agent.controlled_by_metaagent_id() != Some(actor_id)
+                                    agent.parent_agent_id() != Some(actor_id)
                                 }
                             }) {
                                 push_workflow_code_target_validation_error(

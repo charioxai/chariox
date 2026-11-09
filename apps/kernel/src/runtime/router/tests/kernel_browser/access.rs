@@ -39,6 +39,7 @@ fn mdaccess_cross_kernel_tool_names_both_kernels_and_badges_window() {
                         relay_peer_protocol_version: Some(
                             crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                         ),
+                        worker_worktree_id: None,
                     },
                 )
                 .unwrap();

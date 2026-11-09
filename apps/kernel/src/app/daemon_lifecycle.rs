@@ -248,8 +248,9 @@ impl DaemonApp {
             let config_projection = app.config_projection_store();
             crate::transport::event_delivery_client::EventDeliveryClientConfig {
                 url: app.config().event_delivery_url.clone(),
-                token: app.config().event_delivery_token.clone(),
-                kernel_id: app.config().daemon_id.clone(),
+                identity: crate::transport::gateway_identity::GatewayIdentity::from_config(
+                    app.config(),
+                ),
                 environment_id: app.config().event_delivery_environment_id.clone(),
                 generator_management_targets: app
                     .config()
@@ -275,6 +276,13 @@ impl DaemonApp {
         let provider_usage_refresh_task = tokio::spawn(
             Arc::clone(runtime_state.provider_usage_refresher()).run(shutdown_rx.clone()),
         );
+        let ready_event_connection_refresh_router = Arc::clone(&router);
+        let ready_refresh_shutdown = shutdown_rx.clone();
+        let ready_event_connection_refresh_task = tokio::spawn(async move {
+            ready_event_connection_refresh_router
+                .run_ready_event_connection_refresher(ready_refresh_shutdown)
+                .await;
+        });
         let event_connection_reconciliation_router = Arc::clone(&router);
         let event_connection_reconciliation_task = tokio::spawn(async move {
             event_connection_reconciliation_router
@@ -320,6 +328,7 @@ impl DaemonApp {
         let _ = external_provider_session_discovery_task.await;
         let _ = provider_usage_refresh_task.await;
         let _ = event_connection_reconciliation_task.await;
+        let _ = ready_event_connection_refresh_task.await;
         if let Some(task) = managed_activity_task {
             match task.await {
                 Ok(Ok(())) => {}

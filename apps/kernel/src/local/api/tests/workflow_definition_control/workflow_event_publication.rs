@@ -17,7 +17,7 @@ struct ReadyConnectionServer {
     revoked: Arc<AtomicBool>,
     unavailable: Arc<AtomicBool>,
     scopes_reduced: Arc<AtomicBool>,
-    capability_issued: Arc<AtomicBool>,
+    management_url_discovered: Arc<AtomicBool>,
     management_url: String,
     requests: Arc<Mutex<Vec<String>>>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -39,13 +39,13 @@ impl ReadyConnectionServer {
         let revoked = Arc::new(AtomicBool::new(false));
         let unavailable = Arc::new(AtomicBool::new(false));
         let scopes_reduced = Arc::new(AtomicBool::new(false));
-        let capability_issued = Arc::new(AtomicBool::new(false));
+        let management_url_discovered = Arc::new(AtomicBool::new(false));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let thread_stop = Arc::clone(&stop);
         let thread_revoked = Arc::clone(&revoked);
         let thread_unavailable = Arc::clone(&unavailable);
         let thread_scopes_reduced = Arc::clone(&scopes_reduced);
-        let thread_capability_issued = Arc::clone(&capability_issued);
+        let thread_management_url_discovered = Arc::clone(&management_url_discovered);
         let thread_management_url = management_url.clone();
         let thread_requests = Arc::clone(&requests);
         let thread = std::thread::spawn(move || {
@@ -58,7 +58,7 @@ impl ReadyConnectionServer {
                             &thread_revoked,
                             &thread_unavailable,
                             &thread_scopes_reduced,
-                            &thread_capability_issued,
+                            &thread_management_url_discovered,
                             &thread_management_url,
                             &thread_requests,
                         )
@@ -76,7 +76,7 @@ impl ReadyConnectionServer {
             revoked,
             unavailable,
             scopes_reduced,
-            capability_issued,
+            management_url_discovered,
             management_url,
             requests,
             thread: Some(thread),
@@ -86,10 +86,7 @@ impl ReadyConnectionServer {
     fn target(&self) -> crate::config::EventGeneratorManagementTarget {
         crate::config::EventGeneratorManagementTarget {
             url: format!("http://{}", self.address),
-            token: "test-management-token".to_string(),
-            expires_at_ms: None,
-            owner_ids: None,
-            owner_scoped: None,
+            registry_discovered: false,
         }
     }
 }
@@ -150,7 +147,7 @@ fn serve_ready_connection(
     revoked: &AtomicBool,
     unavailable: &AtomicBool,
     scopes_reduced: &AtomicBool,
-    capability_issued: &AtomicBool,
+    management_url_discovered: &AtomicBool,
     management_url: &str,
     requests: &Mutex<Vec<String>>,
 ) {
@@ -177,17 +174,10 @@ fn serve_ready_connection(
     let catalog_detail_request = request
         .starts_with("GET /v1/event-generators/dev.chariox.dummy HTTP/1.1")
         || request.starts_with("GET /v1/event-generators/dev.chariox.dummy?");
-    let capability_request = request
-        .starts_with("POST /v1/event-generators/dev.chariox.dummy/management-capability HTTP/1.1");
-    if !catalog_detail_request && !capability_request {
-        assert!(
-            request
-                .to_ascii_lowercase()
-                .contains("authorization: bearer test-management-token")
-                || request
-                    .to_ascii_lowercase()
-                    .contains("authorization: bearer registry-issued-token")
-        );
+    if catalog_detail_request {
+        management_url_discovered.store(true, Ordering::Relaxed);
+    } else {
+        assert_signed_by_the_kernel(&request);
     }
     if unavailable.load(Ordering::Relaxed) {
         let body = serde_json::json!({
@@ -240,24 +230,6 @@ fn serve_ready_connection(
                 "input_schema": {"type": "object"}
             }],
             "signature": {"key_id": "test", "algorithm": "ed25519", "value": "test"}
-        })
-        .to_string()
-    } else if capability_request {
-        assert!(request.contains("\"sessionToken\":\"cloud-session-token\""));
-        assert!(
-            !request.contains("\"generatorId\":"),
-            "the path-bound generator ID must not be duplicated into the strict Cloud request body"
-        );
-        assert!(request.contains("\"version\":\"1.0.0\""));
-        assert!(request.contains(&format!(
-            "\"manifestDigest\":\"{}\"",
-            crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
-        )));
-        assert!(request.contains(&format!("\"managementUrl\":\"{management_url}\"")));
-        capability_issued.store(true, Ordering::Relaxed);
-        serde_json::json!({
-            "token": "registry-issued-token",
-            "expiresAt": "2100-01-01T00:00:00Z"
         })
         .to_string()
     } else if request.starts_with("POST /v1/authorizations HTTP/1.1") {
@@ -414,7 +386,7 @@ fn kernel_rejects_insecure_registry_issued_management_target_after_capability_is
             .contains("Insecure request attempted with https_only set"),
         "unexpected error: {error}"
     );
-    assert!(server.capability_issued.load(Ordering::Relaxed));
+    assert!(server.management_url_discovered.load(Ordering::Relaxed));
 }
 
 #[test]
@@ -444,10 +416,6 @@ fn kernel_bootstraps_registry_issued_https_management_target_end_to_end() {
         client,
     );
     let caller_user_id = "external-user";
-    let expected_owner_id = crate::runtime::event_catalog_control::event_connection_owner_id(
-        "daemon-test",
-        caller_user_id,
-    );
 
     let response = harness
         .dispatch_as_user(
@@ -470,7 +438,16 @@ fn kernel_bootstraps_registry_issued_https_management_target_end_to_end() {
         authorization.connection_id.as_deref(),
         Some("connection-dynamic")
     );
-    assert!(server.capability_issued.load(Ordering::Relaxed));
+    // The owner the AEGS was asked under is the one the authorization (and so
+    // the connection) keeps: it is resolved once per request.
+    let expected_owner_id = harness
+        .runtime_state()
+        .event_connection_registry()
+        .authorization_event_owner_id(caller_user_id, &authorization.authorization_id)
+        .unwrap()
+        .expect("the authorization records its owner");
+    assert_eq!(expected_owner_id.len(), 32);
+    assert!(server.management_url_discovered.load(Ordering::Relaxed));
     assert_eq!(
         server.management_url,
         format!("https://aegs-public.test:{}", server.address.port())
@@ -482,9 +459,55 @@ fn kernel_bootstraps_registry_issued_https_management_target_end_to_end() {
         .find(|request| request.starts_with("POST /v1/authorizations HTTP/1.1"))
         .expect("authorization request should reach the AEGS");
     let normalized = authorization_request.to_ascii_lowercase();
-    assert!(normalized.contains("authorization: bearer registry-issued-token"));
+    assert!(
+        !normalized.contains("authorization:"),
+        "no bearer token is sent"
+    );
     assert!(normalized.contains(&format!("x-chariox-owner-id: {expected_owner_id}")));
     assert!(authorization_request.contains(&format!("\"owner_id\":\"{expected_owner_id}\"")));
+}
+
+/// The request carries the kernel's identity-key signature and it verifies over the request's
+/// method, path, body and owner.
+fn assert_signed_by_the_kernel(request: &str) {
+    use chariox_event_protocol::kernel_identity::{
+        kernel_id_for_public_key, verify, ManagementRequest, KERNEL_KEY_HEADER,
+        KERNEL_NONCE_HEADER, KERNEL_SIGNATURE_HEADER, KERNEL_TIMESTAMP_HEADER, OWNER_ID_HEADER,
+    };
+    let (head, body) = request.split_once("\r\n\r\n").expect("a complete request");
+    let mut lines = head.lines();
+    let mut first = lines.next().expect("a request line").split_whitespace();
+    let (method, path) = (first.next().unwrap(), first.next().unwrap());
+    let header = |name: &str| {
+        lines
+            .clone()
+            .find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                key.trim()
+                    .eq_ignore_ascii_case(name)
+                    .then(|| value.trim().to_string())
+            })
+            .unwrap_or_else(|| panic!("the request has no {name} header"))
+    };
+    assert!(
+        !head.to_ascii_lowercase().contains("authorization:"),
+        "no bearer token is sent"
+    );
+    let public_key = header(KERNEL_KEY_HEADER);
+    assert_eq!(kernel_id_for_public_key(&public_key).len(), 64);
+    let nonce = header(KERNEL_NONCE_HEADER);
+    let message = ManagementRequest {
+        method,
+        path,
+        generator_id: "dev.chariox.dummy",
+        owner_id: &header(OWNER_ID_HEADER),
+        timestamp_ms: header(KERNEL_TIMESTAMP_HEADER).parse().unwrap(),
+        nonce: &nonce,
+        body: body.as_bytes(),
+    }
+    .message();
+    verify(&public_key, &message, &header(KERNEL_SIGNATURE_HEADER))
+        .expect("the request is signed by the key it presents");
 }
 
 fn http_request_complete(request: &[u8]) -> bool {
@@ -514,6 +537,7 @@ fn kernel_reconciles_completed_event_authorization_without_a_client_observer() {
         .event_connection_registry()
         .start_authorization(
             crate::session::DEFAULT_LOCAL_USER_ID,
+            "event-owner-test",
             chariox_event_protocol::AegsAuthorizationFlow {
                 generator_id: "dev.chariox.dummy".to_string(),
                 status: "user_action_required".to_string(),
@@ -567,6 +591,337 @@ fn kernel_reconciles_completed_event_authorization_without_a_client_observer() {
     );
 }
 
+fn harness_with_ready_connection(
+    server: &ReadyConnectionServer,
+) -> crate::local::test_support::LocalRouterTestHarness {
+    let mut config = crate::DaemonConfig::for_tests();
+    config
+        .event_generator_management_targets
+        .insert("dev.chariox.dummy".to_string(), server.target());
+    let harness = LocalRouterTestHarness::with_config(config);
+    harness
+        .runtime_state()
+        .event_connection_registry()
+        .upsert(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "event-owner-test",
+            chariox_event_protocol::AegsConnectionSummary {
+                generator_id: "dev.chariox.dummy".to_string(),
+                connection_id: "connection-local".to_string(),
+                status: chariox_event_protocol::AegsConnectionStatus::Ready,
+                metadata: serde_json::json!({"account": "local"}),
+                expires_at_ms: None,
+                updated_at_ms: 1,
+            },
+        )
+        .unwrap();
+    harness
+}
+
+fn connection_status(
+    harness: &crate::local::test_support::LocalRouterTestHarness,
+) -> crate::local::EventConnectionStatus {
+    harness
+        .runtime_state()
+        .event_connection_registry()
+        .get(crate::session::DEFAULT_LOCAL_USER_ID, "connection-local")
+        .unwrap()
+        .expect("the connection record stays")
+        .status
+}
+
+fn list_connection_ids(
+    harness: &crate::local::test_support::LocalRouterTestHarness,
+    user_id: &str,
+) -> Vec<String> {
+    match harness
+        .dispatch_as_user(
+            user_id,
+            LocalDaemonRequest::ListEventConnections(crate::local::ListEventConnectionsRequest {
+                generator_id: None,
+                cursor: None,
+                limit: 50,
+            }),
+        )
+        .unwrap()
+    {
+        LocalDaemonResponse::EventConnectionsPage { page } => page
+            .connections
+            .into_iter()
+            .map(|connection| connection.connection_id)
+            .collect(),
+        response => panic!("unexpected response: {response:?}"),
+    }
+}
+
+#[test]
+fn the_local_cli_and_the_owners_cloud_clients_manage_the_same_event_connections() {
+    let server = ReadyConnectionServer::start();
+    let mut config = crate::DaemonConfig::for_tests();
+    config
+        .event_generator_management_targets
+        .insert("dev.chariox.dummy".to_string(), server.target());
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "cloud-owner".to_string(),
+        ..Default::default()
+    });
+    config.event_registry_url = Some("https://registry.test".to_string());
+    let harness = LocalRouterTestHarness::with_config(config);
+    let registry = harness.runtime_state().event_connection_registry().clone();
+    let local = crate::session::DEFAULT_LOCAL_USER_ID;
+    // Made through the local CLI, listed by the owner's Cloud client and back.
+    registry
+        .upsert(
+            local,
+            "event-owner-test",
+            chariox_event_protocol::AegsConnectionSummary {
+                generator_id: "dev.chariox.dummy".to_string(),
+                connection_id: "connection-local".to_string(),
+                status: chariox_event_protocol::AegsConnectionStatus::Ready,
+                metadata: serde_json::json!({}),
+                expires_at_ms: None,
+                updated_at_ms: 1,
+            },
+        )
+        .unwrap();
+    assert_eq!(list_connection_ids(&harness, local), ["connection-local"]);
+    assert_eq!(
+        list_connection_ids(&harness, "cloud-owner"),
+        ["connection-local"]
+    );
+    // Another user of the kernel has their own space.
+    assert!(list_connection_ids(&harness, "collaborator").is_empty());
+    // The owner's Cloud client manages the record the local CLI made.
+    let refreshed = harness
+        .dispatch_as_user(
+            "cloud-owner",
+            LocalDaemonRequest::RefreshEventConnection(
+                crate::local::RefreshEventConnectionRequest {
+                    connection_id: "connection-local".to_string(),
+                },
+            ),
+        )
+        .expect("the Cloud client refreshes the local CLI's connection");
+    assert!(matches!(
+        refreshed,
+        LocalDaemonResponse::EventConnection { .. }
+    ));
+    // A connection the Cloud client starts is the local CLI's too.
+    let LocalDaemonResponse::EventConnectionAuthorizationStarted { authorization } = harness
+        .dispatch_as_user(
+            "cloud-owner",
+            LocalDaemonRequest::InstallEventConnection(
+                crate::local::InstallEventConnectionRequest {
+                    generator_id: "dev.chariox.dummy".to_string(),
+                    return_url: None,
+                },
+            ),
+        )
+        .unwrap()
+    else {
+        panic!("expected a started authorization")
+    };
+    assert!(registry
+        .authorization(local, &authorization.authorization_id)
+        .unwrap()
+        .is_some());
+    assert!(registry
+        .authorization("cloud-owner", &authorization.authorization_id)
+        .unwrap()
+        .is_none());
+    let LocalDaemonResponse::EventConnectionRemoved { .. } = harness
+        .dispatch_as_user(
+            "cloud-owner",
+            LocalDaemonRequest::RemoveEventConnection(crate::local::RemoveEventConnectionRequest {
+                connection_id: "connection-local".to_string(),
+                confirm: true,
+            }),
+        )
+        .unwrap()
+    else {
+        panic!("expected the connection to be removed")
+    };
+    assert!(list_connection_ids(&harness, local).is_empty());
+}
+
+fn connection_of(
+    harness: &crate::local::test_support::LocalRouterTestHarness,
+) -> crate::local::EventConnection {
+    match harness
+        .dispatch(LocalDaemonRequest::GetEventConnection(
+            GetEventConnectionRequest {
+                connection_id: "connection-local".to_string(),
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::EventConnection { connection } => connection,
+        response => panic!("unexpected response: {response:?}"),
+    }
+}
+
+#[test]
+fn an_imported_connection_shows_the_sources_state_right_after_the_import() {
+    let server = ReadyConnectionServer::start();
+    let harness_with_target = || {
+        let mut config = crate::DaemonConfig::for_tests();
+        config
+            .event_generator_management_targets
+            .insert("dev.chariox.dummy".to_string(), server.target());
+        LocalRouterTestHarness::with_config(config)
+    };
+    let source = harness_with_target();
+    register_ready_connection(&source);
+    let target = harness_with_target();
+    // The transfer's own export and import code moves the record.
+    let selection =
+        crate::managed_context::package::ManagedContextEventConnectionSelection::Selected {
+            connection_ids: vec!["connection-local".to_string()],
+        };
+    let local = crate::session::DEFAULT_LOCAL_USER_ID;
+    let records = crate::managed_context::event_connections::export_selected(
+        &selection,
+        source.runtime_state().event_connection_registry(),
+        local,
+    )
+    .unwrap();
+    crate::managed_context::event_connections::import(
+        &crate::managed_context::event_connections::ManagedContextEventConnectionImportTarget {
+            registry: target.runtime_state().event_connection_registry().clone(),
+            owner_user_id: local.to_string(),
+        },
+        "ctx_event_publication",
+        &records,
+    )
+    .unwrap();
+    let before = connection_of(&target);
+    assert!(before.scopes.is_empty() && before.metadata.is_null());
+
+    target.load_imported_event_connections(local, &["connection-local".to_string()]);
+
+    let (copy, original) = (connection_of(&target), connection_of(&source));
+    assert_eq!(copy.status, original.status);
+    assert_eq!(copy.lifecycle_state, original.lifecycle_state);
+    assert_eq!(copy.metadata, original.metadata);
+    assert_eq!(copy.scopes, original.scopes);
+    assert_eq!(copy.resources, original.resources);
+    assert!(!copy.scopes.is_empty());
+}
+
+#[test]
+fn an_unreachable_event_service_leaves_an_imported_connection_as_imported() {
+    let server = ReadyConnectionServer::start();
+    let harness_with_target = || {
+        let mut config = crate::DaemonConfig::for_tests();
+        config
+            .event_generator_management_targets
+            .insert("dev.chariox.dummy".to_string(), server.target());
+        LocalRouterTestHarness::with_config(config)
+    };
+    let (source, target) = (harness_with_target(), harness_with_target());
+    register_ready_connection(&source);
+    let local = crate::session::DEFAULT_LOCAL_USER_ID;
+    let records = crate::managed_context::event_connections::export_selected(
+        &crate::managed_context::package::ManagedContextEventConnectionSelection::Selected {
+            connection_ids: vec!["connection-local".to_string()],
+        },
+        source.runtime_state().event_connection_registry(),
+        local,
+    )
+    .unwrap();
+    crate::managed_context::event_connections::import(
+        &crate::managed_context::event_connections::ManagedContextEventConnectionImportTarget {
+            registry: target.runtime_state().event_connection_registry().clone(),
+            owner_user_id: local.to_string(),
+        },
+        "ctx_event_publication",
+        &records,
+    )
+    .unwrap();
+    server.unavailable.store(true, Ordering::Relaxed);
+    target.load_imported_event_connections(local, &["connection-local".to_string()]);
+    let kept = connection_of(&target);
+    assert_eq!(kept.status, crate::local::EventConnectionStatus::Ready);
+    assert!(kept.scopes.is_empty());
+}
+
+#[test]
+fn a_copy_notices_a_revoked_connection_without_being_queried() {
+    let server = ReadyConnectionServer::start();
+    let harness = harness_with_ready_connection(&server);
+    // Nothing changed at the event service: the copy stays ready.
+    let quiet = harness.refresh_ready_event_connections();
+    assert_eq!((quiet.attempted, quiet.failed), (1, 0));
+    assert_eq!(
+        connection_status(&harness),
+        crate::local::EventConnectionStatus::Ready
+    );
+    // Another kernel (or the user) revokes the connection.
+    server.revoked.store(true, Ordering::Relaxed);
+    let summary = harness.refresh_ready_event_connections();
+    assert_eq!((summary.attempted, summary.completed), (1, 1));
+    assert_eq!(
+        connection_status(&harness),
+        crate::local::EventConnectionStatus::Revoked
+    );
+    // A revoked connection is not asked about again.
+    assert_eq!(harness.refresh_ready_event_connections().attempted, 0);
+}
+
+#[test]
+fn ready_refreshes_ask_about_every_connection_beyond_one_batch_even_when_questions_fail() {
+    let server = ReadyConnectionServer::start();
+    let harness = harness_with_ready_connection(&server);
+    let mut ids = (0..129)
+        .map(|n| format!("connection-{n:03}"))
+        .collect::<Vec<_>>();
+    for id in &ids {
+        harness
+            .runtime_state()
+            .event_connection_registry()
+            .upsert(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "event-owner-test",
+                chariox_event_protocol::AegsConnectionSummary {
+                    generator_id: "dev.chariox.dummy".to_string(),
+                    connection_id: id.clone(),
+                    status: chariox_event_protocol::AegsConnectionStatus::Ready,
+                    metadata: serde_json::json!({"account": "local"}),
+                    expires_at_ms: None,
+                    updated_at_ms: 1,
+                },
+            )
+            .unwrap();
+    }
+    ids.push("connection-local".to_string());
+    // Every question fails, so every connection stays ready: the batches must move on anyway.
+    server.unavailable.store(true, Ordering::Relaxed);
+    for _ in 0..ids.len().div_ceil(64) {
+        let summary = harness.refresh_ready_event_connections();
+        assert_eq!((summary.attempted, summary.failed), (64, 64));
+    }
+    let requests = server.requests.lock().unwrap().join("\n");
+    let never_asked = ids
+        .iter()
+        .filter(|id| !requests.contains(id.as_str()))
+        .collect::<Vec<_>>();
+    assert!(never_asked.is_empty(), "never asked about: {never_asked:?}");
+}
+
+#[test]
+fn an_unreachable_event_service_leaves_a_ready_connection_ready() {
+    let server = ReadyConnectionServer::start();
+    let harness = harness_with_ready_connection(&server);
+    server.unavailable.store(true, Ordering::Relaxed);
+    let summary = harness.refresh_ready_event_connections();
+    assert_eq!((summary.attempted, summary.failed), (1, 1));
+    assert_eq!(
+        connection_status(&harness),
+        crate::local::EventConnectionStatus::Ready,
+        "an outage is not a revocation: keep the last known state"
+    );
+}
+
 #[test]
 fn failed_event_connection_validation_is_durable_and_recovers_in_place() {
     let server = ReadyConnectionServer::start();
@@ -580,6 +935,7 @@ fn failed_event_connection_validation_is_durable_and_recovers_in_place() {
         .event_connection_registry()
         .upsert(
             crate::session::DEFAULT_LOCAL_USER_ID,
+            "event-owner-test",
             chariox_event_protocol::AegsConnectionSummary {
                 generator_id: "dev.chariox.dummy".to_string(),
                 connection_id: "connection-local".to_string(),
@@ -646,8 +1002,8 @@ fn event_connection_removal_waits_for_the_apps_that_use_it() {
     let database = rusqlite::Connection::open(store.path()).unwrap();
     database
         .execute_batch(
-            "INSERT INTO app_connection_grants(owner_id,installation_id,connection_id,generator_id,granted_at_ms)
-             VALUES('local','app_route_first','connection-local','dev.chariox.dummy',1)",
+            "INSERT INTO app_connection_grants(owner_id,installation_id,connection_id,generator_id,event_owner_id,granted_at_ms)
+             VALUES('local','app_route_first','connection-local','dev.chariox.dummy','event-owner-test',1)",
         )
         .unwrap();
     let connection_id = "connection-local".to_string();
@@ -768,6 +1124,7 @@ fn register_ready_connection(harness: &LocalRouterTestHarness) {
     registry
         .upsert(
             crate::session::DEFAULT_LOCAL_USER_ID,
+            "event-owner-test",
             chariox_event_protocol::AegsConnectionSummary {
                 generator_id: "dev.chariox.dummy".to_string(),
                 connection_id: "connection-local".to_string(),

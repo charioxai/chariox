@@ -657,30 +657,36 @@ impl KernelRuntimeState {
             serde_json::Value::Object(payload),
         );
         let state = self.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(delay));
-            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            else {
-                return;
-            };
-            runtime.block_on(async move {
-                let Ok(agent) = state.owned.agent_store.get_agent(&agent_id) else {
+        let spawned = std::thread::Builder::new()
+            .name("remote-extension-manifest-retry".to_string())
+            .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+            .spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(delay));
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                else {
                     return;
                 };
-                let status_matches = agent
-                    .remote_extension_manifest_sync()
-                    .and_then(|status| status.manifest_hash.as_deref())
-                    == Some(manifest_hash.as_str());
-                if !status_matches {
-                    return;
-                }
-                let _ = state
-                    .sync_remote_extension_manifest_for_agent_inner::<false>(&agent, None, None)
-                    .await;
+                runtime.block_on(async move {
+                    let Ok(agent) = state.owned.agent_store.get_agent(&agent_id) else {
+                        return;
+                    };
+                    let status_matches = agent
+                        .remote_extension_manifest_sync()
+                        .and_then(|status| status.manifest_hash.as_deref())
+                        == Some(manifest_hash.as_str());
+                    if !status_matches {
+                        return;
+                    }
+                    let _ = state
+                        .sync_remote_extension_manifest_for_agent_inner::<false>(&agent, None, None)
+                        .await;
+                });
             });
-        });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "cannot start the remote extension manifest retry thread");
+        }
     }
 
     pub(crate) async fn retry_remote_extension_manifest_sync(
@@ -932,25 +938,49 @@ impl KernelRuntimeState {
         requires_idle: bool,
     ) -> Result<crate::session::SessionConfigState, DaemonError> {
         let scopes = self.session_agent_execution_configs(session_id);
+        let sets_agent_limits = values.contains_key(crate::session::SESSION_AGENT_MODE_CONFIG_KEY)
+            || values.contains_key(crate::session::SESSION_AGENT_PERMISSION_CONFIG_KEY);
         let config =
             self.owned
                 .update_session_config(session_id, attachment_id, values, requires_idle)?;
         let changed = self.session_agent_execution_configs(session_id);
-        let mut terminated_run_ids = Vec::new();
+        let mut rescoped = Vec::new();
         for (agent_id, scope) in scopes {
-            if let Some(next_scope) = changed.get(&agent_id).filter(|next| **next != scope) {
+            if changed.get(&agent_id).is_some_and(|next| *next != scope) {
+                rescoped.push(agent_id.clone());
                 self.claude_session_grants.forget(&agent_id);
                 self.terminal_input_grants.forget(&agent_id);
-                terminated_run_ids.extend(self.owned.apply_agent_execution_config_to_provider(
-                    session_id,
-                    &agent_id,
-                    *next_scope,
-                    false,
-                )?);
             }
         }
-        self.remove_terminated_provider_processes(terminated_run_ids)
-            .await;
+        // Every local agent may follow the room default or sit under an agent that does.
+        if sets_agent_limits {
+            self.limit_local_runs(
+                "update session config",
+                session_id,
+                self.owned.local_room_agents(session_id),
+                "update the room default again to retry",
+            )
+            .await?;
+        }
+        // The room default rescopes every agent without its own setting, as `update_agent_config`
+        // does one agent: a lowered holder may no longer hold the decisions it held.
+        for agent_id in rescoped {
+            let (moved, announce) = self
+                .owned
+                .recheck_subtree_decisions(session_id, &agent_id)?;
+            self.finish_moved_decisions(session_id, moved, announce)
+                .await?;
+        }
+        // Every leased agent may sit under an agent that follows the room default.
+        if sets_agent_limits {
+            self.tell_workers_leased_limits(
+                "update session config",
+                session_id,
+                self.owned.leased_room_agents(session_id),
+                "update the room default again to retry",
+            )
+            .await?;
+        }
         Ok(config)
     }
 
@@ -972,6 +1002,154 @@ impl KernelRuntimeState {
                 (agent.id().to_string(), scope)
             })
             .collect()
+    }
+
+    /// Moves the existing provider runs of the local agents among `agent_ids` to the limit their
+    /// parent chain sets now: Codex reads it at its next turn start, and a provider that cannot
+    /// take it in its process ends that process so its next turn launches with it. Moving again
+    /// is harmless, so a failure is retried by repeating the change.
+    pub(super) async fn limit_local_runs(
+        &self,
+        operation: &'static str,
+        session_id: &str,
+        agent_ids: Vec<String>,
+        retry: &str,
+    ) -> Result<(), DaemonError> {
+        let limits = self
+            .owned
+            .limit_local_runs(operation, session_id, &agent_ids, retry)?;
+        for agent_id in &limits.relimited {
+            self.claude_session_grants.forget(agent_id);
+            self.terminal_input_grants.forget(agent_id);
+        }
+        self.remove_terminated_provider_processes(limits.terminated_run_ids)
+            .await;
+        Ok(())
+    }
+
+    /// Moves the provider run of local `agent_id` to the limit its parent chain sets now,
+    /// before ordinary work starts on it: a limit that changed during the agent's last turn
+    /// applies from the next turn on, whether or not a Project environment needs resolving. A
+    /// running turn keeps its process, and a backlog is launched by its own queue promotion.
+    pub(super) async fn limit_local_run_for_next_turn(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        if self
+            .owned
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, agent_id)
+            .is_some()
+        {
+            return Ok(());
+        }
+        self.limit_local_runs(
+            "submit prompt",
+            session_id,
+            vec![agent_id.to_string()],
+            "send the prompt again",
+        )
+        .await
+    }
+
+    /// Tells the worker of each leased agent the limit its parent chain sets now. The limit is read
+    /// again once the worker applied it and sent again if a concurrent change moved it meanwhile,
+    /// so the worker ends at the current limit whichever change it heard last. Telling it again
+    /// is harmless, so a failure is retried by repeating the change.
+    pub(super) async fn tell_workers_leased_limits(
+        &self,
+        operation: &'static str,
+        session_id: &str,
+        agent_ids: Vec<String>,
+        retry: &str,
+    ) -> Result<(), DaemonError> {
+        const SENDS: usize = 4;
+        for agent_id in agent_ids {
+            let mut told = None;
+            for sent in 0.. {
+                let Some(limit) = self.owned.leased_agent_limit_now(session_id, &agent_id)? else {
+                    break;
+                };
+                let (mode, level) = (limit.execution_mode, limit.permission_level);
+                if told == Some((mode, level)) {
+                    break;
+                }
+                if sent == SENDS {
+                    return Err(DaemonError::LocalTransport {
+                        operation,
+                        message: format!(
+                            "the limit of agent `{agent_id}` kept changing while its worker applied it; {retry}"
+                        ),
+                    });
+                }
+                self.send_leased_agent_config(limit)
+                    .await
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation,
+                        message: format!(
+                            "the worker of agent `{agent_id}` did not apply the {} {} limit: {error}; {retry}",
+                            level.as_str(),
+                            mode.as_str()
+                        ),
+                    })?;
+                told = Some((mode, level));
+            }
+        }
+        Ok(())
+    }
+
+    /// Tells the worker what a leased agent runs under; its next provider turn launches with it.
+    pub(super) async fn send_leased_agent_config(
+        &self,
+        remote_update: owned::OwnedRemoteAgentConfigUpdate,
+    ) -> Result<(), DaemonError> {
+        let mut config = self.config_snapshot().await;
+        if let (Some(relay_url), Some(relay_token)) = (
+            remote_update.relay_url.clone(),
+            remote_update.relay_token.clone(),
+        ) {
+            config.apply_remote_relay_override(relay_url, relay_token);
+        }
+        let target = ClientTarget {
+            daemon_id: Some(remote_update.worker_kernel_id.clone()),
+            daemon_alias: None,
+        };
+        let request = RelayPeerRequest::UpdateLeasedAgentConfig {
+            leased_agent_id: remote_update.leased_agent_id,
+            execution_mode: remote_update.execution_mode,
+            permission_level: remote_update.permission_level,
+        };
+        let response = match self.connected_relay_state_for_config(&config).await {
+            Some(relay_state) => {
+                crate::transport::relay_client::send_peer_request_via_connected_relay_authorized(
+                    &config,
+                    &relay_state,
+                    target,
+                    request,
+                    Duration::from_millis(config.relay_request_timeout_ms),
+                    || self.authorize_current_external_command(),
+                )
+                .await
+            }
+            None => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
+                    &config, target, request,
+                    Duration::from_millis(config.relay_request_timeout_ms),
+                    || self.authorize_current_external_command(),
+                )
+                .await
+            }
+        };
+        match response {
+            Ok(RelayPeerResponse::LeasedAgentConfigUpdated { .. }) => Ok(()),
+            Ok(other) => Err(DaemonError::LocalTransport {
+                operation: "update remote leased agent config",
+                message: format!("unexpected remote config response: {other:?}"),
+            }),
+            Err(error) => Err(error),
+        }
     }
 
     #[allow(
@@ -1006,53 +1184,7 @@ impl KernelRuntimeState {
             .await;
         let mut agent = update.agent;
         if let Some(remote_update) = update.remote_update {
-            let mut config = self.config_snapshot().await;
-            if let (Some(relay_url), Some(relay_token)) = (
-                remote_update.relay_url.clone(),
-                remote_update.relay_token.clone(),
-            ) {
-                config.apply_remote_relay_override(relay_url, relay_token);
-            }
-            let target = ClientTarget {
-                daemon_id: Some(remote_update.worker_kernel_id.clone()),
-                daemon_alias: None,
-            };
-            let request = RelayPeerRequest::UpdateLeasedAgentConfig {
-                leased_agent_id: remote_update.leased_agent_id,
-                execution_mode: remote_update.execution_mode,
-                permission_level: remote_update.permission_level,
-            };
-            let response = match self.connected_relay_state_for_config(&config).await {
-                Some(relay_state) => {
-                    crate::transport::relay_client::send_peer_request_via_connected_relay_authorized(
-                        &config,
-                        &relay_state,
-                        target,
-                        request,
-                        Duration::from_millis(config.relay_request_timeout_ms),
-                        || self.authorize_current_external_command(),
-                    )
-                    .await
-                }
-                None => {
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
-                        &config, target, request,
-                        Duration::from_millis(config.relay_request_timeout_ms),
-                        || self.authorize_current_external_command(),
-                    )
-                    .await
-                }
-            };
-            match response {
-                Ok(RelayPeerResponse::LeasedAgentConfigUpdated { .. }) => {}
-                Ok(other) => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "update remote leased agent config",
-                        message: format!("unexpected remote config response: {other:?}"),
-                    });
-                }
-                Err(error) => return Err(error),
-            }
+            self.send_leased_agent_config(remote_update).await?;
             self.authorize_current_external_command()?;
             agent = self.owned.commit_remote_agent_config_update(
                 session_id,
@@ -1064,6 +1196,42 @@ impl KernelRuntimeState {
                 self.claude_session_grants.forget(agent_id);
                 self.terminal_input_grants.forget(agent_id);
             }
+        }
+        if execution_mode_override.is_some() || permission_level_override.is_some() {
+            // The agents below run within this agent's settings: local runs move to the new limit
+            // and leased ones are told again.
+            let local_below = self
+                .owned
+                .local_subtree(session_id, agent_id)
+                .into_iter()
+                .filter(|local| local != agent_id)
+                .collect();
+            self.limit_local_runs(
+                "update agent config",
+                session_id,
+                local_below,
+                "update the agent again to retry",
+            )
+            .await?;
+            let below = self
+                .owned
+                .leased_subtree(session_id, agent_id)
+                .into_iter()
+                .filter(|leased| leased != agent_id)
+                .collect();
+            self.tell_workers_leased_limits(
+                "update agent config",
+                session_id,
+                below,
+                "update the agent again to retry",
+            )
+            .await?;
+        }
+        if update.scope_changed {
+            // A lowered agent and its subtree may no longer hold the decisions they held.
+            let (moved, announce) = self.owned.recheck_subtree_decisions(session_id, agent_id)?;
+            self.finish_moved_decisions(session_id, moved, announce)
+                .await?;
         }
         self.append_agent_durable_event("agent.updated", &agent, None)
             .await?;

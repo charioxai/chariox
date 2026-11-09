@@ -34,7 +34,7 @@ app_subtask_status_t chariox_app_state_get(app_string_t key, chariox_app_state_r
   fill_get(out); return APP_SUBTASK_RETURNED;
 }
 static void transact(chariox_app_state_transaction_t *tx, chariox_app_state_result_committed_app_error_t *out) {
-  assert(tx->schema_version == 1 && tx->checks.len == 1 && tx->writes.len == 1);
+  assert(tx->schema_version == 0 && tx->checks.len == 1 && tx->writes.len == 1);
   assert(cx_string_is(tx->checks.ptr[0].key,"count"));
   if (tx_error || (tx->checks.ptr[0].version.is_some && tx->checks.ptr[0].version.val != version)) {
     out->is_err = true; error(&out->val.err,"STATE_CONFLICT"); return;

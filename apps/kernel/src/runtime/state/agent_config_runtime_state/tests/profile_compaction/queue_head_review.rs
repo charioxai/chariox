@@ -150,6 +150,8 @@ async fn readiness_while_the_starting_promoter_exits(complete_launch: bool) {
             structured_endpoint: None,
         },
     );
+    // Launched with what the fixture agent asks for, as its first run was.
+    starting.set_execution_config(old.execution_mode(), old.permission_level());
     crate::test_support::authenticate_provider_account(
         &runtime.owned.provider_account_profiles,
         crate::session::DEFAULT_LOCAL_USER_ID,

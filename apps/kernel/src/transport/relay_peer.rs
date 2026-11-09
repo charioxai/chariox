@@ -193,7 +193,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer425 carries local984 Vault unlock durations.
 /// Peer 433 carries local994 per-exit sources, App agent targets and blocked-task notifications.
 /// Peer 437 carries the local998 notification listener contract.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 438;
+/// Peer 439 carries local1000: the run finished source kind, event connection selections in the managed-context plan
+/// binding and Vault provider logins in the context package.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 439;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -287,7 +289,19 @@ pub struct RelayManagedContextImportReceipt {
     pub plan_digest: String,
     pub development: RelayManagedDevelopmentContextImportReceipt,
     pub kernel_context: RelayManagedKernelContextImportReceipt,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omitted_provider_accounts: Vec<RelayManagedContextOmittedProviderAccount>,
     pub receipt_sha256: String,
+}
+
+/// A selected provider login the target left out of the import.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayManagedContextOmittedProviderAccount {
+    pub provider: String,
+    pub profile_id: String,
+    pub label: String,
+    pub reason: crate::managed_context::package::ManagedContextProviderAccountOmission,
+    pub next_step: crate::managed_context::package::ManagedContextProviderAccountNextStep,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -831,10 +845,15 @@ pub enum RelayPeerRequest {
         protocol_version: u32,
         source_id: String,
         target_ref: crate::local::WorkflowNotificationSubscription,
+        /// The version of the follow the destination asks for; the source ignores it when it has
+        /// already seen a newer one of this subscription.
+        generation: u64,
     },
     UnsubscribeWorkflowNotifications {
         protocol_version: u32,
         subscription_id: String,
+        /// As `SubscribeWorkflowNotifications::generation`.
+        generation: u64,
     },
     DeliverWorkflowNotification {
         protocol_version: u32,
@@ -1305,6 +1324,11 @@ pub enum RelayPeerResponse {
         subscription: crate::local::WorkflowNotificationSubscription,
     },
     WorkflowNotificationUnsubscribed,
+    /// The source ignored a subscribe or unsubscribe: it has already seen this newer generation
+    /// of the subscription.
+    WorkflowNotificationSuperseded {
+        generation: u64,
+    },
     WorkflowNotificationAccepted {
         ack: crate::local::WorkflowNotificationAck,
     },
@@ -2161,6 +2185,7 @@ mod workflow_notification_shapes {
                 protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 source_id: "source".into(),
                 target_ref: sub.clone(),
+                generation: 3,
             },
             RelayPeerRequest::DeliverWorkflowNotification {
                 protocol_version: RELAY_PEER_PROTOCOL_VERSION,
@@ -2170,6 +2195,7 @@ mod workflow_notification_shapes {
             RelayPeerRequest::UnsubscribeWorkflowNotifications {
                 protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 subscription_id: "sub".into(),
+                generation: 4,
             },
         ];
         let responses = vec![
@@ -2193,6 +2219,7 @@ mod workflow_notification_shapes {
                 ack: WorkflowNotificationAck::Accepted,
             },
             RelayPeerResponse::WorkflowNotificationUnsubscribed,
+            RelayPeerResponse::WorkflowNotificationSuperseded { generation: 5 },
         ];
         let mut wire = serde_json::json!({"requests":requests,"responses":responses});
         // Pin the wire shape independently of the generated current peer number.
@@ -2206,7 +2233,7 @@ mod workflow_notification_shapes {
         }
         assert_eq!(
             format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-            "a1f9549c3b6d095ac7a278678549c23c6aad6d3f666645a6b43eede98e094ae8"
+            "02a8d98603e23bde427cd5c238c4dcf487071f955d4c6848ca31c82f2b6228ee"
         );
     }
 }

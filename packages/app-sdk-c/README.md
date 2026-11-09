@@ -43,8 +43,8 @@ Download/extract/build scripts use only Python's standard library.
 `wait`. It supplies all required handler exports through the SDK. It is a
 backend onboarding template; view/declarations/signing and the real local
 `.cxapp` install flow require R4 and the development tooling. Register the same
-tool names in the package declarations. Counter state uses schema version 1,
-key `count`, and returns conflicts to the caller rather than replaying writes.
+tool names in the package declarations. Counter state uses schema version 0 (the
+clean schema an App without a migration chain runs on), key `count`, and returns conflicts to the caller rather than replaying writes.
 
 ## Tasks and ownership
 

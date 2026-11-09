@@ -42,7 +42,7 @@ fn room() -> Room {
             .with_owner_user_id("alice")
             .with_permission_level_override(crate::provider::AgentPermissionLevel::Yolo);
         if let Some(creator) = creator {
-            request = request.with_spawned_by_agent_id(creator);
+            request = request.with_parent_agent_id(creator);
         }
         let agent = crate::app::KernelSessionService::new(app)
             .spawn_agent(request)
@@ -345,6 +345,7 @@ async fn capability_stale_home_run_cannot_acquire_after_agent_is_leased() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();
@@ -442,6 +443,7 @@ async fn capability_leased_acquisition_uses_delivered_worker_run_and_owner_appro
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .unwrap();
@@ -516,8 +518,9 @@ async fn capability_deleting_an_app_grant_source_revokes_its_child() {
         .destroy_agent(&parent, "alice")
         .await
         .unwrap();
+    // A sub-agent ends with its parent, so the grant it got from the parent goes with it.
     assert!(
-        !bound(&room, &child).await,
+        room.app.lock().await.agents().get_agent(&child).is_err(),
         "MP-11: source deletion revokes delegated authority"
     );
     assert!(

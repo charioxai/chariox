@@ -53,21 +53,26 @@ pub(crate) fn waiting_room_workflow_activity_summary(
     }
 }
 
+/// A4: archived agents and sub-agents are no part of a room's counts.
+fn counted_in_room(agent: &crate::agent::AgentInstance) -> bool {
+    !agent.archived() && !agent.is_sub_agent()
+}
+
 pub(crate) fn waiting_room_session_activity_summary(
     session: &RuntimeSession,
     caller_user_id: &str,
 ) -> WaitingRoomSessionActivitySummary {
-    let archived_agent_ids: HashSet<&str> = session
+    let uncounted_agent_ids: HashSet<&str> = session
         .agents()
         .iter()
-        .filter(|agent| agent.archived())
+        .filter(|agent| !counted_in_room(agent))
         .map(|agent| agent.id())
         .collect();
     let active_prompt_agent_ids: HashSet<&str> = session
         .prompt_states()
         .iter()
         .filter(|(agent_id, state)| {
-            !archived_agent_ids.contains(agent_id.as_str()) && state.active_prompt().is_some()
+            !uncounted_agent_ids.contains(agent_id.as_str()) && state.active_prompt().is_some()
         })
         .map(|(agent_id, _)| agent_id.as_str())
         .collect();
@@ -75,13 +80,13 @@ pub(crate) fn waiting_room_session_activity_summary(
     let queued_prompt_count = session
         .prompt_states()
         .iter()
-        .filter(|(agent_id, _)| !archived_agent_ids.contains(agent_id.as_str()))
+        .filter(|(agent_id, _)| !uncounted_agent_ids.contains(agent_id.as_str()))
         .map(|(_, state)| state.queued_prompts().len())
         .sum();
     let mut working_agent_count = session
         .agents()
         .iter()
-        .filter(|agent| !agent.archived())
+        .filter(|agent| counted_in_room(agent))
         .filter(|agent| waiting_room_agent_has_active_work(agent, &active_prompt_agent_ids))
         .count();
     if working_agent_count == 0 && active_prompt_count > 0 {
@@ -90,13 +95,13 @@ pub(crate) fn waiting_room_session_activity_summary(
     let remote_agent_count = session
         .agents()
         .iter()
-        .filter(|agent| !agent.archived())
+        .filter(|agent| counted_in_room(agent))
         .filter(|agent| agent.remote_execution().is_some())
         .count();
     let missing_worker_provider_run_count = session
         .agents()
         .iter()
-        .filter(|agent| !agent.archived())
+        .filter(|agent| counted_in_room(agent))
         .filter(|agent| {
             let Some(remote) = agent.remote_execution() else {
                 return false;
@@ -114,7 +119,7 @@ pub(crate) fn waiting_room_session_activity_summary(
     let home_proxy_extension_agents = session
         .agents()
         .iter()
-        .filter(|agent| !agent.archived())
+        .filter(|agent| counted_in_room(agent))
         .filter(|agent| agent.remote_execution().is_some())
         .filter_map(home_proxy_extension_activity);
     WaitingRoomSessionActivitySummary {
@@ -122,7 +127,7 @@ pub(crate) fn waiting_room_session_activity_summary(
         agent_count: session
             .agents()
             .iter()
-            .filter(|agent| !agent.archived())
+            .filter(|agent| counted_in_room(agent))
             .count(),
         working_agent_count,
         active_prompt_count,
@@ -130,7 +135,7 @@ pub(crate) fn waiting_room_session_activity_summary(
         error_agent_count: session
             .agents()
             .iter()
-            .filter(|agent| !agent.archived())
+            .filter(|agent| counted_in_room(agent))
             .filter(|agent| agent.state() == AgentState::Error)
             .count(),
         remote_agent_count,
@@ -146,7 +151,7 @@ pub(crate) fn waiting_room_session_activity_summary(
         unread_idle_agent_count: session
             .agents()
             .iter()
-            .filter(|agent| !agent.archived())
+            .filter(|agent| counted_in_room(agent))
             .filter(|agent| {
                 !active_prompt_agent_ids.contains(agent.id())
                     && session.agent_has_unread_output(caller_user_id, agent.id())
@@ -272,6 +277,7 @@ mod tests {
             relay_peer_protocol_version: Some(
                 crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
             ),
+            worker_worktree_id: None,
         }));
         agent
     }
@@ -391,6 +397,21 @@ mod tests {
             )
             .error
         );
+    }
+
+    // MP-08/MP-09/MP-10/MP-11 A4: a room's counts are its own agents, never its sub-agents.
+    #[test]
+    fn room_counts_leave_sub_agents_out() {
+        let mut worker = agent("worker", AgentState::Error, true);
+        worker.set_parent_agent(Some(crate::agent::AgentRef::local("root")));
+        let session = session_with_agents(vec![agent("root", AgentState::Idle, false), worker]);
+
+        let summary =
+            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
+
+        assert_eq!(summary.agent_count, 1);
+        assert_eq!(summary.working_agent_count, 0);
+        assert_eq!(summary.error_agent_count, 0);
     }
 
     #[test]

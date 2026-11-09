@@ -28,11 +28,11 @@ fn conformance_attestation_is_public() {
             .collect(),
         manifest_digest: "sha256:manifest".to_string(),
         report_digest: "sha256:report".to_string(),
-        event_protocol_version: 3,
-        management_protocol_version: 4,
+        event_protocol_version: 4,
+        management_protocol_version: 5,
         completed_at_ms: 1,
     };
 
-    assert_eq!(attestation.management_protocol_version, 4);
+    assert_eq!(attestation.management_protocol_version, 5);
     assert_eq!(attestation.checks.len(), 8);
 }

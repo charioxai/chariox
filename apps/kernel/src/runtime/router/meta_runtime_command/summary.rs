@@ -4,7 +4,7 @@ pub(super) fn summarize_meta_agent(agent: &crate::agent::AgentInstance) -> serde
         "agent_ref": agent.agent_ref(),
         "alias": agent.alias(),
         "role": agent.role(),
-        "spawned_by_agent_id": agent.spawned_by_agent_id(),
+        "parent_agent_id": agent.parent_agent_id(),
         "provider": agent.provider(),
         "model": agent.model(),
     })

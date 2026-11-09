@@ -14,6 +14,7 @@ use crate::local::{
 pub(crate) async fn execute_prompt_input_history_request(
     history: OperationalHistoryStore,
     request: GetPromptInputHistoryRequest,
+    shown: impl Fn(&HistoryEvent) -> bool + Send + 'static,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let session_id = request.session_id.clone();
     let limit = request.limit.unwrap_or(5000).clamp(1, 5000);
@@ -33,6 +34,7 @@ pub(crate) async fn execute_prompt_input_history_request(
             after_sequence,
             limit,
         )?);
+        events.retain(|event| shown(event));
         events.sort_by_key(|event| event.sequence);
         events.truncate(limit);
         Ok(LocalDaemonResponse::PromptInputHistory {
@@ -52,6 +54,7 @@ pub(crate) async fn execute_prompt_input_history_request(
 pub(crate) async fn execute_record_prompt_input_history_request(
     history: OperationalHistoryStore,
     request: RecordPromptInputHistoryRequest,
+    author_user_id: String,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     if request.text.trim().is_empty() {
         return Ok(LocalDaemonResponse::PromptInputHistoryRecorded {
@@ -76,6 +79,10 @@ pub(crate) async fn execute_record_prompt_input_history_request(
             .to_string(),
         ),
     );
+    metadata.insert(
+        AUTHOR_METADATA_KEY.to_string(),
+        serde_json::Value::String(author_user_id),
+    );
     if let Some(attachment_id) = request.attachment_id.clone() {
         metadata.insert(
             "source_attachment_id".to_string(),
@@ -99,6 +106,17 @@ pub(crate) async fn execute_record_prompt_input_history_request(
         }
     })?;
     Ok(LocalDaemonResponse::PromptInputHistoryRecorded { entry })
+}
+
+const AUTHOR_METADATA_KEY: &str = "author_user_id";
+
+/// Whether `user_id` recorded this prompt input.
+pub(crate) fn prompt_input_recorded_by(event: &HistoryEvent, user_id: &str) -> bool {
+    event
+        .metadata
+        .get(AUTHOR_METADATA_KEY)
+        .and_then(|value| value.as_str())
+        == Some(user_id)
 }
 
 fn prompt_input_history_entry_from_event(event: HistoryEvent) -> Option<PromptInputHistoryEntry> {
@@ -136,11 +154,7 @@ fn prompt_input_history_entry_from_event(event: HistoryEvent) -> Option<PromptIn
 
 fn user_prompt_event_counts_as_prompt_input_history(event: &HistoryEvent) -> bool {
     // Kernel instructions are agent-only; the user never typed them.
-    if event
-        .prompt_id
-        .as_deref()
-        .is_some_and(crate::session::is_internal_prompt_echo_id)
-    {
+    if event.is_internal_prompt_echo() {
         return false;
     }
     let Some(entry) = event.to_session_history_entry() else {
@@ -284,6 +298,7 @@ mod tests {
                     kind: PromptInputHistoryEntryKind::Prompt,
                     text: "draft input".to_string(),
                 },
+                "local".to_string(),
             ))
             .expect("draft input should record");
 
@@ -295,6 +310,7 @@ mod tests {
                     after_sequence: None,
                     limit: None,
                 },
+                |_| true,
             ))
             .expect("prompt input history should load");
         let LocalDaemonResponse::PromptInputHistory { entries } = response else {
@@ -349,6 +365,7 @@ mod tests {
                     after_sequence: None,
                     limit: None,
                 },
+                |_| true,
             ))
             .expect("prompt input history should load")
         else {
@@ -360,6 +377,69 @@ mod tests {
                 .map(|entry| entry.text.as_str())
                 .collect::<Vec<_>>(),
             vec!["typed", "typed again"]
+        );
+        remove_temp_history_store(&path);
+    }
+
+    // A steered message is stored under the running turn's prompt id; only its own steering
+    // id says whether a person or the kernel wrote it.
+    #[test]
+    fn prompt_input_history_judges_a_steer_by_its_own_id() {
+        let (store, path) = temp_history_store("steer-own-id");
+        for (sequence, running_prompt_id, steering_id, text) in [
+            (
+                1,
+                "task-catalog:prompt-1",
+                "person-steer-1",
+                "and also take a screenshot",
+            ),
+            (
+                2,
+                "prompt-2",
+                "agent-event-agent-1-7",
+                "Kernel event inbox, untrusted data",
+            ),
+        ] {
+            assert_eq!(store.reserve_sequence(), sequence);
+            let entry =
+                SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", text);
+            let mut event = HistoryEvent::transcript(
+                sequence,
+                &entry,
+                HistoryEventTurnContext {
+                    session_id: Some("session-1".to_string()),
+                    agent_id: Some("agent-1".to_string()),
+                    prompt_id: Some(running_prompt_id.to_string()),
+                    ..HistoryEventTurnContext::default()
+                },
+            );
+            event.metadata.insert(
+                "merge_key".to_string(),
+                serde_json::Value::String(crate::history::steering_prompt_merge_key(steering_id)),
+            );
+            store.append(&event).expect("steering event should append");
+        }
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+        let LocalDaemonResponse::PromptInputHistory { entries } = runtime
+            .block_on(execute_prompt_input_history_request(
+                store,
+                GetPromptInputHistoryRequest {
+                    session_id: "session-1".to_string(),
+                    after_sequence: None,
+                    limit: None,
+                },
+                |_| true,
+            ))
+            .expect("prompt input history should load")
+        else {
+            panic!("unexpected response");
+        };
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["and also take a screenshot"]
         );
         remove_temp_history_store(&path);
     }
@@ -423,6 +503,7 @@ mod tests {
                     after_sequence: None,
                     limit: Some(2),
                 },
+                |_| true,
             ))
             .expect("prompt input history should load");
         let LocalDaemonResponse::PromptInputHistory { entries } = response else {

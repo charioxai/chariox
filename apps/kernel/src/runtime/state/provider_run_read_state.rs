@@ -41,6 +41,7 @@ impl KernelRuntimeState {
 
     pub(crate) fn update_provider_run_selection_response(
         &self,
+        caller_user_id: &str,
         request: crate::local::UpdateProviderRunSelectionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let run = self
@@ -51,6 +52,19 @@ impl KernelRuntimeState {
             return Err(DaemonError::ProviderRunNotInSession {
                 session_id: request.session_id,
                 provider_run_id: request.provider_run_id,
+            });
+        }
+        // The selection is the model the run's owner pays for, so only who acts for that owner
+        // changes it (the `ensure_agent_owner` rule).
+        if !self
+            .owned
+            .acts_for_owner(run.session_id(), caller_user_id, run.owner_user_id())
+        {
+            return Err(DaemonError::OwnershipAccessDenied {
+                user_id: caller_user_id.to_string(),
+                owner_user_id: run.owner_user_id().to_string(),
+                resource: format!("provider run `{}`", run.id()),
+                operation: "update provider run selection",
             });
         }
         let provider_run = self.owned.provider_store.update_run_selection(

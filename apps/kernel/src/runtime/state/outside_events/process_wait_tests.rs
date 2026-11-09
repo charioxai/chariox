@@ -52,8 +52,7 @@ fn a_wait_and_its_end_reach_a_follower_of_the_agent() {
                                     kernel: runtime.owned.config_projection.snapshot().daemon_id,
                                     session_id: session.id().into(),
                                     agent_id: Some("builder".into()),
-                                }],
-                            }),
+                                }], sources: Vec::new(), }),
                         )
                         .unwrap();
                     // A workload of the agent, listed under it in the session.

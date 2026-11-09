@@ -124,13 +124,15 @@ pub struct DetachWorkflowNotificationRequest {
 }
 
 /// What receives the notification: a workflow entry point (always queues a
-/// run) or an agent (always queues a prompt).
+/// run), an agent (always queues a prompt) or an outside agent's access grant (always
+/// appends one event to the grant's own event stream).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowNotificationTargetKind {
     #[default]
     WorkflowEndpoint,
     Agent,
+    OutsideAgent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,4 +140,8 @@ pub enum WorkflowNotificationTargetKind {
 pub enum NotificationSourceKind {
     WorkflowExit,
     OwnerAction,
+    /// Any run of a workflow that ended, completed or failed.
+    WorkflowRun,
+    /// An event an installed App's route accepted.
+    AppEvent,
 }

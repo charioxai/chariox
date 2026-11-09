@@ -66,8 +66,20 @@ pub(crate) async fn execute_generate_workspace_commit_message_request(
 pub(crate) async fn execute_agent_utility_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    caller_user_id: &str,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    // A utility runs a hidden turn on the agent's provider account, so only who acts for the
+    // agent's owner runs one.
+    if let LocalDaemonRequest::RunAgentUtility(RunAgentUtilityRequest { agent_id, .. })
+    | LocalDaemonRequest::GenerateWorkspaceCommitMessage(
+        GenerateWorkspaceCommitMessageRequest { agent_id, .. },
+    ) = &request
+    {
+        runtime_state
+            .ensure_agent_owner(agent_id, caller_user_id, "run agent utility")
+            .await?;
+    }
     match request {
         LocalDaemonRequest::RunAgentUtility(request) => {
             execute_run_agent_utility_request(runtime_state, config_projection, request).await

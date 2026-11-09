@@ -713,7 +713,11 @@ impl KernelRuntimeState {
                 ));
             }
             if agent.id() != target.id() {
-                crate::runtime::room_tool_admission::direct_child(&agent, &target)?;
+                let agents = self
+                    .owned
+                    .agent_store
+                    .get_session_agents(agent.session_id());
+                crate::runtime::room_tool_admission::in_subtree(&agent, &target, &agents)?;
                 let parent = agent
                     .extension_grants()
                     .iter()

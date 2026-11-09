@@ -1968,6 +1968,7 @@ fn arm_request(archive: &[u8], expires_at_ms: u64) -> ArmManagedContextTransfer 
                 crate::managed_context::package::ManagedContextProviderAccountSelection::None,
             git_credentials:
                 crate::managed_context::package::ManagedContextGitCredentialSelection::None,
+            event_connections: Default::default(),
         },
         target_environment_id: "environment-1".to_string(),
         target_kernel_id: "kernel-target".to_string(),
@@ -2029,6 +2030,7 @@ fn managed_package_receipt(
             crate::managed_context::package::ManagedContextImportedProviderAccounts::None,
         git_credentials:
             crate::managed_context::package::ManagedContextImportedGitCredentials::None,
+        event_connections: Default::default(),
     })
     .expect("serialize managed context package receipt")
 }
@@ -2100,6 +2102,7 @@ fn large_managed_package_receipt(
                 crate::managed_context::package::ManagedContextImportedProviderAccounts::None,
             git_credentials:
                 crate::managed_context::package::ManagedContextImportedGitCredentials::None,
+            event_connections: Default::default(),
         },
     )
     .expect("serialize large managed context package receipt");

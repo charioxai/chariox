@@ -101,6 +101,7 @@ fn home_extension_script_router(
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("agent should be remote-backed");
@@ -180,6 +181,7 @@ fn remote_home_invocation_router_with_active_prompt(
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("agent should be remote-backed");
@@ -215,6 +217,9 @@ fn remote_home_invocation_router_with_active_prompt(
     )
 }
 
+mod agent_deadline_visibility;
+mod agent_tree_visibility;
+mod enrolled_owner_room_requests;
 mod home_extension_credentials;
 mod home_extension_denials;
 mod home_extension_grants;

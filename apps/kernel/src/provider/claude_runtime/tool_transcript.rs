@@ -11,6 +11,8 @@ const RESULT_BYTES: usize = 16 * 1024;
 const RESULT_BLOCKS: usize = 256;
 const RESULT_IMAGES: usize = 4;
 const IMAGE_BASE64_BYTES: usize = 512 * 1024;
+/// The largest picture file whose base64 form `bounded_result_images` keeps.
+pub(crate) const RESULT_IMAGE_FILE_BYTES: usize = IMAGE_BASE64_BYTES / 4 * 3;
 const TRUNCATED: &str = "\n[chariox: tool transcript truncated]";
 
 struct BoundedJson(Vec<u8>);
@@ -58,12 +60,19 @@ pub(crate) fn bounded_result_images(content: Option<&Value>) -> (Vec<String>, us
             continue;
         }
         let Some((media_type, data)) = (|| {
-            let source = item.get("source")?;
-            if source.get("type")?.as_str()? != "base64" {
-                return None;
-            }
-            let media_type = source.get("media_type")?.as_str()?;
-            let data = source.get("data")?.as_str()?;
+            let (media_type, data) = match item.get("source") {
+                Some(source) => {
+                    if source.get("type")?.as_str()? != "base64" {
+                        return None;
+                    }
+                    (
+                        source.get("media_type")?.as_str()?,
+                        source.get("data")?.as_str()?,
+                    )
+                }
+                // An MCP image block carries its type and data on the block itself.
+                None => (item.get("mimeType")?.as_str()?, item.get("data")?.as_str()?),
+            };
             let base64 = data
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='));

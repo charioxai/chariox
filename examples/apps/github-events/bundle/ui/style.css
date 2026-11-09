@@ -1,0 +1,9 @@
+body { margin: 0; font: 15px/1.45 system-ui, sans-serif; color-scheme: light dark; }
+main { max-width: 640px; margin: 0 auto; padding: 24px 16px; }
+h1 { margin: 0 0 16px; font-size: 24px; }
+form { display: grid; gap: 12px; }
+label { display: grid; gap: 4px; }
+label span { color: #5f6670; font-size: 14px; }
+input { padding: 8px 10px; border: 1px solid #d0d4da; border-radius: 6px; font: inherit; }
+input[aria-invalid="true"] { border-color: #d33; }
+button { justify-self: start; padding: 8px 14px; border: 0; border-radius: 6px; background: #3b6cf6; color: white; font: inherit; cursor: pointer; }

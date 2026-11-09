@@ -707,6 +707,7 @@ fn remote_execution_health_reports_active_agent_without_worker_run() {
         relay_peer_protocol_version: Some(
             crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         ),
+        worker_worktree_id: None,
     }));
 
     let active_agent_ids =
@@ -795,6 +796,7 @@ fn remote_agent(id: &str) -> AgentInstance {
         relay_peer_protocol_version: Some(
             crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         ),
+        worker_worktree_id: None,
     }));
     agent.set_worktree_id(Some("/repo".to_string()));
     agent

@@ -8,6 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
 use crate::local::{EventConnection, EventConnectionAuthorization};
+use crate::managed_context::event_connections::ImportLedger;
 
 const CONNECTION_UPSERTED: &str = "event_connection.upserted";
 const CONNECTION_REMOVED: &str = "event_connection.removed";
@@ -29,11 +30,24 @@ where
     String::deserialize(deserializer).map(|value| canonical_event_generator_id(&value))
 }
 
+/// The user an event connection is recorded under. Like provider accounts,
+/// connections belong to the person operating the kernel: the local CLI's
+/// `local` and the configured Cloud user are one, so a connection made by one
+/// is managed by the other and a copy lands where the target's `local` CLI
+/// finds it. Other users keep their own space.
+pub(crate) fn event_connection_user_id(
+    config: &crate::config::DaemonConfig,
+    caller_user_id: &str,
+) -> String {
+    crate::account_profile::provider_account_authority_owner_user_id(config, caller_user_id)
+}
+
 #[derive(Clone)]
 pub(crate) struct EventConnectionRegistry {
     durable_state: DurableKernelStateStore,
     state: Arc<Mutex<RegistryState>>,
     restore_error: Arc<Mutex<Option<String>>>,
+    import_ledger: Arc<Mutex<ImportLedger>>,
 }
 
 #[derive(Default)]
@@ -46,12 +60,19 @@ struct RegistryState {
 #[derive(Clone, Serialize, Deserialize)]
 struct StoredConnection {
     owner_user_id: String,
+    /// The owner the event services know this connection under. It is chosen
+    /// when the connection is created and travels with the record, so a
+    /// kernel holding a copy reaches the same connection whatever its own id.
+    #[serde(default)]
+    event_owner_id: String,
     connection: EventConnection,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 struct StoredAuthorization {
     owner_user_id: String,
+    #[serde(default)]
+    event_owner_id: String,
     authorization: EventConnectionAuthorization,
 }
 
@@ -70,6 +91,7 @@ impl EventConnectionRegistry {
             durable_state,
             state: Arc::new(Mutex::new(RegistryState::default())),
             restore_error: Arc::new(Mutex::new(None)),
+            import_ledger: Arc::default(),
         };
         match registry.restore() {
             Ok(restored) => {
@@ -112,6 +134,21 @@ impl EventConnectionRegistry {
         Ok(connections)
     }
 
+    /// Every user's connections currently `Ready`, in a stable order.
+    pub(crate) fn ready_connections(&self) -> Result<Vec<(String, EventConnection)>, DaemonError> {
+        let state = self.lock_state()?;
+        let mut ready = state
+            .connections
+            .values()
+            .filter(|record| record.connection.status == crate::local::EventConnectionStatus::Ready)
+            .map(|record| (record.owner_user_id.clone(), record.connection.clone()))
+            .collect::<Vec<_>>();
+        ready.sort_by(|left, right| {
+            (&left.0, &left.1.connection_id).cmp(&(&right.0, &right.1.connection_id))
+        });
+        Ok(ready)
+    }
+
     pub(crate) fn get(
         &self,
         owner_user_id: &str,
@@ -124,10 +161,100 @@ impl EventConnectionRegistry {
             .map(|record| record.connection.clone()))
     }
 
+    /// The owner the event services know a connection under; `None` when this
+    /// kernel holds no record of it.
+    pub(crate) fn connection_event_owner_id(
+        &self,
+        owner_user_id: &str,
+        connection_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        Ok(self
+            .lock_state()?
+            .connections
+            .get(&(owner_user_id.to_string(), connection_id.to_string()))
+            .map(|record| record.event_owner_id.clone()))
+    }
+
+    /// The owner a connection's claims go out under; `None` when this kernel
+    /// holds no record of it or the record is revoked, so a revoked
+    /// connection stops being claimed.
+    pub(crate) fn claimable_event_owner_id(
+        &self,
+        owner_user_id: &str,
+        connection_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        Ok(self
+            .lock_state()?
+            .connections
+            .get(&(owner_user_id.to_string(), connection_id.to_string()))
+            .filter(|record| {
+                record.connection.status != crate::local::EventConnectionStatus::Revoked
+            })
+            .map(|record| record.event_owner_id.clone()))
+    }
+
+    /// The generator and event owner of every record that is not revoked:
+    /// one claim set per pair, empty when no route uses the connection.
+    pub(crate) fn claimable_generator_owners(&self) -> Result<Vec<(String, String)>, DaemonError> {
+        let mut pairs = self
+            .lock_state()?
+            .connections
+            .values()
+            .filter(|record| {
+                record.connection.status != crate::local::EventConnectionStatus::Revoked
+            })
+            .map(|record| {
+                (
+                    record.connection.generator_id.clone(),
+                    record.event_owner_id.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        pairs.sort();
+        pairs.dedup();
+        Ok(pairs)
+    }
+
+    /// The owner an authorization was started under.
+    pub(crate) fn authorization_event_owner_id(
+        &self,
+        owner_user_id: &str,
+        authorization_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        Ok(self
+            .lock_state()?
+            .authorizations
+            .get(&(owner_user_id.to_string(), authorization_id.to_string()))
+            .map(|record| record.event_owner_id.clone()))
+    }
+
     pub(crate) fn upsert(
         &self,
         owner_user_id: &str,
+        event_owner_id: &str,
         summary: chariox_event_protocol::AegsConnectionSummary,
+    ) -> Result<EventConnection, DaemonError> {
+        self.upsert_record(owner_user_id, event_owner_id, summary, None)
+    }
+
+    /// Creates the record a transfer imports. The same write records that the
+    /// transfer created it, so a rollback after a restart still removes it.
+    pub(crate) fn upsert_imported(
+        &self,
+        owner_user_id: &str,
+        event_owner_id: &str,
+        summary: chariox_event_protocol::AegsConnectionSummary,
+        transfer_id: &str,
+    ) -> Result<EventConnection, DaemonError> {
+        self.upsert_record(owner_user_id, event_owner_id, summary, Some(transfer_id))
+    }
+
+    fn upsert_record(
+        &self,
+        owner_user_id: &str,
+        event_owner_id: &str,
+        summary: chariox_event_protocol::AegsConnectionSummary,
+        imported_by_transfer_id: Option<&str>,
     ) -> Result<EventConnection, DaemonError> {
         let now_ms = unix_epoch_ms();
         let key = (owner_user_id.to_string(), summary.connection_id.clone());
@@ -150,6 +277,7 @@ impl EventConnectionRegistry {
             );
         let record = StoredConnection {
             owner_user_id: owner_user_id.to_string(),
+            event_owner_id: event_owner_id.to_string(),
             connection: EventConnection {
                 generator_id: summary.generator_id,
                 connection_id: summary.connection_id,
@@ -190,11 +318,23 @@ impl EventConnectionRegistry {
                 test_event_supported: previous.is_some_and(|value| value.test_event_supported),
             },
         };
-        if connection_observation_requires_persistence(&state, &key, &record.connection, now_ms) {
+        if imported_by_transfer_id.is_some()
+            || connection_observation_requires_persistence(&state, &key, &record.connection, now_ms)
+        {
+            let mut payload =
+                serde_json::to_value(&record).map_err(|error| registry_error(error.to_string()))?;
+            if let (Some(transfer_id), Some(fields)) =
+                (imported_by_transfer_id, payload.as_object_mut())
+            {
+                fields.insert(
+                    crate::durable_state::IMPORTED_BY_TRANSFER_ID.to_string(),
+                    transfer_id.into(),
+                );
+            }
             self.append(
                 CONNECTION_UPSERTED,
                 &record.connection.connection_id,
-                &record,
+                &payload,
             )?;
             state
                 .connection_last_persisted_at_ms
@@ -291,8 +431,12 @@ impl EventConnectionRegistry {
         let current = self
             .get(owner_user_id, connection_id)?
             .ok_or_else(|| registry_error("connection was not found".to_string()))?;
+        let event_owner_id = self
+            .connection_event_owner_id(owner_user_id, connection_id)?
+            .ok_or_else(|| registry_error("connection was not found".to_string()))?;
         self.upsert(
             owner_user_id,
+            &event_owner_id,
             chariox_event_protocol::AegsConnectionSummary {
                 generator_id: current.generator_id,
                 connection_id: current.connection_id,
@@ -361,6 +505,7 @@ impl EventConnectionRegistry {
     pub(crate) fn start_authorization(
         &self,
         owner_user_id: &str,
+        event_owner_id: &str,
         flow: chariox_event_protocol::AegsAuthorizationFlow,
     ) -> Result<EventConnectionAuthorization, DaemonError> {
         if flow
@@ -384,6 +529,7 @@ impl EventConnectionRegistry {
         };
         let record = StoredAuthorization {
             owner_user_id: owner_user_id.to_string(),
+            event_owner_id: event_owner_id.to_string(),
             authorization,
         };
         self.append(
@@ -566,6 +712,7 @@ impl EventConnectionRegistry {
         }
         let record = StoredAuthorization {
             owner_user_id: owner_user_id.to_string(),
+            event_owner_id: current.event_owner_id.clone(),
             authorization,
         };
         self.append(
@@ -576,6 +723,71 @@ impl EventConnectionRegistry {
         let authorization = record.authorization.clone();
         state.authorizations.insert(key, record);
         Ok(authorization)
+    }
+
+    /// The transfers that rely on a record an import wrote, as last committed.
+    pub(crate) fn import_claims(
+        &self,
+        owner_user_id: &str,
+        connection_id: &str,
+    ) -> Result<Option<crate::durable_state::EventConnectionImportClaims>, DaemonError> {
+        self.durable_state
+            .event_connection_import_claims(owner_user_id, connection_id)
+    }
+
+    /// Records that another run of a transfer relies on a record an import
+    /// wrote. Nothing is recorded for a record no import wrote.
+    pub(crate) fn join_import(
+        &self,
+        owner_user_id: &str,
+        connection_id: &str,
+        transfer_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.durable_state.append_event_connection_import_change(
+            crate::durable_state::EventConnectionImportChange::Joined {
+                owner_user_id: owner_user_id.to_string(),
+                connection_id: connection_id.to_string(),
+                transfer_id: transfer_id.to_string(),
+            },
+        )
+    }
+
+    /// Gives up one transfer's claim on a record and leaves the record.
+    pub(crate) fn release_import(
+        &self,
+        owner_user_id: &str,
+        connection_id: &str,
+        transfer_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.durable_state.append_event_connection_import_change(
+            crate::durable_state::EventConnectionImportChange::Released {
+                owner_user_id: owner_user_id.to_string(),
+                connection_id: connection_id.to_string(),
+                transfer_id: transfer_id.to_string(),
+            },
+        )
+    }
+
+    /// A completed transfer hands the records it created to their owner.
+    pub(crate) fn complete_import(
+        &self,
+        owner_user_id: &str,
+        transfer_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.durable_state.append_event_connection_import_change(
+            crate::durable_state::EventConnectionImportChange::Completed {
+                owner_user_id: owner_user_id.to_string(),
+                transfer_id: transfer_id.to_string(),
+            },
+        )
+    }
+
+    /// An import holds this lock from its check to its write, so two transfers
+    /// cannot both create one record.
+    pub(crate) fn lock_import_ledger(&self) -> Result<MutexGuard<'_, ImportLedger>, DaemonError> {
+        self.import_ledger
+            .lock()
+            .map_err(|error| registry_error(error.to_string()))
     }
 
     fn lock_state(&self) -> Result<MutexGuard<'_, RegistryState>, DaemonError> {
@@ -610,6 +822,11 @@ impl EventConnectionRegistry {
             match event.kind.as_str() {
                 CONNECTION_UPSERTED => {
                     let mut record: StoredConnection = decode(event.payload)?;
+                    // A record from before connections carried their owner cannot
+                    // reach its connection; the user connects again.
+                    if record.event_owner_id.is_empty() {
+                        continue;
+                    }
                     if record.connection.lifecycle_state
                         == crate::local::EventConnectionLifecycleState::NotInstalled
                     {
@@ -633,6 +850,9 @@ impl EventConnectionRegistry {
                 }
                 AUTHORIZATION_UPSERTED => {
                     let record: StoredAuthorization = decode(event.payload)?;
+                    if record.event_owner_id.is_empty() {
+                        continue;
+                    }
                     state.authorizations.insert(
                         (
                             record.owner_user_id.clone(),
@@ -826,6 +1046,7 @@ mod tests {
         let missing_connection_id = registry
             .start_authorization(
                 "user-a",
+                "event-owner-a",
                 chariox_event_protocol::AegsAuthorizationFlow {
                     generator_id: "dev.chariox.github".to_string(),
                     status: "user_action_required".to_string(),
@@ -842,6 +1063,7 @@ mod tests {
         let expired = registry
             .start_authorization(
                 "user-a",
+                "event-owner-a",
                 chariox_event_protocol::AegsAuthorizationFlow {
                     generator_id: "dev.chariox.github".to_string(),
                     status: "user_action_required".to_string(),
@@ -860,6 +1082,7 @@ mod tests {
         registry
             .upsert(
                 "user-a",
+                "event-owner-a",
                 chariox_event_protocol::AegsConnectionSummary {
                     generator_id: "dev.chariox.github".to_string(),
                     connection_id: "github-connection-1".to_string(),
@@ -884,6 +1107,7 @@ mod tests {
         let authorization = restored
             .start_authorization(
                 "user-a",
+                "event-owner-a",
                 chariox_event_protocol::AegsAuthorizationFlow {
                     generator_id: "dev.chariox.github".to_string(),
                     status: "pending".to_string(),
@@ -925,6 +1149,7 @@ mod tests {
         let authorization = registry
             .start_authorization(
                 "user-a",
+                "event-owner-a",
                 chariox_event_protocol::AegsAuthorizationFlow {
                     generator_id: "dev.chariox.github".to_string(),
                     status: "connected".to_string(),
@@ -943,7 +1168,9 @@ mod tests {
             expires_at_ms: None,
             updated_at_ms: 42,
         };
-        registry.upsert("user-a", summary.clone()).unwrap();
+        registry
+            .upsert("user-a", "event-owner-a", summary.clone())
+            .unwrap();
         let inspection = chariox_event_protocol::AegsConnectionInspection {
             generator_id: "dev.chariox.github".to_string(),
             connection_id: "github-connection-1".to_string(),
@@ -971,7 +1198,9 @@ mod tests {
             registry
                 .update_authorization("user-a", authorization.clone())
                 .unwrap();
-            registry.upsert("user-a", summary.clone()).unwrap();
+            registry
+                .upsert("user-a", "event-owner-a", summary.clone())
+                .unwrap();
             registry
                 .apply_inspection(
                     "user-a",
@@ -1010,6 +1239,7 @@ mod tests {
         registry
             .upsert(
                 "user-a",
+                "event-owner-a",
                 chariox_event_protocol::AegsConnectionSummary {
                     generator_id: "dev.chariox.github".to_string(),
                     connection_id: "expired-connection".to_string(),
@@ -1023,6 +1253,7 @@ mod tests {
         let authorization = registry
             .start_authorization(
                 "user-a",
+                "event-owner-a",
                 chariox_event_protocol::AegsAuthorizationFlow {
                     generator_id: "dev.chariox.github".to_string(),
                     status: "user_action_required".to_string(),
@@ -1054,6 +1285,7 @@ mod tests {
         registry
             .upsert(
                 "user-a",
+                "event-owner-a",
                 chariox_event_protocol::AegsConnectionSummary {
                     generator_id: "dev.chariox.github".to_string(),
                     connection_id: "orphaned-connection".to_string(),
@@ -1116,6 +1348,49 @@ mod tests {
             .list("user-a", None)
             .expect("indexed restore should ignore unrelated events")
             .is_empty());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_record_from_before_connections_carried_their_owner_is_dropped_at_restore() {
+        let root = std::env::temp_dir().join(opaque_id("chariox-event-connection-owner-test"));
+        let path = root.join("state.sqlite3");
+        drop(DurableKernelStateStore::open(path.clone()).expect("store should initialize"));
+        let connection = rusqlite::Connection::open(&path).expect("database should open");
+        let old_record = json!({
+            "owner_user_id": "user-a",
+            "connection": {
+                "generator_id": "dev.chariox.github",
+                "connection_id": "old-connection",
+                "status": "ready",
+                "lifecycle_state": "connected",
+                "scopes": [],
+                "resources": [],
+                "attached_trigger_count": 0,
+                "metadata": {},
+                "created_at_ms": 1,
+                "updated_at_ms": 1
+            }
+        });
+        connection
+            .execute(
+                "INSERT INTO durable_state_events (
+                    event_id, kind, subject_id, timestamp_ms, payload_json
+                 ) VALUES ('old-record', ?1, 'old-connection', 1, ?2)",
+                rusqlite::params![CONNECTION_UPSERTED, old_record.to_string()],
+            )
+            .expect("old record should insert");
+        drop(connection);
+
+        let registry = EventConnectionRegistry::new(
+            DurableKernelStateStore::open(path.clone()).expect("store should reopen"),
+        );
+        assert!(registry.list("user-a", None).unwrap().is_empty());
+        assert!(registry
+            .connection_event_owner_id("user-a", "old-connection")
+            .unwrap()
+            .is_none());
 
         let _ = std::fs::remove_dir_all(root);
     }

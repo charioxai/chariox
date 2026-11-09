@@ -30,6 +30,7 @@ async fn remote_profile_preparation_is_visible_to_every_home_attachment() {
                     relay_url: None,
                     relay_token: None,
                     relay_peer_protocol_version: None,
+                    worker_worktree_id: None,
                 },
             )
             .unwrap();

@@ -263,6 +263,7 @@ fn secret_responses() -> Vec<LocalDaemonResponse> {
         relay_url: None,
         relay_token: Some(CANARY.into()),
         relay_peer_protocol_version: None,
+        worker_worktree_id: None,
     }));
     let mut http = crate::mcp::CharioxMcpServerConfig::streamable_http(
         "response-header",

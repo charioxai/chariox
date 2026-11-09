@@ -142,8 +142,7 @@ fn room_creator_lineage_protocol_450_snapshot() {
         None,
         crate::agent::GridPosition::new(0, 0, 1, 1),
     );
-    agent.record_spawn_creator(Some("parent".into()));
-    agent.set_controlled_by_metaagent_id(Some("unrelated-controller".into()));
+    agent.set_parent_agent(Some(crate::agent::AgentRef::local("parent")));
     let definition = WorkflowDefinition::new_controlled_by_metaagent("definition", None, "peer");
     let run = crate::session::WorkflowRun::new(
         "run",
@@ -174,25 +173,22 @@ fn room_creator_lineage_protocol_450_snapshot() {
         serde_json::to_value(&run).unwrap(),
         serde_json::to_value(&queued).unwrap(),
     ];
-    let snapshot = serde_json::json!({"agent": encoded[0]["spawned_by_agent_id"], "workflow": encoded[1]["created_by_agent_id"], "run": encoded[2]["created_by_agent_id"], "queue_item": encoded[3]["created_by_agent_id"]});
+    let snapshot = serde_json::json!({"agent": encoded[0]["parent_agent_id"], "workflow": encoded[1]["created_by_agent_id"], "run": encoded[2]["created_by_agent_id"], "queue_item": encoded[3]["created_by_agent_id"]});
     assert_eq!(
         snapshot,
-        serde_json::json!({"agent":"parent","workflow":"peer","run":"parent","queue_item":"parent"})
+        serde_json::json!({"agent":{"agent_id":"parent"},"workflow":"peer","run":"parent","queue_item":"parent"})
     );
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "8ff2bd21b211626c4c599da9d01565f6ea8caa69c6c95d8b7e6d81f8d60d0de5"
+        "a8c897e7d8868e1e7c82a818feda25ffe687d7a8e75931370e0d2ef93d565054"
     );
     let mut legacy = encoded[0].clone();
-    legacy
-        .as_object_mut()
-        .unwrap()
-        .remove("spawned_by_agent_id");
+    legacy.as_object_mut().unwrap().remove("parent_agent_id");
     let restored: crate::agent::AgentInstance = serde_json::from_value(legacy).unwrap();
-    assert_eq!(restored.spawned_by_agent_id(), None);
+    assert_eq!(restored.parent_agent_id(), None);
     for (value, key) in encoded[1..].iter().zip(["created_by_agent_id"; 3]) {
         let mut legacy = value.clone();
         legacy.as_object_mut().unwrap().remove(key);
@@ -219,6 +215,157 @@ fn room_creator_lineage_protocol_450_snapshot() {
     }
     assert!(agent
         .materialized_for_workflow_runtime("copy", "copy-ref", "room", "worktree")
-        .spawned_by_agent_id()
+        .parent_agent_id()
         .is_none());
+}
+
+/// Protocol 1000: the parent edge, the spawn key and the user-only SetAgentParent.
+#[test]
+fn the_parent_edge_and_set_agent_parent_have_their_shapes() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let request =
+        crate::local::LocalDaemonRequest::SetAgentParent(crate::local::SetAgentParentRequest {
+            session_id: "room".into(),
+            agent_id: "child".into(),
+            parent_agent_id: Some("parent".into()),
+        });
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::json!({"SetAgentParent":{"session_id":"room","agent_id":"child","parent_agent_id":"parent"}})
+    );
+    let none: crate::local::LocalDaemonRequest = serde_json::from_value(
+        serde_json::json!({"SetAgentParent":{"session_id":"room","agent_id":"child","parent_agent_id":null}}),
+    )
+    .unwrap();
+    assert!(matches!(
+        none,
+        crate::local::LocalDaemonRequest::SetAgentParent(r) if r.parent_agent_id.is_none()
+    ));
+    assert!(serde_json::from_value::<crate::local::LocalDaemonRequest>(
+        serde_json::json!({"SetAgentParent":{"session_id":"room","agent_id":"child","parent":"x"}})
+    )
+    .is_err());
+    let mut agent = crate::agent::AgentInstance::new(
+        "child",
+        "ref",
+        "room",
+        None,
+        "codex",
+        None,
+        None,
+        None,
+        crate::agent::GridPosition::new(0, 0, 1, 1),
+    );
+    let root = serde_json::to_value(&agent).unwrap();
+    assert!(root.get("parent_agent_id").is_none() && root.get("spawn_key").is_none());
+    agent.set_parent_agent(Some(crate::agent::AgentRef::local("parent")));
+    agent.set_spawn_key(Some("spawn-1".into()));
+    let child = serde_json::to_value(&agent).unwrap();
+    assert_eq!(
+        child["parent_agent_id"],
+        serde_json::json!({"agent_id":"parent"})
+    );
+    assert_eq!(child["spawn_key"], "spawn-1");
+    let restored: crate::agent::AgentInstance = serde_json::from_value(child).unwrap();
+    assert_eq!(
+        (restored.parent_agent_id(), restored.spawn_key()),
+        (Some("parent"), Some("spawn-1"))
+    );
+}
+
+/// Protocol 1000: the sub-agent tree read and its change event.
+#[test]
+fn the_agent_tree_read_and_change_event_have_their_shapes() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let request: crate::local::LocalDaemonRequest = serde_json::from_value(
+        serde_json::json!({"ListDescendants":{"session_id":"room","agent_id":"root"}}),
+    )
+    .unwrap();
+    assert!(matches!(
+        request,
+        crate::local::LocalDaemonRequest::ListDescendants(r) if r.agent_id == "root"
+    ));
+    let tree = crate::local::AgentTree {
+        root: "root".into(),
+        rev: 7,
+        totals: crate::local::AgentTreeTotals {
+            live: 1,
+            running: 0,
+            needs_user: 1,
+        },
+        nodes: vec![crate::local::AgentTreeNode {
+            agent_id: "child".into(),
+            parent_agent_id: Some("root".into()),
+            kernel_id: None,
+            alias: Some("worker".into()),
+            provider: "codex".into(),
+            model: None,
+            depth: 1,
+            state: crate::local::AgentTreeState::Waiting,
+            outcome: None,
+            needs_user: true,
+            deadline_ms: None,
+            created_at_ms: 5,
+        }],
+    };
+    assert_eq!(
+        serde_json::to_value(crate::local::LocalDaemonResponse::AgentTree { tree }).unwrap(),
+        serde_json::json!({"AgentTree":{"tree":{"root":"root","rev":7,
+            "totals":{"live":1,"running":0,"needs_user":1},
+            "nodes":[{"agent_id":"child","parent_agent_id":"root","kernel_id":null,
+                "alias":"worker","provider":"codex","model":null,"depth":1,
+                "state":"waiting","outcome":null,"needs_user":true,"deadline_ms":null,"created_at_ms":5}]}}})
+    );
+    assert_eq!(
+        serde_json::to_value(crate::local::OutsideEventValue::AgentTree {
+            root: "root".into(),
+            rev: 9
+        })
+        .unwrap(),
+        serde_json::json!({"type":"agent_tree","value":{"root":"root","rev":9}})
+    );
+}
+
+/// Protocol 1000: a sub-agent's decision is one card; a parent may answer it and the user's copy names the panel.
+#[test]
+fn a_sub_agent_decision_has_its_shapes() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        serde_json::to_value(crate::local::EventResolutionVia::ParentAgent).unwrap(),
+        serde_json::json!("parent_agent")
+    );
+    assert_eq!(
+        serde_json::to_value(crate::local::OutsideEventValue::Interaction {
+            state: crate::local::EventInteractionState::Pending,
+            pointer: None,
+            question: None,
+            resolution: None,
+            shown_in: Some("room-agent".into()),
+        })
+        .unwrap(),
+        serde_json::json!({"type": "interaction", "value": {"state": "pending", "shown_in": "room-agent"}})
+    );
+    assert_eq!(
+        serde_json::to_value(crate::local::OutsideEventValue::Interaction {
+            state: crate::local::EventInteractionState::Resolved,
+            pointer: None,
+            question: None,
+            resolution: Some(crate::local::EventResolution {
+                via: crate::local::EventResolutionVia::ParentAgent,
+                choice_id: Some("allow".into()),
+            }),
+            shown_in: None,
+        })
+        .unwrap(),
+        serde_json::json!({"type": "interaction", "value": {"state": "resolved", "resolution": {"via": "parent_agent", "choice_id": "allow"}}})
+    );
 }

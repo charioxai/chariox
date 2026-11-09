@@ -60,7 +60,6 @@ impl UserDomainRefusalReason {
                 Some(Self::StaleEpoch)
             }
             "MD-3: observed document required"
-            | "MD-3: input requires document_id from the observed tab/snapshot/screenshot"
             | "MD-N1: selection unavailable; select again"
             | "MD-N1: selection already used with a different comment" => {
                 Some(Self::StaleReference)

@@ -287,11 +287,28 @@ async fn legacy_existing_task_catalog_reload_keeps_workflow_context() {
         Some((fixture.workflow_run_id.clone(), fixture.node_run_id.clone())),
         "catalog reload must retain the existing invocation"
     );
+    let capture = crate::logging::capture::start();
     fixture
         .runtime
         .dispatch_task_continuation(&task, prompt.source_attachment_id(), "Continue".into())
         .await
         .unwrap();
+    let decision = capture
+        .records()
+        .into_iter()
+        .find(|record| {
+            record.contains("task continuation queued") && record.contains(&task.task_id)
+        })
+        .expect("the continuation decision is logged");
+    // The fixture's turn is still running with another continuation waiting: the facts a stall would need.
+    for fact in [
+        r#""queued_prompts":2"#,
+        r#""turn_active":true"#,
+        r#""reload_pending":false"#,
+        r#""mcp_continuation_pending":true"#,
+    ] {
+        assert!(decision.contains(fact), "{fact} missing in {decision}");
+    }
     let mut projected = owned
         .session_store
         .get_session(&fixture.session_id)
@@ -602,6 +619,7 @@ async fn workflow_wait_cancellation(cancel_creator: bool) {
             run: None,
             now: now + 60_001,
             work: None,
+            through: 0,
         })
         .unwrap();
     let Outcome::Task(promoted) = owned
@@ -2167,6 +2185,7 @@ async fn revoked_remote_workflow_interrupt(discovery: bool, pause: bool) {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();
@@ -2948,6 +2967,7 @@ async fn a01_cancelled_workflow_run_releases_its_queued_inbox_delivery() {
             run: None,
             now: crate::session::unix_epoch_ms(),
             work: None,
+            through: 0,
         })
         .unwrap();
     let (cancelled, _) = fixture
@@ -3240,6 +3260,7 @@ async fn typed_remote_workflow_failure_without_output_settles_home_ownership() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();

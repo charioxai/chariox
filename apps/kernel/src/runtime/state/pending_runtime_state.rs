@@ -85,7 +85,14 @@ pub(super) struct PendingInteraction {
     /// Protocol 403: the popup projected to the owner's terminals, for a
     /// decision that needs the passkey.
     pub(super) passkey_prompt: Option<Arc<crate::local::PasskeyPrompt>>,
+    /// Who may answer now: kernel state for routing and audit, never projected.
+    pub(super) holder: super::DecisionHolder,
+    /// How many times the holder changed: a holder that gets the decision back is told again.
+    pub(super) holder_tenure: u32,
     pub(super) responder: Arc<StdMutex<Option<oneshot::Sender<PendingInteractionResolution>>>>,
+    /// A Vault passphrase was answered and is being checked: the card stays open
+    /// without a responder until its waiter shows the refusal or closes it.
+    pub(super) checking_answer: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Internal ownership of the originating prompt/run, including forwarded worker runs.
@@ -108,6 +115,34 @@ pub(super) struct PendingWorkerInteractionLifetime {
 }
 
 impl PendingInteraction {
+    /// Moves the decision to `holder`, which starts a new tenure.
+    pub(super) fn hand_to(&mut self, holder: super::DecisionHolder) {
+        self.holder = holder;
+        self.holder_tenure += 1;
+    }
+
+    /// A user-held decision with no owner, for tests that classify it.
+    #[cfg(test)]
+    pub(super) fn for_test() -> Self {
+        Self {
+            goal_approval: None,
+            async_task_id: None,
+            kernel_wide_interaction: None,
+            session_id: String::new(),
+            user_domain_interaction: None,
+            session_store_identity: Weak::new(),
+            agent_lifetime: None,
+            kernel_operation_owner: None,
+            terminal_credential_owner: None,
+            kernel_operation_deadline: None,
+            passkey_prompt: None,
+            holder: super::DecisionHolder::User,
+            holder_tenure: 0,
+            responder: Arc::new(StdMutex::new(None)),
+            checking_answer: Default::default(),
+        }
+    }
+
     /// Whether only the owner's terminal may answer `interaction`, for every choice
     /// including refusal. The grant policy and the outside event both read this one
     /// rule, so an event never offers a question the kernel then refuses.
@@ -141,7 +176,11 @@ impl PendingInteraction {
     /// The component that asked is gone or the interaction was answered: no
     /// receiver waits for a resolution any more.
     pub(super) fn nobody_waits(&self) -> bool {
-        if self.async_task_id.is_some() {
+        if self.async_task_id.is_some()
+            || self
+                .checking_answer
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
             return false;
         }
         self.responder.lock().map_or(true, |responder| {

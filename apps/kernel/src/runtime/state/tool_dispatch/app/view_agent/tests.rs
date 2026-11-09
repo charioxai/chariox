@@ -127,14 +127,21 @@ impl Rig {
             .collect()
     }
 
-    fn open_user_view(&self, queue_generation: Option<u64>) -> String {
-        let generation = self
-            .runtime
+    fn installation_generation(&self) -> u64 {
+        self.runtime
             .owned
             .durable_state_store
             .get_app_installation("alice", APP)
             .unwrap()
-            .generation;
+            .generation
+    }
+
+    fn open_user_view(&self, queue_generation: Option<u64>) -> String {
+        self.open_user_view_built_for(self.installation_generation(), queue_generation)
+    }
+
+    /// A view whose page was built for `generation`, as one opened before an update.
+    fn open_user_view_built_for(&self, generation: u64, queue_generation: Option<u64>) -> String {
         let binding = AppViewBinding {
             owner: "alice".into(),
             installation: APP.into(),
@@ -189,7 +196,9 @@ impl Rig {
             .unwrap();
     }
 
-    fn start_signed_v2_fixture_worker(&self) {
+    /// Starts the worker and waits until it can be leased: the start returns
+    /// while the worker still comes up on its own thread.
+    async fn start_signed_v2_fixture_worker(&self) {
         self.runtime
             .app_control()
             .lifecycle()
@@ -201,6 +210,18 @@ impl Rig {
             .lifecycle()
             .start_active_blocking("alice", APP, tokio::runtime::Handle::current())
             .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while self
+                .runtime
+                .app_control()
+                .active_app_lease("alice", APP)
+                .is_none()
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the fixture worker became leasable");
     }
 }
 
@@ -230,7 +251,7 @@ async fn native_user_app_view_uses_its_owner_bound_target_and_kernel_browser_hos
     rig.grant().await;
     rig.stage_signed_v2_fixture();
     let view_id = rig.open_user_view(None);
-    rig.start_signed_v2_fixture_worker();
+    rig.start_signed_v2_fixture_worker().await;
 
     let controller = rig.root.join("native-app-view-controller.sh");
     let observed = rig.root.join("native-app-view-request.json");
@@ -328,13 +349,90 @@ async fn native_user_app_view_requires_the_app_grant_and_current_queue_generatio
     );
 }
 
+/// MP-08/MP-11 S1-11: an uninstall forgets the Room-side queue binding of an open
+/// user view; the reinstall reloads the same Tab onto the new generation, and the
+/// agent must be able to use that view again without opening it a second time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_user_view_reloaded_after_uninstall_and_reinstall_is_usable_by_the_agent_again() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut rig = rig_for_catalog(true);
+    rig.grant().await;
+    rig.stage_signed_v2_fixture();
+    let generation = rig.installation_generation();
+    let view_id = rig.open_user_view_built_for(generation - 1, None);
+    rig.start_signed_v2_fixture_worker().await;
+    let controller = rig.root.join("reinstall-view-controller.sh");
+    std::fs::write(
+        &controller,
+        r#"#!/bin/sh
+while IFS= read -r request; do
+  id=${request#*:}; id=${id%%,*}
+  case "$request" in
+    *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+    *'"method":"browser.app.agent"'*) printf '{"id":%s,"ok":true,"result":{"ok":true,"value":{"native":true}}}\n' "$id" ;;
+    *) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&controller, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = rig.runtime.kernel_browser_host_for_test();
+    host.install_fixture_backend("alice", &controller, &rig.root);
+    host.protected_request(
+        "alice",
+        None,
+        "host.browser",
+        json!({"op":"start"}),
+        json!({"values":[],"targets":[],"unknown":false}),
+    )
+    .unwrap();
+
+    // Uninstall: the Room registry forgets the installation's views; the open Tab stays.
+    rig.runtime
+        .app_control()
+        .views()
+        .forget_installation("alice", APP);
+    // Reinstall: the poll reloads the retained view onto the new generation.
+    let listed = rig.runtime.app_control().user_views().list("alice");
+    let view = listed.iter().find(|v| v.view_id == view_id).unwrap();
+    rig.runtime
+        .reload_updated_user_app_view("alice", view)
+        .await;
+    let reloaded = rig
+        .runtime
+        .app_control()
+        .user_views()
+        .get("alice", &view_id);
+    assert_eq!(
+        reloaded.unwrap().0.generation,
+        generation,
+        "the Tab moved to the new generation"
+    );
+
+    let context = rig
+        .runtime
+        .view_context(&rig.agent, "host-tab-native-test")
+        .await
+        .expect("the agent reaches the reloaded view");
+    assert_eq!(context.binding.generation, generation);
+    assert_eq!(
+        rig.runtime
+            .view_call(&context, ViewAgentCallKind::State, None, None)
+            .await
+            .unwrap(),
+        json!({"native":true})
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_user_app_view_refuses_actions_absent_from_the_signed_declarations() {
     let mut rig = rig_for_catalog(true);
     rig.grant().await;
     rig.stage_signed_v2_fixture();
     rig.open_user_view(None);
-    rig.start_signed_v2_fixture_worker();
+    rig.start_signed_v2_fixture_worker().await;
     let context = rig
         .runtime
         .view_context(&rig.agent, "host-tab-native-test")
@@ -549,6 +647,64 @@ async fn an_approval_action_asks_the_user_and_a_denial_never_reaches_the_page() 
             .unwrap();
     });
     assert_eq!(outcome.unwrap_err().code, "approval_denied");
+}
+
+/// An App view the agent holds but has not claimed cannot run the action, so
+/// the owner is not asked to approve it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unclaimed_user_view_is_refused_before_any_approval_card() {
+    let mut rig = rig_for_catalog(true);
+    rig.grant().await;
+    rig.stage_signed_v2_fixture();
+    let view_id = rig.open_user_view(None);
+    rig.start_signed_v2_fixture_worker().await;
+    let host = rig.runtime.kernel_browser_host_for_test();
+    host.set_focus("alice", Some(rig.agent.id()));
+    host.load("alice", rig.agent.id()).unwrap();
+    let mut context = rig
+        .runtime
+        .view_context(&rig.agent, "host-tab-native-test")
+        .await
+        .unwrap();
+    context.declared = declared();
+
+    let invoke = rig
+        .runtime
+        .invoke_declared(rig.run.id(), &rig.agent, &context, "wipe", json!({}));
+    match tokio::time::timeout(std::time::Duration::from_secs(3), invoke).await {
+        Ok(outcome) => {
+            let refused = outcome.unwrap_err();
+            assert_eq!(refused.code, "AGENT_APP_NOT_GRANTED");
+            assert!(refused.message.contains("claim"), "{}", refused.message);
+            assert!(pending_approval_none(&rig).await);
+        }
+        Err(_) => panic!(
+            "the owner was asked to approve an action on an unclaimed view (card raised: {})",
+            !pending_approval_none(&rig).await
+        ),
+    }
+
+    // Claiming the view, as a click on its Tab does, lets the one card through.
+    let admission = host.admit("alice", rig.agent.id()).unwrap();
+    host.claim_resource(
+        Some(&admission),
+        crate::local::UserDomainResource::AppView { view_id },
+        false,
+    )
+    .unwrap();
+    let invoke = rig
+        .runtime
+        .invoke_declared(rig.run.id(), &rig.agent, &context, "wipe", json!({}));
+    let (outcome, ()) = tokio::join!(invoke, async {
+        let asked = pending_approval(&rig)
+            .await
+            .expect("the claimed view asks the user");
+        rig.runtime
+            .resolve_runtime_interaction(&rig.session, asked.id(), "allow_once", None)
+            .await
+            .unwrap();
+    });
+    assert_ne!(outcome.unwrap_err().code, "AGENT_APP_NOT_GRANTED");
 }
 
 #[tokio::test]

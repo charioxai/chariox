@@ -1,0 +1,39 @@
+{
+  "local_protocol": 1000,
+  "peer_protocol": 439,
+  "request": {
+    "StartManagedContextTransfer": {
+      "interactive": true,
+      "ownerManaged": {
+        "target": {
+          "relayRealmId": "realm",
+          "machineId": "machine",
+          "kernelId": "kernel",
+          "relayPublicKey": "public",
+          "keyThumbprint": "thumbprint"
+        },
+        "contextSelection": {
+          "kernelContext": "empty",
+          "developmentSetup": { "kind": "empty" },
+          "eventConnections": {
+            "kind": "selected",
+            "connectionIds": ["connection-a", "connection-b"]
+          }
+        }
+      }
+    }
+  },
+  "plan": {
+    "contextId": "context",
+    "planDigest": "digest",
+    "destination": { "kind": "owner_managed_machine", "machineId": "machine", "kernelId": "kernel" },
+    "kernelContext": "empty",
+    "development": { "kind": "empty" },
+    "providerAccounts": { "kind": "none" },
+    "gitCredentials": { "kind": "none" },
+    "eventConnections": {
+      "kind": "selected",
+      "connectionIds": ["connection-a", "connection-b"]
+    }
+  }
+}

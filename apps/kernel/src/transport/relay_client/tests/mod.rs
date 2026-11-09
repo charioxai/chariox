@@ -18,3 +18,4 @@ mod token_rollover;
 mod worker_steer_receipt_restart;
 
 mod lease_context_refresh;
+mod lease_dir_after_restart;

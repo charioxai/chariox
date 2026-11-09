@@ -1708,7 +1708,7 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
             .unwrap()
             .expect("the restarted worker holds the continuation");
         Some((
-            active.prompt().contains("MP-10 A10 correlated result"),
+            active.prompt().starts_with("Inbox: "),
             active.hidden_system_context().to_string(),
         ))
     } else {

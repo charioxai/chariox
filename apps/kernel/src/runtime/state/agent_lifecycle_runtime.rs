@@ -732,6 +732,19 @@ impl KernelRuntimeState {
         let Some((task, correction)) = settlement else {
             return Ok(());
         };
+        match task.state {
+            // The agent's turn ended (a blocked task waits for its owner, not for a decision to be
+            // answered): the decisions it held move up, whatever else it has open.
+            ExecutionState::Done | ExecutionState::Cancelled | ExecutionState::Blocked => {
+                self.move_decisions_up(&task.room_id, &task.agent_id)
+                    .await?;
+            }
+            ExecutionState::Waiting => {
+                self.move_seen_decisions_up(&task.room_id, &task.agent_id)
+                    .await?;
+            }
+            ExecutionState::Working => {}
+        }
         self.retract_stale_task_owner_interactions(&task.room_id)
             .await;
         let changed = self.owned.task_settlement_changed(&task);
@@ -803,6 +816,14 @@ impl KernelRuntimeState {
                     occurrence: format!("task-terminal-{}", task.task_id),
                     success: task.state == ExecutionState::Done,
                 })?;
+            // The parent hears of every ended task, whatever else the child still has open.
+            if let Err(error) = self
+                .announce_child_finished(&task, failure, public_answer.as_ref())
+                .await
+            {
+                tracing::warn!(%error, agent_id=%task.agent_id,
+                    "child_finished retained for the inbox sweep");
+            }
         }
         if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
             && !resources_unsettled
@@ -866,6 +887,43 @@ impl KernelRuntimeState {
         self.as_kernel()
             .dispatch_kernel_task_continuation(task, attachment, text, hidden_system_context)
             .await
+    }
+    /// A continuation that never starts leaves no other trace: this records what
+    /// it queues behind (the agent's prompt queue, a turn still running, a
+    /// deferred provider reload or MCP continuation) for diagnosing a stall.
+    fn log_task_continuation_decision(&self, task: &AgentTaskExecution) {
+        let (queued_prompts, turn_active) = self
+            .owned
+            .session_store
+            .get_session(&task.room_id)
+            .map_or((0, false), |session| {
+                (
+                    self.owned
+                        .prompt_state_owner
+                        .queued_prompt_count_for_agent(&session, &task.agent_id),
+                    self.owned
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&session, &task.agent_id)
+                        .is_some(),
+                )
+            });
+        let reload_pending = self
+            .owned
+            .pending_provider_reloads
+            .write()
+            .contains_key(&task.agent_id);
+        let mcp_continuation_pending = self
+            .owned
+            .pending_mcp_continuations
+            .write()
+            .contains_key(&task.agent_id);
+        crate::logging::info_with_fields(
+            "daemon.agent_lifecycle",
+            "task continuation queued",
+            serde_json::json!({"task_id": task.task_id, "agent_id": task.agent_id,
+                "queued_prompts": queued_prompts, "turn_active": turn_active,
+                "reload_pending": reload_pending, "mcp_continuation_pending": mcp_continuation_pending}),
+        );
     }
     async fn dispatch_kernel_task_continuation(
         &self,
@@ -950,6 +1008,7 @@ impl KernelRuntimeState {
         } else {
             prompt
         };
+        self.log_task_continuation_decision(task);
         let mut submission = self
             .submit_prepared_prompt_with_queue_policy(
                 crate::app::KernelPreparedPromptSubmission {
@@ -1056,6 +1115,19 @@ impl KernelRuntimeState {
                 let Some(source) = obligation.resource_id.as_ref() else {
                     continue;
                 };
+                // Deleting an agent that was never given work loses nothing.
+                if obligation.kind == "delegate"
+                    && obligation.completion_task_id.is_none()
+                    && self.owned.agent_store.get_agent(source).is_err()
+                {
+                    self.owned
+                        .durable_state_store
+                        .agent_lifecycle(Operation::ReleaseSpawn {
+                            room: task.room_id.clone(),
+                            source: source.clone(),
+                        })?;
+                    continue;
+                }
                 let outcome = match obligation.kind.as_str() {
                     "delegate" => {
                         let child_task = match &obligation.completion_task_id {
@@ -1262,7 +1334,7 @@ impl KernelRuntimeState {
                 if let Some(ended) = ledger::end_failed_turn(
                     &self.owned.durable_state_store,
                     &task,
-                    "No live provider turn or confirmed wake delivery; owner must reconcile and resume".into(),
+                    "Interrupted before it finished. Resume it to continue where it stopped, or cancel it.".into(),
                 )? {
                     blocked.push(ended);
                 }

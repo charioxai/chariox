@@ -11,8 +11,9 @@ impl KernelRuntimeOwnedState {
             &mut request,
         )?;
         let obligation = request
-            .spawned_by_agent_id
-            .as_deref()
+            .parent_agent_id
+            .as_ref()
+            .map(crate::agent::AgentRef::agent_id)
             .map(|id| self.register_room_dispatch_obligation(id, "delegate", None))
             .transpose()?
             .flatten();
@@ -70,8 +71,9 @@ impl KernelRuntimeOwnedState {
         let mut obligations = Vec::with_capacity(requests.len());
         for request in &requests {
             let registered = request
-                .spawned_by_agent_id
-                .as_deref()
+                .parent_agent_id
+                .as_ref()
+                .map(crate::agent::AgentRef::agent_id)
                 .map(|id| self.register_room_dispatch_obligation(id, "delegate", None))
                 .transpose()
                 .map(Option::flatten);

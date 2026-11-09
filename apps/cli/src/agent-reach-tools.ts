@@ -39,7 +39,7 @@ export const REACH_TOOLS: readonly Tool[] = [
       { name: "session_id", type: "string", required: true, description: "The room to follow." },
       { name: "agent_id", type: "string", description: "Follow only this agent of the room." },
     ],
-    without: SOCKET,
+    without: { ...SOCKET, "--source": "notification sources are followed by your user's own outside agent, never by a room agent" },
     description: "Follow a room, or one agent of it, in your event inbox; `events_wait` brings what happens there.",
   },
   {

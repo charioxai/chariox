@@ -134,6 +134,12 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
+        if let Err(error) = self
+            .state
+            .ensure_room_control(&request.session_id, &caller_user_id)
+        {
+            return (Err(error), None);
+        }
         let viewport = match self.state.room_environment_snapshot(&request.session_id) {
             Ok(environment) => Ok(environment.viewport),
             Err(crate::session::EnvironmentError::EnvironmentNotFound { .. }) => {
@@ -178,10 +184,17 @@ impl SessionRuntimeStore {
     pub(super) async fn stop_room_environment(
         &self,
         request: StopRoomEnvironmentRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
+        if let Err(error) = self
+            .state
+            .ensure_room_control(&request.session_id, &caller_user_id)
+        {
+            return (Err(error), None);
+        }
         let result = if self
             .state
             .browser_controller_enabled_for_room(&request.session_id)
@@ -201,10 +214,17 @@ impl SessionRuntimeStore {
     pub(super) async fn retry_room_environment(
         &self,
         request: RetryRoomEnvironmentRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
+        if let Err(error) = self
+            .state
+            .ensure_room_control(&request.session_id, &caller_user_id)
+        {
+            return (Err(error), None);
+        }
         let result = self
             .state
             .retry_room_environment(&request.session_id)
@@ -790,10 +810,17 @@ impl SessionRuntimeStore {
     pub(super) async fn detach_from_session(
         &self,
         request: DetachFromSessionRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
+        if let Err(error) = self
+            .ensure_attachment_owner(&request.attachment_id, &caller_user_id)
+            .await
+        {
+            return (Err(error), None);
+        }
         let result = match self.state.detach(&request.attachment_id).await {
             Ok(attachment) => self
                 .reconcile_room_environment_actors_if_started(attachment.session_id())
@@ -801,6 +828,29 @@ impl SessionRuntimeStore {
             Err(error) => Err(error),
         };
         self.with_session_projection_action_result(result).await
+    }
+
+    /// MP-08 / MP-11: an attachment is one member's client, so only who acts for that member
+    /// detaches it.
+    async fn ensure_attachment_owner(
+        &self,
+        attachment_id: &str,
+        caller_user_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session_id = self.state.attachment_session_id(attachment_id).await?;
+        let owner_user_id = self.state.attachment_owner_user_id(attachment_id).await?;
+        if self
+            .state
+            .acts_for_owner(&session_id, caller_user_id, &owner_user_id)
+        {
+            return Ok(());
+        }
+        Err(DaemonError::OwnershipAccessDenied {
+            user_id: caller_user_id.to_string(),
+            owner_user_id,
+            resource: format!("attachment `{attachment_id}`"),
+            operation: "detach from session",
+        })
     }
 
     pub(super) async fn focus_agent(
@@ -888,11 +938,15 @@ impl SessionRuntimeStore {
     pub(super) async fn update_session_config(
         &self,
         request: UpdateSessionConfigRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let session_id = request.session_id.clone();
+        if let Err(error) = self.state.ensure_room_control(&session_id, &caller_user_id) {
+            return (Err(error), None);
+        }
         let result = match self
             .state
             .update_session_config(
@@ -1036,43 +1090,68 @@ impl SessionRuntimeStore {
     pub(super) async fn alias_session(
         &self,
         request: AliasSessionRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = self
-            .state
-            .alias_session(&request.session_id, request.alias)
-            .await
-            .map(|session| LocalDaemonResponse::SessionAliased { session });
+        let result = async {
+            self.state
+                .ensure_room_control(&request.session_id, &caller_user_id)?;
+            self.state
+                .alias_session(&request.session_id, request.alias)
+                .await
+        }
+        .await
+        .map(|session| LocalDaemonResponse::SessionAliased { session });
         self.with_session_projection_action_result(result).await
     }
 
     pub(super) async fn end_session(
         &self,
         request: EndSessionRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = self
-            .state
-            .end_session(&request.session_id)
-            .await
-            .map(|session| LocalDaemonResponse::SessionEnded { session });
+        let result = async {
+            self.state
+                .ensure_room_control(&request.session_id, &caller_user_id)?;
+            self.state.end_session(&request.session_id).await
+        }
+        .await
+        .map(|session| LocalDaemonResponse::SessionEnded { session });
         self.with_session_projection_action_result(result).await
+    }
+
+    async fn delete_controlled_session(
+        &self,
+        request: DeleteSessionRequest,
+        caller_user_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let session_id = self
+            .state
+            .resolve_session_ref_id_for_delete(
+                &request.session_ref,
+                request.workspace_id.as_deref(),
+            )
+            .await?;
+        self.state
+            .ensure_room_control(&session_id, caller_user_id)?;
+        self.state.delete_session_id(&session_id).await
     }
 
     pub(super) async fn delete_session(
         &self,
         request: DeleteSessionRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let result = self
-            .state
-            .delete_session_ref(&request.session_ref, request.workspace_id.as_deref())
+            .delete_controlled_session(request, &caller_user_id)
             .await
             .map(|session| LocalDaemonResponse::SessionDeleted { session });
         self.with_session_projection_action_result(result).await

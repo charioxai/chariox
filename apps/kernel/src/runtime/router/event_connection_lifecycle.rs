@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 
 use futures_util::{stream, StreamExt};
@@ -7,16 +8,46 @@ use tokio::time::{Duration, MissedTickBehavior};
 
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
-use crate::runtime::event_catalog_control::execute_event_catalog_request_with_client;
+use crate::runtime::event_catalog_control::{
+    execute_event_catalog_request_with_client, load_imported_event_connection,
+    refresh_ready_event_connection,
+};
 
 use super::CommandRouter;
 
 const AUTHORIZATION_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(2);
 const AUTHORIZATION_RECONCILIATION_BATCH_SIZE: usize = 64;
 const AUTHORIZATION_RECONCILIATION_CONCURRENCY: usize = 8;
+/// A ready connection is asked about rarely: this only lets a copy notice a
+/// revocation or expiry that happened elsewhere.
+const READY_REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const READY_REFRESH_BATCH_SIZE: usize = 64;
 
 type ConnectionLaneKey = (String, String);
 type ConnectionLane = Weak<Mutex<()>>;
+
+/// Where the next ready refresh starts, so every ready connection is asked about in turn
+/// whatever the earlier answers were. In memory: a restarted kernel starts from the first.
+/// Shared by every clone of the router.
+#[derive(Debug, Default, Clone)]
+pub(super) struct ReadyRefreshCursor(Arc<AtomicUsize>);
+
+impl ReadyRefreshCursor {
+    /// All of `ready` (in its stable order) when it fits in one batch; otherwise the
+    /// `READY_REFRESH_BATCH_SIZE` rows after the previous batch, wrapping around.
+    fn next_batch<T>(&self, mut ready: Vec<T>) -> Vec<T> {
+        let len = ready.len();
+        if len <= READY_REFRESH_BATCH_SIZE {
+            return ready;
+        }
+        let start = self.0.load(Ordering::Relaxed) % len;
+        self.0
+            .store((start + READY_REFRESH_BATCH_SIZE) % len, Ordering::Relaxed);
+        ready.rotate_left(start);
+        ready.truncate(READY_REFRESH_BATCH_SIZE);
+        ready
+    }
+}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct EventConnectionReconciliationSummary {
@@ -93,6 +124,157 @@ impl CommandRouter {
             summary.failed += usize::from(outcome.failed);
         }
         Ok(summary)
+    }
+
+    /// Asks the event service about every connection this kernel holds as
+    /// ready, so a copy learns that another kernel or the user revoked it
+    /// without being queried. A failed question keeps the last known state.
+    pub(crate) async fn refresh_ready_event_connections(
+        &self,
+    ) -> EventConnectionReconciliationSummary {
+        let ready = match self
+            .runtime_state
+            .event_connection_registry()
+            .ready_connections()
+        {
+            Ok(ready) => ready,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.event_connection_reconciliation",
+                    "ready event connections could not be listed for refresh",
+                    serde_json::json!({"error": error.to_string()}),
+                );
+                return EventConnectionReconciliationSummary::default();
+            }
+        };
+        let ready = self.ready_refresh_cursor.next_batch(ready);
+        let mut summary = EventConnectionReconciliationSummary {
+            attempted: ready.len(),
+            ..Default::default()
+        };
+        let outcomes = stream::iter(ready.into_iter().map(
+            |(caller_user_id, connection)| async move {
+                let _connection_guard = self
+                    .event_connection_lanes
+                    .lock(&caller_user_id, &connection.connection_id)
+                    .await;
+                let result = refresh_ready_event_connection(
+                    &self.runtime_state,
+                    &self.config_projection,
+                    &self.aegs_management_http_client,
+                    &caller_user_id,
+                    &connection,
+                )
+                .await;
+                if let Err(error) = &result {
+                    crate::logging::warn_with_fields(
+                        "daemon.event_connection_reconciliation",
+                        "ready event connection refresh failed",
+                        serde_json::json!({
+                            "generator_id": connection.generator_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+                result
+            },
+        ))
+        .buffer_unordered(AUTHORIZATION_RECONCILIATION_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+        for outcome in outcomes {
+            match outcome {
+                Ok(left_ready) => {
+                    summary.observed += 1;
+                    summary.completed += usize::from(left_ready);
+                }
+                Err(_) => summary.failed += 1,
+            }
+        }
+        summary
+    }
+
+    /// Fills in connections a transfer just created from the event service,
+    /// so the copy shows the source's real state without waiting for the next
+    /// refresh. A failed question keeps what the import wrote.
+    pub(crate) async fn load_imported_event_connections(
+        &self,
+        owner_user_id: &str,
+        connection_ids: &[String],
+    ) {
+        for connection_id in connection_ids {
+            let _connection_guard = self
+                .event_connection_lanes
+                .lock(owner_user_id, connection_id)
+                .await;
+            let connection = match self
+                .runtime_state
+                .event_connection_registry()
+                .get(owner_user_id, connection_id)
+            {
+                Ok(Some(connection)) => connection,
+                Ok(None) => continue,
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.event_connection_reconciliation",
+                        "imported event connection could not be read",
+                        serde_json::json!({"error": error.to_string()}),
+                    );
+                    continue;
+                }
+            };
+            if let Err(error) = load_imported_event_connection(
+                &self.runtime_state,
+                &self.config_projection,
+                &self.aegs_management_http_client,
+                owner_user_id,
+                &connection,
+            )
+            .await
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.event_connection_reconciliation",
+                    "imported event connection could not be loaded",
+                    serde_json::json!({
+                        "generator_id": connection.generator_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+    }
+
+    pub(crate) async fn run_ready_event_connection_refresher(
+        &self,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) {
+        let mut refresh = tokio::time::interval_at(
+            tokio::time::Instant::now() + READY_REFRESH_INTERVAL,
+            READY_REFRESH_INTERVAL,
+        );
+        refresh.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            if *shutdown.borrow() {
+                return;
+            }
+            tokio::select! {
+                _ = refresh.tick() => {
+                    tokio::select! {
+                        _ = self.refresh_ready_event_connections() => {}
+                        changed = shutdown.changed() => {
+                            if changed.is_err() || *shutdown.borrow() {
+                                return;
+                            }
+                        }
+                    }
+                }
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     async fn reconcile_event_connection_authorization(
@@ -205,6 +387,38 @@ impl CommandRouter {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReadyRefreshCursor, READY_REFRESH_BATCH_SIZE};
+
+    #[test]
+    fn fewer_ready_connections_than_a_batch_keep_their_order() {
+        let cursor = ReadyRefreshCursor::default();
+        for _ in 0..3 {
+            assert_eq!(cursor.next_batch(vec![1, 2, 3]), vec![1, 2, 3]);
+        }
+    }
+
+    #[test]
+    fn batches_go_round_every_ready_connection_and_drop_one_no_longer_ready() {
+        let cursor = ReadyRefreshCursor::default();
+        let ready = (0..130).collect::<Vec<_>>();
+        let mut asked = std::collections::BTreeSet::new();
+        for _ in 0..130_usize.div_ceil(READY_REFRESH_BATCH_SIZE) {
+            asked.extend(cursor.next_batch(ready.clone()));
+        }
+        assert_eq!(asked.len(), 130, "rows 65 and 130 are asked about too");
+        let without_7 = ready
+            .iter()
+            .copied()
+            .filter(|row| *row != 7)
+            .collect::<Vec<_>>();
+        for _ in 0..3 {
+            assert!(!cursor.next_batch(without_7.clone()).contains(&7));
         }
     }
 }

@@ -59,7 +59,11 @@ impl KernelRuntimeOwnedState {
                 let effective_config = session
                     .as_ref()
                     .map(|session| {
-                        crate::session::effective_agent_execution_config(session, Some(&agent))
+                        crate::session::effective_agent_execution_config_in_tree(
+                            session,
+                            &agent,
+                            &self.agent_store.get_session_agents(&request.session_id),
+                        )
                     })
                     .unwrap_or_default();
                 launch_request
@@ -259,8 +263,14 @@ impl KernelRuntimeOwnedState {
             .agent_id
             .as_deref()
             .and_then(|agent_id| self.agent_store.get_agent(agent_id).ok());
-        let effective_config =
-            crate::session::effective_agent_execution_config(&session, agent.as_ref());
+        let effective_config = match agent.as_ref() {
+            Some(agent) => crate::session::effective_agent_execution_config_in_tree(
+                &session,
+                agent,
+                &self.agent_store.get_session_agents(session.id()),
+            ),
+            None => crate::session::effective_agent_execution_config(&session, None),
+        };
         if request.execution_mode.is_none() {
             request = request.with_execution_mode(effective_config.mode);
         }
@@ -1935,6 +1945,139 @@ mod tests {
         );
 
         std::env::remove_var("CHARIOX_HOME");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn preflight_of_a_vault_login_asks_to_unlock_a_locked_vault_instead_of_failing() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-vault-login-preflight-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("test root should exist");
+        std::env::set_var("CHARIOX_HOME", &root);
+        let vault_path = root.join("credentials.vault");
+        let mut config = crate::config::DaemonConfig::for_tests()
+            .with_session_history_root(root.join("session-history"));
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.unlock_policy =
+            crate::config::CredentialVaultUnlockPolicy::Always;
+        config.user_config.credential_vault.path = vault_path.display().to_string();
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.history.operational.path =
+            Some(root.join("operational.db").display().to_string());
+        config.user_config.artifacts.operational.root =
+            Some(root.join("artifacts").display().to_string());
+        config.user_config.artifacts.operational.index_path =
+            Some(root.join("artifacts.db").display().to_string());
+
+        let mut app = crate::app::DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                root.to_string_lossy(),
+                root.to_string_lossy(),
+            ))
+            .expect("session should create");
+        let registry = app.provider_account_profile_registry();
+        let profile = registry
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "claude",
+                "Vaulted Claude",
+            )
+            .expect("managed Claude profile should create");
+        crate::secret::unlock_chariox_encrypted_vault(
+            &vault_path,
+            "correct horse battery staple",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .expect("vault should initialize");
+        crate::provider::store_provider_account_credential(
+            &config,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+            "setup-token-secret",
+            false,
+        )
+        .expect("provider credential should store");
+        crate::test_support::authenticate_provider_account(
+            &registry,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&vault_path).expect("vault should lock");
+        crate::secret::clear_vault_secret_process_cache().expect("secret cache should clear");
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let request = crate::local::PreflightProviderAccountPortabilityRequest {
+            provider_accounts: crate::local::ManagedEnvironmentProviderAccounts::Selected {
+                accounts: vec![crate::local::ManagedEnvironmentProviderAccountSelection {
+                    provider: "claude".into(),
+                    account_profile: profile.profile_id.clone(),
+                }],
+            },
+        };
+        let command_in = |session: Option<&str>| {
+            let mut command = crate::runtime::command::KernelCommand::from_local_request(
+                "preflight",
+                None,
+                None,
+                &crate::local::LocalDaemonRequest::PreflightProviderAccountPortability(
+                    request.clone(),
+                ),
+            );
+            command.session_id = session.map(str::to_owned);
+            command
+        };
+
+        // Launched from a session (an agent, the TUI): the existing unlock card appears there
+        // and the launch goes on once the owner answers it.
+        let command = command_in(Some(session.id()));
+        let mut preflight = Box::pin(
+            crate::runtime::provider_account_portability::execute_preflight(
+                &runtime, &config, &registry, &command, &request,
+            ),
+        );
+        tokio::select! {
+            result = &mut preflight => panic!("preflight finished before the Vault was unlocked: {result:?}"),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
+        }
+        let interaction = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .expect("session should remain available")
+            .active_interaction_for_agent(agent.id())
+            .expect("the Vault unlock card should be visible")
+            .clone();
+        assert_eq!(interaction.title(), Some("Unlock Chariox Vault"));
+        resolve_vault_passphrase_interaction(&runtime, session.id(), &interaction).await;
+        preflight.await.expect("preflight passes after the unlock");
+
+        // A client with no session gets the typed `vault_locked` refusal its launch dialog answers.
+        crate::secret::lock_chariox_encrypted_vault(&vault_path).expect("vault should lock");
+        let error = crate::runtime::provider_account_portability::execute_preflight(
+            &runtime,
+            &config,
+            &registry,
+            &command_in(None),
+            &request,
+        )
+        .await
+        .expect_err("a session-less caller cannot be shown a card");
+        assert!(
+            error.to_string().to_lowercase().contains("locked"),
+            "typed Vault-locked refusal: {error}"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -108,6 +108,8 @@ impl KernelRuntimeState {
             {
                 tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: deadline cleanup retained for retry");
             }
+            self.end_orphaned_sub_agents().await;
+            self.publish_changed_agent_trees();
             if !worker_recovered {
                 worker_recovered = self
                     .recover_worker_leased_processes(crate::session::unix_epoch_ms())

@@ -2069,7 +2069,7 @@ fn room_admission_concurrent_workflow_nodes_record_invoking_creator() {
     );
     for copy in copies {
         assert_eq!(
-            copy.spawned_by_agent_id(),
+            copy.parent_agent_id(),
             Some(actor.id()),
             "new instance nodes need the initiator's immutable lineage"
         );

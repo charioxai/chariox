@@ -10,6 +10,10 @@ use super::development::{
     DevelopmentContextImportRequest, DevelopmentContextPublicationReceipt,
     DevelopmentRepositoryRole, DevelopmentSourceRepositoryBinding, MAX_PUBLICATION_RECEIPT_BYTES,
 };
+use super::event_connections::{
+    self, EventConnectionRecord, ManagedContextEventConnectionImportTarget,
+    ManagedContextEventConnectionReceipt, MAX_EVENT_CONNECTION_COMPONENT_BYTES,
+};
 use super::kernel::{
     cleanup_kernel_context_import, configured_managed_kernel_context_paths, import_kernel_context,
     KernelContextImportReceipt, KernelContextImportRequest, KernelContextSnapshot,
@@ -22,9 +26,12 @@ use super::scm::{
 };
 use crate::account_profile::{
     provider_account_materialization_sha256, ManagedContextProviderAccountReceipt,
-    ProviderAccountMaterialization, ProviderAccountProfileRegistry,
+    ProviderAccountMaterialization, ProviderAccountProfileRegistry, VaultLoginOpen,
 };
 use crate::error::DaemonError;
+use crate::provider_vault_login::{
+    materialization_sha256 as vault_login_materialization_sha256, VaultLoginMaterialization,
+};
 use crate::secret::TransferredVaultSourceBinding;
 
 const PACKAGE_SCHEMA_VERSION: u32 = 4;
@@ -59,7 +66,17 @@ pub enum ManagedContextPackageProviderAccounts {
     None,
     Selected {
         materializations: Vec<ProviderAccountMaterialization>,
+        /// Profiles whose login is a Vault credential, sealed for the target.
+        vault_logins: Vec<VaultLoginMaterialization>,
     },
+}
+
+/// The provider-account component as it is written into the package.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProviderAccountComponent {
+    materializations: Vec<ProviderAccountMaterialization>,
+    vault_logins: Vec<VaultLoginMaterialization>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -67,6 +84,15 @@ pub enum ManagedContextPackageGitCredentials {
     None,
     Selected {
         materializations: Vec<GitCredentialMaterialization>,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum ManagedContextPackageEventConnections {
+    #[default]
+    None,
+    Selected {
+        records: Vec<EventConnectionRecord>,
     },
 }
 
@@ -83,6 +109,11 @@ pub struct ManagedContextPlanBinding {
     pub provider_accounts: ManagedContextProviderAccountSelection,
     #[serde(default)]
     pub git_credentials: ManagedContextGitCredentialSelection,
+    #[serde(
+        default,
+        skip_serializing_if = "ManagedContextEventConnectionSelection::is_none"
+    )]
+    pub event_connections: ManagedContextEventConnectionSelection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +161,29 @@ pub enum ManagedContextGitCredentialSelection {
     },
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ManagedContextEventConnectionSelection {
+    #[default]
+    None,
+    Selected {
+        connection_ids: Vec<String>,
+    },
+}
+
+impl ManagedContextEventConnectionSelection {
+    /// A selection that names nothing is left out of every serialized plan, so
+    /// requests and plans that do not use the item keep their earlier shape.
+    pub fn is_none(&self) -> bool {
+        *self == Self::None
+    }
+}
+
 impl std::fmt::Debug for ManagedContextPackageKernel {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -153,6 +207,7 @@ pub struct ManagedContextPackageExportRequest {
     pub kernel_context: ManagedContextPackageKernel,
     pub provider_accounts: ManagedContextPackageProviderAccounts,
     pub git_credentials: ManagedContextPackageGitCredentials,
+    pub event_connections: ManagedContextPackageEventConnections,
     pub package_path: PathBuf,
 }
 
@@ -196,12 +251,15 @@ pub(crate) struct ManagedContextPackageApplicationRequest {
     pub context_import_target: Option<crate::config::DaemonConfig>,
     pub provider_account_target: Option<ManagedContextProviderAccountImportTarget>,
     pub git_credential_target: Option<ManagedContextGitCredentialImportTarget>,
+    pub event_connection_target: Option<ManagedContextEventConnectionImportTarget>,
 }
 
 #[derive(Clone)]
 pub(crate) struct ManagedContextProviderAccountImportTarget {
     pub registry: ProviderAccountProfileRegistry,
     pub owner_user_id: String,
+    /// The target's own configuration, whose Vault receives a transferred Vault login.
+    pub config: crate::config::DaemonConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -233,6 +291,7 @@ impl std::fmt::Debug for ManagedContextPackageApplicationRequest {
             .field("target_private_key", &"[REDACTED]")
             .field("provider_account_target", &self.provider_account_target)
             .field("git_credential_target", &self.git_credential_target)
+            .field("event_connection_target", &self.event_connection_target)
             .finish()
     }
 }
@@ -252,6 +311,8 @@ pub(crate) struct ManagedContextPackageImportReceipt {
     pub provider_accounts: ManagedContextImportedProviderAccounts,
     #[serde(default)]
     pub git_credentials: ManagedContextImportedGitCredentials,
+    #[serde(default)]
+    pub event_connections: ManagedContextImportedEventConnections,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,7 +322,35 @@ pub(crate) enum ManagedContextImportedProviderAccounts {
     None,
     Selected {
         accounts: Vec<ManagedContextProviderAccountReceipt>,
+        /// Selected logins this machine could not install; the owner acts on each one here.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        omitted: Vec<ManagedContextOmittedProviderAccount>,
     },
+}
+
+/// A selected provider login that the import left out, named the way the owner selected it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedContextOmittedProviderAccount {
+    pub provider: String,
+    pub profile_id: String,
+    pub label: String,
+    pub reason: ManagedContextProviderAccountOmission,
+    pub next_step: ManagedContextProviderAccountNextStep,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedContextProviderAccountOmission {
+    /// The login lives only in the owner's Vault, and this machine's Vault was not open.
+    VaultClosed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedContextProviderAccountNextStep {
+    /// Nothing keeps the login for later: the owner signs this account in on this machine.
+    SignInAgain,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,6 +360,16 @@ pub(crate) enum ManagedContextImportedGitCredentials {
     None,
     Selected {
         credentials: Vec<ManagedContextGitCredentialReceipt>,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ManagedContextImportedEventConnections {
+    #[default]
+    None,
+    Selected {
+        connections: Vec<ManagedContextEventConnectionReceipt>,
     },
 }
 
@@ -298,6 +397,7 @@ pub(crate) struct ExtractedManagedContextPackage {
     pub kernel_context: ManagedContextPackageKernel,
     pub provider_accounts: ManagedContextPackageProviderAccounts,
     pub git_credentials: ManagedContextPackageGitCredentials,
+    pub event_connections: ManagedContextPackageEventConnections,
     _cleanup: PackageExtractionCleanup,
 }
 
@@ -333,6 +433,8 @@ struct ManagedContextPackageManifest {
     provider_accounts: ProviderAccountComponentManifest,
     #[serde(default)]
     git_credentials: GitCredentialComponentManifest,
+    #[serde(default)]
+    event_connections: EventConnectionComponentManifest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -374,6 +476,18 @@ enum GitCredentialComponentManifest {
         size_bytes: u64,
         sha256: String,
         credential_count: usize,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum EventConnectionComponentManifest {
+    #[default]
+    None,
+    Selected {
+        size_bytes: u64,
+        sha256: String,
+        connection_count: usize,
     },
 }
 
@@ -492,15 +606,25 @@ pub fn export_managed_context_package(
                 }
                 (None, ProviderAccountComponentManifest::None, None)
             }
-            ManagedContextPackageProviderAccounts::Selected { materializations } => {
-                validate_provider_account_materializations(&binding.plan, &materializations)?;
-                let bytes = serialize_bounded_json(
+            ManagedContextPackageProviderAccounts::Selected {
+                materializations,
+                vault_logins,
+            } => {
+                validate_provider_account_materializations(
+                    &binding.plan,
                     &materializations,
+                    &vault_logins,
+                )?;
+                let account_count = materializations.len() + vault_logins.len();
+                let bytes = serialize_bounded_json(
+                    &ProviderAccountComponent {
+                        materializations,
+                        vault_logins,
+                    },
                     MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES as usize,
                 )?;
                 let size_bytes = bytes.len() as u64;
                 let sha256 = sha256_bytes(&bytes);
-                let account_count = materializations.len();
                 (
                     Some(bytes),
                     ProviderAccountComponentManifest::Selected {
@@ -548,6 +672,30 @@ pub fn export_managed_context_package(
                 )
             }
         };
+    let (event_connection_bytes, event_connection_manifest) = match request.event_connections {
+        ManagedContextPackageEventConnections::None => {
+            if !matches!(
+                binding.plan.event_connections,
+                ManagedContextEventConnectionSelection::None
+            ) {
+                return Err(package_error(
+                    "managed context package omits the selected event connections",
+                ));
+            }
+            (None, EventConnectionComponentManifest::None)
+        }
+        ManagedContextPackageEventConnections::Selected { records } => {
+            event_connections::validate_records(&binding.plan.event_connections, &records)?;
+            let bytes =
+                serialize_bounded_json(&records, MAX_EVENT_CONNECTION_COMPONENT_BYTES as usize)?;
+            let manifest = EventConnectionComponentManifest::Selected {
+                size_bytes: bytes.len() as u64,
+                sha256: sha256_bytes(&bytes),
+                connection_count: records.len(),
+            };
+            (Some(bytes), manifest)
+        }
+    };
     let manifest = ManagedContextPackageManifest {
         schema_version: PACKAGE_SCHEMA_VERSION,
         plan: binding.plan,
@@ -560,6 +708,7 @@ pub fn export_managed_context_package(
         kernel_context: kernel_manifest,
         provider_accounts: provider_account_manifest,
         git_credentials: git_credential_manifest,
+        event_connections: event_connection_manifest,
     };
     let manifest_bytes = serialize_bounded_json(&manifest, MAX_MANIFEST_BYTES)?;
 
@@ -612,6 +761,9 @@ pub fn export_managed_context_package(
         writer.write_all(bytes).map_err(package_write_error)?;
     }
     if let Some(bytes) = git_credential_bytes.as_deref() {
+        writer.write_all(bytes).map_err(package_write_error)?;
+    }
+    if let Some(bytes) = event_connection_bytes.as_deref() {
         writer.write_all(bytes).map_err(package_write_error)?;
     }
     writer
@@ -670,6 +822,46 @@ fn owner_publication_root(
     }
 }
 
+/// The kernel context the package carries, and what undoes it if this application installed it.
+fn import_package_kernel_context(
+    request: &ManagedContextPackageApplicationRequest,
+    extracted: &ExtractedManagedContextPackage,
+) -> Result<
+    (
+        ManagedContextImportedKernelContext,
+        Option<(KernelContextImportReceipt, PathBuf)>,
+    ),
+    DaemonError,
+> {
+    let ManagedContextPackageKernel::FromKernel(snapshot) = &extracted.kernel_context else {
+        return Ok((ManagedContextImportedKernelContext::Empty, None));
+    };
+    let (capability_root, vault_path) = context_import_paths(
+        &request.expected_binding.plan,
+        &request.development_destination_root,
+    )?;
+    let context_existed = capability_root.exists();
+    let rollback_vault_path = vault_path.clone();
+    let receipt = import_kernel_context(KernelContextImportRequest {
+        publication_root: owner_publication_root(&request.expected_binding.plan)?,
+        snapshot: snapshot.as_ref().clone(),
+        expected_source: TransferredVaultSourceBinding {
+            context_id: request.expected_binding.plan.context_id.clone(),
+            source_kernel_id: request.expected_binding.source_kernel_id.clone(),
+            source_key_thumbprint: request.expected_binding.source_key_thumbprint.clone(),
+        },
+        target_kernel_id: request.expected_binding.target_kernel_id.clone(),
+        target_private_key: request.target_private_key.clone(),
+        capability_root,
+        vault_path,
+    })?;
+    let rollback = (!context_existed).then(|| (receipt.clone(), rollback_vault_path));
+    Ok((
+        ManagedContextImportedKernelContext::FromKernel { receipt },
+        rollback,
+    ))
+}
+
 pub(crate) fn apply_managed_context_package(
     request: ManagedContextPackageApplicationRequest,
 ) -> Result<ManagedContextPackageImportReceipt, DaemonError> {
@@ -697,57 +889,73 @@ pub(crate) fn apply_managed_context_package(
         }
     }
     preflight_import_receipt_capacity(&request, &extracted)?;
-    let provider_accounts = import_provider_accounts(&request, &extracted.provider_accounts)?;
-    let git_credentials = match import_git_credentials(&request, &extracted.git_credentials) {
-        Ok(credentials) => credentials,
+    // MP-08 / MP-10 / MP-11: Install/unlock the transferred Vault first: provider logins and
+    // selected Project values are committed to that target-owned Vault.
+    let (kernel_context, kernel_context_rollback) =
+        import_package_kernel_context(&request, &extracted)?;
+    let rollback_kernel_context = || match &kernel_context_rollback {
+        Some((receipt, vault_path)) => {
+            cleanup_kernel_context_import(receipt, vault_path, &request.target_private_key)
+        }
+        None => Ok(()),
+    };
+    let provider_accounts = match import_provider_accounts(&request, &extracted.provider_accounts) {
+        Ok(accounts) => accounts,
         Err(error) => {
-            if let Err(rollback_error) = rollback_imported_provider_accounts(
-                request.provider_account_target.as_ref(),
-                &provider_accounts,
-            ) {
+            if let Err(rollback_error) = rollback_kernel_context() {
                 return Err(package_unavailable(format!(
-                    "{error}; roll back provider accounts: {rollback_error}"
+                    "{error}; roll back kernel context: {rollback_error}"
                 )));
             }
             return Err(error);
         }
     };
-    let mut kernel_context_rollback = None;
-    let imported_components = (|| {
-        // MP-08 / MP-10 / MP-11: Install/unlock the transferred Vault before selected
-        // Project values are committed to that target-owned Vault.
-        let kernel_context = match &extracted.kernel_context {
-            ManagedContextPackageKernel::Empty => ManagedContextImportedKernelContext::Empty,
-            ManagedContextPackageKernel::FromKernel(snapshot) => {
-                let (capability_root, vault_path) = context_import_paths(
-                    &request.expected_binding.plan,
-                    &request.development_destination_root,
-                )?;
-                let context_existed = capability_root.exists();
-                let rollback_vault_path = vault_path.clone();
-                let receipt = import_kernel_context(KernelContextImportRequest {
-                    publication_root: owner_publication_root(&request.expected_binding.plan)?,
-                    snapshot: snapshot.as_ref().clone(),
-                    expected_source: TransferredVaultSourceBinding {
-                        context_id: request.expected_binding.plan.context_id.clone(),
-                        source_kernel_id: request.expected_binding.source_kernel_id.clone(),
-                        source_key_thumbprint: request
-                            .expected_binding
-                            .source_key_thumbprint
-                            .clone(),
-                    },
-                    target_kernel_id: request.expected_binding.target_kernel_id.clone(),
-                    target_private_key: request.target_private_key.clone(),
-                    capability_root,
-                    vault_path,
-                })?;
-                if !context_existed {
-                    kernel_context_rollback = Some((receipt.clone(), rollback_vault_path));
-                }
-                ManagedContextImportedKernelContext::FromKernel { receipt }
+    let git_credentials = match import_git_credentials(&request, &extracted.git_credentials) {
+        Ok(credentials) => credentials,
+        Err(error) => {
+            let rollback = run_import_rollbacks(
+                rollback_kernel_context,
+                || Ok(()),
+                || {
+                    rollback_imported_provider_accounts(
+                        request.provider_account_target.as_ref(),
+                        &provider_accounts,
+                    )
+                },
+                || Ok(()),
+            );
+            if let Err(rollback_error) = rollback {
+                return Err(package_unavailable(format!("{error}; {rollback_error}")));
             }
-        };
-
+            return Err(error);
+        }
+    };
+    let event_connections = match import_event_connections(&request, &extracted.event_connections) {
+        Ok(connections) => connections,
+        Err(error) => {
+            let rollback = run_import_rollbacks(
+                rollback_kernel_context,
+                || {
+                    rollback_imported_git_credentials(
+                        request.git_credential_target.as_ref(),
+                        &git_credentials,
+                    )
+                },
+                || {
+                    rollback_imported_provider_accounts(
+                        request.provider_account_target.as_ref(),
+                        &provider_accounts,
+                    )
+                },
+                || Ok(()),
+            );
+            if let Err(rollback_error) = rollback {
+                return Err(package_unavailable(format!("{error}; {rollback_error}")));
+            }
+            return Err(error);
+        }
+    };
+    let imported_development = (|| {
         let development = match (
             &extracted.development,
             &request.expected_binding.plan.development,
@@ -824,20 +1032,13 @@ pub(crate) fn apply_managed_context_package(
                 ))
             }
         };
-        Ok::<_, DaemonError>((development, kernel_context))
+        Ok::<_, DaemonError>(development)
     })();
-    let (development, kernel_context) = match imported_components {
-        Ok(imported) => imported,
+    let development = match imported_development {
+        Ok(development) => development,
         Err(error) => {
             let rollback = run_import_rollbacks(
-                || match kernel_context_rollback {
-                    Some((receipt, vault_path)) => cleanup_kernel_context_import(
-                        &receipt,
-                        &vault_path,
-                        &request.target_private_key,
-                    ),
-                    None => Ok(()),
-                },
+                rollback_kernel_context,
                 || {
                     rollback_imported_git_credentials(
                         request.git_credential_target.as_ref(),
@@ -848,6 +1049,13 @@ pub(crate) fn apply_managed_context_package(
                     rollback_imported_provider_accounts(
                         request.provider_account_target.as_ref(),
                         &provider_accounts,
+                    )
+                },
+                || {
+                    rollback_imported_event_connections(
+                        request.event_connection_target.as_ref(),
+                        &request.transfer_id,
+                        &event_connections,
                     )
                 },
             );
@@ -867,7 +1075,35 @@ pub(crate) fn apply_managed_context_package(
         kernel_context,
         provider_accounts,
         git_credentials,
+        event_connections,
     })
+}
+
+/// Logins that need the owner's Vault, named for a machine whose Vault is not open.
+fn omitted_vault_logins(
+    vault_logins: &[VaultLoginMaterialization],
+) -> Vec<ManagedContextOmittedProviderAccount> {
+    vault_logins
+        .iter()
+        .map(|login| ManagedContextOmittedProviderAccount {
+            provider: login.profile.provider.clone(),
+            profile_id: login.profile.profile_id.clone(),
+            label: login.profile.label.clone(),
+            reason: ManagedContextProviderAccountOmission::VaultClosed,
+            next_step: ManagedContextProviderAccountNextStep::SignInAgain,
+        })
+        .collect()
+}
+
+/// Whether a provider login can be written into the target's own Vault now.
+fn target_vault_is_open(config: &crate::config::DaemonConfig) -> Result<bool, DaemonError> {
+    let vault = &config.user_config.credential_vault;
+    match vault.backend {
+        crate::config::CredentialVaultBackend::CharioxEncrypted => {
+            Ok(crate::secret::chariox_encrypted_vault_status(&vault.path)?.unlocked)
+        }
+        crate::config::CredentialVaultBackend::ProcessMemory => Ok(true),
+    }
 }
 
 fn import_provider_accounts(
@@ -883,13 +1119,29 @@ fn import_provider_accounts(
             ManagedContextProviderAccountSelection::None,
         ) => Ok(ManagedContextImportedProviderAccounts::None),
         (
-            ManagedContextPackageProviderAccounts::Selected { materializations },
+            ManagedContextPackageProviderAccounts::Selected {
+                materializations,
+                vault_logins,
+            },
             ManagedContextProviderAccountSelection::Selected { .. },
         ) => {
             let target = request.provider_account_target.as_ref().ok_or_else(|| {
                 package_error("managed context provider-account target is unavailable")
             })?;
-            let mut accounts = Vec::with_capacity(materializations.len());
+            let (vault_logins, omitted) =
+                if vault_logins.is_empty() || target_vault_is_open(&target.config)? {
+                    (vault_logins.as_slice(), Vec::new())
+                } else {
+                    // Only the owner creates or opens this machine's Vault; the rest of the context
+                    // still arrives, and the receipt tells the owner which accounts to sign in here.
+                    tracing::info!(
+                        context_id = %request.expected_binding.plan.context_id,
+                        logins = vault_logins.len(),
+                        "provider logins not carried: this machine's Vault is not open"
+                    );
+                    (&[][..], omitted_vault_logins(vault_logins))
+                };
+            let mut accounts = Vec::with_capacity(materializations.len() + vault_logins.len());
             for materialization in materializations {
                 match target
                     .registry
@@ -916,8 +1168,10 @@ fn import_provider_accounts(
                     }) {
                     Ok(()) => {}
                     Err(error) => {
-                        let imported =
-                            ManagedContextImportedProviderAccounts::Selected { accounts };
+                        let imported = ManagedContextImportedProviderAccounts::Selected {
+                            accounts,
+                            omitted: Vec::new(),
+                        };
                         if let Err(rollback_error) =
                             rollback_imported_provider_accounts(Some(target), &imported)
                         {
@@ -929,7 +1183,50 @@ fn import_provider_accounts(
                     }
                 }
             }
-            Ok(ManagedContextImportedProviderAccounts::Selected { accounts })
+            for login in vault_logins {
+                let binding = &request.expected_binding;
+                match target
+                    .registry
+                    .install_vault_login_replica(
+                        &target.config,
+                        &target.owner_user_id,
+                        &binding.plan.context_id,
+                        &request.expected_package_sha256,
+                        &VaultLoginOpen {
+                            target_private_key: &request.target_private_key,
+                            source_key_thumbprint: &binding.source_key_thumbprint,
+                            source_kernel_id: &binding.source_kernel_id,
+                            target_kernel_id: &binding.target_kernel_id,
+                        },
+                        login,
+                    )
+                    .and_then(|receipt| {
+                        accounts.push(receipt.clone());
+                        target.registry.record_transfer_origin(
+                            &target.owner_user_id,
+                            &receipt,
+                            &binding.source_kernel_id,
+                            &login.profile.profile_id,
+                        )
+                    }) {
+                    Ok(()) => {}
+                    Err(error) => {
+                        let imported = ManagedContextImportedProviderAccounts::Selected {
+                            accounts,
+                            omitted: Vec::new(),
+                        };
+                        if let Err(rollback_error) =
+                            rollback_imported_provider_accounts(Some(target), &imported)
+                        {
+                            return Err(package_unavailable(format!(
+                                "{error}; roll back partial provider-account import: {rollback_error}"
+                            )));
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            Ok(ManagedContextImportedProviderAccounts::Selected { accounts, omitted })
         }
         _ => Err(package_error(
             "managed context provider-account component does not match the launch plan",
@@ -941,7 +1238,8 @@ fn rollback_imported_provider_accounts(
     target: Option<&ManagedContextProviderAccountImportTarget>,
     provider_accounts: &ManagedContextImportedProviderAccounts,
 ) -> Result<(), DaemonError> {
-    let ManagedContextImportedProviderAccounts::Selected { accounts } = provider_accounts else {
+    let ManagedContextImportedProviderAccounts::Selected { accounts, .. } = provider_accounts
+    else {
         return Ok(());
     };
     let target = target.ok_or_else(|| {
@@ -949,10 +1247,11 @@ fn rollback_imported_provider_accounts(
     })?;
     let mut failures = Vec::new();
     for receipt in accounts.iter().rev() {
-        if let Err(error) = target
-            .registry
-            .rollback_managed_context_replica(&target.owner_user_id, receipt)
-        {
+        if let Err(error) = target.registry.rollback_managed_context_account(
+            &target.config,
+            &target.owner_user_id,
+            receipt,
+        ) {
             failures.push(error);
         }
     }
@@ -1011,13 +1310,63 @@ fn rollback_imported_git_credentials(
     rollback_git_credentials(&target.command_context, credentials)
 }
 
+fn import_event_connections(
+    request: &ManagedContextPackageApplicationRequest,
+    event_connections: &ManagedContextPackageEventConnections,
+) -> Result<ManagedContextImportedEventConnections, DaemonError> {
+    match (
+        event_connections,
+        &request.expected_binding.plan.event_connections,
+    ) {
+        (
+            ManagedContextPackageEventConnections::None,
+            ManagedContextEventConnectionSelection::None,
+        ) => Ok(ManagedContextImportedEventConnections::None),
+        (
+            ManagedContextPackageEventConnections::Selected { records },
+            ManagedContextEventConnectionSelection::Selected { .. },
+        ) => {
+            let target = request.event_connection_target.as_ref().ok_or_else(|| {
+                package_error("managed context event connection target is unavailable")
+            })?;
+            let connections = event_connections::import(target, &request.transfer_id, records)?;
+            Ok(ManagedContextImportedEventConnections::Selected { connections })
+        }
+        _ => Err(package_error(
+            "managed context event connection component does not match the launch plan",
+        )),
+    }
+}
+
+fn rollback_imported_event_connections(
+    target: Option<&ManagedContextEventConnectionImportTarget>,
+    transfer_id: &str,
+    event_connections: &ManagedContextImportedEventConnections,
+) -> Result<(), DaemonError> {
+    let ManagedContextImportedEventConnections::Selected { connections } = event_connections else {
+        return Ok(());
+    };
+    let target = target.ok_or_else(|| {
+        package_error("managed context event connection rollback target is unavailable")
+    })?;
+    event_connections::rollback(target, transfer_id, connections)
+}
+
 pub(crate) fn rollback_managed_context_package_application(
     receipt: &ManagedContextPackageImportReceipt,
     target_private_key: &str,
     provider_account_target: Option<&ManagedContextProviderAccountImportTarget>,
     git_credential_target: Option<&ManagedContextGitCredentialImportTarget>,
+    event_connection_target: Option<&ManagedContextEventConnectionImportTarget>,
 ) -> Result<(), DaemonError> {
     let mut failures = Vec::new();
+    if let Err(error) = rollback_imported_event_connections(
+        event_connection_target,
+        &receipt.transfer_id,
+        &receipt.event_connections,
+    ) {
+        failures.push(error);
+    }
     if let Err(error) =
         rollback_imported_git_credentials(git_credential_target, &receipt.git_credentials)
     {
@@ -1084,22 +1433,11 @@ pub(crate) fn rollback_persisted_managed_context_publication(
     let extracted = extract_managed_context_package(request)?;
     let provider_accounts = match &extracted.provider_accounts {
         ManagedContextPackageProviderAccounts::None => ManagedContextImportedProviderAccounts::None,
-        ManagedContextPackageProviderAccounts::Selected { materializations } => {
-            let accounts = materializations
-                .iter()
-                .map(|materialization| {
-                    Ok(ManagedContextProviderAccountReceipt {
-                        context_id: context_id.clone(),
-                        package_sha256: package_sha256.clone(),
-                        materialization_sha256: provider_account_materialization_sha256(
-                            materialization,
-                        )?,
-                        provider: materialization.profile.provider.clone(),
-                        profile_id: materialization.profile.profile_id.clone(),
-                    })
-                })
-                .collect::<Result<Vec<_>, DaemonError>>()?;
-            ManagedContextImportedProviderAccounts::Selected { accounts }
+        selected @ ManagedContextPackageProviderAccounts::Selected { .. } => {
+            ManagedContextImportedProviderAccounts::Selected {
+                accounts: provider_account_receipts(&context_id, &package_sha256, selected)?,
+                omitted: Vec::new(),
+            }
         }
     };
     let git_credentials = match &extracted.git_credentials {
@@ -1114,6 +1452,9 @@ pub(crate) fn rollback_persisted_managed_context_publication(
             ManagedContextImportedGitCredentials::Selected { credentials }
         }
     };
+    // A recovered publication cannot tell which event connection records the
+    // interrupted import created, so it leaves them: they are the owner's own
+    // connections and the event services validate them at first use.
     let mut failures = Vec::new();
     if let Err(error) = rollback_imported_git_credentials(git_credential_target, &git_credentials) {
         failures.push(error);
@@ -1228,22 +1569,15 @@ fn preflight_import_receipt_capacity(
     };
     let provider_accounts = match &extracted.provider_accounts {
         ManagedContextPackageProviderAccounts::None => ManagedContextImportedProviderAccounts::None,
-        ManagedContextPackageProviderAccounts::Selected { materializations } => {
+        selected @ ManagedContextPackageProviderAccounts::Selected { vault_logins, .. } => {
+            // Either outcome of a login must fit: installed (an account) or left out (omitted).
             ManagedContextImportedProviderAccounts::Selected {
-                accounts: materializations
-                    .iter()
-                    .map(|materialization| {
-                        Ok(ManagedContextProviderAccountReceipt {
-                            context_id: request.expected_binding.plan.context_id.clone(),
-                            package_sha256: request.expected_package_sha256.clone(),
-                            materialization_sha256: provider_account_materialization_sha256(
-                                materialization,
-                            )?,
-                            provider: materialization.profile.provider.clone(),
-                            profile_id: materialization.profile.profile_id.clone(),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, DaemonError>>()?,
+                accounts: provider_account_receipts(
+                    &request.expected_binding.plan.context_id,
+                    &request.expected_package_sha256,
+                    selected,
+                )?,
+                omitted: omitted_vault_logins(vault_logins),
             }
         }
     };
@@ -1264,6 +1598,14 @@ fn preflight_import_receipt_capacity(
             }
         }
     };
+    let event_connections = match &extracted.event_connections {
+        ManagedContextPackageEventConnections::None => ManagedContextImportedEventConnections::None,
+        ManagedContextPackageEventConnections::Selected { records } => {
+            ManagedContextImportedEventConnections::Selected {
+                connections: event_connections::receipts_for(records),
+            }
+        }
+    };
     let receipt = ManagedContextPackageImportReceipt {
         destination: request.expected_binding.plan.destination.clone(),
         schema_version: PACKAGE_SCHEMA_VERSION,
@@ -1274,6 +1616,7 @@ fn preflight_import_receipt_capacity(
         kernel_context,
         provider_accounts,
         git_credentials,
+        event_connections,
     };
     let placeholder_outer_bytes = serde_json::to_vec(&receipt)
         .map_err(|error| package_error(format!("serialize receipt preflight: {error}")))?
@@ -1428,11 +1771,13 @@ pub(crate) fn extract_managed_context_package(
                 ));
             }
             let file = open_regular_file_no_follow(&path)?;
-            let materializations =
-                serde_json::from_reader::<_, Vec<ProviderAccountMaterialization>>(file).map_err(
-                    |_| package_error("managed context provider-account component is invalid"),
-                )?;
-            if materializations.len() != *account_count {
+            let ProviderAccountComponent {
+                materializations,
+                vault_logins,
+            } = serde_json::from_reader::<_, ProviderAccountComponent>(file).map_err(|_| {
+                package_error("managed context provider-account component is invalid")
+            })?;
+            if materializations.len() + vault_logins.len() != *account_count {
                 return Err(package_error(
                     "managed context provider-account count does not match its manifest",
                 ));
@@ -1440,8 +1785,12 @@ pub(crate) fn extract_managed_context_package(
             validate_provider_account_materializations(
                 &request.expected_binding.plan,
                 &materializations,
+                &vault_logins,
             )?;
-            ManagedContextPackageProviderAccounts::Selected { materializations }
+            ManagedContextPackageProviderAccounts::Selected {
+                materializations,
+                vault_logins,
+            }
         }
     };
     let git_credentials = match &manifest.git_credentials {
@@ -1481,6 +1830,43 @@ pub(crate) fn extract_managed_context_package(
             ManagedContextPackageGitCredentials::Selected { materializations }
         }
     };
+    let event_connections = match &manifest.event_connections {
+        EventConnectionComponentManifest::None => ManagedContextPackageEventConnections::None,
+        EventConnectionComponentManifest::Selected {
+            size_bytes,
+            sha256,
+            connection_count,
+        } => {
+            let path = component_root.join("event-connections.json");
+            let file = create_private_file(&path)?;
+            let actual_sha256 = copy_component_to_file(
+                &mut reader,
+                file,
+                *size_bytes,
+                MAX_EVENT_CONNECTION_COMPONENT_BYTES,
+            )?;
+            if &actual_sha256 != sha256 {
+                return Err(package_error(
+                    "managed context event connection component digest does not match",
+                ));
+            }
+            let file = open_regular_file_no_follow(&path)?;
+            let records =
+                serde_json::from_reader::<_, Vec<EventConnectionRecord>>(file).map_err(|_| {
+                    package_error("managed context event connection component is invalid")
+                })?;
+            if records.len() != *connection_count {
+                return Err(package_error(
+                    "managed context event connection count does not match its manifest",
+                ));
+            }
+            event_connections::validate_records(
+                &request.expected_binding.plan.event_connections,
+                &records,
+            )?;
+            ManagedContextPackageEventConnections::Selected { records }
+        }
+    };
     let mut trailer = [0_u8; 16];
     reader
         .read_exact(&mut trailer)
@@ -1506,6 +1892,7 @@ pub(crate) fn extract_managed_context_package(
         kernel_context,
         provider_accounts,
         git_credentials,
+        event_connections,
         _cleanup: cleanup,
     })
 }
@@ -1661,6 +2048,35 @@ fn validate_manifest(
         _ => Err(package_error(
             "managed context Git credential component does not match the launch plan",
         )),
+    }?;
+    match (
+        &manifest.event_connections,
+        &manifest.plan.event_connections,
+    ) {
+        (EventConnectionComponentManifest::None, ManagedContextEventConnectionSelection::None) => {
+            Ok(())
+        }
+        (
+            EventConnectionComponentManifest::Selected {
+                size_bytes,
+                sha256,
+                connection_count,
+            },
+            ManagedContextEventConnectionSelection::Selected { connection_ids },
+        ) => {
+            if *size_bytes == 0
+                || *size_bytes > MAX_EVENT_CONNECTION_COMPONENT_BYTES
+                || *connection_count != connection_ids.len()
+            {
+                return Err(package_error(
+                    "managed context event connection component size or count is invalid",
+                ));
+            }
+            validate_sha256(sha256, "event connection component digest")
+        }
+        _ => Err(package_error(
+            "managed context event connection component does not match the launch plan",
+        )),
     }
 }
 
@@ -1763,7 +2179,20 @@ pub(crate) fn validate_plan_binding(plan: &ManagedContextPlanBinding) -> Result<
             }
         }
     }
-    Ok(())
+    validate_plan_event_connections(plan.destination.is_some(), &plan.event_connections)
+}
+
+/// Event connections move only between kernels of one owner.
+pub(crate) fn validate_plan_event_connections(
+    owner_managed: bool,
+    selection: &ManagedContextEventConnectionSelection,
+) -> Result<(), DaemonError> {
+    if !owner_managed && *selection != ManagedContextEventConnectionSelection::None {
+        return Err(package_error(
+            "managed context event connections require an owner-managed destination",
+        ));
+    }
+    event_connections::validate_selection(selection)
 }
 
 pub(crate) fn validate_development_selection(
@@ -1812,9 +2241,49 @@ fn validate_supported_package_plan(plan: &ManagedContextPlanBinding) -> Result<(
     validate_git_credential_selection(&plan.git_credentials)
 }
 
+/// The receipts of the accounts a package installs, in the order the import installs them.
+fn provider_account_receipts(
+    context_id: &str,
+    package_sha256: &str,
+    provider_accounts: &ManagedContextPackageProviderAccounts,
+) -> Result<Vec<ManagedContextProviderAccountReceipt>, DaemonError> {
+    let ManagedContextPackageProviderAccounts::Selected {
+        materializations,
+        vault_logins,
+    } = provider_accounts
+    else {
+        return Ok(Vec::new());
+    };
+    let receipt = |profile: &crate::account_profile::ProviderAccountReplicaMetadata,
+                   materialization_sha256: String| {
+        ManagedContextProviderAccountReceipt {
+            context_id: context_id.to_string(),
+            package_sha256: package_sha256.to_string(),
+            materialization_sha256,
+            provider: profile.provider.clone(),
+            profile_id: profile.profile_id.clone(),
+        }
+    };
+    let mut receipts = Vec::with_capacity(materializations.len() + vault_logins.len());
+    for materialization in materializations {
+        receipts.push(receipt(
+            &materialization.profile,
+            provider_account_materialization_sha256(materialization)?,
+        ));
+    }
+    for login in vault_logins {
+        receipts.push(receipt(
+            &login.profile,
+            vault_login_materialization_sha256(login)?,
+        ));
+    }
+    Ok(receipts)
+}
+
 fn validate_provider_account_materializations(
     plan: &ManagedContextPlanBinding,
     materializations: &[ProviderAccountMaterialization],
+    vault_logins: &[VaultLoginMaterialization],
 ) -> Result<(), DaemonError> {
     let ManagedContextProviderAccountSelection::Selected { accounts } = &plan.provider_accounts
     else {
@@ -1822,23 +2291,40 @@ fn validate_provider_account_materializations(
             "managed context package includes unselected provider accounts",
         ));
     };
-    if materializations.len() != accounts.len() {
+    if materializations.len() + vault_logins.len() != accounts.len() {
         return Err(package_error(
             "managed context provider-account payload does not match the selection count",
         ));
     }
-    let mut owner_user_id: Option<&str> = None;
-    for (selection, materialization) in accounts.iter().zip(materializations) {
-        let profile = &materialization.profile;
-        let profile_matches_selection = if selection.account_profile == "default" {
-            profile.is_default
-        } else {
-            profile.profile_id == selection.account_profile
+    let payloads: Vec<_> = materializations
+        .iter()
+        .map(|materialization| (&materialization.profile, !materialization.files.is_empty()))
+        .chain(vault_logins.iter().map(|login| (&login.profile, true)))
+        .collect();
+    let mut claimed = vec![false; payloads.len()];
+    for selection in accounts {
+        let claim = payloads
+            .iter()
+            .enumerate()
+            .position(|(index, (profile, _))| {
+                !claimed[index]
+                    && profile.provider == selection.provider
+                    && if selection.account_profile == "default" {
+                        profile.is_default
+                    } else {
+                        profile.profile_id == selection.account_profile
+                    }
+            });
+        let Some(claim) = claim else {
+            return Err(package_error(
+                "managed context provider-account payload does not match the launch plan",
+            ));
         };
-        if profile.provider != selection.provider
-            || !profile_matches_selection
-            || materialization.files.is_empty()
-        {
+        claimed[claim] = true;
+    }
+    let mut owner_user_id: Option<&str> = None;
+    for (profile, has_credentials) in &payloads {
+        if !has_credentials {
             return Err(package_error(
                 "managed context provider-account payload does not match the launch plan",
             ));
@@ -1858,7 +2344,12 @@ fn validate_provider_account_materializations(
             ));
         }
         owner_user_id = Some(&profile.owner_user_id);
+    }
+    for materialization in materializations {
         provider_account_materialization_sha256(materialization)?;
+    }
+    for login in vault_logins {
+        vault_login_materialization_sha256(login)?;
     }
     Ok(())
 }
@@ -2290,8 +2781,10 @@ fn run_import_rollbacks(
     kernel: impl FnOnce() -> Result<(), DaemonError>,
     git: impl FnOnce() -> Result<(), DaemonError>,
     provider: impl FnOnce() -> Result<(), DaemonError>,
+    event_connections: impl FnOnce() -> Result<(), DaemonError>,
 ) -> Result<(), DaemonError> {
-    let failures = [kernel(), git(), provider()]
+    // Reverse import order: the kernel context holds the Vault the provider logins live in.
+    let failures = [event_connections(), git(), provider(), kernel()]
         .into_iter()
         .filter_map(Result::err)
         .map(|error| error.to_string())
@@ -2323,10 +2816,14 @@ fn mp11_import_rollback_attempts_every_credential_family_after_kernel_failure() 
             seen.set(seen.get() | 4);
             Ok(())
         },
+        || {
+            seen.set(seen.get() | 8);
+            Ok(())
+        },
     );
     assert_eq!(
         seen.get(),
-        7,
+        15,
         "a failed cleanup suppressed later credential cleanup"
     );
     let error = result.unwrap_err().to_string();

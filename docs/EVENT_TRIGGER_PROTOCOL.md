@@ -57,17 +57,33 @@ no provider actions, credentials, reply capability or event runtime tools.
 - `delivery_id` identifies one AEDS-to-kernel delivery. `occurrence_id` identifies the
   upstream fact after AEGS source deduplication.
 
-AEDS's wire contract permits multiple routes for an interest. The current kernel
-App-route adapter rejects a second active route for the same interest; this document
-does not claim live AEDS fanout qualification. App automations independently fan
-out declared outgoing occurrences to workflow targets.
+AEDS's wire contract permits multiple routes for an interest. The kernel accepts
+several App inbox routes with the same generator, event type, scope and filter; only
+a repeated route ID is refused (`Conflict`). A route's `binding_id` is
+`sha256(owner, installation ID, route ID)` and every route claim carries revision 1,
+so AEDS refuses a claim only when another kernel already holds the same `binding_id`.
+A second kernel that recreates the first kernel's installation and route IDs
+therefore receives nothing; it uses a different route ID. The refusal is not an
+error to the caller: the kernel logs `event route conflicts with another route` and
+the route gets no deliveries. This document does not claim live AEDS fanout
+qualification. App automations independently fan out declared outgoing occurrences
+to workflow and agent targets, each named by the handler.
 
 ## Delivery
 
-The kernel/AEDS event-delivery wire protocol is version 3. Version 3 carries the
+The kernel/AEDS event-delivery wire protocol is version 4. Version 3 carried the
 optional provider-owned `reply_context` through `PublishEventRequest` and
-`EventDeliveryEnvelope`; peers that do not advertise version 3 are rejected rather
-than silently dropping reply capability.
+`EventDeliveryEnvelope`; version 4 replaces the bearer token of the connection with a
+challenge: AEDS opens every WebSocket with `{"type":"challenge","nonce":...}` (fresh and
+single-use), and the kernel's `hello` carries its `kernel_id` (the fingerprint of its
+identity public key), the `public_key` and a `signature` over the nonce and id. A hello
+whose id is not the key's fingerprint, whose signature does not verify, or that answers
+another connection's nonce is refused with `invalid_kernel_credentials`; an operator
+admission policy (`open` with per-kernel caps, or an `allowlist` of kernel ids) may refuse
+with `kernel_not_admitted`. Open admission is also capped for the gateway as a whole; the
+refusals are retryable `gateway_rate_limited` (the connection is closed) and
+`gateway_route_capacity` (claims over the cap are not accepted). Peers that do not advertise
+version 4 are rejected.
 
 The kernel maintains one authenticated outbound WebSocket connection to AEDS. It
 sends its stable kernel/environment identity, route claims, and an optional resume
@@ -166,13 +182,56 @@ notification whose target is already in its ancestry with `workflow_notification
 (A→B→A, A→B→C→A); a 256-entry bound drops with its own diagnostic. Every other occurrence is
 delivered: there is no coalescing.
 
+**Outside agent grants (local 1000).** The owner's own outside agent, holding a local access
+grant, is a third subscriber type, `outside_agent`: `SubscribeEvents {targets, sources}` names
+source ids of this kernel, `UnsubscribeEvents {targets, sources, all}` ends them, and
+`GetEventSubscription` lists them (`sources`). The subscriber is the grant itself: its "queue"
+is its own event stream, there is no URL, webhook, filter, queue or retention field, and a Room
+agent's reach identity, a `/sudo` window or another owner's grant cannot follow a source. A
+source the owner cannot see, one that is not on this kernel and an unknown id are all refused
+with `source not available`. An accepted occurrence (deduplicated, dated and loop-checked as
+for any subscriber, with `grant:<grant_id>` as its ancestry identity) becomes one `notification`
+event in the grant's stream in the same commit that settles its receipt, so a repeated attempt
+adds nothing. The event carries the source, `occurrence_id`, the redacted output, `deadline_ms`
+and, for an owner action, the task and interaction ids the holder can answer with
+`RespondToInteraction`. Delivery is at least once until `AckEvents`. An unread notification
+expires at its deadline (7 days); the holder then reads one `gap` event. The follow belongs to
+its grant: revoke, expiry and holder exit end it, and a restart keeps it only for a grant that
+lasts until its holder exits and whose holder lives. A new grant follows again. At most 64
+sources per grant. Paired kernels do not inherit grants: a source of another kernel is refused.
+`ListNotificationSources {}` answers `NotificationSources {sources}` (the picker's summaries, no
+outputs): the enabled, available sources of this kernel that the grant's owner may follow, and
+every one of them is accepted by `SubscribeEvents`. Listing creates the owner-action source
+("Agent needs your action") of each of the owner's Rooms, so it can be followed before any task has
+blocked, and the "run finished" source of each of their workflows (kind `workflow_run`, named
+`<workflow> run finished`). A "run finished" source emits one occurrence for every run of its
+workflow that completed or failed, whether or not it reached an exit, with the run id as the
+occurrence id. Its output is JSON: `status` (`Completed` or `Failed`), `run_id`, `workflow_id`,
+`prompt` (the run's invocation prompt, at most 2,000 characters) and, for a failed run,
+`failure` (the first failure message, at most 2,000 characters). A stopped run emits nothing.
+Listing also offers one `app_event` source for each active inbox route of the owner's installed Apps
+(`session_id` is the installation, `workflow_id` the route, `exit_node_id` the incoming event, `name` the App's
+incoming event name followed by `@<connection scope>` when the route has one). The kernel publishes
+a newly accepted occurrence of the route to every grant that follows it in the commit that accepts
+it, with the inbox occurrence id as the occurrence id and the event's `text` (at most 32 KiB) as the
+output message; a repeated occurrence adds nothing, and an event nobody follows queues for no one.
+A route that is removed or whose installation is no longer active leaves the listing. Only
+a local access grant sends it; a terminal, a reach caller and a `/sudo` window are
+refused as for the other event requests. `chariox events sources` lists, `chariox events subscribe
+--source ID|NAME` follows, `chariox events unsubscribe --source ID|NAME|all` unfollows, and `chariox
+events mcp` offers the same as tools next to `chariox_next_notification`, which returns each
+`notification` or `gap` record once.
+
 **Transport.** Local delivery is direct; remote delivery uses the existing E2EE relay peer
 channel. Peer 437 carries the per-exit source fields in `ListWorkflowNotificationSources`,
 renames `SubscribeWorkflowNotifications {source_workflow_ref, target_ref}` to `{source_id,
 target_ref}`, admits an agent `target_ref` (the subscriber kernel owns target admission), and
 `DeliverWorkflowNotification` carries the reduced envelope. Remote requests require an
 unexpired sender-key-bound kernel or machine identity, matching realm and owner. Remote lease
-workers reject kernel-wide notification requests. Relay remains ciphertext transport.
+workers reject kernel-wide notification requests. Peer 439 adds a required `generation` to
+subscribe and unsubscribe, which the source applies only when it is not older than the newest it has
+seen for that subscription, and answers a stale one with `WorkflowNotificationSuperseded`. Relay
+remains ciphertext transport.
 
 **Delivery.** Bindings use `app_automations.source_kind=workflow_completion`; pending and
 accepted/queued receipts use `app_outbox`, beside `app_event`. Persist-before-send and retry
@@ -224,20 +283,15 @@ mapping from an event interest to a kernel. Each AEGS owns provider authorizatio
 upstream webhook/subscription resources, and the mapping from an incoming provider
 event to an `event_interest_key`.
 
-The kernel reconciles each configured AEGS through its operator endpoint with a
-separate scoped management capability. Hosted kernels obtain this capability from
-the Cloud API after authenticating their persisted Cloud session or machine
-credential; the registry-provided HTTPS management URL is checked against the
-published generator digest before a token is issued. The capability is a short-lived
-Ed25519-signed bearer token scoped to one generator, manifest digest, kernel identity,
-an exact set of allowed owner identities, and management audience. AEGS SDK servers verify it locally with the configured
-Chariox Cloud public key, so provider credentials and publisher private keys never
-enter the kernel, AEDS, or catalog. Self-hosted deployments may continue using a
-static operator token. `PUT /v1/subscriptions/reconcile` is
-authoritative for one `owner_id` and `generator_id` pair and carries
+The kernel reconciles each configured AEGS through its operator endpoint, signing every
+request with its identity key and naming the secret owner id of the connections it acts for
+(see `AEGS_MANAGEMENT_BOOTSTRAP.md`). No token is issued by Cloud or by the operator, so
+provider credentials and publisher private keys never enter the kernel, AEDS, or catalog.
+`PUT /v1/subscriptions/reconcile` is
+authoritative for the calling kernel's bindings under one `owner_id` and `generator_id` pair and carries
 App-route binding identity, opaque connection handle, provider scope,
 canonical interest key, event type/version, filter, revision, and active state.
-An omitted binding becomes inactive only when it is still owned by that owner.
+An omitted binding becomes inactive only when it is still held by that kernel.
 A higher revision can transfer a logical App route to a new owner; equal or older
 cross-owner writes are fenced. This is not workflow notification transfer. AEGS credentials are never reused as AEDS
 credentials.
@@ -249,8 +303,36 @@ source state to reconcile expiring or provider-managed webhook registrations aft
 restart. The version 1 request is specified by
 `docs/schemas/aegs-subscription-reconcile-v1.schema.json`.
 
+### Isolation between users
+
+An `event_interest_key` is derivable from public names (generator, event type,
+repository), and any kernel authenticated to AEDS can claim a route for it. A claim
+therefore never decides who receives an occurrence. The producer does:
+
+- `PublishEventRequest.audience` lists the routes (`kernel_id` + `binding_id`) an
+  occurrence may reach. The AEGS fills it from its live, authorized subscriptions
+  for the interest, through the connection that received the event. AEDS delivers
+  only to active routes whose kernel and binding both appear in it, and refuses a
+  publication without an `audience` array (`400 audience_required`). An empty
+  audience delivers to nobody. A repeated publication of one occurrence reaches
+  the routes it adds; each route is delivered to once.
+- A subscription is read at publication time, so revoking a connection or
+  withdrawing a subscription stops delivery at once, whatever the AEDS route
+  does. A kernel that claims a route without a subscription receives nothing.
+- A reconcile claim is taken only if the connection exists and is ready, and
+  its provider lists the claim's `connection_scope` among the connection's
+  resources. Other claims come back in `refused` with a typed `reason`
+  (`connection_not_found`, `connection_not_ready`, `scope_not_in_connection`);
+  the response never carries error text. The AEGS keeps the stored subscriptions
+  and answers `502 scope_check_unavailable` when the provider cannot list the
+  resources, so the kernel retries. A listing is cached for five minutes per
+  connection and authorization generation.
+
+One AEGS and one AEDS enforce this the same way for Cloud and self-hosted
+operators: no ticket or Cloud account takes part.
+
 Provider credentials never transit the kernel. The kernel starts authorization with
-the AEGS management capability at `POST /v1/authorizations`; the response is either a
+a signed request at `POST /v1/authorizations`; the response is either a
 ready opaque `connection_id` or a user-action URL/device code. It then pages
 provider-owned repositories, projects, workspaces, or equivalent scopes through
 `POST /v1/resources/query`. The resource response supplies a display identity and the
@@ -258,7 +340,7 @@ canonical `connection_scope` used in an event interest. Both operations are boun
 shared kernel requests used unchanged by web and TUI clients. An AEGS must not return
 provider access tokens, refresh tokens, webhook secrets, or raw credential material.
 
-Management protocol version 4 adds the reusable-connection lifecycle contract:
+Management protocol version 4 added the reusable-connection lifecycle contract (still part of version 5, which authenticates every request by the kernel identity key):
 
 - `POST /v1/connections/inspect` returns explicit lifecycle state, granted/required
   scopes, connected resources, health/event timestamps, recovery guidance, and test

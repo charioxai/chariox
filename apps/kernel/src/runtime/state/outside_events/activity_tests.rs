@@ -45,6 +45,7 @@ fn outside_runtime_turns_publish_working_and_idle_without_legacy_state_setters()
                     };
                     let subscribe = LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
                         targets: vec![target],
+                        sources: Vec::new(),
                     });
                     runtime
                         .outside_part_request(

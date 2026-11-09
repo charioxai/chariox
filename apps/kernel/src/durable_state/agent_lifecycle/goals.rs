@@ -314,6 +314,12 @@ pub(super) const OWNER_RESUME_PROMPT_PREFIX: &str = "task-resume-";
 pub(crate) fn is_owner_resume_prompt_id(prompt_id: &str) -> bool {
     prompt_id.starts_with(OWNER_RESUME_PROMPT_PREFIX)
 }
+const CATALOG_CONTINUATION_PROMPT_PREFIX: &str = "task-catalog:";
+/// The turn that resumes a request after a tool-catalog reload replays the
+/// person's own text; the person already sees it as the loader turn's prompt.
+pub(crate) fn is_catalog_continuation_prompt_id(prompt_id: &str) -> bool {
+    prompt_id.starts_with(CATALOG_CONTINUATION_PROMPT_PREFIX)
+}
 pub(crate) fn is_check(t: &AgentTaskExecution, prompt: &str) -> bool {
     completion::evaluation(t).is_some_and(|e| e.prompt_id == prompt)
 }

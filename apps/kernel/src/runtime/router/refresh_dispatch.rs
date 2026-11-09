@@ -3,8 +3,10 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::cloud_relay_executor::execute_cloud_relay_request;
-use crate::runtime::command::{KernelCommand, KernelCommandPriority};
-use crate::runtime::history_executor::execute_history_request;
+use crate::runtime::command::{command_caller_user_id, KernelCommand, KernelCommandPriority};
+use crate::runtime::history_executor::{
+    authorize_history_request, execute_history_request, execute_prompt_input_request,
+};
 use crate::runtime::kernel_lifecycle_executor::execute_kernel_lifecycle_request;
 use crate::runtime::pairing_invite_executor::execute_pairing_request;
 use crate::runtime::prompt_settings_executor::execute_prompt_settings_request;
@@ -175,16 +177,30 @@ impl CommandRouter {
             request @ (LocalDaemonRequest::GetSessionHistoryOutline(_)
             | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
             | LocalDaemonRequest::GetSessionHistoryBlobContents(_)
-            | LocalDaemonRequest::GetPromptInputHistory(_)
-            | LocalDaemonRequest::RecordPromptInputHistory(_)
             | LocalDaemonRequest::QueryRecall(_)
             | LocalDaemonRequest::SearchRecall(_)
             | LocalDaemonRequest::SemanticSearchRecall(_)) => boxed_handler(|| async move {
+                let request = authorize_history_request(
+                    &self.runtime_state,
+                    &command_caller_user_id(&command),
+                    request,
+                )
+                .await?;
                 execute_history_request(
                     self.history_store.clone(),
                     self.operational_history_store.clone(),
                     &self.runtime_state,
                     &self.config_projection,
+                    request,
+                )
+                .await
+            }),
+            request @ (LocalDaemonRequest::GetPromptInputHistory(_)
+            | LocalDaemonRequest::RecordPromptInputHistory(_)) => boxed_handler(|| async move {
+                execute_prompt_input_request(
+                    self.operational_history_store.clone(),
+                    &self.runtime_state,
+                    &command_caller_user_id(&command),
                     request,
                 )
                 .await

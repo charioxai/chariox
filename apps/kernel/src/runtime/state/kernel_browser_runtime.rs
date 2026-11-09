@@ -153,7 +153,7 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
             .is_none_or(|id| id.is_empty() || id.len() > 256)
     {
         return Err(host_error(
-            "MD-3: input requires document_id from the observed tab/snapshot/screenshot".into(),
+            "MD-3: input needs the top-level document_id argument, next to command and not inside it: pass the document_id of the latest tab, snapshot or screenshot result. Browser access is still held".into(),
         ));
     }
     let mut params = serde_json::to_value(request.command)
@@ -1080,11 +1080,6 @@ impl KernelRuntimeState {
                 &previous_catalog,
                 already_loaded,
                 serde_json::json!({"loaded": BROWSER, "granted": granted, "prompt_id": prompt}),
-            ));
-        }
-        if arguments.lifetime_hours.is_some() {
-            return Err(host_error(
-                "MP-08: lifetime_hours applies only to a new user-requested grant".into(),
             ));
         }
         if !host.is_loaded(&user, agent.id()) {

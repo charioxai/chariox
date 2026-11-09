@@ -228,3 +228,54 @@ fn assert_internal_active_prompt_is_stoppable_without_text(prompt_id: &str) {
     assert_eq!(active.status(), crate::session::PromptStatus::Running);
     assert_eq!(active.prompt(), "");
 }
+
+// MP-08/MP-09/MP-10/MP-11 A4: a sub-agent is a descendant of its parent, never a member of the
+// room: no client-facing projection lists it or counts it.
+#[test]
+fn user_projection_hides_sub_agents_from_the_list_and_the_counts() {
+    use crate::agent::{AgentInstance, AgentRef, GridPosition};
+    let agent = |id: &str, parent: Option<&str>, archived: bool| {
+        let mut agent = AgentInstance::new(
+            id,
+            id,
+            "room",
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
+        agent.set_parent_agent(parent.map(AgentRef::local));
+        if archived {
+            agent.set_archived(true);
+        }
+        agent
+    };
+    let mut session =
+        RuntimeSession::new("room", None, "workspace", "worktree", "machine", "daemon");
+    session.set_agents(vec![
+        agent("root", None, false),
+        agent("worker-1", Some("root"), false),
+        agent("worker-2", Some("root"), true),
+        agent("grandchild", Some("worker-1"), false),
+    ]);
+    let owner = session
+        .clone()
+        .redacted_for_user(crate::session::DEFAULT_LOCAL_USER_ID);
+    let ids = owner
+        .agents()
+        .iter()
+        .map(|agent| agent.id())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        vec!["root"],
+        "list and archived list keep the room agent only"
+    );
+    let counts = owner.collaboration_agent_counts().unwrap();
+    assert_eq!(counts.total_agent_count, 1);
+    assert_eq!(counts.owned_agent_count, 1);
+    // The kernel's own state still holds them: they stay addressable by id.
+    assert_eq!(session.agents().len(), 4);
+}

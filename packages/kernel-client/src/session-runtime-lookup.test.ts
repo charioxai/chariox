@@ -50,6 +50,64 @@ test("session focused interaction lookup follows focused agent fallback", () => 
   assert.equal(sessionFocusedInteraction({ ...session, focused_agent_id: null }), null)
 })
 
+const projectedCard = (id: string, agentId: string, shownIn: string | null, at: number) => ({
+  id,
+  agent_id: agentId,
+  shown_in_agent_id: shownIn,
+  kind: "permission" as const,
+  level: "info" as const,
+  title: "Approve?",
+  message: "Approve?",
+  choices: [{ id: "yes", label: "Yes", reply: "yes", style: "primary" as const }],
+  requested_at_ms: at,
+})
+
+test("a sub-agent decision the user holds is found for the agent that shows it, with its own identity", () => {
+  // Projected session: the child C is hidden (not in agents); its card is shown in the room agent R.
+  const session = makeSession({
+    focused_agent_id: "agent-r",
+    agents: [makeAgent({ id: "agent-r", agent_ref: "agent-r" })],
+    active_interactions: [projectedCard("card-c", "agent-c", "agent-r", 1)],
+  })
+
+  const found = sessionFocusedInteraction(session)
+  assert.equal(found?.id, "card-c")
+  assert.equal(found?.agent_id, "agent-c")
+  assert.equal(sessionActiveInteractionForAgent(session, "agent-r")?.id, "card-c")
+  assert.equal(sessionActiveInteractionForAgent(session, "agent-c"), null)
+  assert.equal(sessionActiveInteractionForAgent(session, "agent-other"), null)
+})
+
+test("a card without a shown-in agent keeps matching its own agent", () => {
+  const session = makeSession({
+    active_interactions: [projectedCard("card-own", "agent-r", null, 1)],
+  })
+
+  assert.equal(sessionActiveInteractionForAgent(session, "agent-r")?.id, "card-own")
+  assert.equal(sessionActiveInteractionForAgent(session, "agent-c"), null)
+})
+
+test("the room agent's own card and a sub-agent's card queue in request order", () => {
+  const own = projectedCard("card-own", "agent-r", null, 1)
+  const child = projectedCard("card-c", "agent-c", "agent-r", 2)
+  const session = makeSession({ active_interactions: [own, child] })
+  assert.equal(sessionActiveInteractionForAgent(session, "agent-r")?.id, "card-own")
+
+  const afterOwn = makeSession({ active_interactions: [child] })
+  assert.equal(sessionActiveInteractionForAgent(afterOwn, "agent-r")?.id, "card-c")
+})
+
+test("a decision an ancestor agent holds has no user card for the room agent", () => {
+  const held = projectedCard("held", "agent-c", null, 1)
+  const session = makeSession({
+    focused_agent_id: "agent-r",
+    agents: [makeAgent({ id: "agent-r", agent_ref: "agent-r" })],
+    active_interactions: [held],
+  })
+
+  assert.equal(sessionFocusedInteraction(session), null)
+})
+
 test("runtime provider run lookup requires matching agent ownership", () => {
   const run: RuntimeProviderRun = {
     id: "run-1",

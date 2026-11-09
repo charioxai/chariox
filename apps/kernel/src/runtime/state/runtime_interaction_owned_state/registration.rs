@@ -248,8 +248,11 @@ impl KernelRuntimeOwnedState {
                 return Err(error);
             }
         }
+        // Where the user sees a card is the kernel's: a restored question is the same question
+        // whichever panel lists it.
         if session.active_interactions().iter().any(|existing| {
-            (existing.id() == interaction.id() && existing != &interaction)
+            (existing.id() == interaction.id()
+                && existing.clone().shown_in(None) != interaction.clone().shown_in(None))
                 || (existing.subject() == interaction.subject()
                     && existing.asking_task_id().is_none()
                     && interaction.asking_task_id().is_none())
@@ -365,6 +368,7 @@ impl KernelRuntimeOwnedState {
             crate::session::unix_epoch_ms(),
         )?;
         let mut pending = super::super::PendingInteraction {
+            checking_answer: Default::default(),
             goal_approval: None,
             async_task_id: interaction.asking_task_id().map(str::to_owned),
             kernel_wide_interaction: None,
@@ -378,7 +382,24 @@ impl KernelRuntimeOwnedState {
                 .and_then(|_| interaction.timeout_sec())
                 .map(|seconds| std::time::Instant::now() + std::time::Duration::from_secs(seconds)),
             passkey_prompt: passkey_prompt.clone(),
+            holder: super::super::DecisionHolder::User,
+            holder_tenure: 0,
             responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
+        };
+        pending.holder = self.decision_holder_at_raise(&session, &pending, &interaction);
+        // Registered again after a restart, a question keeps the holder it was handed to.
+        if let Some((holder, tenure)) =
+            self.restored_decision_holder(&session, &pending, &interaction)?
+        {
+            pending.holder = holder;
+            pending.holder_tenure = tenure;
+        }
+        // The user sees a sub-agent's decision in its top parent's panel, not in its own.
+        let interaction = if pending.holder == super::super::DecisionHolder::User {
+            let shown_in = self.decision_shown_in(session_id, &interaction);
+            interaction.shown_in(shown_in)
+        } else {
+            interaction
         };
         let worker_live = pending.agent_lifetime.as_ref().is_none_or(|lifetime| {
             self.worker_interaction_binding_is_live(lifetime, remote_binding.as_ref(), &session)

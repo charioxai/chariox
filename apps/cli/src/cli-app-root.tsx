@@ -15,6 +15,8 @@ import { installTerminalNativeSelection } from "./terminal-native-selection.js"
 import { enableTerminalHyperlinks } from "./terminal-hyperlinks.js"
 import { selectedProviderAccount } from "./waiting-room-provider-accounts.js"
 import { createCliRoomWorkflowsComposition } from "./cli-room-workflows-composition.js"
+import { createCliSubAgentsComposition } from "./cli-sub-agents-composition.js"
+import { SubAgentsPane } from "./sub-agents-pane.js"
 import { RoomWorkflowsPane } from "./room-workflows-pane.js"
 import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
@@ -591,6 +593,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     getCwd: () => process.cwd(),
     flashFooter: (message, tone, display) => flashFooter(message, tone, display),
   })
+  const subAgents = createCliSubAgentsComposition({ client, session: sessionState, attached: isAttached, focusedAgentId, width: () => dimensions().width })
   const {
     assignDialogOverlayBox, closeActiveDialogOverlay, closeHotkeys, closeSessionBrowserDialog,
     closeTerminalPairingDialog, captureCopyKey, capturePaste, replayCopyKey, discardCopyInput, copyPromptSelection, dialogOverlayOpen, handleHotkeysToggleShortcut,
@@ -608,6 +611,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     currentFocusedRenderable, promptInputRefController, describeRenderableDebug,
     scheduleTimer: startTimeout,
     hotkeysOpen, setHotkeysOpen, terminalPairingOpen, setTerminalPairingOpen,
+    subAgentsOpen: subAgents.cardOpen, closeSubAgents: subAgents.closeCard, subAgentsRows: subAgents.cardRows,
     terminalPairingState, setTerminalPairingState, terminalPairingQrLines, setTerminalPairingQrLines,
     sessionBrowserOpen, setSessionBrowserOpen, managedMachineDialogOpen, setManagedMachineDialogOpen,
     waitingRoomState, reconcileWaitingRoom, providerCatalogState, themeRegistryState,
@@ -855,6 +859,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     currentProviderSelection, providerAccountsState, agentActivityLabels, streamingAgentId, agentBusyLatch,
     agentBusyLatches, sessionState, workspaceLiveSyncStatus, agentLocationLabel,
     workingAnimationFrame, activeInteractionForAgent,
+    subAgentStripeForAgent: subAgents.stripeFor,
+    askingAgentLabel: subAgents.askingAgentLabel,
     queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => queuedPromptStripItemsForAgentId(agentId),
     selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => selectedQueuedPromptIndexForAgent(agentId),
     onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") =>
@@ -881,6 +887,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     fatalError, submitting, footerHint, connectedClientCount,
     multiAgentMode, sessionStatusMode, footerFlash, promptMetaParts,
   })
+  subAgents.bindRender(() => { renderAgentInteractions(); renderHotkeysOverlay() })
   sessionChromeUpdateController = responseShellSessionChromeUpdateController
 
   const {
@@ -1081,6 +1088,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     providerAccountRecoveryOwnsInput: providerAccountRecovery.ownsInput,
     handleProviderAccountRecoveryKey: providerAccountRecovery.handleKey,
     handleRoomWorkflowsKey: roomWorkflows.handleKey,
+    handleSubAgentsKey: subAgents.handleKey,
     roomWorkflowsOwnsInput: roomWorkflows.ownsInput,
     appHostTerminal: createAppHostTerminal(renderer),
     // The terminal program gets plain keys: kitty key reports would turn Ctrl-C into an escape sequence.
@@ -1250,6 +1258,9 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       roomWorkflowsAvailable={() => { roomWorkflows.revision(); return roomWorkflows.controller.available }}
       roomWorkflowsOpen={roomWorkflows.open}
       roomWorkflowsFocused={roomWorkflows.ownsInput}
+      subAgentsVisible={subAgents.viewVisible}
+      subAgentsPane={() => <SubAgentsPane controller={subAgents.controller} revision={subAgents.revision} width={dimensions().width >= 110 ? 36 : 32}
+        onFocus={agentId => subAgents.controller.chooseRow(agentId)} />}
       roomWorkflowsPane={() => <RoomWorkflowsPane controller={roomWorkflows.controller} revision={roomWorkflows.revision} width={dimensions().width >= 110 ? 36 : dimensions().width}
         onFocus={() => { roomWorkflows.controller.focus(true); promptInputRefController.blur() }}
         onAgents={() => { roomWorkflows.controller.focus(false); promptInputRefController.focus() }} />}

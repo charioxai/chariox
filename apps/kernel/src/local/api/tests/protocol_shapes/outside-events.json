@@ -1,6 +1,6 @@
 {
-  "local_protocol": 999,
-  "peer_protocol": 438,
+  "local_protocol": 1000,
+  "peer_protocol": 439,
   "requests": [
     {
       "SubscribeEvents": {
@@ -14,12 +14,31 @@
       }
     },
     {
+      "SubscribeEvents": {
+        "targets": [],
+        "sources": [
+          "wf_source_a",
+          "owner_action_a"
+        ]
+      }
+    },
+    {
       "UnsubscribeEvents": {
         "all": true
       }
     },
     {
+      "UnsubscribeEvents": {
+        "sources": [
+          "wf_source_a"
+        ]
+      }
+    },
+    {
       "GetEventSubscription": {}
+    },
+    {
+      "ListNotificationSources": {}
     },
     {
       "ListEvents": {
@@ -56,6 +75,81 @@
             {
               "kernel": "kernel-a",
               "online": true
+            }
+          ],
+          "acknowledged_cursor": 0,
+          "ended": null
+        }
+      }
+    },
+    {
+      "NotificationSources": {
+        "sources": [
+          {
+            "kind": "workflow_exit",
+            "source_id": "wf_source_a",
+            "kernel_id": "kernel-a",
+            "session_id": "room-a",
+            "workflow_id": "workflow-a",
+            "exit_node_id": "exit-a",
+            "exit_ordinal": 0,
+            "name": "Review",
+            "display_name": "Review",
+            "available": true
+          },
+          {
+            "kind": "owner_action",
+            "source_id": "owner_action_a",
+            "kernel_id": "kernel-a",
+            "session_id": "room-a",
+            "workflow_id": "owner_action",
+            "exit_node_id": "blocked",
+            "exit_ordinal": 0,
+            "name": "Agent needs your action",
+            "display_name": "Agent needs your action",
+            "available": true
+          },
+          {
+            "kind": "workflow_run",
+            "source_id": "run_finished_a",
+            "kernel_id": "kernel-a",
+            "session_id": "room-a",
+            "workflow_id": "workflow-a",
+            "exit_node_id": "run_finished",
+            "exit_ordinal": 0,
+            "name": "Review",
+            "display_name": "Review run finished",
+            "available": true
+          },
+          {
+            "kind": "app_event",
+            "source_id": "app_event_a",
+            "kernel_id": "kernel-a",
+            "session_id": "installation-a",
+            "workflow_id": "route-a",
+            "exit_node_id": "pull_request_updated",
+            "exit_ordinal": 0,
+            "name": "pull_request_updated",
+            "display_name": "Pull request updated",
+            "available": true
+          }
+        ]
+      }
+    },
+    {
+      "EventSubscription": {
+        "subscription": {
+          "subscription_id": "subscription-a",
+          "targets": [],
+          "kernels": [],
+          "sources": [
+            {
+              "source_id": "wf_source_a",
+              "display_name": "reviewer",
+              "kind": "workflow_exit",
+              "session_id": "room-a",
+              "subscription_id": "wf_subscription_a",
+              "available": true
             }
           ],
           "acknowledged_cursor": 0,
@@ -278,9 +372,53 @@
                 "choice_id": "blue"
               }
             }
+          },
+          {
+            "kernel": "kernel-a",
+            "machine": "machine-a",
+            "session_id": "room-a",
+            "at_ms": 2,
+            "refs": {},
+            "summary": "reviewer finished",
+            "cursor": 13,
+            "type": "notification",
+            "value": {
+              "source_id": "wf_source_a",
+              "source_kind": "workflow_exit",
+              "display_name": "reviewer",
+              "occurrence_id": "run-7",
+              "output": {
+                "message": "approved"
+              },
+              "deadline_ms": 604800002
+            }
+          },
+          {
+            "kernel": "kernel-a",
+            "machine": "machine-a",
+            "session_id": "room-a",
+            "agent_id": "agent-a",
+            "at_ms": 3,
+            "refs": {
+              "task_id": "task-a",
+              "interaction_id": "question-a"
+            },
+            "summary": "Agent needs your action",
+            "cursor": 14,
+            "type": "notification",
+            "value": {
+              "source_id": "owner_action_a",
+              "source_kind": "owner_action",
+              "display_name": "Agent needs your action",
+              "occurrence_id": "question-a",
+              "output": {
+                "message": "{\"interaction_id\":\"question-a\"}"
+              },
+              "deadline_ms": 604800003
+            }
           }
         ],
-        "next_cursor": 10,
+        "next_cursor": 14,
         "oldest_cursor": 1,
         "timed_out": false
       }

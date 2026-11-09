@@ -24,6 +24,7 @@ async fn focus_local_after_leased_run(projected: bool) {
         relay_peer_protocol_version: Some(
             crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         ),
+        worker_worktree_id: None,
     };
     app.agents
         .bind_remote_execution(remote.id(), binding.clone())

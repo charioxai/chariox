@@ -31,6 +31,9 @@ async fn unauthenticated_peer() {
                 .with_account_profile(profile.profile_id),
         )
         .unwrap();
+    app.agents()
+        .set_parent_agent(peer.id(), Some(crate::agent::AgentRef::local(actor.id())))
+        .unwrap();
     let run = launch_test_provider(
         &mut app,
         session.id(),
@@ -103,6 +106,9 @@ async fn post_reservation_failure() {
         .unwrap();
     let peer = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("ready-peer"))
+        .unwrap();
+    app.agents()
+        .set_parent_agent(peer.id(), Some(crate::agent::AgentRef::local(actor.id())))
         .unwrap();
     let peer_run = app
         .launch_provider(

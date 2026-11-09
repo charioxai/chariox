@@ -144,7 +144,7 @@ impl KernelRuntimeState {
 
     /// MP-08/MP-11: the agent whose input drove a call must still hold this
     /// App view in its own user-domain grant, for the view's owner.
-    fn user_app_view_agent(
+    pub(super) fn user_app_view_agent(
         &self,
         owner: &str,
         view_id: &str,
@@ -155,18 +155,37 @@ impl KernelRuntimeState {
             .flatten()
             .ok_or_else(agent_not_granted)?;
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
-        let holds = self
+        let owns = self
             .user_domain_owner_aliases(&user)
             .iter()
-            .any(|alias| alias == owner)
-            && self.owned.kernel_browser_host.holds_resource(
-                &user,
-                agent.id(),
-                &crate::local::UserDomainResource::AppView {
-                    view_id: view_id.into(),
-                },
-            );
-        holds.then_some(agent).ok_or_else(agent_not_granted)
+            .any(|alias| alias == owner);
+        let resource = crate::local::UserDomainResource::AppView {
+            view_id: view_id.into(),
+        };
+        if owns
+            && self
+                .owned
+                .kernel_browser_host
+                .holds_resource(&user, agent.id(), &resource)
+        {
+            return Ok(agent);
+        }
+        // The owner may already have granted the App: then the claim is what is missing.
+        let holds_app = self
+            .app_control()
+            .user_views()
+            .get(owner, view_id)
+            .is_some_and(|(binding, _)| {
+                agent.has_extension_grant(
+                    crate::extension::ExtensionKind::App,
+                    &binding.installation,
+                )
+            });
+        Err(if owns && holds_app {
+            crate::runtime::app_view_authority::view_not_claimed()
+        } else {
+            agent_not_granted()
+        })
     }
 
     pub(super) fn forget_user_app_view(&self, owner: &str, id: &str) {
@@ -316,7 +335,7 @@ impl KernelRuntimeState {
     /// An update that committed while a view is open reloads its page onto the
     /// new release (MP-08/MP-10): same Tab, and the App's drafts stay in its web
     /// storage. Until then the controller keeps serving the old generation's files.
-    async fn reload_updated_user_app_view(&self, owner: &str, view: &UserAppView) {
+    pub(super) async fn reload_updated_user_app_view(&self, owner: &str, view: &UserAppView) {
         let instances = self.app_control().user_views();
         let (Some((binding, _)), Some(browser), Some(target)) = (
             instances.get(owner, &view.view_id),
@@ -355,6 +374,14 @@ impl KernelRuntimeState {
         if reloaded.is_err() {
             // Not reloaded: stay on the old generation so the next poll retries.
             instances.set_generation(owner, &view.view_id, binding.generation);
+            return;
+        }
+        // An uninstall drops the Room-side queue binding and an update leaves the
+        // old generation in it; the retained view is the authority for both.
+        if let Some((binding, _)) = instances.get(owner, &view.view_id) {
+            self.app_control()
+                .views()
+                .register(&view.view_id, &view.view_id, binding);
         }
     }
 

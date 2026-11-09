@@ -18,6 +18,7 @@ async fn sudo_operations_projected_worker_uses_home_task() {
         relay_peer_protocol_version: Some(
             crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         ),
+        worker_worktree_id: None,
     };
     f.app
         .lock()
@@ -68,6 +69,7 @@ async fn sudo_operations_forwarded_worker_permissions_use_projected_home_task() 
         relay_peer_protocol_version: Some(
             crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         ),
+        worker_worktree_id: None,
     };
     f.app
         .lock()

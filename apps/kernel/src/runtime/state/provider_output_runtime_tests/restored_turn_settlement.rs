@@ -124,7 +124,7 @@ async fn sweep_assesses_an_answered_turn_whose_end_never_reached_the_ledger() {
     runtime.sweep_agent_lifecycle().await.unwrap();
     let task = task_of(&runtime, &turn);
     assert!(
-        !task.reason.contains("No live provider turn"),
+        !task.reason.contains("Interrupted before it finished"),
         "an answered turn must be assessed, not blocked: {:?} {}",
         task.state,
         task.reason
@@ -339,7 +339,7 @@ async fn sweep_assesses_an_answered_leased_turn_by_its_worker_history_run() {
     runtime.sweep_agent_lifecycle().await.unwrap();
     let task = task_of(&runtime, &turn);
     assert!(
-        !task.reason.contains("No live provider turn"),
+        !task.reason.contains("Interrupted before it finished"),
         "an answered leased turn must be assessed, not blocked: {:?} {}",
         task.state,
         task.reason

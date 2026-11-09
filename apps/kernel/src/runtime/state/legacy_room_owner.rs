@@ -75,6 +75,22 @@ impl KernelRuntimeOwnedState {
                 agent_owner_user_id,
             )
     }
+
+    /// The room's trace rule for `user_id` and an agent owned by `agent_owner_user_id`: their own
+    /// agents, and everyone's with Transparent or Full collaboration.
+    pub(in crate::runtime) fn can_view_agent_trace_owned_by(
+        &self,
+        session: &RuntimeSession,
+        user_id: &str,
+        agent_owner_user_id: &str,
+    ) -> bool {
+        self.acts_for_owner_in(session.owner_user_id(), user_id, agent_owner_user_id)
+            || session
+                .collaboration_level_for_user(
+                    &self.room_member_user_id_in(session.owner_user_id(), user_id),
+                )
+                .is_some_and(|level| level.can_view_agent_trace())
+    }
 }
 
 impl KernelRuntimeState {
@@ -113,6 +129,23 @@ impl KernelRuntimeState {
         self.owned.is_room_member(session, user_id)
     }
 
+    /// Whether `user_id` is the owner of `session`: the stored owner, or the enrolled owner of a
+    /// room made before enrollment.
+    pub(in crate::runtime) fn acts_for_room_owner(
+        &self,
+        session: &RuntimeSession,
+        user_id: &str,
+    ) -> bool {
+        self.owned
+            .acts_for_owner_in(session.owner_user_id(), user_id, session.owner_user_id())
+    }
+
+    /// Whether `user_id` is this kernel's owner: `local`, or the owner it was enrolled for.
+    pub(in crate::runtime) fn acts_for_kernel_owner(&self, user_id: &str) -> bool {
+        self.room_member_user_id_in(crate::session::DEFAULT_LOCAL_USER_ID, user_id)
+            == crate::session::DEFAULT_LOCAL_USER_ID
+    }
+
     pub(in crate::runtime) fn can_prompt_agent_owned_by(
         &self,
         session: &RuntimeSession,
@@ -121,6 +154,16 @@ impl KernelRuntimeState {
     ) -> bool {
         self.owned
             .can_prompt_agent_owned_by(session, user_id, agent_owner_user_id)
+    }
+
+    pub(in crate::runtime) fn can_view_agent_trace_owned_by(
+        &self,
+        session: &RuntimeSession,
+        user_id: &str,
+        agent_owner_user_id: &str,
+    ) -> bool {
+        self.owned
+            .can_view_agent_trace_owned_by(session, user_id, agent_owner_user_id)
     }
 
     /// A provider run carries no session scope of its own; it belongs to the room it ran in.

@@ -50,6 +50,7 @@ mod prompt_settings;
 mod provider_account_credential;
 mod provider_auth_recovery;
 mod provider_usage_activity;
+mod provider_vault_login;
 mod publication;
 mod recall_terminal_metaagent;
 mod released_provider_run;
@@ -119,7 +120,9 @@ mod screenshot;
 mod waiting_room_workspace;
 
 mod provider_tool_images;
+mod remote_agent_binding_worktree;
 mod room_pin;
+mod session_outline_tool_images;
 mod usage_snapshot;
 mod vault_creation;
 mod vault_secret;

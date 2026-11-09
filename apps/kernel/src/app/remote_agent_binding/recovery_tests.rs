@@ -253,6 +253,7 @@ impl Fixture {
             relay_url: None,
             relay_token: None,
             relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION),
+            worker_worktree_id: None,
         };
         home.agents()
             .bind_remote_execution(agent.id(), binding.clone())
@@ -806,6 +807,157 @@ async fn slice_selector_ordinary_explicit_alias_remains_supported() {
         )
         .unwrap();
     assert_eq!(selected.kernel_id, fixture.presences[1].kernel_id);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spawn_target_accepts_the_machine_alias_the_person_sees() {
+    let fixture = Fixture::with_slice_identity(false).await;
+    let home = fixture.home.lock().await;
+    home.slices().restore_records(Vec::new());
+    let mut presence = fixture.presences[1].clone();
+    presence.machine_alias = Some("hkb-kernel".into());
+    presence.kernel_alias = Some("worker-1".into());
+    home.remote_relay_inventory_projection_store()
+        .update(Vec::new(), vec![presence.clone()]);
+    let selected = home
+        .select_remote_kernel_by_ref_with_config(
+            "hkb-kernel",
+            &presence.available_providers[0],
+            home.config(),
+        )
+        .unwrap();
+    assert_eq!(selected.kernel_id, presence.kernel_id);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spawn_target_asks_the_relay_when_the_inventory_has_not_synced() {
+    let fixture = Fixture::with_relay_fixture(false, false, false, false).await;
+    let home = fixture.home.lock().await;
+    home.remote_relay_inventory_projection_store()
+        .update(Vec::new(), Vec::new());
+    let wanted = &fixture.presences[1];
+    let live = crate::transport::relay_discovery::list_live_kernels_for_machine(
+        home.config(),
+        &wanted.machine_id,
+    )
+    .await
+    .unwrap();
+    let provider = live
+        .first()
+        .and_then(|kernel| kernel.available_providers.first())
+        .unwrap_or_else(|| panic!("the relay lists no provider for the machine: {live:?}"));
+    let selected = home
+        .select_remote_kernel_by_ref_with_config(&wanted.machine_id, provider, home.config())
+        .unwrap();
+    assert_eq!(selected.kernel_id, wanted.kernel_id);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spawn_target_refusal_names_what_the_relay_lists_when_the_inventory_is_empty() {
+    let fixture = Fixture::with_relay_fixture(false, false, false, false).await;
+    let home = fixture.home.lock().await;
+    home.remote_relay_inventory_projection_store()
+        .update(Vec::new(), Vec::new());
+    let live = crate::transport::relay_discovery::list_live_machines(home.config())
+        .await
+        .unwrap();
+    let machine = live
+        .iter()
+        .find(|machine| machine.machine_id == fixture.presences[1].machine_id)
+        .expect("the relay lists the second worker's machine");
+    let provider = machine
+        .available_providers
+        .first()
+        .expect("the machine advertises a provider");
+    let error = home
+        .select_remote_kernel_by_ref_with_config("no-such-machine", provider, home.config())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains(&machine.machine_id),
+        "the refusal must name the machines the relay lists: {error}"
+    );
+}
+
+/// A relay that closes every metadata request with a refusal, counting them.
+async fn refusing_relay() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    use futures_util::{SinkExt, StreamExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}", listener.local_addr().unwrap());
+    let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = requests.clone();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::spawn(async move {
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let _ = socket.next().await;
+                let refusal = chariox_relay::protocol::RelayEnvelope::Close {
+                    reason: "relay token does not allow requested action".into(),
+                    kernel_reload: false,
+                };
+                let _ = socket
+                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                        serde_json::to_string(&refusal).unwrap().into(),
+                    ))
+                    .await;
+                let _ = tokio::time::timeout(Duration::from_secs(1), socket.next()).await;
+            });
+        }
+    });
+    (url, requests)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spawn_target_refused_by_the_relay_fails_at_once_and_names_the_usable_kernels() {
+    let fixture = Fixture::with_slice_identity(false).await;
+    let home = fixture.home.lock().await;
+    let (relay_url, requests) = refusing_relay().await;
+    let mut relay_config = home.config().clone();
+    relay_config.relay_url = Some(relay_url);
+    relay_config.relay_token = Some("no-metadata-read".into());
+    let started = std::time::Instant::now();
+    let error = home
+        .select_remote_kernel_by_ref_with_config(
+            "no-such-machine",
+            &fixture.presences[1].available_providers[0],
+            &relay_config,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "a refusal is final, the selector waited {:?}",
+        started.elapsed()
+    );
+    assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(
+        error.contains("does not allow requested action")
+            && error.contains(&fixture.presences[1].kernel_id),
+        "the refusal must say why and name the usable kernels: {error}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spawn_target_refusal_names_the_usable_kernels() {
+    let fixture = Fixture::with_slice_identity(false).await;
+    let home = fixture.home.lock().await;
+    let mut presence = fixture.presences[1].clone();
+    presence.machine_alias = Some("hkb-kernel".into());
+    home.remote_relay_inventory_projection_store()
+        .update(Vec::new(), vec![presence.clone()]);
+    let error = home
+        .select_remote_kernel_by_ref_with_config(
+            "no-such-machine",
+            &presence.available_providers[0],
+            home.config(),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains(&presence.kernel_id) && error.contains("hkb-kernel"),
+        "the refusal must name what can be used: {error}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

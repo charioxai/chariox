@@ -274,3 +274,31 @@ async fn status_reports_the_named_holder_and_refuses_pids_outside_the_callers_ch
         KernelAccessHolderState::NotRequested
     );
 }
+
+// A program whose launcher exited has no grandparent for the kernel to pick as holder. The
+// refusal must say what to do next, in words that survive the external boundary.
+#[tokio::test]
+async fn a_requester_without_a_grandparent_is_told_how_to_name_its_holder() {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("access-holder-unavailable");
+    let orphan = OrphanHolder::start(&root, "orphan");
+    let router = reopen_kernel(&root);
+    let state = router.runtime_state();
+    let requester = process::inspect(orphan.requester).unwrap().0;
+    let refused = state
+        .request_kernel_access(
+            requester,
+            RequestKernelAccessRequest {
+                holder_pid: None,
+                no_wait: true,
+                term: Some(KernelAccessTerm::UntilHolderExits),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("--holder-pid"),
+        "the refusal names the way out, got: {refused}"
+    );
+    assert_eq!(Refusal::exact(&refused), Some(Refusal::HolderUnavailable));
+}

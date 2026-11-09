@@ -478,6 +478,23 @@ pub(crate) fn prepare_git_worktree(
     target_hint: Option<&str>,
     operation: &'static str,
 ) -> Result<String, DaemonError> {
+    prepare_git_worktree_checked(
+        placement,
+        base_directory,
+        target_hint,
+        operation,
+        |_| Ok(()),
+    )
+}
+
+/// `check_target` sees the resolved target directory before anything is created.
+pub(crate) fn prepare_git_worktree_checked(
+    placement: &GitWorktreePlacement,
+    base_directory: impl AsRef<Path>,
+    target_hint: Option<&str>,
+    operation: &'static str,
+    check_target: impl FnOnce(&Path) -> Result<(), DaemonError>,
+) -> Result<String, DaemonError> {
     let base_directory = base_directory.as_ref();
     preflight_working_directory(base_directory, operation, false, &[])?;
     let repo_root = run_git(base_directory, &["rev-parse", "--show-toplevel"], operation)?;
@@ -511,6 +528,7 @@ pub(crate) fn prepare_git_worktree(
             )
         });
 
+    check_target(&target_directory)?;
     let target = target_directory.display().to_string();
     preflight_working_directory(&target_directory, operation, true, &[])?;
     let args = if let Some(branch) = placement.branch.as_deref() {

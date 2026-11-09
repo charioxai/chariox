@@ -63,6 +63,7 @@ fn mp08_mp10_mp11_leased_app_uses_home_grant_and_actor() {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .unwrap();

@@ -48,7 +48,7 @@ fn setup(name: &str, spawned: &[&str], peers: &[&str]) -> Setup {
                 .spawn_agent(
                     CreateAgentRequest::new(session.id(), "dev-stub")
                         .with_alias(*child)
-                        .with_spawned_by_agent_id(first.id()),
+                        .with_parent_agent_id(first.id()),
                 )
                 .unwrap(),
         );
@@ -564,6 +564,7 @@ fn capability_leased_agents_cannot_acquire_or_receive_user_domain_access() {
                         relay_peer_protocol_version: Some(
                             crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                         ),
+                        worker_worktree_id: None,
                     },
                 )
                 .unwrap();

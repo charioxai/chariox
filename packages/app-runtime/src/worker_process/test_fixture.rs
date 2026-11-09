@@ -53,6 +53,8 @@ pub enum Mode {
     LifecycleInbox,
     /// Fixed inbox handler forwards a fixture occurrence through the real broker.
     LifecycleInboxAutomation,
+    /// Forwards one delivery to both fixture automations.
+    LifecycleInboxAutomations,
     LifecycleFailPrepare,
     LifecycleHangPrepare,
     LifecycleHangSuspend,
@@ -82,6 +84,7 @@ impl Mode {
             Self::Lifecycle => "sdk_lifecycle",
             Self::LifecycleInbox => "sdk_lifecycle_inbox",
             Self::LifecycleInboxAutomation => "sdk_lifecycle_inbox_automation",
+            Self::LifecycleInboxAutomations => "sdk_lifecycle_inbox_automations",
             Self::LifecycleFailPrepare => "sdk_lifecycle_fail_prepare",
             Self::LifecycleHangPrepare => "sdk_lifecycle_hang_prepare_update",
             Self::LifecycleHangSuspend => "sdk_lifecycle_hang_suspend",

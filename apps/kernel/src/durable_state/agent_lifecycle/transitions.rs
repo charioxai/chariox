@@ -1,5 +1,9 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: transactional lifecycle policy.
 use super::*;
+/// Why a task is Blocked when its turn ended twice without finishing its obligations or yielding on them.
+pub(super) const INVALID_TURN_END_REASON: &str =
+    "Repeated invalid turn end; owner must resume or cancel";
+
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     let browser_access = matches!(&op, Operation::BlockForBrowserAccess { .. });
     match op {
@@ -571,6 +575,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if t.provider_run_id.as_deref().is_some_and(|r| r != run) {
                 return Err(error("stale provider settlement"));
             }
+            super::unread_steers::revert_for_prompt(tx, &t.room_id, &t.agent_id, &prompt)?;
             if matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
                 || (!cancelled && t.pending_prompt_id.is_some())
             {
@@ -664,7 +669,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     t.state = ExecutionState::Blocked;
                     t.blocked_revision = t.revision + 1;
                     t.wait = None;
-                    t.reason = "Repeated invalid turn end; owner must resume or cancel".into();
+                    t.reason = INVALID_TURN_END_REASON.into();
                 }
             }
             t.provider_run_id = Some(run);
@@ -679,6 +684,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::Occur(_)
         | Operation::Attempt { .. }
         | Operation::Expire { .. }
+        | Operation::MarkShown { .. }
         | Operation::Defer { .. }
         | Operation::BindSubmission { .. }
         | Operation::Receipt { .. }
@@ -686,6 +692,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         op @ (Operation::Progress { .. }
         | Operation::SourceOutcome { .. }
         | Operation::DelegateUnavailable { .. }
+        | Operation::ReleaseSpawn { .. }
         | Operation::Sweep { .. }
         | Operation::ArchiveTask { .. }
         | Operation::CancelTask { .. }

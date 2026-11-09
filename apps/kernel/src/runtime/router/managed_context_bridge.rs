@@ -8,6 +8,7 @@ use crate::managed_context::cloud_completion::{
     context_manifest_digest, validate_disposable_worker_completion_binding,
     validate_managed_context_completion_binding,
 };
+use crate::managed_context::event_connections::ManagedContextEventConnectionImportTarget;
 use crate::managed_context::package::{
     apply_managed_context_package, rollback_managed_context_package_application,
     rollback_persisted_managed_context_publication, ManagedContextGitCredentialImportTarget,
@@ -24,9 +25,10 @@ use crate::runtime::terminal_pairings::public_key_thumbprint;
 use crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE;
 use crate::transport::relay_peer::{
     RelayManagedContextCapability, RelayManagedContextImportReceipt,
-    RelayManagedContextImportedRepository, RelayManagedContextTransferPhase,
-    RelayManagedContextTransferStatus, RelayManagedDevelopmentContextImportReceipt,
-    RelayManagedKernelContextImportReceipt, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
+    RelayManagedContextImportedRepository, RelayManagedContextOmittedProviderAccount,
+    RelayManagedContextTransferPhase, RelayManagedContextTransferStatus,
+    RelayManagedDevelopmentContextImportReceipt, RelayManagedKernelContextImportReceipt,
+    RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
 };
 
 use super::CommandRouter;
@@ -396,7 +398,13 @@ impl CommandRouter {
                 &completion_config,
                 &caller.owner_user_id,
             ),
+            config: completion_config.clone(),
         };
+        let event_connection_target = ManagedContextEventConnectionImportTarget::new(
+            self.runtime_state.event_connection_registry().clone(),
+            &completion_config,
+            &caller.owner_user_id,
+        );
         let store = self.managed_context_transfers.clone();
         let claim_store = store.clone();
         let claim_transfer_id = transfer_id.clone();
@@ -525,6 +533,7 @@ impl CommandRouter {
         let rollback_private_key = target_private_key.clone();
         let import_provider_account_target = provider_account_target.clone();
         let import_git_credential_target = git_credential_target.clone();
+        let import_event_connection_target = event_connection_target.clone();
         let environment_target = Some(completion_config.clone());
         let imported = self
             .import_io(move || {
@@ -545,6 +554,7 @@ impl CommandRouter {
                     context_import_target: environment_target,
                     provider_account_target: Some(import_provider_account_target),
                     git_credential_target: import_git_credential_target,
+                    event_connection_target: Some(import_event_connection_target),
                 })
             })
             .await;
@@ -605,6 +615,7 @@ impl CommandRouter {
                 let rollback_receipt = receipt.clone();
                 let rollback_provider_account_target = provider_account_target.clone();
                 let rollback_git_credential_target = git_credential_target.clone();
+                let rollback_event_connection_target = event_connection_target.clone();
                 if let Err(rollback_error) = self
                     .import_io(move || {
                         rollback_managed_context_package_application(
@@ -612,6 +623,7 @@ impl CommandRouter {
                             &rollback_private_key,
                             Some(&rollback_provider_account_target),
                             rollback_git_credential_target.as_ref(),
+                            Some(&rollback_event_connection_target),
                         )
                     })
                     .await
@@ -664,6 +676,7 @@ impl CommandRouter {
                 let rollback_receipt = receipt.clone();
                 let rollback_provider_account_target = provider_account_target.clone();
                 let rollback_git_credential_target = git_credential_target.clone();
+                let rollback_event_connection_target = event_connection_target.clone();
                 if let Err(rollback_error) = self
                     .import_io(move || {
                         rollback_managed_context_package_application(
@@ -671,6 +684,7 @@ impl CommandRouter {
                             &rollback_private_key,
                             Some(&rollback_provider_account_target),
                             rollback_git_credential_target.as_ref(),
+                            Some(&rollback_event_connection_target),
                         )
                     })
                     .await
@@ -726,12 +740,33 @@ impl CommandRouter {
             }
             return Err(commit_error);
         }
+        if matches!(
+            receipt.event_connections,
+            crate::managed_context::package::ManagedContextImportedEventConnections::Selected { .. }
+        ) {
+            // A ledger row left behind only keeps the records; no rollback of
+            // this committed transfer runs any more.
+            let completed_target = event_connection_target.clone();
+            let completed_transfer_id = transfer_id.clone();
+            if let Err(error) = self
+                .transfer_io(move || {
+                    crate::managed_context::event_connections::complete(
+                        &completed_target,
+                        &completed_transfer_id,
+                    )
+                })
+                .await
+            {
+                tracing::warn!(%error, "complete imported event connections");
+            }
+        }
 
         // Imported profiles start `unknown`, which admits no new work. Refresh
         // native observations independently. Setup-token profiles require an
         // explicit user Refresh; importing must not start a paid model turn.
         if let crate::managed_context::package::ManagedContextImportedProviderAccounts::Selected {
             accounts,
+            ..
         } = &receipt.provider_accounts
         {
             for account in accounts {
@@ -761,6 +796,28 @@ impl CommandRouter {
                         .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
                         .await;
                     runtime_state.record_waiting_room_change();
+                });
+            }
+        }
+
+        // A copied connection starts with only its id, owner and status: read
+        // the rest from the event service now, not at the next refresh.
+        if let crate::managed_context::package::ManagedContextImportedEventConnections::Selected {
+            connections,
+        } = &receipt.event_connections
+        {
+            let created = connections
+                .iter()
+                .filter(|connection| connection.created)
+                .map(|connection| connection.connection_id.clone())
+                .collect::<Vec<_>>();
+            if !created.is_empty() {
+                let router = self.clone();
+                let owner_user_id = event_connection_target.owner_user_id.clone();
+                tokio::spawn(async move {
+                    router
+                        .load_imported_event_connections(&owner_user_id, &created)
+                        .await;
                 });
             }
         }
@@ -1060,6 +1117,22 @@ fn relay_receipt(
             }
         }
     };
+    let omitted_provider_accounts = match receipt.provider_accounts {
+        crate::managed_context::package::ManagedContextImportedProviderAccounts::None => Vec::new(),
+        crate::managed_context::package::ManagedContextImportedProviderAccounts::Selected {
+            omitted,
+            ..
+        } => omitted
+            .into_iter()
+            .map(|account| RelayManagedContextOmittedProviderAccount {
+                provider: account.provider,
+                profile_id: account.profile_id,
+                label: account.label,
+                reason: account.reason,
+                next_step: account.next_step,
+            })
+            .collect(),
+    };
     Ok(RelayManagedContextImportReceipt {
         destination: receipt.destination.clone(),
         transfer_id: receipt.transfer_id,
@@ -1081,6 +1154,7 @@ fn relay_receipt(
                 }
             }
         },
+        omitted_provider_accounts,
         receipt_sha256: receipt_sha256.to_string(),
     })
 }
@@ -1177,5 +1251,54 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn the_source_learns_which_selected_logins_the_target_left_out() {
+        use crate::managed_context::package::{
+            ManagedContextImportedDevelopment, ManagedContextImportedGitCredentials,
+            ManagedContextImportedProviderAccounts, ManagedContextOmittedProviderAccount,
+            ManagedContextProviderAccountNextStep, ManagedContextProviderAccountOmission,
+        };
+        let receipt = ManagedContextPackageImportReceipt {
+            destination: None,
+            schema_version: 2,
+            transfer_id: "transfer-1".to_string(),
+            package_sha256: "a".repeat(64),
+            plan_digest: format!("sha256:{}", "1".repeat(64)),
+            development: ManagedContextImportedDevelopment::Empty,
+            kernel_context: ManagedContextImportedKernelContext::Empty,
+            provider_accounts: ManagedContextImportedProviderAccounts::Selected {
+                accounts: Vec::new(),
+                omitted: vec![ManagedContextOmittedProviderAccount {
+                    provider: "claude".to_string(),
+                    profile_id: "acct-work".to_string(),
+                    label: "Work Claude".to_string(),
+                    reason: ManagedContextProviderAccountOmission::VaultClosed,
+                    next_step: ManagedContextProviderAccountNextStep::SignInAgain,
+                }],
+            },
+            git_credentials: ManagedContextImportedGitCredentials::None,
+            event_connections: Default::default(),
+        };
+
+        let relayed = relay_receipt(receipt, &"b".repeat(64)).expect("project the receipt");
+
+        assert_eq!(
+            relayed.omitted_provider_accounts,
+            vec![RelayManagedContextOmittedProviderAccount {
+                provider: "claude".to_string(),
+                profile_id: "acct-work".to_string(),
+                label: "Work Claude".to_string(),
+                reason: ManagedContextProviderAccountOmission::VaultClosed,
+                next_step: ManagedContextProviderAccountNextStep::SignInAgain,
+            }]
+        );
+        let public =
+            crate::managed_context::outbound_service::ManagedContextOutboundImportReceipt::from(
+                relayed,
+            );
+        assert_eq!(public.omitted_provider_accounts.len(), 1);
+        assert_eq!(public.omitted_provider_accounts[0].label, "Work Claude");
     }
 }

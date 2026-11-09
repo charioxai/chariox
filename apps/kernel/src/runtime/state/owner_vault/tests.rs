@@ -203,6 +203,52 @@ fn vault_activity_cannot_be_resolved_or_changed_as_a_credential() {
 }
 
 #[test]
+fn a_use_left_unfinished_by_a_stopped_kernel_reads_as_failed_closed() {
+    let store = Arc::new(Store::default());
+    let service =
+        RuntimeSecretService::with_vault_store(vec![], "activity-restart-test", store.clone());
+    let attempted = "Use attempted in browser by owner";
+    // An earlier kernel process wrote the attempt and stopped before its result row.
+    store
+        .set_secret(
+            "activity-restart-test",
+            VAULT_ACTIVITY_KEY,
+            &format!(r#"{{"entry":[{{"at_ms":10,"event":"{attempted}"}}]}}"#),
+        )
+        .unwrap();
+    let events = |service: &RuntimeSecretService| -> Vec<String> {
+        service
+            .vault_activity("entry")
+            .unwrap()
+            .into_iter()
+            .map(|row| row.event)
+            .collect()
+    };
+    assert_eq!(
+        events(&service),
+        [
+            attempted,
+            "Use failed: the kernel stopped before it finished"
+        ]
+    );
+    // This process's own attempt is still in flight: it stays open until its result.
+    service.record_vault_activity("entry", attempted).unwrap();
+    assert_eq!(events(&service).len(), 3);
+    service
+        .record_vault_activity("entry", "Used in browser by owner")
+        .unwrap();
+    assert_eq!(
+        events(&service),
+        [
+            attempted,
+            "Use failed: the kernel stopped before it finished",
+            attempted,
+            "Used in browser by owner"
+        ]
+    );
+}
+
+#[test]
 fn vault_activity_rolls_back_a_write_that_failed_after_rename() {
     let root = std::env::temp_dir().join(format!(
         "activity-post-rename-{:032x}",

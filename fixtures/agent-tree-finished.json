@@ -1,0 +1,39 @@
+{
+  "root": "room",
+  "rev": 0,
+  "totals": {
+    "live": 0,
+    "running": 0,
+    "needs_user": 0
+  },
+  "nodes": [
+    {
+      "agent_id": "done",
+      "parent_agent_id": "room",
+      "kernel_id": null,
+      "alias": "done",
+      "provider": "codex",
+      "model": null,
+      "depth": 1,
+      "state": "idle",
+      "outcome": "completed",
+      "needs_user": false,
+      "deadline_ms": null,
+      "created_at_ms": 2
+    },
+    {
+      "agent_id": "cancelled",
+      "parent_agent_id": "room",
+      "kernel_id": null,
+      "alias": "cancelled",
+      "provider": "codex",
+      "model": null,
+      "depth": 1,
+      "state": "idle",
+      "outcome": "cancelled",
+      "needs_user": false,
+      "deadline_ms": null,
+      "created_at_ms": 3
+    }
+  ]
+}

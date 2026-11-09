@@ -45,6 +45,7 @@ mod pre_lane_request;
 mod priority_dispatch;
 mod reach_tools;
 mod refresh_dispatch;
+mod relay_collaborator_gate;
 mod relay_peer_bridge;
 mod runtime_tool_bridge;
 mod slice_relay_token_bridge;
@@ -67,6 +68,7 @@ pub(crate) struct CommandRouter {
     workflow_runtime: WorkflowRuntime,
     aegs_management_http_client: crate::runtime::event_catalog_control::AegsManagementHttpClient,
     event_connection_lanes: event_connection_lifecycle::EventConnectionOperationLanes,
+    ready_refresh_cursor: event_connection_lifecycle::ReadyRefreshCursor,
     provider_runtime_lanes: ProviderRunOperationLanes,
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
@@ -103,7 +105,20 @@ pub(crate) struct CommandRouter {
 
 #[cfg(test)]
 mod tests {
+    mod agent_deadline_owner;
+    mod agent_parent_owner;
+    mod agent_utility_owner;
     mod app_notification_access;
+    mod attachment_detach_owner;
+    mod history_trace_owner;
+    mod metaagent_task_owner;
+    mod native_interaction_owner;
+    mod prompt_input_history_owner;
+    mod provider_run_read_owner;
+    mod provider_run_selection_owner;
+    mod recall_owner;
+    mod room_control_owner;
+    mod room_environment_control_owner;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 

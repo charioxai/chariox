@@ -466,6 +466,51 @@ async fn vflag_plain_agent_reads_vault_status_and_opens_the_popup() {
     assert_eq!(status["status"]["unlocked"], true);
 }
 
+// PCD-05: an unlock through another window answers the waiting agent as unlocked and says where it happened.
+#[tokio::test]
+async fn an_unlock_through_the_vault_window_tells_the_waiting_agent_where() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let popup = call(
+        &f,
+        "chariox.manage_credential_vault",
+        json!({"action": "popup"}),
+    );
+    let window = async {
+        let session = &f.request.session_id;
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !f
+                .state
+                .owned
+                .session_snapshot(session)
+                .unwrap()
+                .active_interactions()
+                .iter()
+                .any(|card| card.id().starts_with("vault-unlock-"))
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        f.state
+            .unlock_credential_vault_for_owner(
+                "local",
+                crate::local::UnlockCredentialVaultRequest {
+                    passphrase: crate::local::VaultPassphrase::new(PASSKEY),
+                    duration: crate::local::VaultUnlockDuration::Minutes { minutes: 30 },
+                    surface: crate::local::VaultUnlockSurface::VaultWindow,
+                },
+            )
+            .await
+            .unwrap();
+    };
+    let (result, ()) = tokio::join!(popup, window);
+    let result = result.unwrap();
+    assert_eq!(result["action"], "unlocked");
+    assert_eq!(result["via"], "the Vault window");
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: a provider that gives up on a waiting popup call (its tool timeout)
 // must not leave a card nobody can answer.
 #[tokio::test]
@@ -1398,6 +1443,49 @@ fn owner_factor(f: &Fixture) {
             false,
         )
         .unwrap();
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a fill that errors after "Use attempted" closes its attempt in a running kernel.
+#[tokio::test]
+async fn a_browser_fill_that_errors_closes_its_attempt_as_failed() {
+    crate::test_support::isolated_env_test!();
+    let controller = LOGIN_CONTROLLER.replace(
+        " case \"$request\" in",
+        r#" case "$request" in
+  *'"method":"host.secret"'*'"text":'*) printf '{"id":%s,"ok":false,"error":{"code":"browser_action_failed","message":"the tab closed"}}\n' "$id" ;;"#,
+    );
+    let login = login_room_with_controller(fixture(), SITE, &controller).await;
+    let f = &login.f;
+    unlock(f);
+    let handle = generate(f, "signup", SITE).await.unwrap()["credential_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(call(f, PASTE, paste_args(&handle)).await.is_err());
+    let events: Vec<String> = f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .vault_activity(&handle)
+        .unwrap()
+        .into_iter()
+        .map(|row| row.event)
+        .filter(|event| event.starts_with("Use"))
+        .collect();
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert!(events[0].starts_with("Use attempted in browser by "));
+    assert_eq!(events[1], "Use failed: the action did not finish");
+    assert!(!events.iter().any(|event| event.starts_with("Used")));
+    let activity = serde_json::to_string(
+        &f.state
+            .home_runtime_secret_service()
+            .unwrap()
+            .vault_activity(&handle)
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(!activity.contains(stored(f, &handle).as_str()));
+    f.state.shutdown_cleanup().await.unwrap();
 }
 
 #[tokio::test]

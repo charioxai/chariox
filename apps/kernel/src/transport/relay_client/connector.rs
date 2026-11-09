@@ -229,7 +229,7 @@ fn token_renewal_retry_delay(
     cloud_token_refresh_retry_delay(daemon_id, failures).max(hint)
 }
 
-fn cloud_retry_hint(message: &str) -> Option<Duration> {
+pub(crate) fn cloud_retry_hint(message: &str) -> Option<Duration> {
     let after = message.split_once("retry in ")?.1;
     let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
     let seconds: u64 = digits.parse().ok()?;
@@ -237,6 +237,11 @@ fn cloud_retry_hint(message: &str) -> Option<Duration> {
         .trim_start()
         .starts_with("second")
         .then(|| Duration::from_secs(seconds.min(3_600)))
+}
+
+/// The relay refused the request outright, so nothing reached the other kernel.
+pub(crate) fn relay_refusal(error: &DaemonError) -> bool {
+    relay_refused_token(&error.to_string())
 }
 
 /// The relay says this token is no good; the kernel does not present it again.
@@ -376,43 +381,51 @@ where
 
 fn spawn_cloud_token_refresh(router: Arc<CommandRouter>, relay_url: String) -> JoinHandle<()> {
     tokio::spawn(async move {
-        match bounded_cloud_relay_refresh(
-            router.ensure_cloud_relay_connection(),
-            CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT,
-        )
-        .await
-        {
-            CloudRelayRefreshResult::Refreshed => {
-                crate::logging::info_with_fields(
-                    "daemon.relay_client",
-                    "cloud relay token refresh completed",
-                    serde_json::json!({
-                        "relay_url": relay_url,
-                    }),
-                );
-            }
-            CloudRelayRefreshResult::Failed(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.relay_client",
-                    "failed to refresh cloud relay token",
-                    serde_json::json!({
-                        "relay_url": relay_url,
-                        "error": error,
-                    }),
-                );
-            }
-            CloudRelayRefreshResult::TimedOut => {
-                crate::logging::warn_with_fields(
-                    "daemon.relay_client",
-                    "cloud relay token refresh timed out",
-                    serde_json::json!({
-                        "relay_url": relay_url,
-                        "timeout_ms": CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT.as_millis(),
-                    }),
-                );
+        run_cloud_token_refresh(router.ensure_cloud_relay_connection(), relay_url).await;
+    })
+}
+
+async fn run_cloud_token_refresh<F, E>(refresh: F, relay_url: String)
+where
+    F: Future<Output = Result<(), E>>,
+    E: ToString,
+{
+    match bounded_cloud_relay_refresh(refresh, CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT).await {
+        CloudRelayRefreshResult::Refreshed => {
+            crate::logging::info_with_fields(
+                "daemon.relay_client",
+                "cloud relay token refresh completed",
+                serde_json::json!({
+                    "relay_url": relay_url,
+                }),
+            );
+        }
+        CloudRelayRefreshResult::Failed(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "failed to refresh cloud relay token",
+                serde_json::json!({
+                    "relay_url": relay_url,
+                    "error": error,
+                }),
+            );
+            // Cloud refused with "retry in N seconds": holding this refresh's slot that
+            // long keeps the next tick from asking again inside the same window.
+            if let Some(wait) = cloud_retry_hint(&error) {
+                sleep(wait).await;
             }
         }
-    })
+        CloudRelayRefreshResult::TimedOut => {
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "cloud relay token refresh timed out",
+                serde_json::json!({
+                    "relay_url": relay_url,
+                    "timeout_ms": CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT.as_millis(),
+                }),
+            );
+        }
+    }
 }
 
 fn spawn_managed_slice_token_refresh(

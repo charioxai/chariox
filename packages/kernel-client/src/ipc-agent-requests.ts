@@ -227,6 +227,10 @@ export function listAgentsRequest(sessionId: string) {
 export function setAgentDeadlineRequest(sessionId: string, agentId: string, deadlineMs: number) {
   return { SetAgentDeadline: { session_id: sessionId, agent_id: agentId, deadline_ms: deadlineMs } }
 }
+// Only the user places an agent in the agent tree; `null` makes it a root.
+export function setAgentParentRequest(sessionId: string, agentId: string, parentAgentId: string | null) {
+  return { SetAgentParent: { session_id: sessionId, agent_id: agentId, parent_agent_id: parentAgentId } }
+}
 export function getAgentDeadlineRequest(sessionId: string, agentId: string) {
   return { GetAgentDeadline: { session_id: sessionId, agent_id: agentId } }
 }
@@ -247,4 +251,9 @@ export function abortAgentMoveRequest(sessionId: string, agentRef: string, local
     throw new Error("Cancelling a pending Move requires kernel protocol 638; update the kernel first")
   }
   return { MoveAgentToLocal: { session_id: sessionId, agent_ref: agentRef, abort_pending: true } }
+}
+
+// The sub-agents below one agent, in creation order; the state of each is one word.
+export function listDescendantsRequest(sessionId: string, agentId: string) {
+  return { ListDescendants: { session_id: sessionId, agent_id: agentId } }
 }

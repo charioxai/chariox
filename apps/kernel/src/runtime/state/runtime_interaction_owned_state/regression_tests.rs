@@ -31,6 +31,7 @@ impl Fixture {
                         session_id: self.session.clone(),
                         agent_id: None,
                     }],
+                    sources: Vec::new(),
                 }),
             )
             .unwrap();
@@ -261,6 +262,7 @@ async fn pruning_dead_store_tokens_closes_only_kernel_operation_responders() {
         pending.write().insert(
             id.into(),
             super::super::PendingInteraction {
+                checking_answer: Default::default(),
                 goal_approval: None,
                 async_task_id: None,
                 kernel_wide_interaction: None,
@@ -272,6 +274,8 @@ async fn pruning_dead_store_tokens_closes_only_kernel_operation_responders() {
                 terminal_credential_owner: None,
                 kernel_operation_deadline: None,
                 passkey_prompt: None,
+                holder: super::super::DecisionHolder::User,
+                holder_tenure: 0,
                 responder: Arc::new(std::sync::Mutex::new(Some(sender))),
             },
         );
@@ -366,6 +370,72 @@ async fn a02_unloaded_room_cannot_abort_live_room_supervision() {
         "task-blocked-{}-{}",
         current.task_id, current.blocked_revision
     )));
+}
+
+// The card a person sees after a kernel restart left an agent mid-turn with owned work: plain words,
+// no provider or delivery vocabulary, and the same choice ids and semantics as every blocked task.
+#[tokio::test]
+async fn a02_interrupted_agent_card_speaks_plainly() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    let f = Fixture::with_room_tools();
+    let store = &f.state.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "idle-agent".into(),
+            prompt: "z-interrupted".into(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::RegisterObligation {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "idle-agent".into(),
+            prompt: "z-interrupted".into(),
+            run: None,
+            id: "z-interrupted-obligation".into(),
+            kind: "delegate".into(),
+            resource: Some("child".into()),
+            now: 1,
+        })
+        .unwrap();
+    f.state.sweep_agent_lifecycle().await.unwrap();
+    let task = store.agent_tasks(Some(&f.session), None).unwrap().remove(0);
+    assert_eq!(task.state, ExecutionState::Blocked);
+    let card = f
+        .state
+        .owned
+        .session_store
+        .get_session(&f.session)
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .find(|card| card.id().starts_with("task-blocked-"))
+        .cloned()
+        .expect("the blocked task shows its decision card");
+    let words = format!("{} {}", task.reason, card.message());
+    assert!(
+        words.contains(
+            "Interrupted before it finished. Resume it to continue where it stopped, or cancel it."
+        ),
+        "{words}"
+    );
+    for internal in ["provider", "wake", "reconcile", "delivery"] {
+        assert!(
+            !words.to_lowercase().contains(internal),
+            "{internal}: {words}"
+        );
+    }
+    assert_eq!(
+        card.choices()
+            .iter()
+            .map(|choice| (choice.id(), choice.label()))
+            .collect::<Vec<_>>(),
+        vec![("cancel", "Cancel"), ("resume", "Resume")]
+    );
 }
 
 #[tokio::test]

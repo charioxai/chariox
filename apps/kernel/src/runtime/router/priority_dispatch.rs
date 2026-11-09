@@ -13,7 +13,9 @@ use crate::runtime::credential_enrollment_control::{
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
 use crate::runtime::debug_bundle_control::execute_export_debug_bundle_request;
 use crate::runtime::external_provider_session_control::execute_external_provider_session_request;
-use crate::runtime::history_executor::execute_history_request;
+use crate::runtime::history_executor::{
+    authorize_history_request, execute_history_request, execute_prompt_input_request,
+};
 use crate::runtime::interactive_command_dispatcher::{
     dispatch_interactive_command, is_interactive_command,
 };
@@ -103,12 +105,23 @@ impl CommandRouter {
                     .await?;
                 Ok(LocalDaemonResponse::Dictation { result })
             }),
-            LocalDaemonRequest::SetAgentDeadline(request) => {
-                boxed_handler(|| async move { self.runtime_state.set_agent_deadline(request) })
-            }
-            LocalDaemonRequest::GetAgentDeadline(request) => {
-                boxed_handler(|| async move { self.runtime_state.get_agent_deadline(request) })
-            }
+            LocalDaemonRequest::SetAgentParent(request) => boxed_handler(|| async move {
+                self.runtime_state
+                    .set_agent_parent(&command_caller_user_id(&command), request)
+                    .await
+            }),
+            LocalDaemonRequest::SetAgentDeadline(request) => boxed_handler(|| async move {
+                self.runtime_state
+                    .set_agent_deadline(&command_caller_user_id(&command), request)
+            }),
+            LocalDaemonRequest::GetAgentDeadline(request) => boxed_handler(|| async move {
+                self.runtime_state
+                    .read_agent_deadline(&command_caller_user_id(&command), request)
+            }),
+            LocalDaemonRequest::ListDescendants(request) => boxed_handler(|| async move {
+                self.runtime_state
+                    .list_descendants(&command_caller_user_id(&command), request)
+            }),
             LocalDaemonRequest::Notes(request) => boxed_handler(|| async move {
                 let result = self
                     .runtime_state
@@ -169,7 +182,12 @@ impl CommandRouter {
             }
             LocalDaemonRequest::RequestNativeProviderTurnInteraction(request) => {
                 boxed_handler(|| async move {
-                    execute_native_provider_interaction_request(&self.runtime_state, request).await
+                    execute_native_provider_interaction_request(
+                        &self.runtime_state,
+                        &command_caller_user_id(&command),
+                        request,
+                    )
+                    .await
                 })
             }
             LocalDaemonRequest::LaunchProviderRun(request) => boxed_handler(|| async move {
@@ -235,7 +253,7 @@ impl CommandRouter {
             | LocalDaemonRequest::ResumeMetaagentTask(_)
             | LocalDaemonRequest::AbortMetaagentTask(_)) => boxed_handler(|| async move {
                 self.runtime_state
-                    .execute_metaagent_task_request(request)
+                    .execute_metaagent_task_request(&command_caller_user_id(&command), request)
                     .await
             }),
             request @ LocalDaemonRequest::GetDaemonHealth(_) => boxed_handler(|| async move {
@@ -270,11 +288,10 @@ impl CommandRouter {
             }),
             request @ (LocalDaemonRequest::GetPromptInputHistory(_)
             | LocalDaemonRequest::RecordPromptInputHistory(_)) => boxed_handler(|| async move {
-                execute_history_request(
-                    self.history_store.clone(),
+                execute_prompt_input_request(
                     self.operational_history_store.clone(),
                     &self.runtime_state,
-                    &self.config_projection,
+                    &command_caller_user_id(&command),
                     request,
                 )
                 .await
@@ -569,6 +586,7 @@ impl CommandRouter {
                     execute_agent_utility_request(
                         &self.runtime_state,
                         &self.config_projection,
+                        &command_caller_user_id(&command),
                         request,
                     )
                     .await
@@ -707,6 +725,12 @@ impl CommandRouter {
             | LocalDaemonRequest::QueryRecall(_)
             | LocalDaemonRequest::SearchRecall(_)
             | LocalDaemonRequest::SemanticSearchRecall(_)) => boxed_handler(|| async move {
+                let request = authorize_history_request(
+                    &self.runtime_state,
+                    &command_caller_user_id(&command),
+                    request,
+                )
+                .await?;
                 execute_history_request(
                     self.history_store.clone(),
                     self.operational_history_store.clone(),

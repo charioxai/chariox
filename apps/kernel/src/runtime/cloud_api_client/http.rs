@@ -79,22 +79,6 @@ pub(crate) async fn post_cloud_acknowledged(
     })?
 }
 
-pub(crate) async fn post_cloud_json_dynamic<T>(
-    api_url: String,
-    path: String,
-    body: serde_json::Value,
-) -> Result<T, DaemonError>
-where
-    T: serde::de::DeserializeOwned + Send + 'static,
-{
-    tokio::task::spawn_blocking(move || post_cloud_json_blocking(api_url, &path, body))
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "post cloud relay json",
-            message: error.to_string(),
-        })?
-}
-
 pub(crate) async fn get_cloud_kernel_directory(
     profile: &crate::config::PersistedCloudRelayProfile,
 ) -> Result<serde_json::Value, DaemonError> {
@@ -220,17 +204,6 @@ fn post_cloud_acknowledged_blocking_with_timeout(
             message: format!("Cloud did not acknowledge completed logout (HTTP {status})"),
         }),
     }
-}
-
-fn post_cloud_json_blocking<T>(
-    api_url: String,
-    path: &str,
-    body: serde_json::Value,
-) -> Result<T, DaemonError>
-where
-    T: serde::de::DeserializeOwned,
-{
-    post_cloud_json_blocking_with_timeout(api_url, path, body, CLOUD_API_REQUEST_TIMEOUT)
 }
 
 fn post_cloud_json_blocking_with_timeout<T>(

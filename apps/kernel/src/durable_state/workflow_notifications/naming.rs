@@ -12,6 +12,28 @@ pub(crate) fn display_name(name: &str, ordinal: u32, notifying_exits: usize) -> 
     }
 }
 
+/// The names of the source an App's route publishes to: the App's own incoming event name and a
+/// readable form of it, each followed by the route's connection scope when it has one, so two
+/// repositories' routes are two sources.
+pub(crate) fn app_event_names(event_name: &str, scope: Option<&str>) -> (String, String) {
+    let mut words = event_name.replace('_', " ");
+    if let Some(first) = words.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    match scope.filter(|scope| !scope.is_empty()) {
+        Some(scope) => (
+            format!("{event_name}@{scope}"),
+            format!("{words} ({scope})"),
+        ),
+        None => (event_name.to_owned(), words),
+    }
+}
+
+/// The name of a workflow's "run finished" source.
+pub(crate) fn run_display_name(name: &str) -> String {
+    format!("{name} run finished")
+}
+
 /// 1-based position of `exit_node_id` among the workflow's exits.
 pub(crate) fn exit_ordinal(workflow: &WorkflowDefinition, exit_node_id: &str) -> Option<u32> {
     workflow
@@ -48,11 +70,17 @@ pub(super) fn display_name_in(
     tx: &Transaction<'_>,
     source: &WorkflowNotificationSource,
 ) -> rusqlite::Result<String> {
+    if source.kind == crate::local::NotificationSourceKind::AppEvent {
+        return Ok(source.display_name.clone());
+    }
     let workflow: Option<String> = tx.query_row("SELECT payload_json FROM durable_workflow_hot_entities WHERE owner_id=?1 AND session_id=?2 AND entity_kind='workflow' AND entity_id=?3",params![source.kernel_id,source.session_id,source.workflow_id],|r|r.get(0)).optional()?;
     let workflow: Option<WorkflowDefinition> =
         workflow.and_then(|json| serde_json::from_str(&json).ok());
-    let notifying: i64 = tx.query_row("SELECT count(*) FROM workflow_notification_exit_sources WHERE kernel_id=?1 AND session_id=?2 AND workflow_id=?3 AND enabled=1",params![source.kernel_id,source.session_id,source.workflow_id],|r|r.get(0))?;
+    let notifying: i64 = tx.query_row("SELECT count(*) FROM workflow_notification_exit_sources WHERE kernel_id=?1 AND session_id=?2 AND workflow_id=?3 AND enabled=1 AND json_extract(payload_json,'$.kind')<>'workflow_run'",params![source.kernel_id,source.session_id,source.workflow_id],|r|r.get(0))?;
     Ok(match workflow {
+        Some(workflow) if source.kind == crate::local::NotificationSourceKind::WorkflowRun => {
+            run_display_name(&workflow_name(&workflow))
+        }
         Some(workflow) => display_name(
             &workflow_name(&workflow),
             exit_ordinal(&workflow, &source.exit_node_id).unwrap_or(0),

@@ -1,6 +1,73 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: inbox ordering and exact receipt policy.
 use super::*;
+/// A receipt or submission binding for one row settles every row of its
+/// batch: they share one prompt, so they share its exact outcome.
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
+    let (room, agent, sequence) = match &op {
+        Operation::Receipt {
+            room,
+            agent,
+            sequence,
+            ..
+        }
+        | Operation::BindSubmission {
+            room,
+            agent,
+            sequence,
+            ..
+        } => (room.clone(), agent.clone(), *sequence),
+        _ => return apply_row(tx, op),
+    };
+    let members = siblings(tx, &room, &agent, sequence)?;
+    let lead = apply_row(tx, op.clone())?;
+    for member in members {
+        let Some(row) = find_event(tx, &room, &agent, member)? else {
+            continue;
+        };
+        if !matches!(row.state.as_str(), "submitting" | "uncertain" | "blocked") {
+            continue;
+        }
+        let op = match op.clone() {
+            Operation::Receipt {
+                room,
+                agent,
+                state,
+                now,
+                ..
+            } => Operation::Receipt {
+                room,
+                agent,
+                sequence: member,
+                state,
+                now,
+            },
+            Operation::BindSubmission {
+                room,
+                agent,
+                prompt,
+                target,
+                run,
+                submit_epoch,
+                now,
+                ..
+            } => Operation::BindSubmission {
+                room,
+                agent,
+                sequence: member,
+                prompt,
+                target,
+                run,
+                submit_epoch,
+                now,
+            },
+            _ => unreachable!(),
+        };
+        apply_row(tx, op)?;
+    }
+    Ok(lead)
+}
+
+fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     match op {
         Operation::Send {
             task,
@@ -55,6 +122,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             run,
             now,
             work,
+            through,
         } => {
             let mut e = get_event(tx, &room, &agent, sequence)?;
             if work
@@ -91,43 +159,43 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Err(error("task continuation must settle before inbox delivery"));
             }
             replies::bind(tx, &e, target.as_deref(), &prompt)?;
-            e.state = "submitting".into();
-            e.prompt_id = Some(prompt.clone());
-            e.target_prompt_id = target;
-            e.provider_run_id = run;
-            // Every admitted attempt gets its full receipt window.
-            e.attempted_at_ms = Some(now);
-            save_event(tx, &e)?;
-            super::wakes::record_delivery(tx, &e)?;
-            // Wake retains the original task. Progress is not an ACK/cursor or deadline edit.
-            for mut t in live_tasks(tx, &room, &agent)? {
-                if t.room_id == room
-                    && t.agent_id == agent
-                    && t.state == ExecutionState::Waiting
-                    && e.kind != "message"
-                    && (e.payload.get("task_id").and_then(serde_json::Value::as_str)
-                        == Some(t.task_id.as_str())
-                        || e.payload["task_ids"].as_array().is_some_and(|ids| {
-                            ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
-                        }))
+            admit(tx, &mut e, &prompt, target.as_deref(), run.as_deref(), now)?;
+            // One wake covers every row it may deliver; the rows share this
+            // prompt and settle together through its receipt. A reply
+            // request is answered by its own turn, so it is never batched.
+            if !e.reply_requested {
+                for mut member in recipient_events_between(tx, &room, &agent, e.sequence, through)?
                 {
-                    let check_in = super::goals::is_check_in_event(&t, &e);
-                    super::goals::clock(&mut t, now);
-                    if let Some(g) = &mut t.goal {
-                        g.continuation_sequence += 1;
-                        g.next_check_in_ms = None;
+                    if member.reply_requested {
+                        break;
                     }
-                    if !check_in {
-                        t.no_progress_wakes += 1;
+                    if batch_member(&member, target.is_some(), work.as_deref()) {
+                        admit(
+                            tx,
+                            &mut member,
+                            &prompt,
+                            target.as_deref(),
+                            run.as_deref(),
+                            now,
+                        )?;
                     }
-                    t.pending_prompt_id = Some(prompt);
-                    t.state = ExecutionState::Working;
-                    t.revision += 1;
-                    save(tx, &t)?;
-                    break;
                 }
             }
             Ok(Outcome::Event(e))
+        }
+        Operation::MarkShown {
+            room,
+            agent,
+            sequences,
+        } => {
+            for sequence in sequences {
+                tx.execute(
+                    "INSERT OR IGNORE INTO agent_inbox_shown(sequence) SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence=?3",
+                    params![room, agent, sql_integer(sequence)?],
+                )
+                .map_err(sql)?;
+            }
+            Ok(Outcome::Saved)
         }
         Operation::Expire {
             room,
@@ -267,6 +335,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             super::wakes::record_delivery(tx, &e)?;
             super::delegation::bind_message(tx, &e)?;
             replies::reconcile_event(tx, &e)?;
+            if e.state == "accepted" {
+                super::unread_steers::revert_late_receipt(tx, &mut e)?;
+            }
             Ok(Outcome::Event(e))
         }
         Operation::Ack {
@@ -322,19 +393,20 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             // without replaying delivery or buying progress from the same receipt.
             // A recurring check-in ACK is bookkeeping, not useful progress.
             // The existing three-no-progress-wake guard requires owner action.
-            if handled && matches!(e.kind.as_str(), "source_completed" | "source_lost") {
+            if handled && e.is_source_outcome() {
                 for mut t in live_tasks(tx, &room, &agent)? {
                     if t.room_id != room
                         || t.agent_id != agent
                         // MP-08/MP-10/MP-11: a loss ACK cannot override the owner's Blocked decision.
-                        || (t.state == ExecutionState::Blocked && e.kind == "source_lost")
+                        || (t.state == ExecutionState::Blocked && e.is_loss())
                         || matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
                     {
                         continue;
                     }
                     let mut changed = false;
                     for o in &mut t.obligations {
-                        if o.completion_source() == Some(&e.source_id)
+                        if o.completion_source()
+                            .is_some_and(|source| e.reports_source(source))
                             && matches!(o.status.as_str(), "failed" | "settling")
                         {
                             o.status = "satisfied".into();
@@ -392,6 +464,143 @@ fn revert_refused_wake(
             }
             t.revision += 1;
             save(tx, &t)?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether a pending row may join the batch of a wake: a steer wake carries
+/// only fresh urgent rows, a sudo-bound wake only rows of the work task.
+pub(crate) fn batch_member(event: &InboxEvent, steer: bool, work: Option<&str>) -> bool {
+    event.state == "pending"
+        && event.kind != "task_cancelled"
+        && !(steer && (!event.urgent || event.attempted_at_ms.is_some()))
+        && work.is_none_or(|work| super::work_correlated(event, work))
+}
+
+/// The recipient's rows with `after < sequence <= through`, in order. The sequence is global, so
+/// the range is read through the recipient's index, never one lookup per number.
+fn recipient_events_between(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+    after: u64,
+    through: u64,
+) -> Result<Vec<InboxEvent>, DaemonError> {
+    let mut statement = tx
+        .prepare_cached(
+            "SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND sequence<=?4 ORDER BY sequence",
+        )
+        .map_err(sql)?;
+    let rows = statement
+        .query_map(
+            params![room, agent, sql_integer(after)?, sql_integer(through)?],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .map_err(sql)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql)?;
+    rows.into_iter()
+        .map(|(sequence, source, id, payload)| {
+            decode_inbox(sequence, room, agent, &source, &id, &payload)
+        })
+        .collect()
+}
+
+fn find_event(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+    sequence: u64,
+) -> Result<Option<InboxEvent>, DaemonError> {
+    let row: Option<(String, String, String)> = tx
+        .query_row(
+            "SELECT source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence=?3",
+            params![room, agent, sql_integer(sequence)?],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    row.map(|(source, id, payload)| {
+        decode_inbox(sql_integer(sequence)?, room, agent, &source, &id, &payload)
+    })
+    .transpose()
+}
+
+/// Rows that share `sequence`'s prompt: the other members of its batch.
+fn siblings(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+    sequence: u64,
+) -> Result<Vec<u64>, DaemonError> {
+    let mut q = tx
+        .prepare("SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence<>?3 AND json_valid(payload) AND json_extract(payload,'$.prompt_id') IS NOT NULL AND json_extract(payload,'$.prompt_id')=(SELECT json_extract(payload,'$.prompt_id') FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence=?3) ORDER BY sequence")
+        .map_err(sql)?;
+    let rows = q
+        .query_map(params![room, agent, sql_integer(sequence)?], |r| {
+            r.get::<_, i64>(0)
+        })
+        .map_err(sql)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql)?;
+    rows.into_iter()
+        .map(|s| u64::try_from(s).map_err(|_| error("corrupt delivery sequence")))
+        .collect()
+}
+
+/// Admits one pending row to the attempt: it takes the prompt, and the task
+/// whose wait it wakes keeps that wait until provider I/O.
+fn admit(
+    tx: &Transaction<'_>,
+    e: &mut InboxEvent,
+    prompt: &str,
+    target: Option<&str>,
+    run: Option<&str>,
+    now: u64,
+) -> Result<(), DaemonError> {
+    let (room, agent) = (e.room_id.clone(), e.agent_id.clone());
+    e.state = "submitting".into();
+    e.prompt_id = Some(prompt.into());
+    e.target_prompt_id = target.map(str::to_owned);
+    e.provider_run_id = run.map(str::to_owned);
+    // Every admitted attempt gets its full receipt window.
+    e.attempted_at_ms = Some(now);
+    save_event(tx, e)?;
+    super::wakes::record_delivery(tx, e)?;
+    // Wake retains the original task. Progress is not an ACK/cursor or deadline edit.
+    for mut t in live_tasks(tx, &room, &agent)? {
+        if t.room_id == room
+            && t.agent_id == agent
+            && t.state == ExecutionState::Waiting
+            && e.kind != "message"
+            && (e.payload.get("task_id").and_then(serde_json::Value::as_str)
+                == Some(t.task_id.as_str())
+                || e.payload["task_ids"].as_array().is_some_and(|ids| {
+                    ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
+                }))
+        {
+            let check_in = super::goals::is_check_in_event(&t, e);
+            super::goals::clock(&mut t, now);
+            if let Some(g) = &mut t.goal {
+                g.continuation_sequence += 1;
+                g.next_check_in_ms = None;
+            }
+            if !check_in {
+                t.no_progress_wakes += 1;
+            }
+            t.pending_prompt_id = Some(prompt.into());
+            t.state = ExecutionState::Working;
+            t.revision += 1;
+            save(tx, &t)?;
+            break;
         }
     }
     Ok(())

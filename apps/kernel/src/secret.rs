@@ -24,6 +24,7 @@ mod vault_activity;
 pub(crate) use http_boundary::HttpSecretBoundary;
 use http_boundary::{decode_http_response, http_error};
 mod vault;
+pub(crate) use vault::hold_chariox_vault_unlock_until;
 pub(crate) use vault::remove_installed_transferred_vault;
 pub(crate) use vault::take_chariox_vault_single_use_unlock;
 use vault::vault_store_for_config;

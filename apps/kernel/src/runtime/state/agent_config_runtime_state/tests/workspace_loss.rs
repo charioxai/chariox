@@ -13,6 +13,7 @@ async fn a_turn_whose_workspace_is_removed_ends_failed_and_names_the_directory()
     turn.runtime.owned.config_projection.update(config);
     let git = turn.worktree.join(".git");
     std::fs::create_dir(&git).unwrap();
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
 
     turn.runtime.sweep_agent_lifecycle_for_test().await.unwrap();
     assert!(
@@ -46,5 +47,28 @@ async fn a_turn_whose_workspace_is_removed_ends_failed_and_names_the_directory()
         task.reason.contains(&turn.worktree.display().to_string()),
         "the failure names the directory: {}",
         task.reason
+    );
+}
+
+#[tokio::test]
+async fn the_command_sandbox_placeholder_is_not_a_workspace_that_can_be_lost() {
+    // The provider's command sandbox mounts an empty `.git` over a plain folder
+    // while an approved command runs and removes it when the command ends. The
+    // turn that ran the command goes on, and so does the next one.
+    let turn = failing_turn(&[("dev-stub", "workspace-substitute", None)]).await;
+    turn.run_in_worktree().await;
+    let mut config = turn.runtime.owned.config_projection.snapshot();
+    config.room_agent_tools = true;
+    turn.runtime.owned.config_projection.update(config);
+    let placeholder = turn.worktree.join(".git");
+    std::fs::create_dir(&placeholder).unwrap();
+
+    turn.runtime.sweep_agent_lifecycle_for_test().await.unwrap();
+    std::fs::remove_dir(&placeholder).unwrap();
+    turn.runtime.sweep_agent_lifecycle_for_test().await.unwrap();
+
+    assert!(
+        turn.active_prompt().is_some(),
+        "a turn in a plain folder ended when the sandbox removed its placeholder"
     );
 }

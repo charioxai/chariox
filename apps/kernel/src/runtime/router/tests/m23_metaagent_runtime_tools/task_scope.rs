@@ -1316,6 +1316,7 @@ async fn forwarded_remote_metaagent_runtime_tools_use_home_scope() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("metaagent should be remote-backed");
@@ -1400,6 +1401,7 @@ async fn forwarded_remote_metaagent_runtime_tools_reject_forged_worker_context()
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("metaagent should be remote-backed");
@@ -1421,6 +1423,7 @@ async fn forwarded_remote_metaagent_runtime_tools_reject_forged_worker_context()
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("regular agent should be remote-backed");

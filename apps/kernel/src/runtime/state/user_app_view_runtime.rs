@@ -379,7 +379,16 @@ impl KernelRuntimeState {
                         view_id: view_id.into(),
                     },
                 )
-                .map_err(|_| super::app_view_runtime::agent_not_granted())?;
+                .map_err(|_| {
+                    if agent.has_extension_grant(
+                        crate::extension::ExtensionKind::App,
+                        &binding.installation,
+                    ) {
+                        crate::runtime::app_view_authority::view_not_claimed()
+                    } else {
+                        super::app_view_runtime::agent_not_granted()
+                    }
+                })?;
             tracked.retain_browser_grant(grant);
         }
         if method == "chariox.panel" {

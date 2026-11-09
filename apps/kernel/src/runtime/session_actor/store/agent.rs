@@ -12,6 +12,46 @@ use crate::local::{
 
 use super::super::projection_policy::SessionProjectionAction;
 use super::SessionRuntimeStore;
+use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
+
+/// A child never has more authority than its parent: a level or mode the spawn does not ask
+/// for is the parent's current limit, and one it asks for cannot be above it. A spawn from a
+/// person (no parent) keeps the requested values, filled from the room defaults.
+fn child_authority(
+    parent: Option<crate::session::EffectiveAgentExecutionConfig>,
+    mode: Option<AgentExecutionMode>,
+    level: Option<AgentPermissionLevel>,
+    defaults: &crate::session::SessionAgentDefaults,
+) -> Result<(Option<AgentExecutionMode>, Option<AgentPermissionLevel>), DaemonError> {
+    let Some(limit) = parent else {
+        return Ok((
+            mode.or(defaults.execution_mode),
+            level.or(defaults.permission_level),
+        ));
+    };
+    let (parent_mode, parent_level) = (limit.mode, limit.permission_level);
+    let child_mode = mode.unwrap_or(parent_mode);
+    let child_level = level.unwrap_or(parent_level);
+    if !parent_mode.permits(child_mode) || !parent_level.permits(child_level) {
+        return Err(DaemonError::LocalTransport {
+            operation: "agent.spawn",
+            message: format!(
+                "a sub-agent cannot have more authority than its parent: the parent runs {parent_level:?} in {parent_mode} mode; spawn with a permission and mode at or below it"
+            ),
+        });
+    }
+    Ok((Some(child_mode), Some(child_level)))
+}
+
+fn parent_limit(
+    session: &crate::session::RuntimeSession,
+    parent: Option<&crate::agent::AgentInstance>,
+    agents: &[crate::agent::AgentInstance],
+) -> Option<crate::session::EffectiveAgentExecutionConfig> {
+    parent.map(|parent| {
+        crate::session::effective_agent_execution_config_in_tree(session, parent, agents)
+    })
+}
 
 impl SessionRuntimeStore {
     const MAX_BATCH_SPAWN_AGENTS: usize = 500;
@@ -177,6 +217,7 @@ impl SessionRuntimeStore {
         request: SpawnAgentRequest,
         caller_user_id: String,
         caller_metaagent_id: Option<String>,
+        idempotency_key: Option<String>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -221,8 +262,42 @@ impl SessionRuntimeStore {
                 .then(|| defaults.account_profile.clone())
                 .flatten()
         });
-        let execution_mode = request.execution_mode.or(defaults.execution_mode);
-        let permission_level = request.permission_level.or(defaults.permission_level);
+        let parent = caller_metaagent_id.as_deref().and_then(|id| {
+            self.state
+                .session_agents(&request.session_id)
+                .into_iter()
+                .find(|agent| agent.id() == id)
+        });
+        if let (Some(parent), Some(key)) = (&parent, idempotency_key.as_deref()) {
+            let existing = self
+                .state
+                .session_agents(&request.session_id)
+                .into_iter()
+                .find(|agent| {
+                    agent.parent_agent_id() == Some(parent.id()) && agent.spawn_key() == Some(key)
+                });
+            if let Some(agent) = existing {
+                return self
+                    .with_session_projection_action_result(Ok(LocalDaemonResponse::AgentSpawned {
+                        agent,
+                        event_subscription_error: None,
+                    }))
+                    .await;
+            }
+        }
+        let (execution_mode, permission_level) = match child_authority(
+            parent_limit(
+                &session,
+                parent.as_ref(),
+                &self.state.session_agents(&request.session_id),
+            ),
+            request.execution_mode,
+            request.permission_level,
+            defaults,
+        ) {
+            Ok(authority) => authority,
+            Err(error) => return self.with_session_projection_action_result(Err(error)).await,
+        };
         let create_request = CreateAgentRequest::new(
             &request.session_id,
             request
@@ -234,9 +309,13 @@ impl SessionRuntimeStore {
                 .room_member_user_id(&request.session_id, &caller_user_id),
         );
         let create_request = match caller_metaagent_id.as_deref() {
-            Some(metaagent_id) if !request.metaagent => create_request
-                .with_spawned_by_agent_id(metaagent_id)
-                .with_controlled_by_metaagent_id(metaagent_id),
+            Some(metaagent_id) if !request.metaagent => {
+                create_request.with_parent_agent_id(metaagent_id)
+            }
+            _ => create_request,
+        };
+        let create_request = match idempotency_key {
+            Some(key) if parent.is_some() => create_request.with_spawn_key(key),
             _ => create_request,
         };
         let create_request = if let Some(alias) = request.alias {
@@ -435,8 +514,10 @@ impl SessionRuntimeStore {
         let default_model = defaults.model.clone();
         let default_effort = defaults.effort.clone();
         let default_account_profile = defaults.account_profile.clone();
-        let default_execution_mode = defaults.execution_mode;
-        let default_permission_level = defaults.permission_level;
+        let room_agents = self.state.session_agents(&request.session_id);
+        let parent = caller_metaagent_id
+            .as_deref()
+            .and_then(|id| room_agents.iter().find(|agent| agent.id() == id).cloned());
         let workspace_id = session.workspace_id().to_string();
         let default_worktree_id = session.worktree_id().to_string();
 
@@ -472,8 +553,15 @@ impl SessionRuntimeStore {
             let effort = item
                 .effort
                 .or_else(|| same_provider.then(|| default_effort.clone()).flatten());
-            let execution_mode = item.execution_mode.or(default_execution_mode);
-            let permission_level = item.permission_level.or(default_permission_level);
+            let (execution_mode, permission_level) = match child_authority(
+                parent_limit(&session, parent.as_ref(), &room_agents),
+                item.execution_mode,
+                item.permission_level,
+                defaults,
+            ) {
+                Ok(authority) => authority,
+                Err(error) => return self.with_session_projection_action_result(Err(error)).await,
+            };
             let requested_worktree_for_scope = item.worktree_id.clone();
             let slice_ref_for_agent = slice_ref_for_agent.clone();
             let slice_kernel_ref = match slice_ref_for_agent.clone() {
@@ -518,9 +606,7 @@ impl SessionRuntimeStore {
             )
             .with_owner_user_id(member_user_id.clone());
             if let Some(metaagent_id) = caller_metaagent_id.as_deref() {
-                create_request = create_request
-                    .with_spawned_by_agent_id(metaagent_id)
-                    .with_controlled_by_metaagent_id(metaagent_id);
+                create_request = create_request.with_parent_agent_id(metaagent_id);
             }
             if let Some(alias) = item.alias {
                 create_request = create_request.with_alias(alias);

@@ -188,6 +188,7 @@ async fn forwarded_home_script_invocation_uses_shared_timeout_policy() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("agent should be remote-backed");

@@ -1075,6 +1075,7 @@ mod tests {
             development: ManagedContextDevelopmentSelection::Empty,
             provider_accounts: ManagedContextProviderAccountSelection::None,
             git_credentials: ManagedContextGitCredentialSelection::None,
+            event_connections: Default::default(),
         };
         OutboundFixture {
             root,
@@ -1139,6 +1140,7 @@ mod tests {
             plan_digest: plan_digest.to_string(),
             development: RelayManagedDevelopmentContextImportReceipt::Empty,
             kernel_context: RelayManagedKernelContextImportReceipt::Empty,
+            omitted_provider_accounts: Vec::new(),
             receipt_sha256: "b".repeat(64),
         }
     }

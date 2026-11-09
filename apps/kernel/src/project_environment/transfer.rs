@@ -616,7 +616,10 @@ pub(crate) fn source_holdings(
         match vault.find_secret(&service, name) {
             Ok(Some(_)) => secrets.push(name.clone()),
             Ok(None) => {}
-            Err(error) if crate::secret::is_chariox_vault_locked_error(&error) => {}
+            // A locked Vault cannot tell, so the target tries the row and the pull says that the Vault is locked.
+            Err(error) if crate::secret::is_chariox_vault_locked_error(&error) => {
+                secrets.push(name.clone())
+            }
             Err(_) => return Err(environment_error("the Vault could not be read")),
         }
     }
@@ -1374,6 +1377,51 @@ mod tests {
         );
         assert!(rig.adopted.lock().unwrap().is_empty());
         assert_eq!(states(&view)[0].0, "LOCAL");
+    }
+
+    /// A Vault that holds the value but is locked: every read says so.
+    #[derive(Debug)]
+    struct LockedVault;
+
+    impl CredentialVaultStore for LockedVault {
+        fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError> {
+            self.find_secret(service, key)?
+                .ok_or_else(|| environment_error("absent"))
+        }
+        fn find_secret(&self, _: &str, _: &str) -> Result<Option<String>, DaemonError> {
+            Err(DaemonError::LocalTransport {
+                operation: "credential_vault_locked",
+                message: "locked".into(),
+            })
+        }
+        fn set_secret(&self, _: &str, _: &str, _: &str) -> Result<(), DaemonError> {
+            unreachable!("a snapshot never writes")
+        }
+        fn delete_secret(&self, _: &str, _: &str) -> Result<(), DaemonError> {
+            unreachable!("a snapshot never writes")
+        }
+    }
+
+    #[test]
+    fn a_source_with_a_locked_vault_still_lists_its_secrets_so_the_row_says_the_vault_is_locked() {
+        let rig = Rig::new();
+        rig.store
+            .adopt("p", record(1, &["A_KEY", "B_KEY"], &[]))
+            .unwrap();
+        let held = source_holdings(
+            &rig.store,
+            "p",
+            &LockedVault,
+            &rig.registrations,
+            &rig.checkout,
+            "A".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            held.secrets,
+            ["A_KEY", "B_KEY"],
+            "a locked Vault cannot tell, so the target tries each row and the pull names the lock"
+        );
     }
 
     #[tokio::test]

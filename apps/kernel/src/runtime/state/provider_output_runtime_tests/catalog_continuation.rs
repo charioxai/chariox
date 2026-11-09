@@ -306,6 +306,162 @@ async fn loader_turn_promised_continuation_starts(
     })
     .await
     .expect("the promised continuation turn must start after the loader turn ends");
+    // The replay carries the person's request text again, so it must not show up
+    // as a second prompt of theirs: only the loader turn keeps a visible prompt.
+    let history = runtime
+        .owned
+        .operational_history_store
+        .load_session_events(session.id(), Some(agent.id()))
+        .expect("operational history should load");
+    let visible_prompts = history
+        .iter()
+        .filter(|event| event.kind == crate::history::HistoryEventKind::UserPrompt)
+        .filter(|event| !event.is_internal_prompt_echo())
+        .map(|event| event.prompt_id.clone().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert!(
+        visible_prompts == [prompt.id().to_string()],
+        "the continuation replay {continuation_id} is shown as a user prompt: {visible_prompts:?}"
+    );
+}
+
+// The continuation replay is hidden, but a person who steers a new message into the
+// running continuation turn wrote it themselves: the steering row is stored under the
+// running turn's `task-catalog:` prompt id, and that id must not hide it.
+#[tokio::test]
+async fn a_person_steer_into_the_catalog_continuation_stays_visible() {
+    crate::test_support::isolated_env_test!();
+    let worktree = crate::test_support::TestWorktree::new("catalog-continuation-steer");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    let source = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "loader-requester",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .submit_prompt(
+            session.id(),
+            source.id(),
+            Some(agent.id()),
+            "open example.com in my browser",
+            Vec::new(),
+        )
+        .unwrap()
+    else {
+        panic!("the loader turn must start");
+    };
+    let continuation_id = format!("task-catalog:{}", prompt.id());
+    let app = Arc::new(Mutex::new(app));
+    let mut runtime = owned_runtime_state(&app).await;
+    runtime.owned.pending_mcp_continuations = PendingMcpContinuationStore::default();
+    let _ = runtime.runtime_catalog_loader_result(
+        &agent,
+        &[],
+        false,
+        serde_json::json!({"loaded":"chariox.kernel_browser"}),
+    );
+    runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), true, false, true)
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let sequence = runtime
+                .owned
+                .session_projection
+                .session_change_sequence(session.id());
+            if runtime
+                .owned
+                .session_store
+                .get_session(session.id())
+                .unwrap()
+                .active_prompt_for_agent(agent.id())
+                .is_some_and(|prompt| prompt.id() == continuation_id)
+            {
+                break;
+            }
+            runtime
+                .owned
+                .session_projection
+                .wait_for_session_change_after(session.id(), sequence)
+                .await;
+        }
+    })
+    .await
+    .expect("the promised continuation turn must start after the loader turn ends");
+    // The person types while the continuation runs: the kernel steers it into that turn.
+    runtime
+        .owned
+        .append_steering_prompt_history(
+            session.id(),
+            run.id(),
+            &continuation_id,
+            source.id(),
+            agent.id(),
+            "person-steer-1",
+            "and also take a screenshot of it",
+            &[],
+            crate::session::PromptOrigin::Chariox,
+        )
+        .unwrap();
+    let steer = runtime
+        .owned
+        .operational_history_store
+        .load_session_events(session.id(), Some(agent.id()))
+        .unwrap()
+        .into_iter()
+        .find(|event| {
+            event.metadata.get("merge_key").and_then(|key| key.as_str())
+                == Some(crate::history::steering_prompt_merge_key("person-steer-1").as_str())
+        })
+        .expect("the person's steering row");
+    assert!(
+        !steer.is_internal_prompt_echo(),
+        "the person's steer under {:?} counts as a kernel instruction",
+        steer.prompt_id
+    );
+    for include_prefetched_content in [false, true] {
+        let crate::local::LocalDaemonResponse::SessionHistoryOutline { agents } =
+            crate::runtime::history_requests::execute_session_history_outline_request(
+                runtime.owned.operational_history_store.clone(),
+                crate::local::GetSessionHistoryOutlineRequest {
+                    session_id: session.id().to_string(),
+                    agent_ids: Some(vec![agent.id().to_string()]),
+                    latest_prompt_count: Some(4),
+                    include_prefetched_content,
+                    cursor: None,
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected the history outline");
+        };
+        let text = serde_json::to_string(&agents).unwrap();
+        assert!(
+            text.contains("and also take a screenshot of it"),
+            "the person's steer is hidden (prefetch {include_prefetched_content}): {text}"
+        );
+    }
 }
 
 // P2-4: when the refreshed task cannot resume, the owner is told instead of

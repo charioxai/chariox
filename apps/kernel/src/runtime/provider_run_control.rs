@@ -20,7 +20,8 @@ pub(crate) async fn execute_provider_run_request(
             execute_get_provider_run_request(runtime_state, request).await
         }
         LocalDaemonRequest::UpdateProviderRunSelection(request) => {
-            execute_update_provider_run_selection_request(runtime_state, request).await
+            execute_update_provider_run_selection_request(runtime_state, caller_user_id, request)
+                .await
         }
         LocalDaemonRequest::LogoutProvider(request) => {
             execute_logout_provider_and_invalidate_catalog_request(
@@ -47,9 +48,10 @@ pub(crate) async fn execute_get_provider_run_request(
 
 pub(crate) async fn execute_update_provider_run_selection_request(
     runtime_state: &KernelRuntimeState,
+    caller_user_id: &str,
     request: UpdateProviderRunSelectionRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    runtime_state.update_provider_run_selection_response(request)
+    runtime_state.update_provider_run_selection_response(caller_user_id, request)
 }
 
 pub(crate) fn projected_provider_run_response(

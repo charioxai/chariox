@@ -35,9 +35,15 @@ impl KernelRuntimeOwnedState {
 impl KernelRuntimeState {
     pub(crate) fn set_agent_deadline(
         &self,
+        caller_user_id: &str,
         request: SetAgentDeadlineRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let agent = self.owned.agent_store.get_agent(&request.agent_id)?;
+        // A reached deadline ends the agent's work, so only who acts for its owner arms one.
+        let agent = self.owned.ensure_agent_owner(
+            &request.agent_id,
+            caller_user_id,
+            "set agent deadline",
+        )?;
         if agent.session_id() != request.session_id {
             return Err(DaemonError::AgentNotInSession {
                 session_id: request.session_id,
@@ -47,20 +53,67 @@ impl KernelRuntimeState {
         if agent.remote_execution().is_some() {
             return Err(refusal("agent_deadline_requires_executor", "arm an agent deadline on its executing kernel; leased-agent deadlines require worker enforcement"));
         }
+        // A deadline is never later than an ancestor's: the parent's deadline ends its team.
+        let agents = self
+            .owned
+            .agent_store
+            .get_session_agents(&request.session_id);
+        for ancestor in crate::agent::authority_limit::ancestors(&agent, &agents) {
+            if self
+                .owned
+                .durable_state_store
+                .agent_deadline(&request.session_id, ancestor.id())?
+                .is_some_and(|parent| request.deadline_ms > parent.deadline_ms)
+            {
+                return Err(refusal(
+                    "agent_deadline_after_parent",
+                    "an agent deadline cannot be later than its parent's; use a shorter time",
+                ));
+            }
+        }
         let Outcome::Deadline(deadline) =
             self.owned
                 .durable_state_store
                 .agent_lifecycle(Operation::SetDeadline {
-                    room: request.session_id,
-                    agent: request.agent_id,
+                    room: request.session_id.clone(),
+                    agent: request.agent_id.clone(),
                     deadline: request.deadline_ms,
                 })?
         else {
             unreachable!()
         };
+        // Everything below follows a shortened deadline at once.
+        for descendant in crate::agent::authority_limit::descendants(&request.agent_id, &agents) {
+            let later = self
+                .owned
+                .durable_state_store
+                .agent_deadline(&request.session_id, descendant.id())?
+                .is_none_or(|own| own.deadline_ms > request.deadline_ms);
+            if later {
+                self.owned
+                    .durable_state_store
+                    .agent_lifecycle(Operation::SetDeadline {
+                        room: request.session_id.clone(),
+                        agent: descendant.id().to_string(),
+                        deadline: request.deadline_ms,
+                    })?;
+            }
+        }
         Ok(LocalDaemonResponse::AgentDeadline {
             deadline: Some(deadline),
         })
+    }
+
+    /// A client's read: the deadline says when another user's work stops, so only who acts for
+    /// the agent's owner reads it.
+    pub(crate) fn read_agent_deadline(
+        &self,
+        caller_user_id: &str,
+        request: GetAgentDeadlineRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.owned
+            .ensure_agent_owner(&request.agent_id, caller_user_id, "read agent deadline")?;
+        self.get_agent_deadline(request)
     }
 
     pub(crate) fn get_agent_deadline(
@@ -131,7 +184,20 @@ impl KernelRuntimeState {
             .map(|_| ())
     }
 
+    /// The agent's own work, or work of any sub-agent below it (A4).
     fn deadline_work_remains(&self, room: &str, agent: &str) -> Result<bool, DaemonError> {
+        if self.agent_work_remains(room, agent)? {
+            return Ok(true);
+        }
+        for descendant in self.descendants_depth_first(agent) {
+            if self.agent_work_remains(room, descendant.id())? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn agent_work_remains(&self, room: &str, agent: &str) -> Result<bool, DaemonError> {
         let session = match self.owned.session_store.get_session(room) {
             Ok(session) => session,
             Err(DaemonError::SessionNotFound { .. }) => return Ok(false),
@@ -148,26 +214,58 @@ impl KernelRuntimeState {
             || !self.owned.unsettled_agent_wakes(room, agent)?.is_empty())
     }
 
+    /// A deadline ends the agent and every sub-agent below it, depth-first.
+    /// A sub-agent whose cleanup is pending does not keep the others running.
     async fn stop_deadline_agent(&self, room: &str, agent: &str) -> Result<(), DaemonError> {
+        let mut first_error = self.stop_one_deadline_agent(room, agent).await.err();
+        for descendant in self.descendants_depth_first(agent) {
+            if let Err(error) = self.stop_one_deadline_agent(room, descendant.id()).await {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    async fn stop_one_deadline_agent(&self, room: &str, agent: &str) -> Result<(), DaemonError> {
         let owned = &self.owned;
         let session = match owned.session_store.get_session(room) {
             Ok(session) => session,
             Err(DaemonError::SessionNotFound { .. }) => return Ok(()),
             Err(error) => return Err(error),
         };
-        if matches!(
-            owned.agent_store.get_agent(agent),
-            Err(DaemonError::AgentNotFound { .. })
-        ) {
-            return Ok(());
-        }
+        let leased = match owned.agent_store.get_agent(agent) {
+            Ok(agent) => agent.remote_execution().is_some(),
+            Err(DaemonError::AgentNotFound { .. }) => return Ok(()),
+            Err(error) => return Err(error),
+        };
         let active = owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent);
-        let run = owned.provider_store.get_run_for_agent(room, agent);
         owned
             .prompt_state_owner
             .remove_queued_prompts_for_agent(&session, agent);
+        if let Some(active) = active.as_ref().filter(|_| leased) {
+            // The worker runs this turn: cancel it there, as an explicit cancel does, and
+            // keep the cleanup pending until the worker settles it.
+            Box::pin(self.cancel_remote_agent_prompt_if_matches(
+                room,
+                agent,
+                active.source_attachment_id(),
+                Some(active.id()),
+                None,
+            ))
+            .await?;
+            owned.persist_deadline_prompt_state(&session, agent)?;
+            return Err(refusal(
+                "agent_deadline_cleanup_pending",
+                &format!("deadline reached; the worker has not settled the turn of agent {agent} yet. Cleanup retries"),
+            ));
+        }
+        // A leased agent's provider process lives on its worker.
+        let run = owned
+            .provider_store
+            .get_run_for_agent(room, agent)
+            .filter(|_| !leased);
         if let Some(active) = &active {
             owned.prompt_state_owner.begin_cancelling_prompt_if_matches(
                 &session,
@@ -175,6 +273,20 @@ impl KernelRuntimeState {
                 Some(active.id()),
             );
         }
+        // The wakes' retirement can end these tasks before the loop below sees them.
+        let unfinished_tasks = owned
+            .durable_state_store
+            .agent_tasks(Some(room), Some(agent))?
+            .into_iter()
+            .filter(|task| {
+                !matches!(
+                    task.state,
+                    crate::durable_state::agent_lifecycle::ExecutionState::Done
+                        | crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
+                )
+            })
+            .map(|task| task.task_id)
+            .collect::<Vec<_>>();
         owned.cancel_owned_agent_wakes(room, Some(agent));
         for task in owned
             .durable_state_store
@@ -192,6 +304,16 @@ impl KernelRuntimeState {
                         owner: session.owner_user_id().into(),
                         revision: task.revision,
                     })?;
+            }
+        }
+        // The deadline ended these tasks: their parent hears of it.
+        for task_id in unfinished_tasks {
+            let Some(ended) = owned.durable_state_store.agent_task(&task_id)? else {
+                continue;
+            };
+            if let Err(error) = self.announce_child_finished(&ended, None, None).await {
+                tracing::warn!(%error, agent_id=%agent,
+                    "child_finished retained for the inbox sweep");
             }
         }
         if let Some(run) = run
@@ -226,16 +348,24 @@ impl KernelRuntimeState {
                 Err(error) => return Err(error),
             }
         }
-        let (active, queued) = owned.prompt_state_owner.state_parts(&session, agent);
-        let mirrored = owned
-            .session_store
-            .mirror_agent_prompt_state(room, agent, active, queued)?;
-        owned.persist_prompt_session_state(&mirrored, agent)?;
+        owned.persist_deadline_prompt_state(&session, agent)?;
         owned.await_owned_wakes_settled(room, agent).await
     }
 }
 
 impl KernelRuntimeOwnedState {
+    fn persist_deadline_prompt_state(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &str,
+    ) -> Result<(), DaemonError> {
+        let (active, queued) = self.prompt_state_owner.state_parts(session, agent);
+        let mirrored =
+            self.session_store
+                .mirror_agent_prompt_state(session.id(), agent, active, queued)?;
+        self.persist_prompt_session_state(&mirrored, agent)
+    }
+
     /// Wakes (timers, watched processes, terminals, driver sources) that have
     /// not confirmed they stopped. `cancel_owned_agent_wakes` only requests
     /// the stop; a process that ignores SIGTERM stays until SIGKILL.

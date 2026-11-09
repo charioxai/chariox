@@ -526,15 +526,11 @@ impl KernelRuntimeState {
             let member_user_id = self
                 .owned
                 .room_member_user_id_in(session.owner_user_id(), caller_user_id);
-            let collaboration_level = session
-                .collaboration_level_for_user(&member_user_id)
-                .unwrap_or(crate::session::CollaborationLevel::Private);
-            if !self.owned.acts_for_owner_in(
-                session.owner_user_id(),
+            if !self.owned.can_view_agent_trace_owned_by(
+                &session,
                 caller_user_id,
                 agent.owner_user_id(),
-            ) && !collaboration_level.can_view_agent_trace()
-            {
+            ) {
                 return Err(DaemonError::OwnershipAccessDenied {
                     user_id: caller_user_id.to_string(),
                     owner_user_id: agent.owner_user_id().to_string(),
@@ -599,7 +595,10 @@ impl KernelRuntimeState {
         self.authorize_current_external_command()?;
         self.normalize_local_kernel_ref(&mut request);
         if request.kernel_ref.is_none() {
+            self.keep_child_folder_inside_parent(&request)?;
             request = self.prepare_local_agent_worktree_placement(request)?;
+            #[cfg(test)]
+            crate::agent::authority_limit::run_hook_before_spawn_commit(&request.session_id);
             return self.owned.spawn_agent(request);
         }
         self.with_app_side_effect(|app| {
@@ -608,6 +607,24 @@ impl KernelRuntimeState {
                 .spawn_agent_authorized(request, &|| self.authorize_current_external_command())
         })
         .await
+    }
+
+    /// A sub-agent's explicit folder lies inside its parent's folders (A5).
+    fn keep_child_folder_inside_parent(
+        &self,
+        request: &crate::agent::CreateAgentRequest,
+    ) -> Result<(), DaemonError> {
+        let (Some(parent), Some(directory)) = (
+            request.parent_agent_id.as_ref(),
+            request.worktree_id.as_deref(),
+        ) else {
+            return Ok(());
+        };
+        let Ok(parent) = self.owned.agent_store.get_agent(parent.agent_id()) else {
+            return Ok(());
+        };
+        let session = self.owned.session_store.get_session(&request.session_id)?;
+        crate::agent::authority_limit::check_directory(&parent, &session, directory)
     }
 
     pub(super) fn normalize_local_kernel_ref(
@@ -640,11 +657,21 @@ impl KernelRuntimeState {
         let Some(placement) = request.worktree_placement.take() else {
             return Ok(request);
         };
-        let resolved = crate::git_worktree_placement::prepare_git_worktree(
+        let parent = request
+            .parent_agent_id
+            .as_ref()
+            .and_then(|parent| self.owned.agent_store.get_agent(parent.agent_id()).ok());
+        let resolved = crate::git_worktree_placement::prepare_git_worktree_checked(
             &placement,
             std::path::Path::new(base_worktree),
             request.worktree_id.as_deref(),
             "agent.spawn",
+            |target| match &parent {
+                Some(parent) => crate::agent::authority_limit::check_directory_to_create(
+                    parent, &session, target,
+                ),
+                None => Ok(()),
+            },
         )?;
         self.copy_environment_files_into_worktree(
             std::path::Path::new(base_worktree),
@@ -800,12 +827,29 @@ impl KernelRuntimeState {
         self.destroy_agent(agent_id, caller_user_id).await
     }
 
+    /// Destroys the agent, then its sub-agents depth-first (A4).
     pub(crate) async fn destroy_agent(
         &self,
         agent_id: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.authorize_current_external_command()?;
+        let destroyed = self
+            .destroy_one_agent(agent_id, caller_user_id, false)
+            .await?;
+        self.destroy_sub_agents_of(destroyed.id()).await;
+        Ok(destroyed)
+    }
+
+    /// `cascade` destroys a sub-agent whose parent the command already removed:
+    /// the command's own target is gone, so only its epoch, peer and grant are
+    /// rechecked, not its reach.
+    pub(super) async fn destroy_one_agent(
+        &self,
+        agent_id: &str,
+        caller_user_id: &str,
+        cascade: bool,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.authorize_destroy(cascade)?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let local_provider_run_ids = if agent.remote_execution().is_none() {
             self.owned
@@ -833,7 +877,7 @@ impl KernelRuntimeState {
         self.owned
             .ensure_agent_owner(agent.id(), caller_user_id, "destroy agent")?;
         self.revoke_agent_app_capability_grants(&agent).await?;
-        self.authorize_current_external_command()?;
+        self.authorize_destroy(cascade)?;
         // Relay projection ingestion also owns the app lock. Keep the worker
         // acknowledgement and home deletion in one critical section so an
         // already-admitted snapshot cannot revive the run after it is ended.
@@ -845,10 +889,10 @@ impl KernelRuntimeState {
             // A private connector owns a current-thread runtime. Its reader and
             // writer must keep polling while synchronous cleanup waits for ACKs.
             self.with_app_side_effect_blocking(move |app| {
-                state.authorize_current_external_command()?;
+                state.authorize_destroy(cascade)?;
                 crate::app::KernelSessionService::new(app)
                     .destroy_agent_worker_execution_authorized(&agent, &|| {
-                        state.authorize_current_external_command()
+                        state.authorize_destroy(cascade)
                     })
                     .map_err(|error| DaemonError::AgentWorkerCleanup {
                         agent_id: agent_id.clone(),
@@ -884,6 +928,14 @@ impl KernelRuntimeState {
         // reconciliation path rather than the next 30-second periodic sweep.
         self.schedule_agent_lifecycle_sweep();
         Ok(destroyed)
+    }
+
+    fn authorize_destroy(&self, cascade: bool) -> Result<(), DaemonError> {
+        if cascade {
+            self.authorize_current_external_response()
+        } else {
+            self.authorize_current_external_command()
+        }
     }
 
     fn agents_leased_to_workers(&self, session_id: &str) -> Vec<crate::agent::AgentInstance> {

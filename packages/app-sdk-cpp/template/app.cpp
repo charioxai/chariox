@@ -46,7 +46,7 @@ static chariox::call run(chariox::context ctx) noexcept {
   write.tag = CHARIOX_APP_STATE_WRITE_PUT;
   write.val.put = {cx_string("count"), cx_string(value)};
   chariox_app_state_transaction_t tx{};
-  tx.schema_version = 1;
+  tx.schema_version = 0;
   tx.checks = {&check, 1};
   tx.writes = {&write, 1};
   chariox::owned<chariox_app_state_result_committed_app_error_t,

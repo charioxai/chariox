@@ -13,7 +13,8 @@ pub use api::{
 pub use api::{CreatedResource, CreatedResourceState, ResourceRevokeMethod};
 mod api;
 pub use api::{
-    AgentDeadline, AgentDeadlineState, GetAgentDeadlineRequest, SetAgentDeadlineRequest,
+    AgentDeadline, AgentDeadlineState, AgentTree, AgentTreeNode, AgentTreeState, AgentTreeTotals,
+    GetAgentDeadlineRequest, ListDescendantsRequest, SetAgentDeadlineRequest,
 };
 pub use api::{
     CaptureVisibleRegionRequest, ScreenshotRegion, ScreenshotSurface, VisibleRegionCapture,
@@ -119,7 +120,8 @@ pub use api::{
     ListEventConnectionsRequest, ListEventGeneratorResourcesRequest,
     ListExternalProviderSessionsRequest, ListHomeExtensionAuditRequest, ListMcpServersRequest,
     ListMetaagentEventsRequest, ListPairedClientsRequest, ListProjectsRequest,
-    ListPromptSettingsRequest, ListProviderAccountCopyOffersRequest, ListProviderProcessesRequest,
+    ListPromptSettingsRequest, ListProviderAccountCopyOffersRequest,
+    ListProviderAccountProfilesRequest, ListProviderProcessesRequest,
     ListQueuedWorkflowPromptsRequest, ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest,
     ListRoomEnvironmentActionHistoryRequest, ListScriptsRequest, ListSessionMembersRequest,
     ListSessionsRequest, ListSkillsRequest, ListSliceAuditRequest, ListSlicesRequest,
@@ -185,8 +187,8 @@ pub use api::{
     SemanticSearchRecallMode, SemanticSearchRecallRequest, SendProviderLoginInputRequest,
     SendTerminalInputRequest, SessionHistoryBlobContentPage, SessionHistoryOutlineAgent,
     SessionHistoryOutlineBlob, SessionHistoryOutlineCursor, SessionHistoryOutlineTurn,
-    SessionHistoryOutlineTurnLifecycle, SessionInviteRecord, SetCredentialSecretRequest,
-    SetProjectEnvironmentSecretRequest, SetProjectPinnedRequest,
+    SessionHistoryOutlineTurnLifecycle, SessionInviteRecord, SetAgentParentRequest,
+    SetCredentialSecretRequest, SetProjectEnvironmentSecretRequest, SetProjectPinnedRequest,
     SetProviderAccountCredentialRequest, SetRoomBrowserBarRequest, SetRoomPinnedRequest,
     SetUserConfigValueRequest, SetWorkflowFlushContextRequest,
     SetWorkflowNodeCanCompleteRunRequest, SetWorkflowNodeCanEmitIntermediateOutputRequest,
@@ -324,9 +326,10 @@ pub use api::{EnvironmentOperationRequest, GetEnvironmentOperationRequest};
 pub use api::{
     AckEventsRequest, EventApprovalPointer, EventInteractionState, EventKernelHealth,
     EventKernelIssue, EventQuestion, EventQuestionChoice, EventQuestionTextReply, EventRefs,
-    EventResolution, EventResolutionVia, EventRunState, EventSessionState, EventSubscription,
-    EventTarget, EventsBatch, GetEventSubscriptionRequest, ListEventsRequest, OutsideEvent,
-    OutsideEventValue, SubscribeEventsRequest, UnsubscribeEventsRequest, WaitEventsRequest,
+    EventResolution, EventResolutionVia, EventRunState, EventSessionState, EventSourceFollow,
+    EventSubscription, EventTarget, EventsBatch, GetEventSubscriptionRequest, ListEventsRequest,
+    ListNotificationSourcesRequest, OutsideEvent, OutsideEventValue, SubscribeEventsRequest,
+    UnsubscribeEventsRequest, WaitEventsRequest,
 };
 
 pub use api::{

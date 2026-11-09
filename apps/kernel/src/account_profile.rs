@@ -7,6 +7,9 @@
 use crate::runtime::bounded_process::BoundedCommandExt as _;
 #[path = "account_profile_copy.rs"]
 mod account_copy;
+#[path = "account_profile_vault_login.rs"]
+mod vault_login;
+pub(crate) use vault_login::{VaultLoginOpen, VaultLoginSeal};
 #[path = "account_profile_usage.rs"]
 mod usage;
 use std::collections::{BTreeMap, BTreeSet};
@@ -670,6 +673,29 @@ pub struct ProviderAccountProfile {
     pub usage: ProviderAccountUsageSnapshot,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub materializations: Vec<ProviderAccountMaterializationStatus>,
+    /// Filled by the kernel when it answers a read; never stored.
+    #[serde(
+        default,
+        skip_serializing_if = "ProviderAccountContextTransfer::is_available"
+    )]
+    pub context_transfer: ProviderAccountContextTransfer,
+}
+
+/// Whether a managed machine's context transfer can carry this login. Provider-native
+/// files and Vault credentials both travel; a login whose Vault is not a Chariox Vault
+/// cannot be sealed for the new machine and is left out of the default selection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAccountContextTransfer {
+    #[default]
+    Available,
+    Unavailable,
+}
+
+impl ProviderAccountContextTransfer {
+    fn is_available(&self) -> bool {
+        *self == Self::Available
+    }
 }
 
 impl ProviderAccountProfile {
@@ -958,6 +984,9 @@ struct ManagedContextReplicaBinding {
     replaced_profile: Option<ReplacedProviderAccountProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     previous_default_profile_id: Option<String>,
+    /// The login is a Vault credential written by the transfer, which a rollback removes too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    vault_login: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1009,6 +1038,8 @@ pub struct ProviderAccountProfileRegistry {
     /// Counts saved changes, so the relay connector republishes the logins it
     /// advertises when one is added, renamed or signed out after it connected.
     generation: Arc<AtomicU64>,
+    /// Profiles whose Vault login an import or its rollback is writing right now.
+    vault_login_slots: vault_login::VaultLoginSlots,
 }
 
 type ProviderAccountUsageRefreshKey = (String, String, String);
@@ -1095,6 +1126,7 @@ impl ProviderAccountProfileRegistry {
             document: Arc::new(RwLock::new(document)),
             usage_refresh_attempts: Arc::new(ProviderAccountUsageRefreshCoordinator::default()),
             generation: Arc::new(AtomicU64::new(0)),
+            vault_login_slots: vault_login::VaultLoginSlots::default(),
         };
         if changed {
             let document = registry.read_document()?;
@@ -3377,6 +3409,7 @@ impl ProviderAccountProfileRegistry {
             materialization_sha256: intent.materialization_sha256.to_string(),
             replaced_profile,
             previous_default_profile_id: previous_default_profile_id.clone(),
+            vault_login: false,
         });
         let result = if let Some(existing) = document.profiles.iter_mut().find(|stored| {
             stored.public.owner_user_id == owner_user_id
@@ -4004,6 +4037,7 @@ fn new_public_profile(
         services: Vec::new(),
         usage: ProviderAccountUsageSnapshot::unavailable(profile_id, provider),
         materializations: Vec::new(),
+        context_transfer: ProviderAccountContextTransfer::Available,
     }
 }
 

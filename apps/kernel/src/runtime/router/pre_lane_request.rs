@@ -7,7 +7,9 @@ use crate::runtime::agent_utility_executor::execute_agent_utility_request;
 use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::event_catalog_control::execute_event_catalog_request_with_client;
 use crate::runtime::managed_bootstrap_observation_control::execute_managed_bootstrap_observation_request;
-use crate::runtime::managed_context_outbound_control::execute_managed_context_outbound_request;
+use crate::runtime::managed_context_outbound_control::{
+    execute_managed_context_outbound_request, OutboundRequester,
+};
 use crate::runtime::managed_context_target_control::execute_managed_context_target_request;
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_process_control::provider_processes_visible_to_user_from_projection;
@@ -28,6 +30,7 @@ impl CommandRouter {
         &'a self,
         request: &'a LocalDaemonRequest,
         caller_user_id: &'a str,
+        session_id: Option<&'a str>,
     ) -> Option<PreLaneRequestFuture<'a>> {
         match request {
             LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(request) => {
@@ -51,7 +54,10 @@ impl CommandRouter {
                         self.managed_context_outbound.clone(),
                         self.provider_account_profiles.clone(),
                         self.runtime_state.clone(),
-                        caller_user_id,
+                        OutboundRequester {
+                            user_id: caller_user_id,
+                            session_id,
+                        },
                         request.clone(),
                     )
                     .map(Some)
@@ -143,6 +149,7 @@ impl CommandRouter {
                     execute_agent_utility_request(
                         &self.runtime_state,
                         &self.config_projection,
+                        caller_user_id,
                         request.clone(),
                     )
                     .await

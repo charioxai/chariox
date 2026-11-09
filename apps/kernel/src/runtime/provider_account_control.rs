@@ -51,9 +51,13 @@ pub(crate) async fn execute_provider_account_request(
             Ok(LocalDaemonResponse::ProviderUsageSnapshot { accounts })
         }
         LocalDaemonRequest::ListProviderAccountProfiles(request) => {
-            Ok(LocalDaemonResponse::ProviderAccountProfilesListed {
-                profiles: registry.list(&owner_user_id, request.provider.as_deref())?,
-            })
+            let mut profiles = registry.list(&owner_user_id, request.provider.as_deref())?;
+            crate::runtime::provider_account_portability::mark_context_transfer(
+                &owner_user_id,
+                &config.user_config.credential_vault,
+                &mut profiles,
+            )?;
+            Ok(LocalDaemonResponse::ProviderAccountProfilesListed { profiles })
         }
         LocalDaemonRequest::GetProviderAccountProfile(request) => {
             Ok(LocalDaemonResponse::ProviderAccountProfile {

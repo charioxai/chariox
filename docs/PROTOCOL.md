@@ -715,6 +715,42 @@ backfills creator authority. Spawn creator is derived from the authenticated
 provider actor, not accepted from a client command. Relay peer shapes are
 unchanged in this PR.
 
+Local daemon protocol 1000 replaces `spawned_by_agent_id` and the agent's
+`controlled_by_metaagent_id` with one edge, `parent_agent_id` (`{"agent_id"}`,
+absent for a root), and adds `spawn_key`, the parent's command id of the spawn
+that created the agent. A caller controls an agent exactly when the caller is
+an ancestor of it in the same Room, at any depth, whatever either agent's
+permission level or mode. Only the user changes the edge, with
+`SetAgentParent {session_id, agent_id, parent_agent_id}` (answered by
+`AgentParentChanged {agent}`); every agent caller, a sudo window included, is
+refused. A Room agent controls its subtree with `agent cancel`, `agent deadline
+set|get`, `agent children` and `agent spawn`, and reads `agent usage` and
+`agent profiles`. `agent spawn` takes `--account-profile`, `--permission
+required|yolo`, `--deadline 90s|30m|2h|1d` and `--command-id`; a child never
+has a higher permission level or mode than its parent, and a retry with the
+same command id returns the same child. The end of a child's work reaches its
+parent as one urgent `child_finished` inbox event carrying `child_agent_id`,
+`success`, the typed turn `outcome` and `deadline_reached`; a turn that waited
+on a question when the kernel restarted ends as `interrupted_by_restart`. The
+relay peer protocol needs no change for it.
+
+Local daemon protocol 1000 makes a
+sub-agent's decision one card with one holder. The kernel keeps the holder (the
+nearest parent that may answer, else the user) as state for routing and audit and
+does not project it. While the user holds a sub-agent's decision, the session
+interaction carries `shown_in_agent_id`, the room agent whose panel shows it, and
+an external agent following the room hears the same interaction id as an
+`interaction` event with `value.shown_in` set; a decision a parent agent holds is
+not listed to the user until it reaches the user. A holder agent gets an urgent
+`child_decision` inbox event (`interaction_id`, `child_agent_id`, `child_alias`,
+`question`, `choices`, `text_allowed`, `needs_answer`) and answers with the room
+command `agent answer <interaction> <choice-id|text>` or hands it on with `agent
+pass <interaction>`; both return `ChildDecision {status}` with `status` one of
+`answered`, `passed`, `not_holder`, `settled_by_user`, `invalid_answer`, and no
+text. The decision moves up at once, with no model turn, when its holder's turn
+ends, errors, is cancelled or is blocked. A decision answered by a parent closes
+as `resolution.via = "parent_agent"`. The relay peer protocol needs no change for it.
+
 Agents may spawn without room agent-count limits, message any current room
 agent, create workflows, and observe/run peers' workflows. Agent rename/delete
 requires the caller's direct spawned child in the same room; self, peers,
@@ -5645,9 +5681,12 @@ merged peer contracts. The event requests are available to external Unix
 access grants and their kernel gateway only. They are absent from session-agent
 tools and sudo's allowed request vocabulary.
 
-`SubscribeEvents { targets }` follows `{ kernel, session_id, agent_id? }` targets;
-omitting the agent follows every agent in the session, including later additions.
-`UnsubscribeEvents { targets | all }`, `GetEventSubscription`, `ListEvents
+`SubscribeEvents { targets, sources? }` follows `{ kernel, session_id, agent_id? }` targets;
+omitting the agent follows every agent in the session, including later additions. `sources`
+names notification source ids of this kernel (see `EVENT_TRIGGER_PROTOCOL.md`, "Outside agent
+grants"); their occurrences arrive as `notification` events, and `ListNotificationSources {}` (answer
+`NotificationSources { sources }`) lists the ones the grant can follow.
+`UnsubscribeEvents { targets, sources, all }`, `GetEventSubscription`, `ListEvents
 { since?, limit }`, `WaitEvents { since?, timeout_ms, limit }` and `AckEvents
 { cursor }` share one grant-owned inbox. A wait returns pending records immediately
 or an empty timed-out batch, with a maximum wait of fifteen minutes. Batches are
@@ -6819,3 +6858,99 @@ Room agents use `chariox.notification_sources {}` to discover this Room's source
 trigger. No target agent or busy policy is accepted. App automation summaries
 carry `target_kind: workflow_endpoint | agent`. App-target receipts revalidate the
 current catalog, signer, automation revision and agent target before queueing.
+
+### Event connection records in an owner-managed copy — local 1000 / relay peer 439
+
+`StartManagedContextTransfer.ownerManaged.contextSelection` takes an optional
+`eventConnections`: `{kind:"none"}` (the default, and left out of the serialized shape) or
+`{kind:"selected", connectionIds:[…]}` naming 1 to 16 connections of the starting user, sorted and
+without duplicates. The managed-context plan binding in `arm_managed_context_import` carries the same
+field under the same rule, so the plan digest covers it; the Cloud ticket still binds only
+`kernelContext` and `developmentSetup`. A record is `{generatorId, connectionId, eventOwnerId,
+status}`: it holds no provider credential, so unlike provider accounts and Git credentials it is
+allowed in an owner-managed copy. The event owner id is a bearer capability for the connection and
+travels only inside the encrypted package; receipts list connection ids and whether the import created
+each record, never the owner id. Before the transfer asks Cloud for authority the source refuses a
+selection that names a connection it does not hold (`event_connection_not_found`) or that is not
+`ready` (`event_connection_not_ready`). The target keeps a record it already holds when it is the same
+connection and refuses a different one under the same connection id (`event_connection_conflict`),
+changing nothing; a later import failure removes only the records this import created. The event
+services validate the connection the first time the target refreshes or attaches it. Clients check
+local >= 1000 and relay peer >= 439 before sending `eventConnections`.
+
+Local daemon protocol 1000 adds `ListDescendants { session_id, agent_id }`, answered by
+`AgentTree { tree }` (`root`, `rev`, `totals {live, running, needs_user}` and `nodes` in creation order). A node
+carries `state` (starting|running|waiting|idle|ended|error|unreachable), `outcome` (how its latest turn ended, null
+while it runs or before it ran) and `needs_user` (the user holds a pending decision of that node;
+`totals.needs_user` counts them; `totals.live` counts the nodes starting, running, waiting or unreachable, so an idle node, finished or not started, is not live); no holder, path or card. `rev` moves only when the read differs. The follow event
+`agent_tree { root, rev }` is published once per change of the tree below `root`. Sub-agents are never listed, counted
+or announced as room members.
+
+### A Vault provider login travels with a new managed machine — local 1000 / relay peer 439
+
+MP-08 / MP-09 / MP-10 / MP-11: a profile whose login is a Vault credential (a Claude setup token) is part of the
+managed-context provider-account component (`providerAccounts` selection; the plan, its digest and the manifest do
+not change). Each such profile travels as `{schema_version, profile, sealed, generated_at_ms}`:
+`sealed` is an `EncryptedRelayPayload` from the source kernel's relay key to the new machine's, bound to the context,
+both kernel ids, the provider and the profile id. The package, its digest and the receipt hold ciphertext and ids only.
+The new machine opens the seal, runs the provider's own check, writes the value into its own Vault (local 973) under the
+deterministic handle, then registers the profile authenticated; a profile of that id already there is a typed refusal and
+the accounts installed before it roll back. `ProviderAccountProfile.context_transfer` is `available` (omitted) or
+`unavailable`, which marks only a login whose Vault is not a Chariox Vault (the earlier `vault_credential` is gone).
+`PreflightProviderAccountPortability` accepts a Vault login and, with a Vault login selected, finds the Vault unlocked:
+the existing unlock card appears in the launching session, an agent's included, and a caller without a session gets the
+typed `vault_locked` refusal. A package without a transferred Vault that reaches a machine whose Vault is not open
+still imports, without those logins: the import receipt names each one in `providerAccounts.omitted`, the relay peer
+receipt in `omitted_provider_accounts` and the local `ManagedContextTransferStatus` receipt in
+`omittedProviderAccounts`, each `{provider, profileId, label, reason: "vault_closed", nextStep: "sign_in_again"}`
+(snake_case keys on the relay peer wire). Nothing keeps those logins for later; the owner signs the account in on the
+new machine. The list is omitted when every selected login was installed. Focused checks:
+`cargo test -p chariox-kernel --lib vault_login`, `vault_login_1000_shapes_are_pinned` and
+`managed_context_omitted_logins_1000_snapshot_and_hash`
+(`protocol_shapes/managed-context-omitted-logins-1000.json`).
+
+### Remote notification follows fenced by generation at the source — relay peer 439
+
+MP-08 / MP-10 / MP-11: `SubscribeWorkflowNotifications` and `UnsubscribeWorkflowNotifications` carry a required
+`generation: u64`, the version of the follow the destination wants the source to hold (it starts at 1 and the
+destination raises it on every attach, detach and restore). The source keeps the highest generation it has seen per
+owner and subscription id, written in the same transaction as the subscription row and kept after a detach, and applies
+a request only when its generation is at least that one. `WorkflowNotificationSubscribed` and
+`WorkflowNotificationUnsubscribed` mean applied (the same generation asked again is applied again); the new
+`WorkflowNotificationSuperseded { generation }` means the request was stale and ignored, and names the newest
+generation the source has seen. `ListWorkflowNotificationSources`, `DeliverWorkflowNotification` and
+`WorkflowNotificationAccepted` are unchanged. Focused check: `cargo test -p chariox-kernel --lib workflow_notification`.
+
+### An installed App's events as a notification source — local 1000
+
+MP-08 / MP-10: `NotificationSourceKind` gains `app_event`, in `ListNotificationSources` answers, in a
+followed source of `GetEventSubscription` and as the `source_kind` of a `notification` event. One
+`app_event` source exists per active inbox route of an installed App: `workflow_id` is the route,
+`exit_node_id` is the App's event name, `exit_ordinal` is 0, `session_id` is the installation, and
+`name` / `display_name` add the route's scope when it has one (`pull_request_updated@owner/repo`,
+"Pull request updated (owner/repo)"). It stays available while the installation and the route exist, not while a Room is live.
+Following it uses the same outside grant, subscription, receipt and acknowledgement as the other
+kinds; the notification text is the event text. Snapshot: `protocol_shapes/outside-events.json`.
+Focused check: `cargo test -p chariox-kernel --lib -- app_event outside_events_snapshot`.
+
+### A tool call's picture count in the outline preview — local 1000
+
+MP-08 / MP-10: a `ProviderTool` blob's `preview` in `SessionHistoryOutline` leaves the call's `images`
+out and, when the stored call returned pictures, adds `imageCount` (the number of `images`). A client
+reads the call's blob contents to show them. The field is optional and absent for a call without
+pictures; no client minimum changes (the Web feature minimum 629 gates request size, not this field).
+Codex MCP tool results carry their image blocks in `images` like the other tool results. Snapshot:
+`protocol_shapes/session-outline-tool-image-count-1000.json`. Focused check:
+`cargo test -p chariox-kernel --lib -- session_outline_tool_images tool_blob_preview`.
+
+### A remote agent's worker folder in its binding — local 1000
+
+MP-08 / MP-11: an agent's `remote_execution` binding gains `worker_worktree_id`, the folder the worker
+kernel runs the remote child in (the spawn's `--dir`). The home kernel sends it again with every renewal
+of the binding (the off-lock refresh, the authorized refresh and a refresh to a given worker), so a
+child whose worker restarted keeps its folder; a slice keeps its own path first. The field is optional
+and absent when the spawn named no folder; a stored binding without it reads as before. Peers are
+unchanged: the worker gets the folder through the existing `SpawnLeasedAgent.worktree_id`, so relay
+peer 439 stays, and no client minimum changes. Snapshot:
+`protocol_shapes/remote-agent-binding-worktree-1000.json`. Focused check:
+`cargo test -p chariox-kernel --lib -- remote_agent_binding_worktree lease_dir_after_restart`.

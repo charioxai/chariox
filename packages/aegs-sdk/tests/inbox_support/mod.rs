@@ -14,7 +14,6 @@ use chariox_aegs_sdk::{AegsStore, SubscriptionClaim};
 
 pub const GENERATOR: &str = "dev.chariox.drill";
 pub const CHILD_ENV: &str = "CHARIOX_DRILL_CHILD";
-pub const MANAGEMENT_TOKEN: &str = "drill-management-token";
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum AedsMode {
@@ -135,7 +134,6 @@ pub fn spawn_server(child_test: &str, database: &Path, port: u16, aeds_port: u16
         .env(CHILD_ENV, "1")
         .env("CHARIOX_AEGS_ADDR", format!("127.0.0.1:{port}"))
         .env("CHARIOX_AEGS_DATABASE_PATH", database)
-        .env("CHARIOX_AEGS_MANAGEMENT_TOKEN", MANAGEMENT_TOKEN)
         .env(
             "CHARIOX_AEDS_EVENTS_URL",
             format!("http://127.0.0.1:{aeds_port}/v1/events"),
@@ -221,4 +219,46 @@ pub fn wait_until(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
         std::thread::sleep(Duration::from_millis(250));
     }
     done()
+}
+
+/// The headers of a management request signed by a fixed drill kernel for `owner_id`.
+pub fn signed_management_headers(path: &str, owner_id: &str, body: &str) -> Vec<(String, String)> {
+    use base64::Engine as _;
+    use chariox_event_protocol::kernel_identity as identity;
+    let secret = p256::SecretKey::from_slice(&[7_u8; 32]).unwrap();
+    let private = base64::engine::general_purpose::STANDARD.encode(secret.to_bytes());
+    let public = base64::engine::general_purpose::STANDARD.encode(
+        p256::elliptic_curve::sec1::ToEncodedPoint::to_encoded_point(&secret.public_key(), false)
+            .as_bytes(),
+    );
+    static NEXT_NONCE: AtomicUsize = AtomicUsize::new(1);
+    let nonce = format!("drill-nonce-{}", NEXT_NONCE.fetch_add(1, Ordering::SeqCst));
+    let timestamp_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let signature = identity::sign(
+        &private,
+        &identity::ManagementRequest {
+            method: "POST",
+            path,
+            generator_id: GENERATOR,
+            owner_id,
+            timestamp_ms,
+            nonce: &nonce,
+            body: body.as_bytes(),
+        }
+        .message(),
+    )
+    .unwrap();
+    vec![
+        (identity::KERNEL_KEY_HEADER.to_string(), public),
+        (
+            identity::KERNEL_TIMESTAMP_HEADER.to_string(),
+            timestamp_ms.to_string(),
+        ),
+        (identity::KERNEL_NONCE_HEADER.to_string(), nonce),
+        (identity::KERNEL_SIGNATURE_HEADER.to_string(), signature),
+        (identity::OWNER_ID_HEADER.to_string(), owner_id.to_string()),
+    ]
 }

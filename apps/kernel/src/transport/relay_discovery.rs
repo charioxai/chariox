@@ -23,6 +23,7 @@ use crate::error::DaemonError;
 mod credentials;
 pub(crate) use credentials::{metadata_discovery_config, with_metadata_token};
 pub(crate) mod authorization;
+mod backoff;
 mod inventory_batches;
 
 static RELAY_METADATA_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -356,6 +357,21 @@ async fn get_live_kernel_inner(
     kernel_ref: &str,
     #[cfg(test)] peer_call_id: Option<u64>,
 ) -> Result<RelayKernelPresence, DaemonError> {
+    let relay = backoff_key(config);
+    admit_or_back_off(&relay)?;
+    #[cfg(test)]
+    let result = get_live_kernel_attempts(config, kernel_ref, peer_call_id).await;
+    #[cfg(not(test))]
+    let result = get_live_kernel_attempts(config, kernel_ref).await;
+    record_dial_outcome(&relay, &result);
+    result
+}
+
+async fn get_live_kernel_attempts(
+    config: &DaemonConfig,
+    kernel_ref: &str,
+    #[cfg(test)] peer_call_id: Option<u64>,
+) -> Result<RelayKernelPresence, DaemonError> {
     #[cfg(test)]
     let peer_call_id = peer_call_id
         .unwrap_or_else(|| NEXT_RELAY_DISCOVERY_TEST_CALL_ID.fetch_add(1, Ordering::Relaxed));
@@ -394,7 +410,11 @@ async fn get_live_kernel_inner(
                 });
             }
             Err(error) => {
+                let refused = is_admission_refusal(&error);
                 last_error = Some(error);
+                if refused {
+                    break;
+                }
             }
         }
         if attempt + 1 < RELAY_METADATA_ATTEMPTS {
@@ -474,6 +494,66 @@ async fn find_live_kernel_once_with_test_trace(
 }
 
 async fn query_relay(
+    config: &DaemonConfig,
+    query: RelayMetadataQuery,
+) -> Result<RelayEnvelope, DaemonError> {
+    let relay = backoff_key(config);
+    admit_or_back_off(&relay)?;
+    let result = query_relay_attempts(config, query).await;
+    record_dial_outcome(&relay, &result);
+    result
+}
+
+fn backoff_key(config: &DaemonConfig) -> String {
+    config.relay_url.clone().unwrap_or_default()
+}
+
+/// A relay that just failed to answer is not dialed again until its backoff
+/// has passed; callers get the dial's failure and the wait instead of a new
+/// connection, so they classify it as they did the dial (a stopped slice relay
+/// refuses, a struggling one times out).
+fn admit_or_back_off(relay: &str) -> Result<(), DaemonError> {
+    backoff::ConnectBackoff::shared()
+        .admit(relay, tokio::time::Instant::now())
+        .map_err(|refused| DaemonError::LocalTransport {
+            operation: refused.failure.operation,
+            message: format!(
+                "{}; relay unreachable, retry in {} seconds",
+                refused.failure.message,
+                refused.left.as_secs_f64().ceil() as u64
+            ),
+        })
+}
+
+fn record_dial_outcome<T>(relay: &str, result: &Result<T, DaemonError>) {
+    let shared = backoff::ConnectBackoff::shared();
+    match result.as_ref().err().and_then(unreachable_failure) {
+        Some(failure) => shared.record_failure(
+            relay,
+            tokio::time::Instant::now(),
+            0.5 + rand::random::<f64>() / 2.0,
+            failure,
+        ),
+        None => shared.record_success(relay),
+    }
+}
+
+fn unreachable_failure(error: &DaemonError) -> Option<backoff::Failure> {
+    match error {
+        DaemonError::LocalTransport { operation, message }
+            if *operation == "connect relay metadata socket"
+                || relay_metadata_error_is_retryable(error) =>
+        {
+            Some(backoff::Failure {
+                operation,
+                message: message.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
+async fn query_relay_attempts(
     config: &DaemonConfig,
     query: RelayMetadataQuery,
 ) -> Result<RelayEnvelope, DaemonError> {
@@ -753,6 +833,17 @@ async fn query_relay_once_body(
     response
 }
 
+/// The relay answered and said no; asking again cannot change that.
+pub(crate) fn is_admission_refusal(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::LocalTransport {
+            operation: "relay metadata admission",
+            ..
+        }
+    )
+}
+
 fn relay_metadata_error_is_retryable(error: &DaemonError) -> bool {
     match error {
         DaemonError::LocalTransport { operation, message } => {
@@ -810,6 +901,66 @@ mod tests {
         assert!(
             error.to_string().contains("relay token action not allowed"),
             "MP-08: the relay refusal must not be reported as a mismatched reply: {error}"
+        );
+    }
+
+    /// MP-08 / MP-11: a poll the backoff refuses answers with the dial failure that
+    /// started the delay, so callers still tell a stopped slice relay from a timeout.
+    #[tokio::test]
+    async fn a_poll_refused_by_the_backoff_names_the_dial_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some(format!("ws://{addr}"));
+        config.relay_token = Some("metadata-fixture-token".to_string());
+        config.relay_request_timeout_ms = 1_000;
+        let Some(DaemonError::LocalTransport {
+            operation: dialed_operation,
+            message: dialed_message,
+        }) = list_live_machines(&config).await.err()
+        else {
+            panic!("the first poll dials the closed port and fails to connect");
+        };
+        assert!(
+            dialed_message.contains("Connection refused"),
+            "{dialed_message}"
+        );
+        let refused = list_live_machines(&config).await.err();
+        let Some(DaemonError::LocalTransport { operation, message }) = &refused else {
+            panic!("{refused:?}");
+        };
+        assert_eq!(*operation, dialed_operation, "{refused:?}");
+        assert!(
+            message.contains(&dialed_message) && message.contains("retry in"),
+            "{refused:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_relay_is_not_dialed_again_on_every_poll() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = std::sync::Arc::new(AtomicU64::new(0));
+        let counter = std::sync::Arc::clone(&accepted);
+        let server = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::Relaxed);
+                drop(stream);
+            }
+        });
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some(format!("ws://{addr}"));
+        config.relay_token = Some("metadata-fixture-token".to_string());
+        config.relay_request_timeout_ms = 1_000;
+        for _ in 0..5 {
+            let _ = list_live_machines(&config).await;
+        }
+        server.abort();
+        let dials = accepted.load(Ordering::Relaxed);
+        assert!(
+            dials <= RELAY_METADATA_ATTEMPTS as u64,
+            "five polls of a relay that drops every connection dialed it {dials} times"
         );
     }
 

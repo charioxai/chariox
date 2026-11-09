@@ -347,13 +347,24 @@ impl HistoryEvent {
             )
     }
 
-    /// Agent-only kernel instructions never become user prompt rows.
+    /// Agent-only kernel instructions never become user prompt rows. A steered
+    /// message is recorded under the running turn's prompt id, so a steering
+    /// row is judged by its own id in the steering merge key: the running turn
+    /// being a kernel continuation says nothing about who wrote the steer.
     pub fn is_internal_prompt_echo(&self) -> bool {
         self.kind == HistoryEventKind::UserPrompt
             && self
-                .prompt_id
-                .as_deref()
+                .steering_prompt_id()
+                .or(self.prompt_id.as_deref())
                 .is_some_and(crate::session::is_internal_prompt_echo_id)
+    }
+
+    /// The id of the prompt a steering row carries into a running turn.
+    fn steering_prompt_id(&self) -> Option<&str> {
+        self.metadata
+            .get("merge_key")
+            .and_then(serde_json::Value::as_str)?
+            .strip_prefix(STEERING_PROMPT_MERGE_KEY_PREFIX)
     }
 
     /// MP-08/MP-10/MP-11: historical kernel diagnostics are not agent speech.
@@ -721,7 +732,7 @@ impl OperationalHistoryStore {
         let writer_worker = thread::Builder::new()
             .name("chariox-history-writer".to_string())
             // MP-08 / MP-10 / MP-11: joined messages are re-projected here.
-            .stack_size(2 * 1024 * 1024)
+            .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
             .spawn(move || {
                 run_operational_history_writer(
                     writer_connection,

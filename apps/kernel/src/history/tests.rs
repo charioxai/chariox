@@ -282,6 +282,41 @@ fn session_history_replacement_appends_and_deduplicates_without_rewriting_the_fi
     );
 }
 
+/// The history writer re-projects joined messages into public history, a deep JSON path that
+/// must not run on a smaller stack than the rest of the kernel.
+#[cfg(target_os = "linux")]
+#[test]
+fn operational_history_writer_runs_on_the_kernel_runtime_stack() {
+    if !crate::test_support::rerun_without_min_stack(
+        "history::tests::operational_history_writer_runs_on_the_kernel_runtime_stack",
+    ) {
+        return;
+    }
+    let path = std::env::temp_dir().join(format!(
+        "chariox-operational-history-writer-stack-{}-{}.db",
+        std::process::id(),
+        super::unix_epoch_ms()
+    ));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history should open");
+    let size = {
+        let worker = store.writer.worker.lock().unwrap();
+        crate::test_support::spawned_thread_stack_size(worker.as_ref().unwrap())
+    };
+    drop(store);
+    for path in [
+        path.clone(),
+        path.with_extension("db-wal"),
+        path.with_extension("db-shm"),
+    ] {
+        let _ = std::fs::remove_file(path);
+    }
+    assert!(
+        size >= crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE,
+        "operational history writer stack is {size} bytes"
+    );
+}
+
 #[test]
 fn operational_history_append_rejects_prompt_origin_without_source_attachment_before_sequence() {
     let path = std::env::temp_dir().join(format!(
