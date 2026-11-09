@@ -54,15 +54,25 @@ async fn reaches_a_peer_across_kernels(
     assert_eq!(events[0].source_id, source_of(&b));
     assert_eq!(events[0].payload["event"], "turn_ended", "{:?}", events[0]);
 
-    running_turn(&mut *b.app.lock().await, &b.room, b.agent.id());
-    assert!(b.turn_running(b.agent.id()).await);
+    let other = {
+        let mut app = b.app.lock().await;
+        let other = owned_agent(
+            &mut app,
+            &b.room,
+            "other",
+            target_room_owner,
+            AgentPermissionLevel::Yolo,
+        );
+        running_turn(&mut app, &b.room, other.id());
+        other
+    };
     a.command(format!(
-        "agent cancel worker --room {} --kernel {}",
+        "agent cancel other --room {} --kernel {}",
         b.room, b.name
     ))
     .await
     .expect("the peer's turn is cancelled");
-    assert!(!b.turn_running(b.agent.id()).await);
+    assert!(!b.turn_running(other.id()).await);
 
     let spawned = a
         .command(format!(
