@@ -8,6 +8,7 @@ import { topLevelNodeId, withLiveNode } from './kernel-browser-node-ref.mjs';
 export const REGION_KEYS = ['node_ref', 'clip', 'full_page'];
 const MAX_SIDE = 16000;
 const IMAGE_LIMIT = 4 * 1024 * 1024;
+const FULL_PAGE_ATTEMPTS = [{ format: 'png', factor: 1 }, { format: 'jpeg', quality: 85, factor: 1 }, { format: 'jpeg', quality: 60, factor: 0.6 }, { format: 'jpeg', quality: 50, factor: 0.4 }];
 
 function checkedClip(clip, page) {
   const fields = ['x', 'y', 'width', 'height'];
@@ -45,21 +46,24 @@ async function fullPage(host, tab) {
   const pageHeight = Math.max(1, Math.ceil(size?.height));
   const height = Math.min(MAX_SIDE, pageHeight);
   if (!Number.isFinite(width) || !Number.isFinite(pageHeight)) throw new AgentToolRefusal('image_too_large');
-  // One image pixel per CSS pixel, whatever the page density.
-  const scale = 1 / (host.scales.get(tab.tab_id) ?? host.viewport().device_scale_factor);
-  const shoot = format => connection.send('Page.captureScreenshot', {
-    format, ...(format === 'jpeg' ? { quality: 85 } : {}), captureBeyondViewport: true, optimizeForSpeed: true,
-    clip: { x: 0, y: 0, width, height, scale },
+  const density = host.scales.get(tab.tab_id) ?? host.viewport().device_scale_factor;
+  // One image pixel per CSS pixel, whatever the page density. A page whose PNG does not fit gets smaller encodings.
+  const shoot = ({ format, quality, factor }) => connection.send('Page.captureScreenshot', {
+    format, ...(quality ? { quality } : {}), captureBeyondViewport: true, optimizeForSpeed: true,
+    clip: { x: 0, y: 0, width, height, scale: factor / density },
   }, sessionId);
-  const { format, data } = await host.sampleLane(tab).run('capture', () => host.browser.inputCapture.run(connection, sessionId, async () => {
-    let shot = await shoot('png');
-    if (typeof shot.data === 'string' && shot.data.length > IMAGE_LIMIT) return { format: 'jpeg', data: (await shoot('jpeg')).data };
-    return { format: 'png', data: shot.data };
+  const taken = await host.sampleLane(tab).run('capture', () => host.browser.inputCapture.run(connection, sessionId, async () => {
+    for (const attempt of FULL_PAGE_ATTEMPTS) {
+      const shot = await shoot(attempt);
+      if (typeof shot.data === 'string' && shot.data.length <= IMAGE_LIMIT) return { ...attempt, data: shot.data };
+    }
+    return null;
   }, { resumeFocus: false }));
   await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-  if (typeof data !== 'string' || data.length > IMAGE_LIMIT) throw new AgentToolRefusal('image_too_large');
-  return { generation: host.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: `image/${format}`, data_base64: data,
-    width, height, page_height: pageHeight, ...(pageHeight > height ? { truncated: true } : {}) };
+  if (!taken) throw new AgentToolRefusal('image_too_large');
+  return { generation: host.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: `image/${taken.format}`, data_base64: taken.data,
+    width: Math.round(width * taken.factor), height: Math.round(height * taken.factor), page_height: pageHeight,
+    ...(taken.factor < 1 ? { scale: taken.factor } : {}), ...(pageHeight > height ? { truncated: true } : {}) };
 }
 
 export async function regionScreenshot(host, tab, command) {

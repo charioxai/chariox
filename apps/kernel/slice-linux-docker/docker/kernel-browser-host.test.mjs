@@ -3476,6 +3476,10 @@ test('browsertools: full_page falls back to JPEG for a page whose PNG is too lar
     : method === 'Page.captureScreenshot' ? { data: params.format === 'png' ? 'A'.repeat(4 * 1024 * 1024 + 4) : 'QUJD' } : undefined);
   const page = await host.request(agentShot(opened, { full_page: true }));
   assert.deepEqual([page.mime_type, page.data_base64], ['image/jpeg', 'QUJD']);
+  // A page too big even as a JPEG is encoded smaller, and says so.
+  withCdp(connection, (method, params) => method === 'Page.captureScreenshot' && (params.format === 'png' || params.clip.scale === 1) ? { data: 'A'.repeat(4 * 1024 * 1024 + 4) } : undefined);
+  const small = await host.request(agentShot(opened, { full_page: true }));
+  assert.deepEqual([small.mime_type, small.scale, small.width, small.height], ['image/jpeg', 0.6, 768, 3000]);
   const before = sent.length;
   host.browser.fillTargets = new Map([['field', { kind: 'browser' }]]);
   await assert.rejects(host.request(agentShot(opened, { full_page: true })), { code: 'user_domain_not_granted' });
