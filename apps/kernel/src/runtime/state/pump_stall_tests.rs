@@ -21,7 +21,12 @@ async fn until(condition: impl Fn() -> bool) -> Option<()> {
     .ok()
 }
 
-fn insert_run(runtime: &KernelRuntimeState, session_id: &str, agent_id: &str, run_id: &str) {
+pub(in crate::runtime::state) fn insert_run(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    run_id: &str,
+) {
     let request = crate::provider::LaunchProviderRequest::new(
         session_id,
         "dev-stub",
@@ -55,7 +60,10 @@ fn insert_run(runtime: &KernelRuntimeState, session_id: &str, agent_id: &str, ru
 }
 
 /// A failed launch of `run_id` whose cleanup is already due.
-fn schedule_launch_failure_retry(runtime: &KernelRuntimeState, run_id: &str) {
+pub(in crate::runtime::state) fn schedule_launch_failure_retry(
+    runtime: &KernelRuntimeState,
+    run_id: &str,
+) {
     let run = runtime.owned.provider_store.get_run(run_id).unwrap();
     let started = crate::app::StartedProviderLaunch {
         run,
@@ -73,7 +81,7 @@ fn schedule_launch_failure_retry(runtime: &KernelRuntimeState, run_id: &str) {
         .schedule_initial(&started, &error, 0));
 }
 
-fn retry_pending(runtime: &KernelRuntimeState, run_id: &str) -> bool {
+pub(in crate::runtime::state) fn retry_pending(runtime: &KernelRuntimeState, run_id: &str) -> bool {
     runtime
         .owned
         .provider_launch_failure_retries
@@ -124,7 +132,7 @@ async fn the_pump_does_not_wait_for_a_launch_retry_whose_provider_lane_is_held()
     }
 }
 
-fn add_due_trigger(
+pub(in crate::runtime::state) fn add_due_trigger(
     runtime: &KernelRuntimeState,
     session_id: &str,
     agent_id: &str,
@@ -146,7 +154,51 @@ fn add_due_trigger(
     runtime.owned.session_store.restore_session(session);
 }
 
-fn trigger(runtime: &KernelRuntimeState, session_id: &str, id: &str) -> AgentTrigger {
+/// A second agent of the room with a turn running, so that a trigger of it queues behind it.
+fn add_busy_agent(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    like_agent_id: &str,
+    attachment_id: &str,
+) -> String {
+    let mut other =
+        serde_json::to_value(runtime.owned.agent_store.get_agent(like_agent_id).unwrap()).unwrap();
+    other["id"] = serde_json::json!("pump-stall-other-agent");
+    other["agent_ref"] = serde_json::json!("pump-stall-other-agent-ref");
+    let other: crate::agent::AgentInstance = serde_json::from_value(other).unwrap();
+    runtime.owned.agent_store.restore_agent(other.clone());
+    let mut room = runtime.owned.session_store.get_session(session_id).unwrap();
+    let mut agents = room.agents().to_vec();
+    agents.push(other.clone());
+    room.set_agents(agents);
+    room.mirror_agent_prompt_state(
+        other.id(),
+        Some(crate::session::PromptQueueItem::new(
+            "pump-stall-other-active",
+            attachment_id,
+            other.id(),
+            "holding",
+            crate::session::PromptStatus::Running,
+        )),
+        Default::default(),
+    );
+    runtime
+        .owned
+        .session_store
+        .write()
+        .restore_session(room.clone());
+    runtime
+        .owned
+        .prompt_state_owner
+        .restore_session_state(&room);
+    other.id().to_string()
+}
+
+pub(in crate::runtime::state) fn trigger(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    id: &str,
+) -> AgentTrigger {
     runtime
         .owned
         .session_store
@@ -159,7 +211,12 @@ fn trigger(runtime: &KernelRuntimeState, session_id: &str, id: &str) -> AgentTri
         .clone()
 }
 
-fn firings_of(runtime: &KernelRuntimeState, session_id: &str, agent_id: &str, id: &str) -> usize {
+pub(in crate::runtime::state) fn firings_of(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    id: &str,
+) -> usize {
     let session = runtime.owned.session_store.get_session(session_id).unwrap();
     let (active, queued) = runtime
         .owned
@@ -174,8 +231,9 @@ fn firings_of(runtime: &KernelRuntimeState, session_id: &str, agent_id: &str, id
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pump_does_not_wait_for_a_trigger_stuck_on_a_held_lane() {
-    let (_worktree, runtime, session_id, agent_id, _, _, run_id) =
+    let (_worktree, runtime, session_id, agent_id, attachment_id, _, run_id) =
         runtime_with_active_prompt().await;
+    let other_agent_id = add_busy_agent(&runtime, &session_id, &agent_id, &attachment_id);
     add_due_trigger(
         &runtime,
         &session_id,
@@ -186,7 +244,7 @@ async fn the_pump_does_not_wait_for_a_trigger_stuck_on_a_held_lane() {
     add_due_trigger(
         &runtime,
         &session_id,
-        &agent_id,
+        &other_agent_id,
         "other",
         AgentTriggerBusyPolicy::Queue,
     );
@@ -212,7 +270,10 @@ async fn the_pump_does_not_wait_for_a_trigger_stuck_on_a_held_lane() {
         .await
         .expect("the second pump waits");
     assert_eq!(firings_of(&runtime, &session_id, &agent_id, "stuck"), 1);
-    assert_eq!(firings_of(&runtime, &session_id, &agent_id, "other"), 1);
+    assert_eq!(
+        firings_of(&runtime, &session_id, &other_agent_id, "other"),
+        1
+    );
 
     let session = runtime
         .owned
@@ -231,5 +292,37 @@ async fn the_pump_does_not_wait_for_a_trigger_stuck_on_a_held_lane() {
     assert_eq!(trigger(&runtime, &session_id, "stuck").fired(), 1);
     assert_eq!(trigger(&runtime, &session_id, "other").fired(), 1);
     assert_eq!(firings_of(&runtime, &session_id, &agent_id, "stuck"), 1);
-    assert_eq!(firings_of(&runtime, &session_id, &agent_id, "other"), 1);
+    assert_eq!(
+        firings_of(&runtime, &session_id, &other_agent_id, "other"),
+        1
+    );
+}
+
+#[tokio::test]
+async fn due_triggers_wait_for_a_place_when_every_place_is_taken() {
+    let (_worktree, runtime, session_id, agent_id, _, _, _) = runtime_with_active_prompt().await;
+    add_due_trigger(
+        &runtime,
+        &session_id,
+        &agent_id,
+        "waiting",
+        AgentTriggerBusyPolicy::Queue,
+    );
+    let places = runtime.trigger_firings.hold_all_places();
+
+    runtime.dispatch_due_agent_triggers(crate::session::unix_epoch_ms());
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    assert!(trigger(&runtime, &session_id, "waiting").dispatch_in_flight());
+    assert_eq!(firings_of(&runtime, &session_id, &agent_id, "waiting"), 0);
+
+    drop(places);
+    tokio::time::timeout(PUMP_BOUND, runtime.trigger_firings_settled())
+        .await
+        .expect("the claimed trigger never fired");
+    let fired = trigger(&runtime, &session_id, "waiting");
+    assert!(!fired.dispatch_in_flight());
+    assert_eq!(fired.fired(), 1);
+    assert_eq!(firings_of(&runtime, &session_id, &agent_id, "waiting"), 1);
 }
