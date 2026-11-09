@@ -72,6 +72,25 @@ impl CommandRouter {
                 meta_command_error("a message is sent from a running turn of the caller"),
             );
         };
+        // Another kernel's answer can be lost: the same call again in this turn is then the
+        // same request, so it lands once and never reaches a later turn twice.
+        let idempotency_key = target.kernel.map(|kernel| {
+            use sha2::{Digest, Sha256};
+            let call = serde_json::json!([
+                sender.id(),
+                prompt.id(),
+                kernel,
+                target.room,
+                agent,
+                text,
+                steer,
+                target.reply_requested,
+            ]);
+            Sha256::digest(call.to_string())[..16]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        });
         let message = serde_json::to_value(crate::transport::runtime_tools::SendAgentMessageArgs {
             agent: agent.clone(),
             room: target.room.map(str::to_owned),
@@ -81,7 +100,7 @@ impl CommandRouter {
             urgent: steer,
             reply_requested: target.reply_requested,
             attachments: Vec::new(),
-            idempotency_key: None,
+            idempotency_key,
         });
         let result = match message {
             Ok(arguments) => {

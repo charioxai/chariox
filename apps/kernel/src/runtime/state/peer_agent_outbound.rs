@@ -37,7 +37,7 @@ fn uncertain(kernel: &str, retry: &str) -> DaemonError {
 fn retry_hint(request: &RelayPeerRequest) -> String {
     match request {
         RelayPeerRequest::PeerAgentMessage { request_id, .. } => {
-            format!("send it again with idempotency_key `{request_id}`")
+            format!("make the same call again (the send_agent_message tool needs idempotency_key `{request_id}`)")
         }
         RelayPeerRequest::PeerAgentCancel { .. } => "make the same call again in this turn".into(),
         _ => "make the same call again".into(),
