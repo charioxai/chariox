@@ -339,7 +339,44 @@ async fn connect_websocket_with_resolver(
         .await
         .map_err(Error::Io)?;
     socket.set_nodelay(true)?;
+    bound_unsent_bytes(&socket)?;
     client_async_tls_with_config(request, socket, None, None).await
+}
+
+/// Unsent bytes the socket may hold before a write waits. Past this, a small frame the writer
+/// picks next would sit behind that many bulk bytes in the send buffer (13 s at 76 KB/s for
+/// 1 MiB); below it, the writer decides frame by frame what goes out next and the link's
+/// throughput is unchanged, since bytes already sent but not yet acknowledged do not count.
+const UNSENT_BYTES_LIMIT: u32 = 128 * 1024;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn bound_unsent_bytes(socket: &TcpStream) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    #[cfg(target_os = "linux")]
+    const TCP_NOTSENT_LOWAT: libc::c_int = 25;
+    #[cfg(target_os = "macos")]
+    const TCP_NOTSENT_LOWAT: libc::c_int = 0x201;
+    let limit = UNSENT_BYTES_LIMIT as libc::c_int;
+    // SAFETY: the descriptor is a live socket owned by `socket`, and the value is a `c_int`.
+    let result = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::IPPROTO_TCP,
+            TCP_NOTSENT_LOWAT,
+            std::ptr::addr_of!(limit).cast(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn bound_unsent_bytes(_socket: &TcpStream) -> io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]

@@ -404,3 +404,45 @@ async fn websocket_keeps_connecting_while_a_syn_is_retried() {
     drop(result);
     drop(server.await.unwrap());
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11 (relayflood): bulk bytes sitting unsent in the socket buffer are
+// bytes a control frame waits behind; the relay socket holds a few frames, not megabytes.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_stalled_peer_leaves_only_a_few_frames_unsent_in_the_socket() {
+    const SIOCOUTQNSD: libc::c_ulong = 0x894B;
+    async fn unsent_after_stall(bounded: bool) -> libc::c_int {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = tokio::net::TcpStream::connect(address).await.unwrap();
+        let (_peer_that_never_reads, _) = listener.accept().unwrap();
+        if bounded {
+            bound_unsent_bytes(&client).unwrap();
+        }
+        let frame = [0_u8; 16 * 1024];
+        loop {
+            let ready = tokio::time::timeout(Duration::from_millis(200), client.writable()).await;
+            if ready.is_err() {
+                break;
+            }
+            let _ = client.try_write(&frame);
+        }
+        let mut unsent: libc::c_int = 0;
+        // SAFETY: a live socket and an `int` out-parameter.
+        assert_eq!(
+            unsafe { libc::ioctl(client.as_raw_fd(), SIOCOUTQNSD, &mut unsent) },
+            0
+        );
+        unsent
+    }
+    let bounded = unsent_after_stall(true).await;
+    let unbounded = unsent_after_stall(false).await;
+    assert!(
+        bounded <= (UNSENT_BYTES_LIMIT + 64 * 1024) as libc::c_int,
+        "unsent bytes with the bound: {bounded}"
+    );
+    assert!(
+        unbounded > 4 * bounded,
+        "the bound changes nothing: {bounded} vs {unbounded}"
+    );
+}
