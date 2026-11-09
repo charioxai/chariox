@@ -98,7 +98,7 @@ test('a non-2xx answer is refused and its stream released', () => fixture(async 
 test('a source must be exactly one of node_ref or url, with a supported scheme', () => fixture(async f => {
   await assert.rejects(f.save({ node_ref: 'backend:7' }), { reason: 'save_source_conflict' });
   await assert.rejects(f.save({ url: undefined }), { reason: 'save_source_conflict' });
-  for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'blob:https://a/b', 'not a url'])
+  for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'blob:https://a/b', 'not a url', 'https://user:pass@img.example/a.png'])
     await assert.rejects(f.save({ url }), { reason: 'save_url_unsupported' }, url);
   await assert.rejects(f.save({ url: undefined, node_ref: 'frame:a:backend:7' }), { reason: 'node_ref_invalid' });
   assert.equal(f.network().length, 0);
