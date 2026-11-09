@@ -274,7 +274,41 @@ fn a_retried_message_to_a_peer_on_another_kernel_is_reported_duplicate_and_lands
 }
 
 #[test]
-fn a_peer_on_another_kernel_answers_a_reply_request_as_a_stamped_message() {
+fn a_reply_request_to_another_kernel_is_refused_before_anything_is_sent() {
+    run_peer_test("peer-kernel-reply-request", || async {
+        let (a, b) = two_kernels(
+            "peer-kernel-reply-request",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        let message = |reply_requested: bool| {
+            serde_json::json!({
+                "agent": "worker",
+                "room": b.room,
+                "kernel": b.name,
+                "message": "which tests cover parser.rs?",
+                "reply_requested": reply_requested,
+                "idempotency_key": "ask-1",
+            })
+        };
+        let refused = a.send(message(true)).await.unwrap_err();
+        assert!(
+            refused.contains(
+                "a reply to a message on another kernel is not supported yet: ask the agent there to message you back"
+            ),
+            "{refused}"
+        );
+        assert!(b.messages(b.agent.id()).await.is_empty());
+        // The other kernel never saw the call: the same key is a first delivery, not a duplicate.
+        let sent = a.send(message(false)).await.expect("a plain message is sent");
+        assert_eq!(sent["status"], "delivered", "{sent:?}");
+        assert_eq!(b.messages(b.agent.id()).await.len(), 1);
+        unlink(&[&a, &b]);
+    });
+}
+
+#[test]
+fn a_peer_on_another_kernel_answers_by_messaging_the_sender_back() {
     run_peer_test("peer-kernel-reply", || async {
         let (a, b) = two_kernels(
             "peer-kernel-reply",
@@ -285,14 +319,12 @@ fn a_peer_on_another_kernel_answers_a_reply_request_as_a_stamped_message() {
             "agent": "worker",
             "room": b.room,
             "kernel": b.name,
-            "message": "which tests cover parser.rs?",
-            "reply_requested": true,
+            "message": "which tests cover parser.rs? message me back",
         }))
         .await
-        .expect("a reply request reaches the peer");
+        .expect("the question reaches the peer");
         let asked = b.messages(b.agent.id()).await;
         assert_eq!(asked.len(), 1);
-        assert_eq!(asked[0].payload["no_reply"], false);
         let (kernel, room, agent) = (
             asked[0].payload["sender_kernel_id"]
                 .as_str()
