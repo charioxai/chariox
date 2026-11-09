@@ -204,6 +204,35 @@ async fn a_small_reply_waits_about_a_round_trip_behind_any_bulk_on_a_slow_link()
     assert!(rate >= 0.9 * RATE, "the link carried {rate:.0} B/s");
 }
 
+// Gateway file chunks are replies: three bulk replies at once fill both reply
+// slots, and a small reply must still pass them (relayproof 1m three: 6.9 s p95).
+#[tokio::test(start_paused = true)]
+async fn a_small_reply_passes_three_bulk_replies() {
+    const RATE: f64 = 64_000.0;
+    const RTT: Duration = Duration::from_millis(40);
+    let messages = (0..3)
+        .map(|n| {
+            let id = format!("bulk-{n}");
+            let message = bulk("client_response", &id, MB);
+            (id, message)
+        })
+        .collect();
+    let outcome = run(RATE, RTT, messages).await;
+    let bound = 2 * RTT
+        + Duration::from_secs_f64(2.0 * CHUNK_BYTES as f64 / RATE)
+        + RTT / 2
+        + Duration::from_millis(20);
+    println!(
+        "three bulk replies: {} small replies, worst {:?} (bound {bound:?})",
+        outcome.small_count, outcome.worst_small
+    );
+    assert!(
+        outcome.worst_small <= bound,
+        "a small reply waited {:?} behind bulk replies, bound {bound:?}",
+        outcome.worst_small
+    );
+}
+
 // The window must not strangle a long transfer: one 20 MB reply alone uses at
 // least 90 % of a 64 KB/s link.
 #[tokio::test(start_paused = true)]
