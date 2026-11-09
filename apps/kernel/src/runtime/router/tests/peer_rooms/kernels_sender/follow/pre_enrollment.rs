@@ -145,14 +145,24 @@ fn the_enrolled_owner_is_no_guest_of_a_room_made_before_enrollment() {
             true,
             DEFAULT_LOCAL_USER_ID,
         );
-        let b = kernel("peer-pre-enrolled-guest-b", AgentPermissionLevel::Yolo, true);
+        let b = kernel(
+            "peer-pre-enrolled-guest-b",
+            AgentPermissionLevel::Yolo,
+            true,
+        );
         link(&a);
         link(&b);
-        let (other_room, drivers) = {
+        let (other_room, older_room, drivers) = {
             let mut app = a.app.lock().await;
+            let older_room = create_room(&mut app, "older-room", Some(DEFAULT_LOCAL_USER_ID));
             let other_room = create_room(&mut app, "enrolled-room", Some(OWNER));
-            let neighbour =
-                owned_agent(&mut app, &other_room, "neighbour", OWNER, AgentPermissionLevel::Yolo);
+            let neighbour = owned_agent(
+                &mut app,
+                &other_room,
+                "neighbour",
+                OWNER,
+                AgentPermissionLevel::Yolo,
+            );
             running_turn(&mut app, &other_room, neighbour.id());
             let mut room = app.sessions().get_session(&a.room).unwrap();
             room.add_member(
@@ -167,7 +177,12 @@ fn the_enrolled_owner_is_no_guest_of_a_room_made_before_enrollment() {
                 ("enrolled-own", OWNER, None, true),
                 ("enrolled-driven", DEFAULT_LOCAL_USER_ID, Some(OWNER), true),
                 ("guest-own", "guest-user", None, false),
-                ("guest-driven", DEFAULT_LOCAL_USER_ID, Some("guest-user"), false),
+                (
+                    "guest-driven",
+                    DEFAULT_LOCAL_USER_ID,
+                    Some("guest-user"),
+                    false,
+                ),
             ] {
                 let agent =
                     owned_agent(&mut app, &a.room, alias, owner, AgentPermissionLevel::Yolo);
@@ -177,7 +192,7 @@ fn the_enrolled_owner_is_no_guest_of_a_room_made_before_enrollment() {
                 };
                 drivers.push((alias, turn, owner_side));
             }
-            (other_room, drivers)
+            (other_room, older_room, drivers)
         };
         for (alias, (token, prompt), owner_side) in &drivers {
             let here = a
@@ -195,7 +210,10 @@ fn the_enrolled_owner_is_no_guest_of_a_room_made_before_enrollment() {
                 )
                 .await;
             let spawn = a
-                .command_as(token, format!("agent spawn helper-{alias} --room {other_room}"))
+                .command_as(
+                    token,
+                    format!("agent spawn helper-{alias} --room {older_room}"),
+                )
                 .await;
             let spawn_on_b = a
                 .command_as(
@@ -225,7 +243,15 @@ fn the_enrolled_owner_is_no_guest_of_a_room_made_before_enrollment() {
                 );
             }
         }
-        assert_eq!(b.messages(b.agent.id()).await.len(), 2, "only the owner's turns reached B");
+        let (token, _) = &drivers[0].1;
+        a.command_as(token, format!("agent spawn helper --room {other_room}"))
+            .await
+            .expect("the enrolled owner's agent creates a peer in the owner's enrolled room");
+        assert_eq!(
+            b.messages(b.agent.id()).await.len(),
+            2,
+            "only the owner's turns reached B"
+        );
         unlink(&[&a, &b]);
     });
 }
