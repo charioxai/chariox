@@ -4118,3 +4118,34 @@ fn terminal_outcome_and_cancellation_projection_commit_together() {
         "recorded outcomes must be backfilled on schema initialization"
     );
 }
+
+#[test]
+fn a02_a_registration_another_task_holds_is_never_rewritten() {
+    let f = Fixture::new();
+    let follow = |task: &str| Operation::Subscribe {
+        task: task.into(),
+        prompt: task.into(),
+        registration: Registration {
+            id: "follow".into(),
+            task_id: task.into(),
+            source_id: "peer".into(),
+            obligation_id: None,
+            source_cursor: 0,
+            live: true,
+            peer: true,
+        },
+    };
+    f.begin("p");
+    f.apply(follow("p"));
+    f.begin("second");
+    let refused = f.store.agent_lifecycle(follow("second")).unwrap_err();
+    assert!(
+        refused.to_string().contains("belongs to another task"),
+        "{refused}"
+    );
+    let held = f.store.agent_registrations("p").unwrap();
+    assert!(held
+        .iter()
+        .any(|reg| reg.id == "follow" && reg.task_id == "p"));
+    assert!(f.store.agent_registrations("second").unwrap().is_empty());
+}

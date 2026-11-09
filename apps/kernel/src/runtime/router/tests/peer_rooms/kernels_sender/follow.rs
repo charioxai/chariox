@@ -563,6 +563,85 @@ fn a_peer_spawned_on_another_kernel_is_followed_by_its_creator_unless_no_follow(
     });
 }
 
+#[test]
+fn a_keyed_spawn_repeated_in_a_later_turn_gives_that_turn_its_own_follow() {
+    run_peer_test("peer-follow-keyed", || async {
+        let (mut a, b) = two_kernels(
+            "peer-follow-keyed",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        let keyed = format!(
+            "agent spawn tester --room {} --kernel {} --command-id spawn-tester-1",
+            b.room, b.name
+        );
+        let first_task = with_task(&a).await;
+        let first = a.command(keyed.clone()).await.expect("a keyed spawn");
+        let first_follow = first["follow_registration_id"].as_str().unwrap().to_owned();
+        a.end_turn(false).await;
+
+        (a.token, a.prompt) = running_turn(&mut *a.app.lock().await, &a.room, a.agent.id());
+        let later_task = with_task(&a).await;
+        let again = a
+            .command(keyed)
+            .await
+            .expect("the same keyed spawn in a later turn");
+        assert_eq!(again["response"]["spawned"]["duplicate"], true);
+        let peer = again["response"]["spawned"]["agent"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(first["response"]["spawned"]["agent"], peer.as_str());
+        let later_follow = again["follow_registration_id"].as_str().unwrap().to_owned();
+        assert_ne!(later_follow, first_follow, "each turn holds its own follow");
+
+        let registrations = |task: String| {
+            let app = a.app.clone();
+            async move {
+                app.lock()
+                    .await
+                    .durable_state_store()
+                    .agent_registrations(&task)
+                    .expect("registrations read clean")
+            }
+        };
+        let earlier = registrations(first_task.clone()).await;
+        assert!(
+            earlier
+                .iter()
+                .any(|held| held.id == first_follow && held.task_id == first_task),
+            "{earlier:?}"
+        );
+        let later = registrations(later_task.clone()).await;
+        assert!(
+            later
+                .iter()
+                .any(|held| held.id == later_follow && held.task_id == later_task && held.live),
+            "{later:?}"
+        );
+
+        running_turn(&mut *b.app.lock().await, &b.room, &peer);
+        b.router
+            .runtime_state
+            .end_agent_turn_for_tests(&b.room, &peer, false)
+            .await
+            .unwrap();
+        let events = a.peer_events_after_delivery(1).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].source_id, format!("{}/{}/{peer}", b.id, b.room));
+        assert!(b.outbox_drained().await);
+        let later = registrations(later_task.clone()).await;
+        assert!(
+            later
+                .iter()
+                .any(|held| held.id == later_follow && !held.live),
+            "the later turn's follow took the outcome: {later:?}"
+        );
+        registrations(first_task).await;
+        unlink(&[&a, &b]);
+    });
+}
+
 /// `kernel` follows as asked, then its worker's turn ends and the outcome goes out before the
 /// follow's answer is back on the following kernel.
 fn link_ending_the_turn_before_answering(kernel: &Kernel) {
