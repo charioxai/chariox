@@ -6,6 +6,8 @@ import { createServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { KernelBrowserHost } from './kernel-browser-host.mjs';
+import { collectSignals } from './kernel-browser-probe-arms.mjs';
+import { knownDifferences, unexpectedDifferences, unexpectedHeaderDifferences } from './kernel-browser-signals.mjs';
 
 const root = process.env.CHARIOX_MDACCESS_DRILL_ROOT;
 assert(root, 'explicit disposable drill root required');
@@ -93,3 +95,25 @@ test('MP-08/10/11 a headless launch (the Mac kernel) reports the identity of the
     assert.deepEqual(seen.pointer, [true, true, true], 'a desktop Chrome has a fine pointer and hover');
   } finally { await host.stop(); await new Promise(r => server.close(r)); await rm(home, {recursive: true, force: true}); }
 });
+
+// Every signal a page can read (kernel-browser-signals.mjs) must equal the stock Chrome of the same build, except the
+// differences listed with their reason. A new difference, or a listed one that goes away, fails here.
+const dockerDir = path.dirname(new URL(import.meta.url).pathname);
+for (const mode of ['headful', 'headless']) {
+  test(`MP-08/10/11 ${mode} kernel browser signals equal a stock Chrome except the listed differences`, {timeout: 180000}, async () => {
+    const executable = process.env.CHARIOX_KERNEL_BROWSER_EXECUTABLE;
+    assert(executable, 'CHARIOX_KERNEL_BROWSER_EXECUTABLE must name the Chrome to compare against itself');
+    const common = {dockerDir, executable, scratchRoot: root};
+    // The reference is always the headed Chrome a person runs, whatever the kernel's launch mode.
+    const stock = await collectSignals({...common, arm: 'stock', mode: 'headful'});
+    const kernel = await collectSignals({...common, arm: 'kernel', mode});
+    const unexpected = unexpectedDifferences(stock.signals, kernel.signals).filter(({key}) => mode === 'headless' || key !== 'uad.high');
+    assert.ok(unexpected.length === 0, `kernel ${mode} differs from stock Chrome: ${JSON.stringify(unexpected).slice(0, 1500)}`);
+    const headers = unexpectedHeaderDifferences(stock.seen, kernel.seen, mode === 'headless' ? ['sec-ch-ua-full-version-list', 'sec-ch-ua-arch', 'sec-ch-ua-bitness', 'sec-ch-ua-model', 'sec-ch-ua-platform-version'] : []);
+    assert.ok(headers.length === 0, `request headers differ from stock Chrome: ${JSON.stringify(headers)}`);
+    // A leak that was fixed must leave the list, so the list only shrinks.
+    const leaks = Object.keys(knownDifferences).filter(key => knownDifferences[key].startsWith('KNOWN LEAK') && (mode === 'headless' || key !== 'uad.high'));
+    const gone = leaks.filter(key => stock.signals[key] === kernel.signals[key]);
+    assert.ok(gone.length === 0, `known leaks no longer differ, remove them from knownDifferences: ${gone}`);
+  });
+}
