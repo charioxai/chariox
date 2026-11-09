@@ -76,7 +76,15 @@ export const pageSignalsExpression = String.raw`(async () => {
   await safeAsync('iframe', async () => { const f = document.createElement('iframe'); document.body.appendChild(f); const w = f.contentWindow; const r = [w.navigator.webdriver, w.navigator.userAgent === nav.userAgent, w.navigator.platform === nav.platform, typeof w.chrome, w.Function.prototype.toString.call(nav.permissions.query) === Function.prototype.toString.call(nav.permissions.query), w.navigator.languages.join(',') === nav.languages.join(',')].join(','); f.remove(); return r; });
   await safeAsync('worker', () => new Promise(resolve => { const code = 'let g=null;try{const c=new OffscreenCanvas(1,1).getContext("webgl");const e=c.getExtension("WEBGL_debug_renderer_info");g=c.getParameter(e.UNMASKED_RENDERER_WEBGL)}catch(e){g="ERR"} postMessage({ua:navigator.userAgent,platform:navigator.platform,hc:navigator.hardwareConcurrency,languages:navigator.languages.join(","),webdriver:navigator.webdriver,brands:navigator.userAgentData?navigator.userAgentData.brands.map(b=>b.brand).join(","):"none",gl:g})'; const w = new Worker(URL.createObjectURL(new Blob([code]))); w.onmessage = e => resolve(JSON.stringify(e.data)); w.onerror = () => resolve('ERR'); setTimeout(() => resolve('TIMEOUT'), 4000); }));
   safe('worker.matchesPage', () => { try { const w = JSON.parse(out.worker); return [w.ua === nav.userAgent, w.platform === nav.platform, w.hc === nav.hardwareConcurrency, w.languages === nav.languages.join(','), w.webdriver === nav.webdriver, !/Headless/.test(w.brands)].join(','); } catch { return out.worker; } });
-  safe('serviceWorker', () => 'serviceWorker' in nav);
+  await safeAsync('serviceWorker', async () => {
+    const registration = await nav.serviceWorker.register('/sw.js');
+    const worker = registration.installing || registration.waiting || registration.active;
+    const reply = new Promise(resolve => { nav.serviceWorker.onmessage = event => resolve(JSON.stringify(event.data)); setTimeout(() => resolve('TIMEOUT'), 4000); });
+    await new Promise(resolve => { if (worker.state === 'activated') resolve(); else worker.onstatechange = () => worker.state === 'activated' && resolve(); setTimeout(resolve, 3000); });
+    (registration.active || worker).postMessage('probe');
+    const result = await reply; await registration.unregister();
+    try { const w = JSON.parse(result); return [w.ua === nav.userAgent, w.platform === nav.platform, w.hc === nav.hardwareConcurrency, w.languages === nav.languages.join(','), w.webdriver === nav.webdriver].join(','); } catch { return result; }
+  });
   return JSON.stringify(out);
 })()`;
 
@@ -89,6 +97,7 @@ export function identityServerHandler(seen) {
     const headers = {};
     for (const name of identityHeaders) if (request.headers[name] !== undefined) headers[name] = request.headers[name];
     seen.push({url: request.url, headers});
+    if (request.url.startsWith('/sw.js')) { response.setHeader('content-type', 'text/javascript'); response.end("self.onmessage = e => e.source.postMessage({ua: navigator.userAgent, platform: navigator.platform, hc: navigator.hardwareConcurrency, languages: navigator.languages.join(','), webdriver: navigator.webdriver}); self.oninstall = () => self.skipWaiting(); self.onactivate = e => e.waitUntil(self.clients.claim());"); return; }
     if (request.url.startsWith('/echo')) { response.setHeader('content-type', 'application/json'); response.end('{}'); return; }
     response.setHeader('accept-ch', 'Sec-CH-UA-Full-Version-List, Sec-CH-UA-Arch, Sec-CH-UA-Bitness, Sec-CH-UA-Model, Sec-CH-UA-Platform-Version');
     response.setHeader('content-type', 'text/html');
