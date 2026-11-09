@@ -259,6 +259,42 @@ async fn unknown_machine_refused() {
 }
 
 #[test]
+fn a_sub_agent_spawn_naming_the_own_machine_runs_here() {
+    run_large_stack_async_test("peer-spawn-own-machine", own_machine_runs_here);
+}
+
+async fn own_machine_runs_here() {
+    use crate::runtime::state::peer_agent_outbound::peer_agent_link_for_tests;
+    let world = world("peer-spawn-own-machine").await;
+    let own = world.app.lock().await.config().daemon_id.clone();
+    // The relay names this kernel under its machine's name, as it would for any kernel.
+    peer_agent_link_for_tests::register(
+        &own,
+        "own-machine",
+        std::sync::Arc::new(|_, _, _| panic!("the own kernel is not a peer")),
+    );
+    for (alias, name) in [("sm", "own-machine"), ("si", own.as_str())] {
+        for flag in ["--machine", "--kernel"] {
+            let alias = format!("{alias}{}", &flag[2..3]);
+            let spawned = room_command(
+                &world,
+                "a",
+                &format!("agent spawn {alias} --provider dev-stub {flag} {name}"),
+            )
+            .await;
+            assert!(spawned.ok, "{flag} {name}: {spawned:?}");
+            let child = agents_of(&world, &world.room)
+                .await
+                .into_iter()
+                .find(|agent| agent.alias() == Some(alias.as_str()))
+                .unwrap_or_else(|| panic!("{flag} {name}: no child in this room"));
+            assert!(child.remote_execution().is_none(), "{flag} {name}");
+        }
+    }
+    peer_agent_link_for_tests::unregister(&own);
+}
+
+#[test]
 fn the_spawn_usage_documents_the_room_option() {
     assert!(
         crate::runtime::metaagent_command_registry::AGENT_SPAWN_USAGE
