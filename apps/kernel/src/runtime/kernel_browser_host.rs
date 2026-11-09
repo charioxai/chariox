@@ -966,6 +966,16 @@ impl KernelBrowserHost {
             backend.host_request_cancellable(method, params, cancellation.clone())
         };
         crate::transport::kernel_browser_display::slow("rust_request", &op_label, requested);
+        // An explicit `start` is the retry a failed start asks for; the controller launch above
+        // does not see it when the controller stayed alive.
+        if method == "host.browser"
+            && request_params["op"] == "start"
+            && !cancellation
+                .as_ref()
+                .is_some_and(|cancel| cancel.requested())
+        {
+            self.note_start(user, result.is_ok());
+        }
         if let Some(action) = action {
             let terminal = if cancellation
                 .as_ref()
