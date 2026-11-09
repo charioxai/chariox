@@ -607,10 +607,7 @@ async fn a_hot_reload_owns_every_descriptor_it_names_while_the_kernel_stops() {
     let shell = unsafe { libc::tcgetpgrp(named[0]) };
     // The kernel stops before `exec`: the terminal's owner drops its PTY.
     let owner = service.terminal_for_test(&id);
-    drop(std::mem::replace(
-        &mut owner.lock_open().unwrap().pty,
-        crate::pty::PtyManager::new(),
-    ));
+    drop(std::mem::take(&mut owner.lock_open().unwrap().pty));
     let after: Vec<_> = named.iter().map(|fd| pty_number(*fd)).collect();
     drop(prepared);
     if shell > 1 {
