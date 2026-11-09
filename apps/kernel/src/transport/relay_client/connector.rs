@@ -902,6 +902,7 @@ async fn run_daemon_relay_connector_inner(
                 let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
                 let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
                 let writer_closing = Arc::clone(&outgoing_tx.closing);
+                let writer_notes = Arc::clone(&outgoing_tx.notes);
                 let writer_task = tokio::spawn(async move {
                     writer::run_relay_writer(
                         writer,
@@ -911,6 +912,7 @@ async fn run_daemon_relay_connector_inner(
                         transport_receipt_rx,
                         binary_events,
                         writer_closing,
+                        writer_notes,
                     )
                     .await;
                     let _ = writer_done_tx.send(());

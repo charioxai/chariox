@@ -1050,3 +1050,20 @@ fn reads_are_not_kept_for_replay() {
     .unwrap();
     assert!(request_is_cacheable(&submit));
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11 (relayflood): a command that timed out on the caller was
+// retried three times in four seconds and each retry received the same 379 KB result.
+#[tokio::test(start_paused = true)]
+async fn a_retried_command_id_is_answered_in_full_once_per_ten_seconds() {
+    let cache = CommandResultCache::default();
+    assert!(cache.may_answer_retry("l2-exec-1"));
+    assert!(!cache.may_answer_retry("l2-exec-1"));
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    assert!(!cache.may_answer_retry("l2-exec-1"));
+    assert!(
+        cache.may_answer_retry("l2-exec-2"),
+        "another command id is not held back"
+    );
+    tokio::time::sleep(std::time::Duration::from_secs(7)).await;
+    assert!(cache.may_answer_retry("l2-exec-1"));
+}

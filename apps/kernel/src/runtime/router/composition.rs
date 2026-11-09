@@ -350,6 +350,7 @@ pub(super) fn compose_command_router(
         runtime_state.clone(),
         config_projection.clone(),
         remote_relay_inventory_projection.clone(),
+        relay_state.clone(),
     ));
     // The pumps of a follower's remote targets end an inbox whose grant they
     // do not find, so the grants that outlive a restart are back before they start.

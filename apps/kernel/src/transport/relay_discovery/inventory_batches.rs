@@ -1,10 +1,12 @@
 //! MP-08 / MP-10 / MP-11: every inventory grant stays within Cloud's 64-target bound.
 use super::{authorization, query_relay_once, with_metadata_token};
+use crate::transport::relay_client::MainConnection;
 use crate::{config::DaemonConfig, error::DaemonError};
 use chariox_relay::protocol::{RelayEnvelope, RelayMetadataQuery};
 
 pub(super) async fn query(
     config: &DaemonConfig,
+    main: Option<&MainConnection>,
     query: RelayMetadataQuery,
 ) -> Result<RelayEnvelope, DaemonError> {
     let profile = config
@@ -24,7 +26,7 @@ pub(super) async fn query(
         )
         .await?;
         let scoped = with_metadata_token(config, token);
-        let response = query_relay_once(&scoped, query.clone()).await?;
+        let response = query_relay_once(&scoped, main, query.clone()).await?;
         match &response {
             RelayEnvelope::ClientMetadataResponse { error: None, .. } => {}
             _ => return Ok(response), // never report a partial successful inventory
