@@ -302,7 +302,26 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
         update.execution_location = Some("home".to_string());
     }
 
-    serde_json::to_string(&update).ok()
+    serde_json::to_string(&TimedCodexToolTranscriptUpdate {
+        update: &update,
+        started_at_ms: state.started_at_ms,
+        background: state.background.then_some(true),
+        finished_at_ms: state.background.then_some(state.finished_at_ms),
+    })
+    .ok()
+}
+
+/// The call's lifecycle times: when the kernel saw it start, and for a command
+/// left running in the background, when it ended (`null` while it runs).
+#[derive(Serialize)]
+struct TimedCodexToolTranscriptUpdate<'a> {
+    #[serde(flatten)]
+    update: &'a CodexToolTranscriptUpdate,
+    started_at_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    background: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finished_at_ms: Option<Option<u64>>,
 }
 
 fn codex_item_is_home_proxy(
@@ -407,6 +426,9 @@ mod tests {
             progress_messages: Vec::new(),
             last_emitted: None,
             pictures: None,
+            started_at_ms: 0,
+            background: false,
+            finished_at_ms: None,
         };
         let text = render_codex_tool_transcript_update(&state, &RemoteExtensionManifest::default())
             .expect("a tool update");
