@@ -4,10 +4,26 @@ use crate::{agent::AgentInstance, error::DaemonError};
 /// Code a client sees for a refusal; the policy cannot change on a retry.
 pub(crate) const REFUSED_CODE: &str = "room_tool_refused";
 
+/// Code a client sees when the same call can succeed later; it may repeat it.
+pub(crate) const RETRY_CODE: &str = "room_tool_retry";
+
+/// Codes whose message the room tool wrote itself, as the sentence the user reads.
+pub(crate) fn is_public_code(code: &str) -> bool {
+    code == REFUSED_CODE || code == RETRY_CODE
+}
+
 /// The one way a room policy refuses: the message is the sentence the user reads.
 pub(crate) fn denied(message: impl Into<String>) -> DaemonError {
     DaemonError::MachineRequest {
         code: REFUSED_CODE.into(),
+        message: message.into(),
+    }
+}
+
+/// A call that failed for a reason that passes: the sentence says when to repeat it.
+pub(crate) fn retry_later(message: impl Into<String>) -> DaemonError {
+    DaemonError::MachineRequest {
+        code: RETRY_CODE.into(),
         message: message.into(),
     }
 }
@@ -244,6 +260,16 @@ mod tests {
         assert_eq!(mapped.code, REFUSED_CODE);
         assert_eq!(mapped.message, sentence);
         assert!(!mapped.retryable);
+    }
+
+    #[test]
+    fn a_failure_that_passes_is_a_plain_retryable_sentence() {
+        let error = retry_later("Public history changed; retry the query");
+        assert_eq!(error.to_string(), "Public history changed; retry the query");
+        let mapped = map_kernel_error(&error);
+        assert_eq!(mapped.code, RETRY_CODE);
+        assert_eq!(mapped.message, error.to_string());
+        assert!(mapped.retryable);
     }
 
     #[test]
