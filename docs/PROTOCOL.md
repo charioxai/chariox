@@ -6486,6 +6486,8 @@ and `node --test apps/kernel/slice-linux-docker/docker/kernel-browser-card-regio
 
 ### Agent reach — local 974
 
+Retired: Room agents no longer get `chariox-reach` (`docs/KERNEL_ACCESS.md`, agent reach); no wire shape changed. The record below is history.
+
 A Room agent of the kernel owner reaches other rooms and kernels through a second runtime MCP server,
 `chariox-reach` at `/mcp/reach` (tools `kernels`, `sessions`, `request`, `events_subscribe`, `events_wait`,
 `events_ack`, `guide`; see `docs/KERNEL_ACCESS.md`). The identity is the agent's own live provider run

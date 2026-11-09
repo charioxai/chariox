@@ -32,26 +32,6 @@ pub(super) fn append_runtime_mcp_overrides(
         "mcp_servers.chariox.tool_timeout_sec".to_string(),
         json!(300),
     );
-    overrides.insert(
-        "mcp_servers.chariox-reach.transport".to_string(),
-        json!("streamable_http"),
-    );
-    overrides.insert(
-        "mcp_servers.chariox-reach.url".to_string(),
-        json!(crate::provider::reach_mcp_url(server_url)),
-    );
-    overrides.insert(
-        "mcp_servers.chariox-reach.http_headers.Authorization".to_string(),
-        json!(format!("Bearer {auth_token}")),
-    );
-    overrides.insert(
-        "mcp_servers.chariox-reach.startup_timeout_sec".to_string(),
-        json!(30),
-    );
-    overrides.insert(
-        "mcp_servers.chariox-reach.tool_timeout_sec".to_string(),
-        json!(300),
-    );
 }
 
 pub(super) fn codex_provider_facing_mcp_proxy_configs(

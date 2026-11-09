@@ -75,21 +75,6 @@ pub(super) fn runtime_mcp_config(
             "-c".to_string(),
             "mcp_servers.chariox.tool_timeout_sec=300".to_string(),
         ]);
-        args.extend([
-            "-c".to_string(),
-            "mcp_servers.chariox-reach.transport=\"streamable_http\"".to_string(),
-            "-c".to_string(),
-            format!(
-                "mcp_servers.chariox-reach.url={:?}",
-                crate::provider::reach_mcp_url(&binding.server_url)
-            ),
-            "-c".to_string(),
-            format!("mcp_servers.chariox-reach.bearer_token_env_var={CODEX_MCP_TOKEN_ENV:?}"),
-            "-c".to_string(),
-            "mcp_servers.chariox-reach.startup_timeout_sec=30".to_string(),
-            "-c".to_string(),
-            "mcp_servers.chariox-reach.tool_timeout_sec=300".to_string(),
-        ]);
         env.insert(CODEX_MCP_TOKEN_ENV.to_string(), binding.auth_token.clone());
     }
     Ok((args, env))

@@ -114,11 +114,8 @@ Its `request` argument is one serialized
 {"request":{"ListSessions":null}}
 ```
 
-A Room agent in a live window reaches the owner's other kernels with the `chariox-reach`
-`request` tool and its `kernel` argument: the window adds there what it adds at home
-(`docs/KERNEL_ACCESS.md`, agent reach). Without a window the agent already does what a
-Room agent without `/sudo` may do at home on every kernel, including creating a room;
-only what needs `/sudo` at home needs it elsewhere (`reach_requires_sudo`).
+A `/sudo` window never reaches another kernel, a subtree or a peer: the agent reach passthrough
+is retired (`docs/KERNEL_ACCESS.md`, agent reach).
 
 External agents holding a process-bound local-kernel grant can request a window
 over that kernel's Unix socket. That window is one turn on that kernel: it does
