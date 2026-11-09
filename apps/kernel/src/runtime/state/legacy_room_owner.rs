@@ -148,6 +148,15 @@ impl KernelRuntimeState {
                 == self.room_member_user_id_in(crate::session::DEFAULT_LOCAL_USER_ID, other)
     }
 
+    /// The identity `user_id` acts with in `session_id`: the room's stored owner when both name
+    /// one owner (`local` and the enrolled owner), otherwise `user_id` itself.
+    pub(in crate::runtime) fn owner_identity_in(&self, session_id: &str, user_id: &str) -> String {
+        match self.owned.session_store.session_owner_user_id(session_id) {
+            Some(room_owner) if self.same_owner(&room_owner, user_id) => room_owner,
+            _ => user_id.to_string(),
+        }
+    }
+
     /// Whether `user_id` is this kernel's owner: `local`, or the owner it was enrolled for.
     pub(in crate::runtime) fn acts_for_kernel_owner(&self, user_id: &str) -> bool {
         self.room_member_user_id_in(crate::session::DEFAULT_LOCAL_USER_ID, user_id)

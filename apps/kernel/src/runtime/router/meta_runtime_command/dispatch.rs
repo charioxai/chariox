@@ -778,6 +778,13 @@ impl CommandRouter {
         });
         let mut spawn_command = meta_kernel_command(provider_run, metaagent, &request);
         spawn_command.idempotency_key = spawn.command_id.clone();
+        // A peer in another room of the owner is created by the owner as that room knows it.
+        if let Some(room) = target_room.as_deref().filter(|room| *room != session.id()) {
+            spawn_command.caller.user_id = Some(
+                self.runtime_state
+                    .owner_identity_in(room, metaagent.owner_user_id()),
+            );
+        }
         let response = match Box::pin(self.dispatch(spawn_command, request)).await {
             Ok(response) => response,
             Err(error) => return Ok(meta_command_failure_result(command, error)),
