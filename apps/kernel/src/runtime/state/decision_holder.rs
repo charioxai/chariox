@@ -11,6 +11,8 @@ pub(crate) const CHILD_DECISION_EVENT: &str = "child_decision";
 pub(crate) const HOLDER_CHANGED: &str = "decision holder changed";
 /// A one-line question is at most this many characters in the holder's inbox event.
 const QUESTION_LIMIT: usize = 160;
+/// The card's own text (the command it allows) is at most this many characters in the event.
+const DETAIL_LIMIT: usize = 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DecisionHolder {
@@ -502,6 +504,23 @@ fn child_decision_occurrence(interaction_id: &str, holder: &str, tenure: u32) ->
     format!("child-decision-{interaction_id}-{holder}-{tenure}")
 }
 
+/// What the card says beyond its title, so a holder can tell which command it is asked to allow.
+/// Secret-shaped values are redacted before the text is cut, so a cut never leaves half a token.
+/// A card with no title already has its text as the question.
+fn card_detail(interaction: &crate::session::RuntimeInteraction) -> Option<String> {
+    let title = interaction.title()?;
+    let message = interaction.message();
+    if message.trim().is_empty() || message == title {
+        return None;
+    }
+    let redacted = crate::secret_redaction::redact_secrets(message);
+    let mut detail: String = redacted.chars().take(DETAIL_LIMIT).collect();
+    if redacted.chars().count() > DETAIL_LIMIT {
+        detail.push('…');
+    }
+    Some(detail)
+}
+
 impl KernelRuntimeOwnedState {
     /// Records the holder agent's urgent `child_decision` event for its current tenure and returns
     /// that holder. A decision the user holds tells no agent.
@@ -541,24 +560,28 @@ impl KernelRuntimeOwnedState {
             .chars()
             .take(QUESTION_LIMIT)
             .collect::<String>();
+        let mut payload = serde_json::json!({
+            "interaction_id": interaction_id,
+            "child_agent_id": child,
+            "child_alias": alias,
+            "question": question,
+            "choices": interaction.choices().iter().map(|choice| serde_json::json!({
+                "id": choice.id(),
+                "label": choice.label(),
+            })).collect::<Vec<_>>(),
+            "text_allowed": interaction.custom_choice().is_some(),
+            "needs_answer": true,
+        });
+        if let Some(detail) = card_detail(interaction) {
+            payload["detail"] = detail.into();
+        }
         let mut event = ledger::occurrence(
             session_id,
             &holder,
             child,
             &child_decision_occurrence(interaction_id, &holder, pending.holder_tenure),
             CHILD_DECISION_EVENT,
-            serde_json::json!({
-                "interaction_id": interaction_id,
-                "child_agent_id": child,
-                "child_alias": alias,
-                "question": question,
-                "choices": interaction.choices().iter().map(|choice| serde_json::json!({
-                    "id": choice.id(),
-                    "label": choice.label(),
-                })).collect::<Vec<_>>(),
-                "text_allowed": interaction.custom_choice().is_some(),
-                "needs_answer": true,
-            }),
+            payload,
         );
         event.urgent = true;
         self.durable_state_store
@@ -884,7 +907,16 @@ impl KernelRuntimeState {
             None,
             Some(holder),
         ) {
-            Ok(()) => Ok(ChildDecisionStatus::Answered),
+            Ok(()) => {
+                self.audit_interaction_answered(
+                    session_id,
+                    interaction_id,
+                    &choice_id,
+                    None,
+                    Some(holder),
+                );
+                Ok(ChildDecisionStatus::Answered)
+            }
             Err(error) => match error.to_string() {
                 text if text.contains(HOLDER_CHANGED) => Ok(ChildDecisionStatus::NotHolder),
                 text if text.contains("not pending") || text.contains("no longer pending") => {

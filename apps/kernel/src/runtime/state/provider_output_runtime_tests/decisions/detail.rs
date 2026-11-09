@@ -101,6 +101,21 @@ async fn a_secret_shaped_value_in_a_command_is_not_passed_on() {
 }
 
 #[tokio::test]
+async fn a_titled_card_reads_its_text_as_the_detail() {
+    let t = tree(
+        "decision-detail-titled",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    t.raise(permission("perm-detail-titled", &t.c)).await;
+    let payload = read_payload(&t, &t.p);
+    assert_eq!(payload["question"], "Allow command?");
+    assert_eq!(payload["detail"], "Run `ls`?");
+}
+
+// An agent has one question open at a time, so the untitled card gets a tree of its own.
+#[tokio::test]
 async fn a_card_with_no_text_beyond_its_title_has_no_detail() {
     let t = tree(
         "decision-detail-none",
@@ -108,10 +123,6 @@ async fn a_card_with_no_text_beyond_its_title_has_no_detail() {
         AgentPermissionLevel::Yolo,
     )
     .await;
-    t.raise(permission("perm-detail-none", &t.c)).await;
-    let payload = read_payload(&t, &t.p);
-    assert_eq!(payload["question"], "Allow command?");
-    assert_eq!(payload["detail"], "Run `ls`?");
     let untitled = RuntimeInteraction::new(
         "ask-detail-none",
         &t.c,
@@ -127,16 +138,11 @@ async fn a_card_with_no_text_beyond_its_title_has_no_detail() {
         None,
     );
     t.raise(untitled).await;
-    let events = t.decision_events(&t.p);
-    let untitled = events
-        .iter()
-        .find(|event| event.payload["interaction_id"] == "ask-detail-none")
-        .unwrap();
-    assert_eq!(untitled.payload["question"], "Run ls?");
+    let payload = read_payload(&t, &t.p);
+    assert_eq!(payload["question"], "Run ls?");
     assert!(
-        untitled.payload.get("detail").is_none(),
-        "the message is the question already: {}",
-        untitled.payload
+        payload.get("detail").is_none(),
+        "the message is the question already: {payload}"
     );
 }
 
@@ -185,22 +191,24 @@ async fn an_event_stored_without_detail_still_reads() {
     t.runtime
         .owned
         .durable_state_store
-        .agent_lifecycle(Operation::Occur(crate::durable_state::agent_lifecycle::occurrence(
-            &t.room,
-            &t.p,
-            &t.c,
-            "child-decision-old",
-            "child_decision",
-            serde_json::json!({
-                "interaction_id": "perm-old",
-                "child_agent_id": t.c,
-                "child_alias": "c",
-                "question": "Allow command?",
-                "choices": [{"id": "allow", "label": "Allow"}],
-                "text_allowed": false,
-                "needs_answer": true,
-            }),
-        )))
+        .agent_lifecycle(Operation::Occur(
+            crate::durable_state::agent_lifecycle::occurrence(
+                &t.room,
+                &t.p,
+                &t.c,
+                "child-decision-old",
+                "child_decision",
+                serde_json::json!({
+                    "interaction_id": "perm-old",
+                    "child_agent_id": t.c,
+                    "child_alias": "c",
+                    "question": "Allow command?",
+                    "choices": [{"id": "allow", "label": "Allow"}],
+                    "text_allowed": false,
+                    "needs_answer": true,
+                }),
+            ),
+        ))
         .unwrap();
     let payload = read_payload(&t, &t.p);
     assert_eq!(payload["question"], "Allow command?");

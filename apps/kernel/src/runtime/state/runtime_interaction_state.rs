@@ -423,28 +423,40 @@ impl KernelRuntimeState {
                 self.owned
                     .closed_interaction_error(session_id, interaction_id, error)
             })?;
-        self.audit_interaction_answered(session_id, interaction_id, choice_id, connection_class);
+        self.audit_interaction_answered(
+            session_id,
+            interaction_id,
+            choice_id,
+            connection_class,
+            None,
+        );
         self.schedule_question_answer_delivery(interaction_id)
     }
 
-    /// Who closed a decision and through which connection; never the reply text.
+    /// Who closed a decision and through which connection; never the reply text. A decision a
+    /// parent agent held names that agent in `answered_by_agent`.
     /// The answer already took effect, so a failed record is logged, not returned.
-    fn audit_interaction_answered(
+    pub(super) fn audit_interaction_answered(
         &self,
         session_id: &str,
         interaction_id: &str,
         choice_id: &str,
         connection_class: Option<crate::local::KernelConnectionClass>,
+        answered_by_agent: Option<&str>,
     ) {
+        let mut payload = serde_json::json!({
+            "session_id": session_id,
+            "choice_id": choice_id,
+            "connection_class": connection_class,
+            "at_ms": crate::session::unix_epoch_ms(),
+        });
+        if let Some(agent) = answered_by_agent {
+            payload["answered_by_agent"] = agent.into();
+        }
         let recorded = self.owned.durable_state_store.append_event(
             "interaction.answered",
             Some(interaction_id.into()),
-            serde_json::json!({
-                "session_id": session_id,
-                "choice_id": choice_id,
-                "connection_class": connection_class,
-                "at_ms": crate::session::unix_epoch_ms(),
-            }),
+            payload,
         );
         if let Err(error) = recorded {
             crate::logging::error_with_fields(
