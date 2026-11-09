@@ -170,7 +170,7 @@ fn request_kind_name(request: &LocalDaemonRequest) -> String {
         .collect()
 }
 
-fn relay_user(user_id: &str) -> RelayCallerIdentity {
+pub(super) fn relay_user(user_id: &str) -> RelayCallerIdentity {
     RelayCallerIdentity {
         realm_id: "test".into(),
         subject: format!("client-{user_id}"),

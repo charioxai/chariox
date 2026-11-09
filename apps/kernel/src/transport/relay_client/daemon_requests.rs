@@ -9,6 +9,8 @@ mod collaborator_gate_tests;
 mod placement_tests;
 mod prepare;
 pub(super) mod request_limits;
+#[cfg(test)]
+mod unpaged_reply_tests;
 pub(super) use prepare::{prepare_daemon_request, PreparedDaemonRequest};
 pub(super) mod renewal_refusals;
 
@@ -567,8 +569,21 @@ pub(super) async fn handle_prepared_daemon_request(
 /// A reply is never bigger than this once serialized; one that is would hold the relay (and the
 /// client's link) for the whole answer, so the client is told to ask for it in pages.
 const MAX_REPLY_BYTES: usize = 1024 * 1024;
+/// The answers a caller cannot ask for in pages: a terminal snapshot and a captured image have
+/// no offset, length or cursor, so refusing them at the ceiling would leave no way to get them.
+/// They travel as bounded chunks like any bulk reply and stay below what one transfer carries.
+const UNPAGED_REPLY_KINDS: [&str; 2] = ["terminal.room.snapshot", "screenshot.capture"];
+const MAX_UNPAGED_REPLY_BYTES: usize = 24 * 1024 * 1024;
 const REPLY_TOO_LARGE: &str =
     "the answer is larger than one relay reply; ask for it in pages (offset/length or the list's cursor)";
+
+fn reply_ceiling(request_kind: &str) -> usize {
+    if UNPAGED_REPLY_KINDS.contains(&request_kind) {
+        MAX_UNPAGED_REPLY_BYTES
+    } else {
+        MAX_REPLY_BYTES
+    }
+}
 
 struct SealContext<'a> {
     request_kind: &'static str,
@@ -596,7 +611,8 @@ fn seal_reply(
         received_at_ms,
         plaintext.len(),
     );
-    if plaintext.len() > MAX_REPLY_BYTES {
+    let ceiling = reply_ceiling(request_kind);
+    if plaintext.len() > ceiling {
         crate::logging::warn_with_fields(
             "daemon.relay_client",
             "relay reply over the ceiling was not sent",
@@ -604,7 +620,7 @@ fn seal_reply(
                 "request_kind": request_kind,
                 "command_id": command_id,
                 "byte_len": plaintext.len(),
-                "ceiling_bytes": MAX_REPLY_BYTES,
+                "ceiling_bytes": ceiling,
             }),
         );
         return RelayRequestOutcome {
