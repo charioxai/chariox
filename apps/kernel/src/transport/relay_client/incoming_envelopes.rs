@@ -162,6 +162,10 @@ pub(super) async fn handle_incoming_envelope(
                     }));
                 }
             }
+            let reply_origin = prepared
+                .as_ref()
+                .ok()
+                .map(|prepared| prepared.reply_origin());
             let timing_input = turn.is_some();
             if timing_input {
                 chariox_relay::transport_timing::record("kernel_input_queued", timing_packet);
@@ -224,16 +228,17 @@ pub(super) async fn handle_incoming_envelope(
                         relay_response.error = Some(super::request_errors::relay_error("display_subscription_required", "MD-DISPLAY: register a fresh display subscription with the same sender identity", false));
                     }
                 }
-                if let Err(error) = super::envelope_io::send_outgoing_reply(
-                    &outgoing_tx,
-                    RelayEnvelope::DaemonResponse {
-                        relay_request_id,
-                        encrypted_response: relay_response.encrypted_response,
-                        error: relay_response.error,
-                    },
-                )
-                .await
-                {
+                let reply = RelayEnvelope::DaemonResponse {
+                    relay_request_id,
+                    encrypted_response: relay_response.encrypted_response,
+                    error: relay_response.error,
+                };
+                if let Err(error) = match reply_origin {
+                    Some(origin) => {
+                        super::envelope_io::send_client_reply(&outgoing_tx, reply, origin).await
+                    }
+                    None => super::envelope_io::send_outgoing_reply(&outgoing_tx, reply).await,
+                } {
                     crate::logging::warn_with_fields(
                         "daemon.relay_client",
                         "failed to send async daemon response",
