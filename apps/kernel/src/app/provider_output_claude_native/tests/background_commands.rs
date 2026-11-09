@@ -8,7 +8,9 @@
 
 use serde_json::Value;
 
-use super::super::transcript::{drain_claude_transcript_file_at, ClaudeTranscriptCursor};
+use super::super::transcript::{
+    drain_claude_transcript_file_at, ClaudeTranscriptChunk, ClaudeTranscriptCursor,
+};
 use crate::terminal::TerminalOutputKind;
 
 const RECORDED: &str = include_str!("fixtures/claude-2.1.296-background-commands.jsonl");
@@ -54,12 +56,34 @@ impl RecordedSession {
     /// Claude has written the recorded lines up to `lines`; the kernel reads
     /// them at `now_ms`. The tool snapshots it emits.
     fn read(&mut self, lines: usize, now_ms: u64) -> Vec<Value> {
+        self.read_since(lines, now_ms, None).0
+    }
+
+    /// Like `read`, with the active prompt's cutoff; the tool snapshots and
+    /// the other chunks the drain emits.
+    fn read_since(
+        &mut self,
+        lines: usize,
+        now_ms: u64,
+        minimum_timestamp_ms: Option<u64>,
+    ) -> (Vec<Value>, Vec<ClaudeTranscriptChunk>) {
         let written = RECORDED.lines().take(lines).collect::<Vec<_>>().join("\n") + "\n";
         std::fs::write(&self.transcript, written).unwrap();
-        drain_claude_transcript_file_at(&self.transcript, &mut self.cursor, None, now_ms)
-            .chunks
+        let (tools, others) = drain_claude_transcript_file_at(
+            &self.transcript,
+            &mut self.cursor,
+            minimum_timestamp_ms,
+            now_ms,
+        )
+        .chunks
+        .into_iter()
+        .partition::<Vec<_>, _>(|chunk| chunk.kind == TerminalOutputKind::ProviderTool);
+        (Self::snapshots(tools), others)
+    }
+
+    fn snapshots(chunks: Vec<ClaudeTranscriptChunk>) -> Vec<Value> {
+        chunks
             .into_iter()
-            .filter(|chunk| chunk.kind == TerminalOutputKind::ProviderTool)
             .map(|chunk| {
                 let snapshot: Value = serde_json::from_str(&chunk.text).unwrap();
                 assert_eq!(
@@ -175,4 +199,94 @@ fn native_background_commands_end_by_stop_by_failure_and_with_the_session() {
     assert_eq!(exited.len(), 1, "{exited:?}");
     assert_eq!(exited[0]["id"], THIRD);
     finished_background(&exited[0], 2_000, 5_000);
+}
+
+/// A prompt started at `timestamp`: the bridge drops the transcript before it.
+fn prompt_started_at(timestamp: &str) -> u64 {
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .unwrap()
+        .timestamp_millis() as u64
+}
+
+#[test]
+fn native_background_notice_older_than_the_active_prompt_still_ends_its_command() {
+    // The notice was written, then a newer prompt started before the kernel read
+    // it: both forms of the notice predate that prompt's cutoff.
+    let cutoff = prompt_started_at("2026-11-09T20:29:58Z");
+    let mut session = RecordedSession::new("cutoff-notice");
+    let launched = session.read(LAUNCHED_AND_POLLED, 1_000);
+    assert_eq!(of(&launched, FIRST).len(), 2, "{launched:?}");
+
+    session.restart();
+    let (notified, others) = session.read_since(FIRST_NOTIFIED, 3_000, Some(cutoff));
+    assert_eq!(notified.len(), 1, "{notified:?}");
+    assert_eq!(notified[0]["id"], FIRST);
+    finished_background(&notified[0], 1_000, 3_000);
+    // The old turn between the launch and the notice stays out of the new prompt.
+    assert!(others.is_empty(), "{others:?}");
+
+    let (again, _) = session.read_since(FIRST_NOTIFIED, 4_000, Some(cutoff));
+    assert!(again.is_empty(), "{again:?}");
+    session.restart();
+    let (again, _) = session.read_since(FIRST_NOTIFIED, 5_000, Some(cutoff));
+    assert!(again.is_empty(), "{again:?}");
+}
+
+#[test]
+fn native_background_notice_ends_its_command_in_either_form_alone() {
+    let cutoff = prompt_started_at("2026-11-09T20:29:58Z");
+    let mut session = RecordedSession::new("cutoff-queued");
+    session.read(LAUNCHED_AND_POLLED, 1_000);
+    // Only the queued notice is written so far.
+    let (queued, _) = session.read_since(NEWER_TURN + 1, 2_000, Some(cutoff));
+    assert_eq!(queued.len(), 1, "{queued:?}");
+    finished_background(&queued[0], 1_000, 2_000);
+    let (started, _) = session.read_since(FIRST_NOTIFIED, 3_000, Some(cutoff));
+    assert!(started.is_empty(), "{started:?}");
+
+    let mut session = RecordedSession::new("cutoff-user-turn");
+    session.read(LAUNCHED_AND_POLLED, 1_000);
+    let written = RECORDED.lines().take(FIRST_NOTIFIED).collect::<Vec<_>>();
+    let without_queue = [&written[..NEWER_TURN], &written[NEWER_TURN + 1..]].concat();
+    std::fs::write(&session.transcript, without_queue.join("\n") + "\n").unwrap();
+    let drain = drain_claude_transcript_file_at(
+        &session.transcript,
+        &mut session.cursor,
+        Some(cutoff),
+        2_000,
+    );
+    let snapshots = RecordedSession::snapshots(drain.chunks);
+    assert_eq!(snapshots.len(), 1, "{snapshots:?}");
+    finished_background(&snapshots[0], 1_000, 2_000);
+}
+
+#[test]
+fn native_background_commands_end_across_the_cutoff_by_notice_and_by_stop_in_one_window() {
+    // The first command's notice and the second's TaskStop both predate the
+    // active prompt; the third launch there was never shown and stays untracked.
+    let cutoff = prompt_started_at("2026-11-09T20:31:00Z");
+    let mut session = RecordedSession::new("cutoff-two");
+    session.read(NEWER_TURN, 1_000);
+    session.restart();
+    let (ended, others) = session.read_since(SECOND_STOPPED_THIRD_LAUNCHED, 2_000, Some(cutoff));
+    assert!(others.is_empty(), "{others:?}");
+    assert_eq!(ended.len(), 2, "{ended:?}");
+    let first = of(&ended, FIRST);
+    let second = of(&ended, SECOND);
+    assert_eq!((first.len(), second.len()), (1, 1), "{ended:?}");
+    finished_background(first[0], 1_000, 2_000);
+    finished_background(second[0], 1_000, 2_000);
+    assert!(of(&ended, THIRD).is_empty() && of(&ended, STOP).is_empty());
+
+    let (again, _) = session.read_since(SECOND_STOPPED_THIRD_LAUNCHED, 3_000, Some(cutoff));
+    assert!(again.is_empty(), "{again:?}");
+}
+
+#[test]
+fn native_old_turns_before_the_cutoff_stay_out_of_the_new_prompt() {
+    let cutoff = prompt_started_at("2026-11-09T20:32:00Z");
+    let mut session = RecordedSession::new("cutoff-old-content");
+    let (tools, others) = session.read_since(FAILING_NOTIFIED, 1_000, Some(cutoff));
+    assert!(tools.is_empty(), "{tools:?}");
+    assert!(others.is_empty(), "{others:?}");
 }
