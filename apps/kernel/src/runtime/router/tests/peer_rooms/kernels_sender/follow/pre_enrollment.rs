@@ -132,3 +132,100 @@ fn an_agent_of_a_room_made_before_enrollment_reaches_the_owners_other_rooms_here
         }
     });
 }
+
+/// In a room made before enrollment the enrolled owner is the room's owner: an agent it owns and
+/// a turn it started reach the owner's other rooms here and on another kernel. A member who is
+/// not the owner under any identity stays a guest of that room.
+#[test]
+fn the_enrolled_owner_is_no_guest_of_a_room_made_before_enrollment() {
+    run_peer_test("peer-pre-enrolled-guest", || async {
+        let a = kernel_with_room_of(
+            "peer-pre-enrolled-guest-a",
+            AgentPermissionLevel::Yolo,
+            true,
+            DEFAULT_LOCAL_USER_ID,
+        );
+        let b = kernel("peer-pre-enrolled-guest-b", AgentPermissionLevel::Yolo, true);
+        link(&a);
+        link(&b);
+        let (other_room, drivers) = {
+            let mut app = a.app.lock().await;
+            let other_room = create_room(&mut app, "enrolled-room", Some(OWNER));
+            let neighbour =
+                owned_agent(&mut app, &other_room, "neighbour", OWNER, AgentPermissionLevel::Yolo);
+            running_turn(&mut app, &other_room, neighbour.id());
+            let mut room = app.sessions().get_session(&a.room).unwrap();
+            room.add_member(
+                "guest-user",
+                Some(DEFAULT_LOCAL_USER_ID.into()),
+                crate::session::CollaborationLevel::Full,
+            );
+            app.sessions_mut().restore_session(room);
+            let mut drivers = Vec::new();
+            // (alias, agent owner, who starts its turn, whether it acts as the room's owner)
+            for (alias, owner, starter, owner_side) in [
+                ("enrolled-own", OWNER, None, true),
+                ("enrolled-driven", DEFAULT_LOCAL_USER_ID, Some(OWNER), true),
+                ("guest-own", "guest-user", None, false),
+                ("guest-driven", DEFAULT_LOCAL_USER_ID, Some("guest-user"), false),
+            ] {
+                let agent =
+                    owned_agent(&mut app, &a.room, alias, owner, AgentPermissionLevel::Yolo);
+                let turn = match starter {
+                    Some(user) => guest_turn(&mut app, &a.room, agent.id(), user),
+                    None => running_turn(&mut app, &a.room, agent.id()),
+                };
+                drivers.push((alias, turn, owner_side));
+            }
+            (other_room, drivers)
+        };
+        for (alias, (token, prompt), owner_side) in &drivers {
+            let here = a
+                .send_as(
+                    token,
+                    prompt,
+                    serde_json::json!({"agent": "neighbour", "room": other_room, "message": "hello"}),
+                )
+                .await;
+            let across = a
+                .send_as(
+                    token,
+                    prompt,
+                    serde_json::json!({"agent": "worker", "room": b.room, "kernel": b.name, "message": "hello"}),
+                )
+                .await;
+            let spawn = a
+                .command_as(token, format!("agent spawn helper-{alias} --room {other_room}"))
+                .await;
+            let spawn_on_b = a
+                .command_as(
+                    token,
+                    format!(
+                        "agent spawn helper-{alias} --room {} --kernel {} --no-follow",
+                        b.room, b.name
+                    ),
+                )
+                .await;
+            if *owner_side {
+                assert!(here.is_ok(), "{alias}: {here:?}");
+                assert!(across.is_ok(), "{alias}: {across:?}");
+                assert!(spawn.is_ok(), "{alias}: {spawn:?}");
+                assert!(spawn_on_b.is_ok(), "{alias}: {spawn_on_b:?}");
+            } else {
+                let here = here.unwrap_err();
+                assert!(here.contains("unavailable"), "{alias}: {here}");
+                let across = across.unwrap_err();
+                assert!(across.contains("room_unavailable"), "{alias}: {across}");
+                let spawn = spawn.unwrap_err();
+                assert!(spawn.contains("does not exist"), "{alias}: {spawn}");
+                let spawn_on_b = spawn_on_b.unwrap_err();
+                assert!(
+                    spawn_on_b.contains("room_unavailable"),
+                    "{alias}: {spawn_on_b}"
+                );
+            }
+        }
+        assert_eq!(b.messages(b.agent.id()).await.len(), 2, "only the owner's turns reached B");
+        unlink(&[&a, &b]);
+    });
+}
