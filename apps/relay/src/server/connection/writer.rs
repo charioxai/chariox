@@ -345,7 +345,9 @@ fn eligible(pending: &VecDeque<Queued>, index: usize, active: &VecDeque<Transfer
     let current = pending[index].lane;
     if current == Lane::Reply {
         // Reserve lanes for events and requests. This also bounds receiver state.
-        return active.iter().filter(|t| t.lane == Lane::Reply).count() < 2;
+        // A single-chunk reply completes as it is written, so bulk replies never hold it back.
+        return pending[index].small()
+            || active.iter().filter(|t| t.lane == Lane::Reply).count() < 2;
     }
     if current == Lane::Ordered {
         return index == 0 && active.is_empty();
