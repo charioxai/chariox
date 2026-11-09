@@ -107,6 +107,8 @@ impl CommandRouter {
             .session_agents(&room)
             .iter()
             .any(|agent| agent.spawn_key() == Some(spawn_key.as_str()));
+        // The owner as this room knows it: `local` in a room made before enrollment.
+        let creator = self.runtime_state.room_member_user_id(&room, owner);
         let spawn = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             no_subscribe: true,
             session_id: room,
@@ -126,7 +128,7 @@ impl CommandRouter {
         // The owner both kernels share creates it; the room's own folder and limits apply.
         let source = KernelCommandSource::DaemonBackground;
         let caller = KernelCaller {
-            user_id: Some(owner.to_string()),
+            user_id: Some(creator),
             ..KernelCaller::for_source(&source)
         };
         let mut command = KernelCommand::from_local_request_with_caller(
