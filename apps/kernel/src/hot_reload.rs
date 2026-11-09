@@ -666,6 +666,11 @@ impl Drop for PreparedForTests {
     }
 }
 
+/// Takes the stopped kernel's state when its run returns, before `finish`.
+pub(crate) fn keep_until_exec(kernel: Box<dyn std::any::Any + Send>) {
+    drop(kernel);
+}
+
 /// Keeps a running Claude turn for the next program.
 pub(crate) fn hand_over_claude(
     run: &crate::provider::RuntimeProviderRun,

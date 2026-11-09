@@ -350,6 +350,8 @@ impl DaemonApp {
         if let Some(task) = remote_execution_lease_reaper_task {
             let _ = task.await;
         }
+        #[cfg(unix)]
+        crate::hot_reload::keep_until_exec(Box::new(app));
         result
     }
 }

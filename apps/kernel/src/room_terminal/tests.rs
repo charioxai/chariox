@@ -621,6 +621,49 @@ async fn a_hot_reload_owns_every_descriptor_it_names_while_the_kernel_stops() {
     );
 }
 
+/// The stopped kernel's state as `run_on_listener` leaves it: it owns the terminals.
+struct StoppedKernel {
+    _terminals: RoomTerminalService,
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for StoppedKernel {
+    fn drop(&mut self) {
+        self.dropped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn a_hot_reload_keeps_the_stopped_kernel_and_its_terminals_until_exec() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let root = TempDir::new();
+    let service = service(root.path());
+    open(&service, root.path());
+    let prepared = crate::hot_reload::PreparedForTests::with_terminals(&service);
+    let shell = unsafe { libc::tcgetpgrp(prepared.inherited_fds()[0]) };
+    assert!(shell > 1, "the terminal has no shell");
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // The kernel's run returns before main's `finish` replaces the program.
+    crate::hot_reload::keep_until_exec(Box::new(StoppedKernel {
+        _terminals: service,
+        dropped: Arc::clone(&dropped),
+    }));
+    let kept = !dropped.load(SeqCst);
+    let running = unsafe { libc::waitpid(shell, std::ptr::null_mut(), libc::WNOHANG) } == 0;
+    drop(prepared);
+    let released = dropped.load(SeqCst);
+    // SAFETY: the positive PID of the shell this test started; never a group.
+    unsafe { libc::kill(shell, libc::SIGKILL) };
+    unsafe { libc::waitpid(shell, std::ptr::null_mut(), 0) };
+    assert!(kept, "the stopped kernel was dropped before exec");
+    assert!(
+        running,
+        "the handed-over terminal's shell ended before exec"
+    );
+    assert!(released, "the stopped kernel outlived the swap");
+}
+
 /// A command that records its pid, then sleeps as that same process.
 const SLEEPER: &str = "sh -c 'echo $$ > {dir}/sleeper; exec sleep 120'";
 
