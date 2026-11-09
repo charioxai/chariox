@@ -295,6 +295,35 @@ mod tests {
         }
     }
 
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayproof r4, F5): four queued bulk replies hold all four
+    // slots. When the writer goes away their envelopes are dropped with its queue, so a fifth
+    // reply waiting for a slot would wait for ever, and its request task with it.
+    #[tokio::test]
+    async fn a_reply_waiting_for_a_slot_settles_when_the_writer_ends() {
+        let (sender, _priority, events) = RelayOutgoingSender::channel(64);
+        let reader = || ReplyOrigin::new("machine_file.read", "key-of-the-file-reader");
+        for index in 0..4 {
+            assert!(
+                sender
+                    .send_reply(bulk_reply(&format!("chunk-{index}")), reader())
+                    .await
+            );
+        }
+        let fifth = tokio::spawn({
+            let sender = sender.clone();
+            async move { sender.send_reply(bulk_reply("chunk-4"), reader()).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!fifth.is_finished(), "the fifth reply waits for a slot");
+
+        drop(events);
+        let settled = tokio::time::timeout(Duration::from_secs(2), fifth)
+            .await
+            .expect("the fifth reply is still waiting for a slot after the writer ended")
+            .unwrap();
+        assert!(!settled, "nothing was sent: the writer is gone");
+    }
+
     // MP-08 / MP-09 / MP-10 / MP-11 (relayflood): the lanes kernel logs who sent how much,
     // top three, once an hour.
     #[test]

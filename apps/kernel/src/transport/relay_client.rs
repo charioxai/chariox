@@ -254,7 +254,12 @@ impl RelayOutgoingSender {
     /// reply waits while the client already has its share queued.
     async fn send_reply(&self, envelope: RelayEnvelope, origin: reply_notes::ReplyOrigin) -> bool {
         let bulk = relay_envelope_uses_event_lane(&envelope);
-        let noted = self.notes.note(&envelope, origin, bulk).await;
+        // The replies that hold the bulk slots are dropped with the writer's lanes and never
+        // release them, so a reply waiting for a slot ends with the writer instead.
+        let noted = tokio::select! {
+            noted = self.notes.note(&envelope, origin, bulk) => noted,
+            () = self.event_tx.closed() => return false,
+        };
         let sent = self.send(envelope).await;
         if let (false, Some(key)) = (sent, noted) {
             self.notes.forget(&key);
