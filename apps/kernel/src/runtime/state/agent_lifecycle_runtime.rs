@@ -728,7 +728,10 @@ impl KernelRuntimeState {
                 .owned
                 .settle_agent_task(session_id, agent_id, &turn, run.id(), false)
             {
-                Ok(settlement) => self.finish_agent_task_settlement(settlement, &turn).await,
+                Ok(settlement) => {
+                    self.finish_agent_task_settlement_outside_lanes(settlement, &turn)
+                        .await
+                }
                 Err(error) => Err(error),
             };
         if let Err(error) = settled {
@@ -758,6 +761,25 @@ impl KernelRuntimeState {
         {
             tracing::warn!(%error, prompt_id=%prompt.id(),
                 "MP-08/MP-10/MP-11 A02: stopped task resources kept for the ledger sweep");
+        }
+    }
+    /// Settles a turn's task for a caller that holds run lanes (an output pump, a
+    /// workflow cancel). The owned work of a cancelled task takes every run lane in
+    /// the Room, so a cancelled task finishes on the stopped-task path instead.
+    pub(super) async fn finish_agent_task_settlement_outside_lanes(
+        &self,
+        settlement: Option<(AgentTaskExecution, bool)>,
+        source: &crate::session::PromptQueueItem,
+    ) -> Result<(), DaemonError> {
+        match settlement {
+            Some(settlement) if settlement.0.state == ExecutionState::Cancelled => {
+                self.spawn_workflow_prompt_dispatches(WorkflowPromptDispatches {
+                    stopped_task_settlements: vec![(settlement, source.clone())],
+                    ..Default::default()
+                });
+                Ok(())
+            }
+            settlement => self.finish_agent_task_settlement(settlement, source).await,
         }
     }
     pub(super) async fn finish_agent_task_settlement(
