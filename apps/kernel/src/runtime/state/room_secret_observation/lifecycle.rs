@@ -122,6 +122,18 @@ impl KernelRuntimeState {
         Ok((service, guard))
     }
 
+    /// Holds off every Vault value and registry write, as a secret fill does.
+    pub(in crate::runtime::state) async fn vault_lifecycle_read_guard(
+        &self,
+    ) -> tokio::sync::OwnedRwLockReadGuard<()> {
+        self.owned
+            .room_secret_observations
+            .vault_lifecycle
+            .clone()
+            .read_owned()
+            .await
+    }
+
     pub(crate) async fn vault_observation_mutation_guard(
         &self,
     ) -> tokio::sync::OwnedRwLockWriteGuard<()> {
