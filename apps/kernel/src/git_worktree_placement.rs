@@ -425,6 +425,17 @@ pub(crate) fn resolve_existing_worktree(
     Ok(resolved.display().to_string())
 }
 
+/// The branch checked out in `directory`; none when HEAD is detached or it is no git worktree.
+pub(crate) fn checked_out_branch(directory: impl AsRef<Path>) -> Option<String> {
+    let branch = run_git(
+        directory.as_ref(),
+        &["symbolic-ref", "--short", "-q", "HEAD"],
+        "agent.spawn",
+    )
+    .ok()?;
+    Some(branch.trim().to_string()).filter(|branch| !branch.is_empty())
+}
+
 pub(crate) fn is_git_worktree(base_directory: impl AsRef<Path>) -> bool {
     crate::process_spawn::command("git")
         .args(["rev-parse", "--is-inside-work-tree"])

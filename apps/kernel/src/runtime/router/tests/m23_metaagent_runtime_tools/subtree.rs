@@ -508,9 +508,15 @@ async fn spawn_answer_applied() {
     .await;
     assert!(plain.ok, "{plain:?}");
     let answer = &plain.payload["response"]["agent"];
-    for absent in ["profile", "effort", "permission", "deadline_ms", "branch"] {
-        assert_eq!(answer[absent], serde_json::Value::Null, "{absent}: {answer}");
+    for absent in ["profile", "effort", "deadline_ms", "branch"] {
+        assert_eq!(
+            answer[absent],
+            serde_json::Value::Null,
+            "{absent}: {answer}"
+        );
     }
+    // The child takes its parent's limit, and the answer says which one it got.
+    assert_eq!(answer["permission"], "yolo");
     assert_eq!(answer["worktree"], workspace);
 }
 
