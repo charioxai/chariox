@@ -3192,7 +3192,7 @@ async fn vopen_a_payment_card_is_its_room_owners_passkey_popup_while_it_waits() 
 // agent's next fill asks again on one new card.
 #[tokio::test]
 async fn vopen_a_payment_card_waiting_at_a_restart_is_withdrawn_and_asked_again() {
-    use super::super::wake_driver::{Recovery, WakeDriver};
+    use super::super::wake_driver::Recovery;
     use crate::local::KernelConnectionClass::Terminal;
     crate::test_support::isolated_env_test!();
     let login = card_room(SITE).await;
