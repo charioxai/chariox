@@ -529,7 +529,9 @@ pub(super) async fn handle_incoming_envelope(
                 .await
                 .try_send_display_stream_event(&stream_id, RelayDisplayTunnelClientEvent::Close);
         }
-        RelayEnvelope::ClientMetadataResponse { .. } => {}
+        response @ RelayEnvelope::ClientMetadataResponse { .. } => {
+            super::metadata_client::resolve_pending_metadata_response(state, response).await;
+        }
         RelayEnvelope::Close { reason, .. } => {
             return Err(DaemonError::LocalTransport {
                 operation: "relay closed connection",
@@ -1070,5 +1072,103 @@ mod tests {
             event_rx.try_recv(),
             Ok(RelayEnvelope::Close { .. })
         ));
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayflood, 2026-11-09): every kernel-list renewal opened
+    // a new TLS socket to the relay, and on a link a bulk download had filled each one timed
+    // out. The renewal asks over the connection the kernel already holds.
+    #[tokio::test]
+    async fn kernel_list_renewal_uses_the_open_relay_connection() {
+        let never_dialled = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        never_dialled.set_nonblocking(true).unwrap();
+        let relay_url = format!("ws://{}", never_dialled.local_addr().unwrap());
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some(relay_url.clone());
+        config.relay_token = Some("synthetic-private-transport".into());
+
+        let app = Arc::new(tokio::sync::Mutex::new(
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap(),
+        ));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(app, 2));
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let sequence = Arc::new(AtomicU64::new(0));
+        let tasks = Arc::new(Mutex::new(BTreeMap::new()));
+        let events = Arc::new(RelayEventRuntime::for_tests(1));
+        let cache = Arc::new(CommandResultCache::default());
+        let gate = Arc::new(RelayReconnectGate::default());
+        let (_shutdown, shutdown) = watch::channel(false);
+        let local_browser = LocalBrowserDirect::new(
+            router.clone(),
+            sequence.clone(),
+            events.clone(),
+            cache.clone(),
+            shutdown,
+        );
+        let (outgoing, mut priority, _event_lane) = RelayOutgoingSender::channel(8);
+        state
+            .write()
+            .await
+            .test_set_connected_sender(outgoing.clone(), &relay_url);
+
+        let projection = crate::runtime::projection::RemoteRelayInventoryProjectionStore::default();
+        let renewal = refresh_remote_inventory_projection(
+            crate::runtime::projection::DaemonConfigProjectionStore::new(config),
+            projection.clone(),
+            Some(Arc::clone(&state)),
+        );
+        // The relay's side of the connection: the first question on the wire is the list of
+        // machines, and its answer reaches the renewal through the envelope dispatch.
+        let relay = async {
+            let question = tokio::time::timeout(Duration::from_secs(5), priority.recv())
+                .await
+                .expect("the renewal must ask on the open connection")
+                .unwrap();
+            let RelayEnvelope::ClientMetadataRequest {
+                request_id, query, ..
+            } = question
+            else {
+                panic!("expected a metadata request: {question:?}");
+            };
+            assert_eq!(
+                query,
+                chariox_relay::protocol::RelayMetadataQuery::ListLiveMachines
+            );
+            let answer = RelayEnvelope::ClientMetadataResponse {
+                request_id,
+                machines: Some(Vec::new()),
+                kernels: None,
+                kernel: None,
+                error: None,
+            };
+            handle_incoming_envelope(
+                IncomingEnvelopeContext {
+                    router: &router,
+                    command_sequence: &sequence,
+                    state: &state,
+                    outgoing_tx: &outgoing,
+                    subscription_tasks: &tasks,
+                    event_runtime: &events,
+                    command_result_cache: &cache,
+                    reconnect_gate: &gate,
+                    local_browser: &local_browser,
+                },
+                None,
+                &serde_json::to_string(&answer).unwrap(),
+            )
+            .await
+            .unwrap();
+        };
+        let (renewed, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(renewal, relay)
+        })
+        .await
+        .expect("the renewal finishes without a socket of its own");
+        renewed.unwrap();
+        assert!(projection.is_fresh(crate::session::unix_epoch_ms(), 5_000));
+        assert!(
+            never_dialled.accept().is_err(),
+            "the renewal opened a new socket to the relay"
+        );
+        assert!(state.read().await.pending_metadata_requests.is_empty());
     }
 }
