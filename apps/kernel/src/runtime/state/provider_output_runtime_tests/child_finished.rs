@@ -561,6 +561,39 @@ async fn a_finish_while_the_parents_turn_settles_wakes_the_parent_when_it_ends()
     );
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: the child's settling turn holds the child's run lane,
+// and a workflow cancel holding the parked parent's lane waits for the child's lane in
+// turn. Waking the parent must not wait for the parent's lane inside the child's settlement.
+#[tokio::test]
+async fn a_finish_wakes_a_parked_parent_without_waiting_for_its_lane() {
+    let family = family("child-finished-parked-lane", 1, Some(false), false).await;
+    let kid = &family.kids[0];
+    let lane = family
+        .runtime
+        .provider_runtime_lanes
+        .acquire(&family.parent_run)
+        .await;
+    let settled = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        family.runtime.finish_agent_task_settlement(
+            Some((kid.task.clone(), kid.correction)),
+            &kid.child_prompt,
+        ),
+    )
+    .await;
+    assert!(
+        settled.is_ok(),
+        "the child's settlement does not wait for its parked parent's run lane"
+    );
+    settled.unwrap().unwrap();
+    drop(lane);
+    let event = child_finished_when(&family.runtime, &family.room, &family.parent, |event| {
+        event.prompt_id.is_some() && !matches!(event.state.as_str(), "pending" | "blocked")
+    })
+    .await;
+    assert!(event.target_prompt_id.is_none(), "{event:?}");
+}
+
 #[tokio::test]
 async fn a_cancelled_child_tells_the_parent_once_whichever_route_ends_it() {
     let team = team_with("child-finished-cancelled-once", None, false).await;
