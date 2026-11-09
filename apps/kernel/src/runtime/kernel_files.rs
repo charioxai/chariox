@@ -22,7 +22,8 @@ const MAX_DIRECTORY_ENTRIES: usize = 2000;
 const PARTIAL_SUFFIX: &str = ".chariox-partial";
 /// A client sends the chunks of an upload without waiting for each answer, and each runs on its own
 /// thread, so one can start before the chunk ahead of it has landed. It waits that long for the
-/// staged bytes to reach its offset before it is refused as out of order.
+/// staged bytes to reach its offset before it is refused as out of order. On a slow uplink the chunk
+/// ahead can land a whole queue of chunks later: as long as the client waits for any answer.
 const TURN_WAIT: Duration = Duration::from_secs(2);
 const TURN_POLL: Duration = Duration::from_millis(2);
 
@@ -745,6 +746,24 @@ mod tests {
         let outcome = written(write(&second).unwrap());
         assert_eq!(outcome.0, 6);
         assert!(outcome.1);
+        assert_eq!(written(late.join().unwrap().unwrap()).0, 3);
+        assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
+    }
+
+    // On a slow uplink the chunk ahead can land seconds after the one behind it.
+    #[test]
+    fn a_chunk_waits_for_the_one_ahead_of_it_when_that_lands_seconds_later() {
+        let dir = scratch();
+        let target = dir.join("late.bin");
+        let sha = format!("{:x}", Sha256::digest(b"abcdef"));
+        let first = chunk(&target, 0, b"abc", 6, Some(&sha));
+        let second = chunk(&target, 3, b"def", 6, Some(&sha));
+        let late = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(2500));
+            write(&first)
+        });
+        let outcome = written(write(&second).unwrap());
+        assert_eq!(outcome.0, 6);
         assert_eq!(written(late.join().unwrap().unwrap()).0, 3);
         assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
     }
