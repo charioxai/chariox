@@ -585,6 +585,10 @@ export interface AgentTreeNode {
   alias: string | null
   provider: string
   model: string | null
+  /** The mode, permission level and variant the node really runs with; absent when not reported. */
+  execution_mode?: 'build' | 'plan'
+  permission_level?: 'required' | 'yolo'
+  effort?: string
   depth: number
   state: AgentTreeState
   outcome: TurnOutcomeKind | null

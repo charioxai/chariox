@@ -6908,7 +6908,7 @@ Local daemon protocol 1000 adds `ListDescendants { session_id, agent_id }`, answ
 `AgentTree { tree }` (`root`, `rev`, `totals {live, running, needs_user}` and `nodes` in creation order). A node
 carries `state` (starting|running|waiting|idle|ended|error|unreachable), `outcome` (how its latest turn ended, null
 while it runs or before it ran) and `needs_user` (the user holds a pending decision of that node;
-`totals.needs_user` counts them; `totals.live` counts the nodes starting, running, waiting or unreachable, so an idle node, finished or not started, is not live); no holder, path or card. `rev` moves only when the read differs. The follow event
+`totals.needs_user` counts them; `totals.live` counts the nodes starting, running, waiting or unreachable, so an idle node, finished or not started, is not live); no holder, path or card. A node also carries `execution_mode` (build|plan) and `permission_level` (required|yolo), the values its approvals really use after the limit of its parent chain, and `effort` (omitted when it has none); all three are omitted for a collaborator who may not view parameters. `rev` moves only when the read differs. The follow event
 `agent_tree { root, rev }` is published once per change of the tree below `root`. Sub-agents are never listed, counted
 or announced as room members.
 

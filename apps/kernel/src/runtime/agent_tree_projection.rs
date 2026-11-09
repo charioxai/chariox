@@ -14,7 +14,9 @@
 use crate::agent::AgentInstance;
 use crate::local::{AgentTree, AgentTreeNode, AgentTreeState, AgentTreeTotals};
 use crate::provider::TurnOutcomeKind;
-use crate::session::{CollaborationLevel, RuntimeSession};
+use crate::session::{
+    effective_agent_execution_config_in_tree, CollaborationLevel, RuntimeSession,
+};
 
 /// What the latest task of an agent says about its turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +64,9 @@ fn totals_of(nodes: &[AgentTreeNode]) -> AgentTreeTotals {
 fn redact_parameters(node: &mut AgentTreeNode) {
     node.provider = "redacted".to_owned();
     node.model = None;
+    node.execution_mode = None;
+    node.permission_level = None;
+    node.effort = None;
 }
 
 /// What the viewer reads of `tree`, by the rule the session projection applies to agents: an agent
@@ -158,6 +163,8 @@ pub(crate) fn project_agent_tree(
     for (agent, depth) in members {
         let turn = turn_of(agent.id());
         let state = node_state(agent, pending(agent.id()), turn);
+        // The value approval gating reads, after the limit of the parent chain.
+        let effective = effective_agent_execution_config_in_tree(session, agent, agents);
         nodes.push(AgentTreeNode {
             agent_id: agent.id().to_owned(),
             parent_agent_id: agent.parent_agent_id().map(str::to_owned),
@@ -165,9 +172,9 @@ pub(crate) fn project_agent_tree(
             alias: agent.alias().map(str::to_owned),
             provider: agent.provider().to_owned(),
             model: agent.model().map(str::to_owned),
-            execution_mode: None,
-            permission_level: None,
-            effort: None,
+            execution_mode: Some(effective.mode),
+            permission_level: Some(effective.permission_level),
+            effort: agent.effort().map(str::to_owned),
             depth,
             state,
             outcome: turn.and_then(|turn| turn.outcome),
