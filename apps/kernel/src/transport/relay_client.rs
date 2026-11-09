@@ -303,10 +303,12 @@ fn relay_envelope_should_write(envelope: &RelayEnvelope, closing: bool) -> bool 
 
 fn relay_envelope_uses_event_lane(envelope: &RelayEnvelope) -> bool {
     // MP-08 / MP-10 / MP-11: bulk encrypted replies (catalogues, history,
-    // captures) must not fill the priority queue ahead of Computer control.
+    // captures) and bulk peer requests (file chunks) must not fill the priority
+    // queue ahead of Computer control and small requests.
     // The relay remains opaque; classify size without inspecting the payload.
     if matches!(envelope, RelayEnvelope::DaemonResponse { encrypted_response: Some(payload), .. }
         | RelayEnvelope::DaemonIncomingPeerResponse { encrypted_response: Some(payload), .. }
+        | RelayEnvelope::DaemonPeerRequest { encrypted_request: payload, .. }
         if payload.ciphertext.len() > 64 * 1024)
     {
         return true;

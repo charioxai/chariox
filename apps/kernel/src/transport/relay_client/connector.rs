@@ -6,7 +6,6 @@ use super::*;
 use crate::runtime::cloud_relay_control::cloud_relay_token_is_expired;
 
 mod managed_slice_activation;
-mod upload;
 mod writer;
 #[cfg(test)]
 use managed_slice_activation::{
@@ -339,20 +338,6 @@ where
             *active_relay_token = registration.auth_token.clone();
             Ok(Some(registration))
         }
-    }
-}
-
-/// The relay's receipt for one of the kernel's own upload chunks.
-fn upload_receipt(payload: &str) -> Option<(u32, u32)> {
-    if !payload.starts_with("{\"kind\":\"transport_ack\"") {
-        return None;
-    }
-    match serde_json::from_str(payload).ok()? {
-        chariox_relay::frame_transport::TransportFrame::TransportAck {
-            transfer_id,
-            offset,
-        } => Some((transfer_id, offset)),
-        _ => None,
     }
 }
 
@@ -898,10 +883,8 @@ async fn run_daemon_relay_connector_inner(
                         version >= chariox_relay::binary_event::PROTOCOL_VERSION
                     });
                 // A relay that reassembles chunked uploads answers the offer; an older one does not.
-                let upload_chunks = handshake
-                    .headers()
-                    .get(chariox_relay::frame_transport::UPLOAD_HEADER)
-                    .is_some_and(|value| value == chariox_relay::frame_transport::UPLOAD_CHUNKS);
+                let upload_chunks =
+                    crate::transport::relay_socket_connect::upload_chunks_accepted(&handshake);
                 let connect_ms = connect_started.elapsed().as_millis();
                 crate::logging::info_with_fields(
                     "daemon.relay_client",
@@ -1084,7 +1067,7 @@ async fn run_daemon_relay_connector_inner(
                             reader_progress.progress();
                             match incoming {
                                 Some(Ok(Message::Text(payload))) => {
-                                    let (payload, receipt) = match upload_chunks.then(|| upload_receipt(&payload)).flatten() {
+                                    let (payload, receipt) = match upload_chunks.then(|| crate::transport::relay_upload::receipt(&payload)).flatten() {
                                         // Receipts for the kernel's own chunks free its upload window.
                                         Some(receipt) if upload_receipt_tx.try_send(receipt).is_ok() => continue,
                                         Some(_) => (Some("{\"kind\":\"close\",\"reason\":\"relay upload receipt lost\"}".to_string()), None),

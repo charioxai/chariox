@@ -14,6 +14,7 @@ pub(crate) mod relay_discovery;
 pub(crate) mod relay_peer;
 pub(crate) mod relay_peer_agents;
 pub(crate) mod relay_socket_connect;
+pub(crate) mod relay_upload;
 pub(crate) mod request_decode_error;
 pub(crate) mod room_browser_controller;
 pub(crate) mod runtime_tools;

@@ -2,7 +2,11 @@
 use std::{future::Future, pin::Pin};
 
 use crate::outbound_dial::{connect_websocket, WebSocket};
-use tokio_tungstenite::tungstenite::{handshake::client::Response, Error};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::{
+    handshake::client::{Request, Response},
+    Error,
+};
 
 type ConnectFuture<'a> =
     Pin<Box<dyn Future<Output = Result<(WebSocket, Response), Error>> + Send + 'a>>;
@@ -23,17 +27,37 @@ pub(super) fn connect_binary_events(relay_url: &str) -> ConnectFuture<'_> {
     match chariox_relay::binary_event::connection_request(
         &chariox_relay::frame_transport::transport_url(relay_url),
     ) {
-        Ok(mut request) => {
-            request.headers_mut().insert(
-                chariox_relay::frame_transport::UPLOAD_HEADER,
-                chariox_relay::frame_transport::UPLOAD_CHUNKS
-                    .parse()
-                    .expect("a valid header value"),
-            );
-            Box::pin(connect_websocket(request))
-        }
+        Ok(request) => Box::pin(connect_websocket(offer_upload_chunks(request))),
         Err(error) => Box::pin(async move { Err(error) }),
     }
+}
+
+/// A client connection that offers chunked uploads (the gateway's links): the
+/// relay answers the offer when it reassembles them.
+#[inline(never)]
+pub(crate) fn connect_with_upload_chunks(relay_url: &str) -> ConnectFuture<'_> {
+    match chariox_relay::frame_transport::transport_url(relay_url).into_client_request() {
+        Ok(request) => Box::pin(connect_websocket(offer_upload_chunks(request))),
+        Err(error) => Box::pin(async move { Err(error) }),
+    }
+}
+
+fn offer_upload_chunks(mut request: Request) -> Request {
+    request.headers_mut().insert(
+        chariox_relay::frame_transport::UPLOAD_HEADER,
+        chariox_relay::frame_transport::UPLOAD_CHUNKS
+            .parse()
+            .expect("a valid header value"),
+    );
+    request
+}
+
+/// True when the relay answered the upload offer in its handshake.
+pub(crate) fn upload_chunks_accepted(handshake: &Response) -> bool {
+    handshake
+        .headers()
+        .get(chariox_relay::frame_transport::UPLOAD_HEADER)
+        .is_some_and(|value| value == chariox_relay::frame_transport::UPLOAD_CHUNKS)
 }
 
 #[cfg(test)]
