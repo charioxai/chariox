@@ -19,12 +19,28 @@ pub(super) struct ClaudeTranscriptCursor {
     /// Calls whose result has not arrived yet: the result line names only the call id.
     #[serde(default)]
     pending_tool_calls: BTreeMap<String, ClaudeToolCall>,
+    /// Launched background commands still running, by tool call id. They
+    /// outlive the turn that started them.
+    #[serde(default)]
+    background_calls: BTreeMap<String, ClaudeBackgroundCall>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ClaudeToolCall {
     tool: String,
     input: Value,
+    /// When the kernel first saw the call.
+    #[serde(default)]
+    started_at_ms: Option<u64>,
+    #[serde(default)]
+    background: bool,
+}
+
+/// A background command's launch snapshot and the task id Claude names it by.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ClaudeBackgroundCall {
+    task_id: Option<String>,
+    snapshot: Value,
 }
 
 /// A larger input stays in the call's own history entry; the result keeps only the tool's name.
@@ -105,18 +121,36 @@ pub(super) fn drain_claude_transcript_file_since(
     cursor: &mut ClaudeTranscriptCursor,
     minimum_timestamp_ms: Option<u64>,
 ) -> ClaudeTranscriptDrain {
+    drain_claude_transcript_file_at(
+        transcript_path,
+        cursor,
+        minimum_timestamp_ms,
+        crate::session::unix_epoch_ms(),
+    )
+}
+
+#[cfg(test)]
+pub(super) fn drain_claude_transcript_file_at(
+    transcript_path: &str,
+    cursor: &mut ClaudeTranscriptCursor,
+    minimum_timestamp_ms: Option<u64>,
+    now_ms: u64,
+) -> ClaudeTranscriptDrain {
     let path = Path::new(transcript_path);
     let Ok(raw) = fs::read_to_string(path) else {
         return ClaudeTranscriptDrain::default();
     };
-    drain_claude_transcript_raw_since(transcript_path, &raw, cursor, minimum_timestamp_ms)
+    drain_claude_transcript_raw_since(transcript_path, &raw, cursor, minimum_timestamp_ms, now_ms)
 }
 
+/// Drains the transcript lines not seen yet; `now_ms` is when the kernel
+/// reads them, the start of a call and the end of a background command.
 pub(super) fn drain_claude_transcript_raw_since(
     transcript_path: &str,
     raw: &str,
     cursor: &mut ClaudeTranscriptCursor,
     minimum_timestamp_ms: Option<u64>,
+    now_ms: u64,
 ) -> ClaudeTranscriptDrain {
     let lines = raw
         .lines()
@@ -162,7 +196,7 @@ pub(super) fn drain_claude_transcript_raw_since(
         if let Some(prompt) = claude_transcript_enqueued_prompt(&value) {
             drain.enqueued_prompts.push(prompt);
         }
-        let chunks = claude_transcript_chunks(&value, &mut cursor.pending_tool_calls);
+        let chunks = claude_transcript_chunks(&value, cursor, now_ms);
         if drain.terminal_failure.is_none() {
             drain.terminal_failure = chunks.iter().find_map(|chunk| {
                 crate::provider::classify_provider_terminal_failure_output_text(
@@ -247,21 +281,86 @@ fn claude_transcript_entry_key(path: &str, index: usize, value: &Value) -> Strin
 
 fn claude_transcript_chunks(
     value: &Value,
-    pending_tool_calls: &mut BTreeMap<String, ClaudeToolCall>,
+    cursor: &mut ClaudeTranscriptCursor,
+    now_ms: u64,
 ) -> Vec<ClaudeTranscriptChunk> {
     let Some(kind) = value.get("type").and_then(Value::as_str) else {
         return Vec::new();
     };
+    if let Some(notification) = claude_task_notification(value) {
+        return finish_background_call(cursor, notification, now_ms)
+            .into_iter()
+            .collect();
+    }
     match kind {
-        "assistant" => claude_assistant_transcript_chunks(value, pending_tool_calls),
-        "user" => claude_tool_result_transcript_chunks(value, pending_tool_calls),
+        "assistant" => {
+            claude_assistant_transcript_chunks(value, &mut cursor.pending_tool_calls, now_ms)
+        }
+        "user" => claude_tool_result_transcript_chunks(value, cursor, now_ms),
         _ => Vec::new(),
     }
+}
+
+/// Claude tells the model a background task ended with a
+/// `<task-notification>`: first queued (`queue-operation` enqueue), then as
+/// the user turn it starts. A command the session stopped on exit is only queued.
+fn claude_task_notification(value: &Value) -> Option<ClaudeTaskEnd<'_>> {
+    let text = match value.get("type").and_then(Value::as_str)? {
+        "queue-operation" => value.get("content")?.as_str()?,
+        "user" => value.get("message")?.get("content")?.as_str()?,
+        _ => return None,
+    };
+    let notification = text.trim_start().strip_prefix("<task-notification>")?;
+    let tag = |name: &str| {
+        let open = format!("<{name}>");
+        let close = format!("</{name}>");
+        let rest = notification.split_once(open.as_str())?.1;
+        Some(rest.split_once(close.as_str())?.0.trim())
+    };
+    Some(ClaudeTaskEnd {
+        tool_use_id: tag("tool-use-id"),
+        task_id: tag("task-id"),
+    })
+}
+
+/// The background command a task notification or a stop result is about.
+#[derive(Clone, Copy)]
+struct ClaudeTaskEnd<'a> {
+    tool_use_id: Option<&'a str>,
+    task_id: Option<&'a str>,
+}
+
+/// The ended background call's launch snapshot, now with its end time.
+fn finish_background_call(
+    cursor: &mut ClaudeTranscriptCursor,
+    end: ClaudeTaskEnd<'_>,
+    now_ms: u64,
+) -> Option<ClaudeTranscriptChunk> {
+    let id = end
+        .tool_use_id
+        .filter(|id| cursor.background_calls.contains_key(*id))
+        .map(str::to_string)
+        .or_else(|| {
+            let task_id = end.task_id?;
+            cursor
+                .background_calls
+                .iter()
+                .find(|(_, call)| call.task_id.as_deref() == Some(task_id))
+                .map(|(id, _)| id.clone())
+        })?;
+    let mut snapshot = cursor.background_calls.remove(&id)?.snapshot;
+    snapshot["finished_at_ms"] = serde_json::json!(now_ms);
+    Some(ClaudeTranscriptChunk {
+        kind: TerminalOutputKind::ProviderTool,
+        merge_key_suffix: format!("tool:{id}"),
+        text: snapshot.to_string(),
+    })
 }
 
 fn claude_assistant_transcript_chunks(
     value: &Value,
     pending_tool_calls: &mut BTreeMap<String, ClaudeToolCall>,
+    now_ms: u64,
 ) -> Vec<ClaudeTranscriptChunk> {
     let message = value.get("message").unwrap_or(value);
     let message_id =
@@ -301,6 +400,7 @@ fn claude_assistant_transcript_chunks(
             "tool_use" => {
                 let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
                 let input = block.get("input").cloned().unwrap_or(Value::Null);
+                let background = crate::provider::launches_background_command(name, Some(&input));
                 if let Some(id) = block.get("id").and_then(Value::as_str) {
                     if pending_tool_calls.len() < PENDING_TOOL_CALLS {
                         let kept = if input.to_string().len() <= PENDING_TOOL_INPUT_BYTES {
@@ -313,16 +413,23 @@ fn claude_assistant_transcript_chunks(
                             ClaudeToolCall {
                                 tool: name.to_string(),
                                 input: kept,
+                                started_at_ms: Some(now_ms),
+                                background,
                             },
                         );
                     }
                 }
-                let payload = serde_json::json!({
+                let mut payload = serde_json::json!({
                     "id": block.get("id").cloned().unwrap_or(Value::Null),
                     "tool": name,
                     "status": "started",
                     "input": input,
+                    "started_at_ms": now_ms,
                 });
+                if background {
+                    payload["background"] = serde_json::json!(true);
+                    payload["finished_at_ms"] = Value::Null;
+                }
                 chunks.push(ClaudeTranscriptChunk {
                     kind: TerminalOutputKind::ProviderTool,
                     merge_key_suffix: format!(
@@ -347,15 +454,21 @@ const CLAUDE_RESUME_REPAIR_RESULT_PREFIX: &str = "[Tool call interrupted:";
 const CLAUDE_STOPPED_CALL_RESULT_PREFIX: &str =
     "The user doesn't want to proceed with this tool use.";
 
+/// At most this many background commands are tracked at once; an untracked
+/// one ends with its provider process.
+const BACKGROUND_CALLS: usize = 64;
+
 fn claude_tool_result_transcript_chunks(
     value: &Value,
-    pending_tool_calls: &mut BTreeMap<String, ClaudeToolCall>,
+    cursor: &mut ClaudeTranscriptCursor,
+    now_ms: u64,
 ) -> Vec<ClaudeTranscriptChunk> {
     let message = value.get("message").unwrap_or(value);
     let Some(content) = message.get("content").and_then(Value::as_array) else {
         return Vec::new();
     };
-    content
+    let mut ended_tasks = Vec::new();
+    let mut chunks: Vec<ClaudeTranscriptChunk> = content
         .iter()
         .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
         .filter_map(|block| {
@@ -365,7 +478,7 @@ fn claude_tool_result_transcript_chunks(
                 .and_then(Value::as_str)
                 .is_some_and(|text| text.starts_with(CLAUDE_RESUME_REPAIR_RESULT_PREFIX))
             {
-                pending_tool_calls.remove(tool_use_id);
+                cursor.pending_tool_calls.remove(tool_use_id);
                 return None;
             }
             let content = match result {
@@ -387,7 +500,7 @@ fn claude_tool_result_transcript_chunks(
                 "failed"
             };
             // The result replaces the call's history entry, so it carries the call's name and input.
-            let call = pending_tool_calls.remove(tool_use_id);
+            let call = cursor.pending_tool_calls.remove(tool_use_id);
             let mut payload = serde_json::json!({
                 "id": tool_use_id,
                 "tool": call.as_ref().map_or("tool_result", |call| call.tool.as_str()),
@@ -401,7 +514,38 @@ fn claude_tool_result_transcript_chunks(
                 payload["images_omitted"] = serde_json::json!(images_omitted);
             }
             if let Some(call) = call {
+                if let Some(started_at_ms) = call.started_at_ms {
+                    payload["started_at_ms"] = serde_json::json!(started_at_ms);
+                }
+                if status == "completed" {
+                    if let Some(task_id) =
+                        crate::provider::ended_task_of_result(&call.tool, &call.input, &content)
+                    {
+                        ended_tasks.push(task_id);
+                    }
+                }
                 payload["input"] = call.input;
+                if call.background {
+                    payload["background"] = serde_json::json!(true);
+                    // A launch that failed or was stopped never left a command running.
+                    payload["finished_at_ms"] = if status == "completed" {
+                        Value::Null
+                    } else {
+                        serde_json::json!(now_ms)
+                    };
+                    if status == "completed" && cursor.background_calls.len() < BACKGROUND_CALLS {
+                        cursor.background_calls.insert(
+                            tool_use_id.to_string(),
+                            ClaudeBackgroundCall {
+                                task_id: crate::provider::launched_task_id(
+                                    value.get("toolUseResult"),
+                                    &content,
+                                ),
+                                snapshot: payload.clone(),
+                            },
+                        );
+                    }
+                }
             }
             Some(ClaudeTranscriptChunk {
                 kind: TerminalOutputKind::ProviderTool,
@@ -409,7 +553,15 @@ fn claude_tool_result_transcript_chunks(
                 text: payload.to_string(),
             })
         })
-        .collect()
+        .collect();
+    for task_id in ended_tasks {
+        let end = ClaudeTaskEnd {
+            tool_use_id: None,
+            task_id: Some(&task_id),
+        };
+        chunks.extend(finish_background_call(cursor, end, now_ms));
+    }
+    chunks
 }
 
 fn claude_transcript_assistant_message_id(value: &Value) -> Option<String> {
