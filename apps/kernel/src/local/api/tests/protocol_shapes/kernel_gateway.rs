@@ -264,8 +264,8 @@ fn created_work_keeps_its_ids_and_separate_event_failure_on_the_wire() {
         LocalDaemonResponse::AgentSpawned {
             agent: agent.clone(),
             event_subscription_error: None,
-            deadline_ms: None,
-            branch: None,
+            deadline_ms: Some(1_800_000_000_000),
+            branch: Some("feature-x".to_string()),
         },
         LocalDaemonResponse::AgentsSpawned {
             agents: vec![agent],
@@ -273,6 +273,14 @@ fn created_work_keeps_its_ids_and_separate_event_failure_on_the_wire() {
         },
     ] {
         let before = serde_json::to_value(&response).unwrap();
+        if let Some(spawned) = before.get("AgentSpawned") {
+            // The spawn answer states the deadline and branch the kernel applied (protocol 1002).
+            assert_eq!(
+                spawned["deadline_ms"],
+                serde_json::json!(1_800_000_000_000u64)
+            );
+            assert_eq!(spawned["branch"], "feature-x");
+        }
         response.record_event_subscription_failure();
         let value = serde_json::to_value(response).unwrap();
         let mut without_issue = value.clone();
