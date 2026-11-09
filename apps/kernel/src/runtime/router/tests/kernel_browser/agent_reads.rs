@@ -33,6 +33,11 @@ struct Browser {
 
 impl Browser {
     async fn new(name: &str) -> Self {
+        Self::start(name, false).await
+    }
+
+    /// `real`: the kernel's own browser host and a real Chromium instead of the fixture controller.
+    async fn start(name: &str, real: bool) -> Self {
         let workspace = crate::test_support::TestWorktree::new(name);
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -53,11 +58,13 @@ impl Browser {
             rand::random::<u128>()
         ));
         std::fs::create_dir(&root).unwrap();
-        router
-            .runtime_state()
-            .install_kernel_browser_fixture(agent.owner_user_id(), &root);
-        let png = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nfixture");
-        std::fs::write(root.join("screenshot.b64"), png).unwrap();
+        if !real {
+            router
+                .runtime_state()
+                .install_kernel_browser_fixture(agent.owner_user_id(), &root);
+            let png = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nfixture");
+            std::fs::write(root.join("screenshot.b64"), png).unwrap();
+        }
         focus(&router, session.id(), agent.id()).await;
         tool_named(&router, &token, "chariox.load_kernel_browser", json!({}))
             .await
@@ -384,6 +391,206 @@ fn the_tool_schema_and_description_offer_the_four_reads_in_product_words() {
                     "{name} in the agent description"
                 );
             }
+            browser.finish().await;
+        })
+    });
+}
+
+const LOGO_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+/// A page on loopback: a tall document, an image served only to a request that carries the page's cookie,
+/// text that appears later and an address that changes later.
+fn serve_page() -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let logo = base64::engine::general_purpose::STANDARD
+        .decode(LOGO_PNG)
+        .unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut stream = stream;
+            let mut request = [0u8; 4096];
+            let read = stream.read(&mut request).unwrap_or(0);
+            let request = String::from_utf8_lossy(&request[..read]).to_string();
+            let (head, body): (String, Vec<u8>) = if request.starts_with("GET /logo.png") {
+                if request.contains("session=abc") {
+                    ("200 OK\r\nContent-Type: image/png".into(), logo.clone())
+                } else {
+                    (
+                        "403 Forbidden\r\nContent-Type: text/plain".into(),
+                        b"no session".to_vec(),
+                    )
+                }
+            } else if request.starts_with("GET / ") {
+                (
+                    "200 OK\r\nContent-Type: text/html\r\nSet-Cookie: session=abc; Path=/".into(),
+                    concat!(
+                        "<!doctype html><title>reads</title><body style=\"margin:0\">",
+                        "<h1 id=\"top\" style=\"margin:0;height:120px\">Top</h1>",
+                        "<img id=\"logo\" src=\"/logo.png\" width=\"40\" height=\"30\">",
+                        "<div style=\"height:2400px\"></div>",
+                        "<p id=\"far\" style=\"margin:0;height:80px;background:#fdc\">Far down</p>",
+                        "<div style=\"height:600px\"></div>",
+                        "<script>setTimeout(()=>{const p=document.createElement('p');p.textContent='Appeared later';document.body.append(p)},600);",
+                        "setTimeout(()=>history.pushState({},'','/pushed/state'),900)</script>"
+                    )
+                    .as_bytes()
+                    .to_vec(),
+                )
+            } else {
+                (
+                    "404 Not Found\r\nContent-Type: text/plain".into(),
+                    b"none".to_vec(),
+                )
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {head}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(&body);
+        }
+    });
+    port
+}
+
+fn node_ref(snapshot: &Value, id: &str) -> String {
+    snapshot["snapshot"]["dom_nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["attributes"]["id"] == id)
+        .unwrap_or_else(|| panic!("no node with id {id}"))["node_ref"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Opt-in: the kernel's own host process and a real Chromium (`CHARIOX_KERNEL_BROWSER_EXECUTABLE`,
+/// `CHARIOX_KERNEL_BROWSER_HEADLESS=1`, a disposable `TMPDIR` outside `/root`), through the real tool dispatch.
+#[test]
+#[ignore = "needs a native Chromium and node: see the test's doc comment"]
+fn the_agent_reads_work_through_the_kernel_on_a_real_chromium() {
+    run_test(|| {
+        Box::pin(async {
+            let browser = Browser::start("browsertools-real", true).await;
+            let port = serve_page();
+            let url = format!("http://127.0.0.1:{port}/");
+            let opened = tool(
+                &browser.router,
+                &browser.token,
+                json!({"command":{"op":"open","url":url}}),
+            )
+            .await
+            .unwrap()
+            .payload;
+            let tab = opened["tab_id"].as_str().unwrap().to_string();
+            let generation = opened["generation"].as_u64().unwrap();
+            let call = |extra: Value| {
+                let mut command = json!({"tab_id":tab,"generation":generation});
+                for (key, value) in extra.as_object().unwrap() {
+                    command[key] = value.clone();
+                }
+                tool(&browser.router, &browser.token, json!({"command":command}))
+            };
+            let mut snapshot = Value::Null;
+            for _ in 0..50 {
+                snapshot = call(json!({"op":"snapshot"})).await.unwrap().payload;
+                if snapshot["snapshot"]["dom_nodes"]
+                    .as_array()
+                    .is_some_and(|nodes| nodes.iter().any(|node| node["attributes"]["id"] == "far"))
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            let (far, logo) = (node_ref(&snapshot, "far"), node_ref(&snapshot, "logo"));
+            let image = |payload: Value| {
+                let (content, structured) =
+                    crate::transport::mcp_server::runtime_tool_content_for_test(payload);
+                assert_eq!(content[0]["type"], "image");
+                structured
+            };
+            let clip = image(
+                call(json!({"op":"screenshot","clip":{"x":0,"y":0,"width":200,"height":100}}))
+                    .await
+                    .unwrap()
+                    .payload,
+            );
+            let element = image(
+                call(json!({"op":"screenshot","node_ref":far}))
+                    .await
+                    .unwrap()
+                    .payload,
+            );
+            let page = image(
+                call(json!({"op":"screenshot","full_page":true}))
+                    .await
+                    .unwrap()
+                    .payload,
+            );
+            assert_eq!(element["clip"]["height"], 80);
+            assert!(page["page_height"].as_u64().unwrap() >= 3100);
+            let saved = call(json!({"op":"save","node_ref":logo,"path":"saved/logo.png"}))
+                .await
+                .unwrap()
+                .payload;
+            let by_url =
+                call(json!({"op":"save","url":format!("{url}logo.png"),"path":"saved/again.png"}))
+                    .await
+                    .unwrap()
+                    .payload;
+            let expected = base64::engine::general_purpose::STANDARD
+                .decode(LOGO_PNG)
+                .unwrap();
+            for (answer, file) in [(&saved, "saved/logo.png"), (&by_url, "saved/again.png")] {
+                assert_eq!(answer["path"], file);
+                assert_eq!(answer["bytes"], expected.len());
+                assert_eq!(answer["mime_type"], "image/png");
+                assert_eq!(
+                    std::fs::read(browser.workspace.path().join(file)).unwrap(),
+                    expected
+                );
+            }
+            assert!(call(
+                json!({"op":"save","url":format!("{url}logo.png"),"path":"../escape.png"})
+            )
+            .await
+            .is_err());
+            let document = snapshot["snapshot"]["document_id"].as_str().unwrap();
+            tool(
+                &browser.router,
+                &browser.token,
+                json!({"document_id":document,"command":{"op":"input","tab_id":tab,"generation":generation,"input":{"kind":"scroll","target":far}}}),
+            )
+            .await
+            .unwrap();
+            let later = call(json!({"op":"wait","text":"appeared LATER","timeout_ms":5000}))
+                .await
+                .unwrap()
+                .payload;
+            let pushed = call(json!({"op":"wait","url_contains":"/pushed/","timeout_ms":5000}))
+                .await
+                .unwrap()
+                .payload;
+            let never = call(json!({"op":"wait","text":"never on this page","timeout_ms":1800}))
+                .await
+                .unwrap()
+                .payload;
+            assert_eq!(
+                (
+                    later["matched"].clone(),
+                    pushed["matched"].clone(),
+                    never["matched"].clone()
+                ),
+                (json!(true), json!(true), json!(false))
+            );
+            println!(
+                "agent reads through the kernel: {}",
+                json!({"clip":[clip["width"],clip["height"]],"element":element["clip"],"page":[page["width"],page["height"],page["page_height"]],
+                    "saved":[saved["bytes"],by_url["bytes"]],"waited_ms":[later["waited_ms"],pushed["waited_ms"],never["waited_ms"]]})
+            );
             browser.finish().await;
         })
     });
