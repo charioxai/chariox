@@ -218,8 +218,7 @@ mod tests {
                     waits += 1;
                     sent += frame;
                 }
-                link_free_at =
-                    link_free_at.max(now) + Duration::from_secs_f64(frame as f64 / rate);
+                link_free_at = link_free_at.max(now) + Duration::from_secs_f64(frame as f64 / rate);
                 in_flight.push_back((link_free_at + rtt, frame, stamp));
             }
             let (receipt_at, frame, stamp) = in_flight.pop_front().unwrap();

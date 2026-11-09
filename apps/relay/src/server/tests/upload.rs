@@ -5,8 +5,7 @@
 use super::*;
 use crate::frame_transport::{
     read_message, text_chunk, FrameReceiver, TransportFrame, CHUNK_BYTES, TRANSPORT_QUERY,
-    UPLOAD_CHUNKS,
-    UPLOAD_HEADER,
+    UPLOAD_CHUNKS, UPLOAD_HEADER,
 };
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
