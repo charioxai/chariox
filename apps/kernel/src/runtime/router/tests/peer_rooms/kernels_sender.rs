@@ -300,7 +300,10 @@ fn a_reply_request_to_another_kernel_is_refused_before_anything_is_sent() {
         );
         assert!(b.messages(b.agent.id()).await.is_empty());
         // The other kernel never saw the call: the same key is a first delivery, not a duplicate.
-        let sent = a.send(message(false)).await.expect("a plain message is sent");
+        let sent = a
+            .send(message(false))
+            .await
+            .expect("a plain message is sent");
         assert_eq!(sent["status"], "delivered", "{sent:?}");
         assert_eq!(b.messages(b.agent.id()).await.len(), 1);
         unlink(&[&a, &b]);
