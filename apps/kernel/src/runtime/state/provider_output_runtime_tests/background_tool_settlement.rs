@@ -115,7 +115,10 @@ impl BackgroundTurn {
     /// Each call's snapshot as a client rebuilds it from history: the latest
     /// row of its merge key.
     async fn stored_tools(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
-        self.runtime.flush_provider_history(&self.run).await.unwrap();
+        self.runtime
+            .flush_provider_history(&self.run)
+            .await
+            .unwrap();
         self.runtime
             .owned
             .operational_history_store
@@ -193,7 +196,10 @@ async fn a_lost_provider_session_ends_its_background_commands_once() {
     })])
     .await;
     turn.live_tools();
-    turn.runtime.flush_provider_history(&turn.run).await.unwrap();
+    turn.runtime
+        .flush_provider_history(&turn.run)
+        .await
+        .unwrap();
     let before = crate::session::unix_epoch_ms();
     turn.runtime
         .retire_owned_provider_run_after_terminal_failure(&turn.session, &turn.run)
@@ -210,10 +216,16 @@ async fn a_lost_provider_session_ends_its_background_commands_once() {
     }
     let claude = ended.iter().find(|tool| tool["id"] == "toolu_bg").unwrap();
     assert_eq!(claude["status"], "completed");
-    let codex = ended.iter().find(|tool| tool["id"] == "call_sleep").unwrap();
+    let codex = ended
+        .iter()
+        .find(|tool| tool["id"] == "call_sleep")
+        .unwrap();
     assert_eq!(codex["status"], "cancelled");
     let stored = turn.stored_tools().await;
-    assert_eq!(stored["toolu_bg"]["finished_at_ms"], claude["finished_at_ms"]);
+    assert_eq!(
+        stored["toolu_bg"]["finished_at_ms"],
+        claude["finished_at_ms"]
+    );
     assert_eq!(stored["toolu_done"], {
         let mut done = lifecycle("claude_background_finished");
         done["id"] = serde_json::json!("toolu_done");
@@ -231,7 +243,10 @@ async fn a_lost_provider_session_ends_its_background_commands_once() {
 async fn a_kernel_restart_ends_background_commands_of_runs_it_did_not_take_over() {
     let turn = BackgroundTurn::start().await;
     turn.live_tools();
-    turn.runtime.flush_provider_history(&turn.run).await.unwrap();
+    turn.runtime
+        .flush_provider_history(&turn.run)
+        .await
+        .unwrap();
     // The run is still live: its commands keep running.
     turn.runtime.end_background_provider_tools_left_by_restart();
     assert!(turn.live_tools().is_empty());

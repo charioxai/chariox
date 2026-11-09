@@ -90,7 +90,6 @@ pub(in crate::provider::codex_runtime) fn is_running_background_command(
         .is_some_and(|entry| entry.background && entry.finished_at_ms.is_none())
 }
 
-
 /// The pictures a call carries to the transcript, and how many were too large to keep.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub(in crate::provider::codex_runtime) struct CodexToolPictures {
@@ -286,14 +285,12 @@ fn append_output_delta_from_stream(
     if delta.is_empty() {
         return None;
     }
-    let entry = tool_items
-        .entry(item_id.to_string())
-        .or_insert_with(|| {
-            CodexToolTranscriptState::new(
-                placeholder_tool_item(item_id, item_type),
-                crate::session::unix_epoch_ms(),
-            )
-        });
+    let entry = tool_items.entry(item_id.to_string()).or_insert_with(|| {
+        CodexToolTranscriptState::new(
+            placeholder_tool_item(item_id, item_type),
+            crate::session::unix_epoch_ms(),
+        )
+    });
     // MP-08 / MP-10: app-server can emit both legacy and modern deltas for
     // one call. Keep the first live stream, avoiding duplicated bytes while
     // preserving the prefix delivered before the modern stream starts.
@@ -346,14 +343,12 @@ pub(in crate::provider::codex_runtime) fn append_tool_progress(
     if message.trim().is_empty() {
         return None;
     }
-    let entry = tool_items
-        .entry(item_id.to_string())
-        .or_insert_with(|| {
-            CodexToolTranscriptState::new(
-                placeholder_tool_item(item_id, "mcpToolCall"),
-                crate::session::unix_epoch_ms(),
-            )
-        });
+    let entry = tool_items.entry(item_id.to_string()).or_insert_with(|| {
+        CodexToolTranscriptState::new(
+            placeholder_tool_item(item_id, "mcpToolCall"),
+            crate::session::unix_epoch_ms(),
+        )
+    });
     entry.progress_messages.push(message.trim().to_string());
     render_tool_chunk_if_changed(item_id, entry, &RemoteExtensionManifest::default())
 }

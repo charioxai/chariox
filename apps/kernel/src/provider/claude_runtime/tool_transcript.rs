@@ -530,7 +530,8 @@ mod tests {
     fn background_command_runs_past_its_launch_and_its_turn_until_claude_reports_its_end() {
         let mut transcript = ClaudeToolTranscript::default();
         let id = "toolu_01GFMN69WJrZfKDN6V2aTEy1";
-        let launch = transcript.observe_at(&background_launch(id, "sleep 20; echo first-done"), 1_000);
+        let launch =
+            transcript.observe_at(&background_launch(id, "sleep 20; echo first-done"), 1_000);
         assert_eq!(launch[0]["background"], true);
         assert_eq!(launch[0]["started_at_ms"], 1_000);
         assert!(launch[0]["finished_at_ms"].is_null());
@@ -557,8 +558,14 @@ mod tests {
     #[test]
     fn two_background_commands_end_independently_and_a_stopped_one_ends_at_its_stop() {
         let mut transcript = ClaudeToolTranscript::default();
-        let (first, second) = ("toolu_01GFMN69WJrZfKDN6V2aTEy1", "toolu_01BX35fq1ULEMKJyPvA6kaF7");
-        transcript.observe_at(&background_launch(first, "sleep 20; echo first-done"), 1_000);
+        let (first, second) = (
+            "toolu_01GFMN69WJrZfKDN6V2aTEy1",
+            "toolu_01BX35fq1ULEMKJyPvA6kaF7",
+        );
+        transcript.observe_at(
+            &background_launch(first, "sleep 20; echo first-done"),
+            1_000,
+        );
         transcript.observe_at(&background_launch_result(first, "br1ml3bl1"), 1_100);
         transcript.observe_at(&background_launch(second, "sleep 300"), 1_200);
         transcript.observe_at(&background_launch_result(second, "bmyee9bi9"), 1_300);
@@ -575,7 +582,8 @@ mod tests {
         assert!(transcript
             .observe_at(&task_notification("bmyee9bi9", second, "stopped"), 2_200)
             .is_empty());
-        let first_ended = transcript.observe_at(&task_notification("br1ml3bl1", first, "completed"), 21_000);
+        let first_ended =
+            transcript.observe_at(&task_notification("br1ml3bl1", first, "completed"), 21_000);
         assert_eq!(first_ended[0]["id"], first);
         assert_eq!(first_ended[0]["finished_at_ms"], 21_000);
     }
@@ -586,15 +594,33 @@ mod tests {
         let id = "toolu_bg";
         transcript.observe_at(&background_launch(id, "make test"), 1_000);
         transcript.observe_at(&background_launch_result(id, "bash_1"), 1_100);
-        transcript.observe_at(&json!({"type":"assistant","message":{"content":[{
-            "type":"tool_use","id":"poll-1","name":"BashOutput","input":{"bash_id":"bash_1"}
-        }]}}), 2_000);
-        let running = transcript.observe_at(&result("poll-1", json!("<status>running</status>\n\n<stdout>\nbuilding\n</stdout>")), 2_100);
+        transcript.observe_at(
+            &json!({"type":"assistant","message":{"content":[{
+                "type":"tool_use","id":"poll-1","name":"BashOutput","input":{"bash_id":"bash_1"}
+            }]}}),
+            2_000,
+        );
+        let running = transcript.observe_at(
+            &result(
+                "poll-1",
+                json!("<status>running</status>\n\n<stdout>\nbuilding\n</stdout>"),
+            ),
+            2_100,
+        );
         assert_eq!(running.len(), 1);
-        transcript.observe_at(&json!({"type":"assistant","message":{"content":[{
-            "type":"tool_use","id":"poll-2","name":"BashOutput","input":{"bash_id":"bash_1"}
-        }]}}), 3_000);
-        let done = transcript.observe_at(&result("poll-2", json!("<status>completed</status>\n\n<exit_code>0</exit_code>")), 3_100);
+        transcript.observe_at(
+            &json!({"type":"assistant","message":{"content":[{
+                "type":"tool_use","id":"poll-2","name":"BashOutput","input":{"bash_id":"bash_1"}
+            }]}}),
+            3_000,
+        );
+        let done = transcript.observe_at(
+            &result(
+                "poll-2",
+                json!("<status>completed</status>\n\n<exit_code>0</exit_code>"),
+            ),
+            3_100,
+        );
         assert_eq!(done.len(), 2);
         assert_eq!(done[1]["id"], id);
         assert_eq!(done[1]["finished_at_ms"], 3_100);
@@ -925,14 +951,13 @@ mod tests {
         launch["message"]["content"][0]["input"]["description"] = json!("Sleep in the background");
         transcript.observe_at(&launch, start);
         let mut launched = background_launch_result("toolu_bg", "b1");
-        launched
-            .as_object_mut()
-            .unwrap()
-            .remove("tool_use_result");
+        launched.as_object_mut().unwrap().remove("tool_use_result");
         let launched = transcript.observe_at(&launched, start + 100);
         assert_eq!(launched[0], fixture["claude_background_launched"]);
-        let finished =
-            transcript.observe_at(&task_notification("b1", "toolu_bg", "completed"), start + 40_000);
+        let finished = transcript.observe_at(
+            &task_notification("b1", "toolu_bg", "completed"),
+            start + 40_000,
+        );
         assert_eq!(finished[0], fixture["claude_background_finished"]);
     }
 
