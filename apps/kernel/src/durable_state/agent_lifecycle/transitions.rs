@@ -371,7 +371,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     return Err(error("source does not cover an open obligation"));
                 }
             }
-            tx.execute("INSERT INTO agent_registrations VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",params![registration.id,task,encode(&registration)?]).map_err(sql)?;
+            // A registration another task holds is never rewritten: it stays bound to its task.
+            if tx.execute("INSERT INTO agent_registrations VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload WHERE agent_registrations.task_id=excluded.task_id",params![registration.id,task,encode(&registration)?]).map_err(sql)? == 0 {
+                return Err(error("registration belongs to another task"));
+            }
             recover_source(tx, &mut load(tx, &task)?, registration)?;
             Ok(Outcome::Saved)
         }

@@ -73,8 +73,21 @@ impl CommandRouter {
         if let Some(answer) = store.peer_agent_request_answer(kernel, &request_id)? {
             let mut answer: RelayPeerResponse = serde_json::from_str(&answer)
                 .map_err(|error| crate::durable_state::agent_lifecycle::error(error.to_string()))?;
-            if let RelayPeerResponse::RoomPeerSpawned { duplicate, .. } = &mut answer {
+            if let RelayPeerResponse::RoomPeerSpawned {
+                duplicate, agent, ..
+            } = &mut answer
+            {
                 *duplicate = true;
+                // The same call from a later turn of the caller brings that turn's own follow.
+                if let Some(follow) = follow {
+                    self.runtime_state.follow_spawned_room_peer(
+                        kernel,
+                        owner,
+                        follow,
+                        &agent.room_id,
+                        &agent.agent_id,
+                    )?;
+                }
             }
             return Ok(answer);
         }
@@ -138,8 +151,13 @@ impl CommandRouter {
             Err(error) => return Err(error),
         };
         if let Some(follow) = follow {
-            self.runtime_state
-                .follow_spawned_room_peer(kernel, owner, follow, &agent)?;
+            self.runtime_state.follow_spawned_room_peer(
+                kernel,
+                owner,
+                follow,
+                agent.session_id(),
+                agent.id(),
+            )?;
         }
         // The first task reaches the new peer as a message from its creator, never as a prompt;
         // it lands before the answer is kept, so a retry after a lost answer delivers it once.

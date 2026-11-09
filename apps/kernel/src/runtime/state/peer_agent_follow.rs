@@ -341,7 +341,8 @@ impl KernelRuntimeState {
         kernel: &str,
         owner: &str,
         follow: crate::transport::relay_peer::PeerFollow,
-        agent: &crate::agent::AgentInstance,
+        room: &str,
+        agent: &str,
     ) -> Result<(), DaemonError> {
         if !valid_id(&follow.subscription_id) {
             return Err(ledger::error("invalid peer subscription id"));
@@ -352,8 +353,8 @@ impl KernelRuntimeState {
                 kernel: kernel.into(),
                 owner: owner.into(),
                 subscription: follow.subscription_id,
-                room: agent.session_id().into(),
-                agent: agent.id().into(),
+                room: room.into(),
+                agent: agent.into(),
                 generation: follow.generation,
             })
             .map(|_| ())

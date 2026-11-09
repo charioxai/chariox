@@ -302,17 +302,19 @@ impl KernelRuntimeState {
         }
         let caller = self.peer_agent_caller(sender, kernel)?;
         let request_id = self.peer_spawn_request_id(sender, &spawn)?;
-        // The follow is named by the call, so a retried spawn re-asks for the same follow.
-        let follow = spawn
-            .follow
-            .then(|| crate::transport::relay_peer::PeerFollow {
-                subscription_id: format!("follow-{request_id}"),
+        let task = if spawn.follow {
+            Some(self.peer_follow_task(sender)?)
+        } else {
+            None
+        };
+        // The follow is named by the call and the turn's task: a retry in the same turn re-asks
+        // for the same follow, and the same call from a later turn holds a follow of its own.
+        let follow = task
+            .as_ref()
+            .map(|(task, _)| crate::transport::relay_peer::PeerFollow {
+                subscription_id: peer_spawn_follow_id(&request_id, task),
                 generation: PEER_FOLLOW_GENERATION,
             });
-        let task = match &follow {
-            Some(_) => Some(self.peer_follow_task(sender)?),
-            None => None,
-        };
         // A retry after a lost answer finds the follow still held, with what it recorded since.
         let still_held = match (&follow, &task) {
             (Some(follow), Some((task, _))) => self
@@ -564,6 +566,16 @@ impl KernelRuntimeState {
         self.send_same_owner_peer_request(owner, kernel, request, PEER_AGENT_REQUEST_TIMEOUT)
             .await
     }
+}
+
+fn peer_spawn_follow_id(request_id: &str, task: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(serde_json::json!([request_id, task]).to_string());
+    let hex: String = digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("follow-{hex}")
 }
 
 /// Peer refusals for attachments are decided here: files stay on this kernel.
