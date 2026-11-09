@@ -17,6 +17,7 @@ import { browserLaunchFailureReason } from './kernel-browser-error-label.mjs';
 import { isOwnedAlive, validOwnedPid } from './linux-owned-process.mjs';
 import { requireBrowserMemory } from './browser-memory.mjs';
 import { rootBrowserUser, browserUserFailure } from './linux-browser-user.mjs';
+import { readBrowserMajor, headlessIdentityArguments } from './kernel-browser-identity.mjs';
 
 function platformPolicy(platform) {
   if (platform === "linux") return linux;
@@ -39,7 +40,7 @@ export async function executable(environment = process.env, platform = process.p
 
 // MP-08/MP-10: a private owned window renders at the viewer's device scale
 // natively (emulated view scaling renders text differently from CDP).
-export function launchArguments(profile, headless, display = false, scale = 1, videoDecode = []) {
+export function launchArguments(profile, headless, display = false, scale = 1, videoDecode = [], identity = []) {
   return [
     `--user-data-dir=${profile}`, "--remote-debugging-pipe",
     "--no-first-run", "--no-default-browser-check",
@@ -59,6 +60,7 @@ export function launchArguments(profile, headless, display = false, scale = 1, v
       // MP-08/MP-11 (BROWSER-UX-14): sign-in is policy-blocked; no dead-end "Sign in to Chrome?" chip in the band.
       "--disable-features=ExplicitBrowserSigninUIOnDesktop,SigninPromoOnAvatarPill"] : []),
     // MP-08/MP-11: no renderer accessibility tree. Masking and the page hit test place the page from CDP and X11.
+    ...identity,
     "about:blank",
   ];
 }
@@ -174,8 +176,10 @@ export class HostChromium {
       this.temporaryDirectory = await open(temporary, 'r');
       environment = chromiumTemporaryEnvironment(environment, this.temporaryDirectory.fd);
     }
+    const headless = headlessLaunch(process.platform, environment);
+    const identity = headless ? headlessIdentityArguments(process.platform, await readBrowserMajor(binary, environment)) : [];
     const args = launchArguments(profile,
-      headlessLaunch(process.platform, environment), featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY",environment) || featureOn("CHARIOX_KERNEL_BROWSER_MIRROR",environment), this.desktop?.binding() ? 1 : this.scale, platformPolicy(process.platform).videoDecodeArguments(environment));
+      headless, featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY",environment) || featureOn("CHARIOX_KERNEL_BROWSER_MIRROR",environment), this.desktop?.binding() ? 1 : this.scale, platformPolicy(process.platform).videoDecodeArguments(environment), identity);
     this.policy = (this.browserUser || process.platform === "linux" && linux.policyNamespaceAvailable()) ? "managed" : "unavailable";
     if (process.platform === "linux" && this.appStorageRoot && this.policy !== "managed") throw new Error("MP-11: browser isolation unavailable; run Chariox browser Setup to enable private namespaces");
     // Root's mount construction must never write through a browser-writable

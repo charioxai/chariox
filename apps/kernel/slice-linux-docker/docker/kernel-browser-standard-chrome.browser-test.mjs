@@ -62,3 +62,34 @@ test('MP-08/10/11 the kernel browser exposes no automation and no replaced brows
     assert.ok(seen.plugins > 0 && seen.chrome === 'object' && seen.brands.includes('Chromium'));
   } finally { await host.stop(); await new Promise(r => server.close(r)); await rm(home, {recursive: true, force: true}); }
 });
+
+// The Mac kernel always launches Chrome headless. Headless Chrome announces itself ("HeadlessChrome" in the User-Agent)
+// and reports no pointer or hover; Google sign-in answered it with "This browser or app may not be secure" (2026-11-09).
+test('MP-08/10/11 a headless launch (the Mac kernel) reports the identity of the Chrome a person runs', {timeout: 90000}, async () => {
+  const { HostChromium } = await import('./kernel-browser-process.mjs');
+  const home = await mkdtemp(path.join(root, 'standard-chrome-headless-'));
+  const appStorageRoot = path.join(home, 'apps');
+  const host = new KernelBrowserHost(home, {appStorageRoot, chromium: new HostChromium(home, {appStorageRoot, environment: {...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: '1'}})});
+  const seenHeaders = [];
+  const server = createServer((request, response) => { seenHeaders.push(request.headers['user-agent']); response.end('<!doctype html><title>Headless</title><p>Headless</p>'); });
+  try {
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const opened = await host.request({op: 'open', url: `http://127.0.0.1:${server.address().port}/`});
+    const tab = host.tabs.get(opened.tabs[0].tab_id);
+    const {connection, sessionId} = await host.browser.resolvePageTarget(tab.target_id);
+    await new Promise(r => setTimeout(r, 1500));
+    const evaluate = async expression => { const r = await connection.send('Runtime.evaluate', {expression, returnByValue: true, awaitPromise: true}, sessionId); assert.ok(!r.exceptionDetails, 'probe threw'); return r.result.value; };
+    const seen = JSON.parse(await evaluate(`(async () => {
+      const worker = await new Promise(resolve => { const w = new Worker(URL.createObjectURL(new Blob(['postMessage(navigator.userAgent)']))); w.onmessage = e => resolve(e.data); setTimeout(() => resolve('hung'), 4000); });
+      return JSON.stringify({ua: navigator.userAgent, worker, appVersion: navigator.appVersion, brands: navigator.userAgentData.brands.map(b => b.brand),
+        pointer: [matchMedia('(pointer: fine)').matches, matchMedia('(hover: hover)').matches, matchMedia('(any-pointer: fine)').matches]});
+    })()`));
+    const major = (await connection.send('Browser.getVersion')).product.match(/\/(\d+)\./)[1];
+    const expected = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+    assert.equal(seen.ua, expected, 'navigator.userAgent must not say HeadlessChrome');
+    assert.equal(seen.worker, expected, 'workers report the same User-Agent as the page');
+    assert.equal(seenHeaders.at(-1), expected, 'the User-Agent request header must match navigator.userAgent');
+    assert.ok(!/Headless/.test(seen.appVersion) && !seen.brands.some(b => /Headless/.test(b)));
+    assert.deepEqual(seen.pointer, [true, true, true], 'a desktop Chrome has a fine pointer and hover');
+  } finally { await host.stop(); await new Promise(r => server.close(r)); await rm(home, {recursive: true, force: true}); }
+});
