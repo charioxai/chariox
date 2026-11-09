@@ -15,9 +15,11 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
             mapped.message = error.to_string();
             mapped
         }
-        DaemonError::MachineRequest { code, .. } => {
-            relay_error(code.as_str(), &error.to_string(), code == "exec_input_busy")
-        }
+        DaemonError::MachineRequest { code, .. } => relay_error(
+            code.as_str(),
+            &error.to_string(),
+            code == "exec_input_busy" || code == crate::runtime::room_tool_admission::RETRY_CODE,
+        ),
         DaemonError::SteerDeliveredEventUnrecorded { .. } => {
             relay_error("prompt_steer_event_unrecorded", &error.to_string(), false)
         }
@@ -715,5 +717,15 @@ mod tests {
         assert_eq!(mapped.code, "room_tool_refused");
         assert_eq!(mapped.message, "agent is unavailable in this room");
         assert!(!mapped.retryable);
+    }
+
+    #[test]
+    fn a_room_tool_failure_that_passes_crosses_the_relay_as_retryable() {
+        let mapped = map_relay_error(&crate::runtime::room_tool_admission::retry_later(
+            "Public history changed; retry the query",
+        ));
+        assert_eq!(mapped.code, "room_tool_retry");
+        assert_eq!(mapped.message, "Public history changed; retry the query");
+        assert!(mapped.retryable);
     }
 }

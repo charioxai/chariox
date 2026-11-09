@@ -1134,9 +1134,11 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             kernel_error(code, error, *retryable)
         }
         DaemonError::UserDomainRefused { reason } => kernel_error(reason.code(), error, false),
-        DaemonError::MachineRequest { code, .. } => {
-            kernel_error(code.as_str(), error, code == "exec_input_busy")
-        }
+        DaemonError::MachineRequest { code, .. } => kernel_error(
+            code.as_str(),
+            error,
+            code == "exec_input_busy" || code == crate::runtime::room_tool_admission::RETRY_CODE,
+        ),
         DaemonError::AgentWorkerCleanup { source, .. } => {
             let mut mapped = map_kernel_error(source);
             mapped.message = error.to_string();
@@ -1233,7 +1235,7 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             retryable,
             ..
         } if crate::room_terminal::is_public_code(code)
-            || code == crate::runtime::room_tool_admission::REFUSED_CODE =>
+            || crate::runtime::room_tool_admission::is_public_code(code) =>
         {
             KernelTransportError {
                 code: code.clone(),

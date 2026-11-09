@@ -372,7 +372,7 @@ impl KernelRuntimeState {
                 .public_history_revision_locked(room.id())?
                 != revision
         {
-            return Err(crate::runtime::room_tool_admission::denied(
+            return Err(crate::runtime::room_tool_admission::retry_later(
                 "Public history changed; retry the query",
             ));
         }
@@ -1133,20 +1133,48 @@ mod admission_tests {
 
     #[test]
     fn public_history_revision_change_is_a_retryable_error() {
-        std::thread::Builder::new().stack_size(64*1024*1024).spawn(|| {
-            let root=std::env::temp_dir().join(format!("chariox-am9-revision-{:016x}",rand::random::<u64>()));
-            std::fs::create_dir(&root).unwrap();
-            let mut config=crate::config::DaemonConfig::for_tests().with_session_history_root(root.join("history"));
-            config.room_agent_tools=true;
-            let mut app=crate::DaemonApp::bootstrap(config).unwrap();
-            let (room,actor)=crate::app::KernelSessionService::new(&mut app).create_session(crate::session::CreateSessionRequest::new(root.to_string_lossy(),root.to_string_lossy())).unwrap();
-            let state=crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)),1).runtime_state();
-            let changed=match state.finish_public_history_snapshot(&room,&actor,&room,None,u64::MAX) {
-                Err(error)=>error,
-                Ok(_)=>panic!("a revision nobody read must not validate"),
-            };
-            assert!(crate::transport::kernel_protocol::map_kernel_error(&changed).retryable,"{changed}");
-            drop(state);let _=std::fs::remove_dir_all(root);
-        }).unwrap().join().unwrap();
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let root = std::env::temp_dir().join(format!(
+                    "chariox-am9-revision-{:016x}",
+                    rand::random::<u64>()
+                ));
+                std::fs::create_dir(&root).unwrap();
+                let mut config = crate::config::DaemonConfig::for_tests()
+                    .with_session_history_root(root.join("history"));
+                config.room_agent_tools = true;
+                let mut app = crate::DaemonApp::bootstrap(config).unwrap();
+                let (room, actor) = crate::app::KernelSessionService::new(&mut app)
+                    .create_session(crate::session::CreateSessionRequest::new(
+                        root.to_string_lossy(),
+                        root.to_string_lossy(),
+                    ))
+                    .unwrap();
+                let state = crate::runtime::router::CommandRouter::with_interactive_capacity(
+                    Arc::new(Mutex::new(app)),
+                    1,
+                )
+                .runtime_state();
+                let changed = match state.finish_public_history_snapshot(
+                    &room,
+                    &actor,
+                    &room,
+                    None,
+                    u64::MAX,
+                ) {
+                    Err(error) => error,
+                    Ok(_) => panic!("a revision nobody read must not validate"),
+                };
+                assert!(
+                    crate::transport::kernel_protocol::map_kernel_error(&changed).retryable,
+                    "{changed}"
+                );
+                drop(state);
+                let _ = std::fs::remove_dir_all(root);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

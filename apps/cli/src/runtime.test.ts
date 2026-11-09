@@ -32,6 +32,14 @@ test("describeCliError prints a room tool refusal as the kernel's own sentence",
   )
 })
 
+test("describeCliError prints a retryable room tool failure as the kernel's own sentence", () => {
+  const sentence = "Public history changed; retry the query"
+  assert.equal(
+    describeCliError(new LocalIpcError("handle kernel response", sentence, "room_tool_retry", true)),
+    sentence,
+  )
+})
+
 test("poll recovery retries transient IPC failures with backoff", () => {
   const failure = new LocalIpcError("handle local response", "timed out")
 
