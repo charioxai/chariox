@@ -249,7 +249,13 @@ fn kernel_running_account_projection_preserves_cadence_across_runtime_owners() {
     let f = Fixture::new(vec![Ok(5.0)]);
     f.refresher.refresh_account(&f.key, f.at(0.0));
     let runs = crate::runtime::projection::ProviderRunProjectionStore::default();
-    let refresher = ProviderUsageRefresher::for_kernel(f.registry.clone(), runs.clone());
+    let refresher = ProviderUsageRefresher::for_kernel(
+        f.registry.clone(),
+        runs.clone(),
+        crate::runtime::projection::DaemonConfigProjectionStore::new(
+            crate::config::DaemonConfig::for_tests(),
+        ),
+    );
     let now = f.at(4.7);
     assert!(refresher.due_accounts(now).is_empty());
 

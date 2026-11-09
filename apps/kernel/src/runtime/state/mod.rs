@@ -1110,6 +1110,7 @@ impl KernelRuntimeState {
                     crate::runtime::provider_usage_refresh::ProviderUsageRefresher::for_kernel(
                         provider_account_profiles.clone(),
                         provider_run_projection.clone(),
+                        config_projection.clone(),
                     ),
                 app_control,
                 dev_app_bindings: Default::default(),
