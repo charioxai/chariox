@@ -311,9 +311,9 @@ impl KernelRuntimeState {
             .collect::<Vec<_>>();
         provider_run_ids.sort();
         provider_run_ids.dedup();
-        let mut _provider_run_permits = Vec::with_capacity(provider_run_ids.len());
+        let mut provider_run_permits = Vec::with_capacity(provider_run_ids.len());
         for provider_run_id in provider_run_ids {
-            _provider_run_permits.push(self.provider_runtime_lanes.acquire(&provider_run_id).await);
+            provider_run_permits.push(self.provider_runtime_lanes.acquire(&provider_run_id).await);
             self.authorize_current_external_command()?;
         }
         self.authorize_current_external_command()?;
@@ -481,6 +481,9 @@ impl KernelRuntimeState {
                 self.spawn_prompt_abort(dispatch, self.provider_runtime_lanes.clone());
             }
         }
+        // The run's prompts are cancelled. Its tasks' owned work, other workflow runs
+        // among it, takes every run lane in the Room again.
+        drop(provider_run_permits);
         if !pause {
             self.cancel_workflow_agent_tasks(session_id, &workflow_run_id)
                 .await?;
