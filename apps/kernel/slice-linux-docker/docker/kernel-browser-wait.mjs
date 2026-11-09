@@ -45,9 +45,16 @@ export async function waitForPage(host, command, scope, signal) {
   for (;;) {
     assertNotCancelled(signal);
     const tab = await host.displayTarget({ generation: command.generation, tab_id: command.tab_id });
-    let matched;
+    let matched = false;
     if (wanted.kind === 'url_contains') matched = mentions(redactObservation(await liveUrl(host, tab), secrets), wanted.value.toLowerCase());
-    else matched = snapshotMatches(redactSnapshot(await host.browser.snapshot({ target_id: tab.target_id, document_id: tab.document_id }), secrets), wanted);
+    else {
+      try { matched = snapshotMatches(redactSnapshot(await host.browser.snapshot({ target_id: tab.target_id, document_id: tab.document_id }), secrets), wanted); }
+      catch (error) {
+        // A navigation replaced the document (or a frame) during this look: the next look reads the new one. A closed
+        // Tab, a restarted browser and a cancelled wait still end it, through the checks at the top of the loop.
+        if (error?.code !== 'stale_document_reference') throw error;
+      }
+    }
     const last = Date.now() >= deadline;
     if (matched || last) {
       return host.observe({ ...host.tabState(), matched, waited_ms: Date.now() - started }, tab, scope);

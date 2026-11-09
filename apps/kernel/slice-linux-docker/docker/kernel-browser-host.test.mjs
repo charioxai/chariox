@@ -3579,6 +3579,32 @@ test('browsertools: wait refuses several conditions, none, a bad timeout and a n
   assert.equal(reads, 0);
 }));
 
+// Review r1 P2: a navigation that replaces the document while a wait reads it is one unmatched look, not the end of the wait.
+test('browsertools: a wait whose first snapshot sees the document replaced keeps looking until the text shows', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  let reads = 0;
+  host.browser.snapshot = async () => {
+    if (++reads === 1) throw Object.assign(new Error('the frame navigated while it was captured'), { code: 'stale_document_reference' });
+    return pageWith('Order confirmed');
+  };
+  const done = await host.request(waitFor(opened, { text: 'Order confirmed', timeout_ms: 5000 }));
+  assert.equal(done.matched, true);
+  assert.equal(reads, 2);
+}));
+
+test('browsertools: a wait still ends with an error when its Tab is closed, the browser restarts or the agent cancels', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  host.browser.snapshot = async () => { host.tabs.delete(opened.tab_id); throw Object.assign(new Error('gone'), { code: 'stale_document_reference' }); };
+  await assert.rejects(host.request(waitFor(opened, { text: 'x', timeout_ms: 2000 })), { code: 'user_domain_stale_reference' });
+  const again = await host.request({ op: 'open', url: 'about:blank' });
+  host.browser.snapshot = async () => { host.generation++; throw Object.assign(new Error('moved'), { code: 'stale_document_reference' }); };
+  await assert.rejects(host.request(waitFor(again, { text: 'x', timeout_ms: 2000 })), { code: 'user_domain_stale_epoch' });
+  const third = await host.request({ op: 'open', url: 'about:blank' });
+  const authority = new AbortController();
+  host.browser.snapshot = async () => { authority.abort(); throw Object.assign(new Error('moved'), { code: 'stale_document_reference' }); };
+  await assert.rejects(host.request(waitFor(third, { text: 'x', timeout_ms: 2000 }), { signal: authority.signal }), { code: 'browser_action_cancelled' });
+}));
+
 test('browsertools: wait does not hold the host mutation lane', () => {
   assert.equal(scheduleHostRequest({ method: 'host.browser', params: { op: 'wait', text: 'a' } }, null, { device_scale_factor: 1 }).kind, 'bridge');
 });
