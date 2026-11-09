@@ -23,16 +23,14 @@ async function elementClip(host, tab, nodeRef, page) {
   const backendNodeId = topLevelNodeId(nodeRef);
   const { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
   await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-  const { model } = await withLiveNode(async () => {
-    await connection.send('DOM.scrollIntoViewIfNeeded', { backendNodeId }, sessionId);
-    return connection.send('DOM.getBoxModel', { backendNodeId }, sessionId);
-  });
+  // A screenshot only looks: moving the page is the agent's admitted scroll (input scroll with this node as target).
+  const { model } = await withLiveNode(() => connection.send('DOM.getBoxModel', { backendNodeId }, sessionId));
   const quad = model?.border;
   if (!Array.isArray(quad) || quad.length !== 8 || !quad.every(Number.isFinite)) throw new AgentToolRefusal('node_unavailable');
   const xs = [quad[0], quad[2], quad[4], quad[6]], ys = [quad[1], quad[3], quad[5], quad[7]];
   const left = Math.max(0, Math.floor(Math.min(...xs))), top = Math.max(0, Math.floor(Math.min(...ys)));
   const right = Math.min(page.width, Math.ceil(Math.max(...xs))), bottom = Math.min(page.height, Math.ceil(Math.max(...ys)));
-  if (right <= left || bottom <= top) throw new AgentToolRefusal('node_not_visible');
+  if (right <= left || bottom <= top) throw new AgentToolRefusal('node_off_screen');
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 

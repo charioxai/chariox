@@ -29,7 +29,7 @@ const toolReasons = new Map([
   ['region_conflict', 'screenshot takes one of node_ref, clip or full_page, not several'],
   ['node_ref_invalid', 'node_ref must be a top-level node_ref from a fresh snapshot (backend:N)'],
   ['node_unavailable', 'the node is gone or has no box on the page; take a fresh snapshot'],
-  ['node_not_visible', 'the node has no visible area in the viewport'],
+  ['node_off_screen', 'the node is outside the viewport; scroll to it first (input scroll with target set to this node_ref), then take the screenshot'],
   ['clip_invalid', 'clip needs integers x, y >= 0 and width, height >= 1 inside the state viewport (css_width x css_height)'],
   ['scroll_target_conflict', 'scroll takes a target node_ref or x, y and deltas, not both'],
   ['wait_condition_invalid', 'wait takes one of text, node_ref or url_contains, and a timeout_ms from 0 to 30000'],
