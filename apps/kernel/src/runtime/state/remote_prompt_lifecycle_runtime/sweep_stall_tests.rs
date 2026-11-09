@@ -14,6 +14,8 @@ mod goal_check;
 mod peer_follow;
 #[path = "sweep_stall_tests/pump.rs"]
 mod pump;
+#[path = "sweep_stall_tests/whole_pump.rs"]
+mod whole_pump;
 #[path = "sweep_stall_tests/whole_sweep.rs"]
 mod whole_sweep;
 #[path = "sweep_stall_tests/workflow.rs"]
