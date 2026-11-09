@@ -1129,9 +1129,9 @@ impl KernelRuntimeState {
         if let Err(error) = self.settle_lost_peer_follows(now) {
             tracing::warn!(%error, "peer follows of gone agents retained for the next sweep");
         }
-        if let Err(error) = self.settle_unpaired_peer_follows(now).await {
-            tracing::warn!(%error, "peer follows of a former owner retained for the next sweep");
-        }
+        // Cloud's kernel directory and the lost follows' inboxes are read in their own pass: a
+        // Cloud that does not answer never holds this sweep.
+        self.spawn_unpaired_peer_follow_settlement(now);
         if let Err(error) = self.drop_unknown_peer_follows(now) {
             tracing::warn!(%error, "peer follows of unanswered spawns retained for the next sweep");
         }
