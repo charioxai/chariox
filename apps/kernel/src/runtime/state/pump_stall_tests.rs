@@ -412,3 +412,47 @@ async fn triggers_of_one_agent_fire_in_claim_order_across_pumps() {
         "the prompts reach the agent's queue in the order the triggers were claimed"
     );
 }
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_launch_retry_rejected_for_lack_of_a_place_is_admitted_before_the_blocked_ones() {
+    let (_worktree, runtime, session_id, agent_id, _, _, _) = runtime_with_active_prompt().await;
+    // More blocked retries than places, all of them sorting before the one that is ready.
+    let blocked = (0..task_work_flight::WORK_AT_ONCE)
+        .map(|i| format!("provider-run-pump-stall-blocked-{i:02}"))
+        .collect::<Vec<_>>();
+    let ready_run_id = "provider-run-pump-stall-ready";
+    let mut held = Vec::new();
+    for run_id in &blocked {
+        insert_run(&runtime, &session_id, &agent_id, run_id);
+        schedule_launch_failure_retry(&runtime, run_id);
+        held.push(runtime.provider_runtime_lanes.acquire(run_id).await);
+    }
+    insert_run(&runtime, &session_id, &agent_id, ready_run_id);
+    schedule_launch_failure_retry(&runtime, ready_run_id);
+
+    // Each pump finds the same blocked retries first; their lane waits run out between pumps.
+    for _ in 0..3 {
+        runtime.pump_transport_runtime().await;
+        for _ in 0..200 {
+            tokio::task::yield_now().await;
+        }
+        if !retry_pending(&runtime, ready_run_id) {
+            break;
+        }
+        tokio::time::advance(std::time::Duration::from_secs(31)).await;
+        for _ in 0..200 {
+            tokio::task::yield_now().await;
+        }
+    }
+    assert!(
+        !retry_pending(&runtime, ready_run_id),
+        "the ready retry was rejected for lack of a place on every pump"
+    );
+    for run_id in &blocked {
+        assert!(
+            retry_pending(&runtime, run_id),
+            "{run_id}: a blocked retry is kept, not dropped"
+        );
+    }
+    drop(held);
+}
