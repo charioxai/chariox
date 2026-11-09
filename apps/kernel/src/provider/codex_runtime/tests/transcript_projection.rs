@@ -708,7 +708,8 @@ fn a_completed_view_image_notification_carries_the_picture_of_the_agents_working
 struct CodexWire {
     active_turn_id: Option<String>,
     turn_tracker: CodexTurnTracker,
-    text_items: BTreeMap<String, crate::provider::codex_runtime::transcript::CodexTextTranscriptState>,
+    text_items:
+        BTreeMap<String, crate::provider::codex_runtime::transcript::CodexTextTranscriptState>,
     tool_items: BTreeMap<String, CodexToolTranscriptState>,
 }
 
@@ -768,10 +769,22 @@ fn codex_commands_left_running_settle_on_their_own_exit_after_newer_turns() {
     };
     let before = crate::session::unix_epoch_ms();
     // A foreground command: started time only.
-    let started = wire.receive("item/started", item_event("turn-1", command_item("call_fg", "ls", "inProgress", None)));
-    let completed = wire.receive("item/completed", item_event("turn-1", command_item("call_fg", "ls", "completed", Some(0))));
+    let started = wire.receive(
+        "item/started",
+        item_event("turn-1", command_item("call_fg", "ls", "inProgress", None)),
+    );
+    let completed = wire.receive(
+        "item/completed",
+        item_event(
+            "turn-1",
+            command_item("call_fg", "ls", "completed", Some(0)),
+        ),
+    );
     assert_eq!(completed[0].1["status"], "completed");
-    assert_eq!(completed[0].1["started_at_ms"], started[0].1["started_at_ms"]);
+    assert_eq!(
+        completed[0].1["started_at_ms"],
+        started[0].1["started_at_ms"]
+    );
     let foreground_start = started[0].1["started_at_ms"].as_u64().unwrap();
     assert!(foreground_start >= before, "{}", started[0].1);
     for (_, snapshot) in started.iter().chain(&completed) {
@@ -780,8 +793,20 @@ fn codex_commands_left_running_settle_on_their_own_exit_after_newer_turns() {
     }
 
     // Two commands the agent leaves running; one it polls through its terminal.
-    let polled = wire.receive("item/started", item_event("turn-1", command_item("call_poll", "npm run dev", "inProgress", None)));
-    wire.receive("item/started", item_event("turn-1", command_item("call_sleep", "sleep 40", "inProgress", None)));
+    let polled = wire.receive(
+        "item/started",
+        item_event(
+            "turn-1",
+            command_item("call_poll", "npm run dev", "inProgress", None),
+        ),
+    );
+    wire.receive(
+        "item/started",
+        item_event(
+            "turn-1",
+            command_item("call_sleep", "sleep 40", "inProgress", None),
+        ),
+    );
     let interaction = wire.receive(
         "item/commandExecution/terminalInteraction",
         json!({"threadId": "thread-1", "turnId": "turn-1", "itemId": "call_poll", "processId": "pty-call_poll", "stdin": ""}),
@@ -790,7 +815,10 @@ fn codex_commands_left_running_settle_on_their_own_exit_after_newer_turns() {
     assert_eq!(interaction[0].0, "call_poll");
     assert_eq!(interaction[0].1["background"], true);
     assert!(interaction[0].1["finished_at_ms"].is_null());
-    assert_eq!(interaction[0].1["started_at_ms"], polled[0].1["started_at_ms"]);
+    assert_eq!(
+        interaction[0].1["started_at_ms"],
+        polled[0].1["started_at_ms"]
+    );
 
     // The turn completes with `sleep 40` still running: it becomes background too.
     let settled = wire.receive("turn/completed", turn_completed("turn-1"));
@@ -803,7 +831,13 @@ fn codex_commands_left_running_settle_on_their_own_exit_after_newer_turns() {
     // A newer turn runs; the old turn's exits still settle their own calls.
     wire.active_turn_id = Some("turn-2".to_string());
     wire.receive("turn/started", json!({"threadId": "thread-1", "turn": {"id": "turn-2", "status": "inProgress", "items": []}}));
-    let exited = wire.receive("item/completed", item_event("turn-1", command_item("call_sleep", "sleep 40", "completed", Some(0))));
+    let exited = wire.receive(
+        "item/completed",
+        item_event(
+            "turn-1",
+            command_item("call_sleep", "sleep 40", "completed", Some(0)),
+        ),
+    );
     assert_eq!(exited.len(), 1);
     assert_eq!(exited[0].0, "call_sleep");
     assert_eq!(exited[0].1["status"], "completed");
@@ -811,12 +845,24 @@ fn codex_commands_left_running_settle_on_their_own_exit_after_newer_turns() {
     assert_eq!(exited[0].1["started_at_ms"], settled[0].1["started_at_ms"]);
     assert!(exited[0].1["finished_at_ms"].as_u64().unwrap() >= foreground_start);
     // Killed by the agent: the exit reports failure and still settles.
-    let killed = wire.receive("item/completed", item_event("turn-1", command_item("call_poll", "npm run dev", "failed", Some(143))));
+    let killed = wire.receive(
+        "item/completed",
+        item_event(
+            "turn-1",
+            command_item("call_poll", "npm run dev", "failed", Some(143)),
+        ),
+    );
     assert_eq!(killed[0].1["status"], "error");
     assert!(killed[0].1["finished_at_ms"].is_u64());
     // An unrelated old-turn item is still ignored once its turn is over.
     assert!(wire
-        .receive("item/completed", item_event("turn-1", command_item("call_other", "true", "completed", Some(0))))
+        .receive(
+            "item/completed",
+            item_event(
+                "turn-1",
+                command_item("call_other", "true", "completed", Some(0))
+            )
+        )
         .is_empty());
 }
 
@@ -830,11 +876,26 @@ fn codex_background_lifecycle_matches_the_protocol_snapshot() {
         active_turn_id: Some("turn-1".to_string()),
         ..Default::default()
     };
-    wire.receive("item/started", item_event("turn-1", command_item("call_sleep", "sleep 40", "inProgress", None)));
-    let mut running = wire.receive("turn/completed", turn_completed("turn-1")).remove(0).1;
+    wire.receive(
+        "item/started",
+        item_event(
+            "turn-1",
+            command_item("call_sleep", "sleep 40", "inProgress", None),
+        ),
+    );
+    let mut running = wire
+        .receive("turn/completed", turn_completed("turn-1"))
+        .remove(0)
+        .1;
     wire.active_turn_id = None;
     let mut finished = wire
-        .receive("item/completed", item_event("turn-1", command_item("call_sleep", "sleep 40", "completed", Some(0))))
+        .receive(
+            "item/completed",
+            item_event(
+                "turn-1",
+                command_item("call_sleep", "sleep 40", "completed", Some(0)),
+            ),
+        )
         .remove(0)
         .1;
     // The kernel clock stamps these; pin them to the snapshot's values.

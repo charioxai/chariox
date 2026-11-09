@@ -216,7 +216,10 @@ mod tests {
             serde_json::json!({"id":"codex","tool":"bash","status":"running","started_at_ms":2,"background":true,"finished_at_ms":null}),
             serde_json::json!({"id":"open","tool":"bash","status":"running","started_at_ms":3}),
         ]);
-        let ended = ended(ended_open_provider_tool_rows(rows, ProviderToolEnding::Cancelled));
+        let ended = ended(ended_open_provider_tool_rows(
+            rows,
+            ProviderToolEnding::Cancelled,
+        ));
         assert_eq!(ended[0]["status"], "cancelled");
         assert!(ended[0]["finished_at_ms"].as_u64().unwrap() > 2);
         assert_eq!(ended[1]["status"], "cancelled");

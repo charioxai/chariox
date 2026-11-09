@@ -190,13 +190,35 @@ mod tests {
             entry
         };
         // Codex: still running when its turn ends, then its exit.
-        assert!(should_persist_provider_tool_history(&lifecycle("running", None, None)));
-        assert!(should_persist_provider_tool_history(&lifecycle("running", Some(true), None)));
-        assert!(!should_persist_provider_tool_history(&lifecycle("running", Some(true), None)));
+        assert!(should_persist_provider_tool_history(&lifecycle(
+            "running", None, None
+        )));
+        assert!(should_persist_provider_tool_history(&lifecycle(
+            "running",
+            Some(true),
+            None
+        )));
+        assert!(!should_persist_provider_tool_history(&lifecycle(
+            "running",
+            Some(true),
+            None
+        )));
         // Claude: the launch completed earlier; only its end changes.
-        assert!(should_persist_provider_tool_history(&lifecycle("completed", Some(true), None)));
-        assert!(should_persist_provider_tool_history(&lifecycle("completed", Some(true), Some(9))));
-        assert!(!should_persist_provider_tool_history(&lifecycle("completed", Some(true), Some(9))));
+        assert!(should_persist_provider_tool_history(&lifecycle(
+            "completed",
+            Some(true),
+            None
+        )));
+        assert!(should_persist_provider_tool_history(&lifecycle(
+            "completed",
+            Some(true),
+            Some(9)
+        )));
+        assert!(!should_persist_provider_tool_history(&lifecycle(
+            "completed",
+            Some(true),
+            Some(9)
+        )));
     }
 
     fn provider_tool_entry(test_id: &str, status: &str) -> SessionHistoryEntry {

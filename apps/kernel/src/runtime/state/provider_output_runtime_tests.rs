@@ -151,6 +151,7 @@ mod agent_tree_state;
 mod agent_wake_sources;
 mod app_quiet_tool_guard;
 mod approval_lifetime;
+mod background_tool_settlement;
 mod browser_import_execution_gate;
 mod child_finished;
 mod child_receipts;
@@ -169,7 +170,6 @@ mod large_codex_resume;
 mod leased_output;
 mod mcp_catalog_reload;
 mod peer_events;
-mod background_tool_settlement;
 mod process_tool_settlement;
 #[cfg(unix)]
 mod project_environment_shell;
