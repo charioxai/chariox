@@ -417,21 +417,7 @@ fn a_followed_peer_deleted_on_its_kernel_is_a_lost_source_for_the_follower() {
                 session_id: b.room.clone(),
                 agent_id: b.agent.id().into(),
             });
-        // The owner removes it, as from any of its clients.
-        let source = crate::runtime::command::KernelCommandSource::DaemonBackground;
-        let caller = crate::runtime::command::KernelCaller {
-            user_id: Some(OWNER.into()),
-            ..crate::runtime::command::KernelCaller::for_source(&source)
-        };
-        let command = KernelCommand::from_local_request_with_caller(
-            "destroy-followed",
-            source,
-            caller,
-            None,
-            None,
-            &destroy,
-        );
-        b.router.dispatch(command, destroy).await.unwrap();
+        b.as_owner("destroy-followed", destroy).await;
         b.router
             .runtime_state
             .sweep_agent_lifecycle_for_test()
@@ -441,6 +427,79 @@ fn a_followed_peer_deleted_on_its_kernel_is_a_lost_source_for_the_follower() {
         assert_eq!(events.len(), 1, "{events:?}");
         assert_eq!(events[0].payload["event"], "source_lost", "{:?}", events[0]);
         assert_eq!(events[0].source_id, source_of(&b));
+        unlink(&[&a, &b]);
+    });
+}
+
+impl Kernel {
+    /// The owner acts here, as from any of its clients.
+    async fn as_owner(&self, command_id: &str, request: crate::local::LocalDaemonRequest) {
+        let source = crate::runtime::command::KernelCommandSource::DaemonBackground;
+        let caller = crate::runtime::command::KernelCaller {
+            user_id: Some(OWNER.into()),
+            ..crate::runtime::command::KernelCaller::for_source(&source)
+        };
+        let command = KernelCommand::from_local_request_with_caller(
+            command_id, source, caller, None, None, &request,
+        );
+        self.router.dispatch(command, request).await.unwrap();
+    }
+
+    async fn archive(&self, archived: bool) {
+        let request = serde_json::from_value(serde_json::json!({"ArchiveAgent": {
+            "session_id": self.room, "agent_id": self.agent.id(), "archived": archived,
+        }}))
+        .unwrap();
+        self.as_owner(&format!("archive-{archived}"), request).await;
+    }
+}
+
+#[test]
+fn a_followed_peer_archived_on_its_kernel_is_a_lost_source_until_it_is_unarchived() {
+    run_peer_test("peer-follow-archived", || async {
+        let (a, b) = two_kernels(
+            "peer-follow-archived",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        // B's worker is idle: archiving it ends no turn, and only the follow can tell A.
+        b.end_turn(false).await;
+        let task = with_task(&a).await;
+        let follow = serde_json::json!({"source_id": "worker", "room": b.room, "kernel": b.name});
+        a.subscribe(&task, follow.clone())
+            .await
+            .expect("A follows an idle peer on another kernel");
+        b.archive(true).await;
+        b.router
+            .runtime_state
+            .sweep_agent_lifecycle_for_test()
+            .await
+            .unwrap();
+        let events = a.peer_events_after_delivery(1).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].payload["event"], "source_lost", "{:?}", events[0]);
+        assert_eq!(events[0].source_id, source_of(&b));
+        let late = a.subscribe(&task, follow.clone()).await.unwrap_err();
+        assert!(
+            late.contains("agent_unavailable"),
+            "an archived peer takes no new follow: {late}"
+        );
+
+        // Unarchived, it is a live source again.
+        b.archive(false).await;
+        a.subscribe(&task, follow)
+            .await
+            .expect("A follows the unarchived peer");
+        b.router
+            .runtime_state
+            .sweep_agent_lifecycle_for_test()
+            .await
+            .unwrap();
+        assert_eq!(
+            a.peer_events_after_delivery(2).await.len(),
+            1,
+            "an unarchived peer is not lost"
+        );
         unlink(&[&a, &b]);
     });
 }
