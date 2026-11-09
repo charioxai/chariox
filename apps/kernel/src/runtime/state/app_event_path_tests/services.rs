@@ -146,7 +146,7 @@ impl Services {
                 else {
                     panic!("hello first")
                 };
-                assert_eq!(protocol_version, 4);
+                assert_eq!(protocol_version, 5);
                 // The kernel proves its relay identity key signed this connection's challenge.
                 assert_eq!(
                     kernel_id,
@@ -172,7 +172,7 @@ impl Services {
                 send(
                     &mut socket,
                     AedsToKernelMessage::HelloAccepted {
-                        protocol_version: 4,
+                        protocol_version: 5,
                         heartbeat_interval_ms: 15_000,
                     },
                 )

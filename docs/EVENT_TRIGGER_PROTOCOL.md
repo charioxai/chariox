@@ -95,7 +95,7 @@ to workflow and agent targets, each named by the handler.
 
 ## Delivery
 
-The kernel/AEDS event-delivery wire protocol is version 4. Version 3 carried the
+The kernel/AEDS event-delivery wire protocol is version 5. Version 3 carried the
 optional provider-owned `reply_context` through `PublishEventRequest` and
 `EventDeliveryEnvelope`; version 4 replaces the bearer token of the connection with a
 challenge: AEDS opens every WebSocket with `{"type":"challenge","nonce":...}` (fresh and
@@ -106,8 +106,8 @@ another connection's nonce is refused with `invalid_kernel_credentials`; an oper
 admission policy (`open` with per-kernel caps, or an `allowlist` of kernel ids) may refuse
 with `kernel_not_admitted`. Open admission is also capped for the gateway as a whole; the
 refusals are retryable `gateway_rate_limited` (the connection is closed) and
-`gateway_route_capacity` (claims over the cap are not accepted). Version 4 also carries typed `data` (see
-above). Peers that do not advertise version 4 are rejected.
+`gateway_route_capacity` (claims over the cap are not accepted). Version 5 carries typed `data` (see
+above). Peers that do not advertise version 5 are rejected.
 
 The kernel maintains one authenticated outbound WebSocket connection to AEDS. It
 sends its stable kernel/environment identity, route claims, and an optional resume
@@ -364,7 +364,7 @@ canonical `connection_scope` used in an event interest. Both operations are boun
 shared kernel requests used unchanged by web and TUI clients. An AEGS must not return
 provider access tokens, refresh tokens, webhook secrets, or raw credential material.
 
-Management protocol version 4 added the reusable-connection lifecycle contract (still part of version 5, which authenticates every request by the kernel identity key):
+Management protocol version 4 added the reusable-connection lifecycle contract (still part of version 5, which authenticates every request by the kernel identity key, and version 6, which declares each event type's payload schema and examples):
 
 - `POST /v1/connections/inspect` returns explicit lifecycle state, granted/required
   scopes, connected resources, health/event timestamps, recovery guidance, and test

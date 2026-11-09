@@ -81,7 +81,7 @@ Each check is a concrete provider test obligation:
 | `connection_lifecycle` | Authorization, inspection, refresh/reconnect, resource discovery, revocation, and expired/unavailable states are covered without exporting credentials. |
 | `test_events` | Supported test events use an active subscription's event type, scope, and filter and enter the ordinary AEDS publication path; unsupported behavior is explicit. |
 | `provider_actions` | Every declared action has bounded inputs/results, required scopes, target isolation, provider-error coverage, and durable idempotency for mutations; undeclared actions fail closed. |
-| `protocol_compatibility` | Tests compile against and assert event-delivery protocol 4 and management protocol 5, including the public request/response validation used by the implementation. |
+| `protocol_compatibility` | Tests compile against and assert event-delivery protocol 5 and management protocol 6, including the public request/response validation used by the implementation. |
 
 The public SDK tests prove the shared reference behavior for signatures,
 filters, durable lifecycle state, action receipts, and protocol validation.
@@ -177,17 +177,18 @@ socket address, and checks these unauthenticated release surfaces:
 - `/healthz` returns `{"status":"ok"}`;
 - `/readyz` returns `{"status":"ready"}`;
 - `/version` identifies `component=chariox-aegs`, the exact generator ID, and
-  management protocol version 5.
+  management protocol version 6.
 
 Redirects are not followed. Private or loopback targets are self-hosted
 administrator configuration and cannot enter the public Store.
 
-The event-delivery wire contract is version 4. AEDS and every producer that sends
+The event-delivery wire contract is version 5. AEDS and every producer that sends
 reply-capable events must use the same protocol revision so the opaque provider
 `reply_context` cannot be silently discarded by an older peer; version 4 also makes the
-kernel prove its identity key in the connection handshake.
+kernel prove its identity key in the connection handshake, and version 5 carries typed
+`data` validated against the publisher's payload schema.
 
-Management protocol version 4 (kept in version 5) also requires the shared installed-connection
+Management protocol version 4 (kept in versions 5 and 6) also requires the shared installed-connection
 lifecycle endpoints documented in [EVENT_TRIGGER_PROTOCOL.md](EVENT_TRIGGER_PROTOCOL.md):
 
 - inspect connection state, scopes, resources, health, and recovery guidance;

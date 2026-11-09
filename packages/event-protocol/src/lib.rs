@@ -8,12 +8,13 @@ use sha2::{Digest, Sha256};
 
 // Version 3 adds provider reply context to publish and delivery envelopes and
 // makes same-interest fan-out an explicit route contract. Version 4 replaces the bearer token of
-// the AEDS connection with a challenge the kernel answers by signing with its identity key, and
-// carries publisher-schema-validated structured event data.
-pub const EVENT_DELIVERY_PROTOCOL_VERSION: u32 = 4;
+// the AEDS connection with a challenge the kernel answers by signing with its identity key.
+// Version 5 carries publisher-schema-validated structured event data.
+pub const EVENT_DELIVERY_PROTOCOL_VERSION: u32 = 5;
 // Version 5 authenticates AEGS management by the kernel's identity key (see `kernel_identity`)
-// and binds a connection to its secret owner id instead of a Cloud-signed capability.
-pub const AEGS_MANAGEMENT_PROTOCOL_VERSION: u32 = 5;
+// and binds a connection to its secret owner id instead of a Cloud-signed capability. Version 6
+// declares each event type's publisher payload schema and examples.
+pub const AEGS_MANAGEMENT_PROTOCOL_VERSION: u32 = 6;
 pub const DEFAULT_EVENT_DELIVERY_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_EVENT_PROMPT_BYTES: usize = 1024 * 1024;
 pub const MAX_EVENT_ARTIFACTS: usize = 32;
