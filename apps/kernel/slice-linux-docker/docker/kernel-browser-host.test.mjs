@@ -3512,3 +3512,69 @@ test('browsertools: scroll with a target node_ref scrolls that node into view an
   await host.request(scroll({ x: 10, y: 10, delta_x: 0, delta_y: 120 }));
   assert(sent.some(call => call.method === 'Input.dispatchMouseEvent' && call.params.type === 'mouseWheel'));
 }));
+
+// MP-08/MP-09/MP-10/MP-11: browsertools r1 op 4. Wait for text, a node or a URL part, compared on the host.
+const waitFor = (opened, extra) => ({ op: 'wait', focused_agent: true, tab_id: opened.tab_id, generation: opened.generation, ...extra });
+const pageWith = (...texts) => ({ accessibility_nodes: texts.map((name, index) => ({ node_ref: `backend:${10 + index}`, role: 'text', name })), dom_nodes: texts.map((text, index) => ({ node_ref: `backend:${10 + index}`, node_name: 'P', text, attributes: {} })) });
+
+test('browsertools: wait returns matched as soon as the text shows, without the agent polling', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  let reads = 0;
+  host.browser.snapshot = async () => pageWith(++reads < 3 ? 'Loading' : 'Order confirmed');
+  const done = await host.request(waitFor(opened, { text: 'order CONFIRMED', timeout_ms: 5000 }));
+  assert.equal(done.matched, true);
+  assert.equal(reads, 3);
+  assert.equal(done.generation, opened.generation);
+  assert(Array.isArray(done.tabs), 'the final state comes with the answer');
+  assert(done.waited_ms >= 0 && done.waited_ms < 5000);
+}));
+
+test('browsertools: wait that never matches ends at its timeout with matched false and the final state', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  host.browser.snapshot = async () => pageWith('Loading');
+  const started = Date.now();
+  const done = await host.request(waitFor(opened, { text: 'Never shown', timeout_ms: 600 }));
+  assert.equal(done.matched, false);
+  assert(Date.now() - started >= 550 && Date.now() - started < 3000);
+  assert(Array.isArray(done.tabs));
+}));
+
+test('browsertools: wait on a node_ref matches while that node is on the page', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  host.browser.snapshot = async () => pageWith('a', 'b');
+  assert.equal((await host.request(waitFor(opened, { node_ref: 'backend:11', timeout_ms: 300 }))).matched, true);
+  assert.equal((await host.request(waitFor(opened, { node_ref: 'backend:99', timeout_ms: 300 }))).matched, false);
+}));
+
+test('browsertools: wait on url_contains follows the tab to its new address without a snapshot', () => using(async ({ host, pages }) => {
+  const opened = await host.request({ op: 'open', url: 'https://example.com/cart' });
+  let snapshots = 0;
+  host.browser.snapshot = async () => { snapshots++; return pageWith('x'); };
+  const target = host.tabs.get(opened.tab_id).target_id;
+  setTimeout(() => pages.set(target, { url: 'https://example.com/checkout/done', document_id: 'doc-next' }), 150);
+  const done = await host.request(waitFor(opened, { url_contains: '/checkout/', timeout_ms: 3000 }));
+  assert.equal(done.matched, true);
+  assert.equal(snapshots, 0);
+}));
+
+test('browsertools: wait compares what the model would see, so a protected value is no oracle', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  await host.protect({ unknown: false, values: ['hunter2-secret'], targets: [] });
+  host.browser.snapshot = async () => pageWith('Your password is hunter2-secret');
+  const done = await host.request(waitFor(opened, { text: 'hunter2-secret', timeout_ms: 300 }));
+  assert.equal(done.matched, false, 'the protected value is redacted before the comparison');
+}));
+
+test('browsertools: wait refuses several conditions, none, a bad timeout and a non-agent before reading the page', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  let reads = 0;
+  host.browser.snapshot = async () => { reads++; return pageWith('x'); };
+  for (const bad of [{}, { text: 'a', node_ref: 'backend:1' }, { text: '' }, { text: 'a', timeout_ms: 30001 }, { text: 'a', timeout_ms: -1 }, { text: 'a', timeout_ms: 1.5 }, { url_contains: 'a'.repeat(513), timeout_ms: 10 }, { node_ref: 'frame:a:backend:1' }])
+    await assert.rejects(host.request(waitFor(opened, bad)), error => ['wait_condition_invalid', 'node_ref_invalid'].includes(error.reason), JSON.stringify(bad));
+  await assert.rejects(host.request({ ...waitFor(opened, { text: 'a', timeout_ms: 10 }), focused_agent: undefined }), { code: 'user_domain_not_granted' });
+  assert.equal(reads, 0);
+}));
+
+test('browsertools: wait does not hold the host mutation lane', () => {
+  assert.equal(scheduleHostRequest({ method: 'host.browser', params: { op: 'wait', text: 'a' } }, null, { device_scale_factor: 1 }).kind, 'bridge');
+});
