@@ -188,17 +188,16 @@ pub(crate) async fn execute_resolve_kernel_client_connection_request(
         .is_fresh(crate::session::unix_epoch_ms(), inventory_stale_after_ms);
     let refresh_config = config_projection.clone();
     let refresh_projection = remote_relay_inventory_projection.clone();
-    let kernel =
-        resolve_relay_kernel_presence_with_refresh(
-            remote_relay_inventory_projection,
-            &request,
-            inventory_is_fresh,
-            KERNEL_CONNECTION_INVENTORY_REFRESH_TIMEOUT,
-            || async move {
-                refresh_remote_inventory_projection(refresh_config, refresh_projection).await
-            },
-        )
-        .await?;
+    let kernel = resolve_relay_kernel_presence_with_refresh(
+        remote_relay_inventory_projection,
+        &request,
+        inventory_is_fresh,
+        KERNEL_CONNECTION_INVENTORY_REFRESH_TIMEOUT,
+        || async move {
+            refresh_remote_inventory_projection(refresh_config, refresh_projection, None).await
+        },
+    )
+    .await?;
     let connection = kernel_client_connection(
         runtime_state,
         config_projection,

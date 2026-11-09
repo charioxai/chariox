@@ -180,6 +180,7 @@ async fn request_remote_relay_inventory_projection_refresh(
         if let Err(error) = refresh_remote_inventory_projection(
             config_projection,
             remote_relay_inventory_projection,
+            None,
         )
         .await
         {

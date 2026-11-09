@@ -302,6 +302,7 @@ impl CommandRouter {
         crate::transport::relay_client::refresh_remote_inventory_projection(
             self.config_projection.clone(),
             self.remote_relay_inventory_projection.clone(),
+            Some(std::sync::Arc::clone(&self.relay_state)),
         )
         .await?;
         let (_, workers) = self.remote_relay_inventory_projection.snapshot();
