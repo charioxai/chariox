@@ -298,6 +298,7 @@ function createHarness(options: {
   attached?: boolean
   respondToInteraction?: FocusedInteractionChoiceControllerDeps["respondToInteraction"]
   providerLogin?: FocusedInteractionChoiceControllerDeps["providerLogin"]
+  showPasskeyPrompt?: FocusedInteractionChoiceControllerDeps["showPasskeyPrompt"]
   composerText?: string
   localInteractions?: RuntimeInteraction[]
 } = {}) {
@@ -356,6 +357,7 @@ function createHarness(options: {
         ? options.respondToInteraction(sessionId, interactionId, choiceId, customReply)
         : runtimeSession("session-answered")
     },
+    ...(options.showPasskeyPrompt ? { showPasskeyPrompt: options.showPasskeyPrompt } : {}),
     applySessionState: (session) => {
       appliedSessions.push(session)
     },
@@ -474,4 +476,23 @@ test("MP-08 / MP-10 A3/A4 a sub-agent's decision shown in the room agent is answ
   assert.equal(await harness.controller.submitChoice(0), true)
 
   assert.deepEqual(harness.responses(), [{ sessionId: "session-1", interactionId: "card-c", choiceId: "allow", customReply: null }])
+})
+
+test("MP-08/MP-09/MP-10/MP-11 a card payment's Allow opens the passkey popup and sends nothing", async () => {
+  const shown: string[] = []
+  const payment = {
+    ...interactionFixture(), id: "vault-card-0000000000000001",
+    choices: [{ id: "allow", label: "Allow once", reply: "allow", requires_passkey: true }, { id: "cancel", label: "Cancel", reply: "cancel" }],
+  } as RuntimeInteraction
+  const harness = createHarness({ interaction: payment, showPasskeyPrompt: (sessionId, id) => { shown.push(`${sessionId}/${id}`); return true } })
+  assert.equal(await harness.controller.submitChoice(0), true)
+  assert.deepEqual(shown, ["session-1/vault-card-0000000000000001"])
+  assert.deepEqual(harness.responses(), [])
+  const without = createHarness({ interaction: payment })
+  assert.equal(await without.controller.submitChoice(0), true)
+  assert.deepEqual(without.responses(), [])
+  assert.match(without.footerMessages().at(-1)!.message, /passkey popup/)
+  // Cancel needs no passkey and answers on the card.
+  assert.equal(await harness.controller.submitChoice(1), true)
+  assert.equal(harness.responses().at(-1)?.choiceId, "cancel")
 })

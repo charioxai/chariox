@@ -216,6 +216,7 @@ export function createCliKernelApprovalComposition(deps: {
     /** The popup takes keys first: it sits over the panel. */
     handleKey: (event: KernelApprovalKey) => popup.handleKey(event) || (!controller.ownsInput() && band.handleKey(event)) || controller.handleKey(event),
     ownsInput: () => popup.ownsInput() || band.ownsInput() || controller.ownsInput(),
+    showPasskeyPrompt: (sessionId: string, interactionId: string) => popup.show(sessionId, interactionId),
     assignBox(value: BoxRenderable) { surface.assign(value); controller.sync() },
     assignPopupBanner(value: BoxRenderable) { popupSurface.assignBanner(value); popupSurface.render(popup.view(), deps.dimensions()) },
     assignPopupBox(value: BoxRenderable) { popupSurface.assign(value); popupSurface.render(popup.view(), deps.dimensions()) },

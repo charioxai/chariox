@@ -47,6 +47,7 @@ export type CliInputRoutingCompositionDeps = {
   handleKernelApprovalKey?: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => boolean
   openKernelApprovals: () => void
   kernelApprovalOwnsInput?: () => boolean
+  showPasskeyPrompt?: (sessionId: string, interactionId: string) => boolean
   client: any
   options: any
   appLogger: any
@@ -577,6 +578,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     respondToInteraction: (sessionId, interactionId, choiceId, customReply) =>
       respondToInteraction(deps.client, sessionId, interactionId, choiceId, customReply),
     applySessionState: deps.applySessionState,
+    ...(deps.showPasskeyPrompt ? { showPasskeyPrompt: deps.showPasskeyPrompt } : {}),
     flashFooter: deps.flashFooter,
     formatError: deps.formatError,
     providerLogin: deps.providerLoginInteractions,
