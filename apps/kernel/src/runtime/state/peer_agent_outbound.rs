@@ -39,6 +39,7 @@ fn retry_hint(request: &RelayPeerRequest) -> String {
         RelayPeerRequest::PeerAgentMessage { request_id, .. } => {
             format!("send it again with idempotency_key `{request_id}`")
         }
+        RelayPeerRequest::PeerAgentCancel { .. } => "make the same call again in this turn".into(),
         _ => "make the same call again".into(),
     }
 }
@@ -448,6 +449,42 @@ impl KernelRuntimeState {
             }
         };
         let digest = Sha256::digest(serde_json::json!([sender.id(), call]).to_string());
+        Ok(digest[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect())
+    }
+
+    /// A cancel names the caller's turn and its target, so the same call again in that turn,
+    /// after a lost answer, is the same request: the other kernel answers it with the receipt of
+    /// the turn it first cancelled and leaves any later turn running.
+    pub(crate) fn peer_cancel_request_id(
+        &self,
+        sender: &crate::agent::AgentInstance,
+        kernel: &str,
+        room: &str,
+        agent: &str,
+    ) -> Result<String, DaemonError> {
+        use sha2::{Digest, Sha256};
+        let session = self.owned.session_store.get_session(sender.session_id())?;
+        let turn = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, sender.id())
+            .ok_or_else(|| {
+                crate::durable_state::agent_lifecycle::error(
+                    "agent cancel on another kernel needs a running turn",
+                )
+            })?;
+        let call = serde_json::json!([
+            sender.id(),
+            "cancel",
+            turn.id(),
+            kernel,
+            room.trim(),
+            agent.trim().trim_start_matches('@'),
+        ]);
+        let digest = Sha256::digest(call.to_string());
         Ok(digest[..16]
             .iter()
             .map(|byte| format!("{byte:02x}"))

@@ -77,7 +77,7 @@ impl KernelRuntimeState {
             }
             RelayPeerRequest::PeerAgentCancel {
                 protocol_version: VERSION,
-                request_id: _,
+                request_id,
                 sender: _,
                 target,
                 caller_authority,
@@ -89,22 +89,8 @@ impl KernelRuntimeState {
                 if let Err(refusal) = self.peer_caller_covers(caller_authority, &target) {
                     return Ok(refused(refusal));
                 }
-                // As for a peer in another room: the kernel cancels through the target's own
-                // delivery seat, so the caller never joins the room.
-                let attachment =
-                    self.ensure_agent_message_attachment(target.session_id(), &target)?;
-                self.cancel_agent_prompt_with_external_authority(
-                    target.session_id(),
-                    target.id(),
-                    &attachment,
-                    None,
-                )
-                .await?;
-                Ok(RelayPeerResponse::PeerAgentAccepted {
-                    protocol_version: VERSION,
-                    duplicate: false,
-                    target: self.peer_agent_stamp(&target),
-                })
+                self.cancel_peer_agent_turn(kernel, &request_id, &target)
+                    .await
             }
             request @ (RelayPeerRequest::SubscribePeerAgent { .. }
             | RelayPeerRequest::UnsubscribePeerAgent { .. }) => {
@@ -123,6 +109,72 @@ impl KernelRuntimeState {
             )),
             _ => Err(ledger::error("not a peer agent request")),
         }
+    }
+
+    /// One `request_id` of one sending kernel cancels at most the turn it first found running.
+    /// The receipt names that turn before anything is cancelled, so a retry after a lost answer,
+    /// or one that overlaps the first, cancels only that turn and never a later one.
+    async fn cancel_peer_agent_turn(
+        &self,
+        kernel: &str,
+        request_id: &str,
+        target: &crate::agent::AgentInstance,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        if request_id.trim().is_empty() || request_id.len() > 128 {
+            return Err(ledger::error("invalid peer request id"));
+        }
+        let store = &self.owned.durable_state_store;
+        let receipt_id = format!("cancel:{request_id}");
+        let duplicate = store
+            .peer_agent_request_answer(kernel, &receipt_id)?
+            .is_some();
+        if !duplicate {
+            let session = self.owned.session_store.get_session(target.session_id())?;
+            let running = self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, target.id())
+                .map(|prompt| prompt.id().to_string());
+            store.remember_peer_agent_request_answer(
+                kernel,
+                &receipt_id,
+                &serde_json::json!({ "prompt_id": running }).to_string(),
+            )?;
+        }
+        // The first receipt wins, also against an overlapping first attempt.
+        let receipt = store
+            .peer_agent_request_answer(kernel, &receipt_id)?
+            .ok_or_else(|| ledger::error("peer cancel receipt was not kept"))?;
+        let receipt: serde_json::Value =
+            serde_json::from_str(&receipt).map_err(|error| ledger::error(error.to_string()))?;
+        let Some(prompt) = receipt["prompt_id"].as_str() else {
+            return Err(DaemonError::NoActivePrompt {
+                session_id: target.session_id().into(),
+            });
+        };
+        // As for a peer in another room: the kernel cancels through the target's own
+        // delivery seat, so the caller never joins the room.
+        let attachment = self.ensure_agent_message_attachment(target.session_id(), target)?;
+        match self
+            .cancel_agent_prompt_if_matches_with_external_authority(
+                target.session_id(),
+                target.id(),
+                &attachment,
+                Some(prompt),
+                None,
+            )
+            .await
+        {
+            Ok(_) => {}
+            // The receipt's turn already ended, by this cancel's first attempt or otherwise.
+            Err(DaemonError::NoActivePrompt { .. }) if duplicate => {}
+            Err(error) => return Err(error),
+        }
+        Ok(RelayPeerResponse::PeerAgentAccepted {
+            protocol_version: VERSION,
+            duplicate,
+            target: self.peer_agent_stamp(target),
+        })
     }
 
     /// The one peer resolver, with a room this owner cannot address told apart from an agent

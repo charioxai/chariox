@@ -211,7 +211,10 @@ impl CommandRouter {
         room: &str,
         reference: &str,
     ) -> Result<serde_json::Value, DaemonError> {
-        let (target, _) = self
+        let request_id = self
+            .runtime_state
+            .peer_cancel_request_id(parent, kernel, room, reference)?;
+        let (target, duplicate) = self
             .runtime_state
             .relay_peer_agent(
                 parent,
@@ -219,11 +222,11 @@ impl CommandRouter {
                 room,
                 reference,
                 crate::runtime::state::peer_agent_outbound::PeerAgentCall::Cancel,
-                format!("{:032x}", rand::random::<u128>()),
+                request_id,
             )
             .await?;
         Ok(
-            serde_json::json!({"cancelled": true, "kernel": target.kernel_id, "room": target.room_id, "agent": target.agent_id}),
+            serde_json::json!({"cancelled": true, "duplicate": duplicate, "kernel": target.kernel_id, "room": target.room_id, "agent": target.agent_id}),
         )
     }
 
