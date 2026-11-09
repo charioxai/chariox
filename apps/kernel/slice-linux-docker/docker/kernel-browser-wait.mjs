@@ -38,25 +38,31 @@ async function liveUrl(host, tab) {
   catch { return tab.url; }
 }
 
+// A navigation replaces the document this look reads, whether while the Tab is resolved or while the snapshot runs:
+// the next look reads the new one. A closed Tab, a restarted browser and a cancelled wait still end the wait, through
+// their own errors and the checks at the top of the loop.
+const replaced = error => error?.code === 'stale_document_reference';
+// Past the deadline the wait still needs a Tab to report; a few more tries ride out a navigation, not a storm of them.
+const LATE_TARGET_ATTEMPTS = 3;
+
 export async function waitForPage(host, command, scope, signal) {
   const wanted = condition(command);
   const started = Date.now(), deadline = started + wanted.timeout;
   const secrets = host.protection.values;
+  let late = 0;
   for (;;) {
     assertNotCancelled(signal);
-    const tab = await host.displayTarget({ generation: command.generation, tab_id: command.tab_id });
-    let matched = false;
-    if (wanted.kind === 'url_contains') matched = mentions(redactObservation(await liveUrl(host, tab), secrets), wanted.value.toLowerCase());
-    else {
-      try { matched = snapshotMatches(redactSnapshot(await host.browser.snapshot({ target_id: tab.target_id, document_id: tab.document_id }), secrets), wanted); }
-      catch (error) {
-        // A navigation replaced the document (or a frame) during this look: the next look reads the new one. A closed
-        // Tab, a restarted browser and a cancelled wait still end it, through the checks at the top of the loop.
-        if (error?.code !== 'stale_document_reference') throw error;
-      }
+    let tab, matched = false;
+    try {
+      tab = await host.displayTarget({ generation: command.generation, tab_id: command.tab_id });
+      if (wanted.kind === 'url_contains') matched = mentions(redactObservation(await liveUrl(host, tab), secrets), wanted.value.toLowerCase());
+      else matched = snapshotMatches(redactSnapshot(await host.browser.snapshot({ target_id: tab.target_id, document_id: tab.document_id }), secrets), wanted);
+    } catch (error) {
+      if (!replaced(error)) throw error;
+      if (!tab && Date.now() >= deadline && ++late > LATE_TARGET_ATTEMPTS) throw error;
     }
     const last = Date.now() >= deadline;
-    if (matched || last) {
+    if (matched || (last && tab)) {
       return host.observe({ ...host.tabState(), matched, waited_ms: Date.now() - started }, tab, scope);
     }
     await delay(Math.min(wanted.kind === 'url_contains' ? URL_GAP_MS : SNAPSHOT_GAP_MS, Math.max(1, deadline - Date.now())));
