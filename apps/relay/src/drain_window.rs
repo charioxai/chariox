@@ -15,9 +15,18 @@ pub const FLOOR_BYTES: usize = 2 * CHUNK_BYTES;
 /// Fills 90 Mbit/s at a 90 ms round trip, and bounds what one socket keeps in
 /// flight if the estimate is ever wrong.
 pub const CEILING_BYTES: usize = 1024 * 1024;
-/// Twice the measured bandwidth-delay product keeps the pipe full through
-/// receipt bursts and rate changes; the queue it can build is one round trip.
-const GAIN: f64 = 2.0;
+/// Until the pipe is full, twice what one round trip delivered: the window
+/// doubles every round trip.
+const STARTUP_GAIN: f64 = 2.0;
+/// Once the rate stops growing, a quarter more than the measured
+/// bandwidth-delay product keeps the pipe full through receipt jitter while
+/// the queue it builds ahead of a small frame stays a quarter of a round trip
+/// (a gain of 2 kept a whole round trip queued: +150 ms at a 150 ms path).
+const STEADY_GAIN: f64 = 1.25;
+/// The pipe is full when three round trips in a row did not raise the rate by
+/// a quarter (BBR's full-pipe test).
+const FULL_GROWTH: f64 = 1.25;
+const FULL_ROUNDS: u8 = 3;
 /// Rate samples older than this are forgotten once a newer one exists, so the
 /// window follows a link that slows down (or a peer that shares it) within two
 /// seconds of bulk, and an idle connection keeps the pipe it measured.
@@ -42,6 +51,12 @@ pub struct DrainWindow {
     /// and grow the window from its own queue.
     min_rtt: Option<Duration>,
     rates: VecDeque<(Instant, f64)>,
+    /// Delivered bytes at which the current round trip ends.
+    round_end: u64,
+    /// The rate at the last round trip that raised it by a quarter.
+    full_rate: f64,
+    flat_rounds: u8,
+    filled: bool,
 }
 
 impl DrainWindow {
@@ -51,6 +66,10 @@ impl DrainWindow {
             delivered_at: now,
             min_rtt: None,
             rates: VecDeque::new(),
+            round_end: 0,
+            full_rate: 0.0,
+            flat_rounds: 0,
+            filled: false,
         }
     }
 
@@ -59,7 +78,12 @@ impl DrainWindow {
         let (Some(rtt), Some(rate)) = (self.min_rtt, self.max_rate()) else {
             return FLOOR_BYTES;
         };
-        ((rate * rtt.as_secs_f64() * GAIN).round() as usize).clamp(FLOOR_BYTES, CEILING_BYTES)
+        let gain = if self.filled {
+            STEADY_GAIN
+        } else {
+            STARTUP_GAIN
+        };
+        ((rate * rtt.as_secs_f64() * gain).round() as usize).clamp(FLOOR_BYTES, CEILING_BYTES)
     }
 
     /// Stamp a frame as it is written. `idle` is true when nothing was
@@ -101,6 +125,24 @@ impl DrainWindow {
                 self.rates.pop_back();
             }
             self.rates.push_back((now, rate));
+        }
+        // A round trip ends when a frame sent after the previous end is acknowledged.
+        if bulk && stamp.delivered >= self.round_end {
+            self.round_end = self.delivered;
+            self.end_round();
+        }
+    }
+
+    fn end_round(&mut self) {
+        let Some(rate) = self.max_rate().filter(|_| !self.filled) else {
+            return;
+        };
+        if rate >= self.full_rate * FULL_GROWTH {
+            self.full_rate = rate;
+            self.flat_rounds = 0;
+        } else {
+            self.flat_rounds += 1;
+            self.filled = self.flat_rounds >= FULL_ROUNDS;
         }
     }
 
