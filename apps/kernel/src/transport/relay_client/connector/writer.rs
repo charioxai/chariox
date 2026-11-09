@@ -374,6 +374,84 @@ mod tests {
         assert_eq!(reply, serde_json::to_string(&bulk_reply()).unwrap());
     }
 
+    fn peer_request(id: &str, ciphertext_bytes: usize) -> RelayEnvelope {
+        RelayEnvelope::DaemonPeerRequest {
+            request_id: id.into(),
+            target: chariox_relay::protocol::ClientTarget {
+                daemon_id: Some("serving-kernel".into()),
+                daemon_alias: None,
+            },
+            encrypted_request: chariox_relay::protocol::EncryptedRelayPayload {
+                sender_public_key: "daemon".into(),
+                nonce: "nonce".into(),
+                ciphertext: "x".repeat(ciphertext_bytes),
+            },
+        }
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayproof r3): `files put` sends each 64 KiB file
+    // chunk as a peer request of about 117 KB. A small peer request (a session list, a
+    // kernel renewal) queued behind the window of upload chunks waited until every one
+    // of them was on the wire (0.4 s at 8 Mbit/s, 3.8 s at 1 Mbit/s); it now goes out
+    // before the next chunk.
+    #[tokio::test]
+    async fn a_small_peer_request_passes_queued_upload_chunks() {
+        let (wire_tx, mut wire) = mpsc::unbounded_channel::<Message>();
+        let sink = Box::pin(futures_util::sink::unfold(
+            wire_tx,
+            |tx, message: Message| async move {
+                tx.send(message).unwrap();
+                Ok::<_, std::convert::Infallible>(tx)
+            },
+        ));
+        let (outgoing, priority_rx, event_rx) =
+            crate::transport::relay_client::RelayOutgoingSender::channel(16);
+        for n in 0..4 {
+            outgoing
+                .try_send(peer_request(&format!("upload-{n}"), 117 * 1024))
+                .unwrap();
+        }
+        outgoing.try_send(peer_request("list", 600)).unwrap();
+        let (_pong, pong_rx) = mpsc::channel(1);
+        let (_receipt, receipt_rx) = mpsc::channel(1);
+        let (upload_receipt, upload_receipt_rx) = mpsc::channel(64);
+        tokio::spawn(run_relay_writer(
+            sink,
+            priority_rx,
+            event_rx,
+            pong_rx,
+            receipt_rx,
+            Some(upload_receipt_rx),
+            false,
+            Arc::new(AtomicBool::new(false)),
+            Arc::default(),
+        ));
+        let mut relay = chariox_relay::frame_transport::FrameReceiver::default();
+        let mut bulk_bytes_ahead = 0;
+        loop {
+            let Message::Text(text) = wire.recv().await.unwrap() else {
+                panic!("text frames")
+            };
+            if text.contains("\"request_id\":\"list\"") {
+                break;
+            }
+            bulk_bytes_ahead += text.len();
+            let (_, receipt) = relay.receive(&text).unwrap();
+            let chariox_relay::frame_transport::TransportFrame::TransportAck {
+                transfer_id,
+                offset,
+            } = serde_json::from_str(&receipt.unwrap()).unwrap()
+            else {
+                panic!("receipt expected")
+            };
+            upload_receipt.send((transfer_id, offset)).await.unwrap();
+        }
+        assert!(
+            bulk_bytes_ahead <= chariox_relay::frame_transport::CHUNK_BYTES,
+            "{bulk_bytes_ahead} bytes of upload chunks went out ahead of the small request"
+        );
+    }
+
     // Toward a relay that did not answer the upload offer (peer 440), the reply is one frame.
     #[tokio::test]
     async fn without_chunked_uploads_a_reply_is_one_frame() {
