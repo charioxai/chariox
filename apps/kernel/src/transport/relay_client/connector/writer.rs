@@ -122,6 +122,10 @@ fn relay_envelope_kind(envelope: &RelayEnvelope) -> &'static str {
 }
 
 // MP-08 / MP-10 / MP-11: socket writer stays below the connector coordinator.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each lane, the closing flag and the reply notes are separate inputs of the one writer task"
+)]
 pub(super) async fn run_relay_writer<S>(
     mut writer: S,
     mut priority_outgoing_rx: tokio::sync::mpsc::Receiver<RelayEnvelope>,
