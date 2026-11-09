@@ -293,7 +293,7 @@ test("agent spawn command can create and start a new slice", async () => {
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned builder · slice slice-created · worktree worktree-1 · worker machine-slice")
+  assert.equal(flashedMessage, "spawned builder · slice slice-created · effort medium · worktree worktree-1 · worker machine-slice")
 })
 
 test("agent spawn command creates a new slice on an exact kernel without also spawning on the kernel", async () => {
@@ -449,7 +449,7 @@ test("agent spawn command reuses resolved slice id after validating scope", asyn
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned builder · slice slice-resolved · worktree worktree-1 · worker machine-slice")
+  assert.equal(flashedMessage, "spawned builder · slice slice-resolved · effort medium · worktree worktree-1 · worker machine-slice")
 })
 
 test("agent spawn command reuses a running slice without starting it again", async () => {
@@ -654,7 +654,47 @@ test("agent spawn command treats --slice off as normal local placement", async (
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned builder · local · worktree worktree-1")
+  assert.equal(flashedMessage, "spawned builder · local · effort medium · worktree worktree-1")
+})
+
+test("agent spawn footer states the options the kernel applied, not the ones asked for", async () => {
+  let currentSession = session()
+  let flashedMessage = ""
+
+  await handleAgentSpawnCommand({
+    currentWorkspaceTarget: () => "/workspace",
+    currentWorktreeTarget: () => "/workspace",
+    currentModelId: () => "codex/gpt-5.4",
+    currentVariantId: () => "high",
+    currentProviderId: () => "codex",
+    flashFooter: (message) => { flashedMessage = message },
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+    applySessionState: (nextSession) => { currentSession = nextSession },
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => {},
+    launchAgentProviderRun: async (_provider, _model, _variant, agentId) => providerRun({ agent_instance_id: agentId }),
+    setProviderRunState: () => {},
+    refreshSessionState: async () => currentSession,
+    spawnAgent: async () => {
+      const nextAgent = agent({
+        id: "agent-applied",
+        agent_ref: "agent-applied",
+        alias: "builder",
+        account_profile: "team-b",
+        effort: "xhigh",
+        permission_level_override: "required",
+        worktree_id: "/workspace-applied",
+      })
+      currentSession = session({ focused_agent_id: nextAgent.id, agents: [...currentSession.agents, nextAgent] })
+      return { agent: nextAgent, session: currentSession }
+    },
+    refreshSplitPaneFocusRepaint: () => {},
+  }, ["builder", "codex/gpt-5.4", "--account", "team-a", "--worktree", "/workspace-asked"])
+
+  assert.equal(
+    flashedMessage,
+    "spawned builder · local · profile team-b · effort xhigh · permission required · worktree /workspace-applied",
+  )
 })
 
 test("agent spawn command targets an exact kernel without machine resolution", async () => {
@@ -707,7 +747,7 @@ test("agent spawn command targets an exact kernel without machine resolution", a
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned builder · remote machine-worker")
+  assert.equal(flashedMessage, "spawned builder · remote machine-worker · effort medium")
 })
 
 for (const bulk of [false, true]) {

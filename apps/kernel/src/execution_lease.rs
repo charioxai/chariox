@@ -67,6 +67,10 @@ pub struct LeasedAgent {
     pub backing_session_id: String,
     pub backing_agent_id: String,
     pub backing_attachment_id: String,
+    /// The checkout the worker created for this agent, so the home can name the folder the agent
+    /// runs in; absent when the agent runs in the folder it was given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_worktree_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub projected_prompt_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -179,6 +183,7 @@ impl LeasedAgent {
             backing_session_id,
             backing_agent_id,
             backing_attachment_id,
+            created_worktree_id: None,
             projected_prompt_ids: Vec::new(),
             projected_completion_keys: Vec::new(),
             projected_output_history_keys: Vec::new(),

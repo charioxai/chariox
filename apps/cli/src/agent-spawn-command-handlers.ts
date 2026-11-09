@@ -387,6 +387,7 @@ function formatSpawnedAgentFooter(
     sliceRef?: string | undefined
   },
 ): string {
+  // What the kernel applied, as the agent carries it; options nobody set stay out.
   const alias = agent.alias ?? options.requestedAlias ?? null
   const remote = agent.remote_execution ?? null
   const worker = remote?.worker_machine_id || remote?.worker_kernel_id || options.requestedMachineRef || null
@@ -395,10 +396,13 @@ function formatSpawnedAgentFooter(
     : remote
       ? `remote ${worker ?? "worker"}`
       : "local"
-  const worktree = options.resolvedWorktreeId || agent.worktree_id || null
+  const worktree = agent.worktree_id || options.resolvedWorktreeId || null
   const parts = [
     `spawned ${formatAgentLabel({ ...agent, alias })}`,
     placement,
+    agent.account_profile ? `profile ${agent.account_profile}` : null,
+    agent.effort ? `effort ${agent.effort}` : null,
+    agent.permission_level_override ? `permission ${agent.permission_level_override}` : null,
     worktree ? `worktree ${worktree}` : null,
     options.sliceRef && worker ? `worker ${worker}` : null,
   ].filter(Boolean)

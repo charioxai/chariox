@@ -1,6 +1,7 @@
 use super::request::*;
 use super::result::*;
 use super::spawn_args::*;
+use super::summary::summarize_spawned_agent;
 use super::*;
 
 impl CommandRouter {
@@ -815,6 +816,31 @@ impl CommandRouter {
             metaagent,
             self.runtime_state.room_agent_tools_enabled(),
         );
+        if let LocalDaemonResponse::AgentSpawned { agent, .. } = &response {
+            let deadline_ms =
+                match self
+                    .runtime_state
+                    .get_agent_deadline(crate::local::GetAgentDeadlineRequest {
+                        session_id: agent.session_id().to_string(),
+                        agent_id: agent.id().to_string(),
+                    }) {
+                    Ok(LocalDaemonResponse::AgentDeadline { deadline }) => {
+                        deadline.map(|deadline| deadline.deadline_ms)
+                    }
+                    Ok(_) => None,
+                    Err(error) => return Ok(meta_command_failure_result(command, error)),
+                };
+            let room = match self
+                .runtime_state
+                .session_snapshot(agent.session_id())
+                .await
+            {
+                Ok(room) => room,
+                Err(error) => return Ok(meta_command_failure_result(command, error)),
+            };
+            result.payload["response"]["agent"] =
+                summarize_spawned_agent(agent, &room, deadline_ms);
+        }
         if target_room.is_some() {
             if let Some(payload) = result.payload.as_object_mut() {
                 let (registration, refused) = match followed {
