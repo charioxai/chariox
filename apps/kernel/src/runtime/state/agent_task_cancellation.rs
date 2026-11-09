@@ -382,7 +382,7 @@ impl KernelRuntimeState {
                             if let Some((entry, creator)) = self
                                 .owned
                                 .durable_state_store
-                                .gate_task_entry(session.owner_user_id(), session.id(), resource)?
+                                .gate_task_entry(session.id(), resource)?
                             {
                                 if !entry.disposition.is_terminal() {
                                     if creator.as_deref() != Some(task.agent_id.as_str()) {

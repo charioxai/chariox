@@ -306,26 +306,27 @@ fn terminal(
 }
 
 impl DurableKernelStateStore {
+    /// A Room's agent tasks name a gate entry by its id. The entry keeps the
+    /// owner it was admitted for (the workflow endpoint's), which need not be
+    /// the Room owner, so the Room and the globally unique id find it.
     pub(crate) fn gate_task_entry(
         &self,
-        owner: &str,
         session: &str,
         id: &str,
     ) -> Result<Option<(Entry, Option<String>)>> {
         let db = self.lock_connection("workflow.gate.task")?;
-        let row:Option<(String,Option<String>)>=db.query_row("SELECT coalesce(summary_json,json_extract(nullif(body_json,''),'$.entry')),json_extract(nullif(body_json,''),'$.admission.template.created_by_agent_id') FROM workflow_gate_entries WHERE owner_id=?1 AND session_id=?2 AND entry_id=?3",params![owner,session,id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
+        let row:Option<(String,Option<String>)>=db.query_row("SELECT coalesce(summary_json,json_extract(nullif(body_json,''),'$.entry')),json_extract(nullif(body_json,''),'$.admission.template.created_by_agent_id') FROM workflow_gate_entries WHERE session_id=?1 AND entry_id=?2",params![session,id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
         row.map(|(json, creator)| decode(&json).map(|entry| (entry, creator)))
             .transpose()
     }
     pub(crate) fn gate_workflow_run(
         &self,
-        owner: &str,
         kernel: &str,
         session: &str,
         id: &str,
     ) -> Result<Option<crate::session::WorkflowRun>> {
         let db = self.lock_connection("workflow.gate.run")?;
-        let row:Option<String>=db.query_row("SELECT r.payload_json FROM workflow_gate_entries e JOIN durable_workflow_runs r ON r.owner_id=?2 AND r.session_id=e.session_id AND json_extract(r.payload_json,'$.queue_item_id')=json_extract(coalesce(e.summary_json,json_extract(nullif(e.body_json,''),'$.entry')),'$.queued_prompt_id') WHERE e.owner_id=?1 AND e.session_id=?3 AND e.entry_id=?4",params![owner,kernel,session,id],|r|r.get(0)).optional().map_err(sql)?;
+        let row:Option<String>=db.query_row("SELECT r.payload_json FROM workflow_gate_entries e JOIN durable_workflow_runs r ON r.owner_id=?1 AND r.session_id=e.session_id AND json_extract(r.payload_json,'$.queue_item_id')=json_extract(coalesce(e.summary_json,json_extract(nullif(e.body_json,''),'$.entry')),'$.queued_prompt_id') WHERE e.session_id=?2 AND e.entry_id=?3",params![kernel,session,id],|r|r.get(0)).optional().map_err(sql)?;
         row.map(|json| decode(&json)).transpose()
     }
     pub(crate) fn gate_module(&self, owner: &str, digest: &str) -> Result<Vec<u8>> {

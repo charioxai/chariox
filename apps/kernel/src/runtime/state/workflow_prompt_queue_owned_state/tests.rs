@@ -975,6 +975,13 @@ fn owned_launch_response_tracks_requested_prompt_when_older_prompt_starts() {
 }
 
 fn runtime_with_idle_workflow() -> (KernelRuntimeState, String, String, String, TestRoot) {
+    // App automation targets are authorized for the session owner.
+    runtime_with_idle_workflow_owned_by("alice")
+}
+
+fn runtime_with_idle_workflow_owned_by(
+    room_owner: &str,
+) -> (KernelRuntimeState, String, String, String, TestRoot) {
     let test_root = TestRoot(crate::test_support::test_workspace_root().join(format!(
         "chariox-owned-workflow-admission-{}-{}-{:032x}",
         std::process::id(),
@@ -989,8 +996,7 @@ fn runtime_with_idle_workflow() -> (KernelRuntimeState, String, String, String, 
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(
             crate::session::CreateSessionRequest::new(&test_root_path, &test_root_path)
-                // App automation targets are authorized for the session owner.
-                .with_owner_user_id("alice"),
+                .with_owner_user_id(room_owner),
         )
         .expect("session should be created");
     let agent = crate::app::KernelSessionService::new(&mut app)
@@ -2133,9 +2139,20 @@ fn workflow_queue_admission_wakes_a_provider_that_became_ready() {
 
 #[tokio::test]
 async fn gated_manual_entry_has_no_queue_or_run_before_worker_decision() {
+    // The entry belongs to the endpoint owner `local`, not the Room owner.
+    gated_manual_entry_waits_for_worker_decision("alice").await;
+}
+
+#[tokio::test]
+async fn gated_manual_entry_of_the_room_owner_waits_for_worker_decision() {
+    gated_manual_entry_waits_for_worker_decision(crate::session::DEFAULT_LOCAL_USER_ID).await;
+}
+
+async fn gated_manual_entry_waits_for_worker_decision(room_owner: &str) {
     use crate::durable_state::workflow_gate::{Operation, Outcome};
     use chariox_app_runtime::workflow_gate as gate;
-    let (runtime, session_id, workflow_id, endpoint_id, _root) = runtime_with_idle_workflow();
+    let (runtime, session_id, workflow_id, endpoint_id, _root) =
+        runtime_with_idle_workflow_owned_by(room_owner);
     let component = b"journal-only test component";
     let digest = gate::sha256(component);
     assert!(matches!(

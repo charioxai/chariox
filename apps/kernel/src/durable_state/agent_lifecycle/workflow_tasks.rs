@@ -68,7 +68,7 @@ pub(super) fn settle_unstarted_delegates(
     }) {
         return Ok(false);
     }
-    let Some(run) = load_run(tx, owner_id, &task.owner_user_id, &task.room_id, source)? else {
+    let Some(run) = load_run(tx, owner_id, &task.room_id, source)? else {
         return Ok(false);
     };
     if run.created_by_agent_id() != Some(task.agent_id.as_str())
@@ -91,9 +91,7 @@ pub(super) fn settle_unstarted_delegates(
         let Some(other_id) = other.resource_id.as_deref() else {
             continue;
         };
-        if let Some(other_run) =
-            load_run(tx, owner_id, &task.owner_user_id, &task.room_id, other_id)?
-        {
+        if let Some(other_run) = load_run(tx, owner_id, &task.room_id, other_id)? {
             if !other_run.status().is_terminal() {
                 // Downstream nodes have no node run yet; their agents come from the run's mapping.
                 let completed = |n: &crate::session::WorkflowNodeRun| {
@@ -184,12 +182,11 @@ pub(super) fn settle_unstarted_delegates(
 fn load_run(
     tx: &Transaction<'_>,
     owner_id: &str,
-    user_id: &str,
     room: &str,
     run: &str,
 ) -> Result<Option<crate::session::WorkflowRun>, DaemonError> {
     if run.starts_with("gate_") {
-        let raw:Option<String>=tx.query_row("SELECT r.payload_json FROM workflow_gate_entries e JOIN durable_workflow_runs r ON r.owner_id=?1 AND r.session_id=e.session_id AND json_extract(r.payload_json,'$.queue_item_id')=json_extract(coalesce(e.summary_json,json_extract(nullif(e.body_json,''),'$.entry')),'$.queued_prompt_id') WHERE e.owner_id=?2 AND e.session_id=?3 AND e.entry_id=?4",params![owner_id,user_id,room,run],|r|r.get(0)).optional().map_err(sql)?;
+        let raw:Option<String>=tx.query_row("SELECT r.payload_json FROM workflow_gate_entries e JOIN durable_workflow_runs r ON r.owner_id=?1 AND r.session_id=e.session_id AND json_extract(r.payload_json,'$.queue_item_id')=json_extract(coalesce(e.summary_json,json_extract(nullif(e.body_json,''),'$.entry')),'$.queued_prompt_id') WHERE e.session_id=?2 AND e.entry_id=?3",params![owner_id,room,run],|r|r.get(0)).optional().map_err(sql)?;
         return raw.map(|raw| decode(&raw)).transpose();
     }
     let raw: Option<String> = tx

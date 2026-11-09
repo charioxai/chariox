@@ -1276,7 +1276,7 @@ impl KernelRuntimeState {
                             .map(super::agent_workflow_tasks::workflow_failure_answer)
                     });
                     let gate_answer = if source.starts_with("gate_") {
-                        self.owned.durable_state_store.gate_task_entry(session.owner_user_id(),session.id(),source)?.map(|(entry,_)|serde_json::json!({"kind":"workflow_entry","entry_id":entry.entry_id,"disposition":entry.disposition,"reason":entry.failure,"workflow_run_id":workflow_source.as_ref().map(|run|run.id()),"workflow_run_status":workflow_source.as_ref().map(|run|run.status())}))
+                        self.owned.durable_state_store.gate_task_entry(session.id(),source)?.map(|(entry,_)|serde_json::json!({"kind":"workflow_entry","entry_id":entry.entry_id,"disposition":entry.disposition,"reason":entry.failure,"workflow_run_id":workflow_source.as_ref().map(|run|run.id()),"workflow_run_status":workflow_source.as_ref().map(|run|run.status())}))
                     } else {
                         None
                     };

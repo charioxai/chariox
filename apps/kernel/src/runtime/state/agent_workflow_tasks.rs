@@ -13,7 +13,6 @@ impl KernelRuntimeOwnedState {
     ) -> Result<Option<crate::session::WorkflowRun>, DaemonError> {
         if run.starts_with("gate_") {
             return self.durable_state_store.gate_workflow_run(
-                session.owner_user_id(),
                 session.host_daemon_id(),
                 session.id(),
                 run,
@@ -43,11 +42,9 @@ impl KernelRuntimeOwnedState {
         source: &str,
     ) -> Result<Option<bool>, DaemonError> {
         if source.starts_with("gate_") {
-            let Some((entry, _)) = self.durable_state_store.gate_task_entry(
-                session.owner_user_id(),
-                session.id(),
-                source,
-            )?
+            let Some((entry, _)) = self
+                .durable_state_store
+                .gate_task_entry(session.id(), source)?
             else {
                 return Ok(Some(false));
             };
