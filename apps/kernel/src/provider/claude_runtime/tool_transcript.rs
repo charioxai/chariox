@@ -323,15 +323,19 @@ impl ClaudeToolTranscript {
                         payload["images_omitted"] = json!(omitted);
                     }
                     if pending.background {
-                        // A launch that failed never left a command running.
-                        let task_id = (!failed).then(|| launched_task_id(value, &output)).flatten();
-                        if task_id.is_none() || self.background.len() >= PENDING_ENTRIES {
-                            self.truncated |= task_id.is_some();
+                        if failed {
+                            // A launch that failed never left a command running.
                             payload["finished_at_ms"] = json!(now_ms);
+                        } else if self.background.len() >= PENDING_ENTRIES {
+                            // Untracked, it ends with its provider session.
+                            self.truncated = true;
                         } else {
                             self.background.insert(
                                 id.to_string(),
-                                BackgroundCall { task_id, snapshot: payload.clone() },
+                                BackgroundCall {
+                                    task_id: launched_task_id(value, &output),
+                                    snapshot: payload.clone(),
+                                },
                             );
                         }
                     }
@@ -635,6 +639,14 @@ mod tests {
         let failed = transcript.observe_at(&failure, 1_100);
         assert_eq!(failed[0]["status"], "error");
         assert_eq!(failed[0]["finished_at_ms"], 1_100);
+
+        // A launch result that names no task is still settled by its call id.
+        transcript.observe_at(&background_launch("unnamed", "sleep 5"), 1_500);
+        let unnamed = transcript.observe_at(&result("unnamed", json!("started")), 1_600);
+        assert!(unnamed[0]["finished_at_ms"].is_null());
+        let unnamed =
+            transcript.observe_at(&task_notification("t9", "unnamed", "completed"), 1_700);
+        assert_eq!(unnamed[0]["finished_at_ms"], 1_700);
 
         transcript.observe_at(&background_launch("running", "sleep 40"), 2_000);
         transcript.observe_at(&background_launch_result("running", "b1"), 2_100);
