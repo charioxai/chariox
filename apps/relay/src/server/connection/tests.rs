@@ -10,6 +10,7 @@ use crate::auth::{
     RelayRevocationRegistry, RelaySubjectKind, RelayTokenClaims, ScopedTokenVerifier,
     VerifiedRelayIdentity,
 };
+use crate::outgoing::QueueStats;
 use crate::protocol::{ClientTarget, DaemonRegistration, EncryptedRelayPayload};
 use crate::registry::{PendingClientRequest, RelaySender};
 
@@ -46,7 +47,7 @@ async fn saturated_display_viewer_is_closed_without_blocking_the_daemon_lane() {
         daemon_key.clone(),
         display_tx,
     );
-    let (daemon_tx, mut daemon_rx) = mpsc::channel(2);
+    let (daemon_tx, mut daemon_rx) = RelaySender::detached_channel(2);
 
     try_forward_display_stream_event(
         &registry,
@@ -204,8 +205,8 @@ async fn revoked_daemon_is_not_route_admitted_before_watch_cleanup() {
     let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "kernel-old");
     let daemon_addr = peer_addr(10_010);
     let client_addr = peer_addr(10_011);
-    let (daemon_sender, mut daemon_receiver) = mpsc::channel::<Message>(2);
-    let (client_sender, mut client_receiver) = mpsc::channel::<Message>(2);
+    let (daemon_sender, mut daemon_receiver) = RelaySender::detached_channel(2);
+    let (client_sender, mut client_receiver) = RelaySender::detached_channel(2);
     let mut registration = daemon_registration("kernel-old");
     registration.machine_id = "machine-old".to_string();
     registration.auth_token = "old-kernel-token".to_string();
@@ -316,7 +317,7 @@ async fn revoked_daemon_is_not_route_admitted_before_watch_cleanup() {
 async fn daemon_route_admission_distinguishes_expired_token_from_missing_sender() {
     let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "kernel-expired");
     let daemon_addr = peer_addr(10_012);
-    let (daemon_sender, _daemon_receiver) = mpsc::channel::<Message>(2);
+    let (daemon_sender, _daemon_receiver) = RelaySender::detached_channel(2);
     let mut registration = daemon_registration("kernel-expired");
     registration.auth_token = "expired-kernel-token".to_string();
 
@@ -394,7 +395,7 @@ fn resolve_daemon_sender_uses_daemon_peer_index() {
     let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
     let registration = daemon_registration("daemon-1");
     let daemon_addr = peer_addr(10_001);
-    let (sender, _receiver) = mpsc::channel::<Message>(1);
+    let (sender, _receiver) = RelaySender::detached_channel(1);
     let mut registry = RelayRegistry::default();
     registry
         .daemons
@@ -426,7 +427,7 @@ fn performance_drill_relay_fanout_resolves_daemon_routes_from_index() {
         let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, daemon_id.clone());
         let registration = daemon_registration(&daemon_id);
         let addr = peer_addr(20_000 + index as u16);
-        let (sender, _receiver) = mpsc::channel::<Message>(1);
+        let (sender, _receiver) = RelaySender::detached_channel(1);
         registry
             .daemons
             .insert(daemon_key.clone(), registration.clone());
@@ -454,7 +455,7 @@ async fn remove_daemon_peer_clears_daemon_route_index() {
     let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
     let registration = daemon_registration("daemon-1");
     let peer_addr = peer_addr(10_003);
-    let (sender, _receiver) = mpsc::channel::<Message>(1);
+    let (sender, _receiver) = RelaySender::detached_channel(1);
     let mut registry = RelayRegistry::default();
     registry
         .daemons
@@ -473,6 +474,7 @@ async fn remove_daemon_peer_clears_daemon_route_index() {
         peer_addr,
         Some(&daemon_key),
         &relay_request_counter,
+        QueueStats::default(),
     )
     .await;
 
@@ -487,9 +489,9 @@ async fn remove_client_peer_unsubscribes_active_and_pending_daemon_subscriptions
     let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
     let client_addr = peer_addr(10_007);
     let other_client_addr = peer_addr(10_008);
-    let (client_sender, _client_receiver) = mpsc::channel::<Message>(4);
-    let (other_client_sender, _other_client_receiver) = mpsc::channel::<Message>(4);
-    let (daemon_sender, mut daemon_receiver) = mpsc::channel::<Message>(4);
+    let (client_sender, _client_receiver) = RelaySender::detached_channel(4);
+    let (other_client_sender, _other_client_receiver) = RelaySender::detached_channel(4);
+    let (daemon_sender, mut daemon_receiver) = RelaySender::detached_channel(4);
     let mut registry = RelayRegistry::default();
     registry
         .peers
@@ -546,6 +548,7 @@ async fn remove_client_peer_unsubscribes_active_and_pending_daemon_subscriptions
         client_addr,
         None,
         &relay_request_counter,
+        QueueStats::default(),
     )
     .await;
 
@@ -610,7 +613,7 @@ async fn alias_resolution_ignores_temporary_peer_transport_registrations() {
         .get(&real_key)
         .expect("real registration should exist")
         .clone();
-    let (real_sender, _receiver) = mpsc::channel::<Message>(1);
+    let (real_sender, _receiver) = RelaySender::detached_channel(1);
     registry.peers.insert(
         real_addr,
         daemon_peer(real_sender.clone(), real_registration),
@@ -647,7 +650,7 @@ async fn target_resolution_and_live_metadata_ignore_stale_daemon_registration() 
     live_registration.daemon_alias = Some("live".to_string());
     live_registration.capabilities = vec!["kernel_ws".to_string()];
     let live_addr = peer_addr(10_006);
-    let (live_sender, _receiver) = mpsc::channel::<Message>(1);
+    let (live_sender, _receiver) = RelaySender::detached_channel(1);
     let mut registry = RelayRegistry::default();
     registry
         .daemons
@@ -727,11 +730,11 @@ async fn slow_event_consumer_cleanup_case() -> bool {
     let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
     let client_addr = peer_addr(10_004);
     let other_client_addr = peer_addr(10_005);
-    let (sender, mut receiver) = mpsc::channel::<Message>(1);
+    let (sender, mut receiver) = RelaySender::detached_channel(1);
     sender
         .try_send(Message::Text("occupied".to_string().into()))
         .expect("test queue should accept first message");
-    let (other_sender, mut other_receiver) = mpsc::channel::<Message>(1);
+    let (other_sender, mut other_receiver) = RelaySender::detached_channel(1);
     let mut registry = RelayRegistry::default();
     registry
         .peers
@@ -756,7 +759,7 @@ async fn slow_event_consumer_cleanup_case() -> bool {
         },
     );
     let routes = registry.route_index();
-    let (daemon_sender, mut daemon_receiver) = mpsc::channel::<Message>(1);
+    let (daemon_sender, mut daemon_receiver) = RelaySender::detached_channel(1);
     routes.set_daemon_sender(daemon_key.clone(), daemon_sender);
     routes.set_client_sender(client_addr, sender.clone());
     routes.set_subscription(
@@ -859,8 +862,8 @@ async fn target_backpressure_rejects_client_pending_request_without_client_close
 async fn target_backpressure_client_case() -> bool {
     let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
     let client_addr = peer_addr(10_006);
-    let (client_sender, mut client_receiver) = mpsc::channel::<Message>(4);
-    let (daemon_sender, mut daemon_receiver) = mpsc::channel::<Message>(1);
+    let (client_sender, mut client_receiver) = RelaySender::detached_channel(4);
+    let (daemon_sender, mut daemon_receiver) = RelaySender::detached_channel(1);
     daemon_sender
         .try_send(Message::Text("occupied".to_string().into()))
         .expect("test queue should accept first message");
@@ -980,8 +983,8 @@ async fn target_backpressure_peer_case() -> bool {
     let requester_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-a");
     let target_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-b");
     let requester_addr = peer_addr(10_008);
-    let (requester_sender, mut requester_receiver) = mpsc::channel::<Message>(4);
-    let (target_sender, mut target_receiver) = mpsc::channel::<Message>(1);
+    let (requester_sender, mut requester_receiver) = RelaySender::detached_channel(4);
+    let (target_sender, mut target_receiver) = RelaySender::detached_channel(1);
     target_sender
         .try_send(Message::Text("occupied".to_string().into()))
         .expect("test queue should accept first message");
@@ -1083,7 +1086,7 @@ async fn peer_event_target_backpressure_case() -> bool {
     let target_registration = daemon_registration("daemon-b");
     let target_addr = peer_addr(10_007);
     let requester_addr = peer_addr(10_008);
-    let (target_sender, mut target_receiver) = mpsc::channel::<Message>(1);
+    let (target_sender, mut target_receiver) = RelaySender::detached_channel(1);
     target_sender
         .try_send(Message::Text("occupied".to_string().into()))
         .expect("test queue should accept first message");
@@ -1266,7 +1269,7 @@ async fn healthy_display_viewer_drains_bursts_without_false_backpressure() {
         }
         packets
     });
-    let (daemon_tx, mut daemon_rx) = mpsc::channel(2);
+    let (daemon_tx, mut daemon_rx) = RelaySender::detached_channel(2);
     for index in 0..64 {
         try_forward_display_stream_event(
             &registry,
@@ -1335,11 +1338,18 @@ async fn foreign_daemon_and_realm_cannot_close_display_stream() {
     assert!(rx.recv().await.is_none());
 }
 
+/// Queues `message` once the writer has made room, as a producer that waits would.
+async fn send_when_room(sender: &RelaySender, message: Message) {
+    while sender.try_send(message.clone()).is_err() {
+        tokio::task::yield_now().await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_subscription_admission_has_one_owner() {
     let key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
     let mut registry = RelayRegistry::default();
-    let (daemon_tx, _daemon_rx) = mpsc::channel(8);
+    let (daemon_tx, _daemon_rx) = RelaySender::detached_channel(8);
     let reg = daemon_registration("daemon-1");
     registry.daemons.insert(key.clone(), reg.clone());
     registry
@@ -1350,7 +1360,7 @@ async fn concurrent_subscription_admission_has_one_owner() {
     routes.set_daemon_sender(key.clone(), daemon_tx);
     let mut clients = Vec::new();
     for port in [18001, 18002] {
-        let (tx, rx) = mpsc::channel(8);
+        let (tx, rx) = RelaySender::detached_channel(8);
         let addr = peer_addr(port);
         let mut peer = client_peer(tx.clone());
         peer.client_daemon_key = Some(key.clone());
@@ -1513,14 +1523,13 @@ async fn burst_of_small_frame_receipts_keeps_the_connection() {
     tokio::spawn(async move {
         for n in 0..FRAMES {
             let request = format!(r#"{{"kind":"daemon_request","relay_request_id":"small-{n}"}}"#);
-            sender.send(Message::Text(request.into())).await.unwrap();
+            send_when_room(&sender, Message::Text(request.into())).await;
         }
-        sender
-            .send(Message::Text(
-                r#"{"kind":"daemon_request","relay_request_id":"after-burst"}"#.into(),
-            ))
-            .await
-            .unwrap();
+        send_when_room(
+            &sender,
+            Message::Text(r#"{"kind":"daemon_request","relay_request_id":"after-burst"}"#.into()),
+        )
+        .await;
     });
     let mut receiver = crate::frame_transport::FrameReceiver::default();
     let mut receipts = Vec::new();
@@ -1563,7 +1572,7 @@ async fn mp11_binary_event_routes_only_for_its_registered_daemon_and_realm() {
     let registry = Arc::new(RwLock::new(RelayRegistry::default()));
     let routes = registry.read().await.route_index();
     let daemon = DaemonKey::new("realm", "kernel");
-    let (sender, mut receiver) = mpsc::channel(2);
+    let (sender, mut receiver) = RelaySender::detached_channel(2);
     routes.set_subscription(
         "sub".into(),
         ActiveEventRoute {
@@ -1632,7 +1641,7 @@ async fn binary_events_are_counted_under_their_subscription_scope() {
     let registry = Arc::new(RwLock::new(RelayRegistry::default()));
     let routes = registry.read().await.route_index();
     let daemon = DaemonKey::new("realm", "kernel");
-    let (sender, mut receiver) = mpsc::channel(2);
+    let (sender, mut receiver) = RelaySender::detached_channel(2);
     routes.set_subscription(
         "sub".into(),
         ActiveEventRoute {
@@ -1719,9 +1728,9 @@ async fn mp11_initial535_pin_is_checked_at_the_subscription_sender_transaction()
     let original_addr = peer_addr(39_001);
     let replacement_addr = peer_addr(39_002);
     let client_addr = peer_addr(39_003);
-    let (original_tx, mut original_rx) = mpsc::channel(8);
-    let (replacement_tx, mut replacement_rx) = mpsc::channel(8);
-    let (client_tx, mut client_rx) = mpsc::channel(8);
+    let (original_tx, mut original_rx) = RelaySender::detached_channel(8);
+    let (replacement_tx, mut replacement_rx) = RelaySender::detached_channel(8);
+    let (client_tx, mut client_rx) = RelaySender::detached_channel(8);
     let registration = daemon_registration("daemon-1");
     let mut state = RelayRegistry::default();
     state.daemons.insert(key.clone(), registration.clone());
@@ -1806,4 +1815,30 @@ async fn mp11_initial535_pin_is_checked_at_the_subscription_sender_transaction()
     );
     assert!(original_rx.try_recv().is_err());
     assert_eq!(registry.read().await.pending_request_count(), 0);
+}
+
+#[tokio::test]
+async fn delivering_to_a_backlogged_receiver_drops_counts_and_closes_it_once() {
+    let (control_tx, mut control_rx) = mpsc::channel(8);
+    let (receiver, rx) = RelaySender::channel(2, control_tx);
+    let envelope = RelayEnvelope::Close {
+        reason: "reply".to_string(),
+        kernel_reload: false,
+    };
+    assert_eq!(deliver(&receiver, &envelope), Delivery::Sent);
+    assert_eq!(deliver(&receiver, &envelope), Delivery::Sent);
+    assert_eq!(deliver(&receiver, &envelope), Delivery::ReceiverBacklogged);
+    assert_eq!(deliver(&receiver, &envelope), Delivery::ReceiverBacklogged);
+
+    let Ok(Message::Close(Some(frame))) = control_rx.try_recv() else {
+        panic!("the backlogged receiver should be asked to close");
+    };
+    assert_eq!(u16::from(frame.code), 1013);
+    assert!(control_rx.try_recv().is_err(), "closed once, not per reply");
+    let stats = receiver.queue().stats();
+    assert_eq!(stats.dropped_replies, 2);
+    assert!(stats.backlog_closed);
+
+    drop(rx);
+    assert_eq!(deliver(&receiver, &envelope), Delivery::ReceiverGone);
 }

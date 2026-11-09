@@ -670,7 +670,7 @@ mod tests {
 
     #[test]
     fn display_daemon_send_fails_fast_when_queue_is_full() {
-        let (sender, _receiver) = mpsc::channel(1);
+        let (sender, _receiver) = RelaySender::detached_channel(1);
         sender
             .try_send(Message::Text("occupied".to_string().into()))
             .expect("test queue should accept first message");

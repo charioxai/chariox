@@ -206,10 +206,11 @@ pub(crate) async fn handle_connection(
         return Ok(());
     }
     let (writer, mut reader) = socket.split();
-    let (outgoing_tx, outgoing_rx) = mpsc::channel::<Message>(relay_outgoing_queue_capacity());
+    let (control_tx, control_rx) = mpsc::channel(8);
+    let (outgoing_tx, outgoing_rx) =
+        RelaySender::channel(relay_outgoing_queue_capacity(), control_tx.clone());
     let routes = registry.read().await.route_index();
     let (receipt_tx, receipt_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
-    let (control_tx, control_rx) = mpsc::channel(8);
     let usage_routes = routes.clone();
     let usage_sender = outgoing_tx.downgrade();
     let connection_meter = ConnectionMeter::new(meter);
@@ -220,11 +221,15 @@ pub(crate) async fn handle_connection(
         binary_events,
         receipt_rx,
         control_rx,
-        writer::WriterUsage::new(connection_meter.clone(), move |subscription_id: &str| {
-            usage_sender
-                .upgrade()
-                .and_then(|sender| usage_routes.scope_for_sender(subscription_id, &sender))
-        }),
+        writer::WriterUsage::new(
+            connection_meter.clone(),
+            move |subscription_id: &str| {
+                usage_sender
+                    .upgrade()
+                    .and_then(|sender| usage_routes.scope_for_sender(subscription_id, &sender))
+            },
+            outgoing_tx.queue(),
+        ),
     )));
     let mut registered_daemon_key: Option<DaemonKey> = None;
     let mut verified_identity: Option<VerifiedRelayIdentity> = None;
@@ -326,7 +331,11 @@ pub(crate) async fn handle_connection(
                     }
                 }, if writer_task.is_some() => {
                     writer_task = None;
-                    end_reason = writer_end;
+                    end_reason = if outgoing_tx.queue().backlog_closed() {
+                        "receiver_backlogged"
+                    } else {
+                        writer_end
+                    };
                     break;
                 }
             };
@@ -852,14 +861,14 @@ pub(crate) async fn handle_connection(
                                 );
                             }
                             if let Some((client_sender, client_request_id)) = client_target {
-                                send_envelope(
+                                deliver(
                                     &client_sender,
                                     &RelayEnvelope::ClientResponse {
                                         request_id: client_request_id,
                                         encrypted_response,
                                         error,
                                     },
-                                )?;
+                                );
                             }
                         }
                         RelayEnvelope::DaemonIncomingPeerResponse {
@@ -893,7 +902,7 @@ pub(crate) async fn handle_connection(
                             if let Some((daemon_sender, requester_request_id, target_daemon_id)) =
                                 daemon_target
                             {
-                                send_envelope(
+                                deliver(
                                     &daemon_sender,
                                     &RelayEnvelope::DaemonPeerResponse {
                                         request_id: requester_request_id,
@@ -901,7 +910,7 @@ pub(crate) async fn handle_connection(
                                         encrypted_response,
                                         error,
                                     },
-                                )?;
+                                );
                             }
                         }
                         RelayEnvelope::DaemonDisplayTunnelRegister { registration } => {
@@ -1108,12 +1117,14 @@ pub(crate) async fn handle_connection(
         }
     }
 
+    let queue_stats = outgoing_tx.queue().stats();
     let (released, daemon_subscription_cleanups, dropped_client_pending_requests) = remove_peer(
         &registry,
         &routes,
         peer_addr,
         registered_daemon_key.as_ref(),
         &relay_request_counter,
+        queue_stats,
     )
     .await;
     let refusal = connection_result
@@ -1142,6 +1153,8 @@ pub(crate) async fn handle_connection(
         || !released.is_empty()
         || daemon_subscription_cleanups > 0
         || dropped_client_pending_requests > 0
+        || queue_stats.backlog_closed
+        || queue_stats.dropped_replies > 0
     {
         relay_log(
             if connection_result.is_err() {
@@ -1164,6 +1177,9 @@ pub(crate) async fn handle_connection(
                 "peer_close_code": peer_close_code,
                 "token_refusal": refusal_report.flatten(),
                 "kernel_reload": kernel_reload,
+                "queued_bytes_high_water": queue_stats.queued_bytes_high_water,
+                "dropped_replies": queue_stats.dropped_replies,
+                "backlog_closed": queue_stats.backlog_closed,
             }),
         );
     }

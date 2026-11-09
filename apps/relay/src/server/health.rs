@@ -66,6 +66,9 @@ pub(crate) async fn handle_health_connection(
         "backpressure": {
             "target_queue_full_count": backpressure.target_queue_full_count,
             "slow_subscription_close_count": backpressure.slow_subscription_close_count,
+            "receiver_backlog_close_count": backpressure.receiver_backlog_close_count,
+            "dropped_reply_count": backpressure.dropped_reply_count,
+            "queued_bytes_high_water": backpressure.queued_bytes_high_water,
             "pressured_subscription_count": pressured_subscription_count,
             "subscription_queue_max_depth": subscription_queue_max_depth,
         },
