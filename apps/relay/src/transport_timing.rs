@@ -28,6 +28,12 @@ pub fn envelope_signature(envelope: &RelayEnvelope) -> Option<u64> {
         }
         | RelayEnvelope::DaemonRequest {
             encrypted_request, ..
+        }
+        | RelayEnvelope::DaemonPeerRequest {
+            encrypted_request, ..
+        }
+        | RelayEnvelope::DaemonIncomingPeerRequest {
+            encrypted_request, ..
         } => encrypted_request,
         RelayEnvelope::DaemonEvent {
             encrypted_event, ..
@@ -40,6 +46,14 @@ pub fn envelope_signature(envelope: &RelayEnvelope) -> Option<u64> {
             ..
         }
         | RelayEnvelope::ClientResponse {
+            encrypted_response: Some(payload),
+            ..
+        }
+        | RelayEnvelope::DaemonIncomingPeerResponse {
+            encrypted_response: Some(payload),
+            ..
+        }
+        | RelayEnvelope::DaemonPeerResponse {
             encrypted_response: Some(payload),
             ..
         } => payload,
