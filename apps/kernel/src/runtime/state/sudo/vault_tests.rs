@@ -1389,6 +1389,27 @@ async fn vopen_one_approved_payment_fills_every_card_field_while_the_turn_lasts(
         Some(24 * 60 * 60),
         "the card waits for the owner"
     );
+    // What every client of the Room reads: the shape the web's unified card and its fixtures use.
+    let listed = serde_json::to_value(&decision).unwrap();
+    assert_eq!(
+        (
+            &listed["agent_id"],
+            &listed["kind"],
+            &listed["level"],
+            &listed["title"]
+        ),
+        (
+            &json!(agent),
+            &json!("choice"),
+            &json!("critical"),
+            &json!("Use payment card")
+        )
+    );
+    assert_eq!(
+        listed["choices"],
+        json!([{"id": "allow", "label": "Allow once", "reply": "allow", "requires_passkey": true},
+            {"id": "cancel", "label": "Cancel", "reply": "cancel", "style": "danger"}])
+    );
     {
         assert_eq!(
             serde_json::to_value(decision.payment().unwrap()).unwrap(),
@@ -1504,7 +1525,6 @@ async fn vopen_a_card_pays_at_any_site_and_another_site_asks_again() {
         async move {
             f.state
                 .authorize_vault_use(
-                    "local",
                     &agent,
                     &credential,
                     &target,

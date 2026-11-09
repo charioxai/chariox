@@ -46,8 +46,8 @@ pub struct RuntimeInteractionChoice {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     style: Option<RuntimeInteractionChoiceStyle>,
     /// Answering with this choice needs the Chariox passkey (the vault
-    /// passphrase) or an open remember window. Only kernel-operation
-    /// decisions may set it.
+    /// passphrase) or an open remember window; a card payment always needs
+    /// the typed passkey. Only kernel decisions may set it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     requires_passkey: bool,
     /// A Vault unlock answer: this choice unlocks for this long, with the
