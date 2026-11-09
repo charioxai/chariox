@@ -17,6 +17,7 @@ use crate::error::DaemonError;
 
 mod agent_deletion_provenance;
 pub(crate) mod agent_lifecycle;
+pub(crate) mod agent_subtree_deletion;
 pub(crate) mod app_activation;
 pub(crate) mod app_active_release;
 pub(crate) mod app_automations;

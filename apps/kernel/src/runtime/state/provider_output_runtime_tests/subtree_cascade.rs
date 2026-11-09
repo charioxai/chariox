@@ -128,6 +128,30 @@ async fn a_crash_while_a_parent_is_torn_down_leaves_no_half_deleted_subtree() {
     );
 }
 
+/// The same crash after `destroy_agent` marked c1's subtree: the restarted
+/// kernel's first pass finishes it.
+#[tokio::test]
+async fn the_first_pass_after_a_crash_finishes_a_marked_subtree() {
+    let tree = tree("cascade-crash-marked").await;
+    tree.runtime
+        .mark_subtree_deleting(&tree.ids["c1"], USER)
+        .unwrap();
+    tree.runtime
+        .owned
+        .destroy_agent(&tree.ids["c1"], USER)
+        .unwrap();
+    assert_eq!(tree.runtime.end_orphaned_sub_agents().await, 1, "g");
+    let tree = restart(tree).await;
+    assert!(alive(&tree, "c1"), "c1's own record was never written");
+    assert_eq!(tree.runtime.end_orphaned_sub_agents().await, 1, "c1");
+    for name in ["c1", "g"] {
+        assert!(!alive(&tree, name), "{name} survived the restart");
+    }
+    for name in ["r", "c2"] {
+        assert!(alive(&tree, name), "{name} is not below c1");
+    }
+}
+
 #[tokio::test]
 async fn the_recovery_pass_leaves_a_live_tree_alone() {
     let tree = tree("cascade-live").await;
