@@ -532,9 +532,11 @@ impl KernelRuntimeState {
                 connection_class,
             )
         };
+        // A card payment is approved with the typed passkey every time, like access and sudo.
         let fresh = operation_id.starts_with("access-grant:")
             || operation_id.starts_with("access-extension:")
-            || operation_id.starts_with("sudo:");
+            || operation_id.starts_with("sudo:")
+            || super::vault_use::is_vault_payment_decision(&operation_id);
         if fresh
             && (connection_class != Some(KernelConnectionClass::Terminal)
                 || remember_minutes.is_some())
