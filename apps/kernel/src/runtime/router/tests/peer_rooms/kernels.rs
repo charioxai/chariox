@@ -344,6 +344,115 @@ fn a_room_agent_on_another_kernel_spawns_one_ordinary_clamped_peer_per_request()
     });
 }
 
+/// A spawn that names no alias: nothing but its request id tells two attempts apart.
+fn unnamed_spawn(request_id: &str, room: &str) -> RelayPeerRequest {
+    let mut request = spawn(request_id, room);
+    if let RelayPeerRequest::SpawnRoomPeer { alias, .. } = &mut request {
+        *alias = None;
+    }
+    request
+}
+
+fn spawned_agent(response: &RelayPeerResponse) -> String {
+    match response {
+        RelayPeerResponse::RoomPeerSpawned { agent, .. } => agent.agent_id.clone(),
+        other => panic!("spawned: {other:?}"),
+    }
+}
+
+impl Rooms {
+    async fn peer_room_agents(&self) -> usize {
+        self.app
+            .lock()
+            .await
+            .agents()
+            .get_session_agents(&self.peer_room)
+            .len()
+    }
+}
+
+#[test]
+fn a_peer_spawn_retried_while_the_first_attempt_runs_creates_one_agent() {
+    run_peer_test("peer-kernel-spawn-overlap", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let before = rooms.peer_room_agents().await;
+        let (first, retry) = tokio::join!(
+            rooms.request_from_kernel_a(unnamed_spawn("spawn-overlap", &rooms.peer_room)),
+            rooms.request_from_kernel_a(unnamed_spawn("spawn-overlap", &rooms.peer_room)),
+        );
+        assert_eq!(spawned_agent(&first), spawned_agent(&retry));
+        assert_eq!(
+            rooms.peer_room_agents().await,
+            before + 1,
+            "two overlapping attempts of one request create one agent"
+        );
+        let inbox = rooms.inbox(&rooms.peer_room, &spawned_agent(&first)).await;
+        assert_eq!(inbox.len(), 1, "the task arrives once");
+    });
+}
+
+#[test]
+fn a_peer_spawn_retried_after_its_answer_was_lost_to_a_restart_finds_its_agent() {
+    run_peer_test("peer-kernel-spawn-restart", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let before = rooms.peer_room_agents().await;
+        // The first attempt created the agent; the kernel stopped before it kept the answer.
+        let spawn = crate::local::LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+            no_subscribe: true,
+            session_id: rooms.peer_room.clone(),
+            alias: None,
+            provider: Some("dev-stub".into()),
+            account_profile: None,
+            model: None,
+            effort: None,
+            execution_mode: Some(AgentExecutionMode::Build),
+            permission_level: Some(AgentPermissionLevel::Required),
+            worktree_id: None,
+            kernel_ref: None,
+            slice_ref: None,
+            worktree_placement: None,
+            metaagent: false,
+        });
+        let source = crate::runtime::command::KernelCommandSource::DaemonBackground;
+        let caller = crate::runtime::command::KernelCaller {
+            user_id: Some(rooms.peer.owner_user_id().into()),
+            ..crate::runtime::command::KernelCaller::for_source(&source)
+        };
+        let key = format!("peer-spawn-{KERNEL_A}-spawn-restart");
+        let mut command = KernelCommand::from_local_request_with_caller(
+            key.clone(),
+            source,
+            caller,
+            None,
+            None,
+            &spawn,
+        );
+        command.idempotency_key = Some(key);
+        let Ok(crate::local::LocalDaemonResponse::AgentSpawned { agent: first, .. }) =
+            rooms.router.dispatch(command, spawn).await
+        else {
+            panic!("the first attempt creates the agent")
+        };
+        let retry = rooms
+            .request_from_kernel_a(unnamed_spawn("spawn-restart", &rooms.peer_room))
+            .await;
+        assert!(
+            matches!(
+                &retry,
+                RelayPeerResponse::RoomPeerSpawned {
+                    duplicate: true,
+                    ..
+                }
+            ),
+            "{retry:?}"
+        );
+        assert_eq!(spawned_agent(&retry), first.id());
+        assert_eq!(rooms.peer_room_agents().await, before + 1);
+        let inbox = rooms.inbox(&rooms.peer_room, first.id()).await;
+        assert_eq!(inbox.len(), 1, "the task arrives once");
+    });
+}
+
 #[test]
 fn a_peer_spawn_from_another_kernel_into_a_room_it_cannot_address_is_refused() {
     run_peer_test("peer-kernel-spawn-refused", || async {
