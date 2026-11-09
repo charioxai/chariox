@@ -353,6 +353,15 @@ pub const PROVIDER_USAGE_STALE_AFTER_MS: u64 = 24 * 60 * 60 * 1000;
 pub(crate) const PROVIDER_USAGE_REFRESH_RETRY_AFTER_MS: u64 = 5 * 60 * 1_000;
 
 impl ProviderAccountUsageMeter {
+    /// A window nobody has observed for longer than the stale horizon, whose
+    /// reset has passed, is one the provider stopped reporting (Claude has no
+    /// 5-hour window any more): it is dropped, not shown as a current meter.
+    pub(crate) fn is_retired(&self, now_ms: u64) -> bool {
+        self.resets_at_ms
+            .is_some_and(|resets_at_ms| resets_at_ms <= now_ms)
+            && now_ms.saturating_sub(self.observed_at_ms) > PROVIDER_USAGE_STALE_AFTER_MS
+    }
+
     /// A window whose reset time has passed no longer describes the account:
     /// the percent it carried belongs to the previous window. The meter stays
     /// listed, with its observation time, as "not measured yet" until a new
@@ -406,6 +415,18 @@ impl ProviderAccountUsageSnapshot {
     /// Snapshots without meters (including `provider_not_observed`) are honest
     /// missing data and stay untouched; error states are never masked.
     pub fn reconciled_freshness(mut self, now_ms: u64) -> Self {
+        let had_meters = !self.meters.is_empty();
+        self.meters.retain(|meter| !meter.is_retired(now_ms));
+        if had_meters
+            && self.meters.is_empty()
+            && matches!(
+                self.availability,
+                ProviderAccountUsageAvailability::Available
+                    | ProviderAccountUsageAvailability::Partial
+            )
+        {
+            self.availability = ProviderAccountUsageAvailability::Stale;
+        }
         for meter in &mut self.meters {
             meter.expire_measurement(now_ms);
         }
@@ -1511,6 +1532,8 @@ impl ProviderAccountProfileRegistry {
                     merged.push(meter);
                 }
             }
+            let now_ms = crate::session::unix_epoch_ms();
+            merged.retain(|meter| !meter.is_retired(now_ms));
             usage.meters = merged;
         }
         profile.public.usage = usage;
@@ -6798,7 +6821,10 @@ mod tests {
             .get("owner-a", "claude", &profile.profile_id)
             .unwrap()
             .usage;
-        assert_eq!(usage.availability, ProviderAccountUsageAvailability::Available);
+        assert_eq!(
+            usage.availability,
+            ProviderAccountUsageAvailability::Available
+        );
         assert_eq!(usage.meters.len(), 1);
         assert_eq!(usage.meters[0].used_percent, Some(19.0));
         assert_eq!(usage.meters[0].observed_at_ms, now_ms);
