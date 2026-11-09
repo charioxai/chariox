@@ -33,7 +33,8 @@ pub enum VaultSecretStatus {
 }
 
 /// MP-08 / MP-09 / MP-10 / MP-11: what the owner approves for one payment-card fill.
-/// `origin`, the entry and the card come from the kernel; `claim` is the asking agent's.
+/// `origin` (the observed page), the entry and the card come from the kernel; `agent_claim`
+/// is what the asking agent says the payment is, shown as its claim.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VaultPaymentApproval {
@@ -44,7 +45,7 @@ pub struct VaultPaymentApproval {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub card_brand: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claim: Option<VaultPaymentClaim>,
+    pub agent_claim: Option<VaultPaymentClaim>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_by_agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -55,33 +56,28 @@ pub struct VaultPaymentApproval {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VaultPaymentClaim {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub merchant: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub amount: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub currency: Option<String>,
+    pub merchant: String,
+    pub amount: String,
+    pub currency: String,
 }
 
 impl VaultPaymentClaim {
     pub(crate) fn validate(&self) -> Result<(), crate::error::DaemonError> {
-        let merchant = self.merchant.as_deref().is_none_or(|merchant| {
-            !merchant.trim().is_empty()
-                && merchant.chars().count() <= 100
-                && !merchant.chars().any(char::is_control)
-        });
-        let amount = self.amount.as_deref().is_none_or(|amount| {
-            let (whole, cents) = amount.split_once('.').unwrap_or((amount, "0"));
-            (1..=12).contains(&whole.len())
-                && (1..=4).contains(&cents.len())
-                && whole
-                    .bytes()
-                    .chain(cents.bytes())
-                    .all(|b| b.is_ascii_digit())
-        });
-        let currency = self.currency.as_deref().is_none_or(|currency| {
-            currency.len() == 3 && currency.bytes().all(|b| b.is_ascii_uppercase())
-        });
+        let merchant = !self.merchant.trim().is_empty()
+            && self.merchant.chars().count() <= 100
+            && !self.merchant.chars().any(char::is_control);
+        let (whole, cents) = self
+            .amount
+            .split_once('.')
+            .unwrap_or((self.amount.as_str(), "0"));
+        let amount = (1..=12).contains(&whole.len())
+            && (1..=4).contains(&cents.len())
+            && whole
+                .bytes()
+                .chain(cents.bytes())
+                .all(|b| b.is_ascii_digit());
+        let currency =
+            self.currency.len() == 3 && self.currency.bytes().all(|b| b.is_ascii_uppercase());
         if merchant && amount && currency {
             Ok(())
         } else {

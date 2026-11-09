@@ -22,12 +22,28 @@ pub enum VaultValueKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VaultUseTarget {
-    Site { origin: String },
-    CommandEnvironment { name: String, origin: String },
-    CommandStdin { origin: String },
-    File { path: String },
-    Totp { origin: String },
-    WebAuthn { origin: String, rp_id: String },
+    Site {
+        origin: String,
+    },
+    CommandEnvironment {
+        name: String,
+        origin: String,
+    },
+    CommandStdin {
+        origin: String,
+    },
+    File {
+        path: String,
+    },
+    Totp {
+        origin: String,
+    },
+    WebAuthn {
+        origin: String,
+        rp_id: String,
+    },
+    /// A saved payment card: usable at any observed site, each payment approved by the owner.
+    AnySite,
 }
 
 fn invalid() -> DaemonError {
@@ -62,8 +78,11 @@ impl VaultUseTarget {
         })
     }
 
+    /// Checks one exact use. Any site is never a requested or agent-declared use: only the
+    /// owner's payment card binding names it (`VaultUseBinding::validate`).
     pub(crate) fn validate(&self) -> Result<(), DaemonError> {
         let origin = match self {
+            Self::AnySite => return Err(invalid()),
             Self::Site { origin } | Self::CommandStdin { origin } | Self::Totp { origin } => origin,
             Self::CommandEnvironment { name, origin } => {
                 let mut chars = name.chars();
@@ -122,10 +141,23 @@ impl VaultUseTarget {
 }
 
 impl VaultUseBinding {
+    /// A payment card is saved for any site; every other entry for one exact use.
+    pub(crate) fn validate(&self) -> Result<(), DaemonError> {
+        match (&self.target, self.value_kind) {
+            (VaultUseTarget::AnySite, VaultValueKind::PaymentCard) => Ok(()),
+            (VaultUseTarget::AnySite, VaultValueKind::Secret) => Err(invalid()),
+            (target, _) => target.validate(),
+        }
+    }
+
     pub(crate) fn require(&self, target: &VaultUseTarget) -> Result<(), DaemonError> {
-        self.target.validate()?;
+        self.validate()?;
         target.validate()?;
-        if &self.target != target {
+        let allowed = match &self.target {
+            VaultUseTarget::AnySite => matches!(target, VaultUseTarget::Site { .. }),
+            bound => bound == target,
+        };
+        if !allowed {
             return Err(DaemonError::LocalTransport {
                 operation: "vault_use_binding",
                 message: "this Vault entry was created for a different use; create a separate entry for this destination".into(),
@@ -179,6 +211,43 @@ mod tests {
                 assert_eq!(binding.require(requested).is_ok(), i == j);
             }
         }
+    }
+
+    #[test]
+    fn a_payment_card_binding_takes_any_site_and_nothing_else() {
+        let card = VaultUseBinding {
+            target: VaultUseTarget::AnySite,
+            value_kind: VaultValueKind::PaymentCard,
+        };
+        assert!(card.validate().is_ok());
+        for site in ["https://shop.example", "https://other.example:8443"] {
+            assert!(card.require(&VaultUseTarget::site(site).unwrap()).is_ok());
+        }
+        for other in [
+            VaultUseTarget::AnySite,
+            VaultUseTarget::CommandStdin {
+                origin: "https://shop.example".into(),
+            },
+            VaultUseTarget::Totp {
+                origin: "https://shop.example".into(),
+            },
+            VaultUseTarget::File {
+                path: "/work/card".into(),
+            },
+        ] {
+            assert!(card.require(&other).is_err());
+        }
+        assert!(VaultUseTarget::AnySite.validate().is_err());
+        assert!(VaultUseBinding {
+            target: VaultUseTarget::AnySite,
+            value_kind: VaultValueKind::Secret,
+        }
+        .validate()
+        .is_err());
+        assert_eq!(
+            serde_json::to_value(&card).unwrap(),
+            serde_json::json!({"target": {"kind": "any_site"}, "value_kind": "payment_card"})
+        );
     }
 
     #[test]

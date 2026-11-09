@@ -45,7 +45,7 @@ fn owner_credential(
     if name.trim().is_empty() || name.len() > 200 {
         return Err(failure("Enter a name up to 200 characters."));
     }
-    use_binding.target.validate()?;
+    use_binding.validate()?;
     let created_by_kind = match kind {
         "Password" => "owner_password",
         "API key" => "owner_api_key",
@@ -59,7 +59,13 @@ fn owner_credential(
         return Err(failure("Choose the matching kind for this use."));
     }
     let (allowed_hosts, allowed_uses, injection) = match (&use_binding.target, kind) {
-        (VaultUseTarget::Site { origin }, "Password" | "API key" | "Payment card") => (
+        // One card serves every site; each payment asks the owner.
+        (VaultUseTarget::AnySite, "Payment card") => (
+            vec![],
+            vec![UserCredentialUse::Browser],
+            UserCredentialInjectionConfig::Browser,
+        ),
+        (VaultUseTarget::Site { origin }, "Password" | "API key") => (
             vec![origin.clone()],
             vec![UserCredentialUse::Browser],
             UserCredentialInjectionConfig::Browser,

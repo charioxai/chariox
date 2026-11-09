@@ -1,13 +1,11 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: ordinary agent Vault operations.
 //! Authentication identifies the actor; the stored use identifies the destination.
 use super::*;
-use crate::config::{
-    PaymentCardField, UserCredentialConfig, VaultUseBinding, VaultUseTarget, VaultValueKind,
-};
+use crate::config::{PaymentCardField, UserCredentialConfig, VaultUseTarget, VaultValueKind};
 use crate::runtime::kernel_access::error;
 
-/// How long the fields of one approved card payment may be filled.
-const VAULT_PAYMENT_FILL_WINDOW: Duration = Duration::from_secs(120);
+/// The longest an approved card payment lasts; the agent's turn ending ends it sooner.
+const VAULT_PAYMENT_APPROVAL_WINDOW: Duration = Duration::from_secs(15 * 60);
 
 /// Who asks for a Vault use and, for a payment card, which field and payment.
 #[derive(Clone, Copy, Default)]
@@ -22,8 +20,11 @@ pub(super) struct VaultUseAsk<'a> {
 pub(super) struct VaultPaymentGrant {
     actor: String,
     credential_id: String,
-    binding: VaultUseBinding,
-    filled: Vec<PaymentCardField>,
+    /// The site the kernel observed when the owner approved.
+    target: VaultUseTarget,
+    claim: crate::local::VaultPaymentClaim,
+    /// The agent's turn the approval belongs to.
+    prompt_id: String,
     pub(super) expires_at: std::time::Instant,
 }
 
@@ -37,6 +38,7 @@ fn vault_use_destination(target: &VaultUseTarget) -> String {
             format!("{name} for {origin}")
         }
         VaultUseTarget::File { path } => path.clone(),
+        VaultUseTarget::AnySite => "any site".into(),
     }
 }
 
@@ -216,7 +218,8 @@ impl KernelRuntimeState {
     }
 
     /// No consent for ordinary values. A card gets one owner decision per payment: Allow once
-    /// lets the same agent fill each field of that card at that destination once, briefly.
+    /// lets the same agent fill every field of that card for that payment (observed site and
+    /// claimed merchant, amount and currency) until its turn ends or 15 minutes pass.
     /// Call before reading a value, then recheck the binding under the use barrier.
     pub(super) async fn authorize_vault_use(
         &self,
@@ -244,10 +247,11 @@ impl KernelRuntimeState {
             .as_ref()
             .and_then(|m| m.payment_card.as_ref());
         if card.is_some() != ask.card_field.is_some()
+            || (card.is_some() && ask.claim.is_none())
             || (binding.value_kind != VaultValueKind::PaymentCard && ask.claim.is_some())
         {
             return Err(error(if card.is_some() {
-                "fill a saved card one checkout field at a time: name it with card_field"
+                "fill a saved card one checkout field at a time: name it with card_field and describe the payment with payment {merchant, amount, currency}"
             } else {
                 "card_field and payment are only for payment cards"
             }));
@@ -260,19 +264,29 @@ impl KernelRuntimeState {
             binding.clone(),
             ask.card_field,
         );
+        let turn = card
+            .and(ask.session_id)
+            .and_then(|session| self.live_vault_turn(session, actor));
         if binding.value_kind != VaultValueKind::PaymentCard
-            || self.take_vault_payment_grant(actor, credential, binding, ask.card_field)
+            || self.vault_payment_approved(actor, credential, target, ask.claim, turn.as_deref())
         {
             return Ok(approval);
         }
         let id = format!("vault-card-{:016x}", rand::random::<u64>());
         let destination = vault_use_destination(target);
         let label = credential.description.as_deref().unwrap_or(&credential.id);
+        let message = match ask.claim {
+            Some(claim) => format!(
+                "Allow {label} to be used at {destination}? The agent says: {} {} to {}.",
+                claim.amount, claim.currency, claim.merchant
+            ),
+            None => format!("Allow {label} to be used at {destination}?"),
+        };
         let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
             &id,
             &id,
             "Use payment card",
-            format!("Allow {label} to be used at {destination}?"),
+            message,
             vec![
                 crate::session::RuntimeInteractionChoice::new("allow", "Allow once", "allow", None)
                     .requiring_passkey(),
@@ -285,7 +299,7 @@ impl KernelRuntimeState {
             entry: label.to_owned(),
             card_last4: card.map(|card| card.last4.clone()),
             card_brand: card.and_then(|card| card.brand.clone()),
-            claim: ask.claim.cloned(),
+            agent_claim: ask.claim.cloned(),
             requested_by_agent_id: ask.agent_id.map(str::to_owned),
             session_id: ask.session_id.map(str::to_owned),
         });
@@ -303,15 +317,24 @@ impl KernelRuntimeState {
         if resolution.choice_id.as_deref() != Some("allow") {
             return Err(error("payment card use was not approved"));
         }
-        if let Some(field) = ask.card_field {
-            let mut grants = self.vault_payment_grants();
-            grants.push(VaultPaymentGrant {
-                actor: actor.to_owned(),
-                credential_id: credential.id.clone(),
-                binding: binding.clone(),
-                filled: vec![field],
-                expires_at: std::time::Instant::now() + VAULT_PAYMENT_FILL_WINDOW,
-            });
+        // A turn that ended during the decision keeps nothing for later fills.
+        if let (Some(claim), Some(prompt_id)) = (ask.claim, turn) {
+            if card.is_some()
+                && ask
+                    .session_id
+                    .and_then(|session| self.live_vault_turn(session, actor))
+                    .as_ref()
+                    == Some(&prompt_id)
+            {
+                self.vault_payment_grants().push(VaultPaymentGrant {
+                    actor: actor.to_owned(),
+                    credential_id: credential.id.clone(),
+                    target: target.clone(),
+                    claim: claim.clone(),
+                    prompt_id,
+                    expires_at: std::time::Instant::now() + VAULT_PAYMENT_APPROVAL_WINDOW,
+                });
+            }
         }
         Ok(approval)
     }
@@ -327,27 +350,43 @@ impl KernelRuntimeState {
         grants
     }
 
-    /// Uses a field of a live approved payment by the same agent, at most once.
-    fn take_vault_payment_grant(
+    /// The agent's running turn, if it has one that has not ended.
+    fn live_vault_turn(&self, session_id: &str, agent_id: &str) -> Option<String> {
+        let session = self.owned.session_store.get_session(session_id).ok()?;
+        self.owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .filter(|prompt| {
+                !matches!(
+                    prompt.status(),
+                    crate::session::PromptStatus::Cancelling
+                        | crate::session::PromptStatus::Cancelled
+                        | crate::session::PromptStatus::Completed
+                )
+            })
+            .map(|prompt| prompt.id().to_owned())
+    }
+
+    /// Whether the owner approved this payment for this agent in its current turn: the same
+    /// card, observed site and claimed merchant, amount and currency, not yet expired.
+    fn vault_payment_approved(
         &self,
         actor: &str,
         credential: &UserCredentialConfig,
-        binding: &VaultUseBinding,
-        field: Option<PaymentCardField>,
+        target: &VaultUseTarget,
+        claim: Option<&crate::local::VaultPaymentClaim>,
+        turn: Option<&str>,
     ) -> bool {
-        let Some(field) = field else {
+        let (Some(claim), Some(turn)) = (claim, turn) else {
             return false;
         };
-        self.vault_payment_grants()
-            .iter_mut()
-            .find(|grant| {
-                grant.actor == actor
-                    && grant.credential_id == credential.id
-                    && &grant.binding == binding
-                    && !grant.filled.contains(&field)
-            })
-            .map(|grant| grant.filled.push(field))
-            .is_some()
+        self.vault_payment_grants().iter().any(|grant| {
+            grant.actor == actor
+                && grant.credential_id == credential.id
+                && &grant.target == target
+                && &grant.claim == claim
+                && grant.prompt_id == turn
+        })
     }
 
     /// A replaced or deleted card ends the payments approved for it.
