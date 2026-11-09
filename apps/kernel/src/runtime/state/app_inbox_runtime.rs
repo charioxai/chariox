@@ -9,7 +9,8 @@ use super::KernelRuntimeState;
 use crate::durable_state::app_active_release::ActiveReleaseError;
 use crate::durable_state::app_inbox::{AppInboxOperation, AppInboxOutcome};
 use crate::local::{
-    AppInboxRouteSummary, AppRequestErrorCode, LocalDaemonRequest, LocalDaemonResponse,
+    AppInboxRouteSummary, AppRequestErrorCode, CreateAppInboxRouteRequest, LocalDaemonRequest,
+    LocalDaemonResponse,
 };
 use chariox_app_runtime::app_inbox::{
     Accepted, InboxCounts, InboxError, InboxItem, InboxRoute, InboxSource, IncomingCatalog,
@@ -18,6 +19,14 @@ use serde_json::Value;
 
 #[cfg(test)]
 mod tests;
+
+/// Where a generator-fed route's payload contract comes from.
+pub(super) enum RouteContract {
+    /// The generator's current catalog entry, checked on admission.
+    Catalog,
+    /// The already admitted source of the owner route a copy is made from.
+    Inherited(InboxSource),
+}
 
 impl KernelRuntimeState {
     pub(super) async fn app_inbox_request(
@@ -28,59 +37,7 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, AppRequestErrorCode> {
         match request {
             LocalDaemonRequest::CreateAppInboxRoute(request) => {
-                let (_, catalog) = self.incoming_catalog(&owner, &installation).await?;
-                if catalog.version(&request.event_name).is_none() {
-                    return Err(AppRequestErrorCode::InvalidRequest);
-                }
-                let pinned_source = if let Some(connection) = &request.connection {
-                    let detail = crate::runtime::event_catalog_control::event_generator_detail(
-                        &self.owned.config_projection,
-                        &connection.generator_id,
-                        None,
-                    )
-                    .await
-                    .map_err(|_| AppRequestErrorCode::InvalidRequest)?;
-                    let event = detail
-                        .events
-                        .iter()
-                        .find(|event| {
-                            event.event_type == request.source_event_type
-                                && event.version == request.source_event_version
-                        })
-                        .ok_or(AppRequestErrorCode::InvalidRequest)?;
-                    chariox_event_protocol::validate_payload_definition(
-                        event.payload_schema.as_ref(),
-                        &event.examples,
-                    )
-                    .map_err(|_| AppRequestErrorCode::InvalidRequest)?;
-                    Some((
-                        event.payload_schema.as_ref().map(Value::to_string),
-                        detail.summary.manifest_digest,
-                    ))
-                } else {
-                    None
-                };
-                let route = InboxRoute {
-                    route_id: request.route_id,
-                    owner_id: owner.clone(),
-                    installation_id: installation.clone(),
-                    event_name: request.event_name,
-                    source_event_type: request.source_event_type,
-                    source_event_version: request.source_event_version,
-                    active: true,
-                    source: request.connection.map(|connection| InboxSource {
-                        generator_id: connection.generator_id,
-                        connection_id: connection.connection_id,
-                        connection_scope: connection.connection_scope,
-                        filter_json: connection.filter.to_string(),
-                        payload_schema_json: pinned_source
-                            .as_ref()
-                            .and_then(|(schema, _)| schema.clone()),
-                        manifest_digest: pinned_source.as_ref().map(|(_, digest)| digest.clone()),
-                    }),
-                };
-                let now_ms = crate::session::unix_epoch_ms();
-                self.inbox(AppInboxOperation::CreateRoute { route, now_ms })
+                self.create_app_inbox_route(&owner, &installation, request, RouteContract::Catalog)
                     .await?;
             }
             LocalDaemonRequest::RemoveAppInboxRoute(request) => {
@@ -124,6 +81,89 @@ impl KernelRuntimeState {
             installation_id: installation,
             routes: routes.into_iter().map(summary).collect(),
         })
+    }
+
+    /// Admits one route. A generator-fed route pins the payload schema and
+    /// publisher manifest it was admitted against; a deployment copy keeps the
+    /// contract of the owner's route it was made from, so the copy never
+    /// re-resolves the publisher.
+    pub(super) async fn create_app_inbox_route(
+        &self,
+        owner: &str,
+        installation: &str,
+        request: CreateAppInboxRouteRequest,
+        contract: RouteContract,
+    ) -> Result<(), AppRequestErrorCode> {
+        let (_, catalog) = self.incoming_catalog(owner, installation).await?;
+        if catalog.version(&request.event_name).is_none() {
+            return Err(AppRequestErrorCode::InvalidRequest);
+        }
+        let (payload_schema_json, manifest_digest) = match (&request.connection, contract) {
+            (None, _) => (None, None),
+            (Some(connection), RouteContract::Catalog) => {
+                self.catalog_source_contract(
+                    &connection.generator_id,
+                    &request.source_event_type,
+                    request.source_event_version,
+                )
+                .await?
+            }
+            (Some(_), RouteContract::Inherited(source)) => {
+                (source.payload_schema_json, source.manifest_digest)
+            }
+        };
+        let route = InboxRoute {
+            route_id: request.route_id,
+            owner_id: owner.to_owned(),
+            installation_id: installation.to_owned(),
+            event_name: request.event_name,
+            source_event_type: request.source_event_type,
+            source_event_version: request.source_event_version,
+            active: true,
+            source: request.connection.map(|connection| InboxSource {
+                generator_id: connection.generator_id,
+                connection_id: connection.connection_id,
+                connection_scope: connection.connection_scope,
+                filter_json: connection.filter.to_string(),
+                payload_schema_json,
+                manifest_digest,
+            }),
+        };
+        let now_ms = crate::session::unix_epoch_ms();
+        self.inbox(AppInboxOperation::CreateRoute { route, now_ms })
+            .await
+            .map(|_| ())
+    }
+
+    /// The payload schema and manifest digest the generator currently
+    /// publishes for one event version, after checking its examples.
+    async fn catalog_source_contract(
+        &self,
+        generator_id: &str,
+        event_type: &str,
+        event_version: u32,
+    ) -> Result<(Option<String>, Option<String>), AppRequestErrorCode> {
+        let detail = crate::runtime::event_catalog_control::event_generator_detail(
+            &self.owned.config_projection,
+            generator_id,
+            None,
+        )
+        .await
+        .map_err(|_| AppRequestErrorCode::InvalidRequest)?;
+        let event = detail
+            .events
+            .iter()
+            .find(|event| event.event_type == event_type && event.version == event_version)
+            .ok_or(AppRequestErrorCode::InvalidRequest)?;
+        chariox_event_protocol::validate_payload_definition(
+            event.payload_schema.as_ref(),
+            &event.examples,
+        )
+        .map_err(|_| AppRequestErrorCode::InvalidRequest)?;
+        Ok((
+            event.payload_schema.as_ref().map(Value::to_string),
+            Some(detail.summary.manifest_digest),
+        ))
     }
 
     /// Records one source occurrence after validating it against the active
