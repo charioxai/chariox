@@ -10,6 +10,8 @@ use crate::durable_state::agent_lifecycle::{
 mod cancel;
 #[path = "sweep_stall_tests/goal_check.rs"]
 mod goal_check;
+#[path = "sweep_stall_tests/peer_follow.rs"]
+mod peer_follow;
 #[path = "sweep_stall_tests/pump.rs"]
 mod pump;
 #[path = "sweep_stall_tests/whole_sweep.rs"]
