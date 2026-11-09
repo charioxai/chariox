@@ -3186,3 +3186,71 @@ async fn vopen_a_payment_card_is_its_room_owners_passkey_popup_while_it_waits() 
         .unwrap();
     assert_eq!(inserted(&login).as_deref(), Some(CARD_NUMBER));
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: what a payment card approves lives only in kernel memory. A card
+// still waiting when the kernel restarts is withdrawn, so no Allow can approve nothing, and the
+// agent's next fill asks again on one new card.
+#[tokio::test]
+async fn vopen_a_payment_card_waiting_at_a_restart_is_withdrawn_and_asked_again() {
+    use super::super::wake_driver::{Recovery, WakeDriver};
+    use crate::local::KernelConnectionClass::Terminal;
+    crate::test_support::isolated_env_test!();
+    let login = card_room(SITE).await;
+    let f = &login.f;
+    unlock(f);
+    let _turn = running(f);
+    saved_card(f);
+    asking_task(f);
+    assert!(call(f, PASTE, card_fill("number", Some(&payment())))
+        .await
+        .is_err());
+    let decision = card_decision(f).await;
+    let wake = f
+        .state
+        .owned
+        .durable_state_store
+        .agent_wake(decision.id())
+        .unwrap()
+        .unwrap();
+    // The restarted kernel holds no responder and no payment ask; the wake ledger and card remain.
+    f.state
+        .owned
+        .pending_interactions
+        .write()
+        .remove(decision.id());
+    f.state.owned.vault_payment_asks.lock().unwrap().clear();
+    let driver = f
+        .state
+        .owned
+        .agent_wakes
+        .drivers
+        .get("interaction")
+        .unwrap();
+    let Recovery::Lost(reason) = driver.recover(&wake) else {
+        panic!("a payment card reattached without what it approves");
+    };
+    assert!(reason.contains("fill the card again"), "{reason}");
+    let now = crate::session::unix_epoch_ms();
+    f.state
+        .report_lost_wake(&wake, now, &format!("the kernel restarted: {reason}"))
+        .unwrap();
+    f.state.tick_interaction_wakes(now).unwrap();
+    assert!(!card_pending(f));
+    assert!(allow_card(f, decision.id(), Some(PASSKEY), None, Terminal)
+        .await
+        .is_err());
+    assert!(inserted(&login).is_none());
+    // Filling again asks again, on one new card.
+    assert!(call(f, PASTE, card_fill("number", Some(&payment())))
+        .await
+        .is_err());
+    let again = card_decision(f).await;
+    assert_ne!(again.id(), decision.id());
+    allow_card(f, again.id(), Some(PASSKEY), None, Terminal)
+        .await
+        .unwrap();
+    call(f, PASTE, card_fill("number", Some(&payment())))
+        .await
+        .unwrap();
+    assert_eq!(inserted(&login).as_deref(), Some(CARD_NUMBER));
+}
