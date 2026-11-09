@@ -1098,7 +1098,8 @@ impl DaemonApp {
                 .as_ref()
                 .and_then(|config| config.relay_token.clone()),
             relay_peer_protocol_version: Some(relay_peer_protocol_version),
-            worker_worktree_id: worktree_id,
+            // The agent runs in the checkout the worker created, not the folder it started from.
+            worker_worktree_id: leased_agent.created_worktree_id.or(worktree_id),
         };
         let bound_result = if matches!(context, RemoteBindingContext::Recreated) {
             self.commit_recreated_remote_execution(agent, remote_execution)
