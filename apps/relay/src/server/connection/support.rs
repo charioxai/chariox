@@ -12,6 +12,7 @@ use crate::auth::{
     VerifiedRelayIdentity,
 };
 use crate::meter::{ConnectionMeter, Direction, CONTROL_SCOPE};
+use crate::outgoing::SendRefused;
 use crate::protocol::{
     canonical_peer_daemon_id, ClientTarget, DaemonRegistration, EncryptedRelayPayload,
     RelayCallerIdentity, RelayConnectionRole, RelayEnvelope, RelayError,
@@ -1366,6 +1367,31 @@ pub(super) fn send_envelope(
     sender
         .try_send(Message::Text(payload.into()))
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::BrokenPipe, error.to_string()))
+}
+
+/// What became of a message handed to another connection's queue.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Delivery {
+    Sent,
+    /// The receiver is too far behind. The message was dropped and the receiver is being
+    /// told to reconnect; the sender's own connection is not affected.
+    ReceiverBacklogged,
+    ReceiverGone,
+}
+
+/// Hands `envelope` to `receiver` on behalf of a different connection (its sender). A
+/// receiver's backlog or departure is reported here and never ends the sender's connection.
+pub(super) fn deliver(receiver: &RelaySender, envelope: &RelayEnvelope) -> Delivery {
+    let payload = serde_json::to_string(envelope).expect("a relay envelope is always valid JSON");
+    match receiver.try_send(Message::Text(payload.into())) {
+        Ok(()) => Delivery::Sent,
+        Err(SendRefused::Backlogged) => {
+            receiver.record_dropped_reply();
+            receiver.close_backlogged();
+            Delivery::ReceiverBacklogged
+        }
+        Err(SendRefused::Gone) => Delivery::ReceiverGone,
+    }
 }
 
 pub(super) fn send_daemon_subscription_cleanup(

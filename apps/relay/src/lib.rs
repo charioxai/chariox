@@ -11,6 +11,7 @@ pub mod stun;
 pub mod transport_timing;
 pub mod usage_report;
 
+mod outgoing;
 mod registry;
 
 pub use auth::{
