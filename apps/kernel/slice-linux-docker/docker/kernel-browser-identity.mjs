@@ -14,7 +14,7 @@ export function browserMajor(versionOutput) {
 }
 
 export async function readBrowserMajor(binary, environment, run = promisify(execFile)) {
-  try { return browserMajor((await run(binary, ['--version'], { env: environment, timeout: 5000 })).stdout); }
+  try { return browserMajor((await run(binary, ['--version'], { env: environment, timeout: 15000 })).stdout); }
   catch (error) { if (/cannot read the browser version/.test(error.message)) throw error; throw new Error('MP-08: cannot run the browser to read its version'); }
 }
 
