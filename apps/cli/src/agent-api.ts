@@ -78,11 +78,18 @@ export async function cycleAgentFocus(
   return payload.agent
 }
 
+/** The new agent, and what the kernel applied to it beyond its record: absent when it has none. */
+export type SpawnedAgent = {
+  agent: AgentInstance
+  deadline_ms?: number | null
+  branch?: string | null
+}
+
 export async function spawnAgent(
   client: LocalIpcClient,
   sessionId: string,
   options: SpawnAgentOptions,
-): Promise<AgentInstance> {
+): Promise<SpawnedAgent> {
   const response = await client.send<Record<string, unknown>>(
     spawnAgentRequest(
       sessionId,
@@ -99,8 +106,7 @@ export async function spawnAgent(
       options.accountProfile,
     ),
   )
-  const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned")
-  return payload.agent
+  return expectVariant<SpawnedAgent>(response, "AgentSpawned")
 }
 
 export async function spawnAgents(

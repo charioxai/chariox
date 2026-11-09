@@ -16,12 +16,12 @@ import {
   remoteKernelReadinessForProvider,
 } from "@chariox/kernel-client/shell-remote-format"
 
+import type { SpawnedAgent } from "./agent-api.js"
 import { formatAgentLabel } from "./agent-label.js"
 
 type FooterTone = "info" | "error"
 
-type AgentSpawnPayload = {
-  agent: AgentInstance
+type AgentSpawnPayload = SpawnedAgent & {
   session: RuntimeSession
 }
 
@@ -216,6 +216,8 @@ export async function handleAgentSpawnCommand(
       sliceRef,
     })
     deps.flashFooter(formatSpawnedAgentFooter(payload.agent, {
+      deadlineMs: payload.deadline_ms,
+      branch: payload.branch,
       requestedAlias: alias,
       requestedMachineRef: parsed.machineRef,
       resolvedWorktreeId: worktreeId,
@@ -381,6 +383,8 @@ function parseSpawnCount(value: string | undefined): number | null {
 function formatSpawnedAgentFooter(
   agent: AgentInstance,
   options: {
+    deadlineMs?: number | null | undefined
+    branch?: string | null | undefined
     requestedAlias?: string | undefined
     requestedMachineRef?: string | undefined
     resolvedWorktreeId?: string | undefined
@@ -403,7 +407,9 @@ function formatSpawnedAgentFooter(
     agent.account_profile ? `profile ${agent.account_profile}` : null,
     agent.effort ? `effort ${agent.effort}` : null,
     agent.permission_level_override ? `permission ${agent.permission_level_override}` : null,
+    options.deadlineMs ? `deadline ${new Date(options.deadlineMs).toISOString().replace(/\.\d{3}Z$/, "Z")}` : null,
     worktree ? `worktree ${worktree}` : null,
+    options.branch ? `branch ${options.branch}` : null,
     options.sliceRef && worker ? `worker ${worker}` : null,
   ].filter(Boolean)
   return parts.join(" · ")
@@ -443,10 +449,7 @@ async function spawnAndLaunchAgent(
     await deps.refreshAgentPanes(refreshedSession)
     deps.rebuildTranscript()
     deps.refreshSplitPaneFocusRepaint()
-    return {
-      agent: payload.agent,
-      session: refreshedSession,
-    }
+    return { ...payload, session: refreshedSession }
   }
   const launchProvider = payload.agent.provider || options.provider || deps.currentProviderId()
   const launchModel = payload.agent.model || options.model || deps.currentModelId()
@@ -465,10 +468,7 @@ async function spawnAndLaunchAgent(
   await deps.refreshAgentPanes(refreshedSession)
   deps.rebuildTranscript()
   deps.refreshSplitPaneFocusRepaint()
-  return {
-    agent: payload.agent,
-    session: refreshedSession,
-  }
+  return { ...payload, session: refreshedSession }
 }
 
 function currentAccountProfileId(deps: AgentSpawnCommandHandlerDeps): string {
