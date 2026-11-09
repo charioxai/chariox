@@ -3254,3 +3254,164 @@ async fn vopen_a_payment_card_waiting_at_a_restart_is_withdrawn_and_asked_again(
         .unwrap();
     assert_eq!(inserted(&login).as_deref(), Some(CARD_NUMBER));
 }
+
+/// How a payment card can be withdrawn before anyone answers it.
+#[derive(Clone, Copy, Debug)]
+enum PaymentWithdrawal {
+    WakeCancelled,
+    KernelRestarted,
+    AgentStopped,
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a payment card withdrawn before anyone answers it closes its
+// passkey popup on every owner terminal at once, on each withdrawal path. Nothing else is asked,
+// another open prompt of the owner stays, and another owner's feed hears nothing.
+#[tokio::test]
+async fn vopen_a_payment_card_whose_wake_is_cancelled_closes_its_passkey_popup() {
+    crate::test_support::isolated_env_test!();
+    a_withdrawn_payment_card_closes_the_popup(PaymentWithdrawal::WakeCancelled).await;
+}
+
+#[tokio::test]
+async fn vopen_a_payment_card_withdrawn_at_a_restart_closes_its_passkey_popup() {
+    crate::test_support::isolated_env_test!();
+    a_withdrawn_payment_card_closes_the_popup(PaymentWithdrawal::KernelRestarted).await;
+}
+
+#[tokio::test]
+async fn vopen_a_payment_card_of_a_stopped_agent_closes_its_passkey_popup() {
+    crate::test_support::isolated_env_test!();
+    a_withdrawn_payment_card_closes_the_popup(PaymentWithdrawal::AgentStopped).await;
+}
+
+async fn a_withdrawn_payment_card_closes_the_popup(withdrawal: PaymentWithdrawal) {
+    use super::super::wake_driver::Recovery;
+    use crate::local::KernelConnectionClass::Terminal;
+    use crate::local::PasskeyPromptClosureReason;
+    use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
+    use crate::transport::kernel_protocol::KernelEvent;
+    use crate::transport::passkey_prompt_feed::PasskeyPromptFeed;
+    let login = card_room(SITE).await;
+    let f = &login.f;
+    unlock(f);
+    let _turn = running(f);
+    saved_card(f);
+    asking_task(f);
+    let mut owner = PasskeyPromptFeed::new(Terminal, "local");
+    let mut stranger = PasskeyPromptFeed::new(Terminal, "guest");
+    let _other = f
+        .state
+        .create_kernel_operation_interaction(
+            &f.request.session_id,
+            "local",
+            RuntimeInteraction::for_kernel_operation(
+                "other-critical",
+                "validation:other-critical",
+                "Approve App action",
+                "An App asks to perform a protected action.",
+                vec![
+                    RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+                    RuntimeInteractionChoice::new("approve", "Approve", "allow", None)
+                        .requiring_passkey(),
+                ],
+            )
+            .with_timeout_sec(300),
+        )
+        .await
+        .unwrap();
+    assert!(call(f, PASTE, card_fill("number", Some(&payment())))
+        .await
+        .is_err());
+    let decision = card_decision(f).await;
+    let ids = |event: Option<KernelEvent>| match event {
+        Some(KernelEvent::PasskeyPromptsChanged {
+            prompts, closed, ..
+        }) => (
+            prompts
+                .into_iter()
+                .map(|prompt| prompt.interaction_id)
+                .collect::<Vec<_>>(),
+            closed
+                .into_iter()
+                .map(|closure| (closure.interaction_id, closure.reason))
+                .collect::<Vec<_>>(),
+        ),
+        other => panic!("{withdrawal:?}: expected a popup change, got {other:?}"),
+    };
+    let (shown, _) = ids(owner.next_event(&f.router));
+    assert_eq!(shown, ["other-critical", decision.id()], "{withdrawal:?}");
+    assert_eq!(ids(stranger.next_event(&f.router)), (vec![], vec![]));
+    let wake = f
+        .state
+        .owned
+        .durable_state_store
+        .agent_wake(decision.id())
+        .unwrap()
+        .unwrap();
+    match withdrawal {
+        PaymentWithdrawal::WakeCancelled => {
+            // The asking turn cancels it, the way chariox.events.cancel_wake does.
+            let task = f
+                .state
+                .owned
+                .durable_state_store
+                .agent_tasks(Some(&f.request.session_id), None)
+                .unwrap()
+                .into_iter()
+                .find(|task| task.task_id == wake.task_id)
+                .unwrap();
+            f.state
+                .cancel_agent_wake(&wake, &task.task_id, Some(&task.prompt_id))
+                .await
+                .unwrap();
+        }
+        PaymentWithdrawal::KernelRestarted => {
+            f.state
+                .owned
+                .pending_interactions
+                .write()
+                .remove(decision.id());
+            f.state.owned.vault_payment_asks.lock().unwrap().clear();
+            let driver = f
+                .state
+                .owned
+                .agent_wakes
+                .drivers
+                .get("interaction")
+                .unwrap();
+            let Recovery::Lost(reason) = driver.recover(&wake) else {
+                panic!("a payment card reattached without what it approves");
+            };
+            let now = crate::session::unix_epoch_ms();
+            f.state.report_lost_wake(&wake, now, &reason).unwrap();
+            f.state.tick_interaction_wakes(now).unwrap();
+        }
+        PaymentWithdrawal::AgentStopped => {
+            f.state
+                .owned
+                .withdraw_agent_interactions(
+                    &f.request.session_id,
+                    f.request.target_agent_id.as_deref(),
+                )
+                .unwrap();
+        }
+    }
+    assert!(!card_pending(f), "{withdrawal:?}");
+    assert_eq!(
+        ids(owner.next_event(&f.router)),
+        (
+            vec!["other-critical".to_owned()],
+            vec![(
+                decision.id().to_owned(),
+                PasskeyPromptClosureReason::Revoked
+            )]
+        ),
+        "{withdrawal:?}: the popup closes and nothing else is asked"
+    );
+    assert!(owner.next_event(&f.router).is_none(), "{withdrawal:?}");
+    assert!(stranger.next_event(&f.router).is_none(), "{withdrawal:?}");
+    assert!(allow_card(f, decision.id(), Some(PASSKEY), None, Terminal)
+        .await
+        .is_err());
+    assert!(inserted(&login).is_none());
+}
