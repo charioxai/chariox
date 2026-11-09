@@ -87,7 +87,9 @@ async function runVariant(variant) {
       allowed_targets: null, iat: Math.floor(Date.now() / 1000) - 1, exp: Math.floor(Date.now() / 1000) + 7200, jti: randomUUID(), user_id: "local" })).toString("base64url")
     return `${head}.${body}.${createHmac("sha256", secret).update(`${head}.${body}`).digest("base64url")}`
   }
-  const baseEnv = { PATH: process.env.PATH, NODE_OPTIONS: "--max-old-space-size=3072", IS_SANDBOX: "1", SHELL: "/bin/bash" }
+  const baseEnv = { PATH: process.env.PATH, NODE_OPTIONS: "--max-old-space-size=3072", IS_SANDBOX: "1", SHELL: "/bin/bash",
+    // Opt-in per-stage packet timing (MP-10-PACKET-TIMING lines in the kernel and relay logs), joined by ciphertext digest.
+    ...(flags.get("--packet-timing") === "1" ? { CHARIOX_BROWSER_DISPLAY_TIMING: "1" } : {}) }
   const start = (program, args, extraEnv, name) => {
     const log = openSync(join(evidence, `${name}.log`), "a", 0o600)
     const child = spawn(program, args, { env: { ...baseEnv, ...extraEnv }, stdio: ["ignore", log, log], cwd: repo })

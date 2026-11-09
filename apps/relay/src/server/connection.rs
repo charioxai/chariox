@@ -394,7 +394,10 @@ pub(crate) async fn handle_connection(
                     }
                 }
                 match complete {
-                    Some(message) => message,
+                    Some(message) => {
+                        crate::transport_timing::record("relay_reassembled", crate::transport_timing::message_signature(&message));
+                        message
+                    }
                     None => continue,
                 }
             } else {
