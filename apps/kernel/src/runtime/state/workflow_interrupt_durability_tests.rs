@@ -767,6 +767,7 @@ async fn workflow_wait_cancellation(cancel_creator: bool) {
         "cancelled"
     );
     fixture.runtime.sweep_agent_lifecycle().await.unwrap();
+    fixture.runtime.task_work_settled().await;
     let parent = owned
         .durable_state_store
         .agent_tasks(Some(&task.room_id), Some(&fixture.unrelated_agent_id))
@@ -786,6 +787,7 @@ async fn workflow_wait_cancellation(cancel_creator: bool) {
         // The first sweep settles the workflow obligation; the next observes
         // the parent with no owned resources and releases its completion source.
         fixture.runtime.sweep_agent_lifecycle().await.unwrap();
+        fixture.runtime.task_work_settled().await;
         assert!(
             owned
                 .durable_state_store
@@ -2746,7 +2748,9 @@ async fn failed_workflow_delegate_settlement(settled_upstream: bool, shared: Sha
         "a different durable host cannot settle this invocation"
     );
     fixture.runtime.sweep_agent_lifecycle().await.unwrap();
+    fixture.runtime.task_work_settled().await;
     fixture.runtime.sweep_agent_lifecycle().await.unwrap();
+    fixture.runtime.task_work_settled().await;
     let tasks = store.agent_tasks(Some(&fixture.session_id), None).unwrap();
     if let Some(successful) = successful {
         assert_eq!(
@@ -2897,6 +2901,7 @@ async fn amfix_r11_adopted_goal_observes_archived_workflow_completion() {
         "legacy tasks drained"
     );
     fixture.runtime.sweep_agent_lifecycle().await.unwrap();
+    fixture.runtime.task_work_settled().await;
     let events = owned
         .durable_state_store
         .agent_inbox(session.id(), &fixture.target_agent_id, 0)

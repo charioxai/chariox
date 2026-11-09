@@ -1147,18 +1147,27 @@ impl KernelRuntimeState {
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
                 continue;
             };
-            self.reconcile_failed_workflow_tasks(&task).await?;
+            self.reconcile_failed_workflow_tasks(&task)?;
             if let Some(check) = ledger::completion::evaluation(&task).filter(|e| {
                 task.state == ExecutionState::Working
                     && e.result.is_none()
                     && e.prompt_id == task.pending_prompt_id.as_deref().unwrap_or(&task.prompt_id)
                     && now >= e.deadline_ms
             }) {
-                if let CheckExpiry::Blocked(stopped) =
-                    self.expire_goal_check(&task, &check.prompt_id, now).await?
-                {
-                    blocked.push(*stopped);
-                }
+                // Stopping the turn asks the worker, which may not answer: the check ends in its
+                // own work, and the sweep goes on with the other tasks.
+                let (task, prompt) = (task.clone(), check.prompt_id.clone());
+                self.spawn_task_work(
+                    format!("goal-check:{}", task.task_id),
+                    move |state| async move {
+                        if let CheckExpiry::Blocked(stopped) =
+                            state.expire_goal_check(&task, &prompt, now).await?
+                        {
+                            state.record_task_transition_notices([*stopped]);
+                        }
+                        Ok(())
+                    },
+                );
                 continue;
             }
             if task.state == ExecutionState::Cancelled

@@ -657,6 +657,7 @@ async fn restart_orphan_outcome_replaces_the_normalized_active_workflow_run() {
             durable.status()
         );
         runtime.sweep_agent_lifecycle().await.unwrap();
+        runtime.task_work_settled().await;
         let events = runtime
             .owned
             .durable_state_store
