@@ -6,6 +6,7 @@ use futures_util::{Sink, SinkExt};
 use tokio_tungstenite::tungstenite::Message;
 
 use super::super::reply_notes::ReplyNotes;
+use super::upload::{Lane as UploadLane, Uploads};
 
 const RELAY_LARGE_FRAME_LOG_BYTES: usize = 256 * 1024;
 const RELAY_SLOW_WRITE_LOG_MS: u128 = 500;
@@ -30,6 +31,8 @@ where
     }
 }
 
+/// With `uploads`, a frame above one chunk is handed to its lane to go out in
+/// chunks instead of being written whole.
 pub(super) async fn send_relay_envelope_frame<S>(
     writer: &mut S,
     envelope: RelayEnvelope,
@@ -37,6 +40,7 @@ pub(super) async fn send_relay_envelope_frame<S>(
     binary_events: bool,
     closing: &AtomicBool,
     notes: &ReplyNotes,
+    uploads: Option<(&mut Uploads, UploadLane)>,
 ) -> bool
 where
     S: Sink<Message> + Unpin,
@@ -75,7 +79,14 @@ where
     let packet = chariox_relay::transport_timing::envelope_signature(&envelope);
     chariox_relay::transport_timing::record("kernel_write_start", packet);
     let started = Instant::now();
-    let sent = send_relay_frame(writer, frame).await;
+    let frame = match uploads {
+        Some((uploads, lane)) => uploads.start(lane, frame),
+        None => Some(frame),
+    };
+    let sent = match frame {
+        Some(frame) => send_relay_frame(writer, frame).await,
+        None => true,
+    };
     chariox_relay::transport_timing::record("kernel_write_end", packet);
     if kind == "daemon_event" {
         crate::transport::kernel_browser_display::timing("event_socket_write", started);
@@ -122,6 +133,12 @@ fn relay_envelope_kind(envelope: &RelayEnvelope) -> &'static str {
 }
 
 // MP-08 / MP-10 / MP-11: socket writer stays below the connector coordinator.
+// Strict priority at every frame boundary: owed receipts and pongs, then the
+// priority lane, then the event lane. Toward a relay that takes chunked
+// uploads (`upload_receipt_rx` is Some), a lane sends a large message one
+// chunk at a time while the window allows and takes no other message until
+// it is done, so each lane stays FIFO and the priority lane passes event bulk
+// between any two chunks.
 #[allow(
     clippy::too_many_arguments,
     reason = "each lane, the closing flag and the reply notes are separate inputs of the one writer task"
@@ -132,18 +149,26 @@ pub(super) async fn run_relay_writer<S>(
     mut event_outgoing_rx: tokio::sync::mpsc::Receiver<RelayEnvelope>,
     mut pong_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
     mut transport_receipt_rx: tokio::sync::mpsc::Receiver<String>,
+    mut upload_receipt_rx: Option<tokio::sync::mpsc::Receiver<(u32, u32)>>,
     binary_events: bool,
     closing: std::sync::Arc<AtomicBool>,
     notes: std::sync::Arc<ReplyNotes>,
 ) where
     S: Sink<Message> + Unpin,
 {
-    // The producer already uses bounded priority and event channels. Holding
-    // envelopes for a frame did not combine their writes; it only delayed the
-    // first accepted turn and state. Preserve lane priority and event FIFO.
+    let chunked = upload_receipt_rx.is_some();
+    let mut uploads = Uploads::new();
     let mut priority_open = true;
     let mut event_open = true;
-    while priority_open || event_open {
+    while priority_open
+        || event_open
+        || uploads.busy(UploadLane::Priority)
+        || uploads.busy(UploadLane::Event)
+    {
+        let priority_chunk = uploads.ready(UploadLane::Priority);
+        let event_chunk = uploads.ready(UploadLane::Event);
+        let take_priority = priority_open && !uploads.busy(UploadLane::Priority);
+        let take_event = event_open && !uploads.busy(UploadLane::Event);
         tokio::select! {
             biased;
             Some(receipt) = transport_receipt_rx.recv() => {
@@ -152,18 +177,38 @@ pub(super) async fn run_relay_writer<S>(
             Some(payload) = pong_rx.recv() => {
                 if !send_relay_frame(&mut writer, Message::Pong(payload.into())).await { break; }
             }
-            envelope = priority_outgoing_rx.recv(), if priority_open => {
+            receipt = async { upload_receipt_rx.as_mut()?.recv().await }, if chunked => {
+                let Some((id, offset)) = receipt else { break; };
+                if !uploads.receipt(id, offset) {
+                    crate::logging::warn_with_fields(
+                        "daemon.relay_client",
+                        "relay acknowledged an upload chunk out of order; reconnecting",
+                        serde_json::json!({ "transfer_id": id, "offset": offset }),
+                    );
+                    break;
+                }
+            }
+            _ = std::future::ready(()), if priority_chunk => {
+                let Some(chunk) = uploads.next_chunk(UploadLane::Priority) else { break; };
+                if !send_relay_frame(&mut writer, chunk).await { break; }
+            }
+            envelope = priority_outgoing_rx.recv(), if take_priority => {
                 match envelope {
-                    Some(envelope) => if !send_relay_envelope_frame(&mut writer, envelope, "priority", binary_events, &closing, &notes).await { break; },
+                    Some(envelope) => if !send_relay_envelope_frame(&mut writer, envelope, "priority", binary_events, &closing, &notes, chunked.then_some((&mut uploads, UploadLane::Priority))).await { break; },
                     None => priority_open = false,
                 }
             }
-            envelope = event_outgoing_rx.recv(), if event_open => {
+            _ = std::future::ready(()), if event_chunk => {
+                let Some(chunk) = uploads.next_chunk(UploadLane::Event) else { break; };
+                if !send_relay_frame(&mut writer, chunk).await { break; }
+            }
+            envelope = event_outgoing_rx.recv(), if take_event => {
                 match envelope {
-                    Some(envelope) => if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events, &closing, &notes).await { break; },
+                    Some(envelope) => if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events, &closing, &notes, chunked.then_some((&mut uploads, UploadLane::Event))).await { break; },
                     None => event_open = false,
                 }
             }
+            else => break,
         }
     }
 }
@@ -227,6 +272,7 @@ mod tests {
                 event_rx,
                 pong_rx,
                 receipt_rx,
+                None,
                 false,
                 Arc::new(AtomicBool::new(false)),
                 Arc::default(),
@@ -238,6 +284,127 @@ mod tests {
                 "stalled {lane} write never releases connector"
             );
         }
+    }
+
+    fn bulk_reply() -> RelayEnvelope {
+        RelayEnvelope::DaemonResponse {
+            relay_request_id: "file-chunk".into(),
+            encrypted_response: Some(chariox_relay::protocol::EncryptedRelayPayload {
+                sender_public_key: "daemon".into(),
+                nonce: "nonce".into(),
+                ciphertext: "x".repeat(300 * 1024),
+            }),
+            error: None,
+        }
+    }
+
+    fn heartbeat() -> RelayEnvelope {
+        RelayEnvelope::DaemonHeartbeat {
+            daemon_id: "kernel".into(),
+            registration: None,
+        }
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (relaychunk): toward a relay that takes chunked uploads,
+    // a 300 KB reply goes out in chunks and a heartbeat queued behind it is written at the
+    // next chunk boundary, not after the whole reply (4.6 s at 76 KB/s).
+    #[tokio::test]
+    async fn a_heartbeat_passes_a_chunked_reply_at_the_next_chunk() {
+        let (wire_tx, mut wire) = mpsc::channel::<Message>(1);
+        let sink = Box::pin(futures_util::sink::unfold(
+            wire_tx,
+            |tx, message: Message| async move {
+                tx.send(message).await.unwrap();
+                Ok::<_, std::convert::Infallible>(tx)
+            },
+        ));
+        let (priority, priority_rx) = mpsc::channel(4);
+        let (event, event_rx) = mpsc::channel(4);
+        let (_pong, pong_rx) = mpsc::channel(1);
+        let (_receipt, receipt_rx) = mpsc::channel(1);
+        let (upload_receipt, upload_receipt_rx) = mpsc::channel(64);
+        event.send(bulk_reply()).await.unwrap();
+        tokio::spawn(run_relay_writer(
+            sink,
+            priority_rx,
+            event_rx,
+            pong_rx,
+            receipt_rx,
+            Some(upload_receipt_rx),
+            false,
+            Arc::new(AtomicBool::new(false)),
+            Arc::default(),
+        ));
+        let mut relay = chariox_relay::frame_transport::FrameReceiver::default();
+        let mut acknowledge = async |message: Message| {
+            let Message::Text(text) = message else {
+                panic!("text frames")
+            };
+            assert!(text.len() <= chariox_relay::frame_transport::CHUNK_BYTES);
+            let (complete, receipt) = relay.receive(&text).unwrap();
+            if let Some(receipt) = receipt {
+                let chariox_relay::frame_transport::TransportFrame::TransportAck {
+                    transfer_id,
+                    offset,
+                } = serde_json::from_str(&receipt).unwrap()
+                else {
+                    panic!("receipt expected")
+                };
+                upload_receipt.send((transfer_id, offset)).await.unwrap();
+            }
+            complete
+        };
+        // The window starts at two chunks: both are written, then the writer waits.
+        let first = wire.recv().await.unwrap();
+        let second = wire.recv().await.unwrap();
+        priority.send(heartbeat()).await.unwrap();
+        assert!(acknowledge(first).await.is_none());
+        assert!(acknowledge(second).await.is_none());
+        let next = wire.recv().await.unwrap();
+        assert!(
+            matches!(&next, Message::Text(text) if text.contains("daemon_heartbeat")),
+            "the heartbeat goes before the third chunk"
+        );
+        assert!(acknowledge(next).await.is_some());
+        let reply = loop {
+            if let Some(complete) = acknowledge(wire.recv().await.unwrap()).await {
+                break complete;
+            }
+        };
+        assert_eq!(reply, serde_json::to_string(&bulk_reply()).unwrap());
+    }
+
+    // Toward a relay that did not answer the upload offer (peer 440), the reply is one frame.
+    #[tokio::test]
+    async fn without_chunked_uploads_a_reply_is_one_frame() {
+        let (wire_tx, mut wire) = mpsc::unbounded_channel::<Message>();
+        let sink = Box::pin(futures_util::sink::unfold(
+            wire_tx,
+            |tx, message: Message| async move {
+                tx.send(message).unwrap();
+                Ok::<_, std::convert::Infallible>(tx)
+            },
+        ));
+        let (_priority, priority_rx) = mpsc::channel(4);
+        let (event, event_rx) = mpsc::channel(4);
+        let (_pong, pong_rx) = mpsc::channel(1);
+        let (_receipt, receipt_rx) = mpsc::channel(1);
+        event.send(bulk_reply()).await.unwrap();
+        tokio::spawn(run_relay_writer(
+            sink,
+            priority_rx,
+            event_rx,
+            pong_rx,
+            receipt_rx,
+            None,
+            false,
+            Arc::new(AtomicBool::new(false)),
+            Arc::default(),
+        ));
+        let Some(Message::Text(text)) = wire.recv().await else {
+            panic!("a text frame")
+        };
+        assert_eq!(text.as_str(), serde_json::to_string(&bulk_reply()).unwrap());
     }
 
     // MP-08 / MP-09 / MP-10 / MP-11 (relayflood): the 11-09 flood had to be traced to its
@@ -269,7 +436,8 @@ mod tests {
                 "event",
                 false,
                 &AtomicBool::new(false),
-                &notes
+                &notes,
+                None
             )
             .await
         );

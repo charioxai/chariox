@@ -3,8 +3,8 @@
 use crate::drain_window::FLOOR_BYTES;
 use crate::drain_window::{DrainWindow, SendStamp};
 use crate::frame_transport::{
-    binary_chunk, TransportFrame, BINARY_CHUNK_PAYLOAD_BYTES, CHUNK_BYTES, MAX_ASSEMBLY_BYTES,
-    MAX_MESSAGE_BYTES, MAX_TRANSFERS, PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES,
+    binary_chunk, text_chunk, TransportFrame, BINARY_CHUNK_PAYLOAD_BYTES, CHUNK_BYTES,
+    MAX_ASSEMBLY_BYTES, MAX_MESSAGE_BYTES, MAX_TRANSFERS, PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES,
 };
 use crate::meter::{ConnectionMeter, Direction, CONTROL_SCOPE, DISPLAY_TUNNEL_SCOPE};
 use crate::outgoing::OutgoingQueue;
@@ -138,26 +138,8 @@ impl Transfer {
             .ok()?;
             return Some((Message::Text(checkpoint.into()), 0));
         }
-        if self.offset == self.text.len() {
-            return None;
-        }
-        let mut end = (self.offset + CHUNK_BYTES).min(self.text.len());
-        loop {
-            while !self.text.is_char_boundary(end) {
-                end -= 1;
-            }
-            let text = serde_json::to_string(&TransportFrame::TransportChunk {
-                transfer_id: self.id,
-                offset: self.offset as u32,
-                total_bytes: self.text.len() as u32,
-                payload: self.text[self.offset..end].to_string(),
-            })
-            .ok()?;
-            if text.len() <= CHUNK_BYTES {
-                return Some((Message::Text(text.into()), end));
-            }
-            end = self.offset + (end - self.offset) / 2;
-        }
+        text_chunk(self.id, &self.text, self.offset)
+            .map(|(frame, end)| (Message::Text(frame.into()), end))
     }
     fn finished(&self) -> bool {
         // MP-08/MP-10/MP-11: assembly/lane occupancy ends when all bytes are

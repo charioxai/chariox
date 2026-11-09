@@ -106,6 +106,14 @@ async fn close_display_stream_from_daemon(
     let _ = sender.try_send(DisplayStreamEvent::Close { error });
 }
 
+fn is_transport_ack(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .is_some_and(|value| {
+            value.get("kind").and_then(|kind| kind.as_str()) == Some("transport_ack")
+        })
+}
+
 pub(crate) async fn handle_connection(
     stream: TcpStream,
     peer_addr: SocketAddr,
@@ -118,6 +126,7 @@ pub(crate) async fn handle_connection(
     let mut chunks = false;
     let mut unsupported_transport = false;
     let mut binary_events = false;
+    let mut upload_chunks = false;
     let mut initial_resume_negotiated = false;
     let mut hello = token_refusal::ConnectionHello::default();
     let handshake = accept_hdr_async(
@@ -182,6 +191,17 @@ pub(crate) async fn handle_connection(
                     .headers_mut()
                     .insert(crate::binary_event::VERSION_HEADER, "98".parse().unwrap());
             }
+            upload_chunks = chunks
+                && request
+                    .headers()
+                    .get(crate::frame_transport::UPLOAD_HEADER)
+                    .is_some_and(|value| value == crate::frame_transport::UPLOAD_CHUNKS);
+            if upload_chunks {
+                response.headers_mut().insert(
+                    crate::frame_transport::UPLOAD_HEADER,
+                    crate::frame_transport::UPLOAD_CHUNKS.parse().unwrap(),
+                );
+            }
             Ok(response)
         },
     );
@@ -192,7 +212,7 @@ pub(crate) async fn handle_connection(
         Err(_) => return Ok(()),
     };
     hello.transport = format!(
-        "chunks={chunks} binary_events={binary_events} display_resume={initial_resume_negotiated}"
+        "chunks={chunks} binary_events={binary_events} upload_chunks={upload_chunks} display_resume={initial_resume_negotiated}"
     );
     if unsupported_transport {
         // MP-08 / MP-10 / MP-11: old TUIs discard HTTP 426 bodies, but surface
@@ -231,6 +251,7 @@ pub(crate) async fn handle_connection(
             outgoing_tx.queue(),
         ),
     )));
+    let mut uploads = crate::frame_transport::FrameReceiver::default();
     let mut registered_daemon_key: Option<DaemonKey> = None;
     let mut verified_identity: Option<VerifiedRelayIdentity> = None;
     let mut auth_expiry_deadline: Option<Instant> = None;
@@ -346,6 +367,39 @@ pub(crate) async fn handle_connection(
             let message = message.map_err(|error| std::io::Error::other(error.to_string()))?;
             crate::transport_timing::record("relay_read", crate::transport_timing::message_signature(&message));
             last_read_at = Instant::now();
+            // MP-08 / MP-09 / MP-10 / MP-11: a kernel's large messages arrive in chunks; each
+            // receipt goes out on the control lane, ahead of anything queued for the kernel.
+            let message = if upload_chunks {
+                let reassembled = match &message {
+                    Message::Text(text) if !is_transport_ack(text) => {
+                        uploads.receive(text).map(|(text, receipt)| (text.map(|t| Message::Text(t.into())), receipt))
+                    }
+                    Message::Binary(bytes) => {
+                        uploads.receive_binary(bytes).map(|(bytes, receipt)| (bytes.map(|b| Message::Binary(b.into())), receipt))
+                    }
+                    _ => Ok((Some(message.clone()), None)),
+                };
+                let (complete, receipt) = match reassembled {
+                    Ok(reassembled) => reassembled,
+                    Err(reason) => {
+                        send_close(&outgoing_tx, format!("invalid upload chunk: {reason}"));
+                        end_reason = "invalid_upload_chunk";
+                        break;
+                    }
+                };
+                if let Some(receipt) = receipt {
+                    if control_tx.send(Message::Text(receipt.into())).await.is_err() {
+                        end_reason = "control_write";
+                        break;
+                    }
+                }
+                match complete {
+                    Some(message) => message,
+                    None => continue,
+                }
+            } else {
+                message
+            };
             // Binary replies enter exactly the same authenticated pending-route ledger as JSON replies.
             let mut counted = false;
             let message = match message {
@@ -366,8 +420,7 @@ pub(crate) async fn handle_connection(
             };
             match message {
                 Message::Text(text) => {
-                    if chunks && serde_json::from_str::<serde_json::Value>(&text).ok()
-                        .is_some_and(|value| value.get("kind").and_then(|kind| kind.as_str()) == Some("transport_ack")) {
+                    if chunks && is_transport_ack(&text) {
                         match serde_json::from_str::<crate::frame_transport::TransportFrame>(&text) {
                             Ok(crate::frame_transport::TransportFrame::TransportAck { transfer_id, offset }) => {
                                 connection_meter.record(Direction::In, CONTROL_SCOPE, text.len());

@@ -13,6 +13,11 @@ pub fn is_display_scope(scope: Option<&str>) -> bool {
     matches!(scope, Some(DISPLAY_EVENT_SCOPE | DISPLAY_RESUME_SCOPE))
 }
 pub const TRANSPORT_QUERY: &str = "chariox_transport=chunks-v2";
+/// A kernel offers this header with UPLOAD_CHUNKS to send its large messages
+/// in chunks too; a relay that reassembles them answers with the same header.
+/// Without the answer (an older relay) the kernel writes whole messages.
+pub const UPLOAD_HEADER: &str = "x-chariox-upload";
+pub const UPLOAD_CHUNKS: &str = "chunks-v2";
 pub const CHUNK_BYTES: usize = 16 * 1024;
 const BINARY_CHUNK_MAGIC: &[u8; 4] = b"CXB1";
 pub const BINARY_CHUNK_HEADER_BYTES: usize = 16;
@@ -44,6 +49,31 @@ pub const PEER_RECEIPT_FRAMES: usize = (64 * 1024 + SMALL_RESERVE_BYTES) / MIN_F
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_TRANSFERS: usize = 4;
 pub const MAX_ASSEMBLY_BYTES: usize = 128 * 1024 * 1024;
+
+/// The chunk frame of `text` that starts at `offset`, and the offset after it.
+/// Frames stay within CHUNK_BYTES after JSON escaping and split on characters.
+pub fn text_chunk(transfer_id: u32, text: &str, offset: usize) -> Option<(String, usize)> {
+    if offset == text.len() {
+        return None;
+    }
+    let mut end = (offset + CHUNK_BYTES).min(text.len());
+    loop {
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let frame = serde_json::to_string(&TransportFrame::TransportChunk {
+            transfer_id,
+            offset: offset as u32,
+            total_bytes: text.len() as u32,
+            payload: text[offset..end].to_string(),
+        })
+        .ok()?;
+        if frame.len() <= CHUNK_BYTES {
+            return Some((frame, end));
+        }
+        end = offset + (end - offset) / 2;
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]

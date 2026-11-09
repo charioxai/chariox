@@ -6,6 +6,7 @@ use super::*;
 use crate::runtime::cloud_relay_control::cloud_relay_token_is_expired;
 
 mod managed_slice_activation;
+mod upload;
 mod writer;
 #[cfg(test)]
 use managed_slice_activation::{
@@ -338,6 +339,20 @@ where
             *active_relay_token = registration.auth_token.clone();
             Ok(Some(registration))
         }
+    }
+}
+
+/// The relay's receipt for one of the kernel's own upload chunks.
+fn upload_receipt(payload: &str) -> Option<(u32, u32)> {
+    if !payload.starts_with("{\"kind\":\"transport_ack\"") {
+        return None;
+    }
+    match serde_json::from_str(payload).ok()? {
+        chariox_relay::frame_transport::TransportFrame::TransportAck {
+            transfer_id,
+            offset,
+        } => Some((transfer_id, offset)),
+        _ => None,
     }
 }
 
@@ -882,6 +897,11 @@ async fn run_daemon_relay_connector_inner(
                     .is_some_and(|version| {
                         version >= chariox_relay::binary_event::PROTOCOL_VERSION
                     });
+                // A relay that reassembles chunked uploads answers the offer; an older one does not.
+                let upload_chunks = handshake
+                    .headers()
+                    .get(chariox_relay::frame_transport::UPLOAD_HEADER)
+                    .is_some_and(|value| value == chariox_relay::frame_transport::UPLOAD_CHUNKS);
                 let connect_ms = connect_started.elapsed().as_millis();
                 crate::logging::info_with_fields(
                     "daemon.relay_client",
@@ -889,6 +909,7 @@ async fn run_daemon_relay_connector_inner(
                     serde_json::json!({
                         "relay_url": relay_url,
                         "connect_ms": connect_ms,
+                        "upload_chunks": upload_chunks,
                     }),
                 );
                 let registration_started = Instant::now();
@@ -900,6 +921,8 @@ async fn run_daemon_relay_connector_inner(
                 let (transport_receipt_tx, transport_receipt_rx) =
                     mpsc::channel::<String>(chariox_relay::frame_transport::MAX_UNACKED_FRAMES);
                 let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
+                let (upload_receipt_tx, upload_receipt_rx) =
+                    mpsc::channel::<(u32, u32)>(chariox_relay::frame_transport::MAX_UNACKED_FRAMES);
                 let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
                 let writer_closing = Arc::clone(&outgoing_tx.closing);
                 let writer_notes = Arc::clone(&outgoing_tx.notes);
@@ -910,6 +933,7 @@ async fn run_daemon_relay_connector_inner(
                         event_outgoing_rx,
                         pong_rx,
                         transport_receipt_rx,
+                        upload_chunks.then_some(upload_receipt_rx),
                         binary_events,
                         writer_closing,
                         writer_notes,
@@ -1060,8 +1084,13 @@ async fn run_daemon_relay_connector_inner(
                             reader_progress.progress();
                             match incoming {
                                 Some(Ok(Message::Text(payload))) => {
-                                    let (payload, receipt) = relay_frames.receive(&payload).unwrap_or_else(|_| (
-                                        Some("{\"kind\":\"close\",\"reason\":\"invalid relay transport frame\"}".to_string()), None));
+                                    let (payload, receipt) = match upload_chunks.then(|| upload_receipt(&payload)).flatten() {
+                                        // Receipts for the kernel's own chunks free its upload window.
+                                        Some(receipt) if upload_receipt_tx.try_send(receipt).is_ok() => continue,
+                                        Some(_) => (Some("{\"kind\":\"close\",\"reason\":\"relay upload receipt lost\"}".to_string()), None),
+                                        None => relay_frames.receive(&payload).unwrap_or_else(|_| (
+                                            Some("{\"kind\":\"close\",\"reason\":\"invalid relay transport frame\"}".to_string()), None)),
+                                    };
                                     if let Some(receipt) = receipt {
                                         if !queue_transport_receipt(&transport_receipt_tx, receipt).await {
                                             abort_leased_projection_pump_task(
