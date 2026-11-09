@@ -10,10 +10,12 @@ const markdown = new MarkdownIt({ html: false })
 const taskMarkerPattern = /^(\s*(?:[-*+]|\d{1,9}[.)])[ \t]+)\[([ xX])\](?=[ \t])/gm
 const imagePattern = /!\[([^\]\n]*)\]\(\s*<?([^\s)>]+)>?(?:\s+"[^"\n]*")?\s*\)/g
 const dataImagePattern = /^data:image\/([a-z0-9.+-]+);base64,([a-z0-9+/=]+)$/i
+// Codex's visualize skill ends a reply with this line for the app to draw the HTML page it names.
+const visualizePattern = /^[ \t]{0,3}visualize(\{.*\})[ \t]*$/gm
 
 export function prepareTranscriptMarkdown(text: string): string {
   return mapMarkdownProse(normalizeMarkdownFenceInfoStrings(text), (prose) => (
-    mapOutsideCodeSpans(prose, (text) => renderTranscriptMath(renderImages(renderTaskMarkers(text))))
+    mapOutsideCodeSpans(prose, (text) => renderTranscriptMath(renderImages(renderVisualizeLines(renderTaskMarkers(text)))))
   ))
 }
 
@@ -31,6 +33,16 @@ function renderImages(prose: string): string {
       return `[▣ image: ${alt} · ${escapeLinkText([file, url.host].filter(Boolean).join(" · "))} · size unknown (open link)](${url.href})`
     }
     return `▣ image: ${alt} · ${escapeLinkText(src.replace(/^file:\/\//i, ""))} · size unknown (open in the web app)`
+  })
+}
+
+// The web pane draws the page; a terminal names it, like a picture.
+function renderVisualizeLines(prose: string): string {
+  return prose.replace(visualizePattern, (line, json: string) => {
+    let path: unknown
+    try { path = (JSON.parse(json) as { path?: unknown }).path } catch { return line }
+    if (typeof path !== "string" || !path.trim()) return line
+    return `▣ visual: ${escapeLinkText(path.trim().split("/").pop() || path.trim())} · ${escapeLinkText(path.trim())} (open in the web app)`
   })
 }
 
