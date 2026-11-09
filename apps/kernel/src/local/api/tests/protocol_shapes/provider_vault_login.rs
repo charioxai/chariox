@@ -84,7 +84,7 @@ fn managed_context_omitted_logins_1000_snapshot_and_hash() {
     };
     assert_eq!(
         format!("{:x}", Sha256::digest(OMITTED_LOGINS_FIXTURE)),
-        "2919924f3fb8371df640e0366e4ddea2810e5e9d658096cfcce1d2ca9c30f16a"
+        "c9695c32758543e1be34a9f26896b6e46b5d7e3091fe72939c1a113971ad6219"
     );
     let fixture: serde_json::Value = serde_json::from_slice(OMITTED_LOGINS_FIXTURE).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);

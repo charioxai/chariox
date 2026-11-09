@@ -494,4 +494,7 @@ pub use workspace::*;
 /// provider logins to a new managed machine (peer 439).
 /// MP-08/MP-09/MP-10/MP-11: 1001 carries peers across rooms and kernels of one owner (spawn --room, messages, steer,
 /// cancel and follow, `peer_event`), the `agent_tree_changed` event and the `kernel_access_sub_agent` refusal (peer 440).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1001;
+/// Temporary 1002 (landing 7): workflow entry gates (`WorkflowGate`, gated entry acceptance, typed event
+/// data), `exec_place` with `placeable_on` on held launches, and a sub-agent tree node's mode, permission
+/// level and effort.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1002;

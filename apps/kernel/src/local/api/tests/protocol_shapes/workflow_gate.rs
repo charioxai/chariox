@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 #[test]
 fn workflow_gate_entry_and_owned_state_protocol_snapshot() {
     let snapshot: serde_json::Value =
-        serde_json::from_str(include_str!("workflow-gate-967.json")).unwrap();
+        serde_json::from_str(include_str!("workflow-gate-1002.json")).unwrap();
     assert_eq!(snapshot["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
     assert_eq!(
         snapshot["peer"],
@@ -39,7 +39,7 @@ fn workflow_gate_entry_and_owned_state_protocol_snapshot() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "fa8a6966aac70d50d04e57cce58aedd80fd311105203d8ef608112e3e97a413c"
+        "2df59f2044166b0db778a94b4ffe0c526bb4b57d3fd3985d42b9e04a475ddfe8"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({"WorkflowGate":{"session_id":"room","workflow_ref":"advisory","action":{"kind":"reset_state","reason":"clear","state":{"forged":true}}}})).is_err());
 }
