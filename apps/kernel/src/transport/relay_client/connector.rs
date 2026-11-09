@@ -874,14 +874,8 @@ async fn run_daemon_relay_connector_inner(
                 continue;
             }
             Ok(Ok((socket, handshake))) => {
-                let binary_events = handshake
-                    .headers()
-                    .get(chariox_relay::binary_event::VERSION_HEADER)
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.parse::<u32>().ok())
-                    .is_some_and(|version| {
-                        version >= chariox_relay::binary_event::PROTOCOL_VERSION
-                    });
+                let binary_events =
+                    crate::transport::relay_socket_connect::binary_events_accepted(&handshake);
                 // A relay that reassembles chunked uploads answers the offer; an older one does not.
                 let upload_chunks =
                     crate::transport::relay_socket_connect::upload_chunks_accepted(&handshake);
