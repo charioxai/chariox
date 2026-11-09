@@ -1673,6 +1673,13 @@ fn refused_gated_entry(
     deadline_ms: Option<u64>,
     now_ms: u64,
 ) -> Option<RefusedGatedEntry> {
-    let _ = (error, deadline_ms, now_ms);
-    None
+    let DaemonError::ProviderProfileRefused { reason, .. } = error else {
+        return None;
+    };
+    let deadline_ms = deadline_ms?;
+    Some(if now_ms >= deadline_ms {
+        RefusedGatedEntry::Expired
+    } else {
+        RefusedGatedEntry::Wait((*reason).into())
+    })
 }

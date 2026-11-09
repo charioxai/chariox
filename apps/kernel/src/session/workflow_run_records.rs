@@ -248,6 +248,9 @@ impl WorkflowNodeRun {
 
     pub fn set_status(&mut self, status: WorkflowNodeRunStatus) {
         self.status = status;
+        if status != WorkflowNodeRunStatus::Ready {
+            self.waiting_reason = None;
+        }
         if matches!(status, WorkflowNodeRunStatus::Running) && self.started_at_ms.is_none() {
             self.started_at_ms = Some(unix_epoch_ms());
         }
