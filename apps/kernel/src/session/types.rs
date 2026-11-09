@@ -57,8 +57,8 @@ pub use super::workflow_scheduling::{
     DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
 };
 pub use super::workflow_turns::{
-    WorkflowNodeRunStatus, WorkflowRunStatus, WorkflowRuntimeToolCallEvent, WorkflowTurnEnvelope,
-    WorkflowTurnRuntimeState,
+    WorkflowNodeRunStatus, WorkflowNodeWaitingReason, WorkflowRunStatus,
+    WorkflowRuntimeToolCallEvent, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
 };
 pub use super::workspace_links::{WorkspaceLinkAttachment, WorkspaceLinkDefinition};
 

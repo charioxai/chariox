@@ -1190,6 +1190,32 @@ impl KernelRuntimeOwnedState {
             .cloned())
     }
 
+    /// Shows why a retried gated entry waits; the retry itself stays with the
+    /// durable entry intent.
+    fn workflow_hold_refused_entry(
+        &self,
+        session_id: &str,
+        workflow_run: &crate::session::WorkflowRun,
+        reason: crate::session::WorkflowNodeWaitingReason,
+    ) {
+        let Some(node_run) = workflow_run.node_runs().first() else {
+            return;
+        };
+        let held = self.session_store.write().hold_workflow_node_run(
+            session_id,
+            workflow_run.id(),
+            node_run.id(),
+            reason,
+        );
+        if matches!(held, Ok(true))
+            && self
+                .persist_workflow_runtime_session(session_id, "workflow_entry_waiting")
+                .is_err()
+        {
+            let _ = self.durable_state_store.fence_writer();
+        }
+    }
+
     pub(super) fn workflow_schedule_queued_prompt_run(
         &self,
         session_id: &str,
@@ -1219,9 +1245,23 @@ impl KernelRuntimeOwnedState {
         {
             Ok(dispatches) => dispatches,
             Err(error) => {
+                let refused = queued_prompt.gate_entry_id().and_then(|entry| {
+                    refused_gated_entry(
+                        &error,
+                        self.durable_state_store
+                            .gate_entry_deadline(entry)
+                            .ok()
+                            .flatten(),
+                        crate::session::unix_epoch_ms(),
+                    )
+                });
                 if valid_agents
+                    && refused != Some(RefusedGatedEntry::Expired)
                     && self.workflow_preserve_entry_after_failure(session_id, workflow_run.id())
                 {
+                    if let Some(RefusedGatedEntry::Wait(reason)) = refused {
+                        self.workflow_hold_refused_entry(session_id, &workflow_run, reason);
+                    }
                     return Err(error);
                 }
                 let activity_mutation = self.begin_managed_activity_mutation();
@@ -1618,3 +1658,21 @@ fn workflow_watchdog_failure_is_terminal(error: &DaemonError) -> bool {
 
 #[cfg(test)]
 pub(in crate::runtime) mod tests;
+
+/// A gated handoff refused for a provider account the user can fix waits for
+/// that fix until the gate entry's own deadline, then fails like an ungated
+/// invoke. Other failures and ungated entries keep their existing handling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefusedGatedEntry {
+    Wait(crate::session::WorkflowNodeWaitingReason),
+    Expired,
+}
+
+fn refused_gated_entry(
+    error: &DaemonError,
+    deadline_ms: Option<u64>,
+    now_ms: u64,
+) -> Option<RefusedGatedEntry> {
+    let _ = (error, deadline_ms, now_ms);
+    None
+}

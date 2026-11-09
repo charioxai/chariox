@@ -406,6 +406,19 @@ impl DurableKernelStateStore {
         }
         Ok((entries, cursor))
     }
+    /// The entry's own admission deadline also bounds a queued handoff that
+    /// waits on a refused dispatch.
+    pub(crate) fn gate_entry_deadline(&self, id: &str) -> Result<Option<u64>> {
+        let db = self.lock_connection("workflow.gate.deadline")?;
+        db.query_row(
+            "SELECT deadline_ms FROM workflow_gate_entries WHERE entry_id=?1",
+            [id],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .map(|deadline| deadline.map(|deadline| deadline as u64))
+        .map_err(sql)
+    }
     pub(crate) fn gate_entry(&self, owner: &str, id: &str) -> Result<Entry> {
         let db = self.lock_connection("workflow.gate.entry")?;
         let owned:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM workflow_gate_entries WHERE entry_id=?1 AND owner_id=?2)",params![id,owner],|r|r.get(0)).map_err(sql)?;

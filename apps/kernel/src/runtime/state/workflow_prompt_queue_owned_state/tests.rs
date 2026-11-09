@@ -2411,3 +2411,64 @@ fn gated_schedule_admission_failure_retries_original_tick_and_preserves_budget()
         Disposition::Cancelled
     );
 }
+
+fn unverified_refusal() -> DaemonError {
+    DaemonError::ProviderProfileRefused {
+        reason: crate::error::ProviderProfileRefusal::Unverified,
+        provider: "codex".into(),
+        account_name: "work".into(),
+    }
+}
+
+#[test]
+fn refused_gated_entry_waits_with_its_reason_until_the_gate_deadline() {
+    assert_eq!(
+        refused_gated_entry(&unverified_refusal(), Some(2_000), 1_999),
+        Some(RefusedGatedEntry::Wait(
+            crate::session::WorkflowNodeWaitingReason::ProviderProfileUnverified
+        ))
+    );
+    assert_eq!(
+        refused_gated_entry(&unverified_refusal(), Some(2_000), 2_000),
+        Some(RefusedGatedEntry::Expired)
+    );
+    // The expired entry fails with the plain refusal an ungated invoke returns.
+    assert_eq!(
+        unverified_refusal().to_string(),
+        "codex account `work`: has not been verified; refresh it in Provider Accounts, then retry"
+    );
+}
+
+#[test]
+fn refused_ungated_entry_and_other_failures_keep_existing_handling() {
+    assert_eq!(refused_gated_entry(&unverified_refusal(), None, 1), None);
+    assert_eq!(
+        refused_gated_entry(
+            &DaemonError::LocalTransport {
+                operation: "dispatch",
+                message: "busy".into(),
+            },
+            Some(2_000),
+            1,
+        ),
+        None
+    );
+}
+
+#[test]
+fn waiting_reason_is_shown_while_ready_and_cleared_on_dispatch() {
+    use crate::session::{WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowNodeWaitingReason};
+    let mut node_run =
+        WorkflowNodeRun::new("node-run", "node", "agent", 0, WorkflowNodeRunStatus::Ready);
+    node_run.set_waiting_reason(WorkflowNodeWaitingReason::ProviderProfileUnverified);
+    let shown = serde_json::to_value(&node_run).unwrap();
+    assert_eq!(shown["waiting_reason"], "provider_profile_unverified");
+    node_run.set_status(WorkflowNodeRunStatus::Running);
+    assert_eq!(node_run.waiting_reason(), None);
+    assert!(serde_json::to_value(&node_run)
+        .unwrap()
+        .get("waiting_reason")
+        .is_none());
+    node_run.set_waiting_reason(WorkflowNodeWaitingReason::ProviderProfileUnverified);
+    assert_eq!(node_run.waiting_reason(), None, "only a Ready node waits");
+}
