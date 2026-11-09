@@ -356,6 +356,56 @@ mod tests {
         assert!(unknown.is_err(), "an unknown name waits for the fresh list");
     }
 
+    /// The relay cannot renew the list: every renewal opens a new socket to it, and a link
+    /// busy with a bulk transfer lets each one time out.
+    struct Unrenewable {
+        listed: Vec<RelayKernelPresence>,
+        usable: AtomicBool,
+    }
+
+    impl InventorySource for Unrenewable {
+        fn via(&self) -> GatewayKernelVia {
+            GatewayKernelVia::Hosted
+        }
+        fn kernels(&self) -> Vec<RelayKernelPresence> {
+            self.listed.clone()
+        }
+        fn is_fresh(&self) -> bool {
+            false
+        }
+        fn refreshed_within(&self, _max_age_ms: u64) -> bool {
+            false
+        }
+        fn is_usable(&self) -> bool {
+            self.usable.load(Ordering::SeqCst)
+        }
+        fn refresh(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::error::DaemonError>> + Send + '_>>
+        {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayflood, 2026-11-09 06:13-06:19Z): a bulk download
+    // kept every list renewal from reaching the relay; five minutes later every call to a
+    // kernel the last list showed failed with "the kernel list did not refresh in time".
+    #[tokio::test(start_paused = true)]
+    async fn a_list_the_relay_cannot_renew_still_routes_to_a_kernel_it_showed() {
+        let source = Arc::new(Unrenewable {
+            listed: vec![kernel("k-b3", Some("b3"), "ovh-b3", true)],
+            usable: AtomicBool::new(true),
+        });
+        let directory = Directory::new(source.clone());
+        assert_eq!(directory.resolve("b3").await.unwrap().kernel_id, "k-b3");
+        source.usable.store(false, Ordering::SeqCst);
+        let found = tokio::time::timeout(Duration::from_secs(2), directory.resolve("b3"))
+            .await
+            .expect("a kernel the last list showed is routed to while the list cannot be renewed")
+            .expect("a kernel the last list showed stays routable");
+        assert_eq!(found.kernel_id, "k-b3");
+    }
+
     #[test]
     fn a_machine_without_room_terminals_is_incompatible_before_anything_is_sent() {
         use crate::local::{LocalDaemonRequest, RoomTerminalOperation, RoomTerminalRequest};
