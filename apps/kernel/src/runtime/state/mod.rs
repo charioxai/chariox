@@ -319,6 +319,8 @@ struct KernelRuntimeOwnedState {
     room_display_leases: room_shared_display::RoomDisplayLeases,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
     kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations,
+    /// MP-08 / MP-09 / MP-10 / MP-11: card payments the owner approved, briefly.
+    vault_payment_grants: Arc<std::sync::Mutex<Vec<vault_use::VaultPaymentGrant>>>,
     room_terminals: crate::room_terminal::RoomTerminalService,
     room_execs: crate::room_exec::RoomExecService,
     disk_usage: crate::runtime::disk_usage::DiskUsageStore,
@@ -1169,6 +1171,7 @@ impl KernelRuntimeState {
                     config.private_runtime_state_root().join("kernel-browser/observations"),
                     BTreeSet::new(),
                 ).with_identity(&config.relay_private_key),
+                vault_payment_grants: Default::default(),
                 room_terminals,
                 room_execs: Default::default(),
                 disk_usage: Default::default(),

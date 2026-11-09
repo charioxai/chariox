@@ -58,6 +58,8 @@ pub(crate) fn user_only(
         Some(UserOnly::Sudo)
     } else if operation.starts_with("access-") {
         Some(UserOnly::AccessGrant)
+    } else if interaction.id().starts_with("vault-card-") {
+        Some(UserOnly::Payment)
     } else if pending.passkey_prompt.is_some()
         || interaction
             .choices()
@@ -65,8 +67,6 @@ pub(crate) fn user_only(
             .any(crate::session::RuntimeInteractionChoice::requires_passkey)
     {
         Some(UserOnly::Passkey)
-    } else if interaction.id().starts_with("vault-card-") {
-        Some(UserOnly::Payment)
     } else if interaction.provider_login_is_human_only()
         || interaction.handoff().is_some()
         || super::is_handoff_interaction_id(interaction.id())

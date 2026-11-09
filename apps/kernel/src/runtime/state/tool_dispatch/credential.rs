@@ -318,6 +318,11 @@ impl KernelRuntimeState {
                             provider_run.agent_instance_id().unwrap_or("agent"),
                             credential,
                             &crate::config::VaultUseTarget::site(&args.url)?,
+                            super::super::vault_use::VaultUseAsk {
+                                agent_id: provider_run.agent_instance_id(),
+                                session_id: Some(provider_run.session_id()),
+                                ..Default::default()
+                            },
                         )
                         .await?,
                     )

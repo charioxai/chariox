@@ -258,6 +258,9 @@ pub struct RuntimeInteraction {
     /// Protocol 470: structured OS requester for external access decisions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     requester: Option<crate::local::KernelAccessRequester>,
+    /// MP-08 / MP-09 / MP-10 / MP-11: the payment a `vault-card-*` decision approves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    payment: Option<crate::local::VaultPaymentApproval>,
     id: String,
     #[serde(flatten)]
     subject: RuntimeInteractionSubject,
@@ -409,6 +412,7 @@ impl RuntimeInteraction {
             provider_login: None,
             handoff: None,
             requester: None,
+            payment: None,
             decision_expires_at: None,
             sudo_request: None,
         }
@@ -473,6 +477,15 @@ impl RuntimeInteraction {
         request: crate::local::SudoRequestPresentation,
     ) -> Self {
         self.sudo_request = Some(request);
+        self
+    }
+
+    pub fn payment(&self) -> Option<&crate::local::VaultPaymentApproval> {
+        self.payment.as_ref()
+    }
+
+    pub(crate) fn with_payment(mut self, payment: crate::local::VaultPaymentApproval) -> Self {
+        self.payment = Some(payment);
         self
     }
 
@@ -593,6 +606,7 @@ impl RuntimeInteraction {
             provider_login: None,
             handoff: None,
             requester: None,
+            payment: None,
             decision_expires_at: None,
             sudo_request: None,
         }

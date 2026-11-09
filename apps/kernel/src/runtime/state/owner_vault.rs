@@ -213,6 +213,7 @@ impl KernelRuntimeState {
                     Some(value.as_str()),
                     "Replaced by owner",
                 )?;
+                self.forget_vault_payment_grants(&id);
                 OwnerVaultResult::Saved { id }
             }
             OwnerVaultRequest::Delete { id } => {
@@ -232,6 +233,7 @@ impl KernelRuntimeState {
                     None,
                     "Deleted by owner",
                 )?;
+                self.forget_vault_payment_grants(&id);
                 OwnerVaultResult::Deleted { id }
             }
         };
