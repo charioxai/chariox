@@ -311,7 +311,9 @@ its commands and no protocol number changed. They are the reach for what an agen
 - `input` with `kind: "scroll"` and `target: node_ref` scrolls that node into view.
 - `wait {text | node_ref | url_contains, timeout_ms <= 30000}` compares the page on the host and answers
   `{matched, waited_ms}` with the tab state. The comparison reads the redacted snapshot the model would see, so a
-  protected value is no oracle. The kernel joins host slices of at most 1.5 s, so a wait never holds the host.
+  protected value is no oracle. The kernel joins host slices of at most 1.5 s, so a wait never holds the host. A
+  navigation that replaces the document during a look counts as no match; a closed Tab, a restarted browser or a
+  cancellation still ends the wait with its error.
 
 A bound capture checks the document before and after capture. After navigation, clients refresh
 state and subscribe to the new document; old frame input is rejected.
