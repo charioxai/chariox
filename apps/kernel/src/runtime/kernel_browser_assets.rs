@@ -575,6 +575,26 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-upload.mjs"),
     ),
     (
+        "kernel-browser-node-ref.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-node-ref.mjs"),
+    ),
+    (
+        "kernel-browser-screenshot-region.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-screenshot-region.mjs"),
+    ),
+    (
+        "kernel-browser-save.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-save.mjs"),
+    ),
+    (
+        "kernel-browser-workspace-file.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-workspace-file.mjs"),
+    ),
+    (
+        "kernel-browser-wait.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-wait.mjs"),
+    ),
+    (
         "kernel-browser-input.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-input.mjs"),
     ),

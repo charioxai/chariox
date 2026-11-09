@@ -94,6 +94,7 @@ impl KernelRuntimeState {
         let script = root.join("MD5-controller.sh");
         std::fs::write(&script, r##"set -eu
 while IFS= read -r request; do
+ printf '%s\n' "$request" >> "$1/requests.log"
  id=${request#*:}; id=${id%%,*}
  case "$request" in
   *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
@@ -109,6 +110,8 @@ while IFS= read -r request; do
   *'"op":"open"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-new","tabs":[{"tab_id":"host-tab-fixture","document_id":"document"},{"tab_id":"host-tab-new","document_id":"new-document"}]}}\n' "$id" ;;
   *'"op":"snapshot"'*) printf '{"id":%s,"ok":true,"result":{"snapshot":{"browser_generation":1,"target_id":"target","document_id":"document","snapshot_revision":1,"accessibility_nodes":[],"dom_nodes":[{"node_ref":"backend:1","parent_ref":null,"document_index":0,"node_type":3,"node_name":"#text","text":"MD5-sensitive-fixture","attributes":{},"bounds":null}]}}}\n' "$id" ;;
   *'"op":"screenshot"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-fixture","document_id":"document","mime_type":"image/png","data_base64":"%s","width":2560,"height":1600}}\n' "$id" "$(cat "$1/screenshot.b64" 2>/dev/null || echo cGl4ZWxzLWZpeHR1cmU=)" ;;
+  *'"op":"wait"'*) if test -e "$1/matched"; then m=true; else m=false; fi; printf '{"id":%s,"ok":true,"result":{"generation":1,"matched":%s,"waited_ms":0,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document"}]}}\n' "$id" "$m" ;;
+  *'"op":"save"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-fixture","document_id":"document","path":"images/logo.png","bytes":4,"mime_type":"image/png","sha256":"00"}}\n' "$id" ;;
   *'"op":"input"'*) printf 'input\n' > "$1/input"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
  esac

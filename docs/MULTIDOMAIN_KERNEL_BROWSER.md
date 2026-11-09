@@ -290,6 +290,25 @@ to them): a stream runs only while a person watches. The earlier user-side `subs
 screencast stream is gone; the client has no PNG-polling view either, and a kernel with the display off
 shows the view as unavailable.
 
+An agent also has four operations that exist only on the `chariox.kernel_browser` tool; the terminal protocol keeps
+its commands and no protocol number changed. They are the reach for what an agent would otherwise do outside Chariox
+(a Chrome of the owner's, a native Save dialog):
+
+- `screenshot` with one of `node_ref`, `clip {x,y,width,height}` (CSS px inside the viewport) or `full_page: true`.
+  An element or region is cut from the same masked viewport capture a plain screenshot returns. A page is captured at
+  one image pixel per CSS pixel, cut at 16000 px (`truncated`, `page_height`), and refused (`user_domain_not_granted`)
+  while a protected Vault-filled field is on the page, since page-sized pixels have no mask geometry. The image reaches
+  the model as an image part under the same 8 MiB cap.
+- `save {node_ref | url, path}` fetches the resource with the page's own session (Chrome's network stack, cookies
+  included) and writes it to `path` inside the Room workspace, with the containment the upload path applies (no `..`,
+  no path outside the workspace, no symlink on the way or at the end). The answer is `{path, bytes, mime_type, sha256}`;
+  at most 25 MiB; `http(s):` and `data:` URLs, or the image, media, link or canvas a snapshot node shows. A canvas is
+  refused while a protected field is on the page. No URL is logged or echoed.
+- `input` with `kind: "scroll"` and `target: node_ref` scrolls that node into view.
+- `wait {text | node_ref | url_contains, timeout_ms <= 30000}` compares the page on the host and answers
+  `{matched, waited_ms}` with the tab state. The comparison reads the redacted snapshot the model would see, so a
+  protected value is no oracle. The kernel joins host slices of at most 1.5 s, so a wait never holds the host.
+
 A bound capture checks the document before and after capture. After navigation, clients refresh
 state and subscribe to the new document; old frame input is rejected.
 Its public adapter must also preserve caller-scoped retry deduplication and
