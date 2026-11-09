@@ -2072,6 +2072,80 @@ done
     }
 
     #[test]
+    fn allowed_rate_limit_event_reports_the_weekly_percent_from_unified_windows() {
+        let (mut state, mut batch) = parser_state();
+
+        // Claude Code 2.1.296 on an account at 18%: no top-level `utilization`
+        // below the first warning threshold, the percent only in `unifiedWindows`.
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "rate_limit_event",
+                "rate_limit_info": {
+                    "status": "allowed",
+                    "resetsAt": 1_794_758_400,
+                    "rateLimitType": "seven_day",
+                    "overageStatus": "rejected",
+                    "overageDisabledReason": "org_level_disabled",
+                    "isUsingOverage": false,
+                    "unifiedWindows": {
+                        "seven_day": { "utilization": 0.18, "resetsAt": 1_794_758_400 }
+                    }
+                }
+            }),
+            &mut batch,
+        );
+
+        let usage = batch.account_usage.expect("rate limit usage");
+        assert_eq!(usage.meters.len(), 1);
+        let weekly = &usage.meters[0];
+        assert_eq!(weekly.meter_id, "rate_limit/seven_day");
+        assert_eq!(weekly.used_percent, Some(18.0));
+        assert_eq!(weekly.resets_at_ms, Some(1_794_758_400_000));
+        assert_eq!(weekly.window_duration_minutes, Some(7 * 24 * 60));
+        assert_eq!(
+            weekly.state,
+            crate::account_profile::ProviderAccountUsageMeterState::Healthy
+        );
+    }
+
+    #[test]
+    fn rate_limit_event_reports_every_unified_window_it_carries() {
+        let (mut state, mut batch) = parser_state();
+
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "rate_limit_event",
+                "rate_limit_info": {
+                    "status": "allowed",
+                    "rateLimitType": "five_hour",
+                    "resetsAt": 1_794_700_000,
+                    "unifiedWindows": {
+                        "five_hour": { "utilization": 0.04, "resetsAt": 1_794_700_000 },
+                        "seven_day": { "utilization": 0.18, "resetsAt": 1_794_758_400 }
+                    }
+                }
+            }),
+            &mut batch,
+        );
+
+        let usage = batch.account_usage.expect("rate limit usage");
+        let percent = |id: &str| {
+            usage
+                .meters
+                .iter()
+                .find(|meter| meter.meter_id == id)
+                .and_then(|meter| meter.used_percent)
+        };
+        assert_eq!(usage.meters.len(), 2);
+        assert_eq!(percent("rate_limit/five_hour"), Some(4.0));
+        assert_eq!(percent("rate_limit/seven_day"), Some(18.0));
+    }
+
+    #[test]
     fn normalizes_claude_rate_limit_event_string_reset_timestamps() {
         let (mut state, mut batch) = parser_state();
 
