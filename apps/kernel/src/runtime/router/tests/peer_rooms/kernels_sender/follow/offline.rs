@@ -255,6 +255,36 @@ fn a_cancel_whose_answer_was_lost_is_retried_without_cancelling_the_next_turn() 
 }
 
 #[test]
+fn a_steer_command_whose_answer_was_lost_is_one_delivery_when_made_again() {
+    run_peer_test("peer-offline-steer", || async {
+        let (a, b) = two_kernels(
+            "peer-offline-steer",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        link_dropping_after_the_first_message(&b);
+        let command = format!(
+            "agent steer worker 'stop editing parser.rs' --room {} --kernel {}",
+            b.room, b.name
+        );
+        let uncertain = a.command(command.clone()).await.unwrap_err();
+        assert!(uncertain.contains("uncertain"), "{uncertain}");
+        assert!(uncertain.contains("same call again"), "{uncertain}");
+        let retry = a
+            .command(command)
+            .await
+            .expect("the retry is answered by the kernel that took the first");
+        assert_eq!(retry["response"]["status"], "duplicate", "{retry}");
+        assert_eq!(
+            b.messages(b.agent.id()).await.len(),
+            1,
+            "an uncertain steer and its retry are one delivery"
+        );
+        unlink(&[&a, &b]);
+    });
+}
+
+#[test]
 fn a_message_that_timed_out_after_the_relay_took_it_is_uncertain_and_its_retry_is_one_delivery() {
     run_peer_test("peer-offline-timeout", || async {
         let (a, b) = two_kernels(
