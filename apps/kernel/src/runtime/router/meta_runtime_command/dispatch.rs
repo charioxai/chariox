@@ -606,24 +606,26 @@ impl CommandRouter {
             Err(error) => return Ok(meta_command_failure_result(command, error)),
         };
         // `--room` with `--kernel` names a room on that kernel; this kernel's own name keeps the
-        // spawn here.
-        if let (Some(room), Some(kernel)) = (spawn.room.clone(), spawn.kernel_ref.take()) {
-            match self.runtime_state.resolve_peer_kernel(&kernel).await {
-                Ok(Some(kernel)) => {
-                    return Ok(self
-                        .spawn_peer_on_kernel(metaagent, command, &kernel, room, spawn)
-                        .await)
+        // spawn here. Without `--room` the reference stays: a sub-agent runs on that kernel.
+        if let Some(room) = spawn.room.clone() {
+            if let Some(kernel) = spawn.kernel_ref.take() {
+                match self.runtime_state.resolve_peer_kernel(&kernel).await {
+                    Ok(Some(kernel)) => {
+                        return Ok(self
+                            .spawn_peer_on_kernel(metaagent, command, &kernel, room, spawn)
+                            .await)
+                    }
+                    Ok(None) if spawn.command_id.is_some() => {
+                        return Ok(meta_command_failure_result(
+                            command,
+                            meta_command_error(
+                                "usage: agent spawn --room does not accept --command-id for a room on this kernel",
+                            ),
+                        ))
+                    }
+                    Ok(None) => {}
+                    Err(error) => return Ok(meta_command_failure_result(command, error)),
                 }
-                Ok(None) if spawn.command_id.is_some() => {
-                    return Ok(meta_command_failure_result(
-                        command,
-                        meta_command_error(
-                            "usage: agent spawn --room does not accept --command-id for a room on this kernel",
-                        ),
-                    ))
-                }
-                Ok(None) => {}
-                Err(error) => return Ok(meta_command_failure_result(command, error)),
             }
         }
 
