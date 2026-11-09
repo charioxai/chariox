@@ -117,7 +117,7 @@ fn kernel_gateway_protocol_568_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "102043fb7f6e4b46f4c9371d861b7ef60a004f86a4ba16d51210f34b9d90bb9e"
+        "b646ae8a41e18035af4f08df2d8b209fa12fa8743c04366f5353e27fa5fec4f6"
     );
 }
 
