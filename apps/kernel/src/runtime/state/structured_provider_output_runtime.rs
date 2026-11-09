@@ -787,12 +787,15 @@ impl KernelRuntimeState {
         let history_lease = self
             .reserve_provider_history(provider_run_id, !positions.is_empty())
             .await?;
-        let prepared = owned
+        let mut prepared = owned
             .prepare_history_entries(session_id, history_entries.into_iter().flatten().collect());
         for item in &prepared {
-            terminal_outputs[positions[item.position]].sequence = Some(item.sequence);
-            terminal_outputs[positions[item.position]].prompt_id = item.kept_in_prompt.clone();
+            let output = &mut terminal_outputs[positions[item.position]];
+            // A row that took an earlier one's place keeps that row's turn.
+            output.sequence = (!item.replaced_in_place).then_some(item.sequence);
+            output.prompt_id = item.kept_in_prompt.clone();
         }
+        prepared.retain(|item| !item.replaced_in_place);
         // A view attached from here on reads these rows from history; one that
         // attached earlier is a recipient now, whatever the pump saw before it
         // waited for the run lane.

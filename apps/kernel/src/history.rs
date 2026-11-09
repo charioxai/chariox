@@ -842,6 +842,31 @@ impl OperationalHistoryStore {
         entry: &SessionHistoryEntry,
         context: HistoryEventTurnContext,
     ) -> Result<Option<HistoryEvent>, DaemonError> {
+        self.replace_transcript_row(session_id, agent_id, merge_key, entry, context, false)
+    }
+
+    /// Replaces the newest row of `merge_key` in place: the row keeps its
+    /// sequence, so it stays in the turn it was written in.
+    pub fn replace_latest_transcript_by_merge_key(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+        merge_key: &str,
+        entry: &SessionHistoryEntry,
+        context: HistoryEventTurnContext,
+    ) -> Result<Option<HistoryEvent>, DaemonError> {
+        self.replace_transcript_row(session_id, agent_id, merge_key, entry, context, true)
+    }
+
+    fn replace_transcript_row(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+        merge_key: &str,
+        entry: &SessionHistoryEntry,
+        context: HistoryEventTurnContext,
+        newest: bool,
+    ) -> Result<Option<HistoryEvent>, DaemonError> {
         if !self.capture_enabled() {
             return Ok(None);
         }
@@ -858,11 +883,19 @@ impl OperationalHistoryStore {
                 })?;
         let existing = connection
             .query_row(
-                "SELECT event_json
-                 FROM history_events
-                 WHERE session_id = ?1 AND agent_id IS ?2 AND merge_key = ?3
-                 ORDER BY sequence ASC
-                 LIMIT 1",
+                if newest {
+                    "SELECT event_json
+                     FROM history_events
+                     WHERE session_id = ?1 AND agent_id IS ?2 AND merge_key = ?3
+                     ORDER BY sequence DESC
+                     LIMIT 1"
+                } else {
+                    "SELECT event_json
+                     FROM history_events
+                     WHERE session_id = ?1 AND agent_id IS ?2 AND merge_key = ?3
+                     ORDER BY sequence ASC
+                     LIMIT 1"
+                },
                 params![session_id, agent_id, merge_key],
                 |row| row.get::<_, String>(0),
             )
