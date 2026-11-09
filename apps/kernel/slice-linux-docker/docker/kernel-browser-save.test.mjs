@@ -9,7 +9,7 @@ import { saveResource, SAVE_LIMIT } from './kernel-browser-save.mjs';
 
 const PNG = Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'binary'), Buffer.from('image bytes')]);
 
-async function fixture(run, { reads = [{ data: PNG.toString('base64'), base64Encoded: true, eof: true }], resource = {}, node = { url: 'https://img.example/logo.png?token=SECRET-TOKEN' } } = {}) {
+async function fixture(run, { reads = [{ data: PNG.toString('base64'), base64Encoded: true, eof: true }], resource = {}, node = { url: 'https://img.example/logo.png?token=SECRET-TOKEN' }, gate = async () => {} } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'kernel-save-'));
   const workspace = path.join(root, 'workspace');
   await mkdir(workspace);
@@ -18,6 +18,7 @@ async function fixture(run, { reads = [{ data: PNG.toString('base64'), base64Enc
   let read = 0;
   const connection = { async send(method, params) {
     calls.push({ method, params });
+    await gate(method);
     if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'frame-1', loaderId: 'doc' } } };
     if (method === 'DOM.resolveNode') return { object: { objectId: 'obj' } };
     if (method === 'Runtime.callFunctionOn') return { result: { value: node } };
@@ -27,7 +28,7 @@ async function fixture(run, { reads = [{ data: PNG.toString('base64'), base64Enc
   } };
   const host = { generation: 3, protection: { targets: [] }, browser: { fillTargets: new Map(), resolvePageTarget: async () => ({ connection, sessionId: 'page' }) } };
   const tab = { tab_id: 'tab-1', target_id: 'target', document_id: 'doc' };
-  const save = (command = {}) => saveResource(host, tab, { op: 'save', url: 'https://img.example/logo.png?token=SECRET-TOKEN', path: 'images/logo.png', _save_roots: [workspace], ...command });
+  const save = (command = {}, signal) => saveResource(host, tab, { op: 'save', url: 'https://img.example/logo.png?token=SECRET-TOKEN', path: 'images/logo.png', _save_roots: [workspace], ...command }, signal);
   const network = () => calls.filter(call => call.method === 'Network.loadNetworkResource');
   try { await run({ root, workspace, calls, host, save, network }); }
   finally { await rm(root, { recursive: true, force: true }); }
@@ -123,3 +124,38 @@ test('a missing or odd content type is recorded as a plain media type', async ()
   await fixture(async f => { assert.equal((await f.save()).mime_type, 'image/jpeg'); }, { resource: { headers: { 'content-type': 'IMAGE/JPEG; charset=binary' } } });
   await fixture(async f => { assert.equal((await f.save()).mime_type, 'application/octet-stream'); }, { resource: { headers: {} } });
 });
+
+// Review r1 P1: a save whose authority ends while the page session fetches never writes over the person's file.
+function held(method) {
+  let release, reached;
+  const arrived = new Promise(resolve => { reached = resolve; });
+  const opened = new Promise(resolve => { release = resolve; });
+  return { arrived, release, gate: async name => { if (name === method) { reached(); await opened; } } };
+}
+
+for (const method of ['Network.loadNetworkResource', 'IO.read']) {
+  test(`a save cancelled while ${method} is pending leaves the existing file and no partial file`, async () => {
+    const hold = held(method);
+    await fixture(async f => {
+      await mkdir(path.join(f.workspace, 'images'));
+      await writeFile(path.join(f.workspace, 'images/logo.png'), 'the person\'s work');
+      const authority = new AbortController();
+      const saving = f.save({}, authority.signal);
+      await hold.arrived;
+      authority.abort();
+      await assert.rejects(saving, { code: 'browser_action_cancelled' });
+      hold.release();
+      await new Promise(resolve => setTimeout(resolve, 20));
+      assert.equal(await readFile(path.join(f.workspace, 'images/logo.png'), 'utf8'), 'the person\'s work');
+      assert.deepEqual(await readdir(path.join(f.workspace, 'images')), ['logo.png'], 'no partial file is left');
+      assert.equal(f.calls.filter(call => call.method === 'IO.close').length, 1, 'the stream handle is released');
+    }, { gate: hold.gate });
+  });
+}
+
+test('a save whose document changes during the fetch writes nothing', () => fixture(async f => {
+  await writeFile(path.join(f.workspace, 'logo.png'), 'kept');
+  await assert.rejects(f.save({ path: 'logo.png' }), { code: 'stale_document_reference' });
+  assert.equal(await readFile(path.join(f.workspace, 'logo.png'), 'utf8'), 'kept');
+  assert.deepEqual(await readdir(f.workspace), ['logo.png']);
+}, { gate: (() => { let frames = 0; return async method => { if (method === 'Page.getFrameTree' && ++frames > 2) throw Object.assign(new Error('moved'), { code: 'stale_document_reference' }); }; })() }));

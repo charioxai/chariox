@@ -7,7 +7,8 @@ import { AgentToolRefusal, UserDomainRefusal } from './kernel-browser-refusal.mj
 
 const within = (root, file) => { const relative = path.relative(root, file); return relative !== '' && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep); };
 
-/** Checks the path now; `commit(bytes)` writes it later and returns the workspace-relative path. */
+/** Checks the path now; `commit(bytes, fence)` writes it later, runs `fence` just before the rename and returns the
+ * workspace-relative path. A fence that throws leaves the destination as it was. */
 export async function planWorkspaceFile(roots, candidate) {
   if (!Array.isArray(roots) || roots.length !== 1) throw new UserDomainRefusal('not_granted');
   let root;
@@ -32,7 +33,7 @@ export async function planWorkspaceFile(roots, candidate) {
   if (existing?.isSymbolicLink()) throw new UserDomainRefusal('not_granted');
   if (existing && !existing.isFile()) throw new AgentToolRefusal('save_path_invalid');
   return {
-    async commit(bytes) {
+    async commit(bytes, fence = async () => {}) {
       const directory = path.dirname(target);
       await mkdir(directory, { recursive: true });
       const realDirectory = await realpath(directory);
@@ -40,7 +41,7 @@ export async function planWorkspaceFile(roots, candidate) {
       const final = path.join(realDirectory, path.basename(target));
       if ((await lstat(final).catch(() => null))?.isSymbolicLink()) throw new UserDomainRefusal('not_granted');
       const partial = path.join(realDirectory, `.save-${randomBytes(6).toString('hex')}.part`);
-      try { await writeFile(partial, bytes, { flag: 'wx', mode: 0o644 }); await rename(partial, final); }
+      try { await writeFile(partial, bytes, { flag: 'wx', mode: 0o644 }); await fence(); await rename(partial, final); }
       catch (error) { await rm(partial, { force: true }); throw error; }
       return path.relative(root, final).split(path.sep).join('/');
     },

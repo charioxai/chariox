@@ -2,8 +2,8 @@
 // The page's own session fetches it (cookies included), so a signed-in image saves like it shows. Nothing here
 // logs or echoes the URL: a URL can carry a token.
 import { createHash } from 'node:crypto';
-import { assertCurrentDocument, resolveBackendNode } from './browser-controller-actions.mjs';
-import { AgentToolRefusal } from './kernel-browser-refusal.mjs';
+import { assertCurrentDocument, assertNotCancelled, resolveBackendNode } from './browser-controller-actions.mjs';
+import { AgentToolRefusal, UserDomainRefusal } from './kernel-browser-refusal.mjs';
 import { topLevelNodeId, withLiveNode } from './kernel-browser-node-ref.mjs';
 import { planWorkspaceFile } from './kernel-browser-workspace-file.mjs';
 
@@ -49,14 +49,27 @@ function decodeDataUrl(url) {
   return { bytes, mime: cleanMime(match[1].replace(/;base64$/i, '')) };
 }
 
-async function fetchWithPageSession(connection, sessionId, url) {
-  const { frameTree } = await connection.send('Page.getFrameTree', {}, sessionId);
-  const { resource } = await connection.send('Network.loadNetworkResource', {
+// A CDP answer that the save's authority may stop waiting for: the request is left to finish, and `late` releases
+// what it still returns.
+function untilCancelled(pending, signal, late = () => {}) {
+  assertNotCancelled(signal);
+  if (!signal) return pending;
+  return new Promise((resolve, reject) => {
+    const stop = () => { pending.then(late, () => {}); try { assertNotCancelled(signal); } catch (error) { reject(error); } };
+    signal.addEventListener('abort', stop, { once: true });
+    pending.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop));
+  });
+}
+
+async function fetchWithPageSession(connection, sessionId, url, signal) {
+  const { frameTree } = await untilCancelled(connection.send('Page.getFrameTree', {}, sessionId), signal);
+  const close = handle => connection.send('IO.close', { handle }, sessionId).catch(() => {});
+  const { resource } = await untilCancelled(connection.send('Network.loadNetworkResource', {
     frameId: frameTree.frame.id, url, options: { disableCache: false, includeCredentials: true },
-  }, sessionId);
+  }, sessionId), signal, answer => { if (typeof answer?.resource?.stream === 'string') close(answer.resource.stream); });
   if (!resource?.success || typeof resource.stream !== 'string') throw new AgentToolRefusal('save_fetch_failed');
   if (resource.httpStatusCode !== undefined && (resource.httpStatusCode < 200 || resource.httpStatusCode > 299)) {
-    await connection.send('IO.close', { handle: resource.stream }, sessionId).catch(() => {});
+    await close(resource.stream);
     throw new AgentToolRefusal('save_fetch_failed');
   }
   const headers = Object.fromEntries(Object.entries(resource.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]));
@@ -64,18 +77,18 @@ async function fetchWithPageSession(connection, sessionId, url) {
   let total = 0;
   try {
     for (;;) {
-      const piece = await connection.send('IO.read', { handle: resource.stream, size: READ_CHUNK }, sessionId);
+      const piece = await untilCancelled(connection.send('IO.read', { handle: resource.stream, size: READ_CHUNK }, sessionId), signal);
       const bytes = piece.base64Encoded ? Buffer.from(piece.data ?? '', 'base64') : Buffer.from(piece.data ?? '', 'utf8');
       total += bytes.length;
       if (total > SAVE_LIMIT) throw new AgentToolRefusal('save_too_large');
       chunks.push(bytes);
       if (piece.eof) break;
     }
-  } finally { await connection.send('IO.close', { handle: resource.stream }, sessionId).catch(() => {}); }
+  } finally { await close(resource.stream); }
   return { bytes: Buffer.concat(chunks), mime: cleanMime(headers['content-type']) };
 }
 
-export async function saveResource(host, tab, command) {
+export async function saveResource(host, tab, command, signal) {
   if ((command.node_ref === undefined) === (command.url === undefined)) throw new AgentToolRefusal('save_source_conflict');
   const plan = await planWorkspaceFile(command._save_roots, command.path);
   const { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
@@ -87,9 +100,15 @@ export async function saveResource(host, tab, command) {
   // The same address rule a navigation has: http(s), no credentials in the URL.
   if (!['http:', 'https:', 'data:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new AgentToolRefusal('save_url_unsupported');
   const scheme = parsed.protocol;
-  const { bytes, mime } = scheme === 'data:' ? decodeDataUrl(url) : await fetchWithPageSession(connection, sessionId, url);
-  await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-  const saved = await plan.commit(bytes);
+  const { bytes, mime } = scheme === 'data:' ? decodeDataUrl(url) : await fetchWithPageSession(connection, sessionId, url, signal);
+  const generation = host.generation;
+  // The last check before the rename: an ended authority, a replaced document or a restarted browser writes nothing.
+  const saved = await plan.commit(bytes, async () => {
+    assertNotCancelled(signal);
+    await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+    assertNotCancelled(signal);
+    if (host.generation !== generation) throw new UserDomainRefusal('stale_epoch');
+  });
   return { generation: host.generation, tab_id: tab.tab_id, document_id: tab.document_id, path: saved, bytes: bytes.length,
     mime_type: mime, sha256: createHash('sha256').update(bytes).digest('hex') };
 }

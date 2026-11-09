@@ -1254,7 +1254,7 @@ export class KernelBrowserHost {
     }
     if (command.op === "save") {
       if (!agentRequest) throw new UserDomainRefusal("not_granted");
-      return this.observe(await saveResource(this, tab, command), tab, scope);
+      return this.observe(await saveResource(this, tab, command, signal), tab, scope);
     }
     if (command.op === "snapshot") {
       const snapshot = await this.browser.snapshot(binding);
