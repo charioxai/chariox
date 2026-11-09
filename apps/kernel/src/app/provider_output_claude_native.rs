@@ -1118,8 +1118,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .map(|run| run.started_at_ms())
             });
         let mut cursor = load_claude_transcript_cursor(context_file);
-        let drain =
-            drain_claude_transcript_raw_since(&path, &raw, &mut cursor, minimum_timestamp_ms);
+        let drain = drain_claude_transcript_raw_since(
+            &path,
+            &raw,
+            &mut cursor,
+            minimum_timestamp_ms,
+            unix_epoch_ms(),
+        );
         save_claude_transcript_cursor(context_file, &cursor);
         let terminal_failure = drain.terminal_failure.clone();
         let active_prompt_id = self

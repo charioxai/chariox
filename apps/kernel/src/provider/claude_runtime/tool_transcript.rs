@@ -193,7 +193,7 @@ impl PendingTool {
 
 /// Claude's Bash tool keeps a command running after its launch result when
 /// the model asked for `run_in_background`.
-fn launches_background_command(name: &str, input: Option<&Value>) -> bool {
+pub(crate) fn launches_background_command(name: &str, input: Option<&Value>) -> bool {
     name == "Bash"
         && input
             .and_then(|input| input.get("run_in_background"))
@@ -201,12 +201,13 @@ fn launches_background_command(name: &str, input: Option<&Value>) -> bool {
             == Some(true)
 }
 
-/// The task id a background launch result names: the stream's structured
-/// `tool_use_result.backgroundTaskId`, else the launch text
+/// The task id a background launch result names: the structured result's
+/// `backgroundTaskId` (the stream's `tool_use_result`, the transcript's
+/// `toolUseResult`), else the launch text
 /// "Command running in background with ID: <id>. ...".
-fn launched_task_id(value: &Value, output: &str) -> Option<String> {
-    value
-        .pointer("/tool_use_result/backgroundTaskId")
+pub(crate) fn launched_task_id(structured: Option<&Value>, output: &str) -> Option<String> {
+    structured
+        .and_then(|result| result.get("backgroundTaskId"))
         .and_then(Value::as_str)
         .map(str::to_string)
         .or_else(|| {
@@ -222,7 +223,7 @@ fn launched_task_id(value: &Value, output: &str) -> Option<String> {
 
 /// The background task a stop or output-poll call is about, when its result
 /// says that task has ended.
-fn ended_task_of_result(name: &str, input: &Value, output: &str) -> Option<String> {
+pub(crate) fn ended_task_of_result(name: &str, input: &Value, output: &str) -> Option<String> {
     let task_id = || {
         ["task_id", "shell_id", "bash_id"]
             .into_iter()
@@ -333,7 +334,7 @@ impl ClaudeToolTranscript {
                             self.background.insert(
                                 id.to_string(),
                                 BackgroundCall {
-                                    task_id: launched_task_id(value, &output),
+                                    task_id: launched_task_id(value.get("tool_use_result"), &output),
                                     snapshot: payload.clone(),
                                 },
                             );
