@@ -56,3 +56,12 @@ test("quoted and indented code protect math, images and task syntax", () => {
   for (const code of [quoted, indented, nested]) assert.equal(prepareTranscriptMarkdown(code), code)
   assert.equal(prepareTranscriptMarkdown("> $x^2$\n\n- [x] real"), "> x²\n\n- ☑ real")
 })
+
+test("MP-08 a visualize line names the page the web pane draws, and stays literal in code", () => {
+  assert.equal(
+    prepareTranscriptMarkdown('Here is the chart.\n\nvisualize{"path":"/Users/miguel/arroba-cloud/tmp/aa-index-reproduction.html"}'),
+    "Here is the chart.\n\n▣ visual: aa-index-reproduction.html · /Users/miguel/arroba-cloud/tmp/aa-index-reproduction.html (open in the web app)",
+  )
+  assert.equal(prepareTranscriptMarkdown('```\nvisualize{"path":"a.html"}\n```'), '```\nvisualize{"path":"a.html"}\n```')
+  assert.equal(prepareTranscriptMarkdown('visualize{"path": 3}'), 'visualize{"path": 3}', "not a page: left as written")
+})
