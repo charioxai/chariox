@@ -33,7 +33,7 @@ pub(crate) use place_command::{
     destinations, offer_placement, run_on_kernel, Placement, Requester,
 };
 
-pub const CHUNK_BYTES: usize = crate::local::KERNEL_FILE_MAX_CHUNK_BYTES as usize;
+pub const CHUNK_BYTES: usize = 256 * 1024;
 const MAX_PER_ROOM: usize = 16;
 const MAX_PER_KERNEL: usize = 64;
 

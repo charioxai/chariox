@@ -1508,6 +1508,38 @@ mod reply_ceiling_tests {
         )
     }
 
+    // The per-client bound on bulk replies only covers a reply the relay client queues as bulk:
+    // the largest file chunk must be one, or a download would run on the priority lane.
+    #[test]
+    fn a_full_file_chunk_reply_is_queued_as_bulk() {
+        use base64::Engine;
+        let data = vec![0u8; crate::local::KERNEL_FILE_MAX_CHUNK_BYTES as usize];
+        let reply = serde_json::to_vec(&serde_json::json!({
+            "response": {
+                "KernelFileChunk": {
+                    "path": "p".repeat(512),
+                    "offset": u64::MAX,
+                    "data_base64": base64::engine::general_purpose::STANDARD.encode(data),
+                    "size": u64::MAX,
+                    "eof": false
+                }
+            }
+        }))
+        .unwrap();
+        let sealed = seal(reply);
+        let on_the_wire = sealed.encrypted_response.as_ref().unwrap().ciphertext.len();
+        assert!(
+            on_the_wire <= 128 * 1024,
+            "a reply of {on_the_wire} bytes holds the link for too long"
+        );
+        let envelope = chariox_relay::protocol::RelayEnvelope::DaemonResponse {
+            relay_request_id: "chunk".into(),
+            encrypted_response: sealed.encrypted_response,
+            error: None,
+        };
+        assert!(crate::transport::relay_client::relay_envelope_uses_event_lane(&envelope));
+    }
+
     // MP-08 / MP-09 / MP-10 / MP-11 (relayflood): nothing bounded how big one reply could be.
     #[test]
     fn a_reply_over_the_ceiling_is_a_typed_error() {
@@ -1524,8 +1556,8 @@ mod reply_ceiling_tests {
                 && record.contains("\"request_kind\":\"machine_file.read\"")),
             "the log names the request kind"
         );
-        // A file chunk (256 KiB of data, 350 KB on the wire) stays well below the ceiling.
-        let chunk = seal(vec![b'x'; 350 * 1024]);
+        // A file chunk (64 KiB of data, about 117 KB on the wire) stays well below the ceiling.
+        let chunk = seal(vec![b'x'; 90 * 1024]);
         assert!(chunk.error.is_none() && chunk.encrypted_response.is_some());
     }
 }
