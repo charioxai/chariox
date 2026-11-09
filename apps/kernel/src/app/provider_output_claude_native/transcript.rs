@@ -182,6 +182,12 @@ pub(super) fn drain_claude_transcript_raw_since(
             claude_transcript_timestamp_ms(&value)
                 .is_some_and(|timestamp_ms| timestamp_ms < minimum_timestamp_ms)
         }) {
+            // The cutoff drops the old turns, not the end of a command the kernel
+            // already tracks: its notice or stop can be written before a newer
+            // prompt starts and still be unread when that prompt's cutoff is set.
+            drain
+                .chunks
+                .extend(claude_background_end_chunks(&value, cursor, now_ms));
             continue;
         }
         if drain.session_id.is_none() {
@@ -357,6 +363,136 @@ fn finish_background_call(
     })
 }
 
+fn track_pending_call(
+    pending_tool_calls: &mut BTreeMap<String, ClaudeToolCall>,
+    id: &str,
+    name: &str,
+    input: &Value,
+    background: bool,
+    now_ms: u64,
+) {
+    if pending_tool_calls.len() >= PENDING_TOOL_CALLS {
+        return;
+    }
+    let kept = if input.to_string().len() <= PENDING_TOOL_INPUT_BYTES {
+        input.clone()
+    } else {
+        Value::Null
+    };
+    pending_tool_calls.insert(
+        id.to_string(),
+        ClaudeToolCall {
+            tool: name.to_string(),
+            input: kept,
+            started_at_ms: Some(now_ms),
+            background,
+        },
+    );
+}
+
+/// What an entry older than the active prompt still does: ends the tracked
+/// background commands it names, and nothing else reaches the prompt. A stop
+/// or poll call is remembered silently so its older result can end its task.
+fn claude_background_end_chunks(
+    value: &Value,
+    cursor: &mut ClaudeTranscriptCursor,
+    now_ms: u64,
+) -> Vec<ClaudeTranscriptChunk> {
+    if let Some(notification) = claude_task_notification(value) {
+        return finish_background_call(cursor, notification, now_ms)
+            .into_iter()
+            .collect();
+    }
+    let kind = value.get("type").and_then(Value::as_str);
+    let message = value.get("message").unwrap_or(value);
+    let Some(content) = message.get("content").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    match kind {
+        Some("assistant") => {
+            for block in content {
+                let (Some("tool_use"), Some(id), Some(name)) = (
+                    block.get("type").and_then(Value::as_str),
+                    block.get("id").and_then(Value::as_str),
+                    block.get("name").and_then(Value::as_str),
+                ) else {
+                    continue;
+                };
+                if crate::provider::ends_background_commands(name) {
+                    let input = block.get("input").cloned().unwrap_or(Value::Null);
+                    track_pending_call(
+                        &mut cursor.pending_tool_calls,
+                        id,
+                        name,
+                        &input,
+                        false,
+                        now_ms,
+                    );
+                }
+            }
+            Vec::new()
+        }
+        Some("user") => {
+            let mut ended_tasks = Vec::new();
+            for block in content {
+                let Some(id) = block
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .filter(|kind| *kind == "tool_result")
+                    .and_then(|_| block.get("tool_use_id").and_then(Value::as_str))
+                else {
+                    continue;
+                };
+                if !cursor
+                    .pending_tool_calls
+                    .get(id)
+                    .is_some_and(|call| crate::provider::ends_background_commands(&call.tool))
+                {
+                    continue;
+                }
+                let call = cursor.pending_tool_calls.remove(id);
+                let failed = block.get("is_error").and_then(Value::as_bool) == Some(true);
+                if let (Some(call), false) = (call, failed) {
+                    let output = claude_tool_result_text(block.get("content"));
+                    ended_tasks.extend(crate::provider::ended_task_of_result(
+                        &call.tool,
+                        &call.input,
+                        &output,
+                    ));
+                }
+            }
+            finish_ended_tasks(cursor, ended_tasks, now_ms)
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn finish_ended_tasks(
+    cursor: &mut ClaudeTranscriptCursor,
+    ended_tasks: Vec<String>,
+    now_ms: u64,
+) -> Vec<ClaudeTranscriptChunk> {
+    ended_tasks
+        .iter()
+        .filter_map(|task_id| {
+            let end = ClaudeTaskEnd {
+                tool_use_id: None,
+                task_id: Some(task_id),
+            };
+            finish_background_call(cursor, end, now_ms)
+        })
+        .collect()
+}
+
+fn claude_tool_result_text(result: Option<&Value>) -> String {
+    match result {
+        Some(Value::String(value)) => value.to_string(),
+        Some(Value::Array(_)) => crate::provider::bounded_result(result),
+        Some(value) => serde_json::to_string(value).unwrap_or_else(|_| value.to_string()),
+        None => String::new(),
+    }
+}
+
 fn claude_assistant_transcript_chunks(
     value: &Value,
     pending_tool_calls: &mut BTreeMap<String, ClaudeToolCall>,
@@ -402,22 +538,7 @@ fn claude_assistant_transcript_chunks(
                 let input = block.get("input").cloned().unwrap_or(Value::Null);
                 let background = crate::provider::launches_background_command(name, Some(&input));
                 if let Some(id) = block.get("id").and_then(Value::as_str) {
-                    if pending_tool_calls.len() < PENDING_TOOL_CALLS {
-                        let kept = if input.to_string().len() <= PENDING_TOOL_INPUT_BYTES {
-                            input.clone()
-                        } else {
-                            Value::Null
-                        };
-                        pending_tool_calls.insert(
-                            id.to_string(),
-                            ClaudeToolCall {
-                                tool: name.to_string(),
-                                input: kept,
-                                started_at_ms: Some(now_ms),
-                                background,
-                            },
-                        );
-                    }
+                    track_pending_call(pending_tool_calls, id, name, &input, background, now_ms);
                 }
                 let mut payload = serde_json::json!({
                     "id": block.get("id").cloned().unwrap_or(Value::Null),
@@ -481,12 +602,7 @@ fn claude_tool_result_transcript_chunks(
                 cursor.pending_tool_calls.remove(tool_use_id);
                 return None;
             }
-            let content = match result {
-                Some(Value::String(value)) => value.to_string(),
-                Some(Value::Array(_)) => crate::provider::bounded_result(result),
-                Some(value) => serde_json::to_string(value).unwrap_or_else(|_| value.to_string()),
-                None => String::new(),
-            };
+            let content = claude_tool_result_text(result);
             let (images, images_omitted) = crate::provider::bounded_result_images(result);
             let is_error = block
                 .get("is_error")
@@ -554,13 +670,7 @@ fn claude_tool_result_transcript_chunks(
             })
         })
         .collect();
-    for task_id in ended_tasks {
-        let end = ClaudeTaskEnd {
-            tool_use_id: None,
-            task_id: Some(&task_id),
-        };
-        chunks.extend(finish_background_call(cursor, end, now_ms));
-    }
+    chunks.extend(finish_ended_tasks(cursor, ended_tasks, now_ms));
     chunks
 }
 
