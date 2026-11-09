@@ -1168,17 +1168,18 @@ async fn dispatch_relay_client_request(
             .reserve(&command.command_id, fingerprint)
             .await
         {
-            CommandReservation::Wait(_)
-                if !command_result_cache.may_answer_retry(&command.command_id) =>
-            {
-                return RelayDispatchOutcome::RelayError(relay_error(
-                    "duplicate_command_unavailable",
-                    "original duplicate command result was unavailable",
-                    true,
-                ));
-            }
             CommandReservation::Wait(wait_rx) => {
                 return match wait_rx.await {
+                    // A retry's answer window starts when the result exists, not when the retry
+                    // arrived: retries of a command that ran for minutes would each claim an
+                    // expired window and all receive the result at once.
+                    Ok(_) if !command_result_cache.may_answer_retry(&command.command_id) => {
+                        RelayDispatchOutcome::RelayError(relay_error(
+                            "duplicate_command_unavailable",
+                            "original duplicate command result was unavailable",
+                            true,
+                        ))
+                    }
                     Ok(cached) => {
                         if let Err(error) = router
                             .runtime_state()
