@@ -64,7 +64,10 @@ async fn a_person_and_the_launching_agent_are_authorized_and_nobody_else() {
     f.state
         .authorize_gateway_request(
             &placer.origin.grant_id,
-            &crate::local::LocalDaemonRequest::RoomTerminal(place(&session, None, None)),
+            &crate::local::LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
+                operation: RoomTerminalOperation::ExecList,
+                ..place(&session, None, None)
+            }),
         )
         .unwrap();
 

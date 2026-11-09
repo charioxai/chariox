@@ -70,6 +70,7 @@ impl KernelRuntimeState {
         if carries_passkey(request) {
             return Err(Refusal::HumanOnly.error());
         }
+        refuse_forwarded_exec_place(request)?;
         if let Some(user_id) = grant_id.strip_prefix(super::reach::OWNER_GRANT_PREFIX) {
             return if self.is_gateway_owner(user_id) {
                 Ok(())
@@ -148,6 +149,7 @@ impl KernelRuntimeState {
         on_behalf_of: &OnBehalfOf,
         request: &LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
+        refuse_forwarded_exec_place(request)?;
         let forbidden = carries_passkey(request)
             || restricted_request(request)
             || matches!(request, LocalDaemonRequest::RespondToInteraction(answer)
@@ -352,4 +354,20 @@ fn owner_vault_is_not_a_kernel_access_operation() {
     assert!(restricted_request(&LocalDaemonRequest::OwnerVault(
         crate::local::OwnerVaultRequest::Reveal { id: "entry".into() }
     )));
+}
+
+/// A held launch is placed by the kernel that holds it. Forwarded, the request would run
+/// under this kernel's owner grant for a requester that has none here.
+fn refuse_forwarded_exec_place(request: &LocalDaemonRequest) -> Result<(), DaemonError> {
+    match request {
+        LocalDaemonRequest::RoomTerminal(terminal)
+            if matches!(terminal.operation, crate::local::RoomTerminalOperation::ExecPlace { .. }) =>
+        {
+            Err(crate::room_exec::error(
+                "exec_place_not_here",
+                "a held launch is placed by the kernel that holds it: send exec_place to that kernel's own socket",
+            ))
+        }
+        _ => Ok(()),
+    }
 }
