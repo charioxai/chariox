@@ -12,12 +12,15 @@ const FIRINGS_AT_ONCE: usize = 8;
 /// stopping it half way would leave a steer hold behind, but it no longer holds back the others.
 const PLACE_LIMIT: Duration = Duration::from_secs(30);
 
+/// The claimed triggers still to fire, per agent, in claim order.
+type AgentQueues = HashMap<String, VecDeque<(AgentTriggerDispatch, u64)>>;
+
 #[derive(Clone)]
 pub(super) struct TriggerFirings {
     places: Arc<tokio::sync::Semaphore>,
     running: Arc<AtomicUsize>,
     idle: Arc<Notify>,
-    queues: Arc<std::sync::Mutex<HashMap<String, VecDeque<(AgentTriggerDispatch, u64)>>>>,
+    queues: Arc<std::sync::Mutex<AgentQueues>>,
 }
 
 impl Default for TriggerFirings {
@@ -63,9 +66,7 @@ impl Drop for RunningFiring {
 }
 
 impl TriggerFirings {
-    fn lock_queues(
-        &self,
-    ) -> std::sync::MutexGuard<'_, HashMap<String, VecDeque<(AgentTriggerDispatch, u64)>>> {
+    fn lock_queues(&self) -> std::sync::MutexGuard<'_, AgentQueues> {
         self.queues
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
