@@ -627,6 +627,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-host.mjs"),
     ),
     (
+        "kernel-browser-identity.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-identity.mjs"),
+    ),
+    (
         "kernel-browser-process.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-process.mjs"),
     ),
