@@ -17,20 +17,26 @@ pub(super) fn summarize_spawned_agent(
     room: &crate::session::RuntimeSession,
     deadline_ms: Option<u64>,
 ) -> serde_json::Value {
-    // Without a folder of its own the agent works in its room's.
-    let worktree = agent.worktree_id().unwrap_or_else(|| room.worktree_id());
+    // A remote agent works in a folder of its worker, which only its binding names: the room's
+    // folder is the home's, and this kernel cannot read the worker's branch.
+    let (worktree, branch) = match agent.remote_execution() {
+        Some(binding) => (binding.worker_worktree_id.as_deref(), None),
+        None => {
+            // Without a folder of its own the agent works in its room's.
+            let worktree = agent.worktree_id().unwrap_or_else(|| room.worktree_id());
+            (
+                Some(worktree),
+                crate::git_worktree_placement::checked_out_branch(worktree),
+            )
+        }
+    };
     let mut summary = summarize_meta_agent(agent);
     summary["profile"] = serde_json::json!(agent.account_profile());
     summary["effort"] = serde_json::json!(agent.effort());
     summary["permission"] = serde_json::json!(agent.permission_level_override());
     summary["deadline_ms"] = serde_json::json!(deadline_ms);
     summary["worktree"] = serde_json::json!(worktree);
-    // A remote agent's folder lies on its worker, so this kernel cannot name its branch.
-    summary["branch"] = serde_json::json!(agent
-        .remote_execution()
-        .is_none()
-        .then(|| crate::git_worktree_placement::checked_out_branch(worktree))
-        .flatten());
+    summary["branch"] = serde_json::json!(branch);
     summary
 }
 
