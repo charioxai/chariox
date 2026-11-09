@@ -409,6 +409,7 @@ fn account_copy_refusals_are_constant_at_public_error_boundary() {
         "provider_account_copy_unavailable",
         "provider_account_copy_unsupported",
         "provider_account_copy_vault_locked",
+        "provider_account_copy_target_vault_locked",
         "provider_account_copy_conflict",
         "provider_account_copy_rejected",
         "provider_account_copy_verification_failed",
