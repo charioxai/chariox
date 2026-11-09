@@ -2,7 +2,7 @@ import {Rig,boot,submit,sleep,runs,recorder,isTerminal,jq} from './lib.mjs';
 const rec=recorder('f2real');
 const rig=new Rig('f2real',{extraEnv:{CHARIOX_CODEX_BIN:'/usr/local/bin/codex',IS_SANDBOX:'1'}});await rig.start();await rig.session();
 const link=await rig.send({LinkProviderAccountProfile:{provider:'codex',label:'wfgate-luna',path:'/root/.chariox/dev/worker-k/home/state/provider-accounts/local/codex/kaissandra-ai-reviewer-login-esqv7b7c/codex'}});
-console.log('link keys',Object.keys(link));const prof=JSON.stringify(link).match(/"profile_id":"([^"]+)"/)?.[1];console.log('profile id present',!!prof);
+console.log('link keys',Object.keys(link));const prof=JSON.stringify(link).match(/"profile_id":"([^"]+)"/)?.[1];await rig.send({RefreshProviderAccountProfile:{provider:'codex',account_profile:prof}});console.log('profile id present',!!prof);
 await boot(rig,{provider:'codex',model:'gpt-6-luna',agentExtra:{effort:'low',accountProfile:prof}});
 const N=+(process.env.F2_N||3);const ids=[];for(let i=0;i<N;i++){const e=await submit(rig,'run');await rig.waitFor(rig.alias,e.entry_id,isTerminal,30000);ids.push(e.entry_id);await sleep(500)}
 const TREE=new URL('../../',import.meta.url).pathname.replace(/\/$/,'');const requests=await import(TREE+'/packages/kernel-client/dist/ipc-requests.js');
