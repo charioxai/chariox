@@ -4,9 +4,8 @@ import { resolve } from "node:path"
 import { link, lstat, open, rename, rm, stat, type FileHandle } from "node:fs/promises"
 import { CommandFailure } from "./agent-command-table.js"
 import { terminalCwd } from "./app-install-file.js"
+import { downloadWindowed, FILE_CHUNK_BYTES } from "./kernel-file-window.js"
 
-// Matches the kernel: a chunk travels base64 inside one relayed request of at most 768 KiB.
-const CHUNK_BYTES = 256 * 1024
 // The same name the kernel gives an unfinished upload, so a download resumes the way an upload does.
 const PARTIAL_SUFFIX = ".chariox-partial"
 
@@ -93,13 +92,22 @@ async function getFile(send: SendRequest, remotePath: string, localPath: string,
   // Private while the bytes arrive; the published file gets its permissions below.
   const { handle: partial, resumedFrom } = await openStaging(partialPath, size)
   try {
-    for (let offset = resumedFrom; offset < size;) {
-      const response = await send({ ReadKernelFile: { path: remotePath, offset, length: Math.min(CHUNK_BYTES, size - offset) } }) as { KernelFileChunk: { data_base64: string } }
-      const bytes = Buffer.from(response.KernelFileChunk.data_base64, "base64")
-      if (bytes.length === 0) throw new CommandFailure("file_io_failed", `${remotePath} ended at ${offset} of ${size} bytes; run the same command again to continue`)
-      await partial.writeFile(bytes)
-      offset += bytes.length
-    }
+    // A small request is answered ahead of the chunks, so its round trip is the link's alone.
+    const probed = Date.now()
+    if (resumedFrom < size) await remoteStat(send, remotePath, false)
+    await downloadWindowed({
+      size,
+      from: resumedFrom,
+      roundTripMs: Date.now() - probed,
+      now: Date.now,
+      read: async (offset, length) => {
+        const response = await send({ ReadKernelFile: { path: remotePath, offset, length } }) as { KernelFileChunk: { data_base64: string } }
+        const bytes = Buffer.from(response.KernelFileChunk.data_base64, "base64")
+        if (bytes.length === 0) throw new CommandFailure("file_io_failed", `${remotePath} ended at ${offset} of ${size} bytes; run the same command again to continue`)
+        return bytes
+      },
+      write: bytes => partial.writeFile(bytes),
+    })
     if (await hashOf(partial) !== sha256) {
       await rm(partialPath)
       throw new CommandFailure("file_hash_mismatch", `The download did not match the sha256 of ${remotePath}, so nothing was kept; run the same command again to download it afresh`)
@@ -125,12 +133,12 @@ async function putFile(send: SendRequest, localPath: string, remotePath: string,
   // The partial's bytes are not verified here: the target checks the whole file's sha256 and keeps nothing on a mismatch.
   const resumedFrom = target.partial_size !== null && target.partial_size <= size ? target.partial_size : 0
   const source = await open(localPath, "r")
-  const buffer = Buffer.alloc(CHUNK_BYTES)
+  const buffer = Buffer.alloc(FILE_CHUNK_BYTES)
   let written!: { path: string; complete: boolean }
   try {
     let offset = resumedFrom
     do {
-      const { bytesRead } = await source.read(buffer, 0, CHUNK_BYTES, offset)
+      const { bytesRead } = await source.read(buffer, 0, FILE_CHUNK_BYTES, offset)
       if (bytesRead === 0 && offset < size) throw new CommandFailure("file_io_failed", `${localPath} changed while it was being sent; run the same command again`)
       const response = await send({ WriteKernelFile: { path: remotePath, offset, data_base64: buffer.subarray(0, bytesRead).toString("base64"), total_size: size, sha256, overwrite } }) as { KernelFileWritten: typeof written }
       written = response.KernelFileWritten
