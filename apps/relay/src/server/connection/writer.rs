@@ -4,6 +4,7 @@ use crate::frame_transport::{
     MAX_MESSAGE_BYTES, MAX_TRANSFERS, PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES, WINDOW_BYTES,
 };
 use crate::meter::{ConnectionMeter, Direction, CONTROL_SCOPE, DISPLAY_TUNNEL_SCOPE};
+use crate::outgoing::{OutgoingQueue, RelaySender};
 use futures_util::{Sink, SinkExt};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -258,15 +259,19 @@ pub(super) struct WriterUsage {
     meter: ConnectionMeter,
     /// The scope of this socket's own subscription, if the id is one.
     scope_of: ScopeOf,
+    /// What the writer has taken off this connection's queue.
+    queue: Arc<OutgoingQueue>,
 }
 impl WriterUsage {
     pub(super) fn new(
         meter: ConnectionMeter,
         scope_of: impl Fn(&str) -> Option<Arc<str>> + Send + 'static,
+        queue: Arc<OutgoingQueue>,
     ) -> Self {
         Self {
             meter,
             scope_of: Box::new(scope_of),
+            queue,
         }
     }
     /// Display subscriptions keep their own queue per stream.
@@ -277,9 +282,15 @@ impl WriterUsage {
     /// A writer without a meter whose every subscription is (or is not) a display one.
     #[cfg(test)]
     fn fixture(display: bool) -> Self {
-        Self::new(ConnectionMeter::detached(), move |_| {
-            display.then(|| Arc::from(crate::frame_transport::DISPLAY_EVENT_SCOPE))
-        })
+        Self::fixture_with_queue(display, RelaySender::detached(mpsc::channel(1).0).queue())
+    }
+    #[cfg(test)]
+    fn fixture_with_queue(display: bool, queue: Arc<OutgoingQueue>) -> Self {
+        Self::new(
+            ConnectionMeter::detached(),
+            move |_| display.then(|| Arc::from(crate::frame_transport::DISPLAY_EVENT_SCOPE)),
+            queue,
+        )
     }
     fn scope(&self, stream: Option<&Stream>) -> Arc<str> {
         match stream {
@@ -289,6 +300,9 @@ impl WriterUsage {
         }
         .unwrap_or_else(|| Arc::from(CONTROL_SCOPE))
     }
+    fn released(&self, queued: &Queued) {
+        self.queue.release(queued.admitted);
+    }
     fn sent(&self, scope: &str, message: &Message) {
         if matches!(message, Message::Text(_) | Message::Binary(_)) {
             self.meter.record(Direction::Out, scope, message.len());
@@ -297,16 +311,19 @@ impl WriterUsage {
 }
 struct Queued {
     message: Message,
+    /// The size the sender queued it at; `receiver_message` may change the message.
+    admitted: usize,
     lane: Lane,
     key: Option<String>,
     scope: Arc<str>,
 }
 impl Queued {
-    fn new(message: Message, usage: &WriterUsage) -> Self {
+    fn new(message: Message, admitted: usize, usage: &WriterUsage) -> Self {
         let (lane, key, stream) = lane(&message, usage);
         let scope = usage.scope(stream.as_ref());
         Self {
             message,
+            admitted,
             lane,
             key,
             scope,
@@ -385,10 +402,13 @@ where
         active.retain(|t| !t.finished());
         while pending.len() < capacity {
             match outgoing.try_recv() {
-                Ok(message) => match receiver_message(message, binary_events) {
-                    Some(m) => pending.push_back(Queued::new(m, &usage)),
-                    None => return "bad_outgoing_message",
-                },
+                Ok(message) => {
+                    let admitted = message.len();
+                    match receiver_message(message, binary_events) {
+                        Some(m) => pending.push_back(Queued::new(m, admitted, &usage)),
+                        None => return "bad_outgoing_message",
+                    }
+                }
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     open = false;
                     break;
@@ -397,7 +417,9 @@ where
             }
         }
         if let Some(index) = pending.iter().position(|queued| control(&queued.message)) {
-            let message = pending.remove(index).unwrap().message;
+            let queued = pending.remove(index).unwrap();
+            usage.released(&queued);
+            let message = queued.message;
             let terminal = matches!(message, Message::Close(_));
             if !write(&mut writer, message).await || terminal {
                 return "control_write";
@@ -406,6 +428,7 @@ where
         }
         if !chunks {
             if let Some(queued) = pending.pop_front() {
+                usage.released(&queued);
                 let message = queued.message;
                 if message.len() > CHUNK_BYTES {
                     upgrade(&mut writer).await;
@@ -439,6 +462,7 @@ where
                 .or_else(|| (0..pending.len()).find(|&i| startable(i)))
             {
                 let queued = pending.remove(index).unwrap();
+                usage.released(&queued);
                 let class = queued.lane;
                 let key = queued.key.clone();
                 let scope = queued.scope.clone();
@@ -581,7 +605,7 @@ where
                 if !credit.receipt(id,offset,&mut active){return "bad_receipt";}
             }
             message=outgoing.recv(),if open && pending.len()<capacity=>{
-                match message {Some(message)=>match receiver_message(message,binary_events){Some(m)=>pending.push_back(Queued::new(m, &usage)),None=>return "bad_outgoing_message"},None=>open=false}
+                match message {Some(message)=>{let admitted=message.len();match receiver_message(message,binary_events){Some(m)=>pending.push_back(Queued::new(m,admitted,&usage)),None=>return "bad_outgoing_message"}},None=>open=false}
             }
         }
     }

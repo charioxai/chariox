@@ -6,6 +6,7 @@ type Socket =
 const REPLY_BYTES: usize = 8 * 1024;
 // More replies than the client's socket buffers and its whole outgoing queue can hold.
 const REPLIES: usize = 6_000;
+const REQUESTS_IN_FLIGHT: usize = 256;
 
 async fn connect_client(url: &str, daemon_id: &str) -> Socket {
     let (mut client, _) = connect_async_with_retry(url)
@@ -98,9 +99,9 @@ fn client_request(index: usize) -> Message {
     )
 }
 
-async fn next_daemon_request(daemon: &mut Socket) -> Option<String> {
+async fn next_daemon_request(daemon: &mut Socket, wait: Duration) -> Option<String> {
     loop {
-        match tokio::time::timeout(Duration::from_secs(10), daemon.next()).await {
+        match tokio::time::timeout(wait, daemon.next()).await {
             Ok(Some(Ok(Message::Text(text)))) => {
                 if let Ok(RelayEnvelope::DaemonRequest {
                     relay_request_id, ..
@@ -132,6 +133,50 @@ fn daemon_reply(relay_request_id: String) -> Message {
     )
 }
 
+/// A client that sends `REPLIES` requests, never reads an answer and has at most
+/// `REQUESTS_IN_FLIGHT` unanswered, while the kernel answers
+/// whatever the relay forwards of them. Ends when the relay forwards no more, which is also
+/// what a relay does with a client it has stopped serving. Returns the client's two halves
+/// and how many requests the kernel answered.
+async fn flood_stalled_client(
+    url: &str,
+    daemon: &mut Socket,
+) -> (
+    futures_util::stream::SplitSink<Socket, Message>,
+    futures_util::stream::SplitStream<Socket>,
+    usize,
+) {
+    let (mut stalled_tx, stalled_rx) = connect_client(url, "daemon-a").await.split();
+    // The client stays within what the kernel's queue holds: only its replies pile up.
+    let answered = Arc::new(tokio::sync::Semaphore::new(REQUESTS_IN_FLIGHT));
+    let sender = tokio::spawn({
+        let answered = answered.clone();
+        async move {
+            for index in 0..REPLIES {
+                // Closed once the kernel is no longer sent requests.
+                let Ok(permit) = answered.acquire().await else {
+                    break;
+                };
+                permit.forget();
+                if stalled_tx.send(client_request(index)).await.is_err() {
+                    break;
+                }
+            }
+            stalled_tx
+        }
+    });
+    let mut replied = 0;
+    while let Some(relay_request_id) = next_daemon_request(daemon, Duration::from_secs(2)).await {
+        if daemon.send(daemon_reply(relay_request_id)).await.is_err() {
+            panic!("the kernel lost its relay connection while answering a stalled client");
+        }
+        replied += 1;
+        answered.add_permits(1);
+    }
+    answered.close();
+    (sender.await.unwrap(), stalled_rx, replied)
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11 (relayflood): one client that stops reading
 // while a kernel answers its bulk requests must not cost the kernel its relay
 // connection, and with it every other client of that kernel.
@@ -139,28 +184,16 @@ fn daemon_reply(relay_request_id: String) -> Message {
 async fn a_stalled_client_does_not_disconnect_the_kernel_that_answers_it() {
     let (url, mut daemon, shutdown_tx, server_task) = relay_with_kernel().await;
 
-    // The stalled client sends its requests and never reads a reply.
-    let (mut stalled_tx, stalled_rx) = connect_client(&url, "daemon-a").await.split();
-    let sender = tokio::spawn(async move {
-        for index in 0..REPLIES {
-            stalled_tx.send(client_request(index)).await.unwrap();
-        }
-        stalled_tx
-    });
-    for _ in 0..REPLIES {
-        let relay_request_id = next_daemon_request(&mut daemon)
-            .await
-            .expect("the kernel lost its relay connection while answering a stalled client");
-        if daemon.send(daemon_reply(relay_request_id)).await.is_err() {
-            panic!("the kernel lost its relay connection while answering a stalled client");
-        }
-    }
-    let _stalled_tx = sender.await.unwrap();
+    let (_stalled_tx, stalled_rx, replied) = flood_stalled_client(&url, &mut daemon).await;
+    assert!(
+        replied > 1_000,
+        "the kernel answered only {replied} requests of the stalled client"
+    );
 
     // Another client of the same kernel is still served.
     let mut other = connect_client(&url, "daemon-a").await;
     other.send(client_request(REPLIES)).await.unwrap();
-    let relay_request_id = next_daemon_request(&mut daemon)
+    let relay_request_id = next_daemon_request(&mut daemon, Duration::from_secs(10))
         .await
         .expect("the kernel must still receive requests from other clients");
     daemon.send(daemon_reply(relay_request_id)).await.unwrap();
@@ -181,36 +214,41 @@ async fn a_stalled_client_does_not_disconnect_the_kernel_that_answers_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_backlogged_receiver_is_closed_and_counted() {
     let (url, mut daemon, shutdown_tx, server_task) = relay_with_kernel().await;
-    let (mut stalled_tx, mut stalled_rx) = connect_client(&url, "daemon-a").await.split();
-    let sender = tokio::spawn(async move {
-        for index in 0..REPLIES {
-            stalled_tx.send(client_request(index)).await.unwrap();
-        }
-        stalled_tx
-    });
-    for _ in 0..REPLIES {
-        let relay_request_id = next_daemon_request(&mut daemon)
-            .await
-            .expect("the kernel lost its relay connection while answering a stalled client");
-        daemon
-            .send(daemon_reply(relay_request_id))
-            .await
-            .expect("the kernel lost its relay connection while answering a stalled client");
-    }
-    let _stalled_tx = sender.await.unwrap();
+    let (_stalled_tx, mut stalled_rx, _) = flood_stalled_client(&url, &mut daemon).await;
 
-    // The client starts reading again: what it had queued, then the close.
-    let close = loop {
+    // The client starts reading again: what it had queued, then the end of its connection. The
+    // close frame itself may be lost to the reset when the relay drops requests still in flight.
+    loop {
         match tokio::time::timeout(Duration::from_secs(10), stalled_rx.next()).await {
-            Ok(Some(Ok(Message::Close(frame)))) => break frame,
+            Ok(Some(Ok(Message::Close(frame)))) => {
+                assert_eq!(
+                    frame.map(|frame| u16::from(frame.code)),
+                    Some(1013),
+                    "a backlogged receiver is closed with 'try again later'"
+                );
+                break;
+            }
             Ok(Some(Ok(_))) => {}
-            other => panic!("the stalled client was never told to come back later: {other:?}"),
+            Ok(Some(Err(_)) | None) => break,
+            Err(_) => panic!("the stalled client was never disconnected"),
         }
-    };
-    assert_eq!(
-        close.map(|frame| u16::from(frame.code)),
-        Some(1013),
-        "a backlogged receiver is closed with 'try again later'"
+    }
+    let addr: std::net::SocketAddr = url.trim_start_matches("ws://").parse().unwrap();
+    let mut health = String::new();
+    for _ in 0..50 {
+        health = relay_http_get(addr, "/healthz").await;
+        if health.contains("\"receiver_backlog_close_count\":1") {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        health.contains("\"receiver_backlog_close_count\":1"),
+        "the backlog close is counted: {health}"
+    );
+    assert!(
+        !health.contains("\"dropped_reply_count\":0"),
+        "the dropped replies are counted: {health}"
     );
     let _ = shutdown_tx.send(());
     server_task.await.unwrap();
