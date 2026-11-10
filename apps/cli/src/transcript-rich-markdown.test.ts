@@ -65,3 +65,12 @@ test("MP-08 a visualize line names the page the web pane draws, and stays litera
   assert.equal(prepareTranscriptMarkdown('```\nvisualize{"path":"a.html"}\n```'), '```\nvisualize{"path":"a.html"}\n```')
   assert.equal(prepareTranscriptMarkdown('visualize{"path": 3}'), 'visualize{"path": 3}', "not a page: left as written")
 })
+
+test("MP-08 a visualize line in Codex's wrapper marks names the page, and no private-use mark reaches the terminal", () => {
+  const wrapped = 'visualize{"path":"/w/chart.html"}'
+  assert.equal(
+    prepareTranscriptMarkdown(`Here is the chart.\n\n${wrapped}`),
+    "Here is the chart.\n\n▣ visual: chart.html · /w/chart.html (open in the web app)",
+  )
+  assert.equal(prepareTranscriptMarkdown("A note stays."), "A note stays.")
+})

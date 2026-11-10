@@ -25,6 +25,10 @@ const taskMarkerPattern = /^\[([ xX])\][ \t]+/
 const externalHrefPattern = /^(?:https?:\/\/|mailto:)/i
 // Codex's visualize skill ends a reply with this line for the app to draw the HTML page it names.
 const visualizeLinePattern = /^visualize(\{.*\})[ \t]*$/
+// Codex's own directives (its visualize line among them) come wrapped in private-use marks: U+E200 opens, U+E202 separates
+// the name from its arguments, U+E201 closes. Its app hides them; here they would show as boxes or nothing and keep the line
+// from being read, so no text is rendered with them.
+const directiveMarkPattern = /[\uE200-\uE2FF]/g
 const maxCachedRenders = 300
 
 const markdown = createMarkdown()
@@ -39,7 +43,7 @@ export function renderMarkdownHtml(text: string): string {
   }
   ensureMarkdownInteractions()
   const env: MathEnv = {}
-  const html = `<div class="freeform-markdown">${fillMathSlots(sanitizeMarkdownHtml(markdown.render(text, env)), env)}</div>`
+  const html = `<div class="freeform-markdown">${fillMathSlots(sanitizeMarkdownHtml(markdown.render(withoutDirectiveMarks(text), env)), env)}</div>`
   // Pending work may be dropped while its pane is detached. Re-rendering
   // must request it again instead of memoizing an unresolved placeholder.
   if (!/data-(?:code-highlight|math-state)="pending"/.test(html)) renderCache.set(text, html)
@@ -52,7 +56,11 @@ export function renderMarkdownHtml(text: string): string {
 
 export function renderMarkdownInlineHtml(text: string): string {
   const env: MathEnv = {}
-  return fillMathSlots(sanitizeMarkdownHtml(markdown.renderInline(text, env)), env)
+  return fillMathSlots(sanitizeMarkdownHtml(markdown.renderInline(withoutDirectiveMarks(text), env)), env)
+}
+
+function withoutDirectiveMarks(text: string): string {
+  return text.replace(directiveMarkPattern, "")
 }
 
 function createMarkdown(): MarkdownItInstance {

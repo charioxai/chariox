@@ -1,5 +1,5 @@
 import MarkdownIt from "markdown-it"
-import { normalizeMarkdownFenceInfoStrings, replaceVisualizeLines } from "./transcript-markdown.js"
+import { normalizeMarkdownFenceInfoStrings, replaceVisualizeLines, withoutDirectiveMarks } from "./transcript-markdown.js"
 import { renderTranscriptMath } from "./transcript-math.js"
 
 // MP-08 / MP-10 (PANE-09): terminal equivalents for rich Markdown that
@@ -12,7 +12,7 @@ const imagePattern = /!\[([^\]\n]*)\]\(\s*<?([^\s)>]+)>?(?:\s+"[^"\n]*")?\s*\)/g
 const dataImagePattern = /^data:image\/([a-z0-9.+-]+);base64,([a-z0-9+/=]+)$/i
 
 export function prepareTranscriptMarkdown(text: string): string {
-  return mapMarkdownProse(normalizeMarkdownFenceInfoStrings(text), (prose) => (
+  return mapMarkdownProse(normalizeMarkdownFenceInfoStrings(withoutDirectiveMarks(text)), (prose) => (
     mapOutsideCodeSpans(prose, (text) => renderTranscriptMath(renderImages(renderVisualizeLines(renderTaskMarkers(text)))))
   ))
 }

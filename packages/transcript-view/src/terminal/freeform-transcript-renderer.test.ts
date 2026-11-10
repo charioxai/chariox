@@ -18,3 +18,24 @@ test("a reply ending in a visualize line names the page, while a fenced one stay
   assert.doesNotMatch(fenced, /▣ visual/)
   assert.match(renderFreeformMessage("agent", 'visualize{"path": 3}'), /<p>visualize\{&quot;path&quot;: 3\}<\/p>/, "not a page: left as written")
 })
+
+// Codex's own visualize skill wraps its directive in private-use marks (U+E200 opens, U+E202 separates the name from its
+// arguments, U+E201 closes). They are invisible in most fonts, so the pane showed a raw line and named no page.
+test("a visualize line in Codex's wrapper marks names the page, and no private-use mark is ever shown", () => {
+  const wrapped = 'visualize{"path":"/Users/miguel/chariox-workspace/output/aa-recreation.html"}'
+  for (const text of [
+    `Here is the recreation.\n\n${wrapped}`,
+    `Here is the recreation.\n${wrapped}  `,
+    'visualize{"path":"/w/chart.html"}',
+    'visualize{"path":"/w/chart.html"}',
+    'visualize{"path":"/w/chart.html"}',
+    `Done:\n\n> ${wrapped}`,
+  ]) {
+    const html = renderFreeformMessage("agent", text)
+    assert.match(html, /▣ visual: [\w.-]+\.html · \/[\w/.-]+\.html \(open in the web app\)/, JSON.stringify(text))
+    assert.doesNotMatch(html, /visualize|[-]/, JSON.stringify(text))
+  }
+  const other = renderFreeformMessage("agent", `A note stays.\n\nvisualize{"mode":"wide"}`)
+  assert.doesNotMatch(other, /[-]/)
+  assert.match(other, /A note stays\./)
+})
