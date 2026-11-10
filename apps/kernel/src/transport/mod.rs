@@ -1,6 +1,7 @@
 pub(crate) mod agent_turn_feed;
 pub(crate) mod event_delivery_client;
 pub(crate) mod flow_control;
+pub(crate) mod framed_plaintext;
 pub(crate) mod gateway_identity;
 pub(crate) mod home_audit_feed;
 pub(crate) mod kernel_browser_display;

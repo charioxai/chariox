@@ -212,6 +212,7 @@ fn a_captured_image_above_the_reply_ceiling_is_sent() {
             received_at_ms: crate::session::unix_epoch_ms(),
             daemon_private_key: &daemon.relay_private_key,
             client_public_key: &client.relay_public_key,
+            framed: false,
         },
     );
     assert!(
@@ -254,6 +255,7 @@ fn a_kernel_browser_screenshot_above_the_reply_ceiling_is_sent() {
             received_at_ms: crate::session::unix_epoch_ms(),
             daemon_private_key: &daemon.relay_private_key,
             client_public_key: &client.relay_public_key,
+            framed: false,
         },
     );
     assert!(
@@ -297,6 +299,7 @@ fn a_kernel_computer_screenshot_above_the_reply_ceiling_is_sent() {
             received_at_ms: crate::session::unix_epoch_ms(),
             daemon_private_key: &daemon.relay_private_key,
             client_public_key: &client.relay_public_key,
+            framed: false,
         },
     );
     assert!(
