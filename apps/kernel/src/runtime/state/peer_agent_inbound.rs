@@ -18,6 +18,11 @@ fn refused(refusal: PeerAgentRefusal) -> RelayPeerResponse {
     }
 }
 
+/// The spawn key of the agent a peer spawn request of `kernel` creates.
+pub(crate) fn peer_spawn_key(kernel: &str, request_id: &str) -> String {
+    format!("peer-spawn-{kernel}-{request_id}")
+}
+
 /// The inbox source of a message from an agent on another kernel.
 fn peer_message_source(kernel: &str, agent: &str) -> String {
     format!("peer:{kernel}:{agent}")
@@ -233,7 +238,7 @@ impl KernelRuntimeState {
 
     /// A room of `owner` named by its id or alias on this kernel, through the visible, non-ended
     /// room resolver a spawn on this kernel uses.
-    fn peer_room(
+    pub(super) fn peer_room(
         &self,
         owner: &str,
         room: &str,

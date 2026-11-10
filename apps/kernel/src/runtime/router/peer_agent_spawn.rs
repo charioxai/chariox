@@ -4,7 +4,7 @@ use super::CommandRouter;
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest};
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
-use crate::runtime::state::peer_agent_inbound::PeerSpawnClaim;
+use crate::runtime::state::peer_agent_inbound::{peer_spawn_key, PeerSpawnClaim};
 use crate::transport::relay_peer::{
     PeerAgentRefusal, RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
 };
@@ -101,7 +101,7 @@ impl CommandRouter {
             Ok(admitted) => admitted,
             Err(refusal) => return Ok(refused(refusal)),
         };
-        let spawn_key = format!("peer-spawn-{kernel}-{request_id}");
+        let spawn_key = peer_spawn_key(kernel, &request_id);
         let created_before = self
             .runtime_state
             .session_agents(&room)

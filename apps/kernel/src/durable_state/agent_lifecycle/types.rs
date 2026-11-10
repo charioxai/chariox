@@ -409,6 +409,14 @@ pub(crate) enum Operation {
     PeerOutboxDelivered {
         delivery: String,
     },
+    /// A room agent created a peer in another room.
+    RecordCreatedPeer {
+        peer: super::created_peers::CreatedPeer,
+    },
+    /// The peer of a creator that ended is deleted, or was already gone.
+    ReleaseCreatedPeer {
+        peer: super::created_peers::CreatedPeer,
+    },
     /// Another attempt later; outcomes past their age are dropped with it.
     PeerOutboxRetry {
         delivery: String,
