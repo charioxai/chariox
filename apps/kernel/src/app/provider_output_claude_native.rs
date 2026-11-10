@@ -66,7 +66,10 @@ use permission::{
     write_claude_permission_passthrough, write_claude_permission_response,
     write_claude_question_answers, write_claude_workspace_trust_selection_marker,
 };
-use question::{claude_question_interaction, claude_question_updated_input, claude_questions};
+use question::{
+    ask_claude_question, claude_question_updated_input, claude_questions, QuestionBatchDeadline,
+    QuestionOutcome,
+};
 use readiness::{
     CLAUDE_HEADLESS_RETRY_MS, CLAUDE_INITIAL_COMPOSER_WAIT_MS, CLAUDE_STARTUP_SETTLE_MS,
 };
@@ -96,13 +99,12 @@ pub(crate) fn claude_workspace_trust_declined(failure: &str) -> bool {
 /// because its turn was stopped; one that ran out of time was ignored.
 fn claude_card_withdrawn(
     resolution: &crate::provider::ProviderNativeInteractionResolution,
-    asked_at: std::time::Instant,
+    closes_at: std::time::Instant,
 ) -> bool {
     const DEADLINE_SLACK: std::time::Duration = std::time::Duration::from_secs(5);
     resolution.choice_id.is_none()
         && resolution.status == "timed_out"
-        && asked_at.elapsed() + DEADLINE_SLACK
-            < std::time::Duration::from_secs(crate::provider::CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS)
+        && std::time::Instant::now() + DEADLINE_SLACK < closes_at
 }
 
 fn claude_workspace_trust_failure(context_file: &str) -> Option<&'static str> {
@@ -1580,13 +1582,16 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let session_id = session_id.to_string();
         let context_file = context_file.to_string();
         let request_id = request_id.to_string();
-        let asked_at = std::time::Instant::now();
+        let closes_at = std::time::Instant::now()
+            + std::time::Duration::from_secs(
+                crate::provider::CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+            );
         std::thread::spawn(
             move || match bridge.request_blocking(&session_id, interaction) {
                 Ok(resolution) => {
                     let allowed = resolution.reply.as_deref() == Some("allow")
                         || resolution.choice_id.as_deref() == Some("allow_once");
-                    if !allowed && claude_card_withdrawn(&resolution, asked_at) {
+                    if !allowed && claude_card_withdrawn(&resolution, closes_at) {
                         write_claude_permission_interrupt(
                             &context_file,
                             &request_id,
@@ -1661,18 +1666,39 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let request_id = request_id.to_string();
         let event = event.clone();
         std::thread::spawn(move || {
+            let deadline = QuestionBatchDeadline::starting_now();
             let mut answers = Vec::with_capacity(questions.len());
             for (index, question) in questions.iter().enumerate() {
-                let interaction = claude_question_interaction(
-                    format!("claude-native-question-{provider_run_id}-{request_id}-{index}"),
+                let outcome = ask_claude_question(
+                    bridge.as_ref(),
+                    &session_id,
+                    &format!("claude-native-question-{provider_run_id}-{request_id}-{index}"),
                     &agent_id,
+                    origin.clone(),
                     question,
-                    crate::provider::CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
-                )
-                .with_native_origin(origin.clone());
-                let asked_at = std::time::Instant::now();
-                let resolution = match bridge.request_blocking(&session_id, interaction) {
-                    Ok(resolution) => resolution,
+                    &deadline,
+                );
+                match outcome {
+                    Ok(QuestionOutcome::Answered(answer)) => {
+                        answers.push((question.question.clone(), answer));
+                    }
+                    Ok(QuestionOutcome::Withdrawn) => {
+                        write_claude_permission_interrupt(
+                            &context_file,
+                            &request_id,
+                            "The turn was stopped in Chariox.",
+                        );
+                        return;
+                    }
+                    Ok(QuestionOutcome::Unanswered) => {
+                        write_claude_permission_response(
+                            &context_file,
+                            &request_id,
+                            false,
+                            "The person did not answer the question.",
+                        );
+                        return;
+                    }
                     Err(error) => {
                         crate::logging::warn_with_fields(
                             "daemon.provider_output",
@@ -1691,30 +1717,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         );
                         return;
                     }
-                };
-                let answer = resolution
-                    .reply
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|reply| !reply.is_empty() && resolution.choice_id.is_some());
-                let Some(answer) = answer else {
-                    if claude_card_withdrawn(&resolution, asked_at) {
-                        write_claude_permission_interrupt(
-                            &context_file,
-                            &request_id,
-                            "The turn was stopped in Chariox.",
-                        );
-                    } else {
-                        write_claude_permission_response(
-                            &context_file,
-                            &request_id,
-                            false,
-                            "The person did not answer the question.",
-                        );
-                    }
-                    return;
-                };
-                answers.push((question.question.clone(), answer.to_string()));
+                }
             }
             write_claude_question_answers(
                 &context_file,
