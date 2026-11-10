@@ -97,13 +97,11 @@ impl KernelGateway {
                 .map(|target| self.probe(target)),
         )
         .await;
-        let known: Vec<&RelayKernelPresence> =
-            probed.iter().map(|probed| &probed.presence).collect();
         Ok(names::grouped(
             probed
                 .iter()
                 .map(|probed| GatewayKernel {
-                    name: names::display_name(&probed.presence, &known),
+                    name: names::display_name(&probed.presence),
                     label: names::label(&probed.presence),
                     kernel_id: probed.presence.kernel_id.clone(),
                     machine_id: probed.presence.machine_id.clone(),
@@ -202,13 +200,12 @@ mod tests {
     #[test]
     fn a_name_means_one_paired_kernel_and_every_other_case_is_a_typed_error() {
         let kernels = vec![
-            paired("k-b3", Some("b3"), Some("ovh")),
+            paired("k-b3", None, Some("b3")),
             paired("k-x", None, Some("shared")),
-            paired("k-y", Some("y"), Some("shared")),
+            paired("k-y", None, Some("shared")),
         ];
         assert_eq!(named(&kernels, "b3").unwrap().kernel_id, "k-b3");
         assert_eq!(named(&kernels, "k-x").unwrap().kernel_id, "k-x");
-        assert_eq!(named(&kernels, "shared/y").unwrap().kernel_id, "k-y");
         assert_eq!(
             named(&kernels, "nope").unwrap_err().code(),
             "kernel_unknown"
@@ -245,7 +242,7 @@ mod tests {
             machine_alias: Some("b3".into()),
         }
         .apply_to(&mut presence);
-        assert_eq!(presence.kernel_alias.as_deref(), Some("dev"));
+        assert_eq!(presence.kernel_alias, None);
         assert_eq!(presence.machine_alias.as_deref(), Some("b3"));
         assert_eq!(presence.capabilities, ["kernel_gateway_v1"]);
         // A status that names nothing keeps what was learned before.
@@ -254,7 +251,6 @@ mod tests {
             machine_alias: None,
         }
         .apply_to(&mut presence);
-        assert_eq!(presence.kernel_alias.as_deref(), Some("dev"));
         assert_eq!(presence.machine_alias.as_deref(), Some("b3"));
         assert!(presence.capabilities.is_empty());
     }

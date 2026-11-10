@@ -217,7 +217,12 @@ fn protected_room_restart_preserves_retained_identity_and_validates_slice_bindin
             assert!(fs::read(&registry).unwrap() == sentinel);
             RuntimeIdentity {
                 daemon_id: "retained-kernel".to_string(),
-                machine_id: "retained-machine".to_string(),
+                // A protected slice keeps its retained ID; an unprotected one is told its ID.
+                machine_id: if env::var_os("CHARIOX_SLICE_PRIVATE_ROOT").is_some() {
+                    "retained-machine".to_string()
+                } else {
+                    env::var("CHARIOX_MACHINE_ID").unwrap()
+                },
                 relay_public_key: "synthetic-public".to_string(),
                 relay_private_key: "synthetic-private-sentinel".to_string(),
             }
@@ -273,7 +278,7 @@ fn protected_room_restart_preserves_retained_identity_and_validates_slice_bindin
     let legacy = load();
     legacy
         .validate()
-        .expect("legacy provisioned machine alias must still boot");
+        .expect("an unprotected slice told its ID by its kernel must still boot");
     let binding = legacy.room_environment_worker_binding.as_ref().unwrap();
     assert!(binding
         .validate(&legacy.daemon_id, &restarted.host_machine_id)

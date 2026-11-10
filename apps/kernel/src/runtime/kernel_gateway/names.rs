@@ -21,13 +21,14 @@ pub(super) fn own_name(config: &crate::config::DaemonConfig) -> String {
         .unwrap_or_else(|| config.host_machine_id.clone())
 }
 
-/// The name `chariox kernels` shows for `kernel`.
-pub(super) fn display_name(kernel: &RelayKernelPresence, _all: &[&RelayKernelPresence]) -> String {
+/// The name `chariox kernels` shows for `kernel`: the distinct name the relay or Cloud
+/// directory gives it, else the computer's name (shared by every kernel on that computer).
+pub(super) fn display_name(kernel: &RelayKernelPresence) -> String {
     kernel
         .kernel_alias
         .clone()
-        .or_else(|| kernel.machine_alias.clone())
         .or_else(|| kernel.relay_alias.clone())
+        .or_else(|| kernel.machine_alias.clone())
         .unwrap_or_else(|| kernel.kernel_id.clone())
 }
 
@@ -58,7 +59,7 @@ pub(super) fn find<'a>(
             name: name.into(),
             candidates: several
                 .iter()
-                .map(|k| format!("{} (kernel id {})", display_name(k, all), k.kernel_id))
+                .map(|k| format!("{} (kernel id {})", display_name(k), k.kernel_id))
                 .collect(),
         })),
     };
@@ -78,13 +79,14 @@ pub(super) fn find<'a>(
 mod tests {
     use super::*;
 
-    fn kernel(id: &str, machine: &str, alias: Option<&str>) -> RelayKernelPresence {
+    // A registration names the kernel through the relay name only: `kernel_alias` is gone.
+    fn kernel(id: &str, machine: &str, relay_alias: Option<&str>) -> RelayKernelPresence {
         RelayKernelPresence {
             kernel_id: id.into(),
             machine_id: format!("machine-id-{machine}"),
             machine_alias: Some(machine.into()),
-            relay_alias: None,
-            kernel_alias: alias.map(Into::into),
+            relay_alias: relay_alias.map(Into::into),
+            kernel_alias: None,
             available_providers: Vec::new(),
             provider_accounts: Vec::new(),
             capabilities: Vec::new(),
@@ -103,8 +105,8 @@ mod tests {
             kernel("k-mac", "mac", Some("mac")),
         );
         let all = [&main, &second, &solo];
-        assert_eq!(display_name(&main, &all), "b3");
-        assert_eq!(display_name(&second, &all), "b3-2");
+        assert_eq!(display_name(&main), "b3");
+        assert_eq!(display_name(&second), "b3-2");
         assert_eq!(find(&all, "b3-2").unwrap().kernel_id, "k-second");
         assert_eq!(find(&all, "b3").unwrap().kernel_id, "k-main");
         assert_eq!(find(&all, "mac").unwrap().kernel_id, "k-mac");
@@ -114,6 +116,19 @@ mod tests {
         let ambiguous = find(&unnamed, "pc").unwrap_err();
         assert_eq!(ambiguous.code(), "kernel_ambiguous");
         assert!(ambiguous.message().contains("k-a") && ambiguous.message().contains("k-b"));
+    }
+
+    // Two kernels of one computer share its name as `machine_alias`; the relay's own names
+    // for them (`pc`, `pc-2`) are what tell them apart.
+    #[test]
+    fn two_kernels_of_one_computer_are_shown_under_their_distinct_relay_names() {
+        let (first, second) = (
+            kernel("k-1", "pc", Some("pc")),
+            kernel("k-2", "pc", Some("pc-2")),
+        );
+        assert_eq!(display_name(&first), "pc");
+        assert_eq!(display_name(&second), "pc-2");
+        assert_eq!(label(&second), "pc-2");
     }
 
     #[test]
@@ -144,8 +159,7 @@ mod tests {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.host_machine_id = "machine-1".into();
         config.machine_name_for_tests = None;
-        let live = crate::config::os_machine::machine_name().unwrap_or_else(|| "machine-1".into());
-        assert_eq!(own_name(&config), live);
+        assert_eq!(own_name(&config), "machine-1");
         config.machine_name_for_tests = Some("mac".into());
         assert_eq!(own_name(&config), "mac");
     }

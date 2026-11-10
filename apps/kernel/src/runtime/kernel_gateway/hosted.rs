@@ -40,6 +40,7 @@ impl HostedClient {
         client_id: &str,
         thumbprint: &str,
         grant_id: &str,
+        machine_name: Option<&str>,
         target: &str,
     ) -> Result<(), GatewayError> {
         let mut state = self.state.lock().await;
@@ -53,7 +54,7 @@ impl HostedClient {
             profile,
             client_id,
             thumbprint,
-            &client_name(profile),
+            &client_name(machine_name, profile),
         )
         .await
         .map_err(|error| GatewayError::Unreachable {
@@ -84,8 +85,9 @@ impl HostedClient {
 }
 
 /// The row the owner sees in the clients list.
-fn client_name(profile: &PersistedCloudRelayProfile) -> String {
-    let machine = crate::config::os_machine::machine_name()
+fn client_name(machine_name: Option<&str>, profile: &PersistedCloudRelayProfile) -> String {
+    let machine = machine_name
+        .map(str::to_owned)
         .filter(|name| !name.trim().is_empty())
         .or_else(|| profile.machine_id.clone())
         .unwrap_or_else(|| "this machine".to_string());
@@ -137,7 +139,11 @@ mod tests {
     #[test]
     fn the_clients_list_row_names_the_machine() {
         let profile = enrolled("http://unused".into());
-        assert_eq!(client_name(&profile), "Agent gateway of Studio");
+        assert_eq!(
+            client_name(Some("Studio"), &profile),
+            "Agent gateway of Studio"
+        );
+        assert_eq!(client_name(Some(" "), &profile), "Agent gateway of this machine");
     }
 
     async fn register(
@@ -146,7 +152,7 @@ mod tests {
         grant: &str,
     ) -> Result<(), GatewayError> {
         hosted
-            .ensure_registered(profile, "agent-gateway", &"d".repeat(64), grant, "b3")
+            .ensure_registered(profile, "agent-gateway", &"d".repeat(64), grant, None, "b3")
             .await
     }
 

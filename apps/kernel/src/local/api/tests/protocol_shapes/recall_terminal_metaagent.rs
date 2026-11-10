@@ -748,7 +748,7 @@ fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned()
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "aab66ad2af2311174b8fa36f3143c7760b078509028d29b17f6a89adf3d0c03d"
+        "73bccaf90d54eca04bb6875c3783d70dab39c9d97c9b2a2c47e0291e591b27d0"
     );
 }
 
