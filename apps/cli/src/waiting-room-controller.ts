@@ -552,11 +552,11 @@ export function deriveWaitingRoomControlActivationDecision(options: {
       if (!machine) {
         return { action: "error", message: "no machine selected" }
       }
-      const label = machine.registry_alias ?? machine.machine_alias ?? machine.display_name ?? machine.machine_id
+      const label = machine.machine_alias ?? machine.display_name ?? machine.machine_id
       if (machine.online === false || machine.pending || machine.kernel_count === 0) {
         return { action: "info", message: `press D twice to delete machine ${label}` }
       }
-      const target = machine.registry_alias ?? machine.machine_alias ?? machine.machine_id
+      const target = machine.machine_alias ?? machine.machine_id
       return {
         action: "stage-command",
         command: `/machine kernels ${target}`,
@@ -683,8 +683,7 @@ export function deriveWaitingRoomDeleteDecision(options: {
   }
 
   if (options.state.focus === "machine" && choice.remoteMachine) {
-    const label = choice.remoteMachine.registry_alias
-      ?? choice.remoteMachine.machine_alias
+    const label = choice.remoteMachine.machine_alias
       ?? choice.remoteMachine.display_name
       ?? choice.remoteMachine.machine_id
     if (!waitingRoomRemoteMachineCanDelete(choice.remoteMachine)) {

@@ -122,7 +122,7 @@ test("MP-08/MP-10/MP-11 shared Room offers require525 before an older kernel sil
 })
 
 test("own machine enrollment refuses older kernels before transport", () => {
-  const request = issueOwnMachineEnrollmentRequest("build box")
+  const request = issueOwnMachineEnrollmentRequest()
   for (const version of [491, ownMachineEnrollmentMinimumProtocolVersion - 1]) {
     assert.throws(() => requireKernelFeatureProtocol(request, version), /own machine enrollment needs protocol ≥971.*update the kernel/)
   }

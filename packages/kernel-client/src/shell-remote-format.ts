@@ -24,7 +24,7 @@ export function formatRemoteMachines(machines: RemoteMachineRecord[]): string {
 }
 
 export function formatRemoteMachineLabel(machine: RemoteMachineRecord): string {
-  return machine.display_name || machine.machine_alias || machine.registry_alias || machine.machine_id
+  return machine.display_name || machine.machine_alias || machine.machine_id
 }
 
 export function formatPairedClients(clients: PairedClientRecord[]): string {

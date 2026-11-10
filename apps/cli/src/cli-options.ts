@@ -294,7 +294,6 @@ function printUsage() {
     "  /machine kernels <m>  list live kernels for a remote machine",
     "  /machine approve <m>  approve a pending remote machine for spawning",
     "  /machine forget <m>   forget a registered remote machine",
-    "  /machine rename <m> <alias> rename and approve a remote machine",
     "  /slice list           list slices owned by this kernel",
     "  /slice create <n>     create a slice (--headed [--display-backend selkies|novnc]|--headless)",
     "  /slice status [s]     show a slice, defaulting to focused agent slice",

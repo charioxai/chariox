@@ -275,7 +275,7 @@ function waitingRoomRemoteKernelNextAction(kernel: WaitingRoomRemoteKernel): str
 }
 
 function waitingRoomRemoteMachineLabel(machine: WaitingRoomRemoteMachine): string {
-  return machine.registry_alias ?? machine.machine_alias ?? machine.display_name ?? machine.machine_id
+  return machine.machine_alias ?? machine.display_name ?? machine.machine_id
 }
 
 function waitingRoomRemoteKernelLabel(kernel: WaitingRoomRemoteKernel): string {

@@ -1,7 +1,6 @@
 export type WaitingRoomLaunchMachineInput = {
   machine_id: string
   machine_alias?: string | null
-  registry_alias?: string | null
   display_name?: string | null
 }
 
@@ -62,7 +61,7 @@ export function waitingRoomLaunchMachineOptions<TMachine extends WaitingRoomLaun
     { id: "local", label: "local", machine: null, managedEnvironment: null },
     ...(remote.machines ?? []).map((machine) => ({
       id: machine.machine_id,
-      label: machine.registry_alias ?? machine.machine_alias ?? machine.display_name ?? machine.machine_id,
+      label: machine.machine_alias ?? machine.display_name ?? machine.machine_id,
       machine,
       managedEnvironment: null,
     })),

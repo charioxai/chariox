@@ -55,7 +55,6 @@ test("remote machine mutation commands patch cached machines without refreshing 
   const harness = remoteMachineHarness()
 
   await handleRemoteMachineSlashCommand(harness.deps, command("approve", "machine-2"))
-  await handleRemoteMachineSlashCommand(harness.deps, command("rename", "machine-2", "New", "Name"))
   await handleRemoteMachineSlashCommand(harness.deps, command("forget", "machine-2"))
 
   assert.deepEqual(harness.machines.map((machine) => [
@@ -65,10 +64,9 @@ test("remote machine mutation commands patch cached machines without refreshing 
   ]), [
     ["machine-1", "Builder", "approved"],
   ])
-  assert.equal(harness.reconcileCount, 3)
+  assert.equal(harness.reconcileCount, 2)
   assert.equal(harness.footers.at(0)?.message, "approved remote machine cold")
-  assert.equal(harness.footers.at(1)?.message, "renamed remote machine machine-2 to New Name")
-  assert.equal(harness.footers.at(2)?.message, "forgot remote machine New Name")
+  assert.equal(harness.footers.at(1)?.message, "forgot remote machine New Name")
 })
 
 test("remote machine reimage command requires an explicit second confirmation", async () => {
@@ -106,7 +104,6 @@ function remoteMachineHarness(kernelOverrides: Record<string, unknown> = {}) {
   const machines: RemoteMachineSummary[] = [{
     machine_id: "machine-1",
     machine_alias: "builder",
-    registry_alias: null,
     display_name: "Builder",
     trust_status: "approved" as const,
     online: true,
@@ -116,7 +113,6 @@ function remoteMachineHarness(kernelOverrides: Record<string, unknown> = {}) {
   }, {
     machine_id: "machine-2",
     machine_alias: "cold",
-    registry_alias: null,
     display_name: "cold",
     trust_status: "pending" as const,
     online: true,
@@ -150,12 +146,6 @@ function remoteMachineHarness(kernelOverrides: Record<string, unknown> = {}) {
       trust_status: "forgotten",
       online: false,
     }),
-    renameRemoteMachine: async (machineRef, alias) => ({
-      machine_id: machineRef,
-      display_name: alias,
-      trust_status: "approved",
-      online: true,
-    }),
     listRemoteMachineKernels: async () => [{
       kernel_id: "kernel-2",
       machine_id: "machine-1",
@@ -181,16 +171,16 @@ function remoteMachineHarness(kernelOverrides: Record<string, unknown> = {}) {
 }
 
 test("machine add shows the single-use enrollment command in a toast, readable and pasteable whole", async () => {
-  const labels: unknown[] = []
+  let asked = 0
   const footers: { message: string; tone: string; display: string | undefined }[] = []
   const notices: string[] = []
   const command = " (setup_script=$(curl -fsSL https://dl.example/install.sh) && printf '%s\\n' ket_abc | sh -c \"$setup_script\" sh --enroll --api-url https://example.test)"
   const deps = { flashFooter: (message: string, tone: string, display?: string) => footers.push({ message, tone, display }), appendNotice: (m: string) => notices.push(m),
-    issueOwnMachineEnrollment: async (label?: string) => { labels.push(label); return { command, expires_at: "2026-11-03T13:10:00Z" } },
+    issueOwnMachineEnrollment: async () => { asked++; return { command, expires_at: "2026-11-03T13:10:00Z" } },
   }
-  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add build box", args: ["add", "build", "box"] })
   await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add", args: ["add"] })
-  assert.deepEqual(labels, ["build box", undefined])
+  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add", args: ["add"] })
+  assert.equal(asked, 2, "the machine names itself: no name is asked for")
   assert.equal(footers.length, 2)
   // The footer line would clip the command; a toast shows all of it.
   assert.deepEqual(footers.map(f => f.display), ["toast", "toast"])

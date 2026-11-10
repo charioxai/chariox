@@ -30,7 +30,7 @@ export type CloudCommandLifecycleDeps = {
   refreshWaitingRoomData?: () => Promise<void>
   startCloudDeviceLogin?: (
     apiUrl: string,
-    input: { clientId?: string; machineId?: string; clientAlias?: string; machineAlias?: string },
+    input: { clientId?: string; machineId?: string; clientAlias?: string },
   ) => Promise<{
     apiUrl: string
     deviceCode: string
@@ -178,7 +178,6 @@ export async function startHostedCloudLink(deps: CloudCommandLifecycleDeps): Pro
   const relayStatus = await deps.getRelayStatus()
   const started = await deps.startCloudDeviceLogin(deps.cloudRelayApiUrl ?? DEFAULT_CONTROL_PLANE_URL, {
     machineId: relayStatus.machine_id,
-    ...(relayStatus.machine_alias ? { machineAlias: relayStatus.machine_alias } : {}),
   })
   const opened = await deps.openExternalUrl?.(started.verificationUrl)
   appendCloudNotice(

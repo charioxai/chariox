@@ -667,7 +667,7 @@ test("deriveWaitingRoomControlActivationDecision handles machine activation", ()
     remote: {
       machines: [{
         machine_id: "machine-1",
-        registry_alias: "builder",
+        machine_alias: "builder",
         trust_status: "approved",
         online: true,
         pending: false,

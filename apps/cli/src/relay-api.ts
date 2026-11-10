@@ -104,7 +104,7 @@ export async function configureRelay(
 export async function startCloudRelayLogin(
   client: LocalIpcClient,
   apiUrl: string,
-  input: { clientId?: string; machineId?: string; clientAlias?: string; machineAlias?: string },
+  input: { clientId?: string; machineId?: string; clientAlias?: string },
 ) {
   const response = await client.send<Record<string, unknown>>(startCloudRelayLoginRequest(apiUrl, input))
   const payload = expectVariant<{ login: KernelCloudRelayLoginStart }>(response, "CloudRelayLoginStarted").login
@@ -391,7 +391,6 @@ function relayCloudProfileFromKernel(profile: KernelCloudRelayProfile): RelayClo
     ...(profile.client_id ? { clientId: profile.client_id } : {}),
     ...(profile.client_alias ? { clientAlias: profile.client_alias } : {}),
     ...(profile.machine_id ? { machineId: profile.machine_id } : {}),
-    ...(profile.machine_alias ? { machineAlias: profile.machine_alias } : {}),
     ...(profile.kernel_id ? { kernelId: profile.kernel_id } : {}),
     kernelEnrolled: profile.kernel_enrolled ?? false,
     ...(profile.token_expires_at_ms ? { tokenExpiresAtMs: profile.token_expires_at_ms } : {}),
