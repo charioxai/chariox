@@ -235,7 +235,7 @@ async function main() {
   const restartBrief = `# Orchestrator brief (drill, restart scenario)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Run a team inside THIS Room using only your own Chariox tools. Do not ask the owner anything.
 Never retry a refused call more than once; record the exact refusal instead. Never use shell sleeps or poll in a loop.
-1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider ${provider} --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN\` for N = 1, 2, 3.
+1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider ${provider} --model ${model} --effort low --worktree ${join(work, "wt")}/wN --branch wN\` for N = 1, 2, 3.
 2. Prompt them (room command \`prompt <alias> "<text>"\` (not \`agent prompt\`)):
    w1: "Write the single word ALPHA into result.txt in your current working directory. End your reply with W1DONE."
    w2: "Write the single word BETA into result.txt in your current working directory. End your reply with W2DONE."
@@ -244,7 +244,7 @@ Keep ${join(work, "orchestrator-state.json")} updated after every step (what is 
 3. Subscribe to each worker (chariox events_subscribe with the worker agent id) and yield on ALL your registrations (chariox events_subscriptions lists them; a yield must cover every open obligation) with a deadline 20 minutes ahead, then END YOUR TURN. The kernel wakes you with a new turn per event.
 4. On the FIRST wake, steer w3 while it is still busy: chariox send_agent_message to w3 with urgent true: "When you continue, also write the word DELTA into steer.txt in your working directory." Then ack the event and yield again on all registrations.
 5. On each later wake: ack, check which workers are done (room \`agent list\` or list_session_agents) and yield again until all three are done.
-6. Collect the results with your own shell: read result.txt (and steer.txt) from each worker worktree under ${join(root, "wt")}.
+6. Collect the results with your own shell: read result.txt (and steer.txt) from each worker worktree under ${join(work, "wt")}.
 7. Then write ${join(work, "orchestrator-report.json")} with one entry per wake (what woke you, what you did), the step 6 answers, and each worker's result.txt content. Then delete the three workers with \`agent delete wN\` and reply ORCHDONE.
 `
   const workerDeadline = Date.now() + 240000
@@ -252,7 +252,7 @@ Keep ${join(work, "orchestrator-state.json")} updated after every step (what is 
   const sudoBrief = `# Orchestrator brief (drill, no-sudo scenario)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). There is NO /sudo and no kernel_request: use only your room commands and the chariox events tools.
 Do not ask the owner anything except in step 8. Never retry a refused call more than once; record the exact answer. Never use shell sleeps or poll in a loop.
-1. Spawn w1, w2, w3 with room commands \`agent spawn wN --provider claude --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN --permission yolo --command-id spawn-wN\`. Spawn w1 a SECOND time with the identical command and record whether you got the same agent id.
+1. Spawn w1, w2, w3 with room commands \`agent spawn wN --provider claude --model ${model} --effort low --worktree ${join(work, "wt")}/wN --branch wN --permission yolo --command-id spawn-wN\`. Spawn w1 a SECOND time with the identical command and record whether you got the same agent id.
 2. Prompt them with the room command \`prompt <alias> "<text>"\` (not \`agent prompt\`):
    w1: "Call the chariox request_popup tool with ONLY the arguments wait true, timeout_sec 900, title 'w1 hold', message 'Hold?', choices [{id:'ok',label:'OK',reply:'ok'}]. After it returns write ALPHA into result.txt in your working directory. End with W1DONE."
    w2: "Write BETA into result.txt in your working directory. End with W2DONE."
@@ -266,7 +266,7 @@ Do not ask the owner anything except in step 8. Never retry a refused call more 
 9. Start a heartbeat: chariox events_timer with interval_ms 60000 and label 'heartbeat'.
 10. Yield on ALL your registrations (chariox events_subscriptions lists them; include the heartbeat timer and the owner question registration) with a deadline 15 minutes ahead and END YOUR TURN. A child's finish arrives as a child_finished event: it wakes you, so do not poll.
 11. On each wake: append to ${join(work, "orchestrator-state.json")} the time, what woke you (for child_finished: the outcome kind and deadline_reached) and what you did; ack; when the heartbeat has woken you at least twice, cancel it (chariox events_cancel_wake). Expect: w1's deadline ending w1 (deadline_reached true), w2 finishing, w3's cancel, the owner's answer.
-12. When w1, w2 and w3 have each finished: read w2's result.txt with your own shell from ${join(root, "wt/w2")} (it is on your kernel).
+12. When w1, w2 and w3 have each finished: read w2's result.txt with your own shell from ${join(work, "wt/w2")} (it is on your kernel).
 13. Write ${join(work, "orchestrator-report.json")}: one entry per step with ok, the command you used and the exact answer, and per wake what woke you. Delete the workers with \`agent delete wN\`. Reply ORCHDONE.
 `
   // A heartbeat (30 minutes unless --heartbeat-seconds) and a worker turn that really fails: what wakes a parked orchestrator, and what it can read about the failure.
@@ -274,7 +274,7 @@ Do not ask the owner anything except in step 8. Never retry a refused call more 
   const heartbeatBrief = `# Orchestrator brief (drill, heartbeat scenario)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own Chariox tools. Do not ask the owner anything. Never use shell sleeps or poll in a loop.
 Keep ${join(work, "orchestrator-state.json")} updated after every step and every wake.
-1. Spawn w1 with room command \`agent spawn w1 --provider claude --model claude-no-such-model-1 --effort low --worktree ${join(root, "wt/w1")} --branch w1\` and w2 with \`agent spawn w2 --provider ${provider} --model ${model} --effort low --worktree ${join(root, "wt/w2")} --branch w2\`. Record the answers.
+1. Spawn w1 with room command \`agent spawn w1 --provider claude --model claude-no-such-model-1 --effort low --worktree ${join(work, "wt/w1")} --branch w1\` and w2 with \`agent spawn w2 --provider ${provider} --model ${model} --effort low --worktree ${join(work, "wt/w2")} --branch w2\`. Record the answers.
 2. Prompt both (room \`prompt\`): "Write the single word DONE into result.txt in your current working directory."
 3. Subscribe to both workers (chariox events_subscribe with the agent id) and arm a heartbeat: chariox events_timer with label 'heartbeat', delay_ms ${heartbeatMs} and interval_ms ${heartbeatMs}.
 4. Yield on ALL your registrations (events_subscriptions lists them) with a deadline 45 minutes ahead and END YOUR TURN.
@@ -285,7 +285,7 @@ Keep ${join(work, "orchestrator-state.json")} updated after every step and every
   // The wake that follows must be ONE turn that reads the three events from the inbox and acknowledges them.
   const batchBrief = `# Orchestrator brief (drill, inbox-batch scenario)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own Chariox tools. Do not ask the owner anything. Never retry a refused call more than once.
-1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider ${provider} --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN\` for N = 1, 2, 3.
+1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider ${provider} --model ${model} --effort low --worktree ${join(work, "wt")}/wN --branch wN\` for N = 1, 2, 3.
 2. Prompt each (room \`prompt\` command): "Write the single word ALPHA (w1) / BETA (w2) / GAMMA (w3) into result.txt in your current working directory. End your reply with W1DONE / W2DONE / W3DONE."
 3. Subscribe to each worker (chariox events_subscribe with the worker agent id).
 4. Hold this turn with ONE shell command: \`sleep 150\`. The three workers finish while it runs.
@@ -298,7 +298,7 @@ You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own 
   const goPath = join(root, "go")
   const batchYieldBrief = `# Orchestrator brief (drill, inbox-batch-yield scenario)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own Chariox tools. Do not ask the owner anything. Never retry a refused call more than once.
-1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider ${provider} --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN\` for N = 1, 2, 3.
+1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider ${provider} --model ${model} --effort low --worktree ${join(work, "wt")}/wN --branch wN\` for N = 1, 2, 3.
 2. Prompt each (room \`prompt\` command): "Run the shell command: until [ -e ${goPath} ]; do sleep 1; done. Then write the single word ALPHA (w1) / BETA (w2) / GAMMA (w3) into result.txt in your current working directory. End your reply with W1DONE / W2DONE / W3DONE."
 3. Subscribe to each worker (chariox events_subscribe with the worker agent id), then yield on ALL your registrations (events_subscriptions lists them) with a deadline 20 minutes ahead and END YOUR TURN. Do not poll and do not read the inbox before you are woken.
 4. When the kernel wakes you, its prompt only names counts and kinds. Call chariox events_inbox ONCE, read every event, then ${flags.get("--ack-mode") === "single" ? "call chariox events_ack once for each event with handled true" : "call chariox events_ack ONCE with through = the last sequence you read and handled true"}. If your inbox read shows fewer than three worker completions, yield again on your remaining registrations and repeat this step on the next wake.
@@ -307,7 +307,7 @@ You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own 
   // A02-S02 / A02-S03: a default message to a busy, an idle and a yielded receiver, one reply-requested message, one urgent steer.
   const messagesBrief = `# Orchestrator brief (drill, messages scenario)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own Chariox tools. Do not ask the owner anything. Never retry a refused call more than once; record the exact answer.
-1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider ${provider} --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN\` for N = 1, 2, 3. Do not prompt w2.
+1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider ${provider} --model ${model} --effort low --worktree ${join(work, "wt")}/wN --branch wN\` for N = 1, 2, 3. Do not prompt w2.
 2. Prompt w1 (room \`prompt\`): "Run the shell command: until [ -e ${goPath} ]; do sleep 1; done. Then write the single word ALPHA into result.txt in your working directory. End your reply with W1DONE." (w1 stays BUSY.)
    Prompt w3: "Arm a timer with the chariox events_timer tool (delay_ms 600000, label w3-wait), then yield on it with chariox events_yield (deadline 15 minutes ahead) and end your turn. When you are woken, read your inbox with chariox events_inbox, do what each message asks as you would for any request from your parent, write the inbox text into result.txt, and end with W3DONE." (w3 is YIELDED once it has parked; wait until room \`agent list\` shows w3 is no longer processing before you send to it.)
 3. Send, with chariox send_agent_message (default, not urgent, no reply wanted):
@@ -343,12 +343,12 @@ Keep ${join(work, "orchestrator-state.json")} updated after every step.
   const decisionsBrief = `# Orchestrator brief (drill, decisions scenario)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}); your agent id is ${orch}. Use only your room commands (chariox room run_command) and chariox events tools. No /sudo. Do not ask the owner anything. Never retry a refused call more than once: record the exact answer. Never use shell sleeps or poll.
 Keep ${join(work, "orchestrator-state.json")} updated after every step.
-1. Spawn w1, w2, w3 with \`agent spawn <name> --provider claude --model ${model} --effort low --permission required --worktree ${join(root, "wt")}/<name> --branch <name>\` and p with \`agent spawn p --provider claude --model ${model} --effort low --permission yolo --worktree ${join(root, "wt")}/p --branch p\`. A worker at the required level asks before it acts: that is the point of the drill.
+1. Spawn w1, w2, w3 with \`agent spawn <name> --provider claude --model ${model} --effort low --permission required --worktree ${join(work, "wt")}/<name> --branch <name>\` and p with \`agent spawn p --provider claude --model ${model} --effort low --permission yolo --worktree ${join(work, "wt")}/p --branch p\`. A worker at the required level asks before it acts: that is the point of the drill.
 2. FIRST subscribe to w1, w2, w3 and p (chariox events_subscribe with each agent id), THEN prompt them with the room command \`prompt <alias> "<text>"\` (not \`agent prompt\`):
    w1: "Use your shell tool to run exactly: echo ALPHA > result.txt . Then reply W1DONE."
    w2: "Call the chariox request_credential_secret tool with these arguments: credential {id 'drill-key', injection {kind 'header', name 'X-Drill-Key', value '{{secret}}'}, use_binding {target {kind 'site', origin 'https://example.invalid'}}}, prompt {message 'Drill: type any text', timeout_sec 900}. If it is refused for an argument, retry ONCE with injection {kind 'env', name 'DRILL_KEY'}. When it returns reply W2DONE."
    w3: "Use your shell tool to run exactly: echo GAMMA > result.txt . Then reply W3DONE."
-   p: "Run these room commands with the chariox room run_command tool and report each exact answer: (1) agent spawn c --provider claude --model ${model} --effort low --permission required --worktree ${join(root, "wt")}/c --branch c (2) prompt c 'Use your shell tool to run exactly: echo DELTA > result.txt . Then reply CDONE.' Then END YOUR TURN at once with PDONE: do not wait for c and do not subscribe. IMPORTANT: if you are woken later by a child_decision event, you must NOT answer it or pass it and you must call no tool: reply PDONE2 only."
+   p: "Run these room commands with the chariox room run_command tool and report each exact answer: (1) agent spawn c --provider claude --model ${model} --effort low --permission required --worktree ${join(work, "wt")}/c --branch c (2) prompt c 'Use your shell tool to run exactly: echo DELTA > result.txt . Then reply CDONE.' Then END YOUR TURN at once with PDONE: do not wait for c and do not subscribe. IMPORTANT: if you are woken later by a child_decision event, you must NOT answer it or pass it and you must call no tool: reply PDONE2 only."
 3. Yield on your registrations (events_subscriptions lists them) with a deadline 15 minutes ahead and END YOUR TURN. If events_yield is refused, do not retry: just END YOUR TURN, because every event wakes you anyway. Each worker decision that you may answer arrives as an urgent child_decision event (payload: interaction_id, child_agent_id, child_alias, question, choices, needs_answer).
 4. On each wake: read the events (chariox events_inbox). For every child_decision event run the room command \`agent answer <interaction_id> <id of the choice that allows the action>\` (take the choice ids from the event; the one meaning allow) and append the interaction_id, the child_alias, the time and the EXACT typed answer to the state file. The answer may come back as settled_by_user or not_holder: record it and go on, never retry. Ack the events; for a child_finished event record the child and the outcome. After you answered a decision of c (p's child), subscribe to c with the child_agent_id of the event. Keep waking until you have seen the child_finished of w1, w2, w3, p AND c. Do NOT write the report before that.
 5. Then write ${join(work, "orchestrator-report.json")}: one entry per child_decision event (interaction_id, child_alias, answer status) and one per child_finished event (child, outcome kind). Note whether you ever received a child_decision for w2. Then delete w1, w2, w3, p with \`agent delete <name>\` and reply ORCHDONE.
@@ -357,12 +357,16 @@ Keep ${join(work, "orchestrator-state.json")} updated after every step.
   if (payPort) http.createServer((_q, r) => r.end("ok")).listen(payPort, "127.0.0.1").unref()
   let otherRoom = { R2: "", q: "" }
   if (flags.has("--other-room")) {
-    const other = (await a.rpc({ CreateSession: { workspace_id: work, worktree_id: work, alias: "other-room", agent_defaults: { provider, account_profile: profile, model, effort: "low", permission_level: "yolo" } } })).SessionCreated
-    const att2 = (await a.rpc({ AttachToSession: { session_id: other.session.id, client_id: "orch-owner-r2", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
-    await a.client.subscribeToKernelEvents(other.session.id, att2)
-    await a.rpc({ LaunchProviderRun: { session_id: other.session.id, agent_id: other.agent.id, adapter_key: provider, provider, account_profile: profile, model, variant: "low", native_tui: false } })
+    const host = flags.get("--other-room-kernel") === "b" && !single ? b : a
+    const hostWork = host === b ? join(b.dir, "work") : work
+    const other = (await host.rpc({ CreateSession: { workspace_id: hostWork, worktree_id: hostWork, alias: "other-room", agent_defaults: { provider, account_profile: profile, model, effort: "low", permission_level: "yolo" } } })).SessionCreated
+    const att2 = (await host.rpc({ AttachToSession: { session_id: other.session.id, client_id: "orch-owner-r2", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
+    await host.client.subscribeToKernelEvents(other.session.id, att2)
+    await host.rpc({ LaunchProviderRun: { session_id: other.session.id, agent_id: other.agent.id, adapter_key: provider, provider, account_profile: profile, model, variant: "low", native_tui: false } })
     otherRoom = { R2: other.session.id, q: other.agent.id }
     note("other-room", { room: otherRoom.R2, agent: otherRoom.q })
+    // The person gives the other Room's agent its own work, so a peer sees a turn it can follow and cancel.
+    if (flags.has("--other-room-prompt")) await host.rpc(submitPromptRequest(otherRoom.R2, att2, otherRoom.q, flags.get("--other-room-prompt"), [])).then(() => note("other-room-prompted"), e => note("other-room-prompt-refused", { message: e.message.slice(0, 200) }))
   }
   const briefFile = flags.get("--brief-file")
   const brief = briefFile ? readFileSync(briefFile, "utf8").replaceAll("{{R}}", R).replaceAll("{{WORK}}", work).replaceAll("{{MODEL}}", model).replaceAll("{{ORCH}}", orch).replaceAll("{{ROOT}}", root).replaceAll("{{Q}}", otherRoom.q).replaceAll("{{R2}}", otherRoom.R2).replaceAll("{{B}}", b.status.daemon_id) : scenario === "decisions" ? decisionsTwoBrief({ R, model, work }) : scenario === "kinds" ? kindsBrief({ R, model, work, payPort }) : scenario === "orch" ? orchBrief({ R, model, work }) : scenario === "decisions" ? decisionsBrief : scenario === "authority" ? authorityBrief : scenario === "ask" ? askBrief : scenario === "messages" ? messagesBrief : scenario === "batchyield" ? batchYieldBrief : scenario === "batch" ? batchBrief : scenario === "heartbeat" ? heartbeatBrief : scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
@@ -384,7 +388,7 @@ Steps:
 6. Run \`agent deadline set w2 90s\` and \`agent deadline get w2\`, then \`agent children\`. Record the answers.
 7. Subscribe to each worker (chariox events_subscribe with the worker agent id), then yield on ALL your registrations (events_subscriptions lists them) with a deadline 15 minutes ahead and END YOUR TURN. The kernel wakes you with a new turn per event.
 8. In each wake read the event (chariox events_inbox): for a child_finished event note the child, outcome.kind, success and deadline_reached. When w4 is still running after the first wake, steer it (send_agent_message to w4, urgent true: "Also write the word GAMMA into steer.txt") and then stop its turn with \`agent cancel w4\`. Ack and yield again on all registrations until w1, w2, w3 and w4 have each finished.
-9. Read w1's result.txt with your own shell from ${join(root, "wt/w1")} (the worker is on your kernel).
+9. Read w1's result.txt with your own shell from ${join(work, "wt/w1")} (the worker is on your kernel).
 10. Write ${join(work, "orchestrator-report.json")}: one entry per step 1-9 with ok true/false, the command you used and the exact answer, and one entry per child_finished event (child, outcome kind, deadline_reached). Then delete the workers with \`agent delete wN\`, record those answers too, and reply ORCHDONE.
 `
   writeFileSync(join(work, "BRIEF.md"), brief)
@@ -597,7 +601,7 @@ Steps:
   if (provider === "codex") writeFileSync(join(evidence, "codex-turns.json"), JSON.stringify(codexTurns(codexProfilePath, since), null, 1), { mode: 0o600 })
   const bTranscripts = transcripts(join(b.dir, "home"))
   for (const t of bTranscripts) writeFileSync(join(evidence, `b-tool-log-${t.file.split("/").pop()}.json`), JSON.stringify(toolLog(t.lines), null, 1), { mode: 0o600 })
-  const read = p => { try { return readFileSync(p, "utf8").slice(0, 2000) } catch { return null } }
+  const read = p => { try { return readFileSync(p, "utf8").slice(0, 12000) } catch { return null } }
   const listed = await a.rpc({ ListEvents: { since: 0, limit: 1000 } }).catch(e => ({ error: e.message }))
   const events = listed.EventsListed?.events ?? []
   writeFileSync(join(evidence, "room-events.json"), redact(JSON.stringify(listed, null, 1)).slice(0, 2000000), { mode: 0o600 })
@@ -627,7 +631,7 @@ Steps:
   }
   note("results", {
     workfiles: Object.fromEntries(readdirSync(work).filter(f => /\.(txt|json)$/.test(f) && f !== "orchestrator-report.json").map(f => [f, read(join(work, f))?.slice(0, 300)])),
-    report: read(reportPath), w1: read(join(root, "wt/w1/result.txt")), msgs: ["w1", "w2", "w3"].map(w => [w, read(join(root, "wt", w, "msg.txt")), read(join(root, "wt", w, "steer.txt")), read(join(root, "wt", w, "peer.txt"))]), w3: read(join(root, "wt/w3/result.txt")), w3_steer: read(join(root, "wt/w3/steer.txt")), collected: read(join(work, "collected-w2.txt")), orch_state: read(join(work, "orchestrator-state.json")), w2_local: read(join(root, "wt/w2/result.txt")), w2_b: read(join(b.dir, "work/w2/result.txt")), w1_branch_log: w1log,
+    report: read(reportPath), w1: read(join(work, "wt/w1/result.txt")), msgs: ["w1", "w2", "w3"].map(w => [w, read(join(work, "wt", w, "msg.txt")), read(join(work, "wt", w, "steer.txt")), read(join(work, "wt", w, "peer.txt"))]), w3: read(join(work, "wt/w3/result.txt")), w3_steer: read(join(work, "wt/w3/steer.txt")), collected: read(join(work, "collected-w2.txt")), orch_state: read(join(work, "orchestrator-state.json")), w2_local: read(join(work, "wt/w2/result.txt")), w2_b: read(join(b.dir, "work/w2/result.txt")), w1_branch_log: w1log,
     agents: (final?.agents ?? []).map(x => ({ id: x.id, alias: x.alias, state: x.state })), b_transcripts: bTranscripts.length,
     orchestrator_turns: stats.length, orchestrator_turns_seen_by_driver: orchTurns.length,
     tokens: stats.reduce((acc, t) => ({ input: acc.input + t.input, cache_read: acc.cache_read + t.cache_read, cache_write: acc.cache_write + t.cache_write, output: acc.output + t.output }), { input: 0, cache_read: 0, cache_write: 0, output: 0 }),
