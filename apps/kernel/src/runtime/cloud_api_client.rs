@@ -441,7 +441,6 @@ pub(crate) fn cloud_profile_from_persisted(
         client_id: profile.client_id.clone(),
         client_alias: profile.client_alias.clone(),
         machine_id: profile.machine_id.clone(),
-        machine_alias: profile.machine_alias.clone(),
         kernel_id: profile.kernel_id.clone(),
         kernel_enrolled: profile
             .kernel_credential

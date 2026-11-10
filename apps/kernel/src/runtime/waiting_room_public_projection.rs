@@ -2401,7 +2401,6 @@ mod tests {
             vec![RemoteMachineRecord {
                 machine_id: "machine-peer".to_string(),
                 machine_alias: Some("peer".to_string()),
-                registry_alias: None,
                 display_name: "peer".to_string(),
                 trust_status: RemoteMachineTrustStatus::Approved,
                 online: true,

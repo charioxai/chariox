@@ -223,7 +223,6 @@ mod tests {
         let name = "b3".to_string();
         let answered = Ok(TargetStatus {
             capabilities: Vec::new(),
-            kernel_alias: None,
             machine_alias: None,
         });
         assert_eq!(status_after(&answered), GatewayKernelStatus::Online);
@@ -243,7 +242,6 @@ mod tests {
         let mut presence = paired("k-x", None, None).presence;
         TargetStatus {
             capabilities: vec!["kernel_gateway_v1".into()],
-            kernel_alias: Some("dev".into()),
             machine_alias: Some("b3".into()),
         }
         .apply_to(&mut presence);
@@ -253,7 +251,6 @@ mod tests {
         // A status that names nothing keeps what was learned before.
         TargetStatus {
             capabilities: Vec::new(),
-            kernel_alias: None,
             machine_alias: None,
         }
         .apply_to(&mut presence);

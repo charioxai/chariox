@@ -337,7 +337,6 @@ mod tests {
             &worker_root,
             "worker-kernel",
             "worker-machine",
-            "disposable-worker",
             43119,
         );
         let worker_private_key = worker_app_config.relay_private_key.clone();
@@ -356,7 +355,6 @@ mod tests {
             &home_root,
             home_kernel_id,
             home_machine_id,
-            "home-kernel",
             43120,
         );
         let home_public_key = home_app_config.relay_public_key.clone();
@@ -909,7 +907,6 @@ mod tests {
         root: &std::path::Path,
         daemon_id: &str,
         machine_id: &str,
-        alias: &str,
         websocket_port: u16,
     ) -> DaemonConfig {
         let mut config = DaemonConfig::for_tests();

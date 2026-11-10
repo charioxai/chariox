@@ -2438,7 +2438,6 @@ mod tests {
             client_id: None,
             client_alias: None,
             machine_id: Some("machine-1".to_string()),
-            machine_alias: None,
             machine_credential: Some("machine-secret".to_string()),
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,

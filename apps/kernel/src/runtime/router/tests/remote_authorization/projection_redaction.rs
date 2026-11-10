@@ -257,7 +257,6 @@ async fn collaborator_waiting_room_directory_redaction_inner() {
         vec![crate::local::RemoteMachineRecord {
             machine_id: "private-machine".into(),
             machine_alias: Some("private-host".into()),
-            registry_alias: None,
             display_name: "private-host".into(),
             trust_status: crate::local::RemoteMachineTrustStatus::Approved,
             online: true,

@@ -85,12 +85,10 @@ impl HostedClient {
 
 /// The row the owner sees in the clients list.
 fn client_name(profile: &PersistedCloudRelayProfile) -> String {
-    let machine = profile
-        .machine_alias
-        .as_deref()
-        .filter(|alias| !alias.trim().is_empty())
-        .or(profile.machine_id.as_deref())
-        .unwrap_or("this machine");
+    let machine = crate::config::os_machine::machine_name()
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| profile.machine_id.clone())
+        .unwrap_or_else(|| "this machine".to_string());
     format!("Agent gateway of {machine}")
 }
 
@@ -132,7 +130,6 @@ mod tests {
             api_url: url,
             kernel_id: Some("kernel-fixture".into()),
             kernel_credential: Some("synthetic-kernel-credential".into()),
-            machine_alias: Some("Studio".into()),
             ..Default::default()
         }
     }

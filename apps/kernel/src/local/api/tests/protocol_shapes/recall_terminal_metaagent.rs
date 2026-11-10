@@ -704,7 +704,6 @@ fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned()
     let machine = crate::local::RemoteMachineRecord {
         machine_id: "machine-1".to_string(),
         machine_alias: Some("workstation".to_string()),
-        registry_alias: Some("builder".to_string()),
         display_name: "builder".to_string(),
         trust_status: RemoteMachineTrustStatus::Approved,
         online: true,

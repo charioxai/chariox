@@ -6,7 +6,6 @@ fn machine_pairing_metadata_preserves_approval_state() {
     {
         let entry = upsert_machine_registration(&mut entries, "machine-1");
         entry.approved = true;
-        entry.alias = Some("worker".to_string());
     }
     {
         let entry = upsert_machine_registration(&mut entries, "machine-1");
@@ -16,7 +15,6 @@ fn machine_pairing_metadata_preserves_approval_state() {
 
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].machine_id, "machine-1");
-    assert_eq!(entries[0].alias.as_deref(), Some("worker"));
     assert_eq!(
         entries[0].public_key_thumbprint.as_deref(),
         Some("thumbprint-1")
@@ -336,7 +334,6 @@ fn persisted_daemon_config_loads_legacy_machine_registry_without_pairing_fields(
     assert_eq!(persisted.clients, Vec::<PersistedClientPairing>::new());
     assert_eq!(persisted.machines.len(), 1);
     assert_eq!(persisted.machines[0].machine_id, "machine-1");
-    assert_eq!(persisted.machines[0].alias.as_deref(), Some("worker"));
     assert_eq!(persisted.machines[0].public_key_thumbprint, None);
     assert_eq!(persisted.machines[0].paired_at_ms, None);
     assert!(persisted.machines[0].approved);

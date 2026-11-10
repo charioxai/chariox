@@ -209,7 +209,6 @@ pub(crate) fn enrolled_profile(
         client_id: None,
         client_alias: None,
         machine_id: profile.machine_id,
-        machine_alias: profile.machine_alias,
         machine_credential: None,
         kernel_id: profile.kernel_id,
         kernel_credential: Some(kernel_credential),
