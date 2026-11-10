@@ -8,7 +8,7 @@ use super::{
     InstallationError, InstallationRegistry, ReleaseMetadata, StageToken, UpdateRecord,
 };
 use crate::publisher_trust::{PublisherTrustError, TrustedPublisherSnapshot};
-use chariox_app_package::VerifiedApp;
+use chariox_app_package::{v2, ReleaseManifest, VerifiedApp};
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
 use serde_json::json;
@@ -16,6 +16,18 @@ use sha2::{Digest, Sha256};
 
 mod supervised;
 mod wasm_metadata;
+
+/// The signed name and icon of an App; only Wasm manifests declare them.
+fn presentation(package: &impl VerifiedApp) -> (Option<String>, Option<String>) {
+    let ReleaseManifest::Wasm(manifest) = package.release_manifest() else {
+        return (None, None);
+    };
+    let icon = manifest.icon.as_deref().and_then(|path| {
+        let (_, bytes) = package.files().find(|(file, _)| *file == path)?;
+        v2::icon_data_url(path, bytes)
+    });
+    (manifest.display_name, icon)
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum VerifiedStageError {
@@ -90,6 +102,7 @@ impl VerifiedInstallCandidate {
         let view_digest = json_digest(&json!({
             "schema": "chariox.installation-view.v1", "entry": manifest.ui.entry, "assets": assets
         }))?;
+        let (display_name, icon) = presentation(package);
         let release = ReleaseMetadata {
             app_id: manifest.app_id.clone(),
             version: manifest.version.clone(),
@@ -102,6 +115,8 @@ impl VerifiedInstallCandidate {
             capabilities_digest,
             catalog_digest,
             view_digest,
+            display_name,
+            icon,
         };
         validate_release(&release)?;
         let review = json!({

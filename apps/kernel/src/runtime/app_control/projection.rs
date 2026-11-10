@@ -7,11 +7,18 @@ fn release(release: ReleaseMetadata) -> AppReleaseSummary {
         publisher_id: release.publisher_id,
         package_digest: release.package_digest,
         schema_version: release.schema_version,
+        display_name: release.display_name,
+        icon: release.icon,
     }
 }
 
 pub(super) fn installation(value: Installation) -> AppInstallationSummary {
     let data_kept = value.active.is_none() && value.retained.is_some();
+    // An uninstalled installation keeps showing the App its data belongs to.
+    let (display_name, icon) = value
+        .data_release()
+        .map(|data| (data.release.display_name.clone(), data.release.icon.clone()))
+        .unwrap_or_default();
     AppInstallationSummary {
         channel: value.channel,
         dev_room_id: value.dev_room_id,
@@ -19,6 +26,8 @@ pub(super) fn installation(value: Installation) -> AppInstallationSummary {
         app_id: value.app_id,
         generation: value.generation.to_string(),
         active_release: value.active.map(|active| release(active.release)),
+        display_name,
+        icon,
         pending_generation: value
             .pending_generation
             .map(|generation| generation.to_string()),

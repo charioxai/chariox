@@ -48,6 +48,8 @@ fn app_dev_register_snapshot_and_default_source() {
             dev_room_id: Some("room".into()),
             generation: "1".into(),
             active_release: None,
+            display_name: None,
+            icon: None,
             pending_generation: Some("2".into()),
             admission_paused: false,
             data_kept: true,
