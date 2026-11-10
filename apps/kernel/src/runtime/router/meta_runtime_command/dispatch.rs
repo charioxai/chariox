@@ -745,6 +745,15 @@ impl CommandRouter {
             },
             None => None,
         };
+        // A reference to this kernel creates a local child: only another kernel decides the folder.
+        let kernel_ref = if spawn.slice_ref.is_some() {
+            None
+        } else {
+            match self.runtime_state.settle_kernel_ref(spawn.kernel_ref).await {
+                Ok(kernel_ref) => kernel_ref,
+                Err(error) => return Ok(meta_command_failure_result(command, error)),
+            }
+        };
         let same_provider = spawns_same_provider(spawn.provider.as_deref(), metaagent);
         let follow = target_room.is_some() && !spawn.no_follow;
         let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
@@ -778,15 +787,11 @@ impl CommandRouter {
             // The parent's folder is a path on this machine: a child on another kernel that
             // names no folder starts where that kernel starts its agents.
             worktree_id: spawn.worktree_id.or_else(|| {
-                (target_room.is_none() && spawn.kernel_ref.is_none())
+                (target_room.is_none() && kernel_ref.is_none())
                     .then(|| metaagent.worktree_id().map(str::to_string))
                     .flatten()
             }),
-            kernel_ref: if spawn.slice_ref.is_some() {
-                None
-            } else {
-                spawn.kernel_ref
-            },
+            kernel_ref,
             slice_ref: spawn.slice_ref,
             worktree_placement: spawn.worktree_placement,
             metaagent: false,
