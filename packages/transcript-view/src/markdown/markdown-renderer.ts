@@ -67,31 +67,41 @@ function unwrapVisualizeDirectives(text: string): string {
       for (let line = token.map[0]; line < token.map[1]; line += 1) code.add(line)
     }
   }
-  return text.split("\n").map((line, index) => code.has(index) ? line : outsideCodeSpans(line, plain => plain.replace(wrappedVisualizePattern, "visualize$1"))).join("\n")
+  // An inline code span may run over several lines of one paragraph, so each paragraph is transformed as a whole.
+  const lines = text.split("\n")
+  const output: string[] = []
+  for (let index = 0; index < lines.length;) {
+    if (code.has(index) || lines[index]!.trim() === "") { output.push(lines[index]!); index += 1; continue }
+    let end = index
+    while (end < lines.length && !code.has(end) && lines[end]!.trim() !== "") end += 1
+    output.push(outsideCodeSpans(lines.slice(index, end).join("\n"), plain => plain.replace(wrappedVisualizePattern, "visualize$1")))
+    index = end
+  }
+  return output.join("\n")
 }
 
 // Applies `transform` to the text between inline code spans (CommonMark backtick runs of equal length).
-function outsideCodeSpans(line: string, transform: (text: string) => string): string {
+function outsideCodeSpans(text: string, transform: (text: string) => string): string {
   let output = ""
   let plainStart = 0
   let index = 0
-  while (index < line.length) {
-    if (line[index] !== "`") { index += 1; continue }
+  while (index < text.length) {
+    if (text[index] !== "`") { index += 1; continue }
     let runEnd = index
-    while (line[runEnd] === "`") runEnd += 1
-    const run = line.slice(index, runEnd)
+    while (text[runEnd] === "`") runEnd += 1
+    const run = text.slice(index, runEnd)
     let close = runEnd
     for (;;) {
-      close = line.indexOf(run, close)
-      if (close < 0 || (line[close - 1] !== "`" && line[close + run.length] !== "`")) break
+      close = text.indexOf(run, close)
+      if (close < 0 || (text[close - 1] !== "`" && text[close + run.length] !== "`")) break
       close += 1
     }
     if (close < 0) { index = runEnd; continue }
-    output += transform(line.slice(plainStart, index)) + line.slice(index, close + run.length)
+    output += transform(text.slice(plainStart, index)) + text.slice(index, close + run.length)
     index = close + run.length
     plainStart = index
   }
-  return output + transform(line.slice(plainStart))
+  return output + transform(text.slice(plainStart))
 }
 
 function createMarkdown(): MarkdownItInstance {

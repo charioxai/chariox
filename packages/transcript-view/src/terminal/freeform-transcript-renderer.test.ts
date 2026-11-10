@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { renderMarkdownHtml, renderMarkdownInlineHtml } from "../markdown/markdown-renderer.js"
 import { renderFreeformMessage } from "./freeform-transcript-renderer.js"
 
 // MP-08: a pane that cannot draw the page a visualize line names shows one calm line instead of raw JSON.
@@ -53,4 +54,19 @@ test("private-use marks in code spans, fences and other directives are left as w
   assert.doesNotMatch(fence, /▣ visual/)
   const other = mark("cite", "turn0search0")
   assert.ok(renderFreeformMessage("agent", `Sourced ${other}.`).includes(other), "another directive is not rewritten")
+})
+
+// c#612/#1323 review: an inline code span may run over several lines of a paragraph. Reading the paragraph line by line took its first
+// line for plain text and removed the marks inside the span, which changed what the code says.
+test("private-use marks inside an inline code span that runs over several lines are left as written", () => {
+  const mark = (name: string, args: string) => `\uE200${name}\uE202${args}\uE201`
+  const wrapped = mark("visualize", '{"path":"/w/chart.html"}')
+  const text = `Codex writes \`the call\n${wrapped}\nends here\` for it, and ${wrapped} stays a directive.`
+  for (const [name, html] of [["renderMarkdownHtml", renderMarkdownHtml(text)], ["renderMarkdownInlineHtml", renderMarkdownInlineHtml(text)]] as const) {
+    const span = /<code>([^<]*)<\/code>/.exec(html)
+    assert.ok(span, `${name}: the code span keeps its wrapper`)
+    assert.ok(/\uE200visualize\uE202[^]*\uE201/.test(span[1]!), `${name}: the marks inside the span are untouched`)
+    const rest = html.slice(span.index + span[0].length)
+    assert.ok(!/[\uE200-\uE2FF]/.test(rest), `${name}: the marks around a directive outside the span are removed`)
+  }
 })
