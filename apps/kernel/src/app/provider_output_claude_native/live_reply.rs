@@ -161,7 +161,7 @@ impl LiveReply {
         let first = rows.first()?;
         // The last row may still be written; every row before it is done.
         let done = &rows[..rows.len() - 1];
-        let start = if bullet_visible {
+        if bullet_visible {
             let block_head = self.block.as_ref().and_then(|block| block.rows.first());
             if block_head.is_some_and(|head| *head != first.text) {
                 self.hand_block_over();
@@ -185,11 +185,17 @@ impl LiveReply {
                     text: String::new(),
                 });
             }
-            // The bullet is on screen: the reply's rows are where they were.
-            self.block.as_ref()?.rows.len()
+        }
+        // A new block starts at its bullet. Once rows were taken, the screen
+        // may have scrolled or been drawn again: find the last rows taken.
+        let taken = &self.block.as_ref()?.rows;
+        let start = if taken.is_empty() {
+            if !bullet_visible {
+                return None;
+            }
+            0
         } else {
-            // The reply scrolled past the top: find the last rows taken.
-            first_new_row(&self.block.as_ref()?.rows, done)?
+            first_new_row(taken, done)?
         };
         let cols = self.cols;
         let block = self.block.as_mut()?;
@@ -415,11 +421,11 @@ fn first_new_row(taken: &[String], done: &[Row]) -> Option<usize> {
     Some(end + blanks_seen.min(blank_tail))
 }
 
-/// Claude wraps a paragraph at the screen's edge, between words: a row that
-/// stopped short of the edge ended its line.
+/// Claude wraps a paragraph between words, before a word would reach the
+/// screen's last column: a row that stopped shorter ended its line.
 fn wraps_into(previous_width: usize, next_row: &str, cols: usize) -> bool {
     let next_word = next_row.trim_start().split(' ').next().unwrap_or_default();
-    previous_width + 1 + next_word.chars().count() > cols
+    previous_width + 1 + next_word.chars().count() >= cols
 }
 
 #[cfg(test)]
