@@ -86,3 +86,8 @@ pub(super) fn claude_stopped_turn(
     }
 }
 
+/// Whether what Claude writes now is still the stopped turn's tail for `prompt_id`.
+pub(super) fn claude_turn_fenced(context_file: &str, prompt_id: &str) -> bool {
+    read_fence(context_file)
+        .is_some_and(|fence| fence.prompt_id == prompt_id || fence.released_at_ms.is_none())
+}

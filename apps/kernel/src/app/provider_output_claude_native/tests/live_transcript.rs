@@ -372,3 +372,111 @@ fn a_prompt_queued_before_the_stop_owns_what_claude_writes_once_it_is_handed_ove
     assert_eq!(turn.output_rows(), ["Here are the files."]);
 }
 
+/// The terminal reads of a recorded Claude Code 2.1.296 session (40×120).
+fn recorded_terminal(recording: &str) -> Vec<Vec<u8>> {
+    use base64::Engine;
+    recording
+        .lines()
+        .map(|line| {
+            let read: serde_json::Value = serde_json::from_str(line).unwrap();
+            base64::engine::general_purpose::STANDARD
+                .decode(read[1].as_str().unwrap())
+                .unwrap()
+        })
+        .collect()
+}
+
+impl RunningTurn {
+    fn terminal_shows(&mut self, bytes: &[u8]) {
+        ProviderOutputClaudeNativeBridge::new(&mut self.app)
+            .stream_reply(&self.session_id, self.run.id(), &self.run, bytes)
+            .expect("the terminal should be read");
+    }
+
+    /// The assistant rows a reload of the session shows.
+    fn stored_replies(&mut self) -> Vec<String> {
+        let session = self
+            .app
+            .sessions
+            .get_session(&self.session_id)
+            .expect("session should exist");
+        self.app
+            .load_session_history_entries(&session, Some(&self.agent_id))
+            .expect("history should load")
+            .into_iter()
+            .filter(|entry| entry.kind == crate::history::SessionHistoryEntryKind::ProviderOutput)
+            .map(|entry| entry.text)
+            .collect()
+    }
+}
+
+#[test]
+fn a_reply_streams_from_the_terminal_and_its_transcript_block_completes_the_same_row() {
+    const PLAIN: &str = include_str!("fixtures/claude-2.1.296-reply-40x120.pty.jsonl");
+    const PLAIN_REPLY: &str = include_str!("fixtures/claude-2.1.296-reply-40x120.reply.txt");
+    let mut turn = running_turn("streamed-reply");
+    turn.hook_event("UserPromptSubmit");
+    turn.pass();
+
+    for bytes in recorded_terminal(PLAIN) {
+        turn.terminal_shows(&bytes);
+    }
+    // Before Claude writes the block to its transcript, it is already out.
+    let streamed = turn.output_rows().concat();
+    assert!(PLAIN_REPLY.starts_with(&streamed), "{streamed}");
+    assert!(streamed.len() * 10 >= PLAIN_REPLY.len() * 9);
+    assert_eq!(turn.stored_replies(), [streamed.clone()], "one stored row");
+
+    turn.append_transcript(assistant_text("reply", PLAIN_REPLY));
+    turn.pass();
+    assert_eq!(
+        turn.output_rows().concat(),
+        PLAIN_REPLY,
+        "clients that appended the stream get exactly the rest"
+    );
+    assert_eq!(turn.stored_replies(), [PLAIN_REPLY]);
+}
+
+#[test]
+fn a_reply_drawn_with_emphasis_streams_plain_and_the_transcript_text_replaces_it() {
+    const EMPHASIS: &str = include_str!("fixtures/claude-2.1.296-reply-with-emphasis.pty.jsonl");
+    const EMPHASIS_REPLY: &str =
+        include_str!("fixtures/claude-2.1.296-reply-with-emphasis.reply.txt");
+    let mut turn = running_turn("streamed-emphasis");
+    turn.hook_event("UserPromptSubmit");
+    turn.pass();
+
+    for bytes in recorded_terminal(EMPHASIS) {
+        turn.terminal_shows(&bytes);
+    }
+    let streamed = turn.output_rows().concat();
+    assert!(
+        streamed.len() * 10 >= EMPHASIS_REPLY.len() * 8,
+        "emphasis must not stop the stream: {streamed}"
+    );
+
+    turn.append_transcript(assistant_text("reply", EMPHASIS_REPLY));
+    turn.pass();
+    assert_eq!(
+        turn.stored_replies(),
+        [EMPHASIS_REPLY],
+        "the transcript text takes the streamed row's place, nothing else stays"
+    );
+    assert_eq!(
+        turn.output_rows().concat(),
+        streamed,
+        "no duplicate goes live"
+    );
+}
+
+#[test]
+fn a_stopped_turn_streams_nothing_more() {
+    const PLAIN: &str = include_str!("fixtures/claude-2.1.296-reply-40x120.pty.jsonl");
+    let mut turn = running_turn("streamed-stop");
+    let stopped = turn.active_prompt_id();
+    crate::app::fence_cancelled_claude_turn(&turn.run, &stopped);
+    for bytes in recorded_terminal(PLAIN) {
+        turn.terminal_shows(&bytes);
+    }
+    assert!(turn.output_rows().is_empty(), "{:?}", turn.output_rows());
+}
