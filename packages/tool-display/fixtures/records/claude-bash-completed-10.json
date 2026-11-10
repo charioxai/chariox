@@ -1,0 +1,17 @@
+{
+ "provider": "claude",
+ "kind": "Bash",
+ "source": "live 2026-11-10: record from the kernel history of a real claude turn on the lane kernel",
+ "record": {
+  "id": "toolu_01JxTxWd7TmT2FMD9S5RWFey",
+  "input": {
+   "command": "echo hello-allrows && ls",
+   "description": "Echo marker and list current directory"
+  },
+  "output": "hello-allrows\nfixture-project\nhome\nk.sock\nkernel-info.json\nkernel.log\nkh\ntmp",
+  "started_at_ms": 1794313821474,
+  "status": "completed",
+  "tool": "Bash"
+ },
+ "shows": "echo\\ hello\\-allrows\\ \\&\\&\\ ls"
+}

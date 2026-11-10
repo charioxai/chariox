@@ -1,0 +1,14 @@
+{
+ "provider": "claude",
+ "kind": "Read",
+ "source": "live 2026-11-10: record from the kernel history of a real claude turn on the lane kernel",
+ "record": {
+  "id": "toolu_01XX9hJAZQQ1nKLYacPcXv3Z",
+  "input": {
+   "file_path": "/work/project/fixture-project/README.md"
+  },
+  "started_at_ms": 1794314914249,
+  "status": "started",
+  "tool": "Read"
+ }
+}

@@ -4,7 +4,7 @@ import { BoxRenderable, MarkdownRenderable, SyntaxStyle } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { createTranscriptMarkdownNodeRenderer } from "./transcript-hyperlinks.js"
 import { readApplyPatchFiles } from "@chariox/tool-display"
-import { buildApplyPatchDiffContent } from "./transcript-diff-render.js"
+import { applyPatchDiffFiles, buildApplyPatchDiffContent } from "./transcript-diff-render.js"
 
 // MP-08 / MP-10 (PANE-09, R16): Codex-style diffs in the terminal.
 const frame = async (harness: Awaited<ReturnType<typeof createTestRenderer>>) => {
@@ -75,5 +75,32 @@ test("a truncated tool diff keeps its warning in the TUI", async () => {
   try {
     buildApplyPatchDiffContent(harness.renderer, body, [{ kind: "update", filePath: "a.py", title: "Patched a.py (diff truncated)", diff: "--- a/a.py\n+++ b/a.py\n@@\n-old\n+new" }])
     assert.match(await frame(harness), /Patched a.py \(diff truncated\)/)
+  } finally { harness.renderer.destroy() }
+})
+
+// Review of #1326: a binary write has no diff, only a note (its size); the diff view shows the note, not "no textual changes".
+test("a binary write shows its note in the terminal diff view", async () => {
+  const files = readApplyPatchFiles({ id: "w", tool: "mcp__chariox__chariox_write_artifact", status: "completed", input: { path: "out/logo.png", content_base64: "A".repeat(4000) } })
+  assert.equal(files.length, 1)
+  assert.ok(applyPatchDiffFiles(files)[0]!.rows.some(row => row.kind === "meta" && /Binary file/.test(row.text)))
+  const harness = await createTestRenderer({ width: 70, height: 8, useThread: false })
+  const body = new BoxRenderable(harness.renderer, { width: "100%", flexDirection: "column" })
+  harness.renderer.root.add(body)
+  buildApplyPatchDiffContent(harness.renderer, body, files)
+  try {
+    const shown = await frame(harness)
+    assert.match(shown, /out\/logo\.png/)
+    assert.match(shown, /Binary file · 3 KB/)
+    assert.doesNotMatch(shown, /no textual changes/)
+  } finally { harness.renderer.destroy() }
+})
+
+test("a binary write with no diff shows its note and size instead of an empty body", async () => {
+  const harness = await createTestRenderer({ width: 60, height: 12, useThread: false })
+  const body = new BoxRenderable(harness.renderer, {})
+  harness.renderer.root.add(body)
+  try {
+    buildApplyPatchDiffContent(harness.renderer, body, [{ kind: "update", filePath: "logo.png", title: "Wrote logo.png", diff: null, note: "Binary file · 12 KB" }])
+    assert.match(await frame(harness), /Binary file · 12 KB/)
   } finally { harness.renderer.destroy() }
 })

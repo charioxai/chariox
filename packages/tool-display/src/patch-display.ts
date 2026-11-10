@@ -7,7 +7,7 @@ import {
   readString,
 } from "./strings.js"
 import { readEditToolFiles } from "./edit-tool-diff.js"
-import { isWorkspaceLiveSyncTool } from "./tool-names.js"
+import { canonicalToolName, isWorkspaceLiveSyncTool } from "./tool-names.js"
 import type {
   ApplyPatchFile,
   ToolDisplayPatchLine,
@@ -41,7 +41,7 @@ type WorkspaceLiveSyncChange = {
 
 export function buildApplyPatchNewPreview(file: ApplyPatchFile): ToolDisplayPatchLine[] {
   if (!file.diff) {
-    return [{ kind: "meta", text: file.kind === "delete" ? "File deleted" : "No diff available" }]
+    return [{ kind: "meta", text: file.note ?? (file.kind === "delete" ? "File deleted" : "No diff available") }]
   }
   const lines: ToolDisplayPatchLine[] = []
   for (const line of file.diff.split(/\r?\n/)) {
@@ -83,7 +83,8 @@ export function readApplyPatchFiles(update: ToolTranscriptUpdate) {
     return editToolFiles
   }
 
-  if (update.tool !== "apply_patch") {
+  const tool = canonicalToolName(update.tool)
+  if (tool !== "apply_patch" && tool !== "chariox.apply_patch") {
     return []
   }
   const patchFiles = parseApplyPatchText(readApplyPatchText(update.input))
@@ -190,7 +191,8 @@ function readWorkspaceLiveSyncChange(value: unknown): ApplyPatchFile | null {
   const change = value as WorkspaceLiveSyncChange
   const filePath = readString(change.path)
   const diff = readString(change.diff)
-  if (!filePath || !diff) {
+  // A binary file's diff is its header alone: it says nothing the call's own input does not (a size, a path), so the input's view is shown.
+  if (!filePath || !diff || !/^[+-](?![+-]{2}(?:\s|$))/m.test(diff)) {
     return null
   }
   const kind = normalizeFileChangeKind(readString(change.kind), null)

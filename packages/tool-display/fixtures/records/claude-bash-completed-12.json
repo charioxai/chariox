@@ -1,0 +1,17 @@
+{
+ "provider": "claude",
+ "kind": "Bash",
+ "source": "live 2026-11-10: record from the kernel history of a real claude turn on the lane kernel",
+ "record": {
+  "id": "toolu_01P7f15auDCk17RWg1cnTWrB",
+  "input": {
+   "command": "ls -la /work/project",
+   "description": "List the working directory contents (LS substitute)"
+  },
+  "output": "total 28\ndrwx------  6 root root 4096 Nov 10 12:20 .\ndrwxr-xr-x 10 root root 4096 Nov 10 12:44 ..\ndrwxr-xr-x  3 root root 4096 Nov 10 12:18 fixture-project\ndrwxr-xr-x 13 root root 4096 Nov 10 12:48 home\nsrw-------  1 root root    0 Nov 10 12:20 k.sock\n-rw-r--r--  1 root root  559 Nov 10 12:20 kernel-info.json\n-rw-r--r--  1 root root    0 Nov 10 12:18 kernel.log\ndrwx------ 12 root root 4096 Nov 10 12:48 kh\ndrwxr-xr-x  8 root root 4096 Nov 10 12:48 tmp",
+  "started_at_ms": 1794314914249,
+  "status": "completed",
+  "tool": "Bash"
+ },
+ "shows": "ls\\ \\-la\\ /work/project"
+}

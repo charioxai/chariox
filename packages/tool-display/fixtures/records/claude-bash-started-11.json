@@ -1,0 +1,16 @@
+{
+ "provider": "claude",
+ "kind": "Bash",
+ "source": "live 2026-11-10: record from the kernel history of a real claude turn on the lane kernel",
+ "record": {
+  "id": "toolu_01P7f15auDCk17RWg1cnTWrB",
+  "input": {
+   "command": "ls -la /work/project",
+   "description": "List the working directory contents (LS substitute)"
+  },
+  "started_at_ms": 1794314914249,
+  "status": "started",
+  "tool": "Bash"
+ },
+ "shows": "ls\\ \\-la\\ /work/project"
+}

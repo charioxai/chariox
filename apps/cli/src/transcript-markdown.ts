@@ -198,7 +198,15 @@ export function shouldRenderTranscriptAsMarkdown(role: string, text: string) {
   // Use the renderer's lexer so identifiers with underscores remain literal
   // while actual Markdown still receives its normal formatting. A visualize
   // line is plain prose to the lexer, but only the Markdown path names its page.
-  return hasMarkdownMarkup(Lexer.lex(text)) || hasVisualizeLine(text)
+  return hasMarkdownMarkup(Lexer.lex(text)) || hasVisualizeLine(unwrapVisualizeDirectives(text))
+}
+
+// Codex wraps its visualize directive in private-use marks: U+E200 opens, U+E202 separates the name from its arguments, U+E201
+// closes, and a stream may show it only partly wrapped. Its app hides them; a terminal would show boxes and the line would not
+// be read. Only the marks that hug a visualize directive are removed: marks in code or in another directive are the reply's own.
+const wrappedVisualizePattern = /[\uE200-\uE2FF]*visualize[\uE200-\uE2FF]*(\{[^\uE200-\uE2FF\n]*\})[\uE200-\uE2FF]*/g
+export function unwrapVisualizeDirectives(text: string): string {
+  return text.replace(wrappedVisualizePattern, "visualize$1")
 }
 
 // Codex's visualize skill ends a reply with this line for the app to draw the HTML page it names.

@@ -1,0 +1,18 @@
+{
+ "provider": "claude",
+ "kind": "mcp__chariox__write_artifact",
+ "source": "live 2026-11-10: record from the kernel history of a real claude haiku turn that wrote a binary file through the Chariox MCP tool on the lane kernel",
+ "shows": "Binary file",
+ "record": {
+  "id": "toolu_011J64bgoq2KS2q1wecqMuQZ",
+  "input": {
+   "content_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+   "domain": "opaque",
+   "path": "out/logo.png"
+  },
+  "output": "{\"applied\":true,\"change\":{\"diff\":\"diff --git a/out/logo.png b/out/logo.png\\nnew file mode 100644\\n--- /dev/null\\n+++ /dev/null\\n@@ -1,0 +1,0 @@\",\"diff_truncated\":false,\"kind\":\"add\",\"path\":\"out/logo.png\"},\"new_version\":2,\"path\":\"out/logo.png\",\"workspace\":{\"branch\":null,\"head_commit\":null,\"identity_changed\":false,\"identity_generation\":0,\"identity_valid\":true,\"repo_id\":null,\"repo_url\":null,\"vcs_provider\":null,\"worktree_root_fingerprint\":\"/workspace\"}}",
+  "started_at_ms": 1794337216106,
+  "status": "completed",
+  "tool": "mcp__chariox__write_artifact"
+ }
+}

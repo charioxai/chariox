@@ -20,7 +20,20 @@ test("collapsed transcript blob presentation formats normal collapsed blobs with
     detail: "Collapsed blob content",
     actionLabel: "click to expand",
     stateLabel: "",
+    expandable: true,
   })
+})
+
+// Review of #1326: a tool call with nothing to open to (a web search that is still running) is a title row, with no "click to expand".
+test("a tool entry whose call has no content is not expandable, one with content is", () => {
+  const entry = (record: object): CollapsedTranscriptBlobEntry => ({ role: "tool", text: JSON.stringify(record) })
+  const running = collapsedTranscriptBlobPresentation({ ...entry({ id: "w1", tool: "web_search", status: "running" }), blobTitle: "Searching the web" })
+  assert.equal(running.expandable, false)
+  assert.equal(running.actionLabel, "")
+  assert.equal(running.detail, "")
+  const done = collapsedTranscriptBlobPresentation({ ...entry({ id: "w1", tool: "web_search", status: "completed", input: { query: "alhambra" } }), blobTitle: "Searched" })
+  assert.equal(done.expandable, true)
+  assert.equal(done.actionLabel, "click to expand")
 })
 
 test("collapsed transcript blob presentation labels unloaded history blobs distinctly", () => {
@@ -31,6 +44,7 @@ test("collapsed transcript blob presentation labels unloaded history blobs disti
     detail: "History blob content is collapsed",
     actionLabel: "click to load",
     stateLabel: "HISTORY",
+    expandable: true,
   })
 })
 
@@ -46,6 +60,7 @@ test("collapsed transcript blob presentation exposes history loading state", () 
     detail: "Loading history blob content",
     actionLabel: "loading...",
     stateLabel: "LOADING",
+    expandable: true,
   })
 })
 
@@ -62,6 +77,7 @@ test("collapsed transcript blob presentation exposes history error state and ret
     detail: "History blob failed to load: network timeout",
     actionLabel: "click to retry",
     stateLabel: "ERROR",
+    expandable: true,
   })
 })
 

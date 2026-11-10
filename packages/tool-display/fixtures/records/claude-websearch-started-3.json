@@ -1,0 +1,16 @@
+{
+ "provider": "claude",
+ "kind": "WebSearch",
+ "source": "live 2026-11-10: record from the kernel history of a real claude turn on the lane kernel",
+ "record": {
+  "id": "toolu_01SvEtzzit2k3nsErMnAYSiT",
+  "input": {
+   "mode": "standard",
+   "query": "Granada Spain official tourism Alhambra UNESCO facts"
+  },
+  "started_at_ms": 1794313821474,
+  "status": "started",
+  "tool": "WebSearch"
+ },
+ "shows": "Granada\\ Spain\\ official\\ t"
+}
