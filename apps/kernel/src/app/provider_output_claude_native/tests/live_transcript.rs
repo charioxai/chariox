@@ -169,6 +169,15 @@ impl RunningTurn {
         }
     }
 
+    fn active_prompt_id(&mut self) -> String {
+        self.app
+            .prompt_owner_active_prompt_for_agent(&self.session_id, &self.agent_id)
+            .expect("prompt state should read")
+            .expect("a prompt should be active")
+            .id()
+            .to_string()
+    }
+
     fn tool_rows(&self) -> Vec<String> {
         self.app
             .terminal()
@@ -273,12 +282,9 @@ fn nothing_a_stopped_turn_writes_after_the_stop_lands_in_it() {
     turn.pass();
     assert_eq!(turn.tool_rows().len(), 1);
 
-    // The person presses Stop: the kernel marks the cancel and settles the turn.
-    fs::write(
-        turn.root.join("cancelled-turn"),
-        unix_epoch_ms().to_string(),
-    )
-    .expect("cancel mark should be written");
+    // The person presses Stop: the kernel fences the turn and settles it.
+    let stopped = turn.active_prompt_id();
+    crate::app::fence_cancelled_claude_turn(&turn.run, &stopped);
     turn.app
         .prompt_owner_cancel_active_prompt_only(&turn.session_id, &turn.agent_id)
         .expect("the turn should cancel");
@@ -308,3 +314,61 @@ fn nothing_a_stopped_turn_writes_after_the_stop_lands_in_it() {
     turn.pass();
     assert_eq!(turn.output_rows(), ["Here is something else."]);
 }
+
+#[test]
+fn a_prompt_queued_before_the_stop_owns_what_claude_writes_once_it_is_handed_over() {
+    let mut turn = running_turn("queued-before-stop");
+    turn.hook_event("UserPromptSubmit");
+    turn.append_transcript(tool_call("toolu_stopped", "sleep 20"));
+    turn.pass();
+    let stopped = turn.active_prompt_id();
+
+    // The next prompt is submitted while the turn still runs: it waits in the
+    // queue and keeps its submission time.
+    turn.app
+        .prompt_owner_submit_prepared_prompt(
+            &turn.session_id,
+            crate::session::PromptQueueItem::new(
+                "prompt-queued-before-stop",
+                &turn.attachment_id,
+                &turn.agent_id,
+                "Then list the files.",
+                crate::session::PromptStatus::Queued,
+            ),
+            true,
+        )
+        .expect("the prompt should queue");
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    crate::app::fence_cancelled_claude_turn(&turn.run, &stopped);
+    turn.app
+        .prompt_owner_cancel_active_prompt_only(&turn.session_id, &turn.agent_id)
+        .expect("the turn should cancel");
+    turn.append_transcript(tool_result("toolu_stopped", "[Request interrupted]"));
+    turn.append_transcript(assistant_text("stopped-tail", "I was interrupted."));
+    turn.pass();
+    assert!(turn.output_rows().is_empty(), "{:?}", turn.output_rows());
+
+    // The queued prompt is admitted and handed to Claude: what Claude writes
+    // from now on is its turn.
+    turn.app
+        .prompt_owner_activate_next_queued_prompt_for_dispatch(
+            &turn.session_id,
+            &turn.agent_id,
+            None,
+        )
+        .expect("the queued prompt should activate")
+        .expect("the queued prompt should be next");
+    turn.pass();
+    turn.append_transcript(tool_call("toolu_next", "ls"));
+    turn.append_transcript(assistant_text("next", "Here are the files."));
+    turn.pass();
+    assert!(
+        turn.tool_rows()
+            .iter()
+            .any(|row| row.contains("toolu_next")),
+        "the queued prompt's tool row was dropped: {:?}",
+        turn.tool_rows()
+    );
+    assert_eq!(turn.output_rows(), ["Here are the files."]);
+}
+
