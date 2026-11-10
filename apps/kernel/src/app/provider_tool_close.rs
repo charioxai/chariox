@@ -80,6 +80,15 @@ pub(crate) enum BackgroundCalls {
     Ended { last_ended_at_ms: u64 },
 }
 
+/// Whether output is the provider doing work, not the report that a background call ended.
+pub(crate) fn is_work_of_a_turn(kind: &TerminalOutputKind, bytes: &[u8]) -> bool {
+    if *kind != TerminalOutputKind::ProviderTool {
+        return true;
+    }
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .map_or(true, |tool| tool.get("background") != Some(&true.into()))
+}
+
 /// The state of every background command in `entries` (one run's tool rows, oldest first).
 pub(crate) fn background_calls(entries: Vec<SessionHistoryEntry>) -> BackgroundCalls {
     let mut calls = BackgroundCalls::None;

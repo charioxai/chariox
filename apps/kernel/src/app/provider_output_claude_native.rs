@@ -173,6 +173,9 @@ pub(crate) trait NativePromptHandoffPolicy: Send + Sync {
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError>;
 
     fn accepted(&self, session_id: &str, agent_id: &str, run_id: &str) -> Result<(), DaemonError>;
+
+    /// The run's transcript produced `chunks`: a turn is working on it.
+    fn note_turn_work(&self, run_id: &str);
 }
 
 pub(crate) struct ProviderOutputClaudeNativeBridge<'a> {
@@ -1177,6 +1180,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }
 
         let recipient_attachment_ids = self.app.attachments.list_session_attachment_ids(session_id);
+        if let Some(policy) = self.prompt_handoff {
+            if drain
+                .chunks
+                .iter()
+                .any(|chunk| crate::app::is_work_of_a_turn(&chunk.kind, chunk.text.as_bytes()))
+            {
+                policy.note_turn_work(provider_run_id);
+            }
+        }
         let fanout = ProviderOutputFanout::new(self.app);
         let mut saw_response_content = false;
         let mut saw_runtime_activity = false;

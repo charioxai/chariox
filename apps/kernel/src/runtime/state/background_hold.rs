@@ -55,7 +55,7 @@ impl BackgroundHolds {
             held.since_ms = since_ms;
         }
     }
-    fn note_output_of_run(&self, run: &str) {
+    pub(super) fn note_output_of_run(&self, run: &str) {
         for held in self.lock().values_mut().filter(|held| held.run == run) {
             held.notification_started = true;
         }
@@ -72,15 +72,6 @@ impl BackgroundHolds {
     }
 }
 
-/// Whether a chunk is the provider doing work, not the report that a background call ended.
-fn is_work_of_a_turn(chunk: &crate::provider::ProviderPromptChunk) -> bool {
-    if chunk.kind != crate::terminal::TerminalOutputKind::ProviderTool {
-        return true;
-    }
-    serde_json::from_slice::<serde_json::Value>(&chunk.bytes)
-        .map_or(true, |tool| tool.get("background") != Some(&true.into()))
-}
-
 impl KernelRuntimeOwnedState {
     /// A run held for background calls produced output: a turn is executing on it.
     pub(super) fn note_output_of_held_run(
@@ -88,7 +79,10 @@ impl KernelRuntimeOwnedState {
         run: &str,
         chunks: &[crate::provider::ProviderPromptChunk],
     ) {
-        if chunks.iter().any(is_work_of_a_turn) {
+        if chunks
+            .iter()
+            .any(|chunk| crate::app::is_work_of_a_turn(&chunk.kind, &chunk.bytes))
+        {
             self.background_holds.note_output_of_run(run);
         }
     }

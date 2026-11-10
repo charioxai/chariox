@@ -167,6 +167,136 @@ async fn a_notification_turn_that_is_executing_is_held_past_the_grace_until_it_c
     );
 }
 
+/// The child's run becomes a native Claude run whose transcript the bridge reads.
+async fn native_child(team: &Team, dir: &std::path::Path) -> crate::provider::RuntimeProviderRun {
+    std::fs::create_dir_all(dir).unwrap();
+    let context = dir.join("context.txt");
+    let events = dir.join("events.jsonl");
+    let transcript = dir.join("session.jsonl");
+    std::fs::write(&context, "").unwrap();
+    std::fs::write(&transcript, "").unwrap();
+    std::fs::write(
+        &events,
+        serde_json::json!({
+            "hook_event_name": "SessionStart",
+            "transcript_path": transcript.display().to_string(),
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let (child, child_run) = (team.child.clone(), team.child_run.clone());
+    let room = team.room.clone();
+    let env = std::collections::BTreeMap::from([
+        (
+            "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+            context.display().to_string(),
+        ),
+        (
+            "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
+            events.display().to_string(),
+        ),
+    ]);
+    team.runtime
+        .with_app_side_effect(move |app| {
+            let request = crate::provider::LaunchProviderRequest::new(
+                &room, "claude", "claude", "default", "haiku",
+            )
+            .with_agent_id(&child)
+            .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+            let mut run = crate::provider::RuntimeProviderRun::new(
+                &child_run,
+                &request,
+                crate::provider::ProviderLaunchResult {
+                    endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                    process_label: "native-background-hold".into(),
+                    pty_target: None,
+                    pty_program: None,
+                    pty_args: Vec::new(),
+                    pty_env: env,
+                    pty_env_remove: Vec::new(),
+                    working_directory: None,
+                    structured_endpoint: None,
+                },
+            );
+            run.mark_running();
+            app.providers_mut().insert_run_for_test(run.clone());
+            run
+        })
+        .await
+}
+
+/// The native bridge reads what the provider's transcript holds now.
+async fn read_native_transcript(
+    team: &Team,
+    run: &crate::provider::RuntimeProviderRun,
+    transcript: &std::path::Path,
+    lines: &[serde_json::Value],
+) {
+    let text = lines
+        .iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(transcript, text + "\n").unwrap();
+    let (room, run_id, run) = (team.room.clone(), team.child_run.clone(), run.clone());
+    let owned = &team.runtime.owned;
+    team.runtime
+        .with_app_side_effect(|app| {
+            app.process_claude_native_bridge_with_handoff_for_runtime(&room, &run_id, &run, owned)
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_native_notification_turn_that_executes_beyond_the_grace_is_held_until_it_completes() {
+    let team = child_with_a_call_running("background-hold-native-executing").await;
+    let dir = std::env::temp_dir().join(format!(
+        "chariox-background-hold-native-{}",
+        std::process::id()
+    ));
+    let run = native_child(&team, &dir).await;
+    let transcript = dir.join("session.jsonl");
+    // The call ended two minutes ago, and the provider's notification turn has since started.
+    apply(
+        &team,
+        vec![ended_at(crate::session::unix_epoch_ms() - 2 * MINUTE_MS)],
+    )
+    .await;
+    let line = |id: &str, text: &str| {
+        serde_json::json!({
+            "type": "assistant",
+            "uuid": id,
+            "sessionId": "native-hold-session",
+            "message": {
+                "id": id, "model": "claude-haiku-5-5", "role": "assistant",
+                "stop_reason": null,
+                "content": [{"type": "text", "text": text}],
+            }
+        })
+    };
+    read_native_transcript(
+        &team,
+        &run,
+        &transcript,
+        &[line("m1", "reading the server output")],
+    )
+    .await;
+    sweep(&team).await;
+    assert!(
+        working(&team),
+        "the executing notification turn is not released"
+    );
+    assert!(child_finished(&team).is_empty());
+
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, false)
+        .await
+        .unwrap();
+    assert_eq!(child_finished(&team).len(), 1);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[tokio::test]
 async fn the_notification_turn_is_part_of_the_one_finish() {
     let team = child_with_a_call_running("background-hold-notification").await;

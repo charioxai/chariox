@@ -125,6 +125,10 @@ impl crate::app::NativePromptHandoffPolicy for KernelRuntimeOwnedState {
         self.consume_pending_context_handoff(session_id, agent_id, &run);
         Ok(())
     }
+
+    fn note_turn_work(&self, run_id: &str) {
+        self.background_holds.note_output_of_run(run_id);
+    }
 }
 
 impl KernelRuntimeOwnedState {

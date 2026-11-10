@@ -99,7 +99,7 @@ pub(crate) use provider_output_claude_native::{
 };
 pub(crate) use provider_tool_close::{
     background_calls, ended_background_provider_tool_rows, ended_open_provider_tool_rows,
-    BackgroundCalls, EndedProviderToolRow, ProviderToolEnding,
+    is_work_of_a_turn, BackgroundCalls, EndedProviderToolRow, ProviderToolEnding,
 };
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
