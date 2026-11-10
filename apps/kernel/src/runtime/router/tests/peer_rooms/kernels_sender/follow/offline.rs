@@ -846,7 +846,6 @@ fn every_peer_request(a: &Kernel, b: &Kernel) -> Vec<RelayPeerRequest> {
             protocol_version: v,
             request_id: "fence-spawn".into(),
             sender: sender.clone(),
-            room: b.room.clone(),
         },
         RelayPeerRequest::DeliverPeerAgentOutcome {
             protocol_version: v,

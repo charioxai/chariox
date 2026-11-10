@@ -3,7 +3,7 @@
 //! the peers (`router/created_peer_release.rs`).
 use super::*;
 use crate::durable_state::agent_lifecycle::created_peers::CreatedPeer;
-use crate::durable_state::agent_lifecycle::Operation;
+use crate::durable_state::agent_lifecycle::{Operation, Outcome};
 use crate::error::DaemonError;
 use crate::session::SessionStatus;
 
@@ -19,18 +19,26 @@ impl KernelRuntimeState {
             creator_room: creator.session_id().into(),
             creator_agent: creator.id().into(),
             kernel: String::new(),
-            room: peer.session_id().into(),
             peer: peer.id().into(),
             created_at_ms: 0,
         })
+        .map(|_| ())
     }
 
-    pub(crate) fn record_created_peer(&self, mut peer: CreatedPeer) -> Result<(), DaemonError> {
+    /// Whether this call wrote the link: an earlier attempt of the same spawn may have, and its
+    /// peer may exist.
+    pub(crate) fn record_created_peer(&self, mut peer: CreatedPeer) -> Result<bool, DaemonError> {
         peer.created_at_ms = crate::session::unix_epoch_ms();
-        self.owned
+        match self
+            .owned
             .durable_state_store
-            .agent_lifecycle(Operation::RecordCreatedPeer { peer })
-            .map(|_| ())
+            .agent_lifecycle(Operation::RecordCreatedPeer { peer })?
+        {
+            Outcome::CreatedPeerRecorded { inserted } => Ok(inserted),
+            _ => Err(crate::durable_state::agent_lifecycle::error(
+                "created peer recorded without an outcome",
+            )),
+        }
     }
 
     pub(crate) fn release_created_peer(&self, peer: CreatedPeer) -> Result<(), DaemonError> {

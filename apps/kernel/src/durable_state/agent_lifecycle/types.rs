@@ -658,6 +658,10 @@ pub(crate) enum Outcome {
     Swept(Vec<AgentTaskExecution>),
     Wakes(Vec<AgentWake>),
     PeerFollowed(super::peer_follows::PeerFollowed),
+    /// Whether the link was new, or an earlier attempt of the same spawn had written it.
+    CreatedPeerRecorded {
+        inserted: bool,
+    },
     Saved,
 }
 pub(crate) struct Request {

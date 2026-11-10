@@ -177,7 +177,6 @@ mod shapes {
                 protocol_version: v,
                 request_id: "request-4".into(),
                 sender: a2,
-                room: "room-b".into(),
             },
             RelayPeerRequest::DeliverPeerAgentOutcome {
                 protocol_version: v,

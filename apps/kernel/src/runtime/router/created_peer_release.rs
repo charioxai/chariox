@@ -57,11 +57,11 @@ impl CommandRouter {
             if let Err(error) = self.delete_created_peer(&link).await {
                 let age = crate::session::unix_epoch_ms().saturating_sub(link.created_at_ms);
                 if age < GIVE_UP_AFTER_MS {
-                    tracing::warn!(%error, creator = %link.creator_agent, kernel = %link.kernel, room = %link.room,
+                    tracing::warn!(%error, creator = %link.creator_agent, kernel = %link.kernel, peer = %link.peer,
                         "created peers: the peer of an ended agent is not deleted yet; retried on the next pass");
                     continue;
                 }
-                tracing::error!(%error, creator = %link.creator_agent, kernel = %link.kernel, room = %link.room,
+                tracing::error!(%error, creator = %link.creator_agent, kernel = %link.kernel, peer = %link.peer,
                     "created peers: giving up on the peer of an ended agent");
             }
             match self.runtime_state.release_created_peer(link) {
@@ -116,8 +116,10 @@ impl CommandRouter {
         }
     }
 
-    /// A creator on another kernel ended: delete the agent its spawn request created, if it is
-    /// still there. A room this owner cannot address reads as a room that is not there.
+    /// A creator on another kernel ended: delete the agent its spawn request created. The agent
+    /// is found by the spawn's key, whatever its room is called now. A spawn that has not created
+    /// it yet is answered first (it holds the claim) or cancelled: this delete is remembered as
+    /// the spawn's answer, so the spawn that comes later creates nothing.
     pub(super) async fn delete_room_peer(
         &self,
         kernel: &str,
@@ -128,7 +130,6 @@ impl CommandRouter {
             protocol_version: RELAY_PEER_PROTOCOL_VERSION,
             request_id,
             sender: _,
-            room,
         } = request
         else {
             return Err(crate::durable_state::agent_lifecycle::error(
@@ -140,28 +141,42 @@ impl CommandRouter {
                 "invalid peer request id",
             ));
         }
-        let room = match self.runtime_state.peer_room_of_owner(owner, &room) {
-            Ok(room) => room,
-            Err(refusal) => {
-                return Ok(RelayPeerResponse::PeerAgentRefused {
-                    protocol_version: RELAY_PEER_PROTOCOL_VERSION,
-                    refusal,
-                })
-            }
-        };
-        let spawn_key = peer_spawn_key(kernel, &request_id);
-        let peer = self
+        let _in_flight = self
             .runtime_state
-            .session_agents(&room)
-            .into_iter()
-            .find(|agent| agent.spawn_key() == Some(spawn_key.as_str()));
-        let duplicate = peer.is_none();
-        if let Some(peer) = peer {
-            self.destroy_created_agent(peer.id()).await?;
-        }
-        Ok(RelayPeerResponse::RoomPeerDeleted {
+            .claim_peer_spawn_when_free(kernel, &request_id)
+            .await;
+        let deleted = |duplicate| RelayPeerResponse::RoomPeerDeleted {
             protocol_version: RELAY_PEER_PROTOCOL_VERSION,
             duplicate,
-        })
+        };
+        let spawn_key = peer_spawn_key(kernel, &request_id);
+        let Some(peer) = self
+            .runtime_state
+            .list_agents()
+            .into_iter()
+            .find(|agent| agent.spawn_key() == Some(spawn_key.as_str()))
+        else {
+            self.runtime_state
+                .durable_state_store()
+                .remember_peer_agent_request_answer(
+                    kernel,
+                    &request_id,
+                    &serde_json::to_string(&deleted(true)).map_err(|error| {
+                        crate::durable_state::agent_lifecycle::error(error.to_string())
+                    })?,
+                )?;
+            return Ok(deleted(true));
+        };
+        if let Err(refusal) = self
+            .runtime_state
+            .peer_room_of_owner(owner, peer.session_id())
+        {
+            return Ok(RelayPeerResponse::PeerAgentRefused {
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+                refusal,
+            });
+        }
+        self.destroy_created_agent(peer.id()).await?;
+        Ok(deleted(false))
     }
 }

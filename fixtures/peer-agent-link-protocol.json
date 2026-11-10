@@ -97,8 +97,7 @@
         "kernel_id": "kernel-a",
         "room_id": "room-a",
         "agent_id": "agent-a"
-      },
-      "room": "room-b"
+      }
     },
     {
       "kind": "deliver_peer_agent_outcome",

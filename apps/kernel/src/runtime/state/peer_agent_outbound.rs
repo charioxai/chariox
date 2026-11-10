@@ -389,11 +389,12 @@ impl KernelRuntimeState {
             creator_room: sender.session_id().into(),
             creator_agent: sender.id().into(),
             kernel: kernel.into(),
-            room: spawn.room.trim().into(),
             peer: request_id.clone(),
             created_at_ms: 0,
         };
-        self.record_created_peer(created.clone())?;
+        // An earlier attempt of this spawn may have written the link and may have created the
+        // peer: only a link this attempt wrote is its to take back.
+        let link_is_new = self.record_created_peer(created.clone())?;
         let request = RelayPeerRequest::SpawnRoomPeer {
             protocol_version: RELAY_PEER_PROTOCOL_VERSION,
             request_id,
@@ -430,7 +431,7 @@ impl KernelRuntimeState {
         let (agent, alias, duplicate) = match answered {
             Ok(spawned) => spawned,
             Err(error) => {
-                if !lost {
+                if !lost && link_is_new {
                     self.release_created_peer(created)?;
                 }
                 if let (Some(registration), Some((task, prompt)), false) = (held, task, lost) {
@@ -463,8 +464,9 @@ impl KernelRuntimeState {
         })
     }
 
-    /// Deletes the peer a spawn created on another kernel for a creator that has ended. A peer
-    /// or room that is not there any more is the outcome asked for.
+    /// Deletes the peer a spawn created on another kernel for a creator that has ended. The
+    /// kernel finds it by the spawn's request id, whatever its room is called now; a peer that is
+    /// not there any more is the outcome asked for.
     pub(crate) async fn delete_created_peer_on_kernel(
         &self,
         created: &CreatedPeer,
@@ -489,17 +491,13 @@ impl KernelRuntimeState {
                 room_id: created.creator_room.clone(),
                 agent_id: created.creator_agent.clone(),
             },
-            room: created.room.clone(),
         };
         match self
             .peer_agent_link(&owner, &created.kernel, request)
             .await?
         {
             RelayPeerResponse::RoomPeerDeleted { .. } => Ok(()),
-            RelayPeerResponse::PeerAgentRefused {
-                refusal: PeerAgentRefusal::RoomUnavailable,
-                ..
-            } => Ok(()),
+            // A peer in a room this owner cannot address still exists: the link stays.
             RelayPeerResponse::PeerAgentRefused { refusal, .. } => {
                 Err(refused(&created.kernel, refusal))
             }

@@ -5,6 +5,9 @@ use super::follow::offline::{link_stopped, relay_error, restarted};
 use super::*;
 use crate::local::{DestroyAgentRequest, EndSessionRequest, LocalDaemonRequest};
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
+use crate::transport::relay_peer::{
+    PeerAgentRefusal, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
+};
 
 /// Deletes `agent` of `room` the way the owner's `agent delete` does.
 async fn delete_agent(router: &CommandRouter, room: &str, agent: &str) {
@@ -287,7 +290,7 @@ fn a_peer_ends_when_the_room_of_its_creator_ends_and_a_lost_spawn_answer_leaves_
 }
 
 async fn set_room_alias(kernel: &Kernel, alias: &str) {
-    let mut app = kernel.app.lock().await;
+    let app = kernel.app.lock().await;
     let mut room = app.sessions().get_session(&kernel.room).unwrap();
     room.set_alias(Some(alias.into()));
     app.sessions_mut().restore_session(room);
@@ -333,6 +336,62 @@ fn a_lost_spawn_answer_keeps_its_link_when_the_retry_finds_the_kernel_offline() 
             gone_from(&b, &b.room, "reviewer").await,
             "the peer the first attempt created ends with its creator"
         );
+        unlink(&[&a, &b]);
+    });
+}
+
+/// `kernel` refuses to delete the peer: its room is not one this owner can address.
+fn link_refusing_the_delete(kernel: &Kernel) {
+    let router = kernel.router.clone();
+    peer_agent_link_for_tests::register(
+        &kernel.id,
+        &kernel.name,
+        Arc::new(
+            move |from: String, owner: String, request: RelayPeerRequest| {
+                let router = router.clone();
+                Box::pin(async move {
+                    if matches!(request, RelayPeerRequest::DeleteRoomPeer { .. }) {
+                        return Ok(RelayPeerResponse::PeerAgentRefused {
+                            protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+                            refusal: PeerAgentRefusal::RoomUnavailable,
+                        });
+                    }
+                    router.relay_peer_agent(&from, &owner, request).await
+                })
+            },
+        ),
+    );
+}
+
+#[test]
+fn a_peer_in_a_room_the_owner_cannot_address_is_not_taken_for_deleted() {
+    run_peer_test("created-peer-room-unavailable", || async {
+        let (a, b) = two_kernels(
+            "created-peer-room-unavailable",
+            AgentPermissionLevel::Required,
+            AgentPermissionLevel::Yolo,
+        );
+        a.command(format!(
+            "agent spawn reviewer --room {} --kernel {} --no-follow",
+            b.room, b.name
+        ))
+        .await
+        .expect("a peer spawns on the other kernel");
+        link_refusing_the_delete(&b);
+
+        delete_agent(&a.router, &a.room, a.agent.id()).await;
+        finish_deletes(&a.router).await;
+        assert_eq!(
+            links(&a).await,
+            1,
+            "the peer is still there: the link stays"
+        );
+        assert!(aliases(&b, &b.room).await.contains(&"reviewer".to_string()));
+
+        link(&b);
+        finish_deletes(&a.router).await;
+        assert!(gone_from(&b, &b.room, "reviewer").await);
+        assert_eq!(links(&a).await, 0);
         unlink(&[&a, &b]);
     });
 }
@@ -457,6 +516,56 @@ fn a_delete_that_reaches_the_kernel_before_the_queued_spawn_leaves_no_orphan() {
             !aliases(&b, &b.room).await.contains(&"reviewer".to_string()),
             "a spawn of a creator that already ended creates nothing"
         );
+        unlink(&[&a, &b]);
+    });
+}
+
+#[test]
+fn a_delete_waits_for_the_spawn_that_is_creating_the_peer() {
+    run_peer_test("created-peer-delete-waits", || async {
+        let (a, b) = two_kernels(
+            "created-peer-delete-waits",
+            AgentPermissionLevel::Required,
+            AgentPermissionLevel::Yolo,
+        );
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let held = link_holding_the_spawn(&b, gate.clone());
+        a.command(format!(
+            "agent spawn reviewer --room {} --kernel {} --no-follow",
+            b.room, b.name
+        ))
+        .await
+        .unwrap_err();
+        let request_id = a
+            .app
+            .lock()
+            .await
+            .durable_state_store()
+            .created_peers()
+            .unwrap()[0]
+            .peer
+            .clone();
+        // The spawn is acting on B: the claim is its.
+        let claim = b
+            .router
+            .runtime_state
+            .claim_peer_spawn_when_free(&a.id, &request_id)
+            .await;
+
+        delete_agent(&a.router, &a.room, a.agent.id()).await;
+        let router = a.router.clone();
+        let pass = tokio::spawn(async move { router.finish_created_peers().await });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!pass.is_finished(), "the delete waits for the spawn to end");
+        assert_eq!(links(&a).await, 1);
+
+        drop(claim);
+        pass.await.unwrap();
+        assert_eq!(links(&a).await, 0, "then it is done");
+        gate.notify_one();
+        let spawn = held.lock().unwrap().take().expect("B took the spawn");
+        spawn.await.unwrap();
+        assert!(!aliases(&b, &b.room).await.contains(&"reviewer".to_string()));
         unlink(&[&a, &b]);
     });
 }
