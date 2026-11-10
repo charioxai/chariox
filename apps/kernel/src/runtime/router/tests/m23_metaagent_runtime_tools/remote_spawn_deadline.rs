@@ -42,16 +42,6 @@ async fn armed_on_worker() {
     assert_eq!(worker.deadlines.lock().unwrap().len(), 2);
 }
 
-async fn room_agents(world: &super::subtree::World) -> usize {
-    world
-        .app
-        .lock()
-        .await
-        .agents()
-        .get_session_agents(&world.room)
-        .len()
-}
-
 #[test]
 fn a_remote_spawn_without_a_deadline_still_leases_and_a_local_one_with_a_deadline_still_arms() {
     run_large_stack_async_test("remote-spawn-deadline-unchanged", unchanged);

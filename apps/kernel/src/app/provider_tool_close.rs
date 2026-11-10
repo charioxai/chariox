@@ -233,7 +233,7 @@ mod tests {
         let foreground =
             serde_json::json!({"id":"fg","tool":"Read","status":"completed","started_at_ms":1});
         assert_eq!(
-            background_calls(tool_rows(&[foreground.clone()])),
+            background_calls(tool_rows(std::slice::from_ref(&foreground))),
             BackgroundCalls::None
         );
         assert_eq!(

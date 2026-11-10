@@ -3,7 +3,6 @@
 //! ends, and its parent hears of one `child_finished` that carries that turn's text.
 use super::background_tool_settlement::{lifecycle, tool_chunk};
 use super::child_finished::{child_finished, team_with, Team};
-use super::*;
 use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
 use crate::provider::{ProviderPromptChunk, ProviderPromptSignalBatch};
 use crate::terminal::TerminalOutputKind;

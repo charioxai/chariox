@@ -91,7 +91,7 @@ impl KernelRuntimeState {
                 .agent_deadline(&request.session_id, descendant.id())?
                 .is_none_or(|own| own.deadline_ms > request.deadline_ms);
             if later {
-                self.arm_leased_agent_deadline(&descendant, request.deadline_ms)
+                self.arm_leased_agent_deadline(descendant, request.deadline_ms)
                     .await?;
                 self.owned
                     .durable_state_store
