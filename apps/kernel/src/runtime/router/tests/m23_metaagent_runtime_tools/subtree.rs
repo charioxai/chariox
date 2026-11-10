@@ -460,6 +460,7 @@ async fn spawn_deadline() {
                 deadline_ms: crate::session::unix_epoch_ms() + 10 * 60_000,
             },
         )
+        .await
         .unwrap();
     let bounded = room_command(
         &world,
@@ -715,6 +716,7 @@ async fn local_spawn_deadline() {
                 deadline_ms: armed,
             },
         )
+        .await
         .unwrap();
     // The same key finds the same agent, now with its deadline.
     let again = local_spawn_answer(&world, Some("again")).await;

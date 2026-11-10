@@ -467,6 +467,19 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn relay_set_leased_agent_deadline(
+        &self,
+        leased_agent_id: &str,
+        deadline_ms: u64,
+    ) -> Result<(), DaemonError> {
+        relay_peer_runtime::set_relay_leased_agent_deadline(
+            &self.runtime_state,
+            leased_agent_id,
+            deadline_ms,
+        )
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn relay_launch_leased_native_provider_run(
         &self,

@@ -113,6 +113,7 @@ impl CommandRouter {
             LocalDaemonRequest::SetAgentDeadline(request) => boxed_handler(|| async move {
                 self.runtime_state
                     .set_agent_deadline(&command_caller_user_id(&command), request)
+                    .await
             }),
             LocalDaemonRequest::GetAgentDeadline(request) => boxed_handler(|| async move {
                 self.runtime_state

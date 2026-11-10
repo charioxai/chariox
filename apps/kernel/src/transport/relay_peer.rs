@@ -1029,6 +1029,11 @@ pub enum RelayPeerRequest {
         leased_agent_id: String,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     },
+    /// The worker enforces the agent's deadline itself, so the run stops with the home offline.
+    SetLeasedAgentDeadline {
+        leased_agent_id: String,
+        deadline_ms: u64,
+    },
     LaunchLeasedNativeProviderRun {
         leased_agent_id: String,
         adapter_key: String,
@@ -1490,6 +1495,9 @@ pub enum RelayPeerResponse {
         leased_agent: LeasedAgent,
     },
     LeasedAgentRemoteExtensionManifestUpdated {
+        leased_agent_id: String,
+    },
+    LeasedAgentDeadlineSet {
         leased_agent_id: String,
     },
     LeasedNativeProviderRunLaunched {

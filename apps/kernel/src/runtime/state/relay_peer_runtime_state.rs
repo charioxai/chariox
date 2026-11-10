@@ -310,6 +310,35 @@ impl KernelRuntimeState {
         .await
     }
 
+    /// The worker owns the deadline of the agent it runs: its own tick stops the run even when
+    /// the home that asked for it is offline.
+    pub(crate) async fn set_relay_leased_agent_deadline(
+        &self,
+        leased_agent_id: &str,
+        deadline_ms: u64,
+    ) -> Result<(), DaemonError> {
+        let leased_agent_id = leased_agent_id.to_string();
+        let backing = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+                runtime.leased_agent_backing(&leased_agent_id).ok_or(
+                    DaemonError::LeasedAgentNotFound {
+                        leased_agent_id: leased_agent_id.clone(),
+                    },
+                )
+            })
+            .await?;
+        self.owned.durable_state_store.agent_lifecycle(
+            crate::durable_state::agent_lifecycle::Operation::SetDeadline {
+                room: backing.0,
+                agent: backing.1,
+                deadline: deadline_ms,
+            },
+        )?;
+        Ok(())
+    }
+
     pub(crate) async fn update_relay_leased_agent_remote_extension_manifest(
         &self,
         leased_agent_id: &str,

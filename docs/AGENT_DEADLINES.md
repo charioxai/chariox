@@ -31,10 +31,18 @@ not cause repeated deadline writes. No process that armed the deadline or open w
 needed. After a kernel restart, an overdue stored deadline is enforced during
 the first scheduler tick; the original reached/stop receipts are retained.
 
-A home kernel cannot promise this for a disconnected leased worker. Arming a
-deadline on a remote-backed agent, or moving a deadline-bound agent to a worker,
-is refused with `agent_deadline_requires_executor`. This is an optional general facility for managing an agent on its local
-executor. It does not replace managed-host automatic shutdown policy (MP-09).
+A leased agent runs on a worker, so the worker enforces its deadline. The home
+sends `SetLeasedAgentDeadline` (relay peer 442) to the worker first and records
+its own deadline only after the worker confirms; a worker that refuses or does not
+answer leaves no deadline on the home, and a spawn that cannot be armed removes
+the child it created. The worker arms the deadline on the agent that carries the
+leased work, so its own scheduler tick stops the provider run even when the home
+is offline; the home also cancels the leased turn when its own tick reaches the
+deadline. A deadline of a parent shortens the deadlines of its remote descendants
+the same way. Moving a deadline-bound agent to a worker stays refused with
+`agent_deadline_requires_executor`: move the agent first, then arm the deadline.
+This is an optional general facility for managing an agent. It does not replace
+managed-host automatic shutdown policy (MP-09).
 
 The requests and response were introduced in local protocol **585**, without
 a relay protocol change. The deadline carries

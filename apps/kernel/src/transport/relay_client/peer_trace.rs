@@ -130,6 +130,7 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
         RelayPeerRequest::UpdateLeasedAgentConfig { .. } => "update_leased_agent_config",
         RelayPeerRequest::UpdateLeasedAgentProfile { .. } => "update_leased_agent_profile",
         RelayPeerRequest::UpdateLeasedAgentMetaMode { .. } => "update_leased_agent_meta_mode",
+        RelayPeerRequest::SetLeasedAgentDeadline { .. } => "set_leased_agent_deadline",
         RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest { .. } => {
             "update_leased_agent_remote_extension_manifest"
         }

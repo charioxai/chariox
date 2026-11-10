@@ -674,6 +674,8 @@ pub(crate) use owner_handoff_runtime::{is_handoff_interaction_id, HANDOFF_OBLIGA
 mod declined_workspace_trust_runtime;
 mod dictation_runtime;
 mod kernel_computer_runtime;
+#[cfg(test)]
+mod leased_agent_deadline_tests;
 mod leased_computer_runtime;
 #[cfg(test)]
 mod leased_computer_runtime_tests;
