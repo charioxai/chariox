@@ -21,7 +21,7 @@ for (const action of ["create", "reimage"] as const) test(`MP-08 / MP-11 ${actio
   })
   const selected = {...contextPlan, providerAccounts: {kind: "selected" as const, accounts: [{provider: "claude", accountProfile: "fixture"}]}}
   const request = action === "create"
-    ? createManagedEnvironment(profile, {clientRequestId: "create-1", name: "fixture", region: "hel1", computeClass: "agent-small", managedRepositoryRoot: "/srv/chariox/repos", shutdownPolicy: {kind: "last_work_finished", warningSeconds: 30}, contextPlan: selected})
+    ? createManagedEnvironment(profile, {clientRequestId: "create-1", region: "hel1", computeClass: "agent-small", managedRepositoryRoot: "/srv/chariox/repos", shutdownPolicy: {kind: "last_work_finished", warningSeconds: 30}, contextPlan: selected})
     : requestManagedEnvironmentReimage(profile, {...reimageInput, contextPlan: selected})
   await assert.rejects(request, /kernel credential portability preflight/)
   assert.equal(requests, 0, "reject before STOP or provisioning authority is spent")
@@ -48,7 +48,7 @@ for (const action of ["create", "reimage"] as const) for (const rejected of [fal
     return {...result, environment: {...result.environment, accountId: metadata.accountId}}
   })
   const request = action === "create"
-    ? createManagedEnvironment(profile, {clientRequestId: "create-1", name: "fixture", region: "hel1", computeClass: "agent-small", shutdownPolicy: {kind: "last_work_finished", warningSeconds: 30}, contextPlan: selected}, client)
+    ? createManagedEnvironment(profile, {clientRequestId: "create-1", region: "hel1", computeClass: "agent-small", shutdownPolicy: {kind: "last_work_finished", warningSeconds: 30}, contextPlan: selected}, client)
     : requestManagedEnvironmentReimage(profile, {...reimageInput, contextPlan: selected}, client)
   if (rejected) await assert.rejects(request, /no transferable credentials/)
   else await request
@@ -58,13 +58,13 @@ for (const action of ["create", "reimage"] as const) for (const rejected of [fal
 for (const response of [undefined, {ProviderAccountPortabilityPreflightPassed: {credential: "must-not-cross"}}, {Other: {}}]) test("MP-08 / MP-11 unexpected portability acknowledgement fails before Cloud", async () => {
   const profile = authority(() => {throw new Error("must not spend Cloud authority")})
   const client = {send: async () => response} as unknown as LocalIpcClient
-  await assert.rejects(createManagedEnvironment(profile, {clientRequestId: "create-1", name: "fixture", region: "hel1", computeClass: "agent-small", shutdownPolicy: {kind: "last_work_finished", warningSeconds: 30}, contextPlan: {...contextPlan, providerAccounts: {kind: "selected", accounts: [{provider: "codex", accountProfile: "fixture"}]}}}, client), /acknowledgement|ProviderAccountPortabilityPreflightPassed/)
+  await assert.rejects(createManagedEnvironment(profile, {clientRequestId: "create-1", region: "hel1", computeClass: "agent-small", shutdownPolicy: {kind: "last_work_finished", warningSeconds: 30}, contextPlan: {...contextPlan, providerAccounts: {kind: "selected", accounts: [{provider: "codex", accountProfile: "fixture"}]}}}, client), /acknowledgement|ProviderAccountPortabilityPreflightPassed/)
 })
 
 test("MP-08 / MP-11 selected-provider older kernel gives protocol 491 diagnostic", async () => {
   const profile = authority(() => {throw new Error("must not spend Cloud authority")})
   const client = {send: async () => {throw new Error("unknown variant `PreflightProviderAccountPortability`")}} as unknown as LocalIpcClient
-  await assert.rejects(createManagedEnvironment(profile, {clientRequestId: "create-1", name: "fixture", region: "hel1", computeClass: "agent-small", shutdownPolicy: {kind: "last_work_finished", warningSeconds: 30}, contextPlan: {...contextPlan, providerAccounts: {kind: "selected", accounts: [{provider: "codex", accountProfile: "fixture"}]}}}, client), /requires kernel protocol 491/)
+  await assert.rejects(createManagedEnvironment(profile, {clientRequestId: "create-1", region: "hel1", computeClass: "agent-small", shutdownPolicy: {kind: "last_work_finished", warningSeconds: 30}, contextPlan: {...contextPlan, providerAccounts: {kind: "selected", accounts: [{provider: "codex", accountProfile: "fixture"}]}}}, client), /requires kernel protocol 491/)
 })
 
 // MP-08 / MP-11: human control transport has no kernel credentials, with local
@@ -84,7 +84,7 @@ test("managed catalog and mutations use bound human HTTP metadata", async () => 
   assert.deepEqual(await listManagedEnvironmentCatalog(profile), {computeClasses: [], contextSources: [], environments: []})
   assert.equal((await getManagedEnvironment(profile, "environment-1")).environmentId, "environment-1")
   await getManagedEnvironmentReimagePreflight(profile, "environment-1")
-  const created = await createManagedEnvironment(profile, {clientRequestId: "create-root-1", name: "fixture", region: "hel1", computeClass: "agent-small", managedRepositoryRoot: "/srv/chariox/repos", shutdownPolicy: {kind: "last_work_finished", warningSeconds: 30}, contextPlan})
+  const created = await createManagedEnvironment(profile, {clientRequestId: "create-root-1", region: "hel1", computeClass: "agent-small", managedRepositoryRoot: "/srv/chariox/repos", shutdownPolicy: {kind: "last_work_finished", warningSeconds: 30}, contextPlan})
   assert.equal(created.environment.managedRepositoryRoot, "/srv/chariox/repos")
   await requestManagedEnvironmentLifecycle(profile, {environmentId: "environment-1", action: "start", idempotencyKey: "stable-start"})
   await prepareManagedEnvironmentContextTransfer(profile, "environment-1")
@@ -106,7 +106,7 @@ for (const shutdownPolicy of [
     posted = true
     return {environment: {environmentId: "environment-1", accountId: metadata.accountId}, operation: {environmentId: "environment-1"}}
   })
-  await createManagedEnvironment(profile, {clientRequestId: "shutdown-1", name: "fixture", region: "hel1", computeClass: "agent-small", shutdownPolicy, contextPlan})
+  await createManagedEnvironment(profile, {clientRequestId: "shutdown-1", region: "hel1", computeClass: "agent-small", shutdownPolicy, contextPlan})
   assert.equal(posted, true)
 })
 
@@ -123,7 +123,7 @@ for (const shutdownPolicy of [
     posted = true
     return {environment: {environmentId: "environment-1", accountId: metadata.accountId}, operation: {environmentId: "environment-1"}}
   })
-  await createManagedEnvironment(profile, {clientRequestId: "shutdown-1", name: "fixture", region: "hel1", computeClass: "agent-small", shutdownPolicy, contextPlan})
+  await createManagedEnvironment(profile, {clientRequestId: "shutdown-1", region: "hel1", computeClass: "agent-small", shutdownPolicy, contextPlan})
   assert.equal(posted, true)
 })
 

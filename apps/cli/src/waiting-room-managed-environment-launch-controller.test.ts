@@ -420,7 +420,6 @@ function createHarness(options: HarnessOptions) {
       return next ?? options.launchTarget ?? emptyLaunchTarget()
     },
     createIdempotencyKey: () => `key-${++keySequence}`,
-    environmentName: () => "Managed agent",
     delay: async (ms) => {
       now += ms
       delayCount += 1

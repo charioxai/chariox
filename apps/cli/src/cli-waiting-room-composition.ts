@@ -560,7 +560,6 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       planDigest,
     ),
     createIdempotencyKey: randomUUID,
-    environmentName: () => "Managed agent",
     delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     nowMs: Date.now,
   })

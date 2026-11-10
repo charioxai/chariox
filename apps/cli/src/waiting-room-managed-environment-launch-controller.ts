@@ -42,7 +42,6 @@ export type ManagedEnvironmentLaunchAttempt = {
 export type WaitingRoomManagedEnvironmentLaunchControllerDeps = {
   createEnvironment(input: {
     clientRequestId: string
-    name: string
     region: string
     computeClass: string
     managedRepositoryRoot: string
@@ -66,7 +65,6 @@ export type WaitingRoomManagedEnvironmentLaunchControllerDeps = {
   ): Promise<ManagedEnvironmentKernelConnection | null>
   getLaunchTarget(contextId: string, planDigest: string): Promise<ManagedContextLaunchTarget>
   createIdempotencyKey(): string
-  environmentName(): string
   delay(ms: number): Promise<void>
   nowMs(): number
   timeoutMs?: number
@@ -98,7 +96,6 @@ export class WaitingRoomManagedEnvironmentLaunchController {
     attempt: ManagedEnvironmentLaunchAttempt,
   ): Promise<ManagedEnvironmentSummary> {
     const requestWithoutId = {
-      name: this.deps.environmentName(),
       region: selection.region,
       computeClass: selection.computeClass,
       managedRepositoryRoot: selection.managedRepositoryRoot,
