@@ -203,7 +203,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08 / MP-09 / MP-10 / MP-11: peer 441 sends the kernel's large messages to the relay in
 /// chunks-v2 frames (`x-chariox-upload`); toward a relay that does not answer the offer the
 /// kernel writes whole messages, and the relay keeps reading whole messages from 440 kernels.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 441;
+/// MP-08 / MP-09 / MP-10 / MP-11: peer 442 sends a request's ciphertext as a `CXR3` frame, to a relay that
+/// answers `x-chariox-relay-requests: binary-v1`, and sizes binary chunks to the link.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 442;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
