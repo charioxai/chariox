@@ -20,7 +20,7 @@ pub(super) async fn seed_claude_aliases(app: &Arc<Mutex<DaemonApp>>, provider: &
             },
         )
     });
-    let mut app = app.lock().await;
+    let app = app.lock().await;
     let profile = app
         .provider_account_profile_registry()
         .get(owner, "claude", "default")
