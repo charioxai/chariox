@@ -82,7 +82,7 @@ export function userDomainWindowBadge(access: UserDomainWindowAccess): string | 
 }
 export type KernelBrowserTabActor = { actor_id: string; kind: "agent" | "human"; display_label: string }
 export type KernelBrowserAgentActivity = { sequence: number; tab_id: string; actor: KernelBrowserTabActor }
-export type KernelBrowserTab = { can_go_back?: boolean | null; can_go_forward?: boolean | null; favicon_png_base64?: string | null; tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null; taken_over?: boolean }
+export type KernelBrowserTab = { can_go_back?: boolean | null; can_go_forward?: boolean | null; favicon_png_base64?: string | null; tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null; opener_tab_id?: string; taken_over?: boolean }
 export type KernelBrowserDialog = {
   dialog_id: string; tab_id: string; generation: number; document_id: string;
   kind: "alert" | "confirm" | "prompt" | "beforeunload" | "permission"; message: string; origin: string; default_prompt?: string

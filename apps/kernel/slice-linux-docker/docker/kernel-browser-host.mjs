@@ -605,9 +605,13 @@ export class KernelBrowserHost {
     // MP-08: private creation evidence for the kernel, stripped before client projection.
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
     const dialogs = this.pendingDialogs();
+    // A popup names the Tab whose page opened it (never the CDP target id), so a window that shares this browser
+    // can tell its own page's popup from one another window's page opened.
+    const tabIds = new Map([...this.tabs.values()].map(tab => [tab.target_id, tab.tab_id]));
     return redactBrowserState({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
       active_tab_id: active, downloads: this.downloads.state(), tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => ({
         ...tab,
+        ...(tabIds.has(opener_target_id) ? { opener_tab_id: tabIds.get(opener_target_id) } : {}),
         ...this.header.read(tab),
         ...(this.webBotAuthRestoreUrls.has(tab.tab_id) ? { title: "Web Bot Auth restore requires an agent to resume this tab" } : {}),
       })), dialogs, viewport:this.viewport(), chrome_window: this.chromeWindow(),
