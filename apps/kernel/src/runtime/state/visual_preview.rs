@@ -23,7 +23,17 @@ fn refusal(message: impl Into<String>) -> DaemonError {
     }
 }
 
-/// The browser that renders the preview: the one the kernel browser is pinned to, else a Chromium on the PATH.
+/// Where the kernel browser installs its pinned Chromium (`kernel-browser-linux.mjs`).
+const PINNED_LINUX_CHROMIUM: &str =
+    "/usr/lib/chariox/browser/chromium/155.0.8059.79/chrome-linux64/chrome";
+/// The Chrome apps the kernel browser looks for under `/Applications` and `~/Applications`, in its order (`kernel-browser-macos.mjs`).
+const MACOS_APPS: [&str; 3] = [
+    "Chromium.app/Contents/MacOS/Chromium",
+    "Google Chrome.app/Contents/MacOS/Google Chrome",
+    "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+];
+
+/// The browser that renders the preview: the one the kernel browser is pinned to, else the one it would find on this platform.
 fn browser() -> Result<std::path::PathBuf, DaemonError> {
     resolve_browser(
         std::env::var_os("CHARIOX_KERNEL_BROWSER_EXECUTABLE").filter(|v| !v.is_empty()),
@@ -36,17 +46,32 @@ fn browser() -> Result<std::path::PathBuf, DaemonError> {
 
 fn resolve_browser(
     pinned: Option<std::ffi::OsString>,
-    _os: &str,
-    _home: Option<std::path::PathBuf>,
+    os: &str,
+    home: Option<std::path::PathBuf>,
     path: &std::ffi::OsStr,
     is_file: impl Fn(&std::path::Path) -> bool,
 ) -> Result<std::path::PathBuf, DaemonError> {
     if let Some(pinned) = pinned {
         return Ok(pinned.into());
     }
-    ["google-chrome", "chromium", "chromium-browser", "chrome"]
+    let candidates: Vec<std::path::PathBuf> = if os == "macos" {
+        let roots = std::iter::once(std::path::PathBuf::from("/Applications")).chain(
+            home.filter(|home| home.is_absolute())
+                .map(|home| home.join("Applications")),
+        );
+        roots
+            .flat_map(|root| MACOS_APPS.map(|app| root.join(app)))
+            .collect()
+    } else {
+        let named = ["google-chrome", "chromium", "chromium-browser", "chrome"]
+            .into_iter()
+            .flat_map(|name| std::env::split_paths(path).map(move |dir| dir.join(name)));
+        std::iter::once(PINNED_LINUX_CHROMIUM.into())
+            .chain(named)
+            .collect()
+    };
+    candidates
         .into_iter()
-        .flat_map(|name| std::env::split_paths(path).map(move |dir| dir.join(name)))
         .find(|candidate| is_file(candidate))
         .ok_or_else(|| refusal("this machine has no Chromium or Chrome to render with; check the page with the browser tools instead"))
 }
@@ -87,15 +112,31 @@ fn console_message(line: &str) -> Option<String> {
     Some(message.chars().take(CONSOLE_LINE_CHARS).collect())
 }
 
+/// A directory of this call alone: `create_dir` fails when the name is taken, so two calls never share one.
+fn create_work_dir(parent: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    std::fs::create_dir_all(parent)?;
+    loop {
+        let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let work = parent.join(format!(
+            "preview-{}-{}-{call}",
+            crate::session::unix_epoch_ms(),
+            std::process::id()
+        ));
+        match std::fs::create_dir(&work) {
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            created => return created.map(|()| work),
+        }
+    }
+}
+
 pub(super) async fn preview(page: &str, width: u32) -> Result<serde_json::Value, DaemonError> {
     if !(320..=1600).contains(&width) {
         return Err(refusal("width must be 320-1600"));
     }
     let browser = browser()?;
-    let work = crate::config::default_state_dir()
-        .join("visuals")
-        .join(format!("preview-{}", crate::session::unix_epoch_ms()));
-    std::fs::create_dir_all(&work).map_err(|error| refusal(format!("cannot render: {error}")))?;
+    let work = create_work_dir(&crate::config::default_state_dir().join("visuals"))
+        .map_err(|error| refusal(format!("cannot render: {error}")))?;
     let rendered = render(&browser, &work, page, width).await;
     let _ = std::fs::remove_dir_all(&work);
     let (png, log) = rendered?;
@@ -241,7 +282,7 @@ mod tests {
         );
         assert_eq!(
             found("macos", Some("/Users/a"), "", &[MAC_CHROME, user]).as_deref(),
-            Some(user)
+            Some(MAC_CHROME)
         );
     }
 
@@ -269,6 +310,19 @@ mod tests {
         );
         assert_eq!(pinned.unwrap(), std::path::PathBuf::from("/opt/chrome"));
         assert_eq!(found("macos", Some("/Users/a"), "/usr/bin", &[]), None);
+    }
+
+    #[test]
+    fn the_browser_lists_follow_the_kernel_browsers() {
+        let macos = include_str!("../../../slice-linux-docker/docker/kernel-browser-macos.mjs");
+        for app in MACOS_APPS {
+            assert!(
+                macos.contains(app),
+                "{app} is not a macOS candidate of the kernel browser"
+            );
+        }
+        let linux = include_str!("../../../slice-linux-docker/docker/kernel-browser-linux.mjs");
+        assert!(linux.contains(PINNED_LINUX_CHROMIUM));
     }
 
     const FAKE_BROWSER: &str = r#"#!/bin/sh
