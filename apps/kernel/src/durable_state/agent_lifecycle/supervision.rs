@@ -30,6 +30,19 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             Ok(Outcome::Saved)
         }
         Operation::ReleaseSpawn { room, source } => {
+            // An agent that is gone follows nobody.
+            for t in room_tasks(tx, &room, Some(&source))? {
+                for mut reg in registrations(tx, &t.task_id)? {
+                    if reg.peer && reg.live {
+                        reg.live = false;
+                        tx.execute(
+                            "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+                            params![reg.id, encode(&reg)?],
+                        )
+                        .map_err(sql)?;
+                    }
+                }
+            }
             for mut t in source_tasks(tx, &room, &source)? {
                 let mut released = Vec::new();
                 for o in &mut t.obligations {
@@ -115,11 +128,17 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .map(|v| decode::<serde_json::Value>(&v))
                 .transpose()?;
             for mut t in source_tasks(tx, &room, &source)? {
-                // Only a peer's follower lives in another room; its registration below decides.
-                if t.state == ExecutionState::Done {
+                let held = registrations(tx, &t.task_id);
+                // A finished task is done with its sources, unless it still follows this peer.
+                if t.state == ExecutionState::Done
+                    && !held.as_ref().is_ok_and(|held| {
+                        held.iter()
+                            .any(|reg| reg.peer && reg.live && reg.source_id == source)
+                    })
+                {
                     continue;
                 }
-                let registrations = match registrations(tx, &t.task_id) {
+                let registrations = match held {
                     Ok(regs) => regs,
                     Err(_) => {
                         quarantine::registrations(tx, &t.task_id)?;
@@ -170,12 +189,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         && !(success && super::delegation::unbound(&t, &reg))
                     {
                         peers_ended |= reg.peer;
-                        reg.live = false;
-                        tx.execute(
-                            "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
-                            params![reg.id, encode(&reg)?],
-                        )
-                        .map_err(sql)?;
+                        if !super::peer_follows::outlives(&reg, &id) {
+                            reg.live = false;
+                            tx.execute(
+                                "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+                                params![reg.id, encode(&reg)?],
+                            )
+                            .map_err(sql)?;
+                        }
                         changed = true;
                     }
                 }
@@ -688,6 +709,10 @@ pub(super) fn cancel_intent(
         }
     };
     for mut registration in regs {
+        // Cancelling the turn does not stop the agent following a peer.
+        if registration.peer {
+            continue;
+        }
         registration.live = false;
         tx.execute(
             "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
