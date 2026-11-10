@@ -974,7 +974,6 @@ thread_local! {
 
 /// A process table read now, within `ps`'s own deadline, never the cached one.
 fn fresh_rows(root: u32) -> Result<Vec<Row>, String> {
-    #[cfg(test)]
     if let Some(errno) = ps_failure::injected(root) {
         return Err(format!(
             "the current processes could not be read ({}); the process may still be running, retry",
@@ -989,7 +988,6 @@ fn fresh_rows(root: u32) -> Result<Vec<Row>, String> {
 }
 
 pub(super) fn process_rows(root: u32) -> Result<std::sync::Arc<Vec<Row>>, SamplingError> {
-    #[cfg(test)]
     if let Some(errno) = ps_failure::injected(root) {
         return Err(SamplingError::Short(errno));
     }
@@ -1002,19 +1000,17 @@ pub(super) fn process_rows(root: u32) -> Result<std::sync::Arc<Vec<Row>>, Sampli
 
 #[cfg(target_os = "linux")]
 fn process_observation(root: u32) -> Result<RowObservation, SamplingError> {
+    if let Some(errno) = ps_failure::injected(root) {
+        return Err(SamplingError::Short(errno));
+    }
     #[cfg(test)]
-    {
-        if let Some(errno) = ps_failure::injected(root) {
-            return Err(SamplingError::Short(errno));
-        }
-        if let Some(observation) = TEST_SAMPLER.with(|sampler| {
-            sampler
-                .borrow()
-                .as_ref()
-                .map(Sampler::successful_observation)
-        }) {
-            return observation;
-        }
+    if let Some(observation) = TEST_SAMPLER.with(|sampler| {
+        sampler
+            .borrow()
+            .as_ref()
+            .map(Sampler::successful_observation)
+    }) {
+        return observation;
     }
     sampler().successful_observation()
 }
@@ -1046,7 +1042,6 @@ pub(super) fn warm_up() -> Result<(), SamplingError> {
 }
 
 pub(super) fn ensure_available(root: u32) -> std::io::Result<()> {
-    #[cfg(test)]
     if let Some(errno) = ps_failure::injected(root) {
         return Err(std::io::Error::from_raw_os_error(errno));
     }
@@ -1064,6 +1059,13 @@ fn run_ps() -> std::io::Result<std::process::Output> {
 /// Makes starting `ps` fail with an errno for the tree of one root process,
 /// as a kernel at its descriptor limit does. Other trees, and the tests that
 /// watch them, are unaffected.
+#[cfg(not(test))]
+pub(super) mod ps_failure {
+    pub(super) fn injected(_root: u32) -> Option<i32> {
+        None
+    }
+}
+
 #[cfg(test)]
 pub(super) mod ps_failure {
     static ERRNO: std::sync::Mutex<std::collections::BTreeMap<u32, i32>> =

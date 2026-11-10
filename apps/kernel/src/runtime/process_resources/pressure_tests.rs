@@ -475,7 +475,10 @@ fn a_pause_that_frees_nothing_ends_the_paused_command_after_the_stall_window() {
     assert!(b.alive("grow"), "the stall window passed too soon");
     settle(8);
     let mut a = a;
-    assert!(a.alive("big") && a.root_alive(), "the running command ended");
+    assert!(
+        a.alive("big") && a.root_alive(),
+        "the running command ended"
+    );
     assert!(
         !b.alive("grow"),
         "the paused command held its memory for ever under a full pool"
