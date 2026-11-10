@@ -4,17 +4,13 @@ use chariox_app_package::{v2, VerifiedApp, VerifiedAppPackage};
 use chariox_app_runtime::installation::ReleaseMetadata;
 
 fn png() -> Vec<u8> {
-    let mut out = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
-    let chunk = |kind: &[u8; 4], data: &[u8]| {
-        let mut chunk = (data.len() as u32).to_be_bytes().to_vec();
-        chunk.extend(kind);
-        chunk.extend(data);
-        chunk.extend([0; 4]);
-        chunk
-    };
-    out.extend(chunk(b"IHDR", &[0, 0, 0, 32, 0, 0, 0, 32, 8, 6, 0, 0, 0]));
-    out.extend(chunk(b"IDAT", &[0; 4]));
-    out.extend(chunk(b"IEND", &[]));
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, 32, 32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    writer.write_image_data(&[0x40; 32 * 32 * 4]).unwrap();
+    writer.finish().unwrap();
     out
 }
 

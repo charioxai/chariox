@@ -14,8 +14,9 @@ pub const MAX_DISPLAY_NAME_CHARS: usize = 64;
 pub const MAX_ICON_BYTES: usize = 32 * 1024;
 pub const MAX_ICON_PIXELS: u32 = 512;
 
-const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
-const PNG_CHUNK_OVERHEAD: usize = 12;
+const PNG_IEND_CHUNK: [u8; 12] = [0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82];
+/// A 512 by 512 image with four 16-bit samples per pixel.
+const MAX_DECODED_ICON_BYTES: usize = MAX_ICON_PIXELS as usize * MAX_ICON_PIXELS as usize * 8;
 
 fn invalid(message: &'static str) -> PackageError {
     PackageError::new(ErrorCode::InvalidManifest, message)
@@ -93,41 +94,37 @@ pub fn icon_data_url(path: &str, bytes: &[u8]) -> Option<String> {
     ))
 }
 
-/// Walks the chunk structure: the signature, an `IHDR` of sane size first and
-/// an `IEND` last. Pixels are not decoded; viewers decode them in a sandbox.
+/// Decodes the whole image, because a client cannot show a PNG that does not
+/// decode. The header is read first and its size checked against the pixel cap
+/// before any buffer is sized from it, so the decode cannot allocate more than
+/// the largest permitted icon needs.
 fn check_png(bytes: &[u8]) -> Result<()> {
-    let bad = || invalid("icon is not a well-formed PNG up to 512 by 512 pixels");
-    let mut rest = bytes.strip_prefix(&PNG_SIGNATURE).ok_or_else(bad)?;
-    let mut first = true;
-    loop {
-        let header: [u8; 8] = rest
-            .get(..8)
-            .ok_or_else(bad)?
-            .try_into()
-            .map_err(|_| bad())?;
-        let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
-        let kind = &header[4..];
-        let total = length.checked_add(PNG_CHUNK_OVERHEAD).ok_or_else(bad)?;
-        let chunk = rest.get(..total).ok_or_else(bad)?;
-        if first {
-            if kind != b"IHDR" || length != 13 {
-                return Err(bad());
-            }
-            let side = |at: usize| {
-                u32::from_be_bytes([chunk[at], chunk[at + 1], chunk[at + 2], chunk[at + 3]])
-            };
-            if !(1..=MAX_ICON_PIXELS).contains(&side(8))
-                || !(1..=MAX_ICON_PIXELS).contains(&side(12))
-            {
-                return Err(bad());
-            }
-            first = false;
-        }
-        rest = &rest[total..];
-        if kind == b"IEND" {
-            return if rest.is_empty() { Ok(()) } else { Err(bad()) };
-        }
+    let bad = || invalid("icon is not a decodable PNG up to 512 by 512 pixels");
+    let mut decoder = png::Decoder::new(bytes);
+    decoder.set_limits(png::Limits {
+        bytes: MAX_DECODED_ICON_BYTES,
+    });
+    let mut reader = decoder.read_info().map_err(|_| bad())?;
+    let info = reader.info();
+    if !(1..=MAX_ICON_PIXELS).contains(&info.width)
+        || !(1..=MAX_ICON_PIXELS).contains(&info.height)
+        || info.is_animated()
+    {
+        return Err(bad());
     }
+    let size = reader.output_buffer_size();
+    if size > MAX_DECODED_ICON_BYTES {
+        return Err(bad());
+    }
+    let mut image = vec![0; size];
+    reader.next_frame(&mut image).map_err(|_| bad())?;
+    // Reads the remaining chunks up to IEND, checking each CRC. The decoder
+    // stops there, so the file must also end there.
+    reader.finish().map_err(|_| bad())?;
+    if !bytes.ends_with(&PNG_IEND_CHUNK) {
+        return Err(bad());
+    }
+    Ok(())
 }
 
 const FORBIDDEN_ELEMENTS: [&str; 8] = [

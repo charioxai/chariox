@@ -3,22 +3,61 @@ use super::*;
 
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
 
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
 fn chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
     let mut out = (data.len() as u32).to_be_bytes().to_vec();
-    out.extend(kind);
-    out.extend(data);
-    out.extend([0; 4]);
+    let mut body = kind.to_vec();
+    body.extend(data);
+    out.extend(&body);
+    out.extend(crc32(&body).to_be_bytes());
     out
 }
 
+/// A PNG the standard encoder wrote, so it decodes to a real image.
 fn png(width: u32, height: u32) -> Vec<u8> {
-    let mut header = width.to_be_bytes().to_vec();
-    header.extend(height.to_be_bytes());
-    header.extend([8, 6, 0, 0, 0]);
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    let pixels: Vec<u8> = (0..width * height * 4).map(|i| (i / 4096) as u8).collect();
+    writer.write_image_data(&pixels).unwrap();
+    writer.finish().unwrap();
+    out
+}
+
+/// The chunks of `png(width, height)` as (kind, data) pairs, to be edited and
+/// put back together with correct lengths and CRCs.
+fn chunks_of(bytes: &[u8]) -> Vec<([u8; 4], Vec<u8>)> {
+    let mut rest = &bytes[8..];
+    let mut chunks = Vec::new();
+    while !rest.is_empty() {
+        let length = u32::from_be_bytes(rest[..4].try_into().unwrap()) as usize;
+        chunks.push((rest[4..8].try_into().unwrap(), rest[8..8 + length].to_vec()));
+        rest = &rest[length + 12..];
+    }
+    chunks
+}
+
+fn assemble(chunks: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
     let mut out = PNG_SIGNATURE.to_vec();
-    out.extend(chunk(b"IHDR", &header));
-    out.extend(chunk(b"IDAT", &[0; 8]));
-    out.extend(chunk(b"IEND", &[]));
+    for (kind, data) in chunks {
+        out.extend(chunk(kind, data));
+    }
     out
 }
 
@@ -136,10 +175,11 @@ fn an_icon_must_be_a_listed_small_png_or_svg() {
 
     for broken in [
         b"not a png".to_vec(),
-        png(0, 8),
-        png(8, 0),
+        png_claiming(0, 8),
+        png_claiming(8, 0),
         png(513, 8),
         png(8, 513),
+        png_claiming(u32::MAX, u32::MAX),
         png(8, 8)[..40].to_vec(),
         PNG_SIGNATURE.to_vec(),
     ] {
@@ -239,4 +279,68 @@ fn verify_alone_refuses_a_signed_package_whose_icon_is_unsafe() {
         .files
         .insert("ui/icon.svg".into(), SVG.as_bytes().to_vec());
     assert!(verify(&sign_without_pack_checks(&fixture), &policy()).is_err());
+}
+
+/// `png(8, 8)` with another size in its header, as an attacker would write it.
+fn png_claiming(width: u32, height: u32) -> Vec<u8> {
+    edited_png(|chunks| {
+        chunks[0].1[..4].copy_from_slice(&width.to_be_bytes());
+        chunks[0].1[4..8].copy_from_slice(&height.to_be_bytes());
+    })
+}
+
+fn edited_png(edit: impl FnOnce(&mut Vec<([u8; 4], Vec<u8>)>)) -> Vec<u8> {
+    let mut chunks = chunks_of(&png(8, 8));
+    edit(&mut chunks);
+    assemble(&chunks)
+}
+
+fn idat(chunks: &mut [([u8; 4], Vec<u8>)]) -> &mut Vec<u8> {
+    &mut chunks
+        .iter_mut()
+        .find(|(kind, _)| kind == b"IDAT")
+        .unwrap()
+        .1
+}
+
+#[test]
+fn a_real_png_decodes_and_a_png_without_a_decodable_image_is_refused() {
+    assert!(pack_error(&with_icon("ui/icon.png", png(8, 8))).is_none());
+    assert!(pack_error(&with_icon("ui/icon.png", png(1, 1))).is_none());
+
+    let no_idat = edited_png(|chunks| chunks.retain(|(kind, _)| kind != b"IDAT"));
+    let bad_crc = {
+        let mut bytes = png(8, 8);
+        let at = bytes.len() - 12 - 4;
+        bytes[at] ^= 0xff;
+        bytes
+    };
+    let bad_zlib = edited_png(|chunks| idat(chunks).fill(0xa5));
+    let truncated_stream = edited_png(|chunks| {
+        let data = idat(chunks);
+        data.truncate(data.len() / 2);
+    });
+    let short_image = edited_png(|chunks| {
+        let mut header = chunks[0].1.clone();
+        header[4..8].copy_from_slice(&64u32.to_be_bytes());
+        chunks[0].1 = header;
+    });
+    let trailing_data = {
+        let mut bytes = png(8, 8);
+        bytes.extend([0; 4]);
+        bytes
+    };
+    for (name, broken) in [
+        ("no IDAT", no_idat),
+        ("bad CRC", bad_crc),
+        ("bad zlib", bad_zlib),
+        ("truncated stream", truncated_stream),
+        ("fewer rows than the header says", short_image),
+        ("bytes after IEND", trailing_data),
+    ] {
+        assert!(
+            pack_error(&with_icon("ui/icon.png", broken)).is_some(),
+            "{name}"
+        );
+    }
 }
