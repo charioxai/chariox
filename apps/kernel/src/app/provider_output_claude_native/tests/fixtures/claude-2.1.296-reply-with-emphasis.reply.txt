@@ -1,0 +1,5 @@
+The command printed "one" because `echo one` is the last part of the chain, and its output is what the shell captures and returns. The leading `sleep 4` ran first, pausing for four seconds, but it writes nothing to standard output, so it contributes no text to the result. The semicolon means the two commands run one after the other rather than in parallel, so the echo only happened once the pause finished.
+
+The output is also the literal string `one` with no quotes or extra whitespace, because `echo` appends a newline and passes its argument through unchanged. Nothing in the command interpolates variables or expands globs, so there was nothing to transform. The tool simply showed the captured stdout.
+
+The result tells us the shell ran the command successfully and that both parts completed in order. Since the echo was reached, the `sleep` exited with status zero. If `sleep` had failed, the semicolon would still have let `echo` run, so this output does not by itself prove the pause was honored, only that the sequence finished.

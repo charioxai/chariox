@@ -402,6 +402,41 @@ pub(super) fn write_claude_permission_response(
     );
 }
 
+/// An answered question: the allowed call carries the person's answers.
+pub(super) fn write_claude_question_answers(
+    context_file: &str,
+    request_id: &str,
+    updated_input: Value,
+) {
+    write_claude_permission_payload(
+        context_file,
+        request_id,
+        serde_json::json!({
+            "behavior": "allow",
+            "message": "Answered through Chariox.",
+            "updatedInput": updated_input,
+        }),
+    );
+}
+
+/// The turn was stopped while the call waited: deny it and tell Claude to end
+/// the turn instead of asking for the same tool again.
+pub(super) fn write_claude_permission_interrupt(
+    context_file: &str,
+    request_id: &str,
+    reason: &str,
+) {
+    write_claude_permission_payload(
+        context_file,
+        request_id,
+        serde_json::json!({
+            "behavior": "deny",
+            "message": reason,
+            "interrupt": true,
+        }),
+    );
+}
+
 /// No decision: the waiting hook returns at once without one, and Claude asks
 /// in its own dialog.
 pub(super) fn write_claude_permission_passthrough(context_file: &str, request_id: &str) {
@@ -524,6 +559,10 @@ pub(super) fn should_bridge_claude_permission(event: &Value) -> bool {
     else {
         return false;
     };
+    // Whatever the permission mode, a question is waiting on a person.
+    if tool_name == super::question::CLAUDE_QUESTION_TOOL {
+        return true;
+    }
     if event.get("permission_mode").and_then(Value::as_str) == Some("bypassPermissions") {
         return false;
     }

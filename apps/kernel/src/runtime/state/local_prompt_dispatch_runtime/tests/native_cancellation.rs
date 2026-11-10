@@ -157,6 +157,9 @@ async fn native_cancel_composer_fixture(settles_before_abort: bool, successor_be
             .input_records()
             .last()
             .map(|record| record.bytes.clone());
+        let fenced_prompt =
+            std::fs::read_to_string(std::path::Path::new(context).with_file_name("cancelled-turn"))
+                .ok();
         if successor_before_abort {
             assert_eq!(
                 runtime
@@ -191,6 +194,11 @@ async fn native_cancel_composer_fixture(settles_before_abort: bool, successor_be
                 Some(expected_input)
             },
             "marker={marker}"
+        );
+        assert_eq!(
+            fenced_prompt.as_deref().map(str::trim),
+            (!successor_before_abort).then_some(prompt_id.as_str()),
+            "a Stop fences what the stopped prompt writes next (marker={marker})"
         );
     }
 }

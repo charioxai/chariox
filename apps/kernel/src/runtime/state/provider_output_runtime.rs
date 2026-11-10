@@ -6,6 +6,9 @@
 use super::*;
 
 const PTY_PROMPT_SETTLE_QUIET_FOR: std::time::Duration = std::time::Duration::from_millis(50);
+/// Claude's hooks and transcript are files: while its terminal is quiet (an
+/// approval, a question or a long tool call) nothing else wakes the pump.
+const CLAUDE_NATIVE_TURN_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
 impl KernelRuntimeState {
     pub(super) async fn pump_owned_provider_output(
@@ -90,6 +93,12 @@ impl KernelRuntimeState {
                 })
                 .await?;
             drop(room_guard);
+            if owned.provider_run_has_active_prompt(session_id, &provider_run)? {
+                owned.schedule_provider_output_check_within(
+                    provider_run_id,
+                    CLAUDE_NATIVE_TURN_POLL,
+                );
+            }
             if !outcome.rejected_prompts.is_empty() {
                 if let Some(agent_id) = provider_run.agent_instance_id() {
                     for prompt in &outcome.rejected_prompts {
@@ -167,6 +176,21 @@ impl KernelRuntimeState {
                 return Err(error);
             }
         };
+        if crate::provider::provider_run_is_claude_headless(&provider_run) && !chunks.is_empty() {
+            let terminal_bytes = chunks
+                .iter()
+                .flat_map(|chunk| chunk.bytes.iter().copied())
+                .collect::<Vec<u8>>();
+            self.with_app_side_effect(|app| {
+                app.stream_claude_reply_for_runtime(
+                    session_id,
+                    provider_run_id,
+                    &provider_run,
+                    &terminal_bytes,
+                )
+            })
+            .await?;
+        }
         if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
             let rendered = chunks
                 .iter()

@@ -31,8 +31,19 @@ pub(crate) struct ProviderOutputFanout {
 }
 
 /// Where `ProviderOutputFanout::append_history_entry` stored a row.
+/// How an output is kept in history.
+#[derive(Clone, Copy)]
+enum HistoryRow<'a> {
+    /// A row of its own.
+    Append,
+    /// One row per merge key, which holds this text and keeps its place.
+    ReplaceWith(&'a str),
+}
+
 enum StoredHistoryRow {
     Appended(u64),
+    /// It replaced the row stored before under its merge key, which keeps its sequence.
+    Replaced,
     /// It took the place of a background call's row in this earlier prompt's
     /// turn (see `OperationalHistoryStore::keep_background_tool_row_in_its_turn`).
     KeptInTurnOf(ActivePromptTranscriptMetadata),
@@ -123,6 +134,77 @@ impl ProviderOutputFanout {
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
+        self.fan_out_stored(
+            session_id,
+            provider_run_id,
+            agent_id,
+            kind,
+            merge_key,
+            recipient_attachment_ids,
+            bytes,
+            HistoryRow::Append,
+        )
+    }
+
+    /// A reply streamed as it is written: clients get `delta`, while one
+    /// stored row under `merge_key` holds `text`, everything so far, and is
+    /// replaced in place as it grows. A reload therefore shows the reply once,
+    /// and the finished text can take the place of what was streamed.
+    pub(crate) fn fan_out_live_reply(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        merge_key: String,
+        recipient_attachment_ids: Vec<String>,
+        delta: &str,
+        text: &str,
+    ) {
+        let agent_id = self
+            .provider_store
+            .get_run(provider_run_id)
+            .ok()
+            .and_then(|run| run.agent_instance_id().map(str::to_string));
+        if delta.is_empty() {
+            self.replace_history_row(
+                session_id,
+                SessionHistoryEntry::provider_output(
+                    session_id,
+                    provider_run_id,
+                    agent_id.as_deref(),
+                    TerminalOutputKind::ProviderOutput,
+                    Some(merge_key),
+                    text.to_string(),
+                ),
+            );
+            return;
+        }
+        self.fan_out_stored(
+            session_id,
+            provider_run_id,
+            agent_id.as_deref(),
+            TerminalOutputKind::ProviderOutput,
+            Some(merge_key),
+            recipient_attachment_ids,
+            delta.as_bytes(),
+            HistoryRow::ReplaceWith(text),
+        );
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The fan-out context arguments plus how the output is stored"
+    )]
+    fn fan_out_stored(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        kind: TerminalOutputKind,
+        merge_key: Option<String>,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+        history: HistoryRow<'_>,
+    ) -> TerminalOutputRecord {
         let delta_bytes = terminal_output_delta_bytes(
             session_id,
             provider_run_id,
@@ -204,23 +286,29 @@ impl ProviderOutputFanout {
                     );
                 }
             }
-            match self.append_history_entry(
+            let text = match history {
+                HistoryRow::Append => text,
+                HistoryRow::ReplaceWith(text) => text.to_string(),
+            };
+            let entry = SessionHistoryEntry::provider_output(
                 session_id,
-                SessionHistoryEntry::provider_output(
-                    session_id,
-                    provider_run_id,
-                    agent_id,
-                    kind.clone(),
-                    merge_key.clone(),
-                    text,
-                )
-                .with_prompt_origin(prompt_metadata.prompt_origin)
-                .with_source_attachment_id(prompt_metadata.source_attachment_id.clone()),
-            ) {
+                provider_run_id,
+                agent_id,
+                kind.clone(),
+                merge_key.clone(),
+                text,
+            )
+            .with_prompt_origin(prompt_metadata.prompt_origin)
+            .with_source_attachment_id(prompt_metadata.source_attachment_id.clone());
+            let stored = match history {
+                HistoryRow::Append => self.append_history_entry(session_id, entry),
+                HistoryRow::ReplaceWith(_) => self.replace_history_row(session_id, entry),
+            };
+            match stored {
                 StoredHistoryRow::Appended(appended) => sequence = Some(appended),
                 // The row stays in its launching prompt's turn, and so does the live record.
                 StoredHistoryRow::KeptInTurnOf(launch) => prompt_metadata = launch,
-                StoredHistoryRow::NotStored => {}
+                StoredHistoryRow::Replaced | StoredHistoryRow::NotStored => {}
             }
         }
         let notify_trace = kind != TerminalOutputKind::ProviderTerminal;
@@ -483,6 +571,69 @@ impl ProviderOutputFanout {
     }
 
     /// Returns the history sequence of the stored row.
+    fn replace_history_row(
+        &self,
+        session_id: &str,
+        entry: SessionHistoryEntry,
+    ) -> StoredHistoryRow {
+        let Some(entry) = bounded_history_entry(entry) else {
+            return StoredHistoryRow::NotStored;
+        };
+        let Some(merge_key) = entry.merge_key.clone() else {
+            return self.append_history_entry(session_id, entry);
+        };
+        let context = crate::app::HistoryEventContextResolver::new(
+            self.provider_store.clone(),
+            self.session_store.clone(),
+            self.prompt_state_owner.clone(),
+            self.active_turns.clone(),
+            self.agent_store.clone(),
+            self.provider_run_projection.clone(),
+        )
+        .resolve(&entry);
+        match self
+            .operational_history_store
+            .replace_latest_transcript_by_merge_key(
+                session_id,
+                entry.agent_id.as_deref(),
+                &merge_key,
+                &entry,
+                context,
+            ) {
+            Ok(Some(event)) => {
+                if self.archive_enabled {
+                    if let Err(error) = self
+                        .operational_history_store
+                        .enqueue_archive_events(std::slice::from_ref(&event))
+                    {
+                        crate::logging::warn_with_fields(
+                            "daemon.history",
+                            "failed to enqueue history archive event",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                }
+                StoredHistoryRow::Replaced
+            }
+            Ok(None) => self.append_history_entry(session_id, entry),
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "failed to replace operational history",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "merge_key": merge_key,
+                        "error": error.to_string(),
+                    }),
+                );
+                StoredHistoryRow::NotStored
+            }
+        }
+    }
+
     fn append_history_entry(
         &self,
         session_id: &str,

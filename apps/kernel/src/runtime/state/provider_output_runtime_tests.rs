@@ -563,4 +563,5 @@ mod catalog_continuation;
 
 mod native_context_rejection;
 
+mod claude_native_turn_poll;
 mod native_startup_trust;

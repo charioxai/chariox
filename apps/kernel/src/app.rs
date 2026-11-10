@@ -94,8 +94,9 @@ pub(crate) use provider_output_claude_native::tests::{startup_readiness_run, Sta
 pub(crate) use provider_output_claude_native::{
     claude_headless_prompt_queued_behind_running_turn, claude_native_pending_prompt_cancel_input,
     claude_native_recent_terminal_failure, claude_permission_title,
-    claude_workspace_trust_declined, format_claude_permission_message, ClaudeNativeDispatchAttempt,
-    ClaudeNativeProcessOutcome, NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
+    claude_workspace_trust_declined, fence_cancelled_claude_turn, format_claude_permission_message,
+    ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome, NativePromptHandoffPolicy,
+    CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
 pub(crate) use provider_tool_close::{
     ended_background_provider_tool_rows, ended_open_provider_tool_rows, EndedProviderToolRow,

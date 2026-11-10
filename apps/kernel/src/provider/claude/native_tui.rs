@@ -440,7 +440,9 @@ mod tests {
     fn hook_auto_allows_only_bypass_permissions() {
         let handler = claude_native_hook_handler();
 
-        assert!(handler.contains("if (input.permission_mode === \"bypassPermissions\")"));
+        assert!(handler.contains(
+            "if (input.permission_mode === \"bypassPermissions\" && input.tool_name !== \"AskUserQuestion\")"
+        ));
         assert!(handler.contains("behavior: \"allow\""));
         assert!(!handler.contains("permissionDecision"));
         assert!(!handler.contains("toolName.startsWith"));
@@ -664,6 +666,206 @@ mod tests {
                 contract_case["name"]
             );
         }
+    }
+
+    #[test]
+    fn question_hook_waits_for_the_person_in_every_mode_and_returns_the_answer() {
+        if crate::process_spawn::command("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let request = LaunchProviderRequest::new(
+            "session-hook-question",
+            "claude",
+            "claude-headless",
+            "default",
+            "opus",
+        );
+        let native =
+            prepare_claude_native_tui_files(&request).expect("native files should be prepared");
+        let hook_handler = native
+            .events_file
+            .parent()
+            .expect("events file should have a root")
+            .join("hook-handler.mjs");
+        let updated_input = serde_json::json!({
+            "questions": [{ "question": "Red or blue?", "options": [{ "label": "Blue" }] }],
+            "answers": { "Red or blue?": "Blue" }
+        });
+        for (event_name, mode) in [
+            ("PermissionRequest", "default"),
+            ("PermissionRequest", "bypassPermissions"),
+        ] {
+            let before = fs::read_to_string(&native.events_file).unwrap_or_default();
+            let mut child = crate::process_spawn::command("node")
+                .arg(&hook_handler)
+                .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+                .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
+                .env(
+                    "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES",
+                    &native.permission_response_dir,
+                )
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("hook handler should start");
+            child
+                .stdin
+                .take()
+                .expect("hook stdin should be piped")
+                .write_all(
+                    serde_json::json!({
+                        "hook_event_name": event_name,
+                        "permission_mode": mode,
+                        "tool_name": "AskUserQuestion",
+                        "tool_input": { "questions": updated_input["questions"] }
+                    })
+                    .to_string()
+                    .as_bytes(),
+                )
+                .expect("hook input should write");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let request_id = loop {
+                let now = fs::read_to_string(&native.events_file).unwrap_or_default();
+                if let Some(id) = now
+                    .strip_prefix(before.as_str())
+                    .unwrap_or(&now)
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .find_map(|event| {
+                        event["hook_context_request_id"]
+                            .as_str()
+                            .map(str::to_string)
+                    })
+                {
+                    break id;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{mode}: the hook never asked for an answer"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            assert!(
+                child.try_wait().expect("hook state").is_none(),
+                "{mode}: the hook must wait for the person's answer"
+            );
+            fs::write(
+                native
+                    .permission_response_dir
+                    .join(format!("{request_id}.json")),
+                serde_json::json!({ "behavior": "allow", "updatedInput": updated_input })
+                    .to_string(),
+            )
+            .expect("answer should write");
+            let output = child
+                .wait_with_output()
+                .expect("hook handler should finish");
+            let response: serde_json::Value =
+                serde_json::from_slice(&output.stdout).expect("hook response should be JSON");
+            assert_eq!(
+                response["hookSpecificOutput"]["decision"]["updatedInput"], updated_input,
+                "{mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stopped_turn_denies_the_pending_call_and_tells_claude_to_stop() {
+        if crate::process_spawn::command("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let request = LaunchProviderRequest::new(
+            "session-hook-stop",
+            "claude",
+            "claude-headless",
+            "default",
+            "opus",
+        );
+        let native =
+            prepare_claude_native_tui_files(&request).expect("native files should be prepared");
+        let hook_handler = native
+            .events_file
+            .parent()
+            .expect("events file should have a root")
+            .join("hook-handler.mjs");
+        let mut child = crate::process_spawn::command("node")
+            .arg(&hook_handler)
+            .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
+            .env(
+                "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES",
+                &native.permission_response_dir,
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("hook handler should start");
+        child
+            .stdin
+            .take()
+            .expect("hook stdin should be piped")
+            .write_all(
+                serde_json::json!({
+                    "hook_event_name": "PermissionRequest",
+                    "permission_mode": "default",
+                    "tool_name": "Bash",
+                    "tool_input": { "command": "sleep 20" }
+                })
+                .to_string()
+                .as_bytes(),
+            )
+            .expect("hook input should write");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let request_id = loop {
+            if let Some(id) = fs::read_to_string(&native.events_file)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find_map(|event| {
+                    event["hook_context_request_id"]
+                        .as_str()
+                        .map(str::to_string)
+                })
+            {
+                break id;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "hook never recorded its permission request"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        fs::write(
+            native
+                .permission_response_dir
+                .join(format!("{request_id}.json")),
+            serde_json::json!({
+                "behavior": "deny",
+                "message": "Stopped.",
+                "interrupt": true
+            })
+            .to_string(),
+        )
+        .expect("decision should write");
+        let output = child
+            .wait_with_output()
+            .expect("hook handler should finish");
+        let response: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("hook response should be JSON");
+        assert_eq!(
+            response["hookSpecificOutput"]["decision"]["interrupt"], true,
+            "Claude must end the turn, not retry the call"
+        );
     }
 
     #[test]

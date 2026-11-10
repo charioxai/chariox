@@ -859,6 +859,18 @@ impl KernelRuntimeOwnedState {
         );
     }
 
+    /// Checks the run again soon, unless a check is already due sooner.
+    pub(super) fn schedule_provider_output_check_within(
+        &self,
+        provider_run_id: &str,
+        delay: std::time::Duration,
+    ) {
+        self.provider_output_deadlines.schedule_no_later_than(
+            provider_run_id,
+            crate::session::unix_epoch_ms().saturating_add(delay.as_millis() as u64),
+        );
+    }
+
     pub(super) fn schedule_provider_output_check_when_quiet(
         &self,
         provider_run_id: &str,
