@@ -773,6 +773,12 @@ impl RuntimeProviderRun {
         self.last_activity_at_ms
     }
 
+    /// When the provider last produced output. Polling or configuring the run
+    /// does not move it, so a quiet provider stays quiet.
+    pub fn last_output_at_ms(&self) -> u64 {
+        self.last_activity_at_ms
+    }
+
     pub(crate) fn active_selection_cmp(&self, other: &Self) -> Ordering {
         (
             provider_run_active_selection_rank(self.state),
