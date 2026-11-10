@@ -124,20 +124,23 @@ fn preparing_ack_replay_and_cancel_survive_reopen_without_creating_a_stage() {
 }
 
 #[test]
-fn verified_review_nonce_and_original_deadline_fence_fresh_writer_budgets() {
+fn verified_review_nonce_and_decision_limit_fence_fresh_writer_budgets() {
     let f = Fixture::new();
     let operation = f.stage("review");
     let old = Arc::new(f.arm("review", "old-decision"));
-    let mut current = f.arm("review", "current-decision");
+    let current = f.arm("review", "current-decision");
     assert_eq!(current.review()["packageDigest"], operation.package_digest);
     assert!(matches!(
         f.store.decide_app_install(old, true, budget()),
         Err(InstallOperationError::Conflict)
     ));
-    current.deadline = std::time::Instant::now();
+    // The approval itself never expires; the limit of the decision starts at the owner's answer.
     assert!(matches!(
-        f.store
-            .decide_app_install(Arc::new(current), true, budget()),
+        f.store.decide_app_install(
+            Arc::new(current),
+            true,
+            AppOperationBudget::from_supervisor(|| true)
+        ),
         Err(InstallOperationError::Stopped)
     ));
     let pending = f

@@ -172,6 +172,7 @@ fn passkey_prompts_and_their_popup_event_are_versioned() {
         refuse_choice_id: "deny".into(),
         requested_at_ms: 1_000,
         expires_at_ms: 301_000,
+        app_install: None,
         term: None,
         lifetime_minutes: None,
         max_lifetime_minutes: None,
@@ -626,5 +627,51 @@ fn kernel_access_938_lets_the_kernel_pick_the_holder_own_no_wait_and_report_one_
     assert_eq!(
         serde_json::from_value::<LocalDaemonResponse>(value).unwrap(),
         status
+    );
+}
+
+/// An App install waiting for its owner is a prompt of the passkey feed that never expires and carries the App's review.
+#[test]
+fn app_install_prompt_shape_is_pinned() {
+    let prompt = PasskeyPrompt {
+        kind: PasskeyPromptKind::AppInstall,
+        sudo_request: None,
+        requester: None,
+        session_id: "session-1".into(),
+        session_alias: None,
+        interaction_id: "app_install_1".into(),
+        title: "Install App".into(),
+        message: "Install this App with the declared capabilities?".into(),
+        approve_choice_id: "approve".into(),
+        refuse_choice_id: "decline".into(),
+        requested_at_ms: 1_000,
+        expires_at_ms: crate::local::NEVER_EXPIRES_MS,
+        app_install: Some(crate::local::AppInstallPresentation {
+            request_id: "install-1".into(),
+            operation: crate::local::AppInstallPromptOperation::Update,
+            review: serde_json::json!({"appId": "dev.acme.notes", "version": "1.2.0", "capabilities": {}}),
+        }),
+        term: None,
+        lifetime_minutes: None,
+        max_lifetime_minutes: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&prompt).unwrap(),
+        serde_json::json!({
+            "kind": "app_install",
+            "session_id": "session-1",
+            "interaction_id": "app_install_1",
+            "title": "Install App",
+            "message": "Install this App with the declared capabilities?",
+            "approve_choice_id": "approve",
+            "refuse_choice_id": "decline",
+            "requested_at_ms": 1_000,
+            "expires_at_ms": 9_007_199_254_740_991u64,
+            "app_install": {
+                "request_id": "install-1",
+                "operation": "update",
+                "review": {"appId": "dev.acme.notes", "version": "1.2.0", "capabilities": {}},
+            },
+        })
     );
 }

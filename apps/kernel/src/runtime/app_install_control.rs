@@ -101,7 +101,6 @@ enum Step {
         session: String,
         challenge: Arc<InstallApprovalChallenge>,
         receiver: oneshot::Receiver<PendingInteractionResolution>,
-        deadline: Instant,
     },
     Decide {
         challenge: Arc<InstallApprovalChallenge>,

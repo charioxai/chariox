@@ -7067,3 +7067,20 @@ the lowest round trip, between 32 KiB and 1 MiB (`apps/relay/src/drain_window.rs
 writer also keeps one transfer slot free for small frames. No client minimum changes. Focused
 checks: `cargo test -p chariox-relay -- upload slow_link_tests drain_window` and
 `cargo test -p chariox-kernel --lib -- connector::upload connector::writer`.
+
+### App install approval: one prompt for the owner's terminals that waits — no protocol number
+
+An App install, update or reinstall that waits for its owner is now a prompt of the passkey feed
+(`passkey_prompts_changed`), so every terminal of the owner shows it wherever it looks, not only the one
+with the Room it was started in. `kind` is `app_install`: the approve choice is `approve`, the refuse choice
+is `decline`, neither carries a passkey, and `expires_at_ms` is 9007199254740991 (`NEVER_EXPIRES_MS`): the
+prompt stays until it is answered or cancelled, and a kernel restart asks a new question. The prompt carries
+`app_install: { request_id, operation: install | update | reinstall, review }`; `review` is the kernel's
+account of the verified package (`appId`, `version`, `publisherId`, `publisherName`, `keyId`,
+`keyFingerprint`, `packageDigest`, `capabilitiesDigest`, `capabilities`, `authoritySet`, `actions`). A client
+reads the outcome after the owner approves with `GetAppInstallOperation { request_id }`: phase `failed`
+carries the `failure` code (for example `app_wasm_runtime`). The decision itself keeps a 30 second limit that
+starts at the owner's answer (it used to be the first five minutes from the prompt, which ended an approval
+nobody had seen yet with `app_install_approval_expired`). The kernel-operation interaction is unchanged for
+clients that show it in the Room (`install:<installation>`, its message still lists the review).
+Focused checks: `cargo test -p chariox-kernel --lib app_install_control`, `app_install_prompt_shape_is_pinned`.

@@ -337,6 +337,7 @@ impl KernelRuntimeOwnedState {
             Some(PasskeyPromptKind::Sudo) => "sudo",
             Some(PasskeyPromptKind::CriticalApproval) => "critical_approval",
             Some(PasskeyPromptKind::VaultSecret) => "vault_secret",
+            Some(PasskeyPromptKind::AppInstall) => "app_install",
             None if interaction.provider_login_is_human_only() => "provider_login",
             None => "critical_approval",
         };

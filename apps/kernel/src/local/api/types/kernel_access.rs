@@ -43,6 +43,32 @@ pub enum PasskeyPromptKind {
     Sudo,
     /// Protocol 929: an outside agent asks for a Vault value; the approve choice is the secret.
     VaultSecret,
+    /// An App install, update or reinstall waits for the owner's decision. It has no passkey and never
+    /// expires: it stays until answered or cancelled, and `expires_at_ms` is `NEVER_EXPIRES_MS`.
+    AppInstall,
+}
+
+/// The `expires_at_ms` of a prompt that waits until it is answered or withdrawn: the largest integer a
+/// JavaScript client reads exactly.
+pub const NEVER_EXPIRES_MS: u64 = 9_007_199_254_740_991;
+
+/// The kernel's own account of the App an install prompt is about, derived from the verified package
+/// and never from display text: `review` is the signed metadata (`appId`, `version`, `publisherId`,
+/// `capabilities`, `authoritySet`, `actions`) the owner approves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppInstallPresentation {
+    /// The operation to read (`GetAppInstallOperation`) for the outcome after the owner approves.
+    pub request_id: String,
+    pub operation: AppInstallPromptOperation,
+    pub review: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppInstallPromptOperation {
+    Install,
+    Update,
+    Reinstall,
 }
 
 /// Protocol 568: how long an access grant lasts. `UntilHolderExits` has no
@@ -96,6 +122,9 @@ pub struct PasskeyPrompt {
     pub refuse_choice_id: String,
     pub requested_at_ms: u64,
     pub expires_at_ms: u64,
+    /// Present for app_install prompts only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_install: Option<AppInstallPresentation>,
     /// Protocol 568: present for access_grant/access_extension, the term the popup
     /// starts on; the terminal may choose a different one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
