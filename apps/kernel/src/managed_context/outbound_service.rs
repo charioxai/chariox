@@ -624,6 +624,7 @@ pub(crate) fn start_managed_context_outbound_operation(
                 return;
             }
         };
+        let rented_machine_id = authoritative_ticket.target.machine_id.clone();
         let transfer = transfer_managed_context_package_with_resume(
             &transport,
             ManagedContextOutboundTransferRequest {
@@ -652,12 +653,15 @@ pub(crate) fn start_managed_context_outbound_operation(
         )
         .await;
         match transfer {
-            Ok(result) => complete_outbound_operation(
-                &task_store,
-                &task_context_id,
-                &prepared.artifact_root,
-                result,
-            ),
+            Ok(result) => {
+                approve_rented_machine(&rented_machine_id);
+                complete_outbound_operation(
+                    &task_store,
+                    &task_context_id,
+                    &prepared.artifact_root,
+                    result,
+                )
+            }
             Err(error) => {
                 if error_is_retryable(&error) {
                     task_store.update(&task_context_id, |status| fail_status(status, &error));
@@ -671,6 +675,14 @@ pub(crate) fn start_managed_context_outbound_operation(
         }
     });
     Ok(status)
+}
+
+// MP-08/MP-10: Cloud's ticket names the machine this home rented and the transfer proved its kernel key, so the
+// owner's own rented machine needs no `/machine approve` on this home.
+fn approve_rented_machine(machine_id: &str) {
+    if let Err(error) = crate::config::DaemonConfig::approve_remote_machine(machine_id, None) {
+        tracing::warn!(machine_id, %error, "rented machine stays pending: approval could not be saved; approve it with /machine approve");
+    }
 }
 
 async fn fetch_authoritative_ticket(
@@ -1932,6 +1944,20 @@ mod tests {
     };
     use crate::config::PersistedCloudRelayProfile;
     use crate::transport::relay_crypto;
+
+    #[test]
+    fn mp08_a_successful_transfer_approves_the_rented_machine_on_this_home() {
+        crate::test_support::isolated_env_test!();
+        let approved = |machine_id: &str| {
+            DaemonConfig::machine_registry_entries()
+                .iter()
+                .any(|entry| entry.machine_id == machine_id && entry.approved && !entry.forgotten)
+        };
+        assert!(!approved("machine-rented"));
+        approve_rented_machine("machine-rented");
+        assert!(approved("machine-rented"));
+        assert!(!approved("machine-other"));
+    }
 
     /// Two real kernels on this host: the source prepares the package through the outbound
     /// service for a ticket naming the new machine, whose Vault was created from the source's
