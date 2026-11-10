@@ -161,6 +161,7 @@ impl KernelRuntimeState {
                 .durable_state_store
                 .agent_wakes(Some(session.id()), None)
                 .unwrap_or_default(),
+            &[],
         );
         activity
     }

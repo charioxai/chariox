@@ -208,6 +208,7 @@ impl SessionSnapshotProjection {
             &durable
                 .agent_wakes(Some(session_id), None)
                 .unwrap_or_default(),
+            &[],
         );
         Ok(Self {
             disk_usage: Vec::new(),

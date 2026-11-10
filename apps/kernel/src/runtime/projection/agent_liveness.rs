@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::{AgentRuntimeActivity, AgentRuntimeStatus};
-use crate::durable_state::agent_lifecycle::{AgentTaskExecution, AgentWake, ExecutionState};
+use crate::durable_state::agent_lifecycle::{
+    AgentTaskExecution, AgentWake, ExecutionState, Registration,
+};
 use crate::runtime::process_resources::{
     SessionProcess, SessionProcessOwner, SessionProcessState, WaitReason, Waiting,
 };
@@ -135,10 +137,11 @@ pub(crate) fn annotate_waits(
     processes: &[SessionProcess],
     tasks: &[AgentTaskExecution],
     wakes: &[AgentWake],
+    registrations: &[Registration],
 ) {
     for (agent_id, activity) in activity.iter_mut() {
-        let waiting =
-            command_wait(agent_id, processes).or_else(|| yielded_wait(agent_id, tasks, wakes));
+        let waiting = command_wait(agent_id, processes)
+            .or_else(|| yielded_wait(agent_id, tasks, wakes, registrations));
         if let Some(waiting) = waiting {
             activity.liveness.waiting_on = Some(waiting);
         }
@@ -172,6 +175,7 @@ fn yielded_wait(
     agent_id: &str,
     tasks: &[AgentTaskExecution],
     wakes: &[AgentWake],
+    _registrations: &[Registration],
 ) -> Option<AgentWaitingOn> {
     let waiting_tasks = tasks
         .iter()
@@ -328,7 +332,7 @@ mod tests {
             row("a", paused_since(5_000)),
             row("b", paused_since(1)),
         ];
-        annotate_waits(&mut activity, &processes, &[], &[]);
+        annotate_waits(&mut activity, &processes, &[], &[], &[]);
         let waiting = activity["a"].liveness.waiting_on.clone().unwrap();
         assert_eq!(waiting.kind, AgentWaitKind::CommandPaused);
         assert_eq!(waiting.resource, Some(WaitReason::Memory));
@@ -370,10 +374,51 @@ mod tests {
             wake("a", "t1", "process", "exited", 1_000),
             wake("a", "t2", "process", "running", 2_000),
         ];
-        annotate_waits(&mut activity, &[], &tasks, &wakes);
+        annotate_waits(&mut activity, &[], &tasks, &wakes, &[]);
         let waiting = activity["a"].liveness.waiting_on.clone().unwrap();
         assert_eq!(waiting.kind, AgentWaitKind::BackgroundCommand);
         assert_eq!(waiting.detail, "cargo build");
         assert_eq!(waiting.since_ms, 13_000);
+    }
+
+    fn waiting_task(
+        agent: &str,
+        id: &str,
+        registration_ids: &[&str],
+        started: u64,
+    ) -> AgentTaskExecution {
+        let mut task = task(agent, id, "waiting");
+        task.wait = Some(crate::durable_state::agent_lifecycle::AgentWait {
+            registration_ids: registration_ids.iter().map(|id| id.to_string()).collect(),
+            deadline_ms: started + 60 * MINUTE,
+            started_at_ms: started,
+            inbox_cursor: 0,
+            long_wait_notified: false,
+            last_checked_at_ms: started,
+        });
+        task
+    }
+
+    fn registration(task: &str, id: &str, source: &str, live: bool) -> Registration {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "task_id": task, "source_id": source, "obligation_id": null,
+            "source_cursor": 0, "live": live, "peer": false
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_agent_that_yielded_on_a_delegate_waits_on_that_source_since_the_yield() {
+        let mut activity = BTreeMap::from([("a".to_string(), idle_activity())]);
+        let tasks = [waiting_task("a", "t1", &["reg-1", "reg-2"], 7_000)];
+        let registrations = [
+            registration("t1", "reg-1", "delegate-task-9", true),
+            registration("t1", "reg-2", "finished-source", false),
+        ];
+        annotate_waits(&mut activity, &[], &tasks, &[], &registrations);
+        let waiting = activity["a"].liveness.waiting_on.clone().unwrap();
+        assert_eq!(waiting.kind, AgentWaitKind::Source);
+        assert_eq!(waiting.detail, "delegate-task-9");
+        assert_eq!(waiting.since_ms, 7_000);
     }
 }
