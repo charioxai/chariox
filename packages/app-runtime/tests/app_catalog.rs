@@ -16,6 +16,8 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+#[path = "app_catalog/display.rs"]
+mod display;
 #[path = "app_catalog/owned.rs"]
 mod owned;
 #[path = "app_catalog/readiness.rs"]

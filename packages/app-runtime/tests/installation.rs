@@ -53,6 +53,8 @@ fn release(version: u32) -> ReleaseMetadata {
         capabilities_digest: format!("sha256:{:064x}", version + 10),
         catalog_digest: format!("sha256:{:064x}", version + 20),
         view_digest: format!("sha256:{:064x}", version + 30),
+        display_name: None,
+        icon: None,
     }
 }
 
@@ -502,6 +504,8 @@ fn identities_digests_and_generation_tokens_are_checked_before_mutation() {
         },
         ReleaseMetadata {
             view_digest: "sha256:bad".into(),
+            display_name: None,
+            icon: None,
             ..release(2)
         },
     ] {

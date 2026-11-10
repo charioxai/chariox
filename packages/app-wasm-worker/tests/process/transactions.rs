@@ -114,6 +114,8 @@ async fn kernel_peer_real_worker_transactions_preserve_all_eighty_updates() {
                 capabilities_digest: format!("sha256:{:064x}", 2),
                 catalog_digest: format!("sha256:{:064x}", 3),
                 view_digest: format!("sha256:{:064x}", 4),
+                display_name: None,
+                icon: None,
             },
             1,
         )

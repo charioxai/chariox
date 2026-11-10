@@ -4,6 +4,7 @@
 //! v1 stays readable by the v1 verifier; the two schemas never share a signing
 //! subject, so a v1 signature cannot be replayed as v2 or the other way round.
 
+mod display;
 mod identity;
 mod manifest;
 mod package;
@@ -14,6 +15,7 @@ mod world;
 #[cfg(test)]
 pub(crate) mod tests;
 
+pub use display::{icon_data_url, MAX_DISPLAY_NAME_CHARS, MAX_ICON_BYTES, MAX_ICON_PIXELS};
 pub use identity::{
     registration_outcome, AppId, Namespace, RegistrationOutcome, RegistrationRefusal,
     SignerPrincipal, DEV_PUBLISHER_ID,

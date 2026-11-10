@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{world::WorldId, AppId, APP_SCHEMA_V2};
+use super::{display, world::WorldId, AppId, APP_SCHEMA_V2};
 use crate::{
     archive::validate_path, Capabilities, ErrorCode, Limits, Migrations, PackageError, Publisher,
     Result, Ui,
@@ -49,6 +49,12 @@ pub struct ManifestV2 {
     pub schema: String,
     pub app_id: String,
     pub version: String,
+    /// Human name for lists and windows; `appId` stays the identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Bundle path of a small PNG or SVG shown beside the name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     pub publisher: Publisher,
     pub app_contract_version: u32,
     pub resource_policy: String,
@@ -115,6 +121,12 @@ impl ManifestV2 {
             return Err(invalid("contract and resource policy are required"));
         }
         self.publisher.validate()?;
+        if let Some(name) = &self.display_name {
+            display::validate_display_name(name)?;
+        }
+        if let Some(icon) = &self.icon {
+            display::validate_icon_path(icon, limits)?;
+        }
         if self.idempotent_tools.len() > limits.max_declarations
             || self
                 .idempotent_tools
@@ -196,6 +208,7 @@ impl ManifestV2 {
     pub(crate) fn required_paths(&self) -> Vec<&str> {
         let mut paths = vec![self.runtime.component.as_str(), self.ui.entry.as_str()];
         paths.extend(self.declaration_paths());
+        paths.extend(self.icon.as_deref());
         if let Some(migrations) = &self.migrations {
             paths.extend(migrations.steps.iter().map(|step| step.entry.as_str()));
         }

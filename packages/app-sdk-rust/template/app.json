@@ -2,6 +2,8 @@
   "schema": "chariox.app.v2",
   "appId": "com.example.todo",
   "version": "1.0.0",
+  "displayName": "Todo",
+  "icon": "ui/icon.svg",
   "publisher": {
     "id": "com.example",
     "keyId": "developer-1",
