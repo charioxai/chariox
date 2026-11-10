@@ -136,6 +136,38 @@ async fn a_call_that_ended_without_a_notification_turn_releases_the_child_after_
 }
 
 #[tokio::test]
+async fn a_notification_turn_that_is_executing_is_held_past_the_grace_until_it_completes() {
+    let team = child_with_a_call_running("background-hold-executing").await;
+    // The call ended long ago, but the notification turn started and is still inspecting.
+    apply(
+        &team,
+        vec![
+            ended_at(crate::session::unix_epoch_ms() - 2 * MINUTE_MS),
+            text_chunk("reading the server output"),
+        ],
+    )
+    .await;
+    sweep(&team).await;
+    assert!(working(&team));
+    assert!(child_finished(&team).is_empty());
+
+    apply(&team, vec![text_chunk("the server exited with code 0")]).await;
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, false)
+        .await
+        .unwrap();
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1, "{events:?}");
+    let excerpt = events[0].payload["public_answer"]["excerpt"]
+        .as_str()
+        .unwrap();
+    assert!(
+        excerpt.contains("the server exited with code 0"),
+        "{excerpt}"
+    );
+}
+
+#[tokio::test]
 async fn the_notification_turn_is_part_of_the_one_finish() {
     let team = child_with_a_call_running("background-hold-notification").await;
     apply(

@@ -604,6 +604,7 @@ impl KernelRuntimeState {
         mut poll_result: crate::provider::ProviderPromptSignalBatch,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         let owned = &self.owned;
+        owned.note_output_of_held_run(provider_run_id, &poll_result.chunks);
         owned
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;

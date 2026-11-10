@@ -20,6 +20,8 @@ struct HeldTask {
     agent: String,
     run: String,
     since_ms: u64,
+    /// The provider's notification turn has produced output: it is executing, not waiting.
+    notification_started: bool,
 }
 
 /// The tasks held for background calls, by task id. A restart drops them: the run's calls end
@@ -40,6 +42,7 @@ impl BackgroundHolds {
                 agent: task.agent_id.clone(),
                 run: run.into(),
                 since_ms: now,
+                notification_started: false,
             })
             .since_ms
     }
@@ -50,6 +53,11 @@ impl BackgroundHolds {
     pub(super) fn held_since_for_test(&self, task_id: &str, since_ms: u64) {
         if let Some(held) = self.lock().get_mut(task_id) {
             held.since_ms = since_ms;
+        }
+    }
+    fn note_output_of_run(&self, run: &str) {
+        for held in self.lock().values_mut().filter(|held| held.run == run) {
+            held.notification_started = true;
         }
     }
     pub(super) fn release(&self, task_id: &str) {
@@ -64,7 +72,27 @@ impl BackgroundHolds {
     }
 }
 
+/// Whether a chunk is the provider doing work, not the report that a background call ended.
+fn is_work_of_a_turn(chunk: &crate::provider::ProviderPromptChunk) -> bool {
+    if chunk.kind != crate::terminal::TerminalOutputKind::ProviderTool {
+        return true;
+    }
+    serde_json::from_slice::<serde_json::Value>(&chunk.bytes)
+        .map_or(true, |tool| tool.get("background") != Some(&true.into()))
+}
+
 impl KernelRuntimeOwnedState {
+    /// A run held for background calls produced output: a turn is executing on it.
+    pub(super) fn note_output_of_held_run(
+        &self,
+        run: &str,
+        chunks: &[crate::provider::ProviderPromptChunk],
+    ) {
+        if chunks.iter().any(is_work_of_a_turn) {
+            self.background_holds.note_output_of_run(run);
+        }
+    }
+
     fn background_calls_of_run(
         &self,
         room: &str,
@@ -126,8 +154,8 @@ impl KernelRuntimeOwnedState {
     }
 
     /// Whether the sweep settles a held task now. Without a call still running, the
-    /// notification turn has `NOTIFICATION_GRACE_MS` to end; a call that runs on is
-    /// kept until `HOLD_LIMIT_MS`.
+    /// notification turn has `NOTIFICATION_GRACE_MS` to start; once it executes it is held until
+    /// it completes, like a call that runs on, until `HOLD_LIMIT_MS` (a deadline decides sooner).
     pub(super) fn held_task_due(
         &self,
         task: &AgentTaskExecution,
@@ -136,15 +164,17 @@ impl KernelRuntimeOwnedState {
         let Some(held) = self.background_holds.get(&task.task_id) else {
             return Ok(false);
         };
+        let limit_reached = || -> Result<bool, DaemonError> {
+            Ok(now.saturating_sub(held.since_ms) >= HOLD_LIMIT_MS
+                && self
+                    .durable_state_store
+                    .agent_deadline(&held.room, &held.agent)?
+                    .is_none())
+        };
         Ok(match self.background_calls_of_run(&held.room, &held.run)? {
             BackgroundCalls::None => true,
-            BackgroundCalls::Running => {
-                now.saturating_sub(held.since_ms) >= HOLD_LIMIT_MS
-                    && self
-                        .durable_state_store
-                        .agent_deadline(&held.room, &held.agent)?
-                        .is_none()
-            }
+            BackgroundCalls::Running => limit_reached()?,
+            BackgroundCalls::Ended { .. } if held.notification_started => limit_reached()?,
             BackgroundCalls::Ended { last_ended_at_ms } => {
                 now.saturating_sub(last_ended_at_ms) >= NOTIFICATION_GRACE_MS
             }
