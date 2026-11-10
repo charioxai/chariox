@@ -135,6 +135,9 @@ pub struct RuntimeProviderRun {
     terminal_diagnostic: Option<String>,
     started_at_ms: u64,
     last_activity_at_ms: u64,
+    /// When the provider last wrote output; the run's start until it does.
+    #[serde(default)]
+    last_output_at_ms: u64,
 }
 
 impl std::fmt::Debug for RuntimeProviderRun {
@@ -226,6 +229,7 @@ impl RuntimeProviderRun {
             terminal_diagnostic: None,
             started_at_ms: now,
             last_activity_at_ms: now,
+            last_output_at_ms: now,
         }
     }
 
@@ -295,6 +299,7 @@ impl RuntimeProviderRun {
             terminal_diagnostic: None,
             started_at_ms: now,
             last_activity_at_ms: now,
+            last_output_at_ms: now,
         }
     }
 
@@ -776,7 +781,7 @@ impl RuntimeProviderRun {
     /// When the provider last produced output. Polling or configuring the run
     /// does not move it, so a quiet provider stays quiet.
     pub fn last_output_at_ms(&self) -> u64 {
-        self.last_activity_at_ms
+        self.last_output_at_ms
     }
 
     pub(crate) fn active_selection_cmp(&self, other: &Self) -> Ordering {
@@ -795,6 +800,12 @@ impl RuntimeProviderRun {
 
     pub fn touch_activity(&mut self) {
         self.last_activity_at_ms = unix_epoch_ms();
+    }
+
+    pub fn record_output(&mut self) {
+        let now = unix_epoch_ms();
+        self.last_activity_at_ms = now;
+        self.last_output_at_ms = now;
     }
 
     pub fn mark_running(&mut self) {

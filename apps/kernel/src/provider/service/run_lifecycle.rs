@@ -325,6 +325,11 @@ impl ProviderProcessService {
         Ok(())
     }
 
+    pub fn record_run_output(&mut self, run_id: &str) -> Result<(), DaemonError> {
+        self.get_run_mut(run_id)?.record_output();
+        Ok(())
+    }
+
     pub(crate) fn mark_run_running(
         &mut self,
         run_id: &str,

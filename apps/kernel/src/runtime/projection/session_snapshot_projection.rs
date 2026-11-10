@@ -341,7 +341,7 @@ pub(crate) fn agent_activity_for_session_projection(
             &status,
             provider_run
                 .as_ref()
-                .map(RuntimeProviderRun::last_activity_at_ms),
+                .map(RuntimeProviderRun::last_output_at_ms),
             active_turn.as_ref().and_then(|turn| turn.started_at_ms),
             crate::session::unix_epoch_ms(),
         );

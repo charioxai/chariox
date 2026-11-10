@@ -117,7 +117,7 @@ pub(crate) fn silent_agents(
             let last_output = runs
                 .iter()
                 .filter(|run| run.agent_instance_id() == Some(agent.agent_id.as_str()))
-                .map(crate::provider::RuntimeProviderRun::last_activity_at_ms)
+                .map(crate::provider::RuntimeProviderRun::last_output_at_ms)
                 .max();
             let quiet_since_ms = last_output.max(Some(prompt.created_at_ms()))?;
             (now_ms.saturating_sub(quiet_since_ms) > STALLED_AFTER_MS).then(|| SilentAgentHealth {
