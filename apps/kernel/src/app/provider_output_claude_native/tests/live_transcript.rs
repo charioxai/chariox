@@ -425,7 +425,7 @@ fn a_reply_streams_from_the_terminal_and_its_transcript_block_completes_the_same
     let streamed = turn.output_rows().concat();
     assert!(PLAIN_REPLY.starts_with(&streamed), "{streamed}");
     assert!(streamed.len() * 10 >= PLAIN_REPLY.len() * 9);
-    assert_eq!(turn.stored_replies(), [streamed.clone()], "one stored row");
+    assert_eq!(turn.stored_replies(), [streamed.as_str()], "one stored row");
 
     turn.append_transcript(assistant_text("reply", PLAIN_REPLY));
     turn.pass();
