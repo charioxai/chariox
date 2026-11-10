@@ -627,6 +627,19 @@ fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
             waits::WaitChange::Resumed { waited_ms } => Some(waits::resumed_line(waited_ms)),
             waits::WaitChange::Stopped { .. } => None,
         };
+        crate::logging::info_with_fields(
+            "process_resources.admission_wait",
+            match change {
+                waits::WaitChange::Began => "a command began to wait",
+                waits::WaitChange::Resumed { .. } => "a waiting command continues",
+                waits::WaitChange::Stopped { .. } => "a waiting command was ended",
+            },
+            serde_json::json!({"pid": command, "state": format!("{state:?}"),
+            "waited_ms": match change {
+                waits::WaitChange::Resumed { waited_ms } => waited_ms,
+                _ => 0,
+            }}),
+        );
         if let Some(line) = line {
             announce(command, &line);
         }

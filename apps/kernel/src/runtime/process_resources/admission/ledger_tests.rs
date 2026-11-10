@@ -281,6 +281,69 @@ fn the_newest_paused_command_yields_before_the_oldest_running_one() {
     assert!(stops(&middle_heard).is_empty() && stops(&oldest_heard).is_empty());
 }
 
+/// Memory-paused commands keep their memory: when the one running command
+/// does not grow or finish either, nothing frees by itself. After the stall
+/// window the largest paused command ends, with its reason.
+#[test]
+fn paused_commands_that_free_nothing_end_the_largest_after_the_stall_window() {
+    let pool = pool::Pool::with_volume(1500 * MIB, volume(&Arc::new(AtomicU64::new(100 * GIB))));
+    pool.ledger.lock().unwrap().stall_window = Duration::from_millis(50);
+    let command_of = |unit: &str, pid: u32, resident: u64, wait: Option<Wait>| {
+        let mut waiting = entry(
+            pid as u64,
+            Peak {
+                memory: 800 * MIB,
+                ..Default::default()
+            },
+        );
+        waiting.admitted = true;
+        waiting.wait = wait;
+        let member = owner(
+            unit,
+            true,
+            vec![command(pid, resident, 0)],
+            vec![(pid, waiting)],
+        );
+        let (control, heard) = std::sync::mpsc::channel();
+        {
+            let mut member = member.lock().unwrap();
+            member.samples = vec![sample(resident)];
+            member.control = Some(control);
+        }
+        pool.join(&member);
+        (member, heard)
+    };
+    let paused = Some(Wait::Paused(WaitReason::Memory));
+    let (running, _running_heard) = command_of("a", 1, 650 * MIB, None);
+    let (_middle, middle_heard) = command_of("b", 2, 400 * MIB, paused);
+    let (_newest, newest_heard) = command_of("c", 3, 350 * MIB, paused);
+    let stops = |heard: &std::sync::mpsc::Receiver<WatchCommand>| {
+        heard
+            .try_iter()
+            .filter_map(|command| match command {
+                WatchCommand::MemoryStop { pid, notice, .. } => Some((pid, notice)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    pool.enforce(&running, None);
+    assert!(
+        stops(&middle_heard).is_empty() && stops(&newest_heard).is_empty(),
+        "a command ended before the stall window passed"
+    );
+    std::thread::sleep(Duration::from_millis(80));
+    pool.enforce(&running, None);
+    let ended = stops(&middle_heard);
+    assert_eq!(ended.len(), 1, "the largest paused command was not ended");
+    assert!(
+        ended[0].1.contains("paused for memory") && ended[0].1.contains("freed nothing"),
+        "{}",
+        ended[0].1
+    );
+    assert!(stops(&newest_heard).is_empty(), "more than one was ended");
+}
+
 #[test]
 fn two_writers_that_together_reach_the_floor_do_not_both_start() {
     // 8 GiB above the floor; each job writes 6 GiB of scratch and deletes it.
