@@ -517,6 +517,7 @@ mod agent_profile_owned_state;
 mod agent_trigger_gateway;
 mod agent_trigger_http;
 mod agent_trigger_notification;
+mod agent_trigger_notification_availability;
 mod agent_trigger_runtime_state;
 mod agent_turn_actions_runtime_state;
 mod agent_utility_runtime_state;

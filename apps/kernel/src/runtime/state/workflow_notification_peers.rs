@@ -256,7 +256,7 @@ impl KernelRuntimeState {
                     sources,
                 })?;
         }
-        Ok(())
+        self.sync_agent_notification_trigger_availability()
     }
 
     pub(super) async fn execute_workflow_notification_command(

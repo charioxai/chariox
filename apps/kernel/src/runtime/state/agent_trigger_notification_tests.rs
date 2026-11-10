@@ -185,6 +185,85 @@ impl Rig {
     }
 }
 
+// MP-08 / MP-10: the trigger tells every client whether its source's kernel is reachable.
+#[tokio::test]
+async fn a_notification_trigger_follows_the_availability_of_its_remote_source() {
+    let rig = rig().await;
+    let source_id = "wf_source_remote";
+    let trigger_id = rig
+        .runtime
+        .owned
+        .session_store
+        .write()
+        .create_agent_notification_trigger(
+            &rig.session_id,
+            &rig.agent_id,
+            "local",
+            AgentTriggerNotificationSource::Workflow {
+                source_id: source_id.into(),
+            },
+            "sub-remote".into(),
+            "Studio pipeline".into(),
+            None,
+        )
+        .unwrap()
+        .id()
+        .to_owned();
+    let available_in = |session: &crate::session::RuntimeSession| {
+        let trigger = session
+            .agent_triggers()
+            .iter()
+            .find(|t| t.id() == trigger_id)
+            .unwrap();
+        match trigger.source() {
+            AgentTriggerSource::Notification {
+                source_available, ..
+            } => *source_available,
+            other => panic!("not a notification trigger: {other:?}"),
+        }
+    };
+    let cache_available = || {
+        rig.runtime
+            .owned
+            .durable_state_store
+            .notify(NotificationOperation::Cache {
+                owner: "local".into(),
+                kernel: "other-home".into(),
+                sources: vec![crate::local::WorkflowNotificationSourceSummary {
+                    kind: crate::local::NotificationSourceKind::WorkflowExit,
+                    source_id: source_id.into(),
+                    kernel_id: "other-home".into(),
+                    session_id: "other-session".into(),
+                    workflow_id: "other-workflow".into(),
+                    exit_node_id: "exit".into(),
+                    exit_ordinal: 1,
+                    name: "Studio pipeline".into(),
+                    display_name: "Studio pipeline".into(),
+                    available: true,
+                }],
+            })
+            .unwrap();
+        rig.runtime
+            .sync_agent_notification_trigger_availability()
+            .unwrap();
+        available_in(&rig.runtime.owned.session_snapshot(&rig.session_id).unwrap())
+    };
+    assert!(
+        cache_available(),
+        "an available source leaves the trigger available"
+    );
+    // The inventory refresh that finds no source kernel marks every cached source offline.
+    rig.runtime
+        .refresh_notification_sources_from_inventory("local", false)
+        .await
+        .unwrap();
+    assert!(
+        !available_in(&rig.runtime.owned.session_snapshot(&rig.session_id).unwrap()),
+        "a source whose kernel is offline marks the trigger unavailable"
+    );
+    assert!(cache_available(), "the trigger recovers with its source");
+}
+
 // MP-08 / MP-10 (VS-S2-2): every occurrence is queued, none coalesced.
 #[tokio::test]
 async fn an_agent_notification_trigger_queues_every_occurrence() {
