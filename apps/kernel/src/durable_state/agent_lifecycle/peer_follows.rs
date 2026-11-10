@@ -97,6 +97,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     crate::transport::relay_peer_agents::PeerEventKind::SourceLost,
                     now,
                 )?;
+                tx.execute(
+                    "UPDATE peer_agent_followers SET live=0 WHERE subscription_id=?1",
+                    params![follower.subscription],
+                )
+                .map_err(sql)?;
             }
             Ok(Outcome::Saved)
         }
@@ -125,8 +130,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
     }
 }
 
-/// A followed agent's turn ended: one outcome per live follower, and the follow is done, as a
-/// follow of a peer on this kernel is.
+/// A followed agent's turn ended: one outcome per live follower. The follow goes on; only the
+/// loss of the agent or the follower's unfollow ends it.
 pub(super) fn turn_ended(
     tx: &Transaction<'_>,
     room: &str,
@@ -206,11 +211,6 @@ fn owe(
             sql_integer(now)?,
             sql_integer(now.saturating_add(OUTBOX_TTL_MS))?,
         ],
-    )
-    .map_err(sql)?;
-    tx.execute(
-        "UPDATE peer_agent_followers SET live=0 WHERE subscription_id=?1",
-        params![follower.subscription],
     )
     .map_err(sql)?;
     tx.execute(

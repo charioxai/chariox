@@ -124,6 +124,127 @@ fn a_peer_followed_from_another_room_ends_as_one_peer_event() {
     assert!(events[0].payload.get("public_answer").is_none());
 }
 
+fn peer_turn(f: &Fixture, turn: &str, success: bool) {
+    f.apply(Operation::SourceOutcome {
+        room: "peer-room".into(),
+        source: "peer".into(),
+        occurrence: format!("task-terminal-{turn}"),
+        success,
+        public_answer: None,
+        now: 2,
+    });
+}
+
+fn peer_events(f: &Fixture) -> Vec<String> {
+    f.store
+        .agent_inbox("room", "parent", 0)
+        .unwrap()
+        .iter()
+        .filter(|e| e.kind == "peer_event")
+        .map(|e| e.payload["event"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn a_follow_reports_every_turn_end_and_failure_of_the_peer() {
+    let f = Fixture::new();
+    f.begin("p");
+    follow(&f, "follow-peer", true);
+    peer_turn(&f, "t1", true);
+    peer_turn(&f, "t2", false);
+    peer_turn(&f, "t3", true);
+    assert_eq!(
+        peer_events(&f),
+        ["turn_ended", "turn_failed", "turn_ended"],
+        "a cancelled and an errored turn are both turn_failed"
+    );
+}
+
+#[test]
+fn a_follow_still_reports_after_the_followers_own_turn_ended() {
+    let f = Fixture::new();
+    f.begin("p");
+    follow(&f, "follow-peer", true);
+    peer_turn(&f, "t1", true);
+    let Outcome::Settled { task, .. } = f.settle("p", true) else {
+        panic!("settled")
+    };
+    assert_eq!(task.state, ExecutionState::Done);
+    peer_turn(&f, "t2", true);
+    assert_eq!(peer_events(&f), ["turn_ended", "turn_ended"]);
+}
+
+#[test]
+fn a_follow_ends_with_the_deletion_of_the_peer_and_not_before() {
+    let f = Fixture::new();
+    f.begin("p");
+    follow(&f, "follow-peer", true);
+    peer_turn(&f, "t1", true);
+    f.apply(Operation::SourceOutcome {
+        room: "peer-room".into(),
+        source: "peer".into(),
+        occurrence: "agent-gone-peer-9".into(),
+        success: false,
+        public_answer: None,
+        now: 3,
+    });
+    peer_turn(&f, "t2", true);
+    assert_eq!(peer_events(&f), ["turn_ended", "turn_failed"]);
+}
+
+#[test]
+fn an_unfollowed_peer_reports_nothing_more() {
+    let f = Fixture::new();
+    f.begin("p");
+    follow(&f, "follow-peer", true);
+    peer_turn(&f, "t1", true);
+    f.apply(Operation::Unsubscribe {
+        task: "p".into(),
+        prompt: "p".into(),
+        registration: "follow-peer".into(),
+    });
+    peer_turn(&f, "t2", true);
+    assert_eq!(peer_events(&f), ["turn_ended"]);
+}
+
+#[test]
+fn cancelling_the_followers_turn_does_not_end_its_follow() {
+    let f = Fixture::new();
+    f.begin("p");
+    follow(&f, "follow-peer", true);
+    let task = f.task();
+    f.apply(Operation::CancelTask {
+        task: task.task_id,
+        owner: "owner".into(),
+        revision: task.revision,
+    });
+    peer_turn(&f, "t1", true);
+    assert_eq!(peer_events(&f), ["turn_ended"]);
+}
+
+#[test]
+fn an_agent_that_is_gone_follows_nobody() {
+    let f = Fixture::new();
+    f.begin("p");
+    follow(&f, "follow-peer", true);
+    f.apply(Operation::ReleaseSpawn {
+        room: "room".into(),
+        source: "parent".into(),
+    });
+    peer_turn(&f, "t1", true);
+    assert!(peer_events(&f).is_empty());
+}
+
+#[test]
+fn a_follow_kept_after_the_followers_turn_does_not_hold_a_managed_machine_up() {
+    let f = Fixture::new();
+    f.begin("p");
+    follow(&f, "follow-peer", true);
+    assert_eq!(f.store.agents_awaiting_wake().unwrap().len(), 1);
+    f.settle("p", true);
+    assert!(f.store.agents_awaiting_wake().unwrap().is_empty());
+}
+
 #[test]
 fn only_a_peer_registration_reaches_across_rooms() {
     let f = Fixture::new();

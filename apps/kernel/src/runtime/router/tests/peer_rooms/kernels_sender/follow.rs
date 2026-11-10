@@ -199,6 +199,36 @@ fn a_followed_peer_turn_end_on_another_kernel_reaches_the_follower_as_one_stampe
 }
 
 #[test]
+fn a_follow_on_another_kernel_reports_every_turn_of_the_peer() {
+    run_peer_test("peer-follow-every-turn", || async {
+        let (a, mut b) = two_kernels(
+            "peer-follow-every-turn",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        let task = with_task(&a).await;
+        a.subscribe(
+            &task,
+            serde_json::json!({"source_id": "worker", "room": b.room, "kernel": b.name}),
+        )
+        .await
+        .expect("A follows a peer on another kernel");
+        b.end_turn(false).await;
+        assert_eq!(a.peer_events_after_delivery(1).await.len(), 1);
+        // The follower's own turn is over; the follow is not.
+        a.end_turn(false).await;
+
+        (b.token, b.prompt) = running_turn(&mut *b.app.lock().await, &b.room, b.agent.id());
+        b.end_turn(true).await;
+        let events = a.peer_events_after_delivery(2).await;
+        let kinds: Vec<_> = events.iter().map(|e| e.payload["event"].clone()).collect();
+        assert_eq!(kinds, ["turn_ended", "turn_failed"], "{events:?}");
+        assert!(b.outbox_drained().await);
+        unlink(&[&a, &b]);
+    });
+}
+
+#[test]
 fn a_failed_turn_of_a_followed_peer_on_another_kernel_says_so() {
     run_peer_test("peer-follow-failed", || async {
         let (a, b, _task, _follow) = followed("peer-follow-failed").await;
@@ -553,8 +583,8 @@ fn a_peer_spawned_on_another_kernel_is_followed_by_its_creator_unless_no_follow(
             .unwrap()
             .unwrap();
         assert!(
-            !held.live,
-            "a follow ends with the turn it reports: {held:?}"
+            held.live,
+            "a follow goes on after the turn it reports: {held:?}"
         );
         unlink(&[&a, &b]);
     });
@@ -631,8 +661,8 @@ fn a_keyed_spawn_repeated_in_a_later_turn_gives_that_turn_its_own_follow() {
         assert!(
             later
                 .iter()
-                .any(|held| held.id == later_follow && !held.live),
-            "the later turn's follow took the outcome: {later:?}"
+                .any(|held| held.id == later_follow && held.live),
+            "the later turn's follow took the outcome and goes on: {later:?}"
         );
         registrations(first_task).await;
         unlink(&[&a, &b]);
