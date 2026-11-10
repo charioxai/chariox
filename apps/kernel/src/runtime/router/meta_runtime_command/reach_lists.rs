@@ -21,7 +21,7 @@ impl CommandRouter {
             [first, second] if first == "slice" && matches!(second.as_str(), "list" | "ls") => {
                 let slices = self
                     .runtime_state
-                    .slices_usable_by_room(session.id())
+                    .slices_usable_by_room(session.id(), caller.owner_user_id())
                     .into_iter()
                     .map(|slice| {
                         serde_json::json!({

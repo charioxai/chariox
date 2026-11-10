@@ -644,10 +644,11 @@ impl CommandRouter {
         }
 
         if let Some(reference) = spawn.slice_ref.as_deref() {
-            match self
-                .runtime_state
-                .resolve_spawn_slice(reference, metaagent.id())
-            {
+            match self.runtime_state.resolve_spawn_slice(
+                reference,
+                metaagent.id(),
+                metaagent.owner_user_id(),
+            ) {
                 Ok(slice) => spawn.slice_ref = Some(slice.id),
                 Err(error) => return Ok(meta_command_failure_result(command, error)),
             }

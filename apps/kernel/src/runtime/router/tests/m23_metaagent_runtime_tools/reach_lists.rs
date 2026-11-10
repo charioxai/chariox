@@ -155,7 +155,7 @@ async fn slice_list() {
     world
         .router
         .runtime_state()
-        .resolve_spawn_slice(id, &world.ids["a"])
+        .resolve_spawn_slice(id, &world.ids["a"], "local")
         .unwrap();
     // The lifecycle commands stay outside the room surface.
     for command in [
@@ -169,6 +169,46 @@ async fn slice_list() {
             "{command}: {refused:?}"
         );
     }
+}
+
+#[test]
+fn slice_list_and_spawn_hide_a_slice_of_another_owner() {
+    run_large_stack_async_test("reach-slice-owner", slice_of_another_owner);
+}
+
+async fn slice_of_another_owner() {
+    let world = world("reach-slice-owner").await;
+    let foreign = foreign_room(&world).await;
+    make_slice(&world, "mine", SliceDisplayMode::Headless).await;
+    make_slice(&world, "theirs", SliceDisplayMode::Headless).await;
+    {
+        let app = world.app.lock().await;
+        // Unreserved, but its only user is a room of another owner.
+        app.slices().attach_session("theirs", &foreign, 1).unwrap();
+        app.slices()
+            .attach_session("mine", &world.other_room, 1)
+            .unwrap();
+    }
+    let listed = room_command(&world, "a", "slice list").await;
+    assert!(listed.ok, "{listed:?}");
+    let mut names = listed.payload["response"]["slices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|slice| slice["name"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, ["mine"], "another owner's slice is not listed");
+    let refused = room_command(
+        &world,
+        "a",
+        "agent spawn px --provider dev-stub --slice theirs",
+    )
+    .await;
+    assert!(
+        !refused.ok && error_text(&refused).contains("unknown slice"),
+        "another owner's slice reads as unknown: {refused:?}"
+    );
 }
 
 #[test]
