@@ -371,6 +371,7 @@ const installFailures: Record<string, string> = {
   app_install_approval_expired: "The approval request expired.",
   app_install_insufficient_storage: "The kernel has insufficient App storage.",
   app_dev_unlock_kernel_vault: "Unlock the kernel Vault before starting the dev build. Its signing key stays in that Vault.",
+  app_dev_identity_changed: "This kernel's dev signing key is not the one its App store trusts, because its Vault lost the key (a volatile Vault empties on restart). Use the encrypted kernel Vault, which keeps the key.",
   app_register_publisher_conflict: "This App ID is already bound to another publisher. Use the original publisher or an explicit new App ID; existing data was kept.",
   app_register_new_version_required: "This version is already registered with different content. Bump app.json version before registering it.",
   app_update_schema_downgrade: "This release's data schema is older than the installed App's; App data is never migrated to an older schema.",

@@ -42,6 +42,8 @@ pub(crate) enum PreparationError {
     LimitExceeded,
     PublisherNotEnrolled,
     DevVaultUnavailable,
+    /// The Vault holds another dev key than the one this kernel bound.
+    DevIdentityChanged,
     PublisherRevoked,
     PackageRejected(ErrorCode),
     LegacyNodePackage,
@@ -392,6 +394,9 @@ fn publisher_error(error: AppPublisherError) -> PreparationError {
         }
         AppPublisherError::Trust(PublisherTrustError::Revoked) => {
             PreparationError::PublisherRevoked
+        }
+        AppPublisherError::Trust(PublisherTrustError::Conflict) => {
+            PreparationError::DevIdentityChanged
         }
         _ => PreparationError::StorageUnavailable,
     }

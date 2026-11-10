@@ -58,6 +58,7 @@ fn preparation(error: PreparationError) -> Error {
     match error {
         PreparationError::Busy => Error::Busy,
         PreparationError::DevVaultUnavailable => Error::Failed("app_dev_unlock_kernel_vault"),
+        PreparationError::DevIdentityChanged => Error::Failed("app_dev_identity_changed"),
         PreparationError::PublisherNotEnrolled => {
             Error::Failed("app_install_publisher_not_enrolled")
         }
