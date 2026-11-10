@@ -437,7 +437,7 @@ fn web_search_input(item: &Value) -> Option<Value> {
             input.insert(key.to_string(), json!(value));
         }
     }
-    (!input.is_empty()).then(|| Value::Object(input))
+    (!input.is_empty()).then_some(Value::Object(input))
 }
 
 #[cfg(test)]
