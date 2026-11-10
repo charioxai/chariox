@@ -73,9 +73,22 @@ fn a_machine_name_resolves_to_the_kernel_it_runs_and_an_unknown_name_is_unreacha
             .expect("a machine of the owner resolves");
         assert_eq!(resolved.as_deref(), Some("daemon-worker"));
 
+        // Two kernels of one computer have two names: the computer's name for the first, numbered from 2 after it.
+        for (name, kernel) in [
+            ("builder-twins", "daemon-twin-a"),
+            ("builder-twins-2", "daemon-twin-b"),
+        ] {
+            let resolved = runtime
+                .resolve_peer_kernel(name)
+                .await
+                .expect("a kernel's name resolves to it");
+            assert_eq!(resolved.as_deref(), Some(kernel), "{name}");
+        }
+
+        // The computer itself, which runs two kernels, names neither.
         for (name, reason) in [
             ("no-such-machine", "kernel_unreachable"),
-            ("builder-twins", "kernel_ambiguous"),
+            ("machine-twins", "kernel_ambiguous"),
         ] {
             let refusal = runtime
                 .resolve_peer_kernel(name)

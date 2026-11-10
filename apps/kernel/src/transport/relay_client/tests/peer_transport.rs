@@ -512,7 +512,7 @@ async fn proxied_peer_requests_are_handled_through_relay() {
     wait_for_daemon_registration(registry.clone(), &config_a.daemon_id).await;
     wait_for_daemon_registration(registry.clone(), &config_b.daemon_id).await;
 
-    let kernel = relay_discovery::get_live_kernel(&config_a, "beta")
+    let kernel = relay_discovery::get_live_kernel(&config_a, "machine-beta")
         .await
         .expect("live kernel lookup should succeed");
     assert_eq!(kernel.kernel_id, config_b.daemon_id);
@@ -522,8 +522,8 @@ async fn proxied_peer_requests_are_handled_through_relay() {
         &app_a,
         &state_a,
         ClientTarget {
-            daemon_id: None,
-            daemon_alias: Some("beta".to_string()),
+            daemon_id: Some(config_b.daemon_id.clone()),
+            daemon_alias: None,
         },
         RelayPeerRequest::Ping {
             value: "hello-remote-kernel".to_string(),
@@ -546,8 +546,8 @@ async fn proxied_peer_requests_are_handled_through_relay() {
         &app_a,
         &state_a,
         ClientTarget {
-            daemon_id: None,
-            daemon_alias: Some("beta".to_string()),
+            daemon_id: Some(config_b.daemon_id.clone()),
+            daemon_alias: None,
         },
         RelayPeerRequest::SubmitLeasedPrompt {
             leased_agent_id: "missing-leased-agent".to_string(),
@@ -1240,8 +1240,8 @@ async fn execution_leases_are_managed_through_peer_transport() {
         &app_a,
         &state_a,
         ClientTarget {
-            daemon_id: None,
-            daemon_alias: Some("worker".to_string()),
+            daemon_id: Some(config_b.daemon_id.clone()),
+            daemon_alias: None,
         },
         RelayPeerRequest::CreateExecutionLease {
             home_kernel_id: config_a.daemon_id.clone(),
@@ -1417,8 +1417,8 @@ async fn leased_agents_are_spawned_and_destroyed_through_peer_transport() {
         &app_a,
         &state_a,
         ClientTarget {
-            daemon_id: None,
-            daemon_alias: Some("worker".to_string()),
+            daemon_id: Some(config_b.daemon_id.clone()),
+            daemon_alias: None,
         },
         RelayPeerRequest::SpawnLeasedAgent {
             lease_id: lease.id.clone(),
