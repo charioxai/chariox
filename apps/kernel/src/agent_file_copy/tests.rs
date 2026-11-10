@@ -397,3 +397,41 @@ async fn a_link_that_stays_down_ends_the_copy_with_nothing_published() {
     assert!(error.contains("stayed unreachable"), "{error}");
     assert!(!worker.root.join("big").exists());
 }
+
+#[tokio::test]
+async fn a_staged_file_is_removed_once_the_link_is_back_after_the_copy_gave_up() {
+    let (home, worker) = workspaces();
+    plant(&home.root, "big", BUNDLE);
+    // The write retries and the first discard both meet the dead link; it returns before the
+    // discard gives up.
+    let remote = FakeWorker::cued(worker.clone(), |request| {
+        if (1..=5).contains(&request) {
+            Fault::Dropped
+        } else {
+            Fault::None
+        }
+    });
+    let error = push(&home, "big", &remote, "big", &CopyOptions::default())
+        .await
+        .unwrap_err();
+    assert!(error.contains("stayed unreachable"), "{error}");
+    assert!(left_nothing(&worker.root, "big"));
+}
+
+#[tokio::test]
+async fn a_staged_file_that_could_not_be_removed_is_named_in_the_error() {
+    let (home, worker) = workspaces();
+    plant(&home.root, "big", BUNDLE);
+    let remote = FakeWorker::cued(worker.clone(), |request| {
+        if request >= 1 {
+            Fault::Dropped
+        } else {
+            Fault::None
+        }
+    });
+    let error = push(&home, "big", &remote, "big", &CopyOptions::default())
+        .await
+        .unwrap_err();
+    assert!(error.contains("big.chariox-partial"), "{error}");
+    assert!(error.contains("replaces it"), "{error}");
+}

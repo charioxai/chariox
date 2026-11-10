@@ -17,6 +17,11 @@ const SLICES_IN_FLIGHT: usize = 3;
 const RESUME_WINDOW: Duration = Duration::from_secs(180);
 #[cfg(test)]
 const RESUME_WINDOW: Duration = Duration::from_secs(3);
+/// How long the removal of an abandoned upload keeps waiting for the link.
+#[cfg(not(test))]
+const DISCARD_WINDOW: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const DISCARD_WINDOW: Duration = Duration::from_secs(3);
 const RETRY_DELAYS: [Duration; 4] = [
     Duration::from_millis(250),
     Duration::from_millis(500),
@@ -139,10 +144,7 @@ pub(crate) async fn push<R: RemoteWorkspace>(
         let staged = patiently(|| remote.write(destination, &write)).await;
         let staged = match staged {
             Ok(staged) => staged,
-            Err(reason) => {
-                let _ = remote.discard(destination).await;
-                return Err(reason);
-            }
+            Err(reason) => return Err(abandon(remote, destination, reason).await),
         };
         if let Some(landed) = staged.sha256 {
             return if landed == sha256 {
@@ -161,23 +163,29 @@ pub(crate) async fn push<R: RemoteWorkspace>(
             stalled + 1
         };
         if staged.received > size || stalled > 2 {
-            let _ = remote.discard(destination).await;
-            return Err(format!(
+            let reason = format!(
                 "The leased agent's kernel stopped taking `{destination}`; nothing was written"
-            ));
+            );
+            return Err(abandon(remote, destination, reason).await);
         }
         offset = staged.received;
         slice = match read_local(local, source, offset).await {
             Ok(next) if next.size_bytes == size && next.revision == slice.revision => next,
-            Ok(_) => {
-                let _ = remote.discard(destination).await;
-                return Err(changed(source));
-            }
-            Err(reason) => {
-                let _ = remote.discard(destination).await;
-                return Err(reason);
-            }
+            Ok(_) => return Err(abandon(remote, destination, changed(source)).await),
+            Err(reason) => return Err(abandon(remote, destination, reason).await),
         };
+    }
+}
+
+/// Removes the unfinished upload of a copy that ended. When the link does not come back within
+/// the discard window the upload stays on the leased agent's kernel, and the error says so.
+async fn abandon<R: RemoteWorkspace>(remote: &R, destination: &str, reason: String) -> String {
+    match wait_for_link(DISCARD_WINDOW, || remote.discard(destination)).await {
+        Ok(()) => reason,
+        Err(_) => format!(
+            "{}. The unfinished upload `{destination}.chariox-partial` may remain on the leased agent's kernel; the next copy to that path replaces it",
+            reason.trim_end_matches('.')
+        ),
     }
 }
 
@@ -244,7 +252,15 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, LinkError>>,
 {
-    let deadline = tokio::time::Instant::now() + RESUME_WINDOW;
+    wait_for_link(RESUME_WINDOW, request).await
+}
+
+async fn wait_for_link<T, F, Fut>(window: Duration, request: F) -> Result<T, String>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T, LinkError>>,
+{
+    let deadline = tokio::time::Instant::now() + window;
     let mut attempt = 0;
     loop {
         match request().await {
@@ -255,7 +271,7 @@ where
                 if tokio::time::Instant::now() + delay > deadline {
                     return Err(format!(
                         "The leased agent's kernel stayed unreachable for {} s ({why}); nothing was written. Copy again once it is back",
-                        RESUME_WINDOW.as_secs()
+                        window.as_secs()
                     ));
                 }
                 tokio::time::sleep(delay).await;
