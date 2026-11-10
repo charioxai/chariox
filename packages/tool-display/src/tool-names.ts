@@ -12,7 +12,7 @@ export function isWorkspaceLiveSyncTool(tool: unknown) {
     || canonical === "chariox.write_artifact"
 }
 
-function canonicalToolName(tool: unknown) {
+export function canonicalToolName(tool: unknown) {
   if (typeof tool !== "string") {
     return ""
   }

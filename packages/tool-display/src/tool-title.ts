@@ -12,7 +12,9 @@ export function toolDisplayTitle(update: ToolTranscriptUpdate, patchFiles: reado
   if (patchFiles.length > 0) {
     // A write shown as its diff still says it wrote the file: "Edited" read wrong for a file just created.
     const wrote = TOOL_TITLE_WRITE.has(name)
-    return `${wrote ? verb("Wrote", "Writing") : verb("Edited", "Editing")} ${toolTitlePatchObject(patchFiles)}`
+    const only = patchFiles.every((file) => file.kind === patchFiles[0]!.kind) ? patchFiles[0]!.kind : null
+    const word = only === "delete" ? verb("Deleted", "Deleting") : only === "move" ? verb("Moved", "Moving") : wrote ? verb("Wrote", "Writing") : verb("Edited", "Editing")
+    return `${word} ${toolTitlePatchObject(patchFiles, active)}`
   }
   const command = toolTitleCommand(input)
   if (command !== null || TOOL_TITLE_SHELL.has(name)) {
@@ -273,7 +275,7 @@ function toolTitleUnquote(value: string) {
   return value.replace(/^(['"])(.*)\1$/, "$2")
 }
 
-function toolTitlePatchObject(files: readonly ApplyPatchFile[]) {
+function toolTitlePatchObject(files: readonly ApplyPatchFile[], active = false) {
   let added = 0
   let removed = 0
   for (const file of files) {
@@ -282,7 +284,8 @@ function toolTitlePatchObject(files: readonly ApplyPatchFile[]) {
       else if (line.startsWith("-") && !line.startsWith("---")) removed += 1
     }
   }
-  const counts = added || removed ? ` (+${added} −${removed})` : ""
+  // A call still running has no settled count to give.
+  const counts = !active && (added || removed) ? ` (+${added} −${removed})` : ""
   return files.length === 1 ? `${toolTitleShort(files[0]!.filePath)}${counts}` : `${files.length} files${counts}`
 }
 

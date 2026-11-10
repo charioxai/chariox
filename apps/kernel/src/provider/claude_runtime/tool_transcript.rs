@@ -1,3 +1,4 @@
+use crate::provider_output_policy::output_bounds::shrink_strings_to_fit;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -33,10 +34,20 @@ impl Write for BoundedJson {
 
 fn bounded_input(input: &Value) -> Vec<u8> {
     let mut encoded = BoundedJson(Vec::new());
-    if serde_json::to_writer(&mut encoded, input).is_err() {
-        return br#"{"chariox_truncated":true}"#.to_vec();
+    if serde_json::to_writer(&mut encoded, input).is_ok() {
+        return encoded.0;
     }
-    encoded.0
+    // A file write carries its whole content: keep its path and the start of the content, which the row shows.
+    let mut shrunk = input.clone();
+    if let Value::Object(object) = &mut shrunk {
+        object.insert("chariox_truncated".to_string(), Value::Bool(true));
+    }
+    if shrink_strings_to_fit(&mut shrunk, INPUT_BYTES, TRUNCATED) {
+        if let Ok(bytes) = serde_json::to_vec(&shrunk) {
+            return bytes;
+        }
+    }
+    br#"{"chariox_truncated":true}"#.to_vec()
 }
 
 fn append_result(output: &mut String, text: &str) -> bool {
@@ -754,6 +765,24 @@ mod tests {
         let finished = transcript.observe(&result("large", json!("done")));
         assert_eq!(finished[0]["input"]["chariox_truncated"], true);
         assert_eq!(finished[0]["output"], "done");
+    }
+
+    #[test]
+    fn oversized_file_write_keeps_its_path_and_the_start_of_its_content() {
+        let mut transcript = ClaudeToolTranscript::default();
+        let mut event = invocation("write", "Write");
+        let page = format!("<!doctype html>\n{}", "<p>row</p>\n".repeat(3000));
+        event["message"]["content"][0]["input"] =
+            json!({"file_path": "/w/chart.html", "content": page});
+        let started = transcript.observe(&event);
+        assert_eq!(started[0]["input"]["file_path"], "/w/chart.html");
+        assert!(started[0]["input"]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("<!doctype html>\n<p>row</p>"));
+        assert_eq!(started[0]["input"]["chariox_truncated"], true);
+        let finished = transcript.observe(&result("write", json!("File created")));
+        assert_eq!(finished[0]["input"]["file_path"], "/w/chart.html");
     }
 
     #[test]

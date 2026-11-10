@@ -10,6 +10,7 @@ import {
   formatApplyPatchTranscriptUpdate,
   readApplyPatchFiles,
 } from "./patch-display.js"
+import { readNamedEditFile } from "./edit-tool-diff.js"
 import {
   formatReadTranscriptUpdate,
   formatReadWindow,
@@ -167,6 +168,10 @@ export function formatToolDisplay(update: ToolTranscriptUpdate): ToolDisplay {
     }
     if (error) {
       blocks.push({ kind: "code", language: "text", text: error })
+    }
+    const named = blocks.length === 0 ? readNamedEditFile(update) : null
+    if (named) {
+      blocks.push({ kind: "patch", files: [{ ...named, previewLines: buildApplyPatchNewPreview(named) }] })
     }
     if (blocks.length === 0 && markdown) {
       blocks.push({ kind: "text", text: markdown })
