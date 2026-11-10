@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { renderFreeformMessage } from "./freeform-transcript-renderer.js"
+import { renderFreeformMessage, renderFreeformTranscriptEntry } from "./freeform-transcript-renderer.js"
+import type { TerminalOutputEntry } from "./runtime-state.js"
 
 // MP-08: a pane that cannot draw the page a visualize line names shows one calm line instead of raw JSON.
 test("a reply ending in a visualize line names the page, while a fenced one stays code", () => {
@@ -39,3 +40,15 @@ test("a visualize line in Codex's wrapper marks names the page, and no private-u
   assert.doesNotMatch(other, /[-]/)
   assert.match(other, /A note stays\./)
 })
+
+// Review of #1326: a tool row that has nothing to open to (a web search that is still running) is a title row with no toggle.
+test("a tool row with no content has no disclosure toggle, one with content keeps it", () => {
+  const entry = (record: object): TerminalOutputEntry => ({ key: "t1", role: "tool", agentId: "a", text: JSON.stringify(record) })
+  const running = renderFreeformTranscriptEntry(entry({ id: "w1", tool: "web_search", status: "running" }))
+  assert.match(running, /freeform-blob-title/, "still a title row")
+  assert.doesNotMatch(running, /data-freeform-blob-toggle|freeform-blob-chevron|aria-expanded/)
+  const done = renderFreeformTranscriptEntry(entry({ id: "w1", tool: "web_search", status: "completed", input: { query: "alhambra" } }))
+  assert.match(done, /data-freeform-blob-toggle/)
+  assert.match(done, /freeform-blob-chevron/)
+})
+

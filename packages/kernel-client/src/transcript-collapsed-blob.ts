@@ -25,6 +25,8 @@ export type CollapsedTranscriptBlobPresentation = {
   readonly detail: string
   readonly actionLabel: string
   readonly stateLabel: string
+  /** False for a tool call with nothing to open to: the row is a title and has no toggle. */
+  readonly expandable: boolean
 }
 
 export type CollapsedTranscriptBlobDescription = {
@@ -65,12 +67,23 @@ export function collapsedTranscriptBlobPresentation(
   const heading = stateLabel ? `${title} · ${stateLabel}` : title
   const glyph = TOOL_DISPLAY_ICON_GLYPHS[entry.blobIcon as ToolDisplayIcon] ?? null
 
+  const expandable = transcriptBlobExpandable(entry)
   return {
     headline: [`> ${glyph ? `${glyph} ` : ""}${heading}`, summary].filter(Boolean).join("  "),
-    detail: collapsedBlobDetail(entry, stateLabel),
-    actionLabel: collapsedBlobActionLabel(entry),
+    detail: expandable ? collapsedBlobDetail(entry, stateLabel) : "",
+    actionLabel: expandable ? collapsedBlobActionLabel(entry) : "",
     stateLabel,
+    expandable,
   }
+}
+
+/** A tool call the display gives no content (a web search still running) opens to nothing, so its row cannot be opened. */
+export function transcriptBlobExpandable(entry: CollapsedTranscriptBlobEntry): boolean {
+  if (entry.role !== "tool" || entry.historyBlobId) {
+    return true
+  }
+  const parsed = parseToolTranscriptUpdate(entry.sourceText ?? entry.text ?? "")
+  return !parsed || formatToolDisplay(parsed).blocks.length > 0
 }
 
 export function roleBlobTitle(role: string): string {
