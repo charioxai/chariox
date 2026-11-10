@@ -748,7 +748,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
 }
 
 /// The event that tells `task` its source ended. A peer is followed, not waited on: its event
-/// names what happened and carries none of the peer's own text.
+/// names what happened and the turn it ended, and carries none of the peer's own text.
 pub(super) fn source_end(
     task: &AgentTaskExecution,
     source: &str,
@@ -758,13 +758,21 @@ pub(super) fn source_end(
     peer: bool,
 ) -> InboxEvent {
     if peer {
+        let mut payload = serde_json::json!({"task_id":task.task_id,"source_id":source,"occurrence_id":occurrence_id,"success":success,"event":peer_event_name(occurrence_id, success)});
+        // The answer text stays with the peer; the turn is named so its history is one read away.
+        if let Some(turn) = public_answer
+            .as_ref()
+            .and_then(|answer| Some((answer.get("agent_id")?, answer.get("task_id")?)))
+        {
+            payload["turn"] = serde_json::json!({"agent_id":turn.0,"turn_ref":turn.1});
+        }
         return occurrence(
             &task.room_id,
             &task.agent_id,
             source,
             occurrence_id,
             "peer_event",
-            serde_json::json!({"task_id":task.task_id,"source_id":source,"occurrence_id":occurrence_id,"success":success,"event":peer_event_name(occurrence_id, success)}),
+            payload,
         );
     }
     occurrence(

@@ -106,6 +106,100 @@ async fn a_peers_finished_turn_reaches_its_follower_as_a_peer_event() {
     assert_eq!(read["untrusted"], true);
 }
 
+/// The follower is not told what the peer answered, but where to read the exact turn.
+#[tokio::test]
+async fn a_peer_event_points_at_the_exact_turn_without_its_text() {
+    let team = family("peer-event-turn", 2, None, true).await;
+    let (follower, peer) = (team.kids[0].child.clone(), team.kids[1].child.clone());
+    follow(&team, 0, &peer).await;
+    finish(&team, 1, false).await;
+
+    let events = inbox(&team, &follower);
+    assert_eq!(events.len(), 1, "{events:?}");
+    let turn = &events[0].payload["turn"];
+    assert_eq!(turn["agent_id"], peer.as_str(), "{:?}", events[0]);
+    assert_eq!(
+        turn["turn_ref"],
+        team.kids[1].task.task_id.as_str(),
+        "{:?}",
+        events[0]
+    );
+    assert!(events[0].payload.get("public_answer").is_none());
+    assert!(turn.get("excerpt").is_none(), "{:?}", events[0]);
+}
+
+/// What a steer asked for is answered like a message: the steerer hears the peer's reply.
+#[tokio::test]
+async fn a_steer_that_asked_for_the_reply_gets_the_peers_answer_as_its_reply() {
+    let team = family("peer-steer-reply", 2, None, true).await;
+    let (steerer, peer) = (team.kids[0].child.clone(), team.kids[1].child.clone());
+    let store = &team.runtime.owned.durable_state_store;
+    let mut steer = crate::durable_state::agent_lifecycle::occurrence(
+        &team.room,
+        &peer,
+        &steerer,
+        "steer",
+        "message",
+        serde_json::json!({"message":"stop editing"}),
+    );
+    steer.urgent = true;
+    steer.reply_requested = true;
+    let Outcome::Event(sent) = store
+        .agent_lifecycle(Operation::Send {
+            task: team.kids[0].task.task_id.clone(),
+            prompt: team.kids[0].child_prompt.id().into(),
+            event: steer,
+        })
+        .unwrap()
+    else {
+        panic!("steer not admitted")
+    };
+    let target = team.kids[1].child_prompt.id().to_owned();
+    store
+        .agent_lifecycle(Operation::Attempt {
+            room: team.room.clone(),
+            agent: peer.clone(),
+            sequence: sent.sequence,
+            prompt: format!("agent-event-{peer}-{}", sent.sequence),
+            target: Some(target),
+            run: Some(team.kids[1].child_run.clone()),
+            now: 2,
+            work: None,
+            through: 0,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Receipt {
+            room: team.room.clone(),
+            agent: peer.clone(),
+            sequence: sent.sequence,
+            state: "accepted".into(),
+            now: 3,
+        })
+        .unwrap();
+    // The peer reads the steer during its turn, as a steer that was never shown is not answered.
+    store
+        .agent_lifecycle(Operation::MarkShown {
+            room: team.room.clone(),
+            agent: peer.clone(),
+            sequences: vec![sent.sequence],
+        })
+        .unwrap();
+    finish(&team, 1, false).await;
+
+    let heard = inbox(&team, &steerer);
+    let reply = heard
+        .iter()
+        .find(|event| event.kind == "source_completed")
+        .unwrap_or_else(|| panic!("the steerer hears the reply: {heard:?}"));
+    assert_eq!(
+        reply.source_id,
+        format!("agent-event-{peer}-{}", sent.sequence)
+    );
+    assert_eq!(reply.payload["public_answer"]["agent_id"], peer.as_str());
+    assert!(reply.payload["public_answer"]["excerpt"].is_string());
+}
+
 #[tokio::test]
 async fn a_peers_failed_turn_says_so_and_never_the_peers_answer() {
     let team = family("peer-event-failed", 2, None, true).await;
