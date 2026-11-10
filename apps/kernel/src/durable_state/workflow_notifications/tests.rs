@@ -122,6 +122,21 @@ impl Fixture {
     pub(crate) fn source(&self, w: &str) -> WorkflowNotificationSource {
         self.source_of_exit(w, &self.exit_of(w))
     }
+    /// The owner turns the exit source of `w` on or off.
+    pub(crate) fn set_source_enabled(&self, w: &str, enabled: bool) {
+        let mut source = self.source(w);
+        source.enabled = enabled;
+        let workflow = self
+            .sessions
+            .resolve_workflow_ref(&self.session, w)
+            .unwrap();
+        self.store
+            .notify(NotificationOperation::Register(SourceAdmission {
+                source,
+                workflow_json: encode(&workflow).unwrap(),
+            }))
+            .unwrap();
+    }
     pub(crate) fn source_of_exit(&self, w: &str, exit: &str) -> WorkflowNotificationSource {
         let s = self.sessions.get_session(&self.session).unwrap();
         let workflow = self
