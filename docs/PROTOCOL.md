@@ -6672,11 +6672,16 @@ and nothing else is needed, so a private relay works:
   refuses a slice of another revision.
 - `write_leased_agent_file { leased_agent_id, path, offset, total_size, sha256, overwrite,
   content }` → `leased_agent_file_written { received, sha256? }`: the worker stages the slice with
-  the Kernel Files engine (`<path>.chariox-partial`, private, `O_NOFOLLOW`) and publishes the file
-  only when the last byte lands with `sha256`. A slice that does not continue the staged bytes is
-  not written; `received` names where the worker stands, so a home that lost an answer resumes
-  from there (an answer lost after publishing returns the finished digest).
-- `discard_leased_agent_file { leased_agent_id, path }` → `leased_agent_file_discarded`.
+  the Kernel Files engine (a private `O_NOFOLLOW` file `.chariox-copy-<id>` beside `path`, where
+  `<id>` is derived from the destination's name; no copy may name a `.chariox*` path, so the staging
+  file never collides with a workspace file) and publishes the file only when the last byte lands
+  with `sha256`. A slice that does not continue the staged bytes is not written; `received` names
+  where the worker stands, so a home that lost an answer resumes from there (an answer lost after
+  publishing returns the finished digest).
+- `discard_leased_agent_file { leased_agent_id, path }` → `leased_agent_file_discarded`: removes
+  only the staging file of a copy to `path`, never a workspace file. When the link stays down, the
+  home retries it for 30 s more and the failure names the leftover; the next copy to that path
+  replaces it.
 
 Refusals are `leased_agent_file_refused { reason }`, final and phrased for the model. A receiving
 workspace refuses absolute paths, `..`, any link on the way, a final link or folder, any write

@@ -109,12 +109,22 @@ fn digest_of(path: &Path) -> String {
     format!("{:x}", Sha256::digest(std::fs::read(path).unwrap()))
 }
 
-/// Nothing at `relative` and nothing staged for it.
-fn left_nothing(root: &Path, relative: &str) -> bool {
+/// A copy staging file beside `relative`.
+fn staging_left(root: &Path, relative: &str) -> bool {
     let path = root.join(relative);
-    let mut partial = path.as_os_str().to_owned();
-    partial.push(".chariox-partial");
-    !path.exists() && !PathBuf::from(partial).exists()
+    std::fs::read_dir(path.parent().unwrap()).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".chariox-copy-")
+        })
+    })
+}
+
+/// Nothing at `relative` and no copy staging beside it.
+fn left_nothing(root: &Path, relative: &str) -> bool {
+    !root.join(relative).exists() && !staging_left(root, relative)
 }
 
 const BUNDLE: usize = 3 * SLICE_BYTES as usize + 12_345;
@@ -156,7 +166,7 @@ async fn a_file_crosses_both_ways_byte_for_byte_with_its_digest() {
     .unwrap();
     assert_eq!(pushed.sha256, sha256);
     assert_eq!(digest_of(&worker.root.join("in/base.bundle")), sha256);
-    assert!(left_nothing(&worker.root, "in/base.bundle.chariox-partial"));
+    assert!(!staging_left(&worker.root, "in/base.bundle"));
 
     std::fs::write(home.root.join("empty"), b"").unwrap();
     let empty = push(&home, "empty", &remote, "empty", &CopyOptions::default())
@@ -377,7 +387,7 @@ async fn a_copy_resumes_where_it_stopped_after_the_link_drops() {
         .unwrap();
     assert_eq!(pushed.sha256, sha256);
     assert_eq!(digest_of(&worker.root.join("again")), sha256);
-    assert!(left_nothing(&worker.root, "again.chariox-partial"));
+    assert!(!staging_left(&worker.root, "again"));
 }
 
 #[tokio::test]
@@ -432,6 +442,83 @@ async fn a_staged_file_that_could_not_be_removed_is_named_in_the_error() {
     let error = push(&home, "big", &remote, "big", &CopyOptions::default())
         .await
         .unwrap_err();
-    assert!(error.contains("big.chariox-partial"), "{error}");
+    assert!(error.contains(".chariox-copy-"), "{error}");
     assert!(error.contains("replaces it"), "{error}");
+}
+
+#[tokio::test]
+async fn a_file_named_like_the_old_staging_sidecar_is_never_touched() {
+    let (home, worker) = workspaces();
+    let sidecar = plant(&worker.root, "report.chariox-partial", 50);
+    plant(&home.root, "report", 70);
+
+    // A finished copy to `report` leaves the neighbour alone, with or without overwrite.
+    let remote = FakeWorker::new(worker.clone());
+    push(&home, "report", &remote, "report", &CopyOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        digest_of(&worker.root.join("report.chariox-partial")),
+        sidecar
+    );
+
+    // So does a copy that ends early: the source changes after the first slice.
+    plant(&home.root, "moving", BUNDLE);
+    let local = home.root.join("moving");
+    let remote = FakeWorker::cued(worker.clone(), move |request| {
+        if request == 1 {
+            let mut bytes = std::fs::read(&local).unwrap();
+            bytes[0] ^= 1;
+            std::fs::write(&local, bytes).unwrap();
+        }
+        Fault::None
+    });
+    push(
+        &home,
+        "moving",
+        &remote,
+        "report",
+        &CopyOptions {
+            overwrite: true,
+            expect_sha256: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        digest_of(&worker.root.join("report.chariox-partial")),
+        sidecar
+    );
+
+    // The same holds on the pulling side.
+    let sidecar = plant(&home.root, "in.chariox-partial", 40);
+    let remote = FakeWorker::new(worker.clone());
+    pull(&remote, "report", &home, "in", &CopyOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(digest_of(&home.root.join("in.chariox-partial")), sidecar);
+}
+
+#[tokio::test]
+async fn a_refused_copy_deletes_nothing_beside_its_destination() {
+    let (home, worker) = workspaces();
+    let sidecar = plant(&worker.root, "docs.chariox-partial", 50);
+    let neighbour = plant(&worker.root, "docs", 60);
+    plant(&home.root, "src", 70);
+    let remote = FakeWorker::new(worker.clone());
+    // Existing destination without overwrite, a protected destination and a missing source.
+    for (source, destination) in [
+        ("src", "docs"),
+        ("src", ".git/hooks/pre-commit"),
+        ("none", "x"),
+    ] {
+        push(&home, source, &remote, destination, &CopyOptions::default())
+            .await
+            .unwrap_err();
+    }
+    assert_eq!(
+        digest_of(&worker.root.join("docs.chariox-partial")),
+        sidecar
+    );
+    assert_eq!(digest_of(&worker.root.join("docs")), neighbour);
 }

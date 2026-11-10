@@ -183,7 +183,7 @@ async fn abandon<R: RemoteWorkspace>(remote: &R, destination: &str, reason: Stri
     match wait_for_link(DISCARD_WINDOW, || remote.discard(destination)).await {
         Ok(()) => reason,
         Err(_) => format!(
-            "{}. The unfinished upload `{destination}.chariox-partial` may remain on the leased agent's kernel; the next copy to that path replaces it",
+            "{}. The unfinished upload (a hidden `.chariox-copy-*` file beside `{destination}`) may remain on the leased agent's kernel; the next copy to that path replaces it",
             reason.trim_end_matches('.')
         ),
     }

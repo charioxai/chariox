@@ -1,8 +1,9 @@
 //! Reading a workspace file one slice at a time and writing one into a workspace, on whichever
 //! kernel holds the workspace. Every answer is final: a refusal says why and what to do.
 use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use super::workspace_path::{resolve, Access};
@@ -95,6 +96,12 @@ pub(crate) fn write_slice(
         return Err(too_large(relative, slice.total_size));
     }
     let path = resolve(&workspace.root, relative, Access::Write)?;
+    let staging = staging_of(&path);
+    // The last slice landed and only its answer was lost: the file is already published.
+    let published = || StagedWrite {
+        received: slice.total_size,
+        sha256: Some(slice.sha256.to_owned()),
+    };
     if slice.offset == 0 {
         let folder = path.parent().unwrap_or(&workspace.root);
         let budget = crate::managed_context::limits::disk_budget(folder);
@@ -104,14 +111,10 @@ pub(crate) fn write_slice(
             ));
         }
     } else {
-        let staged = kernel_files::staged_bytes(&path);
+        let staged = kernel_files::staged_bytes(&staging);
         if staged != slice.offset {
-            // The last slice landed and only its answer was lost: the file is already published.
             if staged == 0 && holds(&path, slice.total_size, slice.sha256) {
-                return Ok(StagedWrite {
-                    received: slice.total_size,
-                    sha256: Some(slice.sha256.to_owned()),
-                });
+                return Ok(published());
             }
             return Ok(StagedWrite {
                 received: staged,
@@ -121,6 +124,7 @@ pub(crate) fn write_slice(
     }
     kernel_files::write_at(
         &path,
+        &staging,
         &StagedChunk {
             offset: slice.offset,
             total_size: slice.total_size,
@@ -143,8 +147,21 @@ pub(crate) fn write_slice(
 /// Drops what an unfinished copy staged for `relative`.
 pub(crate) fn discard(workspace: &Workspace, relative: &str) {
     if let Ok(path) = resolve(&workspace.root, relative, Access::Write) {
-        kernel_files::discard_staging(&path);
+        kernel_files::discard_staging(&staging_of(&path));
     }
+}
+
+/// Where the copy to `path` stages its bytes: beside the destination, under a `.chariox` name that
+/// no copy may name as source or destination, so it never collides with a workspace file and is
+/// removed only by the copy that made it.
+fn staging_of(path: &Path) -> PathBuf {
+    let name = path.file_name().unwrap_or_default().as_encoded_bytes();
+    let digest = Sha256::digest(name);
+    let id: String = digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    path.with_file_name(format!(".chariox-copy-{id}"))
 }
 
 /// Whether `path` is a regular file of `size` bytes with digest `sha256`.

@@ -351,6 +351,7 @@ pub(crate) fn write(request: &WriteKernelFileRequest) -> Result<LocalDaemonRespo
     let path = resolve(&request.path)?;
     let written = write_at(
         &path,
+        &partial_of(&path),
         &StagedChunk {
             offset: request.offset,
             total_size: request.total_size,
@@ -384,10 +385,15 @@ pub(crate) struct StagedWrite {
     pub sha256: Option<String>,
 }
 
-/// Stages `chunk` for `path` and installs the file when its last byte lands; nothing appears under
-/// the name before then, and an existing file is replaced only with `overwrite`.
-pub(crate) fn write_at(path: &Path, chunk: &StagedChunk<'_>) -> Result<StagedWrite, DaemonError> {
-    let partial = partial_of(path);
+/// Stages `chunk` for `path` in the file `staging` and installs the file when its last byte lands;
+/// nothing appears under the name before then, and an existing file is replaced only with
+/// `overwrite`.
+pub(crate) fn write_at(
+    path: &Path,
+    staging: &Path,
+    chunk: &StagedChunk<'_>,
+) -> Result<StagedWrite, DaemonError> {
+    let partial = staging.to_path_buf();
     let existing = std::fs::symlink_metadata(path);
     if existing.is_ok() && !chunk.overwrite {
         return Err(fail(
@@ -435,17 +441,17 @@ pub(crate) fn write_at(path: &Path, chunk: &StagedChunk<'_>) -> Result<StagedWri
     })
 }
 
-/// Bytes an unfinished upload to `path` has staged.
-pub(crate) fn staged_bytes(path: &Path) -> u64 {
-    std::fs::symlink_metadata(partial_of(path))
+/// Bytes the staging file `staging` of an unfinished upload holds.
+pub(crate) fn staged_bytes(staging: &Path) -> u64 {
+    std::fs::symlink_metadata(staging)
         .ok()
         .filter(std::fs::Metadata::is_file)
         .map_or(0, |metadata| metadata.len())
 }
 
-/// Drops an unfinished upload to `path`; the file under its name is left as it is.
-pub(crate) fn discard_staging(path: &Path) {
-    let _ = std::fs::remove_file(partial_of(path));
+/// Drops the staging file `staging` of an unfinished upload.
+pub(crate) fn discard_staging(staging: &Path) {
+    let _ = std::fs::remove_file(staging);
 }
 
 fn staging_replaced(partial: &Path) -> DaemonError {
