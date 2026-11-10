@@ -2204,6 +2204,41 @@ mod native_approval_protocol_tests {
 }
 
 #[cfg(test)]
+mod leased_agent_deadline_shapes {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn pinned<T>(snapshot: serde_json::Value, hash: &str)
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned,
+    {
+        let decoded: T = serde_json::from_value(snapshot.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), snapshot);
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+            ),
+            hash
+        );
+    }
+
+    // The worker enforces a leased agent's deadline (peer 442, Landing 8): the home asks, then
+    // records the deadline only once the worker confirms it.
+    #[test]
+    fn the_worker_deadline_request_and_its_confirmation_keep_their_wire_shape() {
+        pinned::<RelayPeerRequest>(
+            serde_json::json!({"kind":"set_leased_agent_deadline","leased_agent_id":"lease","deadline_ms":1793700040000_u64}),
+            "93d5696247b76e96c9188e3f65be1642338f562a4223c8ba2c390ef378477684",
+        );
+        pinned::<RelayPeerResponse>(
+            serde_json::json!({"kind":"leased_agent_deadline_set","leased_agent_id":"lease"}),
+            "b64a7791b7687bf3b9396ec2375733cf1d2d364d2df873918921d2ede940be75",
+        );
+    }
+}
+
+#[cfg(test)]
 mod owner_managed_context_shapes {
     use super::*;
     use sha2::{Digest, Sha256};

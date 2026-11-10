@@ -734,7 +734,7 @@ parent as one urgent `child_finished` inbox event carrying `child_agent_id`,
 on a question when the kernel restarted ends as `interrupted_by_restart`. The
 relay peer protocol needs no change for it.
 
-Relay peer 442 adds `SetLeasedAgentDeadline {leased_agent_id, deadline_ms}`, answered by
+Relay peer 442 (Landing 8) adds `SetLeasedAgentDeadline {leased_agent_id, deadline_ms}`, answered by
 `LeasedAgentDeadlineSet {leased_agent_id}`. The home sends it before it records the
 deadline of an agent it leased to a worker (`agent spawn --kernel K --deadline`, `agent
 deadline set`, or a parent's deadline reaching a remote descendant). The worker arms the
