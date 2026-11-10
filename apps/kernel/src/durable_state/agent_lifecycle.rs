@@ -1311,9 +1311,18 @@ pub(super) const WORK_CORRELATED: &str = "(json_extract(payload,'$.kind')<>'mess
 /// Rows one inbox read returns at most.
 pub(crate) const INBOX_PAGE: usize = 128;
 
-/// A decision an agent must answer or pass before its event can be acknowledged.
+/// Events whose outcome the agent already settled are not read again.
+pub(crate) fn is_open(event: &InboxEvent) -> bool {
+    !matches!(
+        event.state.as_str(),
+        "acknowledged" | "handled" | "expired" | "failed"
+    )
+}
+
+/// A decision an agent must answer or pass before its event can be acknowledged. Answering or
+/// passing it closes the event, so a closed one needs nothing more.
 pub(crate) fn needs_answer(event: &InboxEvent) -> bool {
-    event.kind == "child_decision" && event.payload["answered"].as_bool() != Some(true)
+    event.kind == "child_decision" && is_open(event)
 }
 
 pub(crate) fn work_correlated(event: &InboxEvent, work: &str) -> bool {
