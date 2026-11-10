@@ -73,12 +73,9 @@ impl KernelRuntimeOwnedState {
                 task.prompt_id == prompt || task.pending_prompt_id.as_deref() == Some(prompt)
             });
         if let Some(task) = task {
+            let initiator = task.recorded_cancel_initiator();
             self.durable_state_store
-                .agent_lifecycle(Operation::CancelTask {
-                    task: task.task_id,
-                    owner,
-                    revision: task.revision,
-                })?;
+                .agent_lifecycle(initiator.cancel_task(task.task_id, owner, task.revision))?;
         }
         Ok(())
     }
@@ -192,14 +189,13 @@ impl KernelRuntimeState {
         if tasks.next().is_some() {
             return Err(crate::durable_state::agent_lifecycle::error("multiple unfinished tasks on this agent; cancel the intended task from its task controls"));
         }
-        let Outcome::Task(cancelled) =
-            self.owned
-                .durable_state_store
-                .agent_lifecycle(Operation::CancelTask {
-                    task: task.task_id,
-                    owner: session.owner_user_id().into(),
-                    revision: task.revision,
-                })?
+        let (task_id, owner, revision) =
+            (task.task_id, session.owner_user_id().into(), task.revision);
+        let cancel = self
+            .owned
+            .cancel_initiator(&request.attachment_id)
+            .cancel_task(task_id, owner, revision);
+        let Outcome::Task(cancelled) = self.owned.durable_state_store.agent_lifecycle(cancel)?
         else {
             unreachable!()
         };

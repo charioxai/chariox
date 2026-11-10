@@ -1636,6 +1636,7 @@ mod agent_tree_runtime;
 mod child_finished_event;
 
 mod agent_gone_announcement;
+mod agent_issued_cancel;
 mod agent_owner_cancellation;
 mod agent_process_group;
 mod agent_process_output;

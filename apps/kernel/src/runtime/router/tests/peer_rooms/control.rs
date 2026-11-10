@@ -31,6 +31,126 @@ fn a_peer_in_another_room_steers_and_cancels_with_equal_authority() {
 }
 
 #[test]
+fn a_message_after_a_peer_cancel_runs_on_the_cancelled_agent() {
+    run_peer_test("peer-room-cancel-then-message", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let cancel = rooms
+            .room_command(
+                &rooms.sender_token,
+                format!("agent cancel peer --room {}", rooms.peer_room),
+            )
+            .await;
+        assert!(cancel.ok, "{}", cancel.payload);
+        rooms
+            .router
+            .runtime_state
+            .end_agent_turn_for_tests(&rooms.peer_room, rooms.peer.id(), true)
+            .await
+            .expect("the cancelled turn settles");
+        rooms
+            .send(serde_json::json!({
+                "agent": "peer",
+                "room": rooms.peer_room,
+                "message": "take over parser.rs",
+            }))
+            .await
+            .expect("a peer may message");
+        assert!(
+            rooms
+                .message_was_delivered(&rooms.peer_room, rooms.peer.id())
+                .await,
+            "a cancel ends the current task, not the agent: the later message runs"
+        );
+    });
+}
+
+#[test]
+fn an_owner_stop_in_flight_is_not_turned_into_an_agent_cancel() {
+    run_peer_test("peer-room-owner-stop-then-cancel", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        rooms.owner_stop(&rooms.peer_room, rooms.peer.id()).await;
+        let cancel = rooms
+            .room_command(
+                &rooms.sender_token,
+                format!("agent cancel peer --room {}", rooms.peer_room),
+            )
+            .await;
+        assert!(cancel.ok, "{}", cancel.payload);
+        rooms
+            .router
+            .runtime_state
+            .end_agent_turn_for_tests(&rooms.peer_room, rooms.peer.id(), true)
+            .await
+            .expect("the stopped turn settles");
+        assert_eq!(
+            rooms
+                .last_task(&rooms.peer_room, rooms.peer.id())
+                .await
+                .reason,
+            "Stopped by you"
+        );
+        rooms
+            .send(serde_json::json!({
+                "agent": "peer",
+                "room": rooms.peer_room,
+                "message": "take over parser.rs",
+            }))
+            .await
+            .expect("a peer may message");
+        assert!(
+            !rooms
+                .message_was_delivered(&rooms.peer_room, rooms.peer.id())
+                .await,
+            "the owner's Stop wins: the message stays held until the owner prompts the agent"
+        );
+    });
+}
+
+#[test]
+fn a_message_after_a_peer_cancel_of_a_parked_task_runs() {
+    run_peer_test("peer-room-cancel-parked-then-message", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let parked = {
+            let mut app = rooms.app.lock().await;
+            let agent = spawn_with_level(
+                &mut app,
+                &rooms.peer_room,
+                "parked",
+                AgentPermissionLevel::Yolo,
+            );
+            running_turn(&mut app, &rooms.peer_room, agent.id());
+            agent
+        };
+        rooms.park_task(&rooms.peer_room, parked.id()).await;
+        let cancel = rooms
+            .room_command(
+                &rooms.sender_token,
+                format!("agent cancel parked --room {}", rooms.peer_room),
+            )
+            .await;
+        assert!(cancel.ok, "{}", cancel.payload);
+        assert_eq!(
+            rooms.last_task(&rooms.peer_room, parked.id()).await.reason,
+            "Stopped by an agent"
+        );
+        rooms
+            .send(serde_json::json!({
+                "agent": "parked",
+                "room": rooms.peer_room,
+                "message": "take over parser.rs",
+            }))
+            .await
+            .expect("a peer may message");
+        assert!(
+            rooms
+                .message_was_delivered(&rooms.peer_room, parked.id())
+                .await,
+            "a cancel ends the parked task, not the agent: the later message runs"
+        );
+    });
+}
+
+#[test]
 fn a_peer_with_less_authority_cannot_steer_or_cancel() {
     run_peer_test("peer-room-control-clamp", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Required, AgentPermissionLevel::Yolo);

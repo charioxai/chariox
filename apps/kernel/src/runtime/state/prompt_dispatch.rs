@@ -1047,6 +1047,7 @@ impl KernelRuntimeState {
                             session_id,
                             target_agent_id,
                             &exact_prompt_id,
+                            owned.cancel_initiator(attachment_id),
                         )
                         .await;
                 }

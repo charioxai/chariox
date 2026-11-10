@@ -276,6 +276,42 @@ fn a_retried_cancel_after_a_lost_answer_returns_its_receipt_and_spares_a_later_t
     });
 }
 
+#[test]
+fn a_message_from_another_kernel_after_its_cancel_runs_on_the_cancelled_agent() {
+    run_peer_test("peer-kernel-cancel-then-message", || async {
+        let rooms = Rooms::new(
+            AgentPermissionLevel::Required,
+            AgentPermissionLevel::Required,
+        );
+        let cancelled = rooms
+            .request_from_kernel_a(cancel(&rooms, AgentExecutionMode::Build))
+            .await;
+        assert!(
+            matches!(cancelled, RelayPeerResponse::PeerAgentAccepted { .. }),
+            "{cancelled:?}"
+        );
+        rooms
+            .router
+            .runtime_state
+            .end_agent_turn_for_tests(&rooms.peer_room, rooms.peer.id(), true)
+            .await
+            .expect("the cancelled turn settles");
+        let later = rooms
+            .request_from_kernel_a(message(&rooms, "after-cancel", "peer", false))
+            .await;
+        assert!(
+            matches!(later, RelayPeerResponse::PeerAgentAccepted { .. }),
+            "{later:?}"
+        );
+        assert!(
+            rooms
+                .message_was_delivered(&rooms.peer_room, rooms.peer.id())
+                .await,
+            "a cancel ends the current task, not the agent: the later message runs"
+        );
+    });
+}
+
 fn spawn(request_id: &str, room: &str) -> RelayPeerRequest {
     RelayPeerRequest::SpawnRoomPeer {
         protocol_version: RELAY_PEER_PROTOCOL_VERSION,

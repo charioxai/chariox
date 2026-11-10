@@ -547,23 +547,60 @@ impl KernelRuntimeOwnedState {
         target_agent_id: &str,
         attachment_id: &str,
     ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
-        self.begin_remote_prompt_cancellation_if_matches(
+        self.begin_remote_prompt_cancellation_inner(
             session_id,
             target_agent_id,
             attachment_id,
             None,
+            false,
         )?
         .ok_or_else(|| DaemonError::NoActivePrompt {
             session_id: session_id.to_string(),
         })
     }
 
+    /// A cancel request: `attachment_id` is whoever asks, and is recorded as the initiator.
     pub(super) fn begin_remote_prompt_cancellation_if_matches(
         &self,
         session_id: &str,
         target_agent_id: &str,
         attachment_id: &str,
         expected: Option<&str>,
+    ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
+        self.begin_remote_prompt_cancellation_inner(
+            session_id,
+            target_agent_id,
+            attachment_id,
+            expected,
+            true,
+        )
+    }
+
+    /// Continues a cancellation that already began (recovery, settlement). The attachment is
+    /// only the prompt's submitter, not whoever cancelled, so it never changes the initiator.
+    pub(super) fn continue_remote_prompt_cancellation_if_matches(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+        expected: Option<&str>,
+    ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
+        self.begin_remote_prompt_cancellation_inner(
+            session_id,
+            target_agent_id,
+            attachment_id,
+            expected,
+            false,
+        )
+    }
+
+    fn begin_remote_prompt_cancellation_inner(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+        expected: Option<&str>,
+        record_initiator: bool,
     ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
         if expected.is_none()
             && !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id)
@@ -586,6 +623,15 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         };
         if active_prompt.status() == crate::session::PromptStatus::Cancelling {
+            if record_initiator {
+                self.note_turn_cancel(
+                    session_id,
+                    target_agent_id,
+                    active_prompt.id(),
+                    attachment_id,
+                    false,
+                );
+            }
             let session = self.session_snapshot(session_id)?;
             return Ok(Some(crate::app::KernelPromptCancellation {
                 cancellation: crate::session::PromptCancellation {
@@ -603,6 +649,15 @@ impl KernelRuntimeOwnedState {
         ) else {
             return Ok(None);
         };
+        if record_initiator {
+            self.note_turn_cancel(
+                session_id,
+                target_agent_id,
+                prompt.id(),
+                attachment_id,
+                true,
+            );
+        }
         let (active_prompt, queued_prompts) = self
             .prompt_state_owner
             .state_parts(&session, target_agent_id);

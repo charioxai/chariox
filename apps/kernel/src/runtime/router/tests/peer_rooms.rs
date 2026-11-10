@@ -153,6 +153,110 @@ impl Rooms {
             .is_some_and(|prompt| prompt.status() == PromptStatus::Running)
     }
 
+    /// Whether the kernel started a turn for the agent's first inbox message, the way it does
+    /// for an agent that is free to take it; a stopped agent keeps the message undelivered. The
+    /// stub provider cannot finish that turn, so its task is the evidence.
+    async fn message_was_delivered(&self, room: &str, agent: &str) -> bool {
+        let message = self
+            .inbox(room, agent)
+            .await
+            .pop()
+            .expect("the message is in the inbox");
+        let prompt = format!("agent-event-{agent}-{}", message.sequence);
+        self.app
+            .lock()
+            .await
+            .durable_state_store()
+            .agent_tasks(Some(room), Some(agent))
+            .unwrap()
+            .iter()
+            .any(|task| task.prompt_id == prompt)
+    }
+
+    /// The owner's Stop on `agent`'s running turn, left in flight: the provider abort is not
+    /// dispatched, so the prompt stays cancelling until the turn is settled.
+    async fn owner_stop(&self, room: &str, agent: &str) {
+        let attach = LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+            session_id: room.to_string(),
+            client_id: "owner-client".into(),
+            capability_level: ClientCapabilityLevel::InteractiveStructured,
+        });
+        let command = KernelCommand::from_local_request("owner-attach", None, None, &attach);
+        let LocalDaemonResponse::SessionAttached { attachment } =
+            self.router.dispatch(command, attach).await.unwrap()
+        else {
+            panic!("expected an attachment")
+        };
+        self.router
+            .runtime_state
+            .cancel_agent_prompt_with_external_authority(room, agent, attachment.id(), None)
+            .await
+            .expect("the owner's Stop begins");
+    }
+
+    /// Parks the agent's task on a timer and ends its provider turn: the state a task is in after
+    /// `events.yield`, with no active prompt.
+    async fn park_task(&self, room: &str, agent: &str) {
+        let task = self.last_task(room, agent).await;
+        let now = crate::session::unix_epoch_ms();
+        let wake: crate::durable_state::agent_lifecycle::AgentWake =
+            serde_json::from_value(serde_json::json!({
+                "id": "timer-parked", "task_id": task.task_id, "room_id": room, "agent_id": agent,
+                "registration_id": "completion-timer-parked", "kind": "timer",
+                "label": "wait for review", "state": "scheduled", "created_at_ms": now,
+                "verified_at_ms": null, "next_due_ms": now + 3_600_000, "interval_ms": null,
+                "command": [], "match_text": null, "matched_at_ms": null, "pid": null,
+                "exit_code": null, "fire_count": 0, "missed_fires": 0,
+                "last_fired_at_ms": null, "last_sequence": null, "last_delivery": null,
+                "last_delivered_at_ms": null, "last_acknowledged_at_ms": null,
+                "alerted_sequence": null
+            }))
+            .unwrap();
+        {
+            use crate::durable_state::agent_lifecycle::Operation;
+            let app = self.app.lock().await;
+            let store = app.durable_state_store();
+            store
+                .agent_lifecycle(Operation::CreateWake {
+                    task: task.task_id.clone(),
+                    prompt: task.prompt_id.clone(),
+                    wake,
+                })
+                .unwrap();
+            store
+                .agent_lifecycle(Operation::Yield {
+                    task: task.task_id.clone(),
+                    prompt: task.prompt_id.clone(),
+                    registrations: vec!["completion-timer-parked".into()],
+                    cursor: 0,
+                    deadline: now + 3_600_000,
+                    reason: "Waiting for review".into(),
+                    now,
+                })
+                .unwrap_or_else(|error| panic!("{error:?}: {:?}", task.obligations));
+        }
+        self.router
+            .runtime_state
+            .end_agent_turn_for_tests(room, agent, false)
+            .await
+            .expect("the parked turn ends");
+    }
+
+    async fn last_task(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> crate::durable_state::agent_lifecycle::AgentTaskExecution {
+        self.app
+            .lock()
+            .await
+            .durable_state_store()
+            .agent_tasks(Some(room), Some(agent))
+            .unwrap()
+            .pop()
+            .expect("the agent has a task")
+    }
+
     async fn inbox(
         &self,
         room: &str,

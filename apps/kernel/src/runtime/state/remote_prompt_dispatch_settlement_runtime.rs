@@ -259,12 +259,11 @@ impl KernelRuntimeState {
         if delivery_succeeded && settled_prompt.status() == crate::session::PromptStatus::Cancelling
         {
             if let Err(error) = self
-                .cancel_remote_agent_prompt_if_remote(
+                .continue_remote_agent_prompt_cancellation(
                     &session_id,
                     &agent_id,
                     settled_prompt.source_attachment_id(),
-                    Some(settled_prompt.id()),
-                    None,
+                    settled_prompt.id(),
                 )
                 .await
             {
