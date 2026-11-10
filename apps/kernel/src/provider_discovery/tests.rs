@@ -336,3 +336,93 @@ fn the_pause_between_probes_of_an_unusable_location_stops_growing_at_half_an_hou
         "31 min after the last probe"
     );
 }
+
+fn claude_profile(
+    registry: &ProviderAccountProfileRegistry,
+    linked: bool,
+) -> ProviderAccountProfile {
+    registry
+        .list(OWNER, Some("claude"))
+        .unwrap()
+        .into_iter()
+        .find(|profile| profile.is_default != linked)
+        .unwrap()
+}
+
+#[test]
+fn a_linked_account_rejected_while_the_default_login_was_the_same_account_returns_after_the_switch_back(
+) {
+    crate::test_support::isolated_env_test!();
+    let machine = Machine::new("collision");
+    std::fs::create_dir_all(machine.home.join(".claude")).unwrap();
+    std::fs::set_permissions(
+        machine.home.join(".claude"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    machine.claude_config_dir(".claude-work");
+    machine.cli_answers("default", ALICE);
+    machine.cli_answers(".claude-work", BOB);
+    let registry = machine.open_registry();
+    registry
+        .migrate_effective_defaults(OWNER, &machine.home)
+        .unwrap();
+    machine.discover(&registry);
+    let linked = claude_profile(&registry, true);
+    assert_eq!(linked.auth_state, ProviderAccountAuthState::Authenticated);
+    assert_eq!(linked.identity_summary.as_deref(), Some("bob@example.com"));
+    drop(registry);
+
+    // The default CLI is signed in as Bob outside Chariox: the default wins the
+    // duplicate-identity check and the linked Bob profile is rejected.
+    machine.cli_answers("default", BOB);
+    machine.age_recorded_checks(1);
+    let restarted = machine.open_registry();
+    machine.discover(&restarted);
+    assert_eq!(
+        claude_profile(&restarted, true).auth_state,
+        ProviderAccountAuthState::Error,
+        "the collision is what rejects the linked profile"
+    );
+    drop(restarted);
+
+    // Signed back in as Alice, across restarts: the linked Bob login was never
+    // wrong, so a bounded recheck validates it again.
+    machine.cli_answers("default", ALICE);
+    for _ in 0..2 {
+        machine.age_recorded_checks(1);
+        let restarted = machine.open_registry();
+        machine.discover(&restarted);
+    }
+    let reopened = machine.open_registry();
+    let linked = claude_profile(&reopened, true);
+    assert_eq!(linked.auth_state, ProviderAccountAuthState::Authenticated);
+    assert_eq!(linked.identity_summary.as_deref(), Some("bob@example.com"));
+    assert_eq!(
+        claude_profile(&reopened, false).identity_summary.as_deref(),
+        Some("alice@example.com")
+    );
+}
+
+#[test]
+fn a_native_profile_in_error_is_rechecked_like_an_authenticated_one_except_codex() {
+    crate::test_support::isolated_env_test!();
+    let machine = Machine::new("error-recheck");
+    machine.cli_answers("default", ALICE);
+    let registry = machine.open_registry();
+    registry
+        .migrate_effective_defaults(OWNER, &machine.home)
+        .unwrap();
+    machine.discover(&registry);
+    let mut profile = claude_profile(&registry, false);
+    profile.auth_state = ProviderAccountAuthState::Error;
+    profile.last_validated_at_ms = Some(1_000_000);
+    let a_day_later = 1_000_000 + 24 * 3_600_000;
+
+    assert!(!needs_validation(&profile, 1_000_000), "just checked");
+    assert!(needs_validation(&profile, a_day_later), "claude");
+    profile.provider = "opencode".to_string();
+    assert!(needs_validation(&profile, a_day_later), "opencode");
+    profile.provider = "codex".to_string();
+    assert!(!needs_validation(&profile, a_day_later), "codex");
+}
