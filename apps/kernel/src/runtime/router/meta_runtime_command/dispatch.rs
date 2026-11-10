@@ -775,9 +775,10 @@ impl CommandRouter {
             // Omitted, the child takes the parent's effective limit where it is created.
             execution_mode: None,
             permission_level: spawn.permission_level,
+            // The parent's folder is a path on this machine: a child on another kernel that
+            // names no folder starts where that kernel starts its agents.
             worktree_id: spawn.worktree_id.or_else(|| {
-                target_room
-                    .is_none()
+                (target_room.is_none() && spawn.kernel_ref.is_none())
                     .then(|| metaagent.worktree_id().map(str::to_string))
                     .flatten()
             }),
