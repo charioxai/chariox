@@ -1,3 +1,4 @@
+import { compactToolName } from "./tool-names.js"
 import { isObjectValue, normalizeJsonLike } from "./strings.js"
 import type { ToolDisplayBlock, ToolTranscriptUpdate } from "./types.js"
 
@@ -9,7 +10,7 @@ const SELF_PRESENTING = new Set([
   "bash", "shell", "sh", "shellcommand", "execcommand", "runcommand", "runshellcommand", "localshell", "terminal", "commandexecution", "exec", "unifiedexec",
   "read", "readfile", "view", "charioxreadartifact", "readartifact",
   "edit", "multiedit", "strreplace", "strreplacebasededittool", "notebookedit", "applypatch", "patch", "write", "writefile", "create",
-  "charioxeditartifact", "charioxapplypatch", "charioxpatchartifact", "mcpcharioxpatchartifact", "editartifact", "patchartifact",
+  "charioxeditartifact", "charioxapplypatch", "charioxpatchartifact", "editartifact", "patchartifact",
   "charioxwriteartifact", "writeartifact", "charioxdeleteartifact", "deleteartifact", "charioxmoveartifact", "moveartifact",
   "grep", "search", "rg", "codebasesearch", "searchfiles", "glob", "find", "findfiles", "ls", "list", "listdir", "listfiles", "listdirectory",
 ])
@@ -21,7 +22,7 @@ const DELEGATION = new Set(["task", "agent", "spawnagent"])
 type ToolContentKind = "plain" | "web_search" | "web_fetch" | "todo" | "delegation" | "other"
 
 function contentKind(tool: unknown): ToolContentKind {
-  const name = typeof tool === "string" ? tool.trim().replace(/[\s._-]/g, "").toLowerCase() : ""
+  const name = compactToolName(tool)
   if (WEB_SEARCH.has(name)) return "web_search"
   if (WEB_FETCH.has(name)) return "web_fetch"
   if (TODO.has(name)) return "todo"

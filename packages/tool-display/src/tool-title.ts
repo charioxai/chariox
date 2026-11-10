@@ -1,3 +1,4 @@
+import { compactToolName } from "./tool-names.js"
 import type { ApplyPatchFile, ToolDisplayIcon, ToolTranscriptUpdate } from "./types.js"
 
 // Verb + object titles for tool rows ("Ran ls -la", "Read README.md",
@@ -7,7 +8,7 @@ export function toolDisplayTitle(update: ToolTranscriptUpdate, patchFiles: reado
   const active = toolTitleIsActive(update.status)
   const verb = (done: string, running: string) => active ? running : done
   const input = toolTitleRecord(update.input)
-  const name = toolTitleCanonicalName(update.tool)
+  const name = compactToolName(update.tool)
 
   if (patchFiles.length > 0) {
     // A write shown as its diff still says it wrote the file: "Edited" read wrong for a file just created.
@@ -39,7 +40,6 @@ export function toolDisplayTitle(update: ToolTranscriptUpdate, patchFiles: reado
     case "charioxeditartifact":
     case "charioxapplypatch":
     case "charioxpatchartifact":
-    case "mcpcharioxpatchartifact":
     case "editartifact":
     case "patchartifact":
       return `${verb("Edited", "Editing")} ${toolTitleShort(path) ?? "files"}`
@@ -109,7 +109,7 @@ export const TOOL_DISPLAY_ICON_GLYPHS: Readonly<Record<ToolDisplayIcon, string>>
 // The icon shown left of a tool row's title; same classification as the title.
 export function toolDisplayIcon(update: ToolTranscriptUpdate, patchFiles: readonly ApplyPatchFile[] = []): ToolDisplayIcon {
   const input = toolTitleRecord(update.input)
-  const name = toolTitleCanonicalName(update.tool)
+  const name = compactToolName(update.tool)
   const raw = typeof update.tool === "string" ? update.tool : ""
   const browser = (value: string) => /browser|computer|playwright|chrome|screenshot|navigate|webview/i.test(value)
   if (patchFiles.length > 0) {
@@ -131,7 +131,7 @@ export function toolDisplayIcon(update: ToolTranscriptUpdate, patchFiles: readon
       return name === "todoread" ? "plan" : "read"
     case "edit": case "multiedit": case "strreplace": case "strreplacebasededittool": case "notebookedit":
     case "applypatch": case "patch": case "charioxeditartifact": case "charioxapplypatch": case "charioxpatchartifact":
-    case "mcpcharioxpatchartifact": case "editartifact": case "patchartifact": case "write": case "writefile":
+    case "editartifact": case "patchartifact": case "write": case "writefile":
     case "create": case "charioxwriteartifact": case "writeartifact": case "charioxdeleteartifact":
     case "deleteartifact": case "charioxmoveartifact": case "moveartifact":
       return "edit"
@@ -171,10 +171,6 @@ const TOOL_TITLE_ACTIVE = new Set(["running", "pending", "in_progress", "inprogr
 
 function toolTitleIsActive(status: unknown) {
   return typeof status === "string" && TOOL_TITLE_ACTIVE.has(status.trim().toLowerCase())
-}
-
-function toolTitleCanonicalName(tool: unknown) {
-  return typeof tool === "string" ? tool.trim().replace(/[\s._-]/g, "").toLowerCase() : ""
 }
 
 function toolTitleRecord(value: unknown): Record<string, unknown> | null {

@@ -98,3 +98,18 @@ for (const verb of ["write", "edit", "delete", "move"]) {
     })
   }
 }
+
+// The same calls, titled and iconed: the live row of a binary write through Claude's MCP client read "Edited out/logo.png".
+for (const [name, title, icon] of [
+  ["chariox.write_artifact", "Wrote out/logo.png", "edit"],
+  ["mcp__chariox__write_artifact", "Wrote out/logo.png", "edit"],
+  ["mcp__chariox__chariox_write_artifact", "Wrote out/logo.png", "edit"],
+  ["mcp__chariox__chariox_delete_artifact", "Deleted out/logo.png", "edit"],
+  ["mcp__chariox__chariox_move_artifact", "Moved out/logo.png", "edit"],
+] as const) {
+  test(`${name} is titled by what it did`, () => {
+    const display = formatToolDisplay({ id: "c", tool: name, status: "completed", input: { path: "out/logo.png", content_base64: "iVBORw0KGgo=", from_path: "out/logo.png", to_path: "out/b.png" } })
+    assert.match(display.title, new RegExp(`^${title.replace(/[./]/g, "\\$&")}`))
+    assert.equal(display.icon, icon)
+  })
+}

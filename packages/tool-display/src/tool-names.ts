@@ -12,13 +12,18 @@ export function isWorkspaceLiveSyncTool(tool: unknown) {
     || canonical === "chariox.write_artifact"
 }
 
+/** A tool's name without separators or case. The Chariox bridge's tools arrive as "chariox.x", "chariox_x" or, through a provider's MCP client,
+ *  "mcp__chariox__chariox_x" or "mcp__chariox__x": one name each ("charioxx"). */
+export function compactToolName(tool: unknown): string {
+  return typeof tool === "string" ? tool.trim().replace(/[\s._-]/g, "").toLowerCase().replace(/^mcp(?=chariox)/, "").replace(/^(?:chariox)+(?=chariox)/, "") : ""
+}
+
 export function canonicalToolName(tool: unknown) {
   if (typeof tool !== "string") {
     return ""
   }
   const normalized = tool.trim()
-  // The bridge's tools arrive as "chariox.x", "chariox_x" or, through a provider's MCP client, "mcp__chariox__chariox_x": one name each.
-  const compact = normalized.replace(/[._-]/g, "").toLowerCase().replace(/^mcp(?=chariox)/, "")
+  const compact = compactToolName(normalized)
   const chariox = compact.startsWith("chariox")
   const verb = compact.replace(/^(?:chariox)+/, "")
   if (verb === "writeartifact") return "chariox.write_artifact"
