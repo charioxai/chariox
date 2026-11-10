@@ -13,6 +13,11 @@ pub fn is_display_scope(scope: Option<&str>) -> bool {
     matches!(scope, Some(DISPLAY_EVENT_SCOPE | DISPLAY_RESUME_SCOPE))
 }
 pub const TRANSPORT_QUERY: &str = "chariox_transport=chunks-v2";
+/// A kernel offers this header with UPLOAD_CHUNKS to send its large messages
+/// in chunks too; a relay that reassembles them answers with the same header.
+/// Without the answer (an older relay) the kernel writes whole messages.
+pub const UPLOAD_HEADER: &str = "x-chariox-upload";
+pub const UPLOAD_CHUNKS: &str = "chunks-v2";
 pub const CHUNK_BYTES: usize = 16 * 1024;
 const BINARY_CHUNK_MAGIC: &[u8; 4] = b"CXB1";
 pub const BINARY_CHUNK_HEADER_BYTES: usize = 16;
@@ -28,17 +33,15 @@ pub fn binary_chunk(transfer_id: u32, offset: usize, total: usize, payload: &[u8
     chunk.extend_from_slice(payload);
     chunk
 }
-/// Bulk bytes in flight per socket: a 480 KB mirror packet takes two round
-/// trips instead of eight. 256 KiB per RTT is 23 Mbit/s at 90 ms.
-pub const WINDOW_BYTES: usize = 256 * 1024;
 /// Extra credit only single-chunk messages may use, so a small interactive
 /// frame never waits a round trip behind a window full of bulk data.
 pub const SMALL_RESERVE_BYTES: usize = 2 * CHUNK_BYTES;
-/// Smallest chunk frame on the wire. The byte window plus reserve bound
+/// Smallest chunk frame on the wire. The largest byte window plus reserve bound
 /// unacknowledged frames at that many bytes / MIN_FRAME_BYTES, so a receipt
 /// queue of that depth can never overflow for a conforming peer.
 pub const MIN_FRAME_BYTES: usize = 64;
-pub const MAX_UNACKED_FRAMES: usize = (WINDOW_BYTES + SMALL_RESERVE_BYTES) / MIN_FRAME_BYTES;
+pub const MAX_UNACKED_FRAMES: usize =
+    (crate::drain_window::CEILING_BYTES + SMALL_RESERVE_BYTES) / MIN_FRAME_BYTES;
 /// Unacknowledged frames a sender may keep toward any peer. Peers built with
 /// the 64 KiB window size their receipt queue to this many entries and drop
 /// the connection when it overflows, so the larger byte window must not raise it.
@@ -46,6 +49,38 @@ pub const PEER_RECEIPT_FRAMES: usize = (64 * 1024 + SMALL_RESERVE_BYTES) / MIN_F
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_TRANSFERS: usize = 4;
 pub const MAX_ASSEMBLY_BYTES: usize = 128 * 1024 * 1024;
+
+/// The chunk frame of `text` that starts at `offset`, and the offset after it.
+/// Frames stay within `limit` (at most CHUNK_BYTES) after JSON escaping and
+/// split on characters; receivers take any frame up to CHUNK_BYTES.
+pub fn text_chunk(
+    transfer_id: u32,
+    text: &str,
+    offset: usize,
+    limit: usize,
+) -> Option<(String, usize)> {
+    if offset == text.len() {
+        return None;
+    }
+    let limit = limit.min(CHUNK_BYTES);
+    let mut end = (offset + limit).min(text.len());
+    loop {
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let frame = serde_json::to_string(&TransportFrame::TransportChunk {
+            transfer_id,
+            offset: offset as u32,
+            total_bytes: text.len() as u32,
+            payload: text[offset..end].to_string(),
+        })
+        .ok()?;
+        if frame.len() <= limit {
+            return Some((frame, end));
+        }
+        end = offset + (end - offset) / 2;
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -333,7 +368,10 @@ mod tests {
         })
         .unwrap();
         assert!(smallest.len() >= MIN_FRAME_BYTES);
-        assert!(MAX_UNACKED_FRAMES * smallest.len() >= WINDOW_BYTES + SMALL_RESERVE_BYTES);
+        assert!(
+            MAX_UNACKED_FRAMES * smallest.len()
+                >= crate::drain_window::CEILING_BYTES + SMALL_RESERVE_BYTES
+        );
     }
 
     #[test]

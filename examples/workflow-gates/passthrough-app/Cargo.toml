@@ -1,0 +1,17 @@
+[package]
+name = "upwatch-passthrough-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[workspace]
+[lib]
+crate-type = ["cdylib"]
+[dependencies]
+wit-bindgen = "=0.63.0"
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = "s"
+strip = true

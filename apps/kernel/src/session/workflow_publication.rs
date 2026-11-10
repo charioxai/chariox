@@ -340,6 +340,9 @@ impl WorkflowPublicationDefinition {
         &self.id
     }
 
+    pub fn input_schema(&self) -> Option<&Value> {
+        self.input_schema.as_ref()
+    }
     pub fn session_id(&self) -> &str {
         &self.session_id
     }

@@ -63,9 +63,31 @@ pub(crate) async fn visible_targets(
     if profile.kernel_credential.is_none() {
         return Ok(None);
     }
-    let directory = crate::runtime::cloud_api_client::get_cloud_kernel_directory(profile).await?;
-    cloud_directory_discovery_targets(&directory).map(Some)
+    let answer = crate::runtime::cloud_api_client::get_cloud_kernel_directory(profile)
+        .await
+        .and_then(|directory| cloud_directory_discovery_targets(&directory));
+    let key = format!(
+        "{}/{}/{}",
+        profile.api_url, profile.account_id, profile.realm_id
+    );
+    let mut last = LAST_VISIBLE_TARGETS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match answer {
+        Ok(targets) => {
+            last.insert(key, targets.clone());
+            Ok(Some(targets))
+        }
+        // The list only decides which kernels to ask the relay about; a Cloud that does not
+        // answer for a moment must not take the kernel list down once it has answered.
+        Err(error) => last.get(&key).cloned().map(Some).ok_or(error),
+    }
 }
+
+/// Cloud's last answer to "which kernels are visible", by account and realm.
+static LAST_VISIBLE_TARGETS: std::sync::Mutex<
+    std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 fn cloud_directory_discovery_targets(
     directory: &serde_json::Value,
@@ -107,6 +129,46 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(targets, ["owner".to_string()].into());
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11: Cloud answered once, then went silent (a saturated
+    // link): the kernel list keeps routing by that answer; a kernel Cloud never answered for
+    // still fails.
+    #[tokio::test]
+    async fn a_silent_cloud_leaves_the_last_visible_targets_in_use() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api_url = format!("http://{}", listener.local_addr().unwrap());
+        let serve = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request).unwrap();
+            let body = r#"{"targets":[{"daemonId":"k-b3","status":"ONLINE"}]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        let profile = crate::config::PersistedCloudRelayProfile {
+            api_url,
+            account_id: "account-last-answer".into(),
+            kernel_credential: Some("synthetic-enrollment".into()),
+            ..Default::default()
+        };
+        let first = visible_targets(&profile).await.unwrap().unwrap();
+        assert_eq!(first, ["k-b3".to_string()].into());
+        serve.join().unwrap();
+        let second = visible_targets(&profile)
+            .await
+            .expect("the last answer routes while Cloud is silent");
+        assert_eq!(second, Some(first));
+        let never_answered = crate::config::PersistedCloudRelayProfile {
+            account_id: "account-never-answered".into(),
+            ..profile
+        };
+        assert!(visible_targets(&never_answered).await.is_err());
     }
 
     #[test]

@@ -220,6 +220,7 @@ fn legacy_notification_queue_defers(transport: &str) {
     let (runtime, session, workflow, endpoint, _root) = runtime_with_idle_workflow();
     let mut app = runtime.app.blocking_lock();
     let invocation = crate::session::WorkflowPublicationInvocationEnvelope {
+        http_method: None,
         publication_id: "fixture-publication".into(),
         hook_id: None,
         invocation_id: "fixture-receipt".into(),
@@ -436,6 +437,7 @@ fn expire_ready_entry(restart: bool) {
             crate::session::WorkflowQueuedPromptSource::Event,
             None,
             Some(crate::session::WorkflowPublicationInvocationEnvelope {
+                http_method: None,
                 publication_id: "fixture".into(),
                 hook_id: None,
                 invocation_id: "expiry-fixture".into(),
@@ -657,6 +659,7 @@ async fn restart_orphan_outcome_replaces_the_normalized_active_workflow_run() {
             durable.status()
         );
         runtime.sweep_agent_lifecycle().await.unwrap();
+        runtime.task_work_settled().await;
         let events = runtime
             .owned
             .durable_state_store

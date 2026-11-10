@@ -572,10 +572,96 @@ async fn a_hot_reload_hands_over_who_launched_the_terminals_commands() {
     // SAFETY: the positive PID of a job this test started; never a group.
     unsafe { libc::kill(pid as i32, libc::SIGKILL) };
     service.end_session("room-1");
-    let submissions = serde_json::to_value(&handovers[0].pty.submissions).unwrap();
+    let submissions = serde_json::to_value(&handovers[0].0.pty.submissions).unwrap();
     assert_eq!(submissions["default"], false, "{submissions}");
     assert_eq!(submissions["unreported"], false, "{submissions}");
     assert_eq!(submissions["jobs"][pid.to_string()], false, "{submissions}");
+}
+
+/// The PTY a master descriptor refers to, or `None` when the descriptor is not an open PTY master.
+fn pty_number(fd: i32) -> Option<libc::c_uint> {
+    let mut number: libc::c_uint = 0;
+    (unsafe { libc::ioctl(fd, libc::TIOCGPTN, &mut number) } == 0).then_some(number)
+}
+
+#[tokio::test]
+async fn a_hot_reload_owns_every_descriptor_it_names_while_the_kernel_stops() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    let prepared = crate::hot_reload::PreparedForTests::with_terminals(&service);
+    let named = prepared.inherited_fds();
+    let ptys: Vec<_> = named.iter().map(|fd| pty_number(*fd)).collect();
+    assert!(
+        ptys.iter().all(Option::is_some),
+        "{named:?} are not all PTY masters"
+    );
+    let mut distinct = named.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        named.len(),
+        "{named:?} names a descriptor twice"
+    );
+    let shell = unsafe { libc::tcgetpgrp(named[0]) };
+    // The kernel stops before `exec`: the terminal's owner drops its PTY.
+    let owner = service.terminal_for_test(&id);
+    drop(std::mem::take(&mut owner.lock_open().unwrap().pty));
+    let after: Vec<_> = named.iter().map(|fd| pty_number(*fd)).collect();
+    drop(prepared);
+    if shell > 1 {
+        // SAFETY: the positive PID of the shell this test started; never a group.
+        unsafe { libc::kill(shell, libc::SIGKILL) };
+        unsafe { libc::waitpid(shell, std::ptr::null_mut(), 0) };
+    }
+    assert_eq!(
+        after, ptys,
+        "the swap names {named:?}, which closed or changed while the kernel stopped"
+    );
+}
+
+/// The stopped kernel's state as `run_on_listener` leaves it: it owns the terminals.
+struct StoppedKernel {
+    _terminals: RoomTerminalService,
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for StoppedKernel {
+    fn drop(&mut self) {
+        self.dropped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn a_hot_reload_keeps_the_stopped_kernel_and_its_terminals_until_exec() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let root = TempDir::new();
+    let service = service(root.path());
+    open(&service, root.path());
+    let prepared = crate::hot_reload::PreparedForTests::with_terminals(&service);
+    let shell = unsafe { libc::tcgetpgrp(prepared.inherited_fds()[0]) };
+    assert!(shell > 1, "the terminal has no shell");
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // The kernel's run returns before main's `finish` replaces the program.
+    crate::hot_reload::keep_until_exec(Box::new(StoppedKernel {
+        _terminals: service,
+        dropped: Arc::clone(&dropped),
+    }));
+    let kept = !dropped.load(SeqCst);
+    let running = unsafe { libc::waitpid(shell, std::ptr::null_mut(), libc::WNOHANG) } == 0;
+    drop(prepared);
+    let released = dropped.load(SeqCst);
+    // SAFETY: the positive PID of the shell this test started; never a group.
+    unsafe { libc::kill(shell, libc::SIGKILL) };
+    unsafe { libc::waitpid(shell, std::ptr::null_mut(), 0) };
+    assert!(kept, "the stopped kernel was dropped before exec");
+    assert!(
+        running,
+        "the handed-over terminal's shell ended before exec"
+    );
+    assert!(released, "the stopped kernel outlived the swap");
 }
 
 /// A command that records its pid, then sleeps as that same process.

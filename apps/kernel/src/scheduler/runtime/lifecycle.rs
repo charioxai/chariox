@@ -530,7 +530,10 @@ fn maybe_start_next_queued_workflow_prompt(app: &mut DaemonApp, session_id: &str
                 ),
             );
         }
-        Ok(Some(crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. })) => {}
+        Ok(Some(
+            crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry { .. }
+            | crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. },
+        )) => {}
         Ok(None) => {}
         Err(error) => {
             app.record_notice(

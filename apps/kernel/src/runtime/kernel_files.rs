@@ -5,7 +5,7 @@
 //! is chunked, resumable and checked by sha256. Paths are absolute or `~/`.
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use sha2::{Digest, Sha256};
@@ -20,6 +20,12 @@ use crate::local::{
 /// Directory listings stop here and say so.
 const MAX_DIRECTORY_ENTRIES: usize = 2000;
 const PARTIAL_SUFFIX: &str = ".chariox-partial";
+/// A client sends the chunks of an upload without waiting for each answer, and each runs on its own
+/// thread, so one can start before the chunk ahead of it has landed. It waits that long for the
+/// staged bytes to reach its offset before it is refused as out of order. On a slow uplink the chunk
+/// ahead can land a whole queue of chunks later: as long as the client waits for any answer.
+const TURN_WAIT: Duration = Duration::from_secs(30);
+const TURN_POLL: Duration = Duration::from_millis(2);
 
 /// Codes whose message this module writes itself, so the grant holder reads them in full.
 pub(crate) fn is_public_code(code: &str) -> bool {
@@ -309,6 +315,16 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
     Ok(file)
 }
 
+/// Holds a chunk that is ahead of the staged bytes until the chunks before it have landed. A chunk
+/// at a wrong offset still ends as `file_offset_mismatch`, after this wait.
+fn wait_for_turn(partial: &Path, offset: u64) {
+    let staged = || std::fs::symlink_metadata(partial).map_or(0, |metadata| metadata.len());
+    let deadline = Instant::now() + TURN_WAIT;
+    while offset > 0 && staged() < offset && Instant::now() < deadline {
+        std::thread::sleep(TURN_POLL);
+    }
+}
+
 fn offset_mismatch(path: &Path, have: u64) -> DaemonError {
     fail(
         "file_offset_mismatch",
@@ -363,6 +379,7 @@ pub(crate) fn write(request: &WriteKernelFileRequest) -> Result<LocalDaemonRespo
             ),
         ));
     }
+    wait_for_turn(&partial, request.offset);
     let mut file = open_staging(&partial, &path, request.offset)?;
     file.write_all(&data)
         .map_err(|e| io_failure(&partial, &e))?;
@@ -712,6 +729,74 @@ mod tests {
             length: 1,
         };
         assert_eq!(code(read(&directory).unwrap_err()), "file_not_a_file");
+    }
+
+    // Chunks sent without waiting for each answer run on separate threads and may start in any order.
+    #[test]
+    fn a_chunk_that_starts_ahead_of_the_one_before_it_waits_for_it() {
+        let dir = scratch();
+        let target = dir.join("early.bin");
+        let sha = format!("{:x}", Sha256::digest(b"abcdef"));
+        let first = chunk(&target, 0, b"abc", 6, Some(&sha));
+        let second = chunk(&target, 3, b"def", 6, Some(&sha));
+        let late = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            write(&first)
+        });
+        let outcome = written(write(&second).unwrap());
+        assert_eq!(outcome.0, 6);
+        assert!(outcome.1);
+        assert_eq!(written(late.join().unwrap().unwrap()).0, 3);
+        assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
+    }
+
+    // On a slow uplink the chunk ahead can land seconds after the one behind it.
+    #[test]
+    fn a_chunk_waits_for_the_one_ahead_of_it_when_that_lands_seconds_later() {
+        let dir = scratch();
+        let target = dir.join("late.bin");
+        let sha = format!("{:x}", Sha256::digest(b"abcdef"));
+        let first = chunk(&target, 0, b"abc", 6, Some(&sha));
+        let second = chunk(&target, 3, b"def", 6, Some(&sha));
+        let late = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(2500));
+            write(&first)
+        });
+        let outcome = written(write(&second).unwrap());
+        assert_eq!(outcome.0, 6);
+        assert_eq!(written(late.join().unwrap().unwrap()).0, 3);
+        assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
+    }
+
+    // A request of exactly the cap is served whole; one byte more is refused, for reads and writes.
+    #[test]
+    fn a_request_of_exactly_the_chunk_cap_is_served_and_one_byte_more_is_refused() {
+        let cap = KERNEL_FILE_MAX_CHUNK_BYTES as usize;
+        let dir = scratch();
+        let file = dir.join("cap.bin");
+        let bytes = vec![7u8; cap + 1];
+        std::fs::write(&file, &bytes).unwrap();
+        let LocalDaemonResponse::KernelFileChunk { data_base64, .. } =
+            read(&ReadKernelFileRequest {
+                path: file.display().to_string(),
+                offset: 0,
+                length: cap as u64,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(STANDARD.decode(data_base64).unwrap().len(), cap);
+        let target = dir.join("up.bin");
+        let total = bytes.len() as u64;
+        assert_eq!(
+            written(write(&chunk(&target, 0, &bytes[..cap], total, None)).unwrap()),
+            (cap as u64, false, None)
+        );
+        assert_eq!(
+            code(write(&chunk(&target, cap as u64, &bytes, total, None)).unwrap_err()),
+            "file_chunk_too_large"
+        );
     }
 
     // EA2-07 review: the staging name is predictable, so another user of a shared

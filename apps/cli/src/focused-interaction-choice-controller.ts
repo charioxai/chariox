@@ -1,4 +1,5 @@
 import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
+import { PASSKEY_IN_POPUP } from "./kernel-approval-controller.js"
 import type { FooterFlash } from "./footer-flash-controller.js"
 import {
   appendInteractionCustomReply,
@@ -55,6 +56,8 @@ export type FocusedInteractionChoiceControllerDeps = {
     customReply: string | null,
   ) => Promise<RuntimeSession>
   applySessionState: (session: RuntimeSession) => void
+  /** Opens the passkey popup on this decision; false when this terminal has no popup for it. */
+  showPasskeyPrompt?: (sessionId: string, interactionId: string) => boolean
   flashFooter: (message: string, tone: FooterFlash["tone"]) => void
   formatError?: (error: unknown) => string
   /** Provider login interactions: link actions and the kernel's result. */
@@ -110,6 +113,11 @@ export function createFocusedInteractionChoiceController(
       return true
     }
     deps.setSelectedIndex(interaction.id, submitDecision.selectedIndex)
+    // The passkey is typed only in the passkey popup, as for sudo and access grants.
+    if (interaction.choices.find(choice => choice.id === submitDecision.choiceId)?.requires_passkey) {
+      if (!deps.showPasskeyPrompt?.(deps.getSessionId(), interaction.id)) deps.flashFooter(PASSKEY_IN_POPUP, "error")
+      return true
+    }
     const submittedSecret = Boolean(
       interaction.custom_choice
         && submitDecision.customReply

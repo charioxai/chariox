@@ -74,6 +74,22 @@ pub(crate) fn ready(
     installation_id: &str,
     release_digest: &str,
 ) -> wasmtime::Result<()> {
+    ready_identity(
+        generation_text,
+        installation_id,
+        release_digest,
+        b"CXAWR001",
+    )
+}
+pub(crate) fn ready_gate(generation: &str, entry_id: &str, module: &str) -> wasmtime::Result<()> {
+    ready_identity(generation, entry_id, module, b"CXGWR001")
+}
+fn ready_identity(
+    generation_text: &str,
+    installation_id: &str,
+    release_digest: &str,
+    magic: &[u8; 8],
+) -> wasmtime::Result<()> {
     let generation = generation_text.parse::<u64>()?;
     wasmtime::ensure!(
         generation > 0
@@ -102,7 +118,7 @@ pub(crate) fn ready(
     let mut stream = inherited_stream(4)?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
-    stream.write_all(b"CXAWR001")?;
+    stream.write_all(magic)?;
     for value in [generation_text, installation_id, &release_digest[7..]] {
         stream.write_all(&(value.len() as u32).to_be_bytes())?;
         stream.write_all(value.as_bytes())?;
@@ -127,6 +143,7 @@ fn run() -> wasmtime::Result<()> {
         [command] if command == "identity" => {
             println!("{}", serde_json::to_string(&crate::engine::runtime_identity(&crate::engine::engine()?, crate::engine::worker_build()?)?)?);
         },
+        [command] if command == "gate-supervised" => crate::gate::serve()?,
         [command] if command == "serve-supervised" => crate::supervised::serve()?,
         [command, world] if command == "precompile-stdio" => {
             let mut bytes = Vec::new();

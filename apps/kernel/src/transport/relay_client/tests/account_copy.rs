@@ -890,7 +890,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         crate::secret::lock_chariox_encrypted_vault(&target_vault).unwrap();
         assert_code(
             source_request(&source_router, request.clone()).await,
-            "provider_account_copy_vault_locked",
+            "provider_account_copy_target_vault_locked",
             canary,
         );
         crate::secret::unlock_chariox_encrypted_vault(

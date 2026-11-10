@@ -471,6 +471,7 @@ pub enum LocalDaemonRequest {
     RemoveWorkflowEdge(RemoveWorkflowEdgeRequest),
     UpdateWorkflowCanvasLayout(UpdateWorkflowCanvasLayoutRequest),
     InvokeWorkflowEndpoint(InvokeWorkflowEndpointRequest),
+    WorkflowGate(WorkflowGateRequest),
     ListWorkflowRuns(ListWorkflowRunsRequest),
     GetWorkflowRun(GetWorkflowRunRequest),
     CancelWorkflowRun(CancelWorkflowRunRequest),

@@ -116,13 +116,43 @@ impl MasterPty for WriterRefused {
     }
 }
 
+/// Every open descriptor and what it points at.
+#[cfg(target_os = "linux")]
+fn descriptors() -> std::collections::BTreeMap<String, String> {
+    std::fs::read_dir("/proc/self/fd")
+        .unwrap()
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            // A descriptor closed since the listing (the directory's own) has no target.
+            let target = std::fs::read_link(&path).ok()?;
+            Some((
+                path.file_name()?.to_string_lossy().into_owned(),
+                target.to_string_lossy().into_owned(),
+            ))
+        })
+        .collect()
+}
+
+/// The descriptors `after` holds that `before` did not, except the listing's own.
+#[cfg(target_os = "linux")]
+fn opened_since(
+    before: &std::collections::BTreeMap<String, String>,
+    after: &std::collections::BTreeMap<String, String>,
+) -> Vec<(String, String)> {
+    let listing = format!("/proc/{}/fd", std::process::id());
+    after
+        .iter()
+        .filter(|(fd, target)| before.get(*fd) != Some(*target) && **target != listing)
+        .map(|(fd, target)| (fd.clone(), target.clone()))
+        .collect()
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn failed_attach_releases_descriptors_and_reaps_its_child() {
     crate::test_support::isolated_env_test!();
     let mut manager = PtyManager::new();
-    let fds = || std::fs::read_dir("/proc/self/fd").unwrap().count();
-    let before = fds();
+    let before = descriptors();
     let mut unreaped = Vec::new();
     for (i, errno) in [libc::EMFILE, libc::ENFILE, libc::EAGAIN, libc::ENOMEM]
         .into_iter()
@@ -163,12 +193,32 @@ fn failed_attach_releases_descriptors_and_reaps_its_child() {
             unreaped.push(pid);
         }
     }
-    let after = fds();
+    // The process-wide sampler runs `ps` every 200 ms on its own thread
+    // (process_resources/sampling.rs `run_ps`), and the pipes that capture its
+    // output are open here for as long as one `ps` lives. A descriptor that a
+    // failed attach left behind never closes; a `ps` pipe closes within one
+    // sampling period, so wait for the extra ones to go.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut transient = std::collections::BTreeSet::new();
+    let (after, leaked) = loop {
+        let after = descriptors();
+        let extra = opened_since(&before, &after);
+        if extra.is_empty() || std::time::Instant::now() > deadline {
+            break (after, extra);
+        }
+        transient.extend(extra);
+        std::thread::yield_now();
+    };
     eprintln!(
-        "12 failed attaches: descriptors {before} -> {after}; unreaped {}",
+        "12 failed attaches: descriptors {} -> {}; held meanwhile by the sampler {transient:?}; unreaped {}",
+        before.len(),
+        after.len(),
         unreaped.len()
     );
-    assert_eq!(after, before, "failed attaches leaked descriptors");
+    assert!(
+        leaked.is_empty(),
+        "failed attaches leaked descriptors: {leaked:?}"
+    );
     assert!(
         unreaped.is_empty(),
         "failed attaches left children unreaped: {unreaped:?}"

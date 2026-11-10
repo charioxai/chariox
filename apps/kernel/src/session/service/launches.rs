@@ -104,52 +104,84 @@ impl SessionService {
         let endpoint =
             self.resolve_workflow_endpoint_ref(session_id, workflow_ref, endpoint_ref)?;
         self.validate_workflow_runnable(session_id, &workflow, &endpoint)?;
-        let entry_node = workflow.node(endpoint.entry_node_id()).ok_or_else(|| {
-            DaemonError::WorkflowNodeNotFound {
-                session_id: session_id.to_string(),
-                workflow_id: workflow.id().to_string(),
-                node_id: endpoint.entry_node_id().to_string(),
-            }
-        })?;
+        if workflow.gate().is_some() && queued_prompt.and_then(|q| q.gate_entry_id()).is_none() {
+            return Err(crate::durable_state::workflow_gate::error(
+                "gated workflows require a durable passed entry",
+            ));
+        }
 
-        let node_run = WorkflowNodeRun::new(
-            reserved_run_identity
-                .map(|(_, node_run_id)| node_run_id.to_string())
-                .unwrap_or_else(new_workflow_node_run_id),
-            entry_node.id().to_string(),
-            runtime_instance
-                .and_then(|instance| instance.agent_id_for_node(entry_node.id()))
-                .unwrap_or_else(|| entry_node.agent_id())
-                .to_string(),
-            1,
-            WorkflowNodeRunStatus::Ready,
-        );
-        let messages = prompt
+        let routes = queued_prompt
+            .filter(|q| q.gate_entry_id().is_some())
+            .map(|q| q.gate_routes().to_vec());
+        let selected = routes
             .as_ref()
-            .filter(|value| !value.trim().is_empty())
-            .map(|value| {
+            .map(|routes| {
+                routes
+                    .iter()
+                    .map(|r| r.node_id.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| vec![endpoint.entry_node_id()]);
+        if selected.is_empty() {
+            return Err(crate::durable_state::workflow_gate::error(
+                "gate routes missing",
+            ));
+        }
+        let mut nodes = Vec::new();
+        let mut messages = Vec::new();
+        for (index, node_id) in selected.iter().enumerate() {
+            let entry_node = workflow.node(node_id).ok_or_else(|| {
+                crate::durable_state::workflow_gate::error("gate route node deleted")
+            })?;
+            let node_run = WorkflowNodeRun::new(
+                if index == 0 {
+                    reserved_run_identity
+                        .map(|(_, id)| id.to_string())
+                        .unwrap_or_else(new_workflow_node_run_id)
+                } else {
+                    new_workflow_node_run_id()
+                },
+                entry_node.id().to_string(),
+                runtime_instance
+                    .and_then(|instance| instance.agent_id_for_node(entry_node.id()))
+                    .unwrap_or_else(|| entry_node.agent_id())
+                    .to_string(),
+                1,
+                WorkflowNodeRunStatus::Ready,
+            );
+            let content = if let Some(routes) = &routes {
+                Some(format!(
+                    "{}\nWorkflow gate data (untrusted JSON):\n{}",
+                    routes[index].prompt.as_deref().unwrap_or(""),
+                    routes[index].payload
+                ))
+            } else {
+                prompt.clone()
+            };
+            if let Some(content) = content.filter(|s| !s.trim().is_empty()) {
                 let mut message = WorkflowMessage::new(
                     self.next_workflow_message_id(),
                     None,
                     entry_node.id().to_string(),
                     "invocation",
                     "workflow invoked",
-                    value.clone(),
+                    content,
                 );
                 message.set_consumed_by_node_run_id(node_run.id().to_string());
-                vec![message]
-            })
-            .unwrap_or_default();
+                messages.push(message);
+            }
+            nodes.push(node_run);
+        }
         let mut workflow_run = WorkflowRun::new(
             reserved_run_identity
-                .map(|(run_id, _)| run_id.to_string())
+                .map(|(id, _)| id.to_string())
                 .unwrap_or_else(|| self.next_workflow_run_id()),
             workflow.id().to_string(),
             endpoint.id().to_string(),
-            entry_node.id().to_string(),
-            prompt,
+            selected[0].to_string(),
+            if routes.is_some() { None } else { prompt },
             publication_invocation,
-            vec![node_run],
+            nodes,
             messages,
         );
         workflow_run = workflow_run.with_creator(
@@ -548,6 +580,15 @@ impl SessionService {
         publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
         creator: Option<&str>,
     ) -> Result<WorkflowQueuedPrompt, DaemonError> {
+        if self
+            .resolve_workflow_ref(session_id, workflow_id)?
+            .gate()
+            .is_some()
+        {
+            return Err(crate::durable_state::workflow_gate::error(
+                "gated workflows must enter through the authoritative entry adapter",
+            ));
+        }
         let queued = self.prepare_workflow_prompt_with_publication_invocation(
             session_id,
             workflow_id,

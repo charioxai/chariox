@@ -14,6 +14,7 @@ use super::mcp_config::create_claude_runtime_files_root;
 
 const CLAUDE_PROBE_OUTPUT_BYTES: u64 = 1024 * 1024;
 const CLAUDE_CREDENTIAL_CHECK_TIMEOUT: Duration = Duration::from_secs(90);
+const CLAUDE_RATE_LIMIT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// Oldest Claude Code whose `haiku` alias answers the credential check with
 /// the marker: 2.1.212 resolves it to Haiku 4.5, which replies with prose and
 /// leaves every Vault-backed login "inconclusive". The managed image pin
@@ -155,6 +156,46 @@ pub(super) fn verify_claude_account_credential_with_timeout(
             "Claude did not complete verification ({status}; HTTP={http}; turns={turns}; valid_single_turn={single_turn})"
         )))
     }
+}
+
+/// Reads the account windows Claude reports for one minimal model turn. A
+/// long-lived stream-json session reports its `rate_limit_event` only once, so
+/// a fresh percent needs a fresh process; `-p` never runs the status line.
+pub(crate) fn read_claude_rate_limits(
+    executable: &Path,
+    environment: &BTreeMap<String, String>,
+) -> Result<crate::account_profile::ProviderAccountUsageSnapshot, DaemonError> {
+    let (_, output) = run_claude_capture(
+        executable,
+        environment,
+        &[
+            "-p",
+            "Reply with exactly OK.",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--no-session-persistence",
+            "--no-chrome",
+            "--tools",
+            "",
+            "--model",
+            "haiku",
+            "--max-turns",
+            "1",
+            "--system-prompt",
+            "Reply only with the requested marker.",
+        ],
+        None,
+        CLAUDE_RATE_LIMIT_READ_TIMEOUT,
+        "Claude usage read",
+    )?;
+    output
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
+        .filter(|value| value["type"] == "rate_limit_event")
+        .map(|value| crate::provider::claude_rate_limit_snapshot(&value))
+        .next_back()
+        .ok_or_else(|| probe_error("Claude reported no account usage windows".into()))
 }
 
 /// Runs one bounded, tool-less `claude -p <args[0]> ... <args[1..]>` in a
@@ -844,6 +885,49 @@ process.stdout.write(JSON.stringify({
         assert!(
             matches!(error, ClaudeCredentialCheckError::Inconclusive(ref message) if message.contains("credential check timed out") && !message.contains("usage"))
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // The stream a live Claude Code 2.1.296 printed for an account at 18%.
+    #[cfg(unix)]
+    #[test]
+    fn rate_limit_read_returns_the_weekly_percent_of_a_minimal_turn() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile_fixture_root();
+        let executable = root.join("claude");
+        let args = root.join("args.txt");
+        let event = serde_json::json!({
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": "allowed", "resetsAt": 1_794_758_400, "rateLimitType": "seven_day",
+                "overageStatus": "rejected", "isUsingOverage": false,
+                "unifiedWindows": { "seven_day": { "utilization": 0.18, "resetsAt": 1_794_758_400 } }
+            }
+        });
+        fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\nprintf '%s\\n' '{{\"type\":\"system\"}}' '{}' '{{\"type\":\"result\",\"is_error\":false}}'\n",
+                args.display(),
+                event
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            root.join("profile").display().to_string(),
+        )]);
+
+        let usage = read_claude_rate_limits(&executable, &environment).unwrap();
+
+        assert_eq!(usage.meters.len(), 1);
+        assert_eq!(usage.meters[0].meter_id, "rate_limit/seven_day");
+        assert_eq!(usage.meters[0].used_percent, Some(18.0));
+        assert_eq!(usage.meters[0].resets_at_ms, Some(1_794_758_400_000));
+        let args = fs::read_to_string(args).unwrap();
+        assert!(args.contains("--output-format stream-json"), "{args}");
+        assert!(args.contains("--max-turns 1"), "{args}");
         fs::remove_dir_all(root).unwrap();
     }
 

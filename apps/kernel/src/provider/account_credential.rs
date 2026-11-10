@@ -181,6 +181,7 @@ pub(crate) fn store_provider_account_credential(
         allowed_uses: vec![crate::config::UserCredentialUse::Provider],
         injection: crate::config::UserCredentialInjectionConfig::Provider,
         metadata: Some(crate::config::UserCredentialMetadataConfig {
+            payment_card: None,
             use_binding: None,
             created_by_kind: Some("provider_account_profile".to_string()),
             created_by_id: Some(profile_id.to_string()),

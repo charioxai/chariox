@@ -20,7 +20,7 @@ fn descriptor(number: i32) -> wasmtime::Result<File> {
     }
     Ok(unsafe { File::from_raw_fd(copy) })
 }
-fn read(number: i32, maximum: usize) -> wasmtime::Result<Vec<u8>> {
+pub(crate) fn read(number: i32, maximum: usize) -> wasmtime::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     descriptor(number)?
         .take(maximum as u64 + 1)

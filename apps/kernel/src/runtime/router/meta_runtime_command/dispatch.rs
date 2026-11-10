@@ -1,6 +1,7 @@
 use super::request::*;
 use super::result::*;
 use super::spawn_args::*;
+use super::summary::summarize_spawned_agent;
 use super::*;
 
 impl CommandRouter {
@@ -606,7 +607,7 @@ impl CommandRouter {
             Err(error) => return Ok(meta_command_failure_result(command, error)),
         };
         // `--room` with `--kernel` names a room on that kernel; this kernel's own name keeps the
-        // spawn here. Without `--room` the reference stays: a sub-agent runs on that kernel.
+        // spawn here. Without `--room` another kernel's reference stays: a sub-agent runs there.
         if let Some(room) = spawn.room.clone() {
             if let Some(kernel) = spawn.kernel_ref.take() {
                 match self.runtime_state.resolve_peer_kernel(&kernel).await {
@@ -640,6 +641,19 @@ impl CommandRouter {
                 command,
                 crate::runtime::room_tool_admission::denied("the room for the peer does not exist"),
             ));
+        }
+
+        if spawn.deadline.is_some() {
+            if let Err(error) = self
+                .runtime_state
+                .ensure_spawn_deadline_runs_here(
+                    spawn.kernel_ref.as_deref(),
+                    spawn.slice_ref.is_some() || spawn.slice_create.is_some(),
+                )
+                .await
+            {
+                return Ok(meta_command_failure_result(command, error));
+            }
         }
 
         if let Some(reference) = spawn.slice_ref.as_deref() {
@@ -815,6 +829,14 @@ impl CommandRouter {
             metaagent,
             self.runtime_state.room_agent_tools_enabled(),
         );
+        if let LocalDaemonResponse::AgentSpawned { agent, .. } = &response {
+            // Read after the deadline was armed above, so the answer states it.
+            let facts = match self.runtime_state.spawned_agent_facts(agent).await {
+                Ok(facts) => facts,
+                Err(error) => return Ok(meta_command_failure_result(command, error)),
+            };
+            result.payload["response"]["agent"] = summarize_spawned_agent(agent, &facts);
+        }
         if target_room.is_some() {
             if let Some(payload) = result.payload.as_object_mut() {
                 let (registration, refused) = match followed {

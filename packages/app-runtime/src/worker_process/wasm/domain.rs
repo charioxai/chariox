@@ -9,7 +9,7 @@ pub(super) struct WasmDomain {
     data: Dir,
     _runtime: WasmRuntime,
     _release: VerifiedReleaseLease,
-    pid: Option<libc::pid_t>,
+    process: OwnedProcess,
 }
 impl WasmDomain {
     pub(super) fn new(
@@ -23,7 +23,7 @@ impl WasmDomain {
             data,
             _runtime: runtime,
             _release: release,
-            pid: None,
+            process: OwnedProcess::new(None),
         }
     }
 }
@@ -35,22 +35,57 @@ impl ResourceDomain for WasmDomain {
         &self.descriptors
     }
     fn verify_before_continue(&mut self, pid: libc::pid_t) -> Result<(), WorkerError> {
-        if pid <= 1 {
+        self.process.verify(pid)
+    }
+    fn terminate(&mut self, pid: libc::pid_t) {
+        self.process.terminate(pid);
+    }
+
+    fn reap_domain_blocking(&mut self) {}
+}
+
+/// Shared exact-PID ownership for native contained workers. Seccomp/Seatbelt
+/// forbids child processes, so reaping the owned child empties the domain.
+pub(in crate::worker_process) struct OwnedProcess {
+    pid: Option<libc::pid_t>,
+    deadline: Option<std::time::Instant>,
+}
+impl OwnedProcess {
+    pub(in crate::worker_process) fn new(deadline: Option<std::time::Instant>) -> Self {
+        Self {
+            pid: None,
+            deadline,
+        }
+    }
+    pub(in crate::worker_process) fn verify(
+        &mut self,
+        pid: libc::pid_t,
+    ) -> Result<(), WorkerError> {
+        if pid <= 1 || self.pid.is_some_and(|owned| owned != pid) {
             return Err(WorkerError::Identity);
         }
         self.pid = Some(pid);
-        // The ready record arrives only after the worker's containment entry
-        // succeeded; a failed entry exits before it. WASM limits alone are not
-        // OS containment.
         Ok(())
     }
-    fn terminate(&mut self, pid: libc::pid_t) {
+    pub(in crate::worker_process) fn check(
+        &self,
+        pid: libc::pid_t,
+        now: std::time::Instant,
+    ) -> Result<(), WorkerError> {
+        if self.pid != Some(pid) {
+            return Err(WorkerError::Identity);
+        }
+        if self.deadline.is_some_and(|deadline| now >= deadline) {
+            return Err(WorkerError::StartupTimeout);
+        }
+        Ok(())
+    }
+    pub(in crate::worker_process) fn terminate(&mut self, pid: libc::pid_t) {
         if pid > 1 && self.pid.is_none_or(|owned| owned == pid) {
-            // The common monitor retains waitpid ownership until this call.
+            // The common monitor still owns waitpid, preventing PID reuse.
             unsafe {
                 libc::kill(pid, libc::SIGKILL);
             }
         }
     }
-    fn reap_domain_blocking(&mut self) {}
 }

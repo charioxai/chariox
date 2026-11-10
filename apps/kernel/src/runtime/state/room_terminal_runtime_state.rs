@@ -20,11 +20,17 @@ impl KernelRuntimeState {
         caller: &KernelCaller,
         request: RoomTerminalRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let actor = self.authorize_room_terminal(caller, &request)?;
+        let origin_agent = request.operation.is_exec()
+            && request
+                .acting_agent
+                .as_deref()
+                .is_some_and(|agent| self.names_origin_agent(agent));
+        let actor = self.authorize_room_terminal(caller, &request, origin_agent)?;
+        // An agent of the origin kernel runs nowhere in this Room: it only labels the process.
         let host = request
             .host_agent
             .as_deref()
-            .or(request.acting_agent.as_deref());
+            .or(request.acting_agent.as_deref().filter(|_| !origin_agent));
         let everywhere = host.is_none() && matches!(request.operation, RoomTerminalOperation::List);
         let result = self
             .route_room_terminal(
@@ -310,10 +316,11 @@ impl KernelRuntimeState {
         crate::agent_temp::clear_room(session_id);
     }
 
-    fn authorize_room_terminal(
+    pub(super) fn authorize_room_terminal(
         &self,
         caller: &KernelCaller,
         request: &RoomTerminalRequest,
+        origin_agent: bool,
     ) -> Result<TerminalActor, DaemonError> {
         if !matches!(
             caller.caller_kind,
@@ -346,6 +353,7 @@ impl KernelRuntimeState {
         }
         match &request.acting_agent {
             None => Ok(TerminalActor::User),
+            Some(agent_id) if origin_agent => Ok(TerminalActor::Agent(agent_id.clone())),
             Some(agent_id) => {
                 self.ensure_room_agent(&request.session_id, agent_id)?;
                 Ok(TerminalActor::Agent(agent_id.clone()))

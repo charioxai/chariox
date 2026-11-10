@@ -104,7 +104,7 @@ impl CommandRouter {
     ) -> AuthenticatedRuntimeToolFuture<'a> {
         Box::pin(async move {
             // A tool that does not declare a `kernel` would run here while the agent believes it ran
-            // there, so another kernel is only reached through `chariox-reach`.
+            // there, so another kernel is only reached through the peer room commands.
             if arguments.get("kernel").is_some() {
                 let normalized = |name: &str| {
                     name.strip_prefix("mcp__chariox__")
@@ -120,7 +120,7 @@ impl CommandRouter {
                     });
                 if !declared {
                     return Err(crate::runtime::room_tool_admission::denied(
-                        "this tool acts in your own room; use the chariox-reach tools to reach another kernel",
+                        "this tool acts in your own room; reach an agent on another kernel with `agent message|steer|cancel|spawn --kernel`",
                     ));
                 }
             }

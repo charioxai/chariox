@@ -44,7 +44,7 @@ MP-08 / MP-09 / MP-10 / MP-11: factor capture and input use the authenticated
 agent's ordinary Vault context, without sudo. The kernel rechecks the provider,
 submitting prompt, destination and observation protection after waits. Ending
 the prompt still cancels its operation. Payment-card entries require a fresh
-owner decision for each use.
+owner decision with the typed passkey for each payment.
 
 Owner-created 2FA entries use the same seed normalization and computed-code
 resolver. Owner command and file entries use the existing Env and File injection

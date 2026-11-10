@@ -2055,3 +2055,71 @@ done
         "person input must reach the host before the waiting agent settles"
     );
 }
+
+// Review r1 P2: a save waits on the page session's fetch. Input and a state read finish while it is held.
+#[test]
+fn browsertools_held_save_does_not_hold_the_shared_controller() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-browsertools-save-unlocked-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script,r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"op":"save"'*)
+   printf 'started\n' > "$root/save"
+   (while ! test -f "$root/release"; do sleep 0.01; done; printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-a","path":"a.png"}}\n' "$id") & ;;
+ *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
+ *'"op":"input"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"input_completed":true}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id";exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    let (tx, rx) = std::sync::mpsc::channel();
+    let early = std::thread::scope(|scope| {
+        let save = scope.spawn(|| {
+            host.protected_request(
+                "alice",
+                None,
+                "host.browser",
+                json!({"op":"save","tab_id":"host-tab-a","generation":1,"url":"https://img.example/a.png","path":"a.png"}),
+                policy.clone(),
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !root.join("save").exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(root.join("save").exists());
+        let others = scope.spawn(|| {
+            let input = host.protected_request("alice",None,"host.browser",json!({"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"click","x":1,"y":1}}),policy.clone());
+            let state = host.protected_request("alice", None, "host.browser", json!({"op":"state"}), policy.clone());
+            tx.send((input, state)).unwrap();
+        });
+        let early = rx.recv_timeout(Duration::from_secs(1));
+        std::fs::write(root.join("release"), b"release").unwrap();
+        assert_eq!(save.join().unwrap().unwrap()["path"], "a.png");
+        others.join().unwrap();
+        early
+    });
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    let (input, state) = early.expect("input and state waited behind the save");
+    assert_eq!(input.unwrap()["input_completed"], true);
+    assert_eq!(state.unwrap()["generation"], 1);
+}

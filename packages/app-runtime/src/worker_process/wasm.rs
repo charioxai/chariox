@@ -20,12 +20,12 @@ use std::{
 };
 
 mod compile;
-mod domain;
+pub(super) mod domain;
 mod snapshot;
 pub mod storage;
 
 pub struct WasmRuntime {
-    executable: File,
+    pub(super) executable: File,
     identity: AotRuntimeIdentity,
 }
 impl WasmRuntime {
@@ -303,7 +303,7 @@ pub fn aot_error_code(error: &AotError) -> &'static str {
     }
 }
 
-fn input_file(root: &Dir, bytes: &[u8]) -> Result<File, WorkerError> {
+pub(super) fn input_file(root: &Dir, bytes: &[u8]) -> Result<File, WorkerError> {
     use std::{
         io::{Seek, SeekFrom},
         os::fd::{AsRawFd, FromRawFd},
@@ -351,7 +351,7 @@ fn input_file(root: &Dir, bytes: &[u8]) -> Result<File, WorkerError> {
     Ok(file)
 }
 
-fn executable_path(descriptor: i32) -> PathBuf {
+pub(super) fn executable_path(descriptor: i32) -> PathBuf {
     #[cfg(target_os = "linux")]
     {
         PathBuf::from(format!("/proc/self/fd/{descriptor}"))

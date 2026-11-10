@@ -261,7 +261,7 @@ The extension can ship after the core; the core's popups cover the Mac TUI, and 
 
 **How.**
 - They are ordinary kernel API requests (`ReadKernelFile`, `WriteKernelFile`), not terminal traffic. There is no stat or listing request: the terminal does that. The gateway routes them to the target kernel like any other request with `kernel`; the target kernel does the file work and answers.
-- Chunked: each request moves one bounded chunk (offset, length) of at most 256 KiB, so it fits the relay's 768 KiB request bound after base64 (found in the r5 drill: 1 MiB chunks were refused). A large file is a sequence of chunks.
+- Chunked: each request moves one bounded chunk (offset, length) of at most 64 KiB, so a reply is about 117 KB on the wire and never holds the link for long (1 MiB chunks were refused by the relay's request bound; 256 KiB held an 8 Mbit/s link for half a second). A large file is a sequence of chunks, several in flight at once.
 - Resumable: a zero-length `ReadKernelFile` of `<path>.chariox-partial` returns the bytes an unfinished upload holds (`file_not_found` means start at 0); the client continues at that offset after an interruption (drill EA2-07 interrupts at 40 %). `files get` takes the size from a zero-length first read and resumes from its own local `.chariox-partial` only with `--sha256 HEX`. Without an expected hash it discards any partial and starts from zero. A hash mismatch deletes the partial before failing, so a later retry starts fresh.
 - Verified: the final sha256 is compared by the receiving kernel; a mismatch is a typed error and the partial file is never presented as complete.
 - Capped: 2 GiB per file; a larger file is refused with a typed error naming the cap.
@@ -433,9 +433,9 @@ An external agent needs to know when something it started has moved: an agent fi
 ### 14.2 Session confinement (rule)
 
 - A session is the confinement boundary for the agents in it. The room tools of a session agent (`chariox.events.*`, `chariox.history.*`) see and wake it for changes of its own session only, and stay unchanged.
-- Observing several sessions belongs to **principals outside the session**, none of them a session member: an external agent through its grant, and the owner's Room agents through agent reach (the second runtime MCP entry `chariox-reach`, `docs/KERNEL_ACCESS.md`). The Chariox assistants (later, see the `chariox-assistants` area) will be the in-product equivalent.
+- Observing several sessions belongs to **principals outside the session**, none of them a session member: an external agent through its grant, (the owner's Room agents had agent reach, now retired, `docs/KERNEL_ACCESS.md`). The Chariox assistants (later, see the `chariox-assistants` area) will be the in-product equivalent.
 - A Room agent of the kernel owner follows other rooms and kernels with the reach tools `events_subscribe`, `events_wait` and `events_ack`: one inbox per live run on its own kernel (origin `reach:<run>`), parts installed on followed kernels through the gateway exactly as for an external holder, and it ends with the run. It may answer a routine decision of another room it follows (`RespondToInteraction`), never one of its own room, never a passkey or a decision that needs the person's terminal. A guest's agent in a shared room never reaches.
-- The event subscription requests are **not exposed** to the room `chariox` tools or the `/sudo` request vocabulary. A session agent has them only through `chariox-reach`, and an event request with a `kernel` argument is refused (`events_local_only`): the target goes in the `events_subscribe` call.
+- The event subscription requests are **not exposed** to the room `chariox` tools or the `/sudo` request vocabulary. A session agent follows a peer only with `chariox.events.subscribe`.
 - Communication between session agents across sessions is still the room message tools; reach adds reading another room's history and messaging its agents for the owner's agents, with the same authority rule as at home: what needs `/sudo` in the agent's own room needs it elsewhere.
 
 ### 14.3 Terms

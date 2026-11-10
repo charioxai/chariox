@@ -96,6 +96,7 @@ fn write(tx: &Transaction<'_>, encoded: &Encoded) -> Result<()> {
         "workflow_queue_checked"
     };
     if let Some((queued, run, _, _)) = encoded.prepared.next() {
+        super::workflow_gate::require_queue_pass_in(tx, queued)?;
         super::workflow_dispatch_intents::insert_in(
             tx,
             session.host_daemon_id(),

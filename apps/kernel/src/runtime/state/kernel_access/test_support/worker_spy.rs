@@ -13,24 +13,24 @@ use tokio::sync::Notify;
 use tokio::time::timeout;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
-pub(in crate::runtime::state) struct WorkerSpy {
-    pub(in crate::runtime::state) id: String,
-    pub(in crate::runtime::state) url: String,
-    pub(in crate::runtime::state) requests: Arc<AtomicUsize>,
-    pub(in crate::runtime::state) discovery_started: Arc<Notify>,
-    pub(in crate::runtime::state) release_discovery: Arc<Notify>,
-    pub(in crate::runtime::state) native_recovery: Arc<std::sync::atomic::AtomicBool>,
-    pub(in crate::runtime::state) native_launch_started: Arc<Notify>,
-    pub(in crate::runtime::state) release_native_launch: Arc<Notify>,
-    pub(in crate::runtime::state) pause_destroy: Arc<std::sync::atomic::AtomicBool>,
-    pub(in crate::runtime::state) destroy_committed: Arc<Notify>,
-    pub(in crate::runtime::state) release_destroy: Arc<Notify>,
+pub(in crate::runtime) struct WorkerSpy {
+    pub(in crate::runtime) id: String,
+    pub(in crate::runtime) url: String,
+    pub(in crate::runtime) requests: Arc<AtomicUsize>,
+    pub(in crate::runtime) discovery_started: Arc<Notify>,
+    pub(in crate::runtime) release_discovery: Arc<Notify>,
+    pub(in crate::runtime) native_recovery: Arc<std::sync::atomic::AtomicBool>,
+    pub(in crate::runtime) native_launch_started: Arc<Notify>,
+    pub(in crate::runtime) release_native_launch: Arc<Notify>,
+    pub(in crate::runtime) pause_destroy: Arc<std::sync::atomic::AtomicBool>,
+    pub(in crate::runtime) destroy_committed: Arc<Notify>,
+    pub(in crate::runtime) release_destroy: Arc<Notify>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl WorkerSpy {
-    pub(in crate::runtime::state) fn new(pause_discovery: bool) -> Self {
+    pub(in crate::runtime) fn new(pause_discovery: bool) -> Self {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());

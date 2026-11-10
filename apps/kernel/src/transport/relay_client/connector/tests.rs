@@ -740,8 +740,10 @@ async fn relay_event_writer_delivers_ready_events_without_a_frame_wait() {
         event_rx,
         pong_rx,
         receipt_rx,
+        None,
         false,
         Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        Arc::default(),
     ));
     let waker = futures_util::task::noop_waker();
     let mut context = Context::from_waker(&waker);
@@ -798,8 +800,10 @@ async fn relay_event_writer_preserves_controls_bounded_events_and_fifo() {
         event_rx,
         pong_rx,
         receipt_rx,
+        None,
         false,
         Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        Arc::default(),
     ));
     let waker = futures_util::task::noop_waker();
     let mut context = Context::from_waker(&waker);

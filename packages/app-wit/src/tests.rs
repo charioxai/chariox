@@ -334,3 +334,81 @@ fn duplicate_allowed_import_names_are_invalid_binary() {
         Err(ComponentError::InvalidComponent { .. })
     ));
 }
+
+#[test]
+fn accepts_import_free_workflow_gate_contract() {
+    let mut resolve = Resolve::default();
+    let package = resolve.push_str("gate.wit", r#"
+        package chariox:workflow-gate@1.0.0;
+        interface evaluator {
+            record input { entry-json: string }
+            record configuration { workflow-revision: string, config-sha256: string, config-json: string }
+            record state { workflow-json: string, binding-json: string }
+            record route { node-id: string, payload-json: string, prompt: option<string> }
+            record batch-value { key: string, flush-at-ms: u64, payload-json: string }
+            variant decision { run(list<route>), drop, defer-until(u64), batch(batch-value) }
+            record output { decision: decision, state: state, reason: string, logs: list<string> }
+            evaluate: func(input: input, configuration: configuration, state: state) -> output;
+        }
+        world gate { export evaluator; }
+    "#).unwrap();
+    let world = resolve.select_world(&[package], Some("gate")).unwrap();
+    // Sync ABI: the gate cannot create asynchronous tasks or callbacks.
+    let module = dummy_module(&resolve, world, ManglingAndAbi::Standard32);
+    // dummy_module exports an empty cm32p2_initialize; the encoder turns that
+    // into a guest start. Real gate cdylibs have no initialization export.
+    let mut clean = wasm_encoder::Module::new();
+    for payload in wasmparser::Parser::new(0).parse_all(&module) {
+        let payload = payload.unwrap();
+        if let wasmparser::Payload::ExportSection(exports) = payload {
+            let mut section = wasm_encoder::ExportSection::new();
+            for export in exports {
+                let export = export.unwrap();
+                if !export.name.contains("initialize") {
+                    section.export(export.name, export.kind.into(), export.index);
+                }
+            }
+            clean.section(&section);
+        } else if let Some((id, range)) = payload.as_section() {
+            clean.section(&wasm_encoder::RawSection {
+                id,
+                data: &module[range.start as usize..range.end as usize],
+            });
+        }
+    }
+    let mut module = clean.finish();
+    embed_component_metadata(&mut module, &resolve, world, StringEncoding::UTF8, false).unwrap();
+    let bytes = ComponentEncoder::default()
+        .module(&module)
+        .unwrap()
+        .validate(true)
+        .encode()
+        .unwrap();
+    check_component(&bytes, "chariox:workflow-gate/gate@1.0.0").unwrap();
+    assert!(check_component(&bytes, APP_WORLD).is_err());
+}
+
+#[test]
+fn gate_rejects_capabilities_and_nested_noninteger_features() {
+    let (resolve, package) = contract::resolve();
+    let app = resolve
+        .select_world(&[package], Some("app-admission"))
+        .unwrap();
+    assert!(gate::check(&component(&resolve, app)).is_err());
+    for (body, expected) in [
+        ("(func (result f64) f64.const 1)", "floating-point"),
+        ("(func $start) (start $start)", "start functions"),
+        ("(memory 257)", "16 MiB"),
+        ("(memory 1) (memory 1)", "multiple memories"),
+        ("(table 4097 funcref)", "table exceeds"),
+        ("(memory 1 1 shared)", "threads"),
+        ("(func (result v128) v128.const i32x4 0 0 0 0)", "SIMD"),
+    ] {
+        let bytes = wat::parse_str(format!("(component (core module {body}))")).unwrap();
+        let error = gate::check(&bytes).unwrap_err().to_string();
+        assert!(
+            error.to_lowercase().contains(&expected.to_lowercase()),
+            "{body}: {error}"
+        );
+    }
+}

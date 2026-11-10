@@ -266,6 +266,7 @@ impl KernelRuntimeState {
                     kind: output.kind,
                     merge_key: output.merge_key,
                     sequence: None,
+                    prompt: None,
                     bytes: output.text.into_bytes(),
                 },
                 history_entry,

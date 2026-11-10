@@ -4,7 +4,6 @@ use std::net::SocketAddr;
 use std::sync::{Arc, RwLock as StdRwLock};
 
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message;
 
 use crate::auth::{RelayAction, DEFAULT_RELAY_REALM_ID};
 use crate::protocol::{
@@ -12,7 +11,8 @@ use crate::protocol::{
     RelayError, RelayKernelPresence, RelayMachinePresence, RelayProviderAccountSummary,
 };
 
-pub(crate) type RelaySender = mpsc::Sender<Message>;
+use crate::outgoing::QueueStats;
+pub(crate) use crate::outgoing::RelaySender;
 pub(crate) type DisplayStreamSender = mpsc::Sender<DisplayStreamEvent>;
 
 #[derive(Debug, Clone)]
@@ -225,10 +225,7 @@ impl RelayRouteIndex {
         self.subscriptions.values().into_iter().fold(
             (0, 0),
             |(pressured_count, max_depth), route| {
-                let depth = route
-                    .client_sender
-                    .max_capacity()
-                    .saturating_sub(route.client_sender.capacity());
+                let depth = route.client_sender.queued_messages();
                 (
                     pressured_count + usize::from(depth > 0),
                     max_depth.max(depth),
@@ -376,6 +373,12 @@ pub(crate) struct ActiveSubscription {
 pub struct RelayBackpressureMetrics {
     pub target_queue_full_count: u64,
     pub slow_subscription_close_count: u64,
+    /// Connections closed with "try again later" because they could not keep up.
+    pub receiver_backlog_close_count: u64,
+    /// Messages dropped because their receiver was too far behind.
+    pub dropped_reply_count: u64,
+    /// The most bytes any one connection has had queued.
+    pub queued_bytes_high_water: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -490,6 +493,16 @@ impl RelayRegistry {
             .backpressure_metrics
             .target_queue_full_count
             .saturating_add(1);
+    }
+
+    /// What an ended connection's queue went through.
+    pub(crate) fn record_connection_queue(&mut self, stats: QueueStats) {
+        let metrics = &mut self.backpressure_metrics;
+        metrics.receiver_backlog_close_count += u64::from(stats.backlog_closed);
+        metrics.dropped_reply_count += stats.dropped_replies;
+        metrics.queued_bytes_high_water = metrics
+            .queued_bytes_high_water
+            .max(stats.queued_bytes_high_water as u64);
     }
 
     pub(crate) fn record_slow_subscription_close(&mut self) {
@@ -925,13 +938,14 @@ fn normalized_kernel_started_at_ms(registration: &DaemonRegistration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio_tungstenite::tungstenite::Message;
 
     #[tokio::test]
     async fn route_index_resolves_packet_paths_without_registry_state() {
         let routes = RelayRouteIndex::default();
         let daemon_key = DaemonKey::new("realm-1", "daemon-1");
-        let (daemon_sender, _daemon_receiver) = mpsc::channel(1);
-        let (client_sender, _client_receiver) = mpsc::channel(1);
+        let (daemon_sender, _daemon_receiver) = RelaySender::detached_channel(1);
+        let (client_sender, _client_receiver) = RelaySender::detached_channel(1);
         let client_addr = "127.0.0.1:41001".parse().expect("client address");
 
         routes.set_daemon_sender(daemon_key.clone(), daemon_sender.clone());
@@ -966,7 +980,7 @@ mod tests {
     async fn route_index_reports_live_subscription_queue_pressure() {
         let routes = RelayRouteIndex::default();
         let daemon_key = DaemonKey::new("realm-1", "daemon-1");
-        let (client_sender, mut client_receiver) = mpsc::channel(4);
+        let (client_sender, mut client_receiver) = RelaySender::detached_channel(4);
         routes.set_subscription(
             "subscription-1".to_string(),
             ActiveEventRoute {
@@ -1069,8 +1083,8 @@ mod display_scheduling_tests {
     #[test]
     fn mp08_mp10_mp11_only_own_acknowledged_display_route_can_bypass() {
         let routes = RelayRouteIndex::default();
-        let (own, _rx) = tokio::sync::mpsc::channel(8);
-        let (foreign, _rx2) = tokio::sync::mpsc::channel(8);
+        let (own, _rx) = RelaySender::detached_channel(8);
+        let (foreign, _rx2) = RelaySender::detached_channel(8);
         assert!(!display_for_sender(&routes, "display", &own));
         routes.set_subscription(
             "display".into(),

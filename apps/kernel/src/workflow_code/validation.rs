@@ -69,6 +69,19 @@ impl<'a> WorkflowCodeValidator<'a> {
     }
 
     pub(super) fn validate(&mut self, definition: &WorkflowCodeDefinition) {
+        if definition
+            .workflow
+            .gate
+            .as_ref()
+            .is_some_and(|gate| gate.validate().is_err())
+        {
+            self.error(
+                "invalid_gate",
+                "workflow gate ABI, module or config digest is invalid",
+                None,
+            );
+        }
+
         if definition.schema_version != WORKFLOW_CODE_SCHEMA_VERSION {
             self.error(
                 "unsupported_schema_version",
@@ -234,6 +247,29 @@ impl<'a> WorkflowCodeValidator<'a> {
         self.validate_edge_pairs(definition);
 
         for endpoint in &definition.endpoints {
+            if !endpoint.entry_nodes.is_empty() {
+                if definition.workflow.gate.is_none()
+                    || endpoint.entry_nodes.len() > 16
+                    || endpoint.entry_nodes.first() != Some(&endpoint.entry_node)
+                    || endpoint.entry_nodes.iter().collect::<BTreeSet<_>>().len()
+                        != endpoint.entry_nodes.len()
+                {
+                    self.error(
+                        "invalid_entry_targets",
+                        "multiple unique ordered entry targets require a workflow gate",
+                        Some(endpoint.handle.clone()),
+                    );
+                }
+                for target in &endpoint.entry_nodes {
+                    self.validate_ref(
+                        &node_handles,
+                        target,
+                        "endpoint.entry_nodes",
+                        Some(endpoint.handle.clone()),
+                    );
+                }
+            }
+
             self.validate_ref(
                 &node_handles,
                 &endpoint.entry_node,
@@ -383,8 +419,15 @@ impl<'a> WorkflowCodeValidator<'a> {
         let mut stack = definition
             .endpoints
             .iter()
-            .filter(|&endpoint| node_handles.contains(&endpoint.entry_node))
-            .map(|endpoint| endpoint.entry_node.clone())
+            .flat_map(|endpoint| {
+                if endpoint.entry_nodes.is_empty() {
+                    vec![&endpoint.entry_node]
+                } else {
+                    endpoint.entry_nodes.iter().collect()
+                }
+            })
+            .filter(|node| node_handles.contains(*node))
+            .cloned()
             .collect::<Vec<_>>();
 
         while let Some(node_handle) = stack.pop() {

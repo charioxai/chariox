@@ -41,7 +41,7 @@ use directory::{is_gateway_ready, Directory};
 pub(crate) use error::{is_public_code, GatewayError};
 #[cfg(test)]
 pub(crate) use events::Added;
-pub(crate) use forward::forward_audited;
+pub(crate) use forward::{forward_audited, forward_with_retry};
 use identity::GatewayIdentity;
 use inventory::RelayInventory;
 use link::{Link, LinkFailure, LinkParams};
@@ -105,6 +105,7 @@ impl KernelGateway {
         runtime_state: KernelRuntimeState,
         config: DaemonConfigProjectionStore,
         projection: RemoteRelayInventoryProjectionStore,
+        relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     ) -> Self {
         let paired = Arc::new(paired::PairedKernels::new(
             config
@@ -115,6 +116,7 @@ impl KernelGateway {
         let source = Arc::new(RelayInventory {
             config: config.clone(),
             projection,
+            relay_state,
         });
         Self {
             directory: Directory::new(source),
@@ -157,6 +159,11 @@ impl KernelGateway {
                     .join("gateway-ledger.jsonl"),
             )
         })
+    }
+
+    /// What this kernel is called to its owner, as the other kernel sees it in `on_behalf_of`.
+    pub(crate) fn own_name(&self) -> String {
+        names::own_name(&self.config.snapshot())
     }
 
     /// Forwards `request` to `kernel` and returns the target's response value.

@@ -25,6 +25,7 @@ fn local_request_api_rejects_workflow_code_artifact_import_with_definition_hash_
         schema_version: crate::workflow_code::WORKFLOW_CODE_SCHEMA_VERSION,
         parameters_schema: None,
         workflow: crate::workflow_code::WorkflowCodeWorkflow {
+            gate: None,
             alias: Some("mismatch_import".to_string()),
             prompt: None,
             flush_agent_context_before_run: None,
@@ -55,6 +56,7 @@ fn local_request_api_rejects_workflow_code_artifact_import_with_definition_hash_
         }],
         edges: Vec::new(),
         endpoints: vec![crate::workflow_code::WorkflowCodeEndpointDefinition {
+            entry_nodes: vec![],
             handle: "entry".to_string(),
             entry_node: "worker".to_string(),
             alias: Some("entry".to_string()),

@@ -427,8 +427,10 @@ impl KernelRuntimeState {
                     Some(provider_run_id),
                 )
                 .await?;
-            if let Err(error) =
-                Box::pin(self.finish_agent_task_settlement(task_settlement, &active_prompt)).await
+            if let Err(error) = Box::pin(
+                self.finish_agent_task_settlement_outside_lanes(task_settlement, &active_prompt),
+            )
+            .await
             {
                 // Prompt completion is already committed. Ledger supervision
                 // errors cannot strand a promoted prompt or skip run retirement.
@@ -787,8 +789,10 @@ impl KernelRuntimeState {
             };
             (completion, None)
         };
-        if let Err(error) =
-            Box::pin(self.finish_agent_task_settlement(task_settlement, &active_prompt)).await
+        if let Err(error) = Box::pin(
+            self.finish_agent_task_settlement_outside_lanes(task_settlement, &active_prompt),
+        )
+        .await
         {
             // Prompt completion is already committed. Ledger supervision
             // errors cannot strand a promoted prompt or skip run retirement.

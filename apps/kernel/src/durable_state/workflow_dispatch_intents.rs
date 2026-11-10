@@ -27,7 +27,7 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
         owner_id TEXT NOT NULL,session_id TEXT NOT NULL,run_id TEXT NOT NULL,node_id TEXT NOT NULL,
         agent_id TEXT NOT NULL,queued_json TEXT NOT NULL,operation_id TEXT NOT NULL UNIQUE,fingerprint TEXT NOT NULL,
         submitted INTEGER NOT NULL DEFAULT 0 CHECK(submitted IN (0,1)),prompt_id TEXT,
-        PRIMARY KEY(owner_id,session_id,run_id)
+        PRIMARY KEY(owner_id,session_id,run_id,node_id)
     ); CREATE INDEX IF NOT EXISTS durable_workflow_dispatch_pending ON durable_workflow_dispatch_intents(owner_id,session_id,run_id) WHERE submitted=0;
         CREATE TRIGGER IF NOT EXISTS durable_workflow_dispatch_run_deleted
         AFTER DELETE ON durable_workflow_runs BEGIN
@@ -41,41 +41,39 @@ pub(super) fn insert_in(
     queued: &WorkflowQueuedPrompt,
     run: &WorkflowRun,
 ) -> rusqlite::Result<()> {
-    let node = run
-        .node_runs()
-        .first()
-        .ok_or(rusqlite::Error::InvalidQuery)?;
-    let fingerprint = format!(
-        "sha256:{:x}",
-        Sha256::digest(
-            serde_json::to_vec(&serde_json::json!([
-                "chariox.workflow-entry.v1",
-                owner,
-                session,
-                run.id(),
-                node.id(),
-                node.agent_id(),
-                run.invocation_prompt()
-            ]))
-            .map_err(|_| rusqlite::Error::InvalidQuery)?
-        )
-    );
-    let existing = load(tx, owner, session, run.id())?;
-    if let Some(existing) = existing {
-        if existing.fingerprint != fingerprint
-            || existing.node_id != node.id()
-            || existing.agent_id != node.agent_id()
-        {
+    for node in run.node_runs() {
+        let fingerprint = format!(
+            "sha256:{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&serde_json::json!([
+                    "chariox.workflow-entry.v1",
+                    owner,
+                    session,
+                    run.id(),
+                    node.id(),
+                    node.agent_id(),
+                    run.invocation_prompt()
+                ]))
+                .map_err(|_| rusqlite::Error::InvalidQuery)?
+            )
+        );
+        let existing = tx.query_row("SELECT session_id,run_id,node_id,agent_id,operation_id,fingerprint,submitted,queued_json FROM durable_workflow_dispatch_intents WHERE owner_id=?1 AND session_id=?2 AND run_id=?3 AND node_id=?4",params![owner,session,run.id(),node.id()],decode).optional()?;
+        if let Some(existing) = existing {
+            if existing.fingerprint != fingerprint
+                || existing.node_id != node.id()
+                || existing.agent_id != node.agent_id()
+            {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            continue;
+        }
+        let count:i64=tx.query_row("SELECT count(*) FROM durable_workflow_dispatch_intents WHERE owner_id=?1 AND session_id=?2 AND submitted=0",params![owner,session],|r|r.get(0))?;
+        if count >= 1024 {
             return Err(rusqlite::Error::InvalidQuery);
         }
-        return Ok(());
-    }
-    let count:i64=tx.query_row("SELECT count(*) FROM durable_workflow_dispatch_intents WHERE owner_id=?1 AND session_id=?2 AND submitted=0",params![owner,session],|r|r.get(0))?;
-    if count >= 1024 {
-        return Err(rusqlite::Error::InvalidQuery);
-    }
-    tx.execute("INSERT INTO durable_workflow_dispatch_intents(owner_id,session_id,run_id,node_id,agent_id,operation_id,fingerprint,queued_json)
+        tx.execute("INSERT INTO durable_workflow_dispatch_intents(owner_id,session_id,run_id,node_id,agent_id,operation_id,fingerprint,queued_json)
       VALUES(?1,?2,?3,?4,?5,?6||lower(hex(randomblob(32))),?7,?8)",params![owner,session,run.id(),node.id(),node.agent_id(),OPERATION_PREFIX,fingerprint,serde_json::to_string(queued).map_err(|_|rusqlite::Error::InvalidQuery)?])?;
+    }
     Ok(())
 }
 fn load(
@@ -84,7 +82,7 @@ fn load(
     session: &str,
     run: &str,
 ) -> rusqlite::Result<Option<WorkflowDispatchIntent>> {
-    connection.query_row("SELECT session_id,run_id,node_id,agent_id,operation_id,fingerprint,submitted,queued_json FROM durable_workflow_dispatch_intents WHERE owner_id=?1 AND session_id=?2 AND run_id=?3",params![owner,session,run],decode).optional()
+    connection.query_row("SELECT session_id,run_id,node_id,agent_id,operation_id,fingerprint,submitted,queued_json FROM durable_workflow_dispatch_intents WHERE owner_id=?1 AND session_id=?2 AND run_id=?3 ORDER BY submitted,rowid LIMIT 1",params![owner,session,run],decode).optional()
 }
 fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkflowDispatchIntent> {
     Ok(WorkflowDispatchIntent {
@@ -199,8 +197,8 @@ fn record_prompt(
     if persisted.id() != run
         || !persisted
             .node_runs()
-            .first()
-            .is_some_and(|entry| entry.id() == node && entry.agent_id() == agent)
+            .iter()
+            .any(|entry| entry.id() == node && entry.agent_id() == agent)
     {
         return Err(rusqlite::Error::InvalidQuery);
     }

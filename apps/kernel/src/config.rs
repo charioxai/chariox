@@ -8,6 +8,9 @@ use crate::transport::relay_crypto;
 use serde::{Deserialize, Serialize};
 
 mod credentials;
+mod payment_card;
+pub(crate) use payment_card::PaymentCard;
+pub use payment_card::{PaymentCardField, PaymentCardSummary};
 pub(crate) mod vault_use;
 pub use vault_use::{VaultUseBinding, VaultUseTarget, VaultValueKind};
 mod env_loader;
@@ -192,6 +195,15 @@ impl DaemonConfig {
         self.cloud_relay
             .as_ref()
             .is_some_and(|profile| normalize_relay_url_for_match(&profile.relay_url) == relay_url)
+    }
+
+    /// The machine name the relay matches `--machine` against: the name the owner gave this
+    /// machine at Cloud enrollment while the Cloud relay carries this kernel, else the local alias.
+    pub(crate) fn relay_machine_alias(&self) -> Option<String> {
+        crate::runtime::cloud_relay_control::active_cloud_profile(self)
+            .and_then(|profile| profile.machine_alias.clone())
+            .filter(|alias| !alias.trim().is_empty())
+            .or_else(|| self.host_machine_alias.clone())
     }
 
     pub(crate) fn apply_remote_relay_override(&mut self, relay_url: String, relay_token: String) {

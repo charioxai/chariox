@@ -693,8 +693,13 @@ impl KernelRuntimeState {
             provider_run_id.as_deref(),
         )?;
         let response = cancellation.cancellation.clone();
+        // A workflow cancel stops its prompts here while it holds every run lane in the
+        // Room; the task's owned work takes them again, so it is finished outside.
         if let Some(settlement) = settlement {
-            self.finish_stopped_agent_task(settlement, &prompt).await;
+            self.spawn_workflow_prompt_dispatches(WorkflowPromptDispatches {
+                stopped_task_settlements: vec![(settlement, prompt.clone())],
+                ..Default::default()
+            });
         }
         self.start_queue_head_after_cancellation(session_id, target_agent_id, cancellation)
             .await;

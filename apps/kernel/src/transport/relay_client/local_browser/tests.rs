@@ -1398,15 +1398,12 @@ fn mp11_admitted_direct_command_settles_once_after_disconnect_and_relay_retry() 
             Some(&kernel.direct),
         )
         .await;
-        let second = relay_crypto::decrypt_payload_for_private_key(
-            &browser.private_key,
-            &replay.encrypted_response.unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            first.plaintext, second.plaintext,
-            "relay retry duplicated the mutation"
-        );
+        // A second retry within ten seconds is not answered with the result again (nor run
+        // again): it is told the answer was already given and may ask later.
+        let refused = replay.error.expect("a second retry waits out the window");
+        assert_eq!(refused.code, "duplicate_command_unavailable");
+        assert!(refused.retryable && replay.encrypted_response.is_none());
+        drop(first);
         let sessions = relay_crypto::encrypt_payload_for_peer(
             &browser.private_key,
             &kernel.daemon_public_key,
@@ -1434,6 +1431,90 @@ fn mp11_admitted_direct_command_settles_once_after_disconnect_and_relay_retry() 
         assert_eq!(
             list["SessionsListed"]["sessions"].as_array().unwrap().len(),
             1
+        );
+    });
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 (relayproof r4, F4): a command that finishes after several
+// retry windows was retried inside each of them; every retry used to claim its window on arrival
+// and so all of them received the full result at the moment it finished.
+#[test]
+fn retries_of_a_pending_command_are_answered_once_when_it_finishes() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        kernel.mint(&browser, browser.identity()).await.unwrap();
+        let cache = kernel.direct.command_result_cache.clone();
+        cache.set_retry_answer_interval_for_test(Duration::from_millis(300));
+        let (reserved, release) = cache.pause_next_dispatch_for_test().await;
+        let workspace = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let request = LocalDaemonRequest::CreateSession(crate::session::CreateSessionRequest::new(
+            &workspace, &workspace,
+        ));
+        let envelope =
+            serde_json::json!({ "command_id": "retry-window-create", "request": request });
+        let encrypted = relay_crypto::encrypt_payload_for_peer(
+            &browser.private_key,
+            &kernel.daemon_public_key,
+            envelope.to_string().as_bytes(),
+        )
+        .unwrap();
+        let ask = |direct: Arc<LocalBrowserDirect>, identity, encrypted| {
+            tokio::spawn(async move {
+                handle_daemon_request(
+                    &direct.router,
+                    &direct.command_sequence,
+                    Some(identity),
+                    encrypted,
+                    &direct.command_result_cache,
+                    &Default::default(),
+                    Some(&direct),
+                )
+                .await
+            })
+        };
+        let original = ask(kernel.direct.clone(), browser.identity(), encrypted.clone());
+        timeout(Duration::from_secs(2), reserved)
+            .await
+            .expect("command was not reserved")
+            .unwrap();
+        // The command stays pending across three retry windows of 300 ms.
+        let mut retries = Vec::new();
+        for _ in 0..3 {
+            sleep(Duration::from_millis(350)).await;
+            retries.push(ask(
+                kernel.direct.clone(),
+                browser.identity(),
+                encrypted.clone(),
+            ));
+        }
+        let _ = release.send(());
+        assert!(timeout(Duration::from_secs(10), original)
+            .await
+            .expect("the original command did not finish")
+            .unwrap()
+            .error
+            .is_none());
+        let mut answered = 0;
+        for retry in retries {
+            let outcome = timeout(Duration::from_secs(10), retry)
+                .await
+                .expect("a retry was left waiting")
+                .unwrap();
+            match outcome.error {
+                None => answered += 1,
+                Some(error) => {
+                    assert_eq!(error.code, "duplicate_command_unavailable");
+                    assert!(error.retryable);
+                }
+            }
+        }
+        assert_eq!(
+            answered, 1,
+            "the result is sent to one of the retries when it becomes available, not to each"
         );
     });
 }

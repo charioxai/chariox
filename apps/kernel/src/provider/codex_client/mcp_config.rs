@@ -32,26 +32,6 @@ pub(super) fn append_runtime_mcp_overrides(
         "mcp_servers.chariox.tool_timeout_sec".to_string(),
         json!(300),
     );
-    overrides.insert(
-        "mcp_servers.chariox-reach.transport".to_string(),
-        json!("streamable_http"),
-    );
-    overrides.insert(
-        "mcp_servers.chariox-reach.url".to_string(),
-        json!(crate::provider::reach_mcp_url(server_url)),
-    );
-    overrides.insert(
-        "mcp_servers.chariox-reach.http_headers.Authorization".to_string(),
-        json!(format!("Bearer {auth_token}")),
-    );
-    overrides.insert(
-        "mcp_servers.chariox-reach.startup_timeout_sec".to_string(),
-        json!(30),
-    );
-    overrides.insert(
-        "mcp_servers.chariox-reach.tool_timeout_sec".to_string(),
-        json!(300),
-    );
 }
 
 pub(super) fn codex_provider_facing_mcp_proxy_configs(
@@ -148,5 +128,26 @@ pub(super) fn append_codex_mcp_overrides(
         if let Some(disabled_tools) = &server.disabled_tools {
             overrides.insert(format!("{prefix}.disabled_tools"), json!(disabled_tools));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // The reach passthrough is retired (docs/design/sub-agents.md 7.2).
+    #[test]
+    fn a_room_agent_gets_only_the_chariox_mcp_server() {
+        let mut overrides = std::collections::BTreeMap::new();
+        super::append_runtime_mcp_overrides(
+            &mut overrides,
+            "http://127.0.0.1:43120/mcp",
+            "private-token",
+        );
+        assert!(
+            overrides
+                .keys()
+                .all(|key| key.starts_with("mcp_servers.chariox.")),
+            "{:?}",
+            overrides.keys().collect::<Vec<_>>()
+        );
     }
 }

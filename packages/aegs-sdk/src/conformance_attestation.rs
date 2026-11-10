@@ -133,8 +133,8 @@ mod tests {
             attestation.manifest_digest,
             manifest["signature"]["digest"].as_str().unwrap()
         );
-        assert_eq!(attestation.event_protocol_version, 4);
-        assert_eq!(attestation.management_protocol_version, 5);
+        assert_eq!(attestation.event_protocol_version, 5);
+        assert_eq!(attestation.management_protocol_version, 6);
         assert!(attestation.report_digest.starts_with("sha256:"));
     }
 

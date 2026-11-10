@@ -17,6 +17,29 @@ pub enum WorkflowRunStatus {
     Stopped,
 }
 
+/// Why a Ready entry node is held instead of dispatched. A fixed kernel class,
+/// never error or provider text: clients turn it into their own wording.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowNodeWaitingReason {
+    ProviderProfileUnavailable,
+    ProviderProfileUnverified,
+    ProviderProfileUnauthenticated,
+    ProviderProfileUsageExhausted,
+}
+
+impl From<crate::error::ProviderProfileRefusal> for WorkflowNodeWaitingReason {
+    fn from(refusal: crate::error::ProviderProfileRefusal) -> Self {
+        use crate::error::ProviderProfileRefusal as Refusal;
+        match refusal {
+            Refusal::Unavailable => Self::ProviderProfileUnavailable,
+            Refusal::Unverified => Self::ProviderProfileUnverified,
+            Refusal::Unauthenticated => Self::ProviderProfileUnauthenticated,
+            Refusal::UsageExhausted => Self::ProviderProfileUsageExhausted,
+        }
+    }
+}
+
 impl WorkflowRunStatus {
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Stopped)

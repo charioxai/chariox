@@ -31,6 +31,7 @@ fn event(id: &str) -> NormalizedEvent {
         occurred_at: "2026-10-29T00:00:00Z".to_string(),
         connection_scope: "scope-1".to_string(),
         prompt: "drill prompt".to_string(),
+        data: None,
         metadata: serde_json::json!({}),
         reply_context: None,
     }

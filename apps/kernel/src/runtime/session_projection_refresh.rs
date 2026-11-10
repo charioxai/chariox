@@ -109,6 +109,7 @@ impl SessionProjectionRefresh {
                 LocalDaemonResponse::AgentSpawned {
                     agent,
                     event_subscription_error: None,
+                    ..
                 }
                 | LocalDaemonResponse::AgentAliased { agent, .. }
                 | LocalDaemonResponse::AgentConfigUpdated { agent, .. }

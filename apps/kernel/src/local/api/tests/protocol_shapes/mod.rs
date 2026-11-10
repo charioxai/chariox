@@ -70,6 +70,7 @@ mod user_app_views;
 mod user_domain_access;
 mod web_bot_auth;
 mod workflow_code;
+mod workflow_gate;
 mod workflow_notifications;
 mod workspace_history_external;
 
@@ -119,6 +120,8 @@ mod room_workflows;
 mod screenshot;
 mod waiting_room_workspace;
 
+mod payment_card;
+mod provider_tool_background_lifecycle;
 mod provider_tool_images;
 mod remote_agent_binding_worktree;
 mod room_pin;

@@ -171,6 +171,8 @@ fn reused_route_name_keeps_dedupe_scope_when_its_source_changes() {
             connection_id: "connection-1".into(),
             connection_scope: "workspace:1".into(),
             filter_json: "null".into(),
+            payload_schema_json: None,
+            manifest_digest: None,
         }),
         ..route("mail")
     };

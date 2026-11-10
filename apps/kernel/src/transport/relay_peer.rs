@@ -200,7 +200,10 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 439 carries local1000: the run finished source kind, event connection selections in the managed-context plan
 /// binding and Vault provider logins in the context package.
 /// Peer 440 carries local 1001: peers across kernels of one owner.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 440;
+/// MP-08 / MP-09 / MP-10 / MP-11: peer 441 sends the kernel's large messages to the relay in
+/// chunks-v2 frames (`x-chariox-upload`); toward a relay that does not answer the offer the
+/// kernel writes whole messages, and the relay keeps reading whole messages from 440 kernels.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 441;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -294,19 +297,7 @@ pub struct RelayManagedContextImportReceipt {
     pub plan_digest: String,
     pub development: RelayManagedDevelopmentContextImportReceipt,
     pub kernel_context: RelayManagedKernelContextImportReceipt,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub omitted_provider_accounts: Vec<RelayManagedContextOmittedProviderAccount>,
     pub receipt_sha256: String,
-}
-
-/// A selected provider login the target left out of the import.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RelayManagedContextOmittedProviderAccount {
-    pub provider: String,
-    pub profile_id: String,
-    pub label: String,
-    pub reason: crate::managed_context::package::ManagedContextProviderAccountOmission,
-    pub next_step: crate::managed_context::package::ManagedContextProviderAccountNextStep,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

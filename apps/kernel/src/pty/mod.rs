@@ -7,6 +7,8 @@ mod provider_restart_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod sandbox_lifetime_tests;
 
+#[cfg(unix)]
+pub(crate) use handover::OutgoingPty;
 pub use handover::PtyHandover;
 pub(crate) use handover::ReaderGate;
 pub use manager::{PtyAgent, PtyManager, PtyOutputChunk, PtyProcessState, PtySpawnRequest};

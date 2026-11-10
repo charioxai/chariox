@@ -82,9 +82,9 @@ impl KernelRuntimeState {
             now,
             crate::durable_state::agent_lifecycle::SWEEP_MS,
         ) {
-            if let Err(error) = self.sweep_agent_lifecycle().await {
-                tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: agent lifecycle sweep failed; retained intents need reconciliation");
-            }
+            // The sweep waits on workers and peers that may not answer, and every other step of
+            // this pump comes after it: ask for it, as every other trigger does, and go on.
+            self.schedule_agent_lifecycle_sweep();
         }
         self.owned.sweep_kernel_operation_interactions(false);
         self.owned.withdraw_stale_agent_interactions();
@@ -107,7 +107,7 @@ impl KernelRuntimeState {
             self,
         )
         .await;
-        self.retry_due_provider_launch_failures(now_ms).await;
+        self.schedule_due_provider_launch_failure_retries(now_ms);
         if self.claim_provider_process_gc(now_ms) {
             if let Err(error) = self.reap_idle_provider_processes(now_ms).await {
                 crate::logging::warn_with_fields(
@@ -127,8 +127,7 @@ impl KernelRuntimeState {
             .owned
             .workflow_collect_due_watchdog_dispatches(crate::session::unix_epoch_ms());
         self.spawn_workflow_prompt_dispatches(watchdog_dispatches);
-        self.dispatch_due_agent_triggers(crate::session::unix_epoch_ms())
-            .await;
+        self.dispatch_due_agent_triggers(crate::session::unix_epoch_ms());
     }
 
     pub(crate) async fn record_terminal_attachment_heartbeat(

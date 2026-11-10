@@ -69,65 +69,31 @@ fn vault_login_1000_shapes_are_pinned() {
     assert!(!value.to_string().contains("SHAPE-ONLY"));
 }
 
-// A login the new machine could not install (its Vault was not open) is named in the import
-// receipt, on the relay peer wire and in the local receipt Cloud reads. A full import omits it.
-const OMITTED_LOGINS_FIXTURE: &[u8] = include_bytes!("managed-context-omitted-logins-1000.json");
-
+// A transfer into a kernel whose Vault is closed is refused with a reason class the UI words
+// itself. Both strings are wire values: peers and clients match them exactly.
 #[test]
-fn managed_context_omitted_logins_1000_snapshot_and_hash() {
-    use crate::managed_context::package::{
-        ManagedContextProviderAccountNextStep, ManagedContextProviderAccountOmission,
-    };
-    use crate::transport::relay_peer::{
-        RelayManagedContextImportReceipt, RelayManagedContextOmittedProviderAccount,
-        RelayManagedDevelopmentContextImportReceipt, RelayManagedKernelContextImportReceipt,
+fn the_closed_receiving_vault_reason_classes_are_wire_stable() {
+    let refused = crate::transport::relay_peer::RelayPeerResponse::ManagedContextImportFailed {
+        code: crate::managed_context::target_vault::TARGET_VAULT_LOCKED.into(),
+        retryable: true,
     };
     assert_eq!(
-        format!("{:x}", Sha256::digest(OMITTED_LOGINS_FIXTURE)),
-        "2919924f3fb8371df640e0366e4ddea2810e5e9d658096cfcce1d2ca9c30f16a"
+        serde_json::to_value(&refused).unwrap(),
+        serde_json::json!({
+            "kind": "managed_context_import_failed",
+            "code": "target_vault_locked",
+            "retryable": true
+        })
     );
-    let fixture: serde_json::Value = serde_json::from_slice(OMITTED_LOGINS_FIXTURE).unwrap();
-    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
-    assert_eq!(
-        fixture["peer_protocol"],
-        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
-    );
-
-    let receipt = |omitted_provider_accounts| RelayManagedContextImportReceipt {
-        destination: None,
-        transfer_id: "transfer".into(),
-        archive_sha256: "a".repeat(64),
-        plan_digest: "sha256:plan".into(),
-        development: RelayManagedDevelopmentContextImportReceipt::Empty,
-        kernel_context: RelayManagedKernelContextImportReceipt::Empty,
-        omitted_provider_accounts,
-        receipt_sha256: "b".repeat(64),
-    };
-    let relay = receipt(vec![RelayManagedContextOmittedProviderAccount {
-        provider: "claude".into(),
-        profile_id: "work".into(),
-        label: "Work".into(),
-        reason: ManagedContextProviderAccountOmission::VaultClosed,
-        next_step: ManagedContextProviderAccountNextStep::SignInAgain,
-    }]);
-    assert_eq!(
-        serde_json::to_value(&relay).unwrap()["omitted_provider_accounts"],
-        fixture["relay_receipt_omitted_provider_accounts"]
-    );
-    let local =
-        crate::managed_context::outbound_service::ManagedContextOutboundImportReceipt::from(relay);
-    assert_eq!(
-        serde_json::to_value(&local).unwrap()["omittedProviderAccounts"],
-        fixture["local_receipt_omitted_provider_accounts"]
-    );
-
-    let full = serde_json::to_value(receipt(Vec::new())).unwrap();
-    assert!(full.get("omitted_provider_accounts").is_none());
-    let full_local = serde_json::to_value(
-        crate::managed_context::outbound_service::ManagedContextOutboundImportReceipt::from(
-            receipt(Vec::new()),
-        ),
-    )
-    .unwrap();
-    assert!(full_local.get("omittedProviderAccounts").is_none());
+    assert!(crate::provider_account_copy::is_public_code(
+        "provider_account_copy_target_vault_locked"
+    ));
+    assert!(matches!(
+        crate::provider_account_copy::failure("provider_account_copy_target_vault_locked"),
+        crate::error::DaemonError::ProviderAccountCopy {
+            code: "provider_account_copy_target_vault_locked",
+            retryable: true,
+            ..
+        }
+    ));
 }

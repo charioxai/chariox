@@ -728,7 +728,10 @@ impl KernelRuntimeState {
                 .owned
                 .settle_agent_task(session_id, agent_id, &turn, run.id(), false)
             {
-                Ok(settlement) => self.finish_agent_task_settlement(settlement, &turn).await,
+                Ok(settlement) => {
+                    self.finish_agent_task_settlement_outside_lanes(settlement, &turn)
+                        .await
+                }
                 Err(error) => Err(error),
             };
         if let Err(error) = settled {
@@ -758,6 +761,25 @@ impl KernelRuntimeState {
         {
             tracing::warn!(%error, prompt_id=%prompt.id(),
                 "MP-08/MP-10/MP-11 A02: stopped task resources kept for the ledger sweep");
+        }
+    }
+    /// Settles a turn's task for a caller that holds run lanes (an output pump, a
+    /// workflow cancel). The owned work of a cancelled task takes every run lane in
+    /// the Room, so a cancelled task finishes on the stopped-task path instead.
+    pub(super) async fn finish_agent_task_settlement_outside_lanes(
+        &self,
+        settlement: Option<(AgentTaskExecution, bool)>,
+        source: &crate::session::PromptQueueItem,
+    ) -> Result<(), DaemonError> {
+        match settlement {
+            Some(settlement) if settlement.0.state == ExecutionState::Cancelled => {
+                self.spawn_workflow_prompt_dispatches(WorkflowPromptDispatches {
+                    stopped_task_settlements: vec![(settlement, source.clone())],
+                    ..Default::default()
+                });
+                Ok(())
+            }
+            settlement => self.finish_agent_task_settlement(settlement, source).await,
         }
     }
     pub(super) async fn finish_agent_task_settlement(
@@ -894,6 +916,36 @@ impl KernelRuntimeState {
             self.schedule_agent_lifecycle_sweep();
         }
         Ok(())
+    }
+    /// Every transition is a notice so attached clients refresh the projection.
+    fn record_task_transition_notices(&self, tasks: impl IntoIterator<Item = AgentTaskExecution>) {
+        for task in tasks {
+            self.owned.record_notice_for_agent(
+                &task.room_id,
+                None,
+                Some(&task.agent_id),
+                self.owned
+                    .attachment_store
+                    .list_session_attachment_ids(&task.room_id),
+                if task.state == ExecutionState::Blocked {
+                    format!(
+                        "{}: Needs your help. {}",
+                        self.agent_notice_name(&task.agent_id),
+                        task.reason
+                    )
+                } else if task.state == ExecutionState::Cancelled {
+                    format!(
+                        "{}: Stopped. Its provider turn ended without an answer.",
+                        self.agent_notice_name(&task.agent_id)
+                    )
+                } else {
+                    format!(
+                        "{}: Waiting for 15 minutes without progress.",
+                        self.agent_notice_name(&task.agent_id)
+                    )
+                },
+            );
+        }
     }
     pub(super) fn schedule_agent_lifecycle_sweep(&self) {
         // Output settlement may hold one or every provider lane. Dispatch
@@ -1099,9 +1151,9 @@ impl KernelRuntimeState {
         if let Err(error) = self.settle_lost_peer_follows(now) {
             tracing::warn!(%error, "peer follows of gone agents retained for the next sweep");
         }
-        if let Err(error) = self.settle_unpaired_peer_follows(now).await {
-            tracing::warn!(%error, "peer follows of a former owner retained for the next sweep");
-        }
+        // Cloud's kernel directory and the lost follows' inboxes are read in their own pass: a
+        // Cloud that does not answer never holds this sweep.
+        self.spawn_unpaired_peer_follow_settlement(now);
         if let Err(error) = self.drop_unknown_peer_follows(now) {
             tracing::warn!(%error, "peer follows of unanswered spawns retained for the next sweep");
         }
@@ -1147,18 +1199,27 @@ impl KernelRuntimeState {
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
                 continue;
             };
-            self.reconcile_failed_workflow_tasks(&task).await?;
+            self.reconcile_failed_workflow_tasks(&task)?;
             if let Some(check) = ledger::completion::evaluation(&task).filter(|e| {
                 task.state == ExecutionState::Working
                     && e.result.is_none()
                     && e.prompt_id == task.pending_prompt_id.as_deref().unwrap_or(&task.prompt_id)
                     && now >= e.deadline_ms
             }) {
-                if let CheckExpiry::Blocked(stopped) =
-                    self.expire_goal_check(&task, &check.prompt_id, now).await?
-                {
-                    blocked.push(*stopped);
-                }
+                // Stopping the turn asks the worker, which may not answer: the check ends in its
+                // own work, and the sweep goes on with the other tasks.
+                let (task, prompt) = (task.clone(), check.prompt_id.clone());
+                self.spawn_task_work(
+                    format!("goal-check:{}", task.task_id),
+                    move |state| async move {
+                        if let CheckExpiry::Blocked(stopped) =
+                            state.expire_goal_check(&task, &prompt, now).await?
+                        {
+                            state.record_task_transition_notices([*stopped]);
+                        }
+                        Ok(())
+                    },
+                );
                 continue;
             }
             if task.state == ExecutionState::Cancelled
@@ -1167,9 +1228,15 @@ impl KernelRuntimeState {
                     .durable_state_store
                     .agent_task_terminal_recorded(&task)?
             {
-                if let Err(error) = Box::pin(self.cancel_agent_task_resources(&task)).await {
-                    tracing::warn!(%error,"MP-08/MP-09/MP-10/MP-11 A02: cancellation remains supervised");
-                }
+                // The worker that holds the run may be gone: a cancellation that is not confirmed
+                // stays unsettled and is started again by the next sweep, apart from this one.
+                let cancelled = task.clone();
+                self.spawn_task_work(
+                    format!("cancel:{}", task.task_id),
+                    move |state| async move {
+                        Box::pin(state.cancel_agent_task_resources(&cancelled)).await
+                    },
+                );
             }
             for obligation in task.obligations.iter().filter(|o| o.status == "open") {
                 let Some(source) = obligation.resource_id.as_ref() else {
@@ -1275,6 +1342,12 @@ impl KernelRuntimeState {
                             })
                             .map(super::agent_workflow_tasks::workflow_failure_answer)
                     });
+                    let gate_answer = if source.starts_with("gate_") {
+                        self.owned.durable_state_store.gate_task_entry(session.id(),source)?.map(|(entry,_)|serde_json::json!({"kind":"workflow_entry","entry_id":entry.entry_id,"disposition":entry.disposition,"reason":entry.failure,"workflow_run_id":workflow_source.as_ref().map(|run|run.id()),"workflow_run_status":workflow_source.as_ref().map(|run|run.status())}))
+                    } else {
+                        None
+                    };
+                    let public_answer = public_answer.or(gate_answer);
                     let occurrence = terminal_task
                         .as_ref()
                         .map(|t| format!("task-terminal-{}", t.task_id))
@@ -1285,7 +1358,11 @@ impl KernelRuntimeState {
                                     run.completed_at_ms().unwrap_or(0)
                                 )
                             } else {
-                                format!("source-lost-{source}")
+                                if source.starts_with("gate_") {
+                                    format!("entry-terminal-{source}")
+                                } else {
+                                    format!("source-lost-{source}")
+                                }
                             }
                         });
                     self.owned
@@ -1445,34 +1522,7 @@ impl KernelRuntimeState {
         let Outcome::Swept(changed) = swept else {
             unreachable!()
         };
-        // Every transition is a notice so attached clients refresh the projection.
-        for task in blocked.into_iter().chain(changed) {
-            self.owned.record_notice_for_agent(
-                &task.room_id,
-                None,
-                Some(&task.agent_id),
-                self.owned
-                    .attachment_store
-                    .list_session_attachment_ids(&task.room_id),
-                if task.state == ExecutionState::Blocked {
-                    format!(
-                        "{}: Needs your help. {}",
-                        self.agent_notice_name(&task.agent_id),
-                        task.reason
-                    )
-                } else if task.state == ExecutionState::Cancelled {
-                    format!(
-                        "{}: Stopped. Its provider turn ended without an answer.",
-                        self.agent_notice_name(&task.agent_id)
-                    )
-                } else {
-                    format!(
-                        "{}: Waiting for 15 minutes without progress.",
-                        self.agent_notice_name(&task.agent_id)
-                    )
-                },
-            );
-        }
+        self.record_task_transition_notices(blocked.into_iter().chain(changed));
         let tasks = self.owned.durable_state_store.agent_tasks_to_sweep()?;
         self.owned
             .human_control_task_waits

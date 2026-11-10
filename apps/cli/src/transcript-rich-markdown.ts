@@ -1,5 +1,5 @@
 import MarkdownIt from "markdown-it"
-import { normalizeMarkdownFenceInfoStrings } from "./transcript-markdown.js"
+import { normalizeMarkdownFenceInfoStrings, replaceVisualizeLines } from "./transcript-markdown.js"
 import { renderTranscriptMath } from "./transcript-math.js"
 
 // MP-08 / MP-10 (PANE-09): terminal equivalents for rich Markdown that
@@ -13,7 +13,7 @@ const dataImagePattern = /^data:image\/([a-z0-9.+-]+);base64,([a-z0-9+/=]+)$/i
 
 export function prepareTranscriptMarkdown(text: string): string {
   return mapMarkdownProse(normalizeMarkdownFenceInfoStrings(text), (prose) => (
-    mapOutsideCodeSpans(prose, (text) => renderTranscriptMath(renderImages(renderTaskMarkers(text))))
+    mapOutsideCodeSpans(prose, (text) => renderTranscriptMath(renderImages(renderVisualizeLines(renderTaskMarkers(text)))))
   ))
 }
 
@@ -32,6 +32,13 @@ function renderImages(prose: string): string {
     }
     return `▣ image: ${alt} · ${escapeLinkText(src.replace(/^file:\/\//i, ""))} · size unknown (open in the web app)`
   })
+}
+
+// The web pane draws the page; a terminal names it, like a picture.
+function renderVisualizeLines(prose: string): string {
+  return replaceVisualizeLines(prose, (path) => (
+    `▣ visual: ${escapeLinkText(path.split("/").pop() || path)} · ${escapeLinkText(path)} (open in the web app)`
+  ))
 }
 
 function renderTaskMarkers(prose: string): string {

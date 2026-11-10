@@ -117,7 +117,7 @@ fn kernel_gateway_protocol_568_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "102043fb7f6e4b46f4c9371d861b7ef60a004f86a4ba16d51210f34b9d90bb9e"
+        "b646ae8a41e18035af4f08df2d8b209fa12fa8743c04366f5353e27fa5fec4f6"
     );
 }
 
@@ -228,7 +228,7 @@ fn outside_events_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "b6a0703ebf1777548df6e60b9ecfc0c8196716127b8879abdf5ccf98144771bf"
+        "f74c78bcdbe810b10b8d4e572eb09c02563d0012c946858a1b47b66175ffd1a6"
     );
 }
 
@@ -264,6 +264,8 @@ fn created_work_keeps_its_ids_and_separate_event_failure_on_the_wire() {
         LocalDaemonResponse::AgentSpawned {
             agent: agent.clone(),
             event_subscription_error: None,
+            deadline_ms: Some(1_800_000_000_000),
+            branch: Some("feature-x".to_string()),
         },
         LocalDaemonResponse::AgentsSpawned {
             agents: vec![agent],
@@ -271,6 +273,14 @@ fn created_work_keeps_its_ids_and_separate_event_failure_on_the_wire() {
         },
     ] {
         let before = serde_json::to_value(&response).unwrap();
+        if let Some(spawned) = before.get("AgentSpawned") {
+            // The spawn answer states the deadline and branch the kernel applied (protocol 1002).
+            assert_eq!(
+                spawned["deadline_ms"],
+                serde_json::json!(1_800_000_000_000u64)
+            );
+            assert_eq!(spawned["branch"], "feature-x");
+        }
         response.record_event_subscription_failure();
         let value = serde_json::to_value(response).unwrap();
         let mut without_issue = value.clone();

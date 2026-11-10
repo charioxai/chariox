@@ -22,6 +22,15 @@ pub struct PtyHandover {
     pub(crate) submissions: crate::runtime::process_resources::Submissions,
 }
 
+/// A running PTY on its way to the next program. The handover names `master`,
+/// a copy of the master this program owns until `exec`: whoever owns the PTY
+/// here may close its own descriptor while the kernel stops.
+#[cfg(unix)]
+pub(crate) struct OutgoingPty {
+    pub(crate) handover: PtyHandover,
+    pub(crate) master: std::os::fd::OwnedFd,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum Gate {
     #[default]

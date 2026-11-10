@@ -10,6 +10,22 @@ pub(super) fn summarize_meta_agent(agent: &crate::agent::AgentInstance) -> serde
     })
 }
 
+/// What `agent spawn` answers: the agent, and the options the kernel applied to it, so the
+/// spawner verifies them without a second call. Options nobody gave stay null.
+pub(super) fn summarize_spawned_agent(
+    agent: &crate::agent::AgentInstance,
+    facts: &crate::runtime::state::SpawnedAgentFacts,
+) -> serde_json::Value {
+    let mut summary = summarize_meta_agent(agent);
+    summary["profile"] = serde_json::json!(agent.account_profile());
+    summary["effort"] = serde_json::json!(agent.effort());
+    summary["permission"] = serde_json::json!(agent.permission_level_override());
+    summary["deadline_ms"] = serde_json::json!(facts.deadline_ms);
+    summary["worktree"] = serde_json::json!(facts.worktree);
+    summary["branch"] = serde_json::json!(facts.branch);
+    summary
+}
+
 pub(super) fn summarize_meta_workflow(
     workflow: &crate::session::WorkflowDefinition,
 ) -> serde_json::Value {

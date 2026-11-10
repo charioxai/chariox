@@ -15,6 +15,8 @@ pub(super) struct TerminalOutputBatchAppend {
     pub(super) kind: crate::terminal::TerminalOutputKind,
     pub(super) merge_key: Option<String>,
     pub(super) sequence: Option<u64>,
+    /// The prompt this output belongs to when that is not the active one.
+    pub(super) prompt: Option<ActivePromptTranscriptMetadata>,
     pub(super) bytes: Vec<u8>,
 }
 
@@ -23,6 +25,12 @@ pub(super) struct PreparedHistoryEntry {
     pub(super) entry: SessionHistoryEntry,
     pub(super) context: crate::history::HistoryEventTurnContext,
     pub(super) sequence: u64,
+    /// The earlier prompt whose turn this row stays in (see
+    /// `keep_background_tool_in_its_turn`).
+    pub(super) kept_in_prompt: Option<ActivePromptTranscriptMetadata>,
+    /// That row already took the place of the call's newest stored row, so it
+    /// is not appended again.
+    pub(super) replaced_in_place: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -111,8 +119,59 @@ impl KernelRuntimeOwnedState {
                 .load_provider_tool_entries_for_run(session_id, provider_run_id)?,
             ending,
         );
+        self.append_ended_provider_tool_rows(session_id, provider_run_id, agent_id, rows);
+        Ok(())
+    }
+
+    /// Ends the background commands of a run whose provider process is gone
+    /// (see `crate::app::ended_background_provider_tool_rows`).
+    pub(super) fn end_background_provider_tools(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let rows = crate::app::ended_background_provider_tool_rows(
+            self.operational_history_store
+                .load_provider_tool_entries_for_run(session_id, provider_run_id)?,
+            crate::session::unix_epoch_ms(),
+        );
+        self.append_ended_provider_tool_rows(session_id, provider_run_id, agent_id, rows);
+        Ok(())
+    }
+
+    /// The run's provider process stopped with it; failing to settle its
+    /// background rows must not undo the stop, so the failure is logged.
+    pub(super) fn end_background_provider_tools_of_ended_run(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+    ) {
+        let Some(agent_id) = run.agent_instance_id() else {
+            return;
+        };
+        if let Err(error) = self.end_background_provider_tools(run.session_id(), run.id(), agent_id)
+        {
+            crate::logging::warn_with_fields(
+                "daemon.history",
+                "failed to end background provider tools of an ended run",
+                serde_json::json!({
+                    "session_id": run.session_id(),
+                    "provider_run_id": run.id(),
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+
+    fn append_ended_provider_tool_rows(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        rows: Vec<crate::app::EndedProviderToolRow>,
+    ) {
         if rows.is_empty() {
-            return Ok(());
+            return;
         }
         let metadata = self.active_prompt_transcript_metadata_for_agent(session_id, Some(agent_id));
         let outputs = rows
@@ -135,6 +194,7 @@ impl KernelRuntimeOwnedState {
                         kind: crate::terminal::TerminalOutputKind::ProviderTool,
                         merge_key,
                         sequence: None,
+                        prompt: None,
                         bytes,
                     },
                     Some(entry),
@@ -142,7 +202,6 @@ impl KernelRuntimeOwnedState {
             })
             .collect();
         self.append_history_and_fan_out(session_id, None, outputs);
-        Ok(())
     }
 
     pub(super) fn record_failed_provider_tools(
@@ -175,6 +234,7 @@ impl KernelRuntimeOwnedState {
                         kind: chunk.kind,
                         merge_key: chunk.merge_key,
                         sequence: None,
+                        prompt: None,
                         bytes: chunk.bytes,
                     },
                     Some(entry),
@@ -278,6 +338,7 @@ impl KernelRuntimeOwnedState {
                     kind: crate::terminal::TerminalOutputKind::ProviderError,
                     merge_key: None,
                     sequence: None,
+                    prompt: None,
                     bytes: message.into_bytes(),
                 },
                 Some(history_entry),
@@ -300,10 +361,13 @@ impl KernelRuntimeOwnedState {
             .enumerate()
             .filter_map(|(position, entry)| entry.as_ref().map(|_| position))
             .collect::<Vec<_>>();
-        let sequences =
-            self.append_history_entries(session_id, entries.into_iter().flatten().collect());
-        for (position, sequence) in positions.into_iter().zip(sequences) {
-            outputs[position].sequence = sequence;
+        let appended = self
+            .append_history_entries_in_turns(session_id, entries.into_iter().flatten().collect());
+        for (position, appended) in positions.into_iter().zip(appended) {
+            if let Some((sequence, kept_in_prompt)) = appended {
+                outputs[position].sequence = sequence;
+                outputs[position].prompt = kept_in_prompt;
+            }
         }
         match recipient_attachment_ids {
             Some(recipient_attachment_ids) => self.fan_out_terminal_outputs_to_recipients(
@@ -419,15 +483,18 @@ impl KernelRuntimeOwnedState {
             if bounded_bytes.is_empty() {
                 continue;
             }
-            let prompt_metadata = prompt_metadata_cache
-                .entry(agent_id.clone())
-                .or_insert_with(|| {
-                    self.active_prompt_transcript_metadata_for_agent(
-                        session_id,
-                        agent_id.as_deref(),
-                    )
-                })
-                .clone();
+            let prompt_metadata = match output.prompt {
+                Some(prompt) => prompt,
+                None => prompt_metadata_cache
+                    .entry(agent_id.clone())
+                    .or_insert_with(|| {
+                        self.active_prompt_transcript_metadata_for_agent(
+                            session_id,
+                            agent_id.as_deref(),
+                        )
+                    })
+                    .clone(),
+            };
             let provider_terminal =
                 output.kind == crate::terminal::TerminalOutputKind::ProviderTerminal;
             let scoped_recipient_attachment_ids = if provider_terminal {
@@ -765,34 +832,92 @@ impl KernelRuntimeOwnedState {
                     None,
                     active_turn,
                 );
+                let kept_in_prompt = self.keep_background_tool_in_its_turn(&entry, &context);
                 Some(PreparedHistoryEntry {
                     position,
                     entry,
                     context,
                     sequence: self.operational_history_store.reserve_sequence(),
+                    replaced_in_place: kept_in_prompt.is_some(),
+                    kept_in_prompt,
                 })
             })
             .collect()
     }
 
+    #[cfg(test)]
     pub(super) fn append_history_entries(
         &self,
         session_id: &str,
         entries: Vec<SessionHistoryEntry>,
     ) -> Vec<Option<u64>> {
-        let mut sequences = vec![None; entries.len()];
-        let prepared = self.prepare_history_entries(session_id, entries);
-        let positions = prepared
+        self.append_history_entries_in_turns(session_id, entries)
+            .into_iter()
+            .map(|appended| appended.and_then(|(sequence, _)| sequence))
+            .collect()
+    }
+
+    /// The sequence of each appended row (none for a row that replaced an
+    /// earlier one), and the earlier prompt it stays in.
+    fn append_history_entries_in_turns(
+        &self,
+        session_id: &str,
+        entries: Vec<SessionHistoryEntry>,
+    ) -> Vec<Option<(Option<u64>, Option<ActivePromptTranscriptMetadata>)>> {
+        let mut appended = vec![None; entries.len()];
+        let (replaced, to_append): (Vec<_>, Vec<_>) = self
+            .prepare_history_entries(session_id, entries)
+            .into_iter()
+            .partition(|item| item.replaced_in_place);
+        for item in replaced {
+            appended[item.position] = Some((None, item.kept_in_prompt));
+        }
+        let positions = to_append
             .iter()
             .map(|item| item.position)
             .collect::<Vec<_>>();
         for (position, sequence) in positions
             .into_iter()
-            .zip(self.append_prepared_history_entries(prepared))
+            .zip(self.append_prepared_history_entries(to_append))
         {
-            sequences[position] = Some(sequence);
+            appended[position] = Some((Some(sequence), None));
         }
-        sequences
+        appended
+    }
+
+    /// The launching prompt of a background tool row that took the place of
+    /// its call's newest stored row (see
+    /// `OperationalHistoryStore::keep_background_tool_row_in_its_turn`).
+    fn keep_background_tool_in_its_turn(
+        &self,
+        entry: &SessionHistoryEntry,
+        context: &crate::history::HistoryEventTurnContext,
+    ) -> Option<ActivePromptTranscriptMetadata> {
+        match self
+            .operational_history_store
+            .keep_background_tool_row_in_its_turn(entry, context)
+        {
+            Ok(kept) => kept.map(|kept| {
+                let launch = kept.to_session_history_entry();
+                ActivePromptTranscriptMetadata {
+                    prompt_id: kept.prompt_id,
+                    prompt_origin: launch.as_ref().and_then(|entry| entry.prompt_origin),
+                    source_attachment_id: launch.and_then(|entry| entry.source_attachment_id),
+                }
+            }),
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "failed to keep a background tool row in its turn",
+                    serde_json::json!({
+                        "session_id": entry.session_id,
+                        "merge_key": entry.merge_key,
+                        "error": error.to_string(),
+                    }),
+                );
+                None
+            }
+        }
     }
 
     pub(super) fn append_operational_history_entry(

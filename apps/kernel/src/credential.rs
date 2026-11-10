@@ -211,7 +211,7 @@ pub(crate) fn validate_credential_registration(
         .as_ref()
         .and_then(|m| m.use_binding.as_ref())
     {
-        binding.target.validate()?;
+        binding.validate()?;
     }
     if credential
         .allowed_uses

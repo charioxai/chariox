@@ -3,7 +3,9 @@
 use chariox_relay::protocol::RelayError;
 
 use crate::error::DaemonError;
-use crate::local::LocalDaemonRequest;
+use crate::local::{
+    KernelBrowserCommand, KernelBrowserRequest, LocalDaemonRequest, RoomTerminalOperation,
+};
 
 pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
     match error {
@@ -15,9 +17,11 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
             mapped.message = error.to_string();
             mapped
         }
-        DaemonError::MachineRequest { code, .. } => {
-            relay_error(code.as_str(), &error.to_string(), code == "exec_input_busy")
-        }
+        DaemonError::MachineRequest { code, .. } => relay_error(
+            code.as_str(),
+            &error.to_string(),
+            code == "exec_input_busy" || code == crate::runtime::room_tool_admission::RETRY_CODE,
+        ),
         DaemonError::SteerDeliveredEventUnrecorded { .. } => {
             relay_error("prompt_steer_event_unrecorded", &error.to_string(), false)
         }
@@ -189,7 +193,16 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SetRoomBrowserBar(_) => "environment.browser_bar.set",
         LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(_) => "environment.input.takeover",
         LocalDaemonRequest::ReleaseRoomEnvironmentInput(_) => "environment.input.release",
+        LocalDaemonRequest::RoomTerminal(request)
+            if matches!(request.operation, RoomTerminalOperation::Snapshot { .. }) =>
+        {
+            "terminal.room.snapshot"
+        }
         LocalDaemonRequest::RoomTerminal(_) => "terminal.room",
+        LocalDaemonRequest::CaptureVisibleRegion(_) => "screenshot.capture",
+        LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
+            command: KernelBrowserCommand::Screenshot { .. },
+        }) => "screenshot.capture",
         LocalDaemonRequest::SubmitRoomEnvironmentAction(_) => "environment.action.submit",
         LocalDaemonRequest::SubmitRoomEnvironmentBrowserAction(_) => {
             "environment.browser_action.submit"
@@ -699,5 +712,25 @@ mod tests {
             });
 
         assert_eq!(relay_request_kind(&request), "environment.action.cancel");
+    }
+
+    #[test]
+    fn a_room_tool_refusal_crosses_the_relay_as_its_own_code() {
+        let mapped = map_relay_error(&crate::runtime::room_tool_admission::denied(
+            "agent is unavailable in this room",
+        ));
+        assert_eq!(mapped.code, "room_tool_refused");
+        assert_eq!(mapped.message, "agent is unavailable in this room");
+        assert!(!mapped.retryable);
+    }
+
+    #[test]
+    fn a_room_tool_failure_that_passes_crosses_the_relay_as_retryable() {
+        let mapped = map_relay_error(&crate::runtime::room_tool_admission::retry_later(
+            "Public history changed; retry the query",
+        ));
+        assert_eq!(mapped.code, "room_tool_retry");
+        assert_eq!(mapped.message, "Public history changed; retry the query");
+        assert!(mapped.retryable);
     }
 }

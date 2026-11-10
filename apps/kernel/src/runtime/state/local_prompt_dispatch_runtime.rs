@@ -1635,8 +1635,13 @@ impl KernelRuntimeState {
                 Some(&dispatch.provider_run_id),
             )
             .await;
+        // The abort holds this run's lane, and cancelling the task's owned work takes
+        // every run lane in the Room: finish it outside the lane, as a structured Stop does.
         if let Some(settlement) = settlement {
-            self.finish_stopped_agent_task(settlement, &prompt).await;
+            self.spawn_workflow_prompt_dispatches(WorkflowPromptDispatches {
+                stopped_task_settlements: vec![(settlement, prompt)],
+                ..Default::default()
+            });
         }
         // A prompt the person sent while the Stop settled is promoted here; without its dispatch
         // it would stay active and never reach the provider.

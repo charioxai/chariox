@@ -160,16 +160,30 @@ fn apply(
         candidate.receipt.automation_revision,
     )?;
     // Exact receipt revision + automation CAS are checked by mark_queued_in.
-    let receipt = AppOutbox::mark_queued_in(
-        &tx,
-        &automation,
-        &candidate.receipt.receipt_id,
-        candidate.receipt.revision,
-        &prepared.queued_id,
-        crate::session::unix_epoch_ms(),
-    )?;
+    let receipt = if let Some(admission) = &prepared.gate {
+        let entry = super::workflow_gate::admission::accept_in(&tx, admission.clone())?;
+        AppOutbox::mark_entry_owned_in(
+            &tx,
+            &automation,
+            &candidate.receipt.receipt_id,
+            candidate.receipt.revision,
+            &entry.entry_id,
+            crate::session::unix_epoch_ms(),
+        )?
+    } else {
+        AppOutbox::mark_queued_in(
+            &tx,
+            &automation,
+            &candidate.receipt.receipt_id,
+            candidate.receipt.revision,
+            &prepared.queued_id,
+            crate::session::unix_epoch_ms(),
+        )?
+    };
     budget.check()?;
-    write(&tx, prepared, false)?;
+    if prepared.gate.is_none() {
+        write(&tx, prepared, false)?;
+    }
     match tx.commit() {
         Ok(()) => {
             #[cfg(test)]
@@ -187,6 +201,7 @@ fn apply(
         }
         // A full disk rolled the commit back: nothing to reconcile.
         Err(error) if super::storage_full::observe(&error) => Err(error.into()),
+        Err(_) if prepared.gate.is_some() => Err(AppEventDeliveryError::CommitUnknown),
         Err(error) => reconcile_commit(connection, prepared, error),
     }
 }

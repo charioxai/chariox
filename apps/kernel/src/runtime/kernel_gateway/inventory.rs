@@ -4,6 +4,7 @@
 //! it later without touching the gateway or the CLI.
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use chariox_relay::protocol::RelayKernelPresence;
 
@@ -12,10 +13,7 @@ use crate::local::GatewayKernelVia;
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
 };
-
-/// A kernel list this old is still good to route a request by; a kernel that went away
-/// meanwhile is reported by the relay as not connected.
-const USABLE_FOR_MS: u64 = 5 * 60 * 1000;
+use crate::transport::relay_client::RelayClientState;
 
 pub(crate) trait InventorySource: Send + Sync {
     fn via(&self) -> GatewayKernelVia;
@@ -25,15 +23,13 @@ pub(crate) trait InventorySource: Send + Sync {
     /// Listed within the last `max_age_ms`. A question asked by a person or an agent
     /// (`chariox kernels`) wants a list this young, not one that is merely good enough to route by.
     fn refreshed_within(&self, max_age_ms: u64) -> bool;
-    /// Listed recently enough to answer a request from while a fresh list is fetched
-    /// behind it; a source that never listed is not usable.
-    fn is_usable(&self) -> bool;
     fn refresh(&self) -> Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + '_>>;
 }
 
 pub(crate) struct RelayInventory {
     pub(crate) config: DaemonConfigProjectionStore,
     pub(crate) projection: RemoteRelayInventoryProjectionStore,
+    pub(crate) relay_state: Arc<tokio::sync::RwLock<RelayClientState>>,
 }
 
 impl InventorySource for RelayInventory {
@@ -65,16 +61,12 @@ impl InventorySource for RelayInventory {
             .is_fresh(crate::session::unix_epoch_ms(), max_age_ms)
     }
 
-    fn is_usable(&self) -> bool {
-        self.projection
-            .is_fresh(crate::session::unix_epoch_ms(), USABLE_FOR_MS)
-    }
-
     fn refresh(&self) -> Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + '_>> {
         Box::pin(
             crate::transport::relay_client::refresh_remote_inventory_projection(
                 self.config.clone(),
                 self.projection.clone(),
+                Some(Arc::clone(&self.relay_state)),
             ),
         )
     }

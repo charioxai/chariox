@@ -35,6 +35,10 @@ export async function invokeKernelWorkflow(
       publication.queue_ref ?? null,
       publicationInvocation as unknown as Record<string, unknown>,
     ))
+    if ("WorkflowEntryAccepted" in response) {
+      const { entry } = response.WorkflowEntryAccepted as { entry: import("@chariox/kernel-client").WorkflowGateEntry }
+      return { accepted: true, gate_entry: entry }
+    }
     if ("WorkflowPromptEnqueued" in response) {
       return { accepted: true, queued: true, response: response.WorkflowPromptEnqueued }
     }
@@ -73,6 +77,7 @@ export function publicationInvocationEnvelope(
   invocation: NormalizedInvocation,
 ): WorkflowPublicationInvocationEnvelope {
   return {
+    ...(invocation.http_method ? { http_method: invocation.http_method } : {}),
     publication_id: invocation.publication_id,
     hook_id: publication.hook_id ?? null,
     invocation_id: invocation.request_id,

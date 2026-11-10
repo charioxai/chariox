@@ -100,3 +100,37 @@ fn a_machine_name_resolves_to_the_kernel_it_runs_and_an_unknown_name_is_unreacha
         server_task.await.expect("relay server joins");
     });
 }
+
+/// The name the owner gave the machine at Cloud enrollment is the machine name the relay
+/// matches `--machine` against while the Cloud relay carries this kernel; the local alias
+/// (`CHARIOX_MACHINE_ALIAS` or the host name) stays the name on a private relay.
+#[test]
+fn the_enrolled_machine_name_is_the_name_the_relay_knows() {
+    crate::test_support::isolated_env_test!();
+    // Each kernel gets its own state: the first one still owns its durable state.
+    let enrolled = |relay_url: &str| {
+        let mut config = DaemonConfig::for_tests();
+        config.host_machine_alias = Some("ao-b-machine".to_string());
+        config.relay_url = Some(relay_url.to_string());
+        config.relay_token = Some("relay-token".to_string());
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            relay_url: "wss://relay.example.test".to_string(),
+            machine_alias: Some("aoorch-b".to_string()),
+            ..Default::default()
+        });
+        config
+    };
+    let mut app =
+        DaemonApp::bootstrap(enrolled("wss://relay.example.test")).expect("kernel bootstraps");
+    assert_eq!(
+        app.relay_registration().machine_alias.as_deref(),
+        Some("aoorch-b")
+    );
+
+    let mut private =
+        DaemonApp::bootstrap(enrolled("ws://127.0.0.1:1")).expect("kernel bootstraps");
+    assert_eq!(
+        private.relay_registration().machine_alias.as_deref(),
+        Some("ao-b-machine")
+    );
+}

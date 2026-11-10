@@ -39,6 +39,7 @@ impl RetryPolicy {
 }
 pub struct WorkerEngine {
     engine: Engine,
+    gate: bool,
     #[cfg(target_os = "macos")]
     code: Arc<crate::macos_code::JitCode>,
     stop: Arc<AtomicBool>,
@@ -46,10 +47,24 @@ pub struct WorkerEngine {
 }
 impl WorkerEngine {
     pub fn new() -> wasmtime::Result<Self> {
+        Self::with_profile(false)
+    }
+    pub(crate) fn gate() -> wasmtime::Result<Self> {
+        Self::with_profile(true)
+    }
+    fn with_profile(gate: bool) -> wasmtime::Result<Self> {
         #[cfg(not(target_os = "macos"))]
-        let engine = crate::engine::engine()?;
+        let engine = if gate {
+            Engine::new(&crate::engine::gate_configuration())?
+        } else {
+            crate::engine::engine()?
+        };
         #[cfg(target_os = "macos")]
-        let (engine, code) = crate::macos_code::engine()?;
+        let (engine, code) = if gate {
+            crate::macos_code::with_configuration(crate::engine::gate_configuration())?
+        } else {
+            crate::macos_code::engine()?
+        };
         let ticking = engine.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
@@ -63,6 +78,7 @@ impl WorkerEngine {
             })?;
         Ok(Self {
             engine,
+            gate,
             #[cfg(target_os = "macos")]
             code,
             stop,
@@ -73,6 +89,10 @@ impl WorkerEngine {
         &self.engine
     }
     pub fn compile(&self, bytes: &[u8], world: &str) -> wasmtime::Result<Component> {
+        wasmtime::ensure!(
+            self.gate == (world == chariox_app_wit::gate::WORLD),
+            "component world does not match engine profile"
+        );
         chariox_app_wit::check_component(bytes, world)?;
         #[cfg(target_os = "macos")]
         {
@@ -99,6 +119,10 @@ impl WorkerEngine {
         }
     }
     pub fn precompile(&self, bytes: &[u8], world: &str) -> wasmtime::Result<Vec<u8>> {
+        wasmtime::ensure!(
+            self.gate == (world == chariox_app_wit::gate::WORLD),
+            "component world does not match engine profile"
+        );
         chariox_app_wit::check_component(bytes, world)?;
         self.engine.precompile_component(bytes)
     }

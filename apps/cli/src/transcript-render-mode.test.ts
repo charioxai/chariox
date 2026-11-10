@@ -65,3 +65,11 @@ test("readTranscriptApplyPatch extracts patch files from tool source text", () =
   assert.equal(files?.length, 1)
   assert.equal(files?.[0]?.filePath, "src/app.ts")
 })
+
+test("MP-08 a paragraph ending in a visualize line renders as markdown so the page is named", () => {
+  assert.equal(
+    transcriptRenderMode(transcriptEntry("assistant", { text: 'Here is the chart.\n\nvisualize{"path":"/w/chart.html"}' })),
+    "markdown",
+  )
+  assert.equal(transcriptRenderMode(transcriptEntry("assistant", { text: 'visualize{"path": 3}' })), "text", "not a page: plain text")
+})

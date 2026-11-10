@@ -1129,6 +1129,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::UpdateWorkflowCanvasLayout(_) => "workflow_canvas.layout.update",
         LocalDaemonRequest::SetWorkflowRunOutputSchema(_) => "workflow.run_output_schema.set",
         LocalDaemonRequest::SetWorkflowFlushContext(_) => "workflow.flush_context.set",
+        LocalDaemonRequest::WorkflowGate(_) => "workflow.gate",
         LocalDaemonRequest::InvokeWorkflowEndpoint(_) => "workflow_prompt.enqueue",
         LocalDaemonRequest::ListWorkflowRuns(_) => "workflow_run.list",
         LocalDaemonRequest::GetWorkflowRun(_) => "workflow_run.get",

@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 use tokio::time::{sleep, Duration, Instant};
 
+use super::app_inbox_runtime::RouteContract;
 use super::workflow_publication_runtime_lifecycle::DEPLOYMENT_COPY_KEY_PREFIX as COPY_KEY_PREFIX;
 use super::KernelRuntimeState;
 use crate::durable_state::app_inbox::{AppInboxOperation, AppInboxOutcome};
@@ -29,6 +30,7 @@ use crate::local::{
     MaterializeWorkflowPublicationRequest, RevokeAppConnectionRequest, UninstallAppRequest,
 };
 use crate::session::WorkflowPublicationDefinition;
+use chariox_app_runtime::app_inbox::InboxSource;
 
 #[cfg(not(test))]
 const COPY_INSTALL_TIMEOUT: Duration = Duration::from_secs(120);
@@ -813,10 +815,15 @@ impl KernelRuntimeState {
             {
                 continue;
             }
-            let connection = match route["connection"].is_null() {
-                true => None,
-                false => Some(
-                    source_routes
+            let source_event_type = text(route, "source_event_type").to_owned();
+            let source_event_version = route["source_event_version"]
+                .as_u64()
+                .and_then(|version| u32::try_from(version).ok())
+                .unwrap_or_default();
+            let (connection, contract) = match route["connection"].is_null() {
+                true => (None, RouteContract::Catalog),
+                false => {
+                    let connection = source_routes
                         .iter()
                         .find(|current| current.route_id == route_id)
                         .and_then(|current| current.connection.clone())
@@ -824,26 +831,34 @@ impl KernelRuntimeState {
                             copy_error(format!(
                                 "the owner's inbox route `{route_id}` of App `{source}` no longer exists"
                             ))
-                        })?,
-                ),
+                        })?;
+                    let inherited = self
+                        .owner_route_source(
+                            owner,
+                            source,
+                            route_id,
+                            &source_event_type,
+                            source_event_version,
+                        )
+                        .await?;
+                    (Some(connection), RouteContract::Inherited(inherited))
+                }
             };
-            self.copy_request(
+            self.create_app_inbox_route(
                 owner,
                 &copy.installation_id,
-                LocalDaemonRequest::CreateAppInboxRoute(CreateAppInboxRouteRequest {
+                CreateAppInboxRouteRequest {
                     installation_id: copy.installation_id.clone(),
                     route_id: route_id.to_owned(),
                     event_name: text(route, "event_name").to_owned(),
-                    source_event_type: text(route, "source_event_type").to_owned(),
-                    source_event_version: route["source_event_version"]
-                        .as_u64()
-                        .and_then(|version| u32::try_from(version).ok())
-                        .unwrap_or_default(),
+                    source_event_type,
+                    source_event_version,
                     connection,
-                }),
-                "an inbox route could not be created for the copy",
+                },
+                contract,
             )
-            .await?;
+            .await
+            .map_err(|code| app_error("an inbox route could not be created for the copy", code))?;
         }
         for current in copy.inbox_routes.iter().filter(|current| {
             !planned
@@ -862,6 +877,50 @@ impl KernelRuntimeState {
             .await?;
         }
         Ok(())
+    }
+
+    /// The admitted source of the owner's route a copy route is made from.
+    /// The copy keeps that route's verified payload contract, so it must
+    /// subscribe to the same event version.
+    async fn owner_route_source(
+        &self,
+        owner: &str,
+        installation: &str,
+        route_id: &str,
+        event_type: &str,
+        event_version: u32,
+    ) -> Result<InboxSource, DaemonError> {
+        let missing = || {
+            copy_error(format!(
+                "the owner's inbox route `{route_id}` of App `{installation}` no longer exists"
+            ))
+        };
+        let route = match self
+            .inbox(AppInboxOperation::Route {
+                owner: owner.to_owned(),
+                installation: installation.to_owned(),
+                route_id: route_id.to_owned(),
+            })
+            .await
+        {
+            Ok(AppInboxOutcome::Route(Some(route))) => route,
+            Ok(AppInboxOutcome::Route(None)) | Err(AppRequestErrorCode::NotFound) => {
+                return Err(missing())
+            }
+            Ok(_) => {
+                return Err(app_error(
+                    "the owner's inbox route could not be read",
+                    AppRequestErrorCode::StorageUnavailable,
+                ))
+            }
+            Err(code) => return Err(app_error("the owner's inbox route could not be read", code)),
+        };
+        if route.source_event_type != event_type || route.source_event_version != event_version {
+            return Err(copy_error(format!(
+                "the owner's inbox route `{route_id}` of App `{installation}` subscribes to another event version than the release plans"
+            )));
+        }
+        route.source.ok_or_else(missing)
     }
 
     /// Handover: an owner's generator-fed route pauses while a deployment

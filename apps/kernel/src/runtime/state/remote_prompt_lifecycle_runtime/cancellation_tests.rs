@@ -2,6 +2,8 @@
 mod completed_cancellation_tests;
 #[path = "deadline_cancellation_tests.rs"]
 mod deadline_cancellation_tests;
+#[path = "sweep_stall_tests.rs"]
+mod sweep_stall_tests;
 
 use super::*;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};

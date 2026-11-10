@@ -370,15 +370,6 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
                     }],
                 },
                 kernel_context: RelayManagedKernelContextImportReceipt::Empty,
-                omitted_provider_accounts: vec![
-                    crate::transport::relay_peer::RelayManagedContextOmittedProviderAccount {
-                        provider: "claude".to_string(),
-                        profile_id: "acct-work".to_string(),
-                        label: "Work Claude".to_string(),
-                        reason: crate::managed_context::package::ManagedContextProviderAccountOmission::VaultClosed,
-                        next_step: crate::managed_context::package::ManagedContextProviderAccountNextStep::SignInAgain,
-                    },
-                ],
                 receipt_sha256: "c".repeat(64),
             }),
         },
@@ -395,16 +386,6 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
     assert_eq!(
         value.pointer("/status/receipt/kernel_context/kind"),
         Some(&serde_json::json!("empty"))
-    );
-    assert_eq!(
-        value.pointer("/status/receipt/omitted_provider_accounts/0"),
-        Some(&serde_json::json!({
-            "provider": "claude",
-            "profile_id": "acct-work",
-            "label": "Work Claude",
-            "reason": "vault_closed",
-            "next_step": "sign_in_again",
-        }))
     );
     let failure = serde_json::to_value(RelayPeerResponse::ManagedContextImportFailed {
         code: "invalid_managed_context".to_string(),

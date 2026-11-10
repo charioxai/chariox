@@ -47,6 +47,7 @@ mod room_slice_cross_placement;
 mod screenshot;
 mod screenshot_region;
 mod session;
+mod spawn_answer;
 
 pub(super) async fn controller_placement_lifecycle() {
     controller::controller_scenario(false).await;

@@ -9,6 +9,7 @@ mod account_credential;
 mod account_endpoints;
 mod claude;
 mod claude_runtime;
+pub(crate) use claude_runtime::claude_rate_limit_snapshot;
 pub(crate) use claude_runtime::usage::{
     claude_status_line_context_usage, claude_status_line_usage_snapshot,
 };
@@ -83,13 +84,17 @@ pub(crate) use claude::{
 };
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
-    verify_claude_account_credential, verify_claude_setup_token, ClaudeCredentialCheckError,
+    read_claude_rate_limits, verify_claude_account_credential, verify_claude_setup_token,
+    ClaudeCredentialCheckError,
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
 pub(crate) use claude_runtime::ClaudeRuntimeState;
 pub(crate) use claude_runtime::{begin_claude_runtime_tool_wait, ClaudeRuntimeToolWait};
-pub(crate) use claude_runtime::{bounded_result, bounded_result_images, RESULT_IMAGE_FILE_BYTES};
+pub(crate) use claude_runtime::{
+    bounded_result, bounded_result_images, ended_task_of_result, ends_background_commands,
+    launched_task_id, launches_background_command, RESULT_IMAGE_FILE_BYTES,
+};
 #[cfg(test)]
 pub(crate) use claude_runtime::{
     drain_claude_events, initialize_claude_runtime, submit_claude_prompt,
@@ -127,10 +132,10 @@ pub use launch_contract::{
     canonical_external_provider_session_id, canonical_profile_external_provider_session_id,
     default_provider_control_capabilities, external_provider_import_model,
     external_provider_session_providers, normalize_provider_resume_model,
-    provider_resume_failure_notice, provider_uses_inferred_runtime_mcp_binding, reach_mcp_url,
-    AgentExecutionMode, AgentPermissionLevel, ExternalProviderImportMetadata,
-    ExternalProviderObservedCursor, LaunchProviderRequest, ProviderLaunchResult,
-    ProviderResumeState, ProviderWriteAccessMode, RuntimeMcpBinding,
+    provider_resume_failure_notice, provider_uses_inferred_runtime_mcp_binding, AgentExecutionMode,
+    AgentPermissionLevel, ExternalProviderImportMetadata, ExternalProviderObservedCursor,
+    LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState, ProviderWriteAccessMode,
+    RuntimeMcpBinding,
 };
 #[cfg(test)]
 #[cfg(test)]

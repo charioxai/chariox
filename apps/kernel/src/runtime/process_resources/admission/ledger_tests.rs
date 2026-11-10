@@ -205,6 +205,82 @@ fn paused_binary_descendant_resumes_with_actual_headroom_and_live_reservation() 
     }
 }
 
+/// A 1500 MiB pool the oldest running command has filled while two younger
+/// commands wait, paused, on what they hold: the newest paused command ends
+/// for it, with its reason; the middle one and the oldest are not touched,
+/// and once the newest's memory is free nothing else is stopped.
+#[test]
+fn the_newest_paused_command_yields_before_the_oldest_running_one() {
+    let pool = pool::Pool::with_volume(1500 * MIB, volume(&Arc::new(AtomicU64::new(100 * GIB))));
+    let command_of = |unit: &str, pid: u32, resident: u64, growth: u64, wait: Option<Wait>| {
+        let mut waiting = entry(
+            pid as u64,
+            Peak {
+                memory: 800 * MIB,
+                ..Default::default()
+            },
+        );
+        waiting.admitted = true;
+        waiting.wait = wait;
+        let member = owner(
+            unit,
+            true,
+            vec![command(pid, resident, growth)],
+            vec![(pid, waiting)],
+        );
+        let (control, heard) = std::sync::mpsc::channel();
+        {
+            let mut member = member.lock().unwrap();
+            member.samples = vec![sample(resident)];
+            member.control = Some(control);
+        }
+        pool.join(&member);
+        (member, heard)
+    };
+    let paused = Some(Wait::Paused(WaitReason::Memory));
+    let (oldest, oldest_heard) = command_of("a", 1, 700 * MIB, 48 * MIB, None);
+    let (middle, middle_heard) = command_of("b", 2, 350 * MIB, 0, paused);
+    let (newest, newest_heard) = command_of("c", 3, 350 * MIB, 0, paused);
+    let stops = |heard: &std::sync::mpsc::Receiver<WatchCommand>| {
+        heard
+            .try_iter()
+            .filter_map(|command| match command {
+                WatchCommand::MemoryStop { pid, notice, .. } => Some((pid, notice)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    pool.enforce(&oldest, None);
+    let ended = stops(&newest_heard);
+    assert_eq!(ended.len(), 1, "the newest paused command was not stopped");
+    assert_eq!(ended[0].0, 3);
+    assert!(
+        ended[0].1.contains("stopped this waiting command"),
+        "{}",
+        ended[0].1
+    );
+    assert!(
+        stops(&middle_heard).is_empty(),
+        "more than the newest was stopped"
+    );
+    assert!(
+        stops(&oldest_heard).is_empty(),
+        "the oldest running command was stopped"
+    );
+    assert_eq!(wait(&oldest, 1), None, "the oldest command was paused");
+    assert_eq!(wait(&middle, 2), paused);
+
+    // The newest's memory is free: the pool has room and nobody else yields.
+    {
+        let mut newest = newest.lock().unwrap();
+        newest.samples.clear();
+        newest.commands.clear();
+    }
+    pool.enforce(&oldest, None);
+    assert!(stops(&middle_heard).is_empty() && stops(&oldest_heard).is_empty());
+}
+
 #[test]
 fn two_writers_that_together_reach_the_floor_do_not_both_start() {
     // 8 GiB above the floor; each job writes 6 GiB of scratch and deletes it.

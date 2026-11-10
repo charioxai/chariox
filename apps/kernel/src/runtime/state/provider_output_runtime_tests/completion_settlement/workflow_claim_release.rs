@@ -93,6 +93,7 @@ async fn exercise_archived_claim_release(reconcile_orphan: bool) {
             endpoint.id(),
             Some("complete the published workflow".to_string()),
             Some(crate::session::WorkflowPublicationInvocationEnvelope {
+                http_method: None,
                 publication_id: "publication-claim-release".to_string(),
                 hook_id: Some("hook-claim-release".to_string()),
                 invocation_id: "request-claim-release".to_string(),

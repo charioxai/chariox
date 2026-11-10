@@ -563,6 +563,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::UpdateWorkflowCanvasLayout(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::WorkflowGate(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::InvokeWorkflowEndpoint(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

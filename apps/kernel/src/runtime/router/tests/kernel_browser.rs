@@ -3,9 +3,12 @@ use super::*;
 use crate::local::{KernelBrowserCommand, KernelBrowserInput, KernelBrowserRequest};
 use serde_json::{json, Value};
 mod access;
+mod agent_reads;
 mod capability_grants;
 mod computer;
 mod focus_authority;
+mod implicit_start;
+mod screenshot;
 mod state_wait;
 
 fn run_test(test: fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>) {

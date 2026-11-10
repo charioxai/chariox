@@ -120,12 +120,9 @@ impl KernelRuntimeState {
         if agent.session_id() != session.id()
             || (!agent.is_metaagent() && !self.room_agent_tools_enabled())
         {
-            return Err(DaemonError::LocalTransport {
-                operation: "runtime_tool_meta",
-                message:
-                    "Meta mode runtime tools are only available to agents currently in Meta mode"
-                        .to_string(),
-            });
+            return Err(crate::runtime::room_tool_admission::denied(
+                "Meta mode runtime tools are only available to agents currently in Meta mode",
+            ));
         }
         self.dispatch_meta_runtime_tool_call_for_session_agent(
             &session, &agent, tool_name, arguments,
@@ -784,11 +781,9 @@ impl KernelRuntimeState {
         self.authorize_room_provider_epoch(Some(agent_id), Some(provider_run.id()))?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         if !agent.is_metaagent() && !self.room_agent_tools_enabled() {
-            return Err(DaemonError::LocalTransport {
-                operation: "runtime_tool_meta",
-                message: "Meta mode tools are only available to agents currently in Meta mode"
-                    .to_string(),
-            });
+            return Err(crate::runtime::room_tool_admission::denied(
+                "Meta mode tools are only available to agents currently in Meta mode",
+            ));
         }
         let session = self
             .owned

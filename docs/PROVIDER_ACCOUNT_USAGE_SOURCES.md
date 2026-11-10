@@ -72,6 +72,26 @@ streamed `rate_limit_event` observations by meter identity, retaining both the
 5-hour and weekly windows instead of replacing the whole account snapshot with
 the newest event.
 
+Claude Code runs the status line only in its interactive terminal. A
+stream-json run (`claude -p`, what the Chariox client interface launches) never
+executes it, so there the weekly reading comes from `rate_limit_event`: below
+its first warning threshold the event has no top-level `utilization`, and the
+percent of every window Claude tracks is in `unifiedWindows.<window>.utilization`
+as a 0-1 fraction, with `resetsAt` in epoch seconds. The kernel turns each
+window of that map into its own meter, so the weekly meter carries
+`used_percent`, `resets_at_ms` and `observed_at_ms` on every event. Claude has
+no 5-hour window any more: a meter whose reset has passed and that was not
+observed for `PROVIDER_USAGE_STALE_AFTER_MS` is retired (dropped on read and on
+the next write), while a 5-hour window Claude still sends stays. A stream-json process reports that event
+once, not again while the percent holds, so while the kernel holds prompt work
+(a turn in progress or queued) for an agent on the account the usage refresher
+(at most every 5 minutes) reads it again from one minimal Haiku turn of the
+official CLI in the account's own profile (about 400 tokens). An agent that
+finished its prompt but is still attached does not count: the account is idle
+and is never read, and the work is checked again right before each read. The usage
+endpoint (`/api/oauth/usage`) is not an option: it requires the `user:profile`
+scope, which a setup token lacks.
+
 Provider Accounts refresh never reads Claude Code credential files or macOS
 Keychain entries and does not call undocumented account endpoints. It refreshes
 authentication through the provider CLI, retains the latest real status-line or

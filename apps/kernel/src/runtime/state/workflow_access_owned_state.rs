@@ -155,6 +155,13 @@ impl KernelRuntimeOwnedState {
                 operation: "workflow.create_from_agent",
                 message: "metaagents cannot generate workflows from agents".to_string(),
             }),
+            LocalDaemonRequest::WorkflowGate(request) => self
+                .ensure_workflow_controlled_by_metaagent(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    metaagent_id,
+                    "workflow gate",
+                ),
             LocalDaemonRequest::ListWorkflowRuns(request) => {
                 if let Some(workflow_ref) = request.workflow_ref.as_deref() {
                     self.ensure_workflow_controlled_by_metaagent(

@@ -91,7 +91,7 @@ async fn mp11_g08_history_tools_never_leave_the_caller_room_even_under_sudo() {
     for name in ["chariox.history.search", "chariox.history.read"] {
         let result = history(name, own.id()).await;
         assert!(
-            matches!(&result, Err(crate::error::DaemonError::LocalTransport { message, .. })
+            matches!(&result, Err(crate::error::DaemonError::MachineRequest { message, .. })
                 if message.contains("limited to the caller room")),
             "{name}: another own room stays closed under /sudo: {result:?}"
         );

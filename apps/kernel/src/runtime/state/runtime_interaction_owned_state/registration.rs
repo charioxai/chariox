@@ -26,8 +26,12 @@ impl KernelRuntimeOwnedState {
             return Err(interaction_error("Invalid interaction identity"));
         }
         // Only a kernel decision may ask for the passkey; an agent's question
-        // must never prompt the human for it.
+        // must never prompt the human for it. A card payment the kernel raises
+        // in the asking agent's Room is the kernel's own decision.
+        let payment = super::super::vault_use::is_vault_payment_decision(interaction.id())
+            && interaction.payment().is_some();
         if interaction.agent_id().is_some()
+            && !payment
             && interaction
                 .choices()
                 .iter()
@@ -378,8 +382,11 @@ impl KernelRuntimeOwnedState {
             user_domain_interaction: None,
             kernel_operation_owner: kernel_operation_owner.map(str::to_owned),
             terminal_credential_owner: terminal_credential_owner.map(str::to_owned),
-            kernel_operation_deadline: kernel_operation_owner
-                .and_then(|_| interaction.timeout_sec())
+            // A card payment ends at its own deadline like a kernel operation; its popup lives as
+            // long as the card.
+            kernel_operation_deadline: (kernel_operation_owner.is_some() || payment)
+                .then(|| interaction.timeout_sec())
+                .flatten()
                 .map(|seconds| std::time::Instant::now() + std::time::Duration::from_secs(seconds)),
             passkey_prompt: passkey_prompt.clone(),
             holder: super::super::DecisionHolder::User,

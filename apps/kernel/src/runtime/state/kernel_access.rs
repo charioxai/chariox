@@ -986,7 +986,7 @@ mod cover;
 mod policy;
 pub(crate) mod reach;
 #[cfg(test)]
-pub(super) mod test_support;
+pub(in crate::runtime) mod test_support;
 
 /// The last durable grant state: a live until-exit grant, or covered-process
 /// ends still owed after a recorded grant end.

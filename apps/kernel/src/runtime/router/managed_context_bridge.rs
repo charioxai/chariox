@@ -25,10 +25,9 @@ use crate::runtime::terminal_pairings::public_key_thumbprint;
 use crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE;
 use crate::transport::relay_peer::{
     RelayManagedContextCapability, RelayManagedContextImportReceipt,
-    RelayManagedContextImportedRepository, RelayManagedContextOmittedProviderAccount,
-    RelayManagedContextTransferPhase, RelayManagedContextTransferStatus,
-    RelayManagedDevelopmentContextImportReceipt, RelayManagedKernelContextImportReceipt,
-    RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
+    RelayManagedContextImportedRepository, RelayManagedContextTransferPhase,
+    RelayManagedContextTransferStatus, RelayManagedDevelopmentContextImportReceipt,
+    RelayManagedKernelContextImportReceipt, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
 };
 
 use super::CommandRouter;
@@ -1117,22 +1116,6 @@ fn relay_receipt(
             }
         }
     };
-    let omitted_provider_accounts = match receipt.provider_accounts {
-        crate::managed_context::package::ManagedContextImportedProviderAccounts::None => Vec::new(),
-        crate::managed_context::package::ManagedContextImportedProviderAccounts::Selected {
-            omitted,
-            ..
-        } => omitted
-            .into_iter()
-            .map(|account| RelayManagedContextOmittedProviderAccount {
-                provider: account.provider,
-                profile_id: account.profile_id,
-                label: account.label,
-                reason: account.reason,
-                next_step: account.next_step,
-            })
-            .collect(),
-    };
     Ok(RelayManagedContextImportReceipt {
         destination: receipt.destination.clone(),
         transfer_id: receipt.transfer_id,
@@ -1154,7 +1137,6 @@ fn relay_receipt(
                 }
             }
         },
-        omitted_provider_accounts,
         receipt_sha256: receipt_sha256.to_string(),
     })
 }
@@ -1251,54 +1233,5 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn the_source_learns_which_selected_logins_the_target_left_out() {
-        use crate::managed_context::package::{
-            ManagedContextImportedDevelopment, ManagedContextImportedGitCredentials,
-            ManagedContextImportedProviderAccounts, ManagedContextOmittedProviderAccount,
-            ManagedContextProviderAccountNextStep, ManagedContextProviderAccountOmission,
-        };
-        let receipt = ManagedContextPackageImportReceipt {
-            destination: None,
-            schema_version: 2,
-            transfer_id: "transfer-1".to_string(),
-            package_sha256: "a".repeat(64),
-            plan_digest: format!("sha256:{}", "1".repeat(64)),
-            development: ManagedContextImportedDevelopment::Empty,
-            kernel_context: ManagedContextImportedKernelContext::Empty,
-            provider_accounts: ManagedContextImportedProviderAccounts::Selected {
-                accounts: Vec::new(),
-                omitted: vec![ManagedContextOmittedProviderAccount {
-                    provider: "claude".to_string(),
-                    profile_id: "acct-work".to_string(),
-                    label: "Work Claude".to_string(),
-                    reason: ManagedContextProviderAccountOmission::VaultClosed,
-                    next_step: ManagedContextProviderAccountNextStep::SignInAgain,
-                }],
-            },
-            git_credentials: ManagedContextImportedGitCredentials::None,
-            event_connections: Default::default(),
-        };
-
-        let relayed = relay_receipt(receipt, &"b".repeat(64)).expect("project the receipt");
-
-        assert_eq!(
-            relayed.omitted_provider_accounts,
-            vec![RelayManagedContextOmittedProviderAccount {
-                provider: "claude".to_string(),
-                profile_id: "acct-work".to_string(),
-                label: "Work Claude".to_string(),
-                reason: ManagedContextProviderAccountOmission::VaultClosed,
-                next_step: ManagedContextProviderAccountNextStep::SignInAgain,
-            }]
-        );
-        let public =
-            crate::managed_context::outbound_service::ManagedContextOutboundImportReceipt::from(
-                relayed,
-            );
-        assert_eq!(public.omitted_provider_accounts.len(), 1);
-        assert_eq!(public.omitted_provider_accounts[0].label, "Work Claude");
     }
 }

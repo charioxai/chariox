@@ -36,6 +36,10 @@ struct HostState {
     browsers: BTreeMap<String, Arc<Mutex<BrowserControllerProcessStdioBackend>>>,
     retire_lanes: BTreeMap<String, RetireLane>,
     stopped: bool,
+    /// Users whose browser a `stop` ended: only an explicit start brings it back.
+    stopped_by_request: BTreeSet<String>,
+    /// Users whose last attempt to start the browser failed; a start that works clears it.
+    start_failed: BTreeSet<String>,
     mutation_lanes: BTreeMap<String, Arc<Mutex<()>>>,
     display_gates: BTreeMap<String, Arc<super::kernel_browser_display_gate::DisplayGate>>,
     #[cfg(test)]
@@ -273,6 +277,22 @@ impl KernelBrowserHost {
             && state
                 .loaded
                 .contains(&(user.into(), agent.into(), capability))
+    }
+    /// Whether the user's browser failed its last start: access exists, the browser does not run.
+    pub(crate) fn start_failed(&self, user: &str) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .start_failed
+            .contains(user)
+    }
+    fn note_start(&self, user: &str, started: bool) {
+        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        if started {
+            state.start_failed.remove(user);
+        } else {
+            state.start_failed.insert(user.into());
+        }
     }
     pub(crate) fn load(&self, user: &str, agent: &str) -> Result<(), String> {
         self.load_for(user, agent, KernelBrowserCapability::Browser)
@@ -623,8 +643,14 @@ impl KernelBrowserHost {
             });
             result.map_err(crate::error::HostFailure::Other)?;
             self.check_admission(admission)?;
+            self.inner
+                .lock()
+                .map_err(|_| "MD-2: browser host lock poisoned")?
+                .stopped_by_request
+                .insert(user.into());
             return Ok(serde_json::json!({ "state": "stopped", "tabs": [] }));
         }
+        let mut implicit_start = false;
         if params["_host_generation"].is_u64() {
             if !backend
                 .host_is_live()
@@ -636,10 +662,12 @@ impl KernelBrowserHost {
             .host_is_live()
             .map_err(crate::error::HostFailure::Other)?
         {
-            // MP-11: state/observation reads cannot start or recover a
-            // controller. Startup is explicit and uses the same grant for
-            // focused and retained agents, without holding its lock over I/O.
-            if method == "host.browser"
+            // MP-11: state/observation reads cannot start or recover a controller for a
+            // person's display, and nothing restarts a browser a `stop` ended. An agent that
+            // holds the grant may read from a controller that is simply not running: that read
+            // starts it once, as its own `start` would (Room owner rule: agents always reach the
+            // Room's browser). Startup uses the same grant without holding its lock over I/O.
+            let read = method == "host.browser"
                 && matches!(
                     params["op"].as_str(),
                     Some(
@@ -647,6 +675,8 @@ impl KernelBrowserHost {
                             | "snapshot"
                             | "popup_region"
                             | "screenshot"
+                            | "save"
+                            | "wait"
                             | "unsubscribe"
                             | "display_subscribe"
                             | "display_attach"
@@ -656,13 +686,33 @@ impl KernelBrowserHost {
                             | "mirror_next"
                             | "mirror_close"
                     )
+                );
+            let agent_read = read
+                && admission.is_some_and(|admission| admission.agent.is_some())
+                && matches!(
+                    params["op"].as_str(),
+                    Some("state" | "snapshot" | "screenshot")
                 )
-            {
+                && !self
+                    .inner
+                    .lock()
+                    .map_err(|_| "MD-2: browser host lock poisoned")?
+                    .stopped_by_request
+                    .contains(user);
+            if read && !agent_read {
                 return Err("MP-11: browser_unavailable: user browser controller is stopped or unavailable; explicitly start/open the browser".into());
             }
+            implicit_start = agent_read;
             self.check_admission(admission)?;
-            backend.start().map_err(crate::error::HostFailure::Other)?;
+            let started = backend.start();
+            self.note_start(user, started.is_ok());
+            started.map_err(crate::error::HostFailure::Other)?;
             self.check_admission(admission)?;
+            self.inner
+                .lock()
+                .map_err(|_| "MD-2: browser host lock poisoned")?
+                .stopped_by_request
+                .remove(user);
         }
         let mut params = params;
         if input {
@@ -687,6 +737,15 @@ impl KernelBrowserHost {
         self.check_admission(admission)?;
         backend.protect_host(policy)?;
         self.check_admission(admission)?;
+        if implicit_start {
+            let started = backend.host_request_classified(
+                "host.browser",
+                serde_json::json!({"op":"start","focused_agent":true,"observed_by":params["observed_by"]}),
+            );
+            self.note_start(user, started.is_ok());
+            started?;
+            self.check_admission(admission)?;
+        }
         let model = self.actor_model(user)?;
         // MP-08/MP-11: display requests on a desktop video subscription renew
         // its viewer lease; an unsubscribe ends it (ownership then retires).
@@ -852,6 +911,8 @@ impl KernelBrowserHost {
         let display = method == "host.browser"
             && params["op"] == "screenshot"
             && params["display_subscription_id"].is_string();
+        // An agent's save waits on the page session's fetch: other Tabs' input, state reads and stop proceed meanwhile.
+        let save = method == "host.browser" && params["op"] == "save";
         // MP-08/MP-10: an idle App drain waits for page enqueue. Keep its
         // existing admission/cancellation, but release the controller mutex
         // while waiting so input, observations and App replies can proceed.
@@ -888,6 +949,7 @@ impl KernelBrowserHost {
             || display_subscribe
             || note
             || display_release
+            || save
             || method == "browser.app.calls"
             || state
             || (method == "host.browser" && params["op"] == "input")
@@ -909,6 +971,16 @@ impl KernelBrowserHost {
             backend.host_request_cancellable(method, params, cancellation.clone())
         };
         crate::transport::kernel_browser_display::slow("rust_request", &op_label, requested);
+        // An explicit `start` is the retry a failed start asks for; the controller launch above
+        // does not see it when the controller stayed alive.
+        if method == "host.browser"
+            && request_params["op"] == "start"
+            && !cancellation
+                .as_ref()
+                .is_some_and(|cancel| cancel.requested())
+        {
+            self.note_start(user, result.is_ok());
+        }
         if let Some(action) = action {
             let terminal = if cancellation
                 .as_ref()

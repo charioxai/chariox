@@ -91,6 +91,7 @@ struct Fixture {
     reads: Arc<AtomicUsize>,
     read_delay_ms: Arc<AtomicU64>,
     running: Arc<AtomicBool>,
+    prompting: Arc<AtomicBool>,
     _root: crate::test_support::TestWorktree,
 }
 
@@ -121,6 +122,7 @@ impl Fixture {
         let reads = Arc::new(AtomicUsize::new(0));
         let read_delay_ms = Arc::new(AtomicU64::new(0));
         let running = Arc::new(AtomicBool::new(false));
+        let prompting = Arc::new(AtomicBool::new(false));
         let reader = ScriptedReader {
             answers: Mutex::new(answers.into()),
             clock: Arc::clone(&clock),
@@ -128,13 +130,22 @@ impl Fixture {
             read_delay_ms: Arc::clone(&read_delay_ms),
         };
         let running_flag = Arc::clone(&running);
-        let running_key = (provider.to_string(), profile.profile_id.clone());
+        let prompting_flag = Arc::clone(&prompting);
+        let account = (provider.to_string(), profile.profile_id.clone());
+        let running_key = account.clone();
         let mut refresher = ProviderUsageRefresher::new(
             registry.clone(),
             Box::new(reader),
             Box::new(move || {
                 if running_flag.load(Ordering::SeqCst) {
                     HashSet::from([running_key.clone()])
+                } else {
+                    HashSet::new()
+                }
+            }),
+            Box::new(move || {
+                if prompting_flag.load(Ordering::SeqCst) {
+                    HashSet::from([account.clone()])
                 } else {
                     HashSet::new()
                 }
@@ -156,6 +167,7 @@ impl Fixture {
             reads,
             read_delay_ms,
             running,
+            prompting,
             _root: root,
         }
     }
@@ -249,7 +261,14 @@ fn kernel_running_account_projection_preserves_cadence_across_runtime_owners() {
     let f = Fixture::new(vec![Ok(5.0)]);
     f.refresher.refresh_account(&f.key, f.at(0.0));
     let runs = crate::runtime::projection::ProviderRunProjectionStore::default();
-    let refresher = ProviderUsageRefresher::for_kernel(f.registry.clone(), runs.clone());
+    let refresher = ProviderUsageRefresher::for_kernel(
+        f.registry.clone(),
+        runs.clone(),
+        crate::runtime::projection::SessionStateProjectionStore::default(),
+        crate::runtime::projection::DaemonConfigProjectionStore::new(
+            crate::config::DaemonConfig::for_tests(),
+        ),
+    );
     let now = f.at(4.7);
     assert!(refresher.due_accounts(now).is_empty());
 
@@ -457,6 +476,7 @@ fn only_one_read_runs_per_account_at_a_time() {
             reads: Arc::clone(&reads),
         }),
         Box::new(HashSet::new),
+        Box::new(HashSet::new),
     );
     let key = f.key.clone();
     let first = {
@@ -580,4 +600,114 @@ fn a_window_past_its_reset_reads_as_not_measured_yet_until_a_new_reading() {
     f.refresher.refresh_account(&f.key, f.at(0.0));
     let renewed = f.registry.get("local", "codex", &f.key.profile_id).unwrap();
     assert_eq!(renewed.usage.meters[0].used_percent, Some(2.0));
+}
+
+#[test]
+fn a_claude_account_with_prompt_work_is_read_every_five_minutes() {
+    crate::test_support::isolated_env_test!();
+    let f = Fixture::for_provider("claude", vec![Ok(18.0), Ok(19.0)]);
+    assert!(f.refresher.due_accounts(f.at(0.0)).is_empty());
+    assert!(f
+        .refresher
+        .stale_accounts("local", Some("claude"), f.at(0.0))
+        .is_empty());
+
+    f.prompting.store(true, Ordering::SeqCst);
+    assert_eq!(f.refresher.due_accounts(f.at(0.0)), vec![f.key.clone()]);
+    assert_eq!(
+        f.refresher
+            .stale_accounts("local", Some("claude"), f.at(0.0)),
+        vec![f.key.clone()]
+    );
+    f.refresher.refresh_account(&f.key, f.at(0.0));
+    let usage = f.usage();
+    assert_eq!(usage.meters[0].used_percent, Some(18.0));
+    assert_eq!(usage.meters[0].source, "refresh");
+
+    assert!(f.refresher.due_accounts(f.at(4.0)).is_empty());
+    assert_eq!(f.refresher.due_accounts(f.at(5.0)), vec![f.key.clone()]);
+    f.refresher.refresh_account(&f.key, f.at(5.0));
+    assert_eq!(f.usage().meters[0].used_percent, Some(19.0));
+
+    f.prompting.store(false, Ordering::SeqCst);
+    assert!(f.refresher.due_accounts(f.at(60.0)).is_empty());
+}
+
+fn claude_run(profile_id: &str) -> crate::provider::RuntimeProviderRun {
+    let run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+        "attached-run",
+        "room".into(),
+        Some("agent".into()),
+        "claude".into(),
+    );
+    let mut value = serde_json::to_value(run).unwrap();
+    value["account_profile"] = serde_json::json!(profile_id);
+    let mut run: crate::provider::RuntimeProviderRun = serde_json::from_value(value).unwrap();
+    run.mark_running();
+    run
+}
+
+fn room_with_prompt_work(active: bool, queued: bool) -> crate::session::RuntimeSession {
+    use crate::session::{PromptQueueItem, PromptStatus};
+    let mut room =
+        crate::session::RuntimeSession::new("room", None, "workspace", "tree", "machine", "home");
+    room.mirror_agent_prompt_state(
+        "agent",
+        active.then(|| {
+            PromptQueueItem::new("active", "attach", "agent", "work", PromptStatus::Running)
+        }),
+        queued
+            .then(|| {
+                PromptQueueItem::new("queued", "attach", "agent", "more", PromptStatus::Queued)
+            })
+            .into_iter()
+            .collect(),
+    );
+    room
+}
+
+#[test]
+fn an_attached_claude_run_is_probed_only_while_the_kernel_has_prompt_work() {
+    crate::test_support::isolated_env_test!();
+    let f = Fixture::for_provider("claude", vec![]);
+    let runs = crate::runtime::projection::ProviderRunProjectionStore::default();
+    let sessions = crate::runtime::projection::SessionStateProjectionStore::default();
+    let refresher = ProviderUsageRefresher::for_kernel(
+        f.registry.clone(),
+        runs.clone(),
+        sessions.clone(),
+        crate::runtime::projection::DaemonConfigProjectionStore::new(
+            crate::config::DaemonConfig::for_tests(),
+        ),
+    );
+    let probed = |now: u64| {
+        !refresher.due_accounts(now).is_empty()
+            || !refresher
+                .stale_accounts("local", Some("claude"), now)
+                .is_empty()
+    };
+    runs.update(claude_run(&f.key.profile_id));
+
+    // New work starts: a turn is in progress.
+    sessions.update(room_with_prompt_work(true, false));
+    assert!(probed(f.at(0.0)));
+
+    // The prompt completes while the run stays Running and attached.
+    sessions.update(room_with_prompt_work(false, false));
+    assert!(!probed(f.at(30.0)));
+    // A probe chosen while the turn ran is dropped before it is paid for.
+    assert_eq!(
+        refresher.refresh_account(&f.key, f.at(30.0)),
+        UsageRefreshOutcome::Idle
+    );
+
+    // Queued prompts count as work even before a turn is active.
+    sessions.update(room_with_prompt_work(false, true));
+    assert!(probed(f.at(31.0)));
+
+    // A run that ended has no work, whatever the session still queues.
+    let mut ended = claude_run(&f.key.profile_id);
+    ended.mark_ended();
+    runs.update(ended);
+    assert!(!probed(f.at(32.0)));
 }

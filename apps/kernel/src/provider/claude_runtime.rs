@@ -29,11 +29,15 @@ mod runtime_tool_wait;
 mod session_restart;
 mod state;
 mod tool_transcript;
-pub(crate) use tool_transcript::{bounded_result, bounded_result_images, RESULT_IMAGE_FILE_BYTES};
+pub(crate) use tool_transcript::{
+    bounded_result, bounded_result_images, ended_task_of_result, ends_background_commands,
+    launched_task_id, launches_background_command, RESULT_IMAGE_FILE_BYTES,
+};
 pub(crate) mod usage;
 mod watchdog;
 
 use events::apply_claude_message;
+pub(crate) use events::claude_rate_limit_snapshot;
 pub(crate) use handover::ClaudeHandover;
 use input::claude_user_content;
 use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};
@@ -353,6 +357,16 @@ pub(crate) fn drain_claude_events(
             }
         }
     }
+    if state.exit_reported {
+        state
+            .tool_transcript
+            .end_background_calls(crate::session::unix_epoch_ms());
+    }
+    push_claude_tool_payloads(
+        run.id(),
+        state.tool_transcript.take_ended_background_calls(),
+        &mut batch,
+    )?;
     if !batch.prompt_completed && state.cancelled_turn_pending_settlement {
         state.cancelled_turn_pending_settlement = false;
         batch.prompt_completed = true;
@@ -474,22 +488,8 @@ fn handle_claude_tool_uses(
     value: &serde_json::Value,
     batch: &mut ProviderPromptSignalBatch,
 ) -> Result<(), DaemonError> {
-    for payload in state.tool_transcript.observe(value) {
-        let bytes =
-            serde_json::to_vec(&payload).map_err(|error| DaemonError::ProviderProtocol {
-                provider_run_id: provider_run_id.to_string(),
-                operation: "claude_tool_transcript_serialize",
-                message: error.to_string(),
-            })?;
-        batch.chunks.push(super::ProviderPromptChunk {
-            kind: TerminalOutputKind::ProviderTool,
-            merge_key: payload
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string),
-            bytes,
-        });
-    }
+    let payloads = state.tool_transcript.observe(value);
+    push_claude_tool_payloads(provider_run_id, payloads, batch)?;
     if state.tool_transcript.take_truncation_notice() {
         batch.notices.push(
             "Claude tool transcript truncated to resource limits; provider execution is unchanged"
@@ -509,6 +509,30 @@ fn handle_claude_tool_uses(
         batch.notices.push(format!(
             "Rejected unsupported Claude stream-json tool use for `{provider_run_id}`"
         ));
+    }
+    Ok(())
+}
+
+fn push_claude_tool_payloads(
+    provider_run_id: &str,
+    payloads: Vec<serde_json::Value>,
+    batch: &mut ProviderPromptSignalBatch,
+) -> Result<(), DaemonError> {
+    for payload in payloads {
+        let bytes =
+            serde_json::to_vec(&payload).map_err(|error| DaemonError::ProviderProtocol {
+                provider_run_id: provider_run_id.to_string(),
+                operation: "claude_tool_transcript_serialize",
+                message: error.to_string(),
+            })?;
+        batch.chunks.push(super::ProviderPromptChunk {
+            kind: TerminalOutputKind::ProviderTool,
+            merge_key: payload
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            bytes,
+        });
     }
     Ok(())
 }
@@ -648,6 +672,10 @@ fn restart_claude_runtime(
     state.completed_text_blocks.clear();
     state.exit_reported = false;
     state.tool_transcript.clear();
+    // The replaced process took its background commands with it.
+    state
+        .tool_transcript
+        .end_background_calls(crate::session::unix_epoch_ms());
     Ok(())
 }
 
@@ -2069,6 +2097,80 @@ done
         assert_eq!(usage.meters[0].used_percent, Some(84.0));
         assert_eq!(usage.meters[0].window_duration_minutes, Some(300));
         assert_eq!(usage.meters[0].resets_at_ms, Some(1_800_000_000_000));
+    }
+
+    #[test]
+    fn allowed_rate_limit_event_reports_the_weekly_percent_from_unified_windows() {
+        let (mut state, mut batch) = parser_state();
+
+        // Claude Code 2.1.296 on an account at 18%: no top-level `utilization`
+        // below the first warning threshold, the percent only in `unifiedWindows`.
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "rate_limit_event",
+                "rate_limit_info": {
+                    "status": "allowed",
+                    "resetsAt": 1_794_758_400,
+                    "rateLimitType": "seven_day",
+                    "overageStatus": "rejected",
+                    "overageDisabledReason": "org_level_disabled",
+                    "isUsingOverage": false,
+                    "unifiedWindows": {
+                        "seven_day": { "utilization": 0.18, "resetsAt": 1_794_758_400 }
+                    }
+                }
+            }),
+            &mut batch,
+        );
+
+        let usage = batch.account_usage.expect("rate limit usage");
+        assert_eq!(usage.meters.len(), 1);
+        let weekly = &usage.meters[0];
+        assert_eq!(weekly.meter_id, "rate_limit/seven_day");
+        assert_eq!(weekly.used_percent, Some(18.0));
+        assert_eq!(weekly.resets_at_ms, Some(1_794_758_400_000));
+        assert_eq!(weekly.window_duration_minutes, Some(7 * 24 * 60));
+        assert_eq!(
+            weekly.state,
+            crate::account_profile::ProviderAccountUsageMeterState::Healthy
+        );
+    }
+
+    #[test]
+    fn rate_limit_event_reports_every_unified_window_it_carries() {
+        let (mut state, mut batch) = parser_state();
+
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "rate_limit_event",
+                "rate_limit_info": {
+                    "status": "allowed",
+                    "rateLimitType": "five_hour",
+                    "resetsAt": 1_794_700_000,
+                    "unifiedWindows": {
+                        "five_hour": { "utilization": 0.04, "resetsAt": 1_794_700_000 },
+                        "seven_day": { "utilization": 0.18, "resetsAt": 1_794_758_400 }
+                    }
+                }
+            }),
+            &mut batch,
+        );
+
+        let usage = batch.account_usage.expect("rate limit usage");
+        let percent = |id: &str| {
+            usage
+                .meters
+                .iter()
+                .find(|meter| meter.meter_id == id)
+                .and_then(|meter| meter.used_percent)
+        };
+        assert_eq!(usage.meters.len(), 2);
+        assert_eq!(percent("rate_limit/five_hour"), Some(4.0));
+        assert_eq!(percent("rate_limit/seven_day"), Some(18.0));
     }
 
     #[test]

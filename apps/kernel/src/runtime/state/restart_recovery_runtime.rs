@@ -174,7 +174,55 @@ impl KernelRuntimeState {
         // Recovered prompts claimed their handed-over turns by now.
         #[cfg(unix)]
         crate::hot_reload::end_unclaimed_providers();
+        self.end_background_provider_tools_left_by_restart();
         summary
+    }
+
+    /// A provider process this kernel did not take over from its predecessor
+    /// is gone, and the background commands it ran with it.
+    pub(super) fn end_background_provider_tools_left_by_restart(&self) {
+        let owned = &self.owned;
+        for session in owned.session_store.list_all_sessions() {
+            let runs = match owned
+                .operational_history_store
+                .provider_runs_with_background_tools(session.id())
+            {
+                Ok(runs) => runs,
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.history",
+                        "failed to find background provider tools after restart",
+                        serde_json::json!({
+                            "session_id": session.id(),
+                            "error": error.to_string(),
+                        }),
+                    );
+                    continue;
+                }
+            };
+            for (provider_run_id, agent_id) in runs {
+                let live = owned
+                    .provider_store
+                    .get_run(&provider_run_id)
+                    .is_ok_and(|run| run.state() != crate::provider::ProviderRunState::Ended);
+                if live {
+                    continue;
+                }
+                if let Err(error) =
+                    owned.end_background_provider_tools(session.id(), &provider_run_id, &agent_id)
+                {
+                    crate::logging::warn_with_fields(
+                        "daemon.history",
+                        "failed to end background provider tools after restart",
+                        serde_json::json!({
+                            "session_id": session.id(),
+                            "provider_run_id": provider_run_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        }
     }
 
     async fn drive_durable_restart_recovery_passes(
@@ -1929,6 +1977,7 @@ mod tests {
                 )
                 .expect("workflow publication should create");
             let publication_invocation = crate::session::WorkflowPublicationInvocationEnvelope {
+                http_method: None,
                 publication_id: publication.id().to_string(),
                 hook_id: None,
                 invocation_id: "invocation-restart".to_string(),

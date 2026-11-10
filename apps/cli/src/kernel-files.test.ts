@@ -5,10 +5,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 import type { WebSocket } from "ws"
+import { FILE_CHUNK_BYTES, MIN_WINDOW } from "./kernel-file-window.js"
 import { runKernelsCommand } from "./kernels-command.js"
-import { fakeKernelFiles, serveKernelFiles, startFakeKernel, type FakeKernel, type FakeKernelFrame, type FakeKernelFiles } from "./fake-unix-kernel.test-support.js"
+import { fakeKernelFiles, replyWith, serveKernelFiles, startFakeKernel, type FakeKernel, type FakeKernelFrame, type FakeKernelFiles } from "./fake-unix-kernel.test-support.js"
 
-const CHUNK = 256 * 1024
+const CHUNK = FILE_CHUNK_BYTES
 const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex")
 
 // Runs the command as an agent would and returns what it printed and how it ended.
@@ -42,7 +43,7 @@ async function withRig(run: (rig: { kernel: FakeKernel; store: FakeKernelFiles; 
 
 const requestsOf = (kernel: FakeKernel, name: string) => kernel.frames.filter((frame: FakeKernelFrame) => name in frame.request).map(frame => frame.request[name] as Record<string, unknown>)
 
-test("put sends 256 KiB chunks in order on one connection, each carrying the total size and sha256", async () => {
+test("put sends 64 KiB chunks in order on one connection, each carrying the total size and sha256", async () => {
   await withRig(async ({ kernel, store, dir, socket }) => {
     const content = randomBytes(2 * CHUNK + CHUNK / 2)
     await writeFile(join(dir, "big.bin"), content)
@@ -105,7 +106,7 @@ test("put names a local file that is missing or not a file", async () => {
   })
 })
 
-test("get downloads in 256 KiB chunks, verifies the sha256 of what it wrote and leaves no partial file", async () => {
+test("get downloads in 64 KiB chunks, verifies the sha256 of what it wrote and leaves no partial file", async () => {
   await withRig(async ({ kernel, store, dir, socket }) => {
     const content = randomBytes(2 * CHUNK + CHUNK / 2)
     store.files.set("/srv/big.bin", content)
@@ -113,7 +114,7 @@ test("get downloads in 256 KiB chunks, verifies the sha256 of what it wrote and 
     assert.equal(result.exit, 0, result.stderr)
     assert.deepEqual(await readFile(join(dir, "big.bin")), content)
     assert.deepEqual(await readdir(dir), ["big.bin"])
-    assert.deepEqual(requestsOf(kernel, "StatKernelFile"), [{ path: "/srv/big.bin", with_sha256: true }])
+    assert.deepEqual(requestsOf(kernel, "StatKernelFile"), [{ path: "/srv/big.bin", with_sha256: true }, { path: "/srv/big.bin", with_sha256: false }])
     assert.deepEqual(requestsOf(kernel, "ReadKernelFile").map(read => [read.offset, read.length]), [[0, CHUNK], [CHUNK, CHUNK], [2 * CHUNK, CHUNK / 2]])
     const printed = JSON.parse(result.stdout)
     assert.deepEqual([printed.path, printed.size, printed.sha256, printed.bytes_sent_or_received, printed.resumed_from], [join(dir, "big.bin"), content.length, sha256(content), content.length, 0])
@@ -309,5 +310,151 @@ test("a relative local path means the directory the agent runs in, not the CLI's
       if (before === undefined) delete process.env.CHARIOX_CLI_ORIGINAL_CWD
       else process.env.CHARIOX_CLI_ORIGINAL_CWD = before
     }
+  })
+})
+
+// A kernel whose chunk replies take `delayMs(read)` to come, as a link with a round trip does.
+function slowReads(delayMs: (read: { offset: number; index: number }) => number, observe: { open: number; peak: number; failAt?: number }) {
+  return (serve: ReturnType<typeof serveKernelFiles>) => {
+    let index = 0
+    return (socket: WebSocket, frame: FakeKernelFrame) => {
+      const read = frame.request.ReadKernelFile as { offset: number } | undefined
+      if (!read) return serve(socket, frame)
+      const mine = index++
+      if (mine === observe.failAt) return void setTimeout(() => replyWith(socket, frame, { error: { code: "file_io_failed", message: "the disk went away", retryable: false } }), 5)
+      observe.peak = Math.max(observe.peak, ++observe.open)
+      setTimeout(() => { observe.open--; serve(socket, frame) }, delayMs({ offset: read.offset, index: mine }))
+    }
+  }
+}
+
+test("get keeps several chunk requests in flight and still writes the file in order", async () => {
+  const observe = { open: 0, peak: 0 }
+  await withRig(async ({ store, dir, socket, kernel }) => {
+    const content = randomBytes(24 * CHUNK + 99)
+    store.files.set("/srv/big.bin", content)
+    const result = await chariox(["files", "get", ...socket, "/srv/big.bin", join(dir, "big.bin")])
+    assert.equal(result.exit, 0, result.stderr)
+    assert.deepEqual(await readFile(join(dir, "big.bin")), content)
+    assert.ok(observe.peak >= MIN_WINDOW, `at most ${observe.peak} requests were in flight`)
+    assert.deepEqual(requestsOf(kernel, "ReadKernelFile").map(read => read.offset).sort((a, b) => Number(a) - Number(b)), Array.from({ length: 25 }, (_, index) => index * CHUNK))
+  }, slowReads(() => 20, observe))
+})
+
+test("get writes the right file when later chunks are answered before earlier ones", async () => {
+  const observe = { open: 0, peak: 0 }
+  await withRig(async ({ store, dir, socket }) => {
+    const content = randomBytes(12 * CHUNK + 1)
+    store.files.set("/srv/big.bin", content)
+    const result = await chariox(["files", "get", ...socket, "/srv/big.bin", join(dir, "big.bin")])
+    assert.equal(result.exit, 0, result.stderr)
+    assert.deepEqual(await readFile(join(dir, "big.bin")), content)
+    assert.deepEqual(JSON.parse(result.stdout).sha256, sha256(content))
+  }, slowReads(({ index }) => 60 - 12 * (index % 5), observe))
+})
+
+test("a chunk that fails in the middle of the window keeps only a whole prefix, which the next run continues", async () => {
+  const observe = { open: 0, peak: 0, failAt: 6 }
+  const content = randomBytes(20 * CHUNK + 7)
+  let partial: Buffer = Buffer.alloc(0)
+  await withRig(async ({ store, dir, socket }) => {
+    store.files.set("/srv/big.bin", content)
+    const failed = await chariox(["files", "get", ...socket, "/srv/big.bin", join(dir, "big.bin")])
+    assert.equal(failed.exit, 1)
+    assert.equal(JSON.parse(failed.stderr).error.code, "file_io_failed")
+    assert.deepEqual(await readdir(dir), ["big.bin.chariox-partial"])
+    partial = await readFile(join(dir, "big.bin.chariox-partial"))
+    assert.ok(partial.length <= 6 * CHUNK && partial.length % CHUNK === 0)
+    assert.deepEqual(partial, content.subarray(0, partial.length))
+    observe.failAt = -1
+    const resumed = await chariox(["files", "get", ...socket, "/srv/big.bin", join(dir, "big.bin")])
+    assert.equal(resumed.exit, 0, resumed.stderr)
+    assert.equal(JSON.parse(resumed.stdout).resumed_from, partial.length)
+    assert.deepEqual(await readFile(join(dir, "big.bin")), content)
+    assert.deepEqual(await readdir(dir), ["big.bin"])
+  }, slowReads(() => 10, observe))
+})
+
+test("a kernel that ends the file early is reported as it was before, with its offset", async () => {
+  // The file shrank after the stat: reads from 3 chunks on come back empty.
+  const shrinking = (serve: ReturnType<typeof serveKernelFiles>) => (socket: WebSocket, frame: FakeKernelFrame) => {
+    const read = frame.request.ReadKernelFile as { path: string; offset: number } | undefined
+    if (read && read.offset >= 3 * CHUNK) return replyWith(socket, frame, { response: { KernelFileChunk: { path: read.path, offset: read.offset, data_base64: "", size: 3 * CHUNK, eof: true } } })
+    serve(socket, frame)
+  }
+  await withRig(async ({ store, dir, socket }) => {
+    store.files.set("/srv/big.bin", randomBytes(8 * CHUNK))
+    const result = await chariox(["files", "get", ...socket, "/srv/big.bin", join(dir, "big.bin")])
+    assert.equal(result.exit, 1)
+    assert.equal(JSON.parse(result.stderr).error.code, "file_io_failed")
+    assert.match(JSON.parse(result.stderr).error.message, /ended at 196608 of 524288 bytes; run the same command again to continue/)
+    assert.deepEqual(await readFile(join(dir, "big.bin.chariox-partial")), (store.files.get("/srv/big.bin") as Buffer).subarray(0, 3 * CHUNK))
+  }, shrinking)
+})
+
+// A kernel that answers each chunk write `delayMs` after it arrives, as a link with a round trip does.
+function slowWrites(delayMs: number, observe: { open: number; peak: number; failAt?: number }) {
+  return (serve: ReturnType<typeof serveKernelFiles>) => {
+    let index = 0
+    return (socket: WebSocket, frame: FakeKernelFrame) => {
+      if (!frame.request.WriteKernelFile) return serve(socket, frame)
+      const mine = index++
+      observe.peak = Math.max(observe.peak, ++observe.open)
+      const send = socket.send.bind(socket)
+      socket.send = ((text: string) => setTimeout(() => {
+        observe.open--
+        if (mine === observe.failAt) send(JSON.stringify({ type: "response", request_id: frame.request_id, response: null, error: { code: "file_io_failed", message: "the disk went away", retryable: false } }))
+        else send(text)
+      }, delayMs)) as typeof socket.send
+      serve(socket, frame)
+    }
+  }
+}
+
+test("put keeps several chunk writes in flight and the file arrives whole", async () => {
+  const observe = { open: 0, peak: 0 }
+  await withRig(async ({ store, dir, socket, kernel }) => {
+    const content = randomBytes(24 * CHUNK + 99)
+    await writeFile(join(dir, "big.bin"), content)
+    const result = await chariox(["files", "put", ...socket, join(dir, "big.bin"), "/srv/big.bin"])
+    assert.equal(result.exit, 0, result.stderr)
+    assert.deepEqual(store.files.get("/srv/big.bin"), content)
+    assert.ok(observe.peak >= MIN_WINDOW, `at most ${observe.peak} writes were in flight`)
+    assert.deepEqual(requestsOf(kernel, "WriteKernelFile").map(write => write.offset), Array.from({ length: 25 }, (_, index) => index * CHUNK))
+    assert.equal(JSON.parse(result.stdout).bytes_sent_or_received, content.length)
+  }, slowWrites(20, observe))
+})
+
+test("put that fails in the middle of the window stops and the next run continues where the target stands", async () => {
+  const observe = { open: 0, peak: 0, failAt: 6 }
+  await withRig(async ({ store, dir, socket }) => {
+    const content = randomBytes(20 * CHUNK + 7)
+    await writeFile(join(dir, "big.bin"), content)
+    const failed = await chariox(["files", "put", ...socket, join(dir, "big.bin"), "/srv/big.bin"])
+    assert.equal(failed.exit, 1)
+    assert.equal(JSON.parse(failed.stderr).error.code, "file_io_failed")
+    assert.equal(store.files.has("/srv/big.bin"), false)
+    const staged = store.partials.get("/srv/big.bin")!
+    assert.ok(staged.length >= 6 * CHUNK && staged.length % CHUNK === 0)
+    observe.failAt = -1
+    const resumed = await chariox(["files", "put", ...socket, join(dir, "big.bin"), "/srv/big.bin"])
+    assert.equal(resumed.exit, 0, resumed.stderr)
+    assert.equal(JSON.parse(resumed.stdout).resumed_from, staged.length)
+    assert.deepEqual(store.files.get("/srv/big.bin"), content)
+  }, slowWrites(10, observe))
+})
+
+test("put of an empty file and of a file whose partial is already whole still ask the target to finish", async () => {
+  await withRig(async ({ store, dir, socket, kernel }) => {
+    await writeFile(join(dir, "empty"), "")
+    assert.equal((await chariox(["files", "put", ...socket, join(dir, "empty"), "/srv/empty"])).exit, 0)
+    assert.deepEqual(store.files.get("/srv/empty"), Buffer.alloc(0))
+    const content = randomBytes(CHUNK + 3)
+    await writeFile(join(dir, "whole"), content)
+    store.partials.set("/srv/whole", content)
+    const result = await chariox(["files", "put", ...socket, join(dir, "whole"), "/srv/whole"])
+    assert.equal(result.exit, 0, result.stderr)
+    assert.deepEqual(store.files.get("/srv/whole"), content)
+    assert.deepEqual(requestsOf(kernel, "WriteKernelFile").map(write => [write.offset, String(write.data_base64).length]), [[0, 0], [CHUNK + 3, 0]])
   })
 })

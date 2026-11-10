@@ -11,6 +11,7 @@ pub(crate) type AppCursor = (String, String);
 pub(crate) struct AppEventPump(Arc<Mutex<State>>);
 struct State {
     in_flight: bool,
+    gate_due: Option<Instant>,
     wake: bool,
     /// The last pass left work behind (more receipts, sessions or cleanup).
     more: bool,
@@ -30,6 +31,7 @@ impl AppEventPump {
     pub(crate) fn new() -> Self {
         Self(Arc::new(Mutex::new(State {
             in_flight: false,
+            gate_due: None,
             wake: true,
             more: false,
             next: Instant::now(),
@@ -37,6 +39,12 @@ impl AppEventPump {
             maintenance: None,
             dispatch: None,
         })))
+    }
+    pub(crate) fn set_gate_due(&self, due: Option<Instant>) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .gate_due = due;
     }
     pub(crate) fn wake(&self) {
         self.0
@@ -52,7 +60,11 @@ impl AppEventPump {
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        (state.in_flight || state.wake || state.more).then_some(state.next)
+        let active = (state.in_flight || state.wake || state.more).then_some(state.next);
+        match (active, state.gate_due) {
+            (Some(a), Some(b)) => Some(a.min(b.max(state.next))),
+            (a, b) => a.or(b.map(|b| b.max(state.next))),
+        }
     }
     pub(crate) fn try_begin(&self) -> Option<AppEventPass> {
         self.try_begin_at(Instant::now())

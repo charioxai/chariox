@@ -2,7 +2,10 @@
 use std::{future::Future, pin::Pin};
 
 use crate::outbound_dial::{connect_websocket, WebSocket};
-use tokio_tungstenite::tungstenite::{handshake::client::Response, Error};
+use tokio_tungstenite::tungstenite::{
+    handshake::client::{Request, Response},
+    Error,
+};
 
 type ConnectFuture<'a> =
     Pin<Box<dyn Future<Output = Result<(WebSocket, Response), Error>> + Send + 'a>>;
@@ -16,16 +19,45 @@ pub(crate) fn connect(relay_url: &str) -> ConnectFuture<'_> {
     ))
 }
 
-// MP-08 / MP-10 / MP-11: negotiate both display and bounded framing without
-// constructing the TLS future in the connector's poll frame.
+// MP-08 / MP-10 / MP-11: negotiate binary frames, bounded framing and chunked
+// uploads without constructing the TLS future in the caller's poll frame. The
+// kernel's own relay connection and the gateway's client links both use it.
 #[inline(never)]
-pub(super) fn connect_binary_events(relay_url: &str) -> ConnectFuture<'_> {
+pub(crate) fn connect_binary_events(relay_url: &str) -> ConnectFuture<'_> {
     match chariox_relay::binary_event::connection_request(
         &chariox_relay::frame_transport::transport_url(relay_url),
     ) {
-        Ok(request) => Box::pin(connect_websocket(request)),
+        Ok(request) => Box::pin(connect_websocket(offer_upload_chunks(request))),
         Err(error) => Box::pin(async move { Err(error) }),
     }
+}
+
+fn offer_upload_chunks(mut request: Request) -> Request {
+    request.headers_mut().insert(
+        chariox_relay::frame_transport::UPLOAD_HEADER,
+        chariox_relay::frame_transport::UPLOAD_CHUNKS
+            .parse()
+            .expect("a valid header value"),
+    );
+    request
+}
+
+/// True when the relay answered the binary frame offer in its handshake.
+pub(crate) fn binary_events_accepted(handshake: &Response) -> bool {
+    handshake
+        .headers()
+        .get(chariox_relay::binary_event::VERSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u32>().ok())
+        .is_some_and(|version| version >= chariox_relay::binary_event::PROTOCOL_VERSION)
+}
+
+/// True when the relay answered the upload offer in its handshake.
+pub(crate) fn upload_chunks_accepted(handshake: &Response) -> bool {
+    handshake
+        .headers()
+        .get(chariox_relay::frame_transport::UPLOAD_HEADER)
+        .is_some_and(|value| value == chariox_relay::frame_transport::UPLOAD_CHUNKS)
 }
 
 #[cfg(test)]

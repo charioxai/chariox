@@ -172,6 +172,7 @@ fn rejects_invalid_aliases_and_duplicate_queue_aliases() {
     definition.workflow.alias = Some("bad alias".to_string());
     definition.endpoints[0].alias = Some("bad/endpoint".to_string());
     definition.endpoints.push(WorkflowCodeEndpointDefinition {
+        entry_nodes: vec![],
         handle: "duplicate_endpoint".to_string(),
         entry_node: "planner".to_string(),
         alias: Some("ENTRY".to_string()),
@@ -179,6 +180,7 @@ fn rejects_invalid_aliases_and_duplicate_queue_aliases() {
         canvas: None,
     });
     definition.endpoints.push(WorkflowCodeEndpointDefinition {
+        entry_nodes: vec![],
         handle: "duplicate_endpoint_copy".to_string(),
         entry_node: "planner".to_string(),
         alias: Some("entry".to_string()),

@@ -1,10 +1,14 @@
-//! Keeps Codex account usage current through its official app-server without a turn.
+//! Keeps account usage current through the providers' official tools.
 //!
-//! Reads every 15 minutes, every 5 minutes while an agent runs on the account,
-//! and on request when a reading is older than 5 minutes. Reads run outside
-//! turns, are single-flight per account and back off after a failure, preserving
-//! the last observation. Claude windows come only from official turn output;
-//! its enrolled setup tokens have no supported idle usage read.
+//! Codex reads its app-server without a turn every 15 minutes, every 5 minutes
+//! while an agent runs on the account, and on request when a reading is older
+//! than 5 minutes. Claude has no usage read without a model turn, so it is read
+//! (one minimal turn) only while the kernel holds prompt work (a turn in progress
+//! or queued) for an agent on the account, at most every 5 minutes. An attached
+//! run that finished its prompt is idle: the account keeps its last observation
+//! from turn output.
+//! Reads run outside turns, are single-flight per account and back off after a
+//! failure, preserving the last observation.
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -54,7 +58,13 @@ pub(crate) enum UsageRefreshOutcome {
     Joined,
     /// A completed read installed a retry delay after this candidate was selected.
     BackingOff,
+    /// The read would cost a model turn and the account had no prompt work left
+    /// when it was about to start.
+    Idle,
 }
+
+/// Accounts as a (provider, profile id) pair.
+pub(crate) type AccountSet = HashSet<(String, String)>;
 
 struct AccountSchedule {
     in_flight: bool,
@@ -77,7 +87,10 @@ impl Default for AccountSchedule {
 pub(crate) struct ProviderUsageRefresher {
     registry: ProviderAccountProfileRegistry,
     reader: Box<dyn ProviderUsageReader>,
-    running_accounts: Box<dyn Fn() -> HashSet<(String, String)> + Send + Sync>,
+    running_accounts: Box<dyn Fn() -> AccountSet + Send + Sync>,
+    /// Accounts with a turn in progress or queued prompts. Only these may pay
+    /// for a read that costs a model turn.
+    prompting_accounts: Box<dyn Fn() -> AccountSet + Send + Sync>,
     now_ms: Box<dyn Fn() -> u64 + Send + Sync>,
     schedules: Mutex<HashMap<UsageAccountKey, AccountSchedule>>,
     finished: Notify,
@@ -87,12 +100,14 @@ impl ProviderUsageRefresher {
     pub(crate) fn new(
         registry: ProviderAccountProfileRegistry,
         reader: Box<dyn ProviderUsageReader>,
-        running_accounts: Box<dyn Fn() -> HashSet<(String, String)> + Send + Sync>,
+        running_accounts: Box<dyn Fn() -> AccountSet + Send + Sync>,
+        prompting_accounts: Box<dyn Fn() -> AccountSet + Send + Sync>,
     ) -> Arc<Self> {
         Arc::new(Self {
             registry,
             reader,
             running_accounts,
+            prompting_accounts,
             now_ms: Box::new(crate::session::unix_epoch_ms),
             schedules: Mutex::new(HashMap::new()),
             finished: Notify::new(),
@@ -105,6 +120,7 @@ impl ProviderUsageRefresher {
         &self,
         owner_user_id: Option<&str>,
         provider: Option<&str>,
+        prompting_accounts: &AccountSet,
     ) -> Vec<ProviderAccountProfile> {
         let provider = provider.and_then(crate::provider::canonical_provider_family);
         self.registry
@@ -113,7 +129,13 @@ impl ProviderUsageRefresher {
             .into_iter()
             .filter(|profile| {
                 owner_user_id.is_none_or(|owner| profile.owner_user_id == owner)
-                    && profile.provider == "codex"
+                    && match profile.provider.as_str() {
+                        "codex" => true,
+                        // Every Claude read costs a model turn.
+                        "claude" => prompting_accounts
+                            .contains(&(profile.provider.clone(), profile.profile_id.clone())),
+                        _ => false,
+                    }
                     && provider.is_none_or(|provider| profile.provider == provider)
                     && match profile.auth_state {
                         ProviderAccountAuthState::Authenticated => true,
@@ -135,22 +157,25 @@ impl ProviderUsageRefresher {
 
     /// Accounts whose reading has reached the interval of their state.
     pub(crate) fn due_accounts(&self, now_ms: u64) -> Vec<UsageAccountKey> {
-        let enrolled = self.enrolled(None, None);
         // Read external projections before locking refresh bookkeeping so a
         // contended source cannot delay account requests waiting on this lock.
         let running_accounts = (self.running_accounts)();
+        let prompting_accounts = (self.prompting_accounts)();
+        let enrolled = self.enrolled(None, None, &prompting_accounts);
         let mut schedules = self.lock();
         enrolled
             .into_iter()
             .filter_map(|profile| {
                 let key = key_of(&profile);
                 let schedule = schedules.entry(key.clone()).or_default();
-                let interval =
-                    if running_accounts.contains(&(key.provider.clone(), key.profile_id.clone())) {
-                        RUNNING_USAGE_REFRESH_INTERVAL
-                    } else {
-                        USAGE_REFRESH_INTERVAL
-                    };
+                let account = (key.provider.clone(), key.profile_id.clone());
+                let interval = if running_accounts.contains(&account)
+                    || prompting_accounts.contains(&account)
+                {
+                    RUNNING_USAGE_REFRESH_INTERVAL
+                } else {
+                    USAGE_REFRESH_INTERVAL
+                };
                 let wait_ms = interval.mul_f64(1.0 - schedule.early_start).as_millis() as u64;
                 let due = reading_age_ms(&profile.usage, now_ms).is_none_or(|age| age >= wait_ms);
                 (due && !schedule.in_flight && now_ms >= schedule.no_read_before_ms).then_some(key)
@@ -165,7 +190,7 @@ impl ProviderUsageRefresher {
         provider: Option<&str>,
         now_ms: u64,
     ) -> Vec<UsageAccountKey> {
-        let enrolled = self.enrolled(Some(owner_user_id), provider);
+        let enrolled = self.enrolled(Some(owner_user_id), provider, &(self.prompting_accounts)());
         let mut schedules = self.lock();
         enrolled
             .into_iter()
@@ -185,6 +210,14 @@ impl ProviderUsageRefresher {
         key: &UsageAccountKey,
         now_ms: u64,
     ) -> UsageRefreshOutcome {
+        // The account can have gone idle since it was selected; check again
+        // before a read that is paid for with a model turn.
+        if read_costs_a_turn(&key.provider)
+            && !(self.prompting_accounts)()
+                .contains(&(key.provider.clone(), key.profile_id.clone()))
+        {
+            return UsageRefreshOutcome::Idle;
+        }
         {
             let mut schedules = self.lock();
             let schedule = schedules.entry(key.clone()).or_default();
@@ -329,6 +362,10 @@ impl ProviderUsageRefresher {
             }
         }
     }
+}
+
+fn read_costs_a_turn(provider: &str) -> bool {
+    provider == "claude"
 }
 
 fn key_of(profile: &ProviderAccountProfile) -> UsageAccountKey {

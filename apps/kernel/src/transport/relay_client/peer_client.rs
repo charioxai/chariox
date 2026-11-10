@@ -268,16 +268,16 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
             .map(|timeout| u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX))
             .unwrap_or(0),
     );
-    if send_outgoing_envelope(
-        &outgoing_tx,
-        RelayEnvelope::DaemonPeerRequest {
-            request_id: request_id.clone(),
-            target,
-            encrypted_request,
-        },
-    )
-    .is_err()
-    {
+    let envelope = RelayEnvelope::DaemonPeerRequest {
+        request_id: request_id.clone(),
+        target,
+        encrypted_request,
+    };
+    chariox_relay::transport_timing::record(
+        "kernel_peer_enqueue",
+        chariox_relay::transport_timing::envelope_signature(&envelope),
+    );
+    if send_outgoing_envelope(&outgoing_tx, envelope).is_err() {
         let mut guard = state.write().await;
         guard.pending_peer_requests.remove(&request_id);
         trace.log_completed("send_failed", Some("relay is not connected"), None);
@@ -875,7 +875,7 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
             auth_token: relay_token,
             daemon_id: format!("{}:peer-tmp:{}", config.daemon_id, request_id),
             machine_id: config.host_machine_id.clone(),
-            machine_alias: config.host_machine_alias.clone(),
+            machine_alias: config.relay_machine_alias(),
             os_name: Some(config.os_name.clone()),
             kernel_started_at_ms: crate::session::unix_epoch_ms(),
             daemon_alias: None,

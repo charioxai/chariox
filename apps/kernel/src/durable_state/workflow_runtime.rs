@@ -496,6 +496,7 @@ pub(super) fn write_workflow_runtime_transition(
         write.hot_entities,
         true,
     )?;
+    super::workflow_gate::cancel_stale_in(transaction, write.owner_id, write.session_id)?;
     super::workflow_notifications::capture_in(
         transaction,
         write.owner_id,

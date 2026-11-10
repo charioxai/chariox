@@ -1,8 +1,8 @@
 use super::*;
 
-pub(super) struct TempDir(PathBuf);
+pub(crate) struct TempDir(PathBuf);
 impl TempDir {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
             "chariox-exec-queue-{:032x}",
             rand::random::<u128>()
@@ -10,7 +10,7 @@ impl TempDir {
         std::fs::create_dir_all(&path).unwrap();
         Self(path)
     }
-    pub(super) fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -20,7 +20,7 @@ impl Drop for TempDir {
     }
 }
 
-pub(super) fn limited(memory: u64, disk: u64) -> RoomExecService {
+pub(crate) fn limited(memory: u64, disk: u64) -> RoomExecService {
     RoomExecService {
         inner: Arc::new(Inner {
             admission: LaunchAdmission::limited(memory, disk),
@@ -29,7 +29,7 @@ pub(super) fn limited(memory: u64, disk: u64) -> RoomExecService {
     }
 }
 
-pub(super) async fn queued(service: &RoomExecService, id: &str) {
+pub(crate) async fn queued(service: &RoomExecService, id: &str) {
     tokio::time::timeout(Duration::from_secs(5), async {
         while !service
             .list("room")

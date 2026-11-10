@@ -36,6 +36,7 @@ impl KernelRuntimeOwnedState {
             ancestry.push(identity);
         }
         let mut invocation = invocation.unwrap_or_else(|| WorkflowPublicationInvocationEnvelope {
+            http_method: None,
             publication_id: String::new(),
             hook_id: None,
             invocation_id: prompt.id().into(),

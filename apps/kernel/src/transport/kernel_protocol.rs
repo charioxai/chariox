@@ -1134,9 +1134,11 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             kernel_error(code, error, *retryable)
         }
         DaemonError::UserDomainRefused { reason } => kernel_error(reason.code(), error, false),
-        DaemonError::MachineRequest { code, .. } => {
-            kernel_error(code.as_str(), error, code == "exec_input_busy")
-        }
+        DaemonError::MachineRequest { code, .. } => kernel_error(
+            code.as_str(),
+            error,
+            code == "exec_input_busy" || code == crate::runtime::room_tool_admission::RETRY_CODE,
+        ),
         DaemonError::AgentWorkerCleanup { source, .. } => {
             let mut mapped = map_kernel_error(source);
             mapped.message = error.to_string();
@@ -1225,18 +1227,22 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             message: message.clone(),
             retryable: *retryable,
         },
-        // A terminal on another kernel refuses in the terminal service's own words; they
-        // are passed on as they came, so the caller that sent the id reads them.
+        // A terminal or room tool on another kernel refuses in its own words; they are
+        // passed on as they came, so the caller that sent the request reads them.
         DaemonError::RelayTransport {
             code,
             message,
             retryable,
             ..
-        } if crate::room_terminal::is_public_code(code) => KernelTransportError {
-            code: code.clone(),
-            message: message.clone(),
-            retryable: *retryable,
-        },
+        } if crate::room_terminal::is_public_code(code)
+            || crate::runtime::room_tool_admission::is_public_code(code) =>
+        {
+            KernelTransportError {
+                code: code.clone(),
+                message: message.clone(),
+                retryable: *retryable,
+            }
+        }
         DaemonError::RelayTransport {
             code, retryable, ..
         } if crate::error::actionable_refusal_message(code).is_some() => KernelTransportError {

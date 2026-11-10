@@ -60,6 +60,21 @@ pub(super) async fn send_outgoing_event_envelope(
         })
 }
 
+/// A reply to a client's request, noted with who asked what.
+pub(super) async fn send_client_reply(
+    outgoing_tx: &RelayOutgoingSender,
+    envelope: RelayEnvelope,
+    origin: super::reply_notes::ReplyOrigin,
+) -> Result<(), DaemonError> {
+    if outgoing_tx.send_reply(envelope, origin).await {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation: "send relay envelope",
+        message: "relay connection writer is closed".to_string(),
+    })
+}
+
 /// MP-08/MP-10/MP-11: an async daemon or peer reply applies backpressure
 /// instead of being dropped when its lane is full.
 pub(super) async fn send_outgoing_reply(

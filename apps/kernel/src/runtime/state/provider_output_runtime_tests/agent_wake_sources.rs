@@ -2037,6 +2037,219 @@ async fn dropping_the_runtime_frees_the_terminal_wake_driver() {
 #[path = "async_popup.rs"]
 mod async_popup;
 
+async fn run_token(f: &Fixture) -> String {
+    f.app
+        .lock()
+        .await
+        .providers
+        .get_run(&f.run)
+        .unwrap()
+        .runtime_mcp_auth_token()
+        .unwrap()
+        .to_owned()
+}
+
+/// A browser that failed to start is not a permission question: the "allow browser access" card
+/// is refused until a start succeeds again, with what to do instead.
+#[tokio::test]
+async fn blocked_for_browser_access_is_refused_after_a_failed_browser_start() {
+    let f = fixture("owner-browser-card-start-failed", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = run_token(&f).await;
+    let host = &f.runtime.owned.kernel_browser_host;
+    host.set_focus("local", Some(&f.agent));
+    host.load("local", &f.agent).unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-start-failed-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let broken = root.join("broken.sh");
+    std::fs::write(&broken, "exit 1\n").unwrap();
+    host.install_fixture_backend("local", &broken, &root);
+    let admission = host.admit("local", &f.agent).unwrap();
+    host.protected_request_admitted(
+        "local",
+        Some(&admission),
+        "host.browser",
+        serde_json::json!({"op":"start"}),
+        serde_json::Value::Null,
+    )
+    .expect_err("the controller never comes up");
+    assert!(host.start_failed("local"));
+    let args = serde_json::json!({
+        "reason":"The browser did not start.", "owner_action":"browser_access"
+    });
+    let error = call(&f, &token, "chariox.events.blocked", &task, args.clone())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("did not start") && error.contains("start once more"),
+        "{error}"
+    );
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert!(
+        session.active_interactions().is_empty(),
+        "no card for a browser that failed to start"
+    );
+    assert!(!matches!(
+        f.task(&task.task_id).state,
+        ExecutionState::Blocked
+    ));
+    // The same words without owner_action stay an ordinary block.
+    call(
+        &f,
+        &token,
+        "chariox.events.blocked",
+        &task,
+        serde_json::json!({"reason":"The browser did not start."}),
+    )
+    .await
+    .unwrap();
+    // A start that works clears the failure: the card is a question about access again.
+    f.runtime
+        .install_unstarted_kernel_browser_fixture("local", &root);
+    host.protected_request_admitted(
+        "local",
+        Some(&host.admit("local", &f.agent).unwrap()),
+        "host.browser",
+        serde_json::json!({"op":"start"}),
+        serde_json::Value::Null,
+    )
+    .unwrap();
+    assert!(!host.start_failed("local"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// The controller stays alive while Chrome fails to start; the explicit `start` the refusal asks
+/// for is the retry, and it must clear the failure on that same controller.
+#[tokio::test]
+async fn an_explicit_start_on_the_live_controller_clears_a_failed_start() {
+    let f = fixture("owner-browser-card-live-retry", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = run_token(&f).await;
+    let host = &f.runtime.owned.kernel_browser_host;
+    host.set_focus("local", Some(&f.agent));
+    host.load("local", &f.agent).unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-start-live-retry-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    f.runtime
+        .install_unstarted_kernel_browser_fixture("local", &root);
+    let script = root.join("MD5-controller.sh");
+    let source = std::fs::read_to_string(&script).unwrap();
+    let healthy = r#"*'"op":"start"'*) printf 'start\n' >> "$1/starts"; "#;
+    assert!(source.contains(healthy));
+    // The controller answers every request; only Chrome's start fails while the flag file exists.
+    let failing = r#"*'"op":"start"'*) if test -e "$1/chrome-down"; then printf '{"id":%s,"ok":false,"error":{"code":"browser_start_failed","message":"chrome did not start"}}\n' "$id"; continue; fi; printf 'start\n' >> "$1/starts"; "#;
+    std::fs::write(&script, source.replace(healthy, failing)).unwrap();
+    std::fs::write(root.join("chrome-down"), "").unwrap();
+    // The first agent read launches the controller; its implicit start then fails.
+    let read = || {
+        host.protected_request_admitted(
+            "local",
+            Some(&host.admit("local", &f.agent).unwrap()),
+            "host.browser",
+            serde_json::json!({"op":"state"}),
+            serde_json::Value::Null,
+        )
+    };
+    read().expect_err("Chrome does not start");
+    assert!(host.start_failed("local"));
+    let args = serde_json::json!({
+        "reason":"I need the signed-in tab.", "owner_action":"browser_access"
+    });
+    let refusal = call(&f, &token, "chariox.events.blocked", &task, args.clone())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refusal.contains("start once more"), "{refusal}");
+    // An explicit start that fails again keeps the failure on the live controller.
+    let start = || {
+        host.protected_request_admitted(
+            "local",
+            Some(&host.admit("local", &f.agent).unwrap()),
+            "host.browser",
+            serde_json::json!({"op":"start"}),
+            serde_json::Value::Null,
+        )
+    };
+    start().expect_err("Chrome is still down");
+    assert!(host.start_failed("local"));
+    // The retry the refusal asked for succeeds on the same controller.
+    std::fs::remove_file(root.join("chrome-down")).unwrap();
+    start().unwrap();
+    assert!(
+        !host.start_failed("local"),
+        "a successful start clears the failure"
+    );
+    call(&f, &token, "chariox.events.blocked", &task, args)
+        .await
+        .expect("the owner can approve the signed-in tab again");
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert!(session
+        .active_interactions()
+        .last()
+        .unwrap()
+        .choices()
+        .iter()
+        .any(|choice| choice.id() == "allow_browser"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A loaded grant that does not hold the tab the task needs is a missing resource, not a browser
+/// that failed to start: the owner can still approve it.
+#[tokio::test]
+async fn blocked_for_browser_access_is_offered_when_a_loaded_grant_lacks_the_tab() {
+    let f = fixture("owner-browser-card-partial", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = run_token(&f).await;
+    let host = &f.runtime.owned.kernel_browser_host;
+    host.request_grant(
+        "local",
+        &f.agent,
+        &f.prompt_id,
+        Duration::from_secs(600),
+        None,
+        &f.room,
+    )
+    .unwrap();
+    let admission = host.admit("local", &f.agent).unwrap();
+    let tab = crate::local::UserDomainResource::BrowserTab {
+        tab_id: "existing-signed-in-tab".into(),
+    };
+    let refusal = host
+        .claim_resource(Some(&admission), tab, false)
+        .unwrap_err();
+    assert!(refusal.contains("not_focused_agent"), "{refusal}");
+    call(
+        &f,
+        &token,
+        "chariox.events.blocked",
+        &task,
+        serde_json::json!({
+            "reason":"I need the signed-in tab.", "owner_action":"browser_access"
+        }),
+    )
+    .await
+    .expect("the owner can approve the missing tab");
+    assert!(matches!(
+        f.task(&task.task_id).state,
+        ExecutionState::Blocked
+    ));
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert!(session
+        .active_interactions()
+        .last()
+        .unwrap()
+        .choices()
+        .iter()
+        .any(|choice| choice.id() == "allow_browser"));
+}
+
 #[tokio::test]
 async fn owner_browser_decision_restores_access_and_rejects_stale_answers() {
     for stale in [false, true] {

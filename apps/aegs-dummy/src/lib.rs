@@ -165,6 +165,7 @@ impl AegsProvider for DummyProvider {
             connection_scope,
             prompt: "Handle a Chariox dummy test notification.".to_string(),
             metadata,
+            data: None,
             reply_context: None,
         }))
     }

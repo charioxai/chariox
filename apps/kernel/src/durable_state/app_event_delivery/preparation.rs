@@ -20,6 +20,7 @@ pub(crate) struct PreparedAppEvent {
     pub(super) encoded: DurableWorkflowSessionWrite,
     pub(super) after: RuntimeSession,
     pub(super) queued_id: String,
+    pub(super) gate: Option<crate::durable_state::workflow_gate::Admission>,
     #[cfg(test)]
     pub(super) fault_after_commit: Option<Arc<TestCommitFault>>,
 }
@@ -57,15 +58,6 @@ impl PreparedAppEvent {
             return Err(AppEventDeliveryError::Conflict);
         }
         let session = sessions.get_session(&configuration.target.session_id)?;
-        if session
-            .workflow_queued_prompts()
-            .iter()
-            .filter(|queued| queued.status() == WorkflowQueuedPromptStatus::Queued)
-            .count()
-            >= MAX_QUEUED_WORKFLOW_PROMPTS
-        {
-            return Err(AppEventDeliveryError::Limit);
-        }
         let invocation: Invocation = serde_json::from_str(
             receipt
                 .invocation
@@ -102,19 +94,71 @@ impl PreparedAppEvent {
             None,
             Some(envelope),
         )?;
+        let workflow = sessions.resolve_workflow_ref(session.id(), publication.workflow_id())?;
+        if workflow.gate().is_none()
+            && session
+                .workflow_queued_prompts()
+                .iter()
+                .filter(|q| q.status() == WorkflowQueuedPromptStatus::Queued)
+                .count()
+                >= MAX_QUEUED_WORKFLOW_PROMPTS
+        {
+            return Err(AppEventDeliveryError::Limit);
+        }
+
+        let mut gate = if workflow.gate().is_some() {
+            let data: serde_json::Value = serde_json::from_str(
+                receipt
+                    .payload
+                    .as_deref()
+                    .ok_or(AppEventDeliveryError::Conflict)?,
+            )
+            .map_err(|_| OutboxError::Corrupt)?;
+            let schema = candidate
+                .catalog
+                .payload_schema(&candidate.configuration.event_name)
+                .ok_or(OutboxError::Schema)?;
+            let schema = chariox_app_runtime::workflow_gate::DataSchema {
+                source_kind: "app_event".into(),
+                event_type: candidate.configuration.event_name.clone(),
+                version: receipt.event_version,
+                sha256: candidate.configuration.schema_digest.clone(),
+                schema: schema.as_object().ok_or(OutboxError::Schema)?.clone(),
+            };
+            Some(crate::durable_state::workflow_gate::Admission::from_prompt(
+                &session,
+                &workflow,
+                queued.clone(),
+                receipt.automation_id.clone(),
+                chariox_app_runtime::workflow_gate::TriggerKind::AppEvent,
+                receipt.occurrence_id.clone(),
+                receipt.expires_at_ms,
+                Some(data.as_object().ok_or(OutboxError::Schema)?.clone()),
+                Some(schema),
+                Some(receipt.receipt_id.clone()),
+            )?)
+        } else {
+            None
+        };
+        if let Some(admission) = &mut gate {
+            admission.trigger.occurred_at_ms = Some(receipt.occurred_at_ms);
+        }
         let before = encode_workflow_session(&session)?;
         let mut after = session;
-        after.enqueue_workflow_prompt(queued.clone());
-        after.record_workflow_event_delivery_receipt(WorkflowEventDeliveryReceipt {
-            delivery_id: receipt.receipt_id.clone(),
-            binding_id: receipt.automation_id.clone(),
-            occurrence_id: receipt.occurrence_id.clone(),
-            queued_prompt_id: queued.id().into(),
-            accepted_at_ms: receipt.accepted_at_ms,
-            expires_at_ms: receipt.expires_at_ms,
-        });
+        if gate.is_none() {
+            after.enqueue_workflow_prompt(queued.clone());
+            after.record_workflow_event_delivery_receipt(WorkflowEventDeliveryReceipt {
+                delivery_id: receipt.receipt_id.clone(),
+                binding_id: receipt.automation_id.clone(),
+                occurrence_id: receipt.occurrence_id.clone(),
+                queued_prompt_id: queued.id().into(),
+                accepted_at_ms: receipt.accepted_at_ms,
+                expires_at_ms: receipt.expires_at_ms,
+            });
+        }
         let encoded = encode_workflow_session(&after)?;
         Ok(Self {
+            gate,
             candidate,
             target,
             before,
@@ -151,6 +195,7 @@ fn envelope(
         .collect::<Result<Vec<_>>>()?;
     let receipt = &candidate.receipt;
     Ok(WorkflowPublicationInvocationEnvelope {
+        http_method: None,
         publication_id: candidate.configuration.target.publication_id.clone(),
         hook_id: Some(receipt.automation_id.clone()),
         invocation_id: receipt.receipt_id.clone(),

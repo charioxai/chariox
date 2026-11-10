@@ -22,10 +22,19 @@ pub const DESCRIPTORS: u64 = 64;
 /// paths the contained worker can reach. Failure is fatal: there is no
 /// uncontained execution mode.
 pub fn enter(files: &[PathBuf]) -> io::Result<()> {
+    enter_profile(files, None)
+}
+
+/// The same native boundary with a tighter CPU ceiling and no path grants.
+pub(crate) fn enter_gate() -> io::Result<()> {
+    enter_profile(&[], Some(1))
+}
+
+fn enter_profile(files: &[PathBuf], cpu_seconds: Option<u64>) -> io::Result<()> {
     #[cfg(target_os = "linux")]
-    linux::enter(files)?;
+    linux::enter(files, cpu_seconds)?;
     #[cfg(target_os = "macos")]
-    macos::enter(files)?;
+    macos::enter(files, cpu_seconds)?;
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     return Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -35,7 +44,7 @@ pub fn enter(files: &[PathBuf]) -> io::Result<()> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn ceilings() -> io::Result<()> {
+fn ceilings(cpu_seconds: Option<u64>) -> io::Result<()> {
     for (name, resource, value) in [
         // Darwin rejects a cap below its already-mapped shared region with
         // EINVAL. RLIMIT_DATA has the same VM-map-size check, and RLIMIT_RSS is
@@ -45,7 +54,10 @@ fn ceilings() -> io::Result<()> {
         ("RLIMIT_FSIZE", libc::RLIMIT_FSIZE, FILE_BYTES),
         ("RLIMIT_NOFILE", libc::RLIMIT_NOFILE, DESCRIPTORS),
         ("RLIMIT_CORE", libc::RLIMIT_CORE, 0),
-    ] {
+    ]
+    .into_iter()
+    .chain(cpu_seconds.map(|seconds| ("RLIMIT_CPU", libc::RLIMIT_CPU, seconds)))
+    {
         let mut old = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,

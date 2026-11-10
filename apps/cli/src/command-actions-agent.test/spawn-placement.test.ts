@@ -275,6 +275,7 @@ test("agent spawn with machine requires directory and does not launch local prov
           worker_machine_id: "machine-worker",
           execution_lease_id: "lease-1",
           leased_agent_id: "leased-agent-1",
+          worker_worktree_id: "/srv/project",
         },
         state: "Focused",
       })

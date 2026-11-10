@@ -5,8 +5,12 @@ use super::request_errors::map_relay_error;
 mod app_tests;
 #[cfg(test)]
 mod collaborator_gate_tests;
+#[cfg(test)]
+mod placement_tests;
 mod prepare;
 pub(super) mod request_limits;
+#[cfg(test)]
+mod unpaged_reply_tests;
 pub(super) use prepare::{prepare_daemon_request, PreparedDaemonRequest};
 pub(super) mod renewal_refusals;
 
@@ -531,44 +535,17 @@ pub(super) async fn handle_prepared_daemon_request(
                     };
                 }
             };
-            crate::runtime::perf_timing::record_relay_request(
-                request_kind,
-                received_at_ms,
-                plaintext.len(),
-            );
-            let elapsed_ms = crate::session::unix_epoch_ms().saturating_sub(received_at_ms);
-            if elapsed_ms >= RELAY_SLOW_REQUEST_LOG_MS {
-                crate::logging::info_with_fields(
-                    "daemon.relay_client",
-                    "relay daemon request slow",
-                    serde_json::json!({
-                        "request_kind": request_kind,
-                        "command_id": command_id,
-                        "byte_len": plaintext.len(),
-                        "elapsed_ms": elapsed_ms,
-                    }),
-                );
-            }
-            match relay_crypto::encrypt_payload_for_peer(
-                &daemon_private_key,
-                &client_public_key,
-                &plaintext,
-            ) {
-                Ok(encrypted_response) => RelayRequestOutcome {
-                    display_event,
-                    encrypted_response: Some(encrypted_response),
-                    error: None,
+            seal_reply(
+                plaintext,
+                display_event,
+                SealContext {
+                    request_kind,
+                    command_id: command_id.as_deref(),
+                    received_at_ms,
+                    daemon_private_key: &daemon_private_key,
+                    client_public_key: &client_public_key,
                 },
-                Err(error) => RelayRequestOutcome {
-                    display_event: None,
-                    encrypted_response: None,
-                    error: Some(relay_error(
-                        "relay_request_failed",
-                        &format!("failed to encrypt relay response: {error}"),
-                        false,
-                    )),
-                },
-            }
+            )
         }
         RelayDispatchOutcome::RelayError(error) => {
             crate::logging::info_with_fields(
@@ -586,6 +563,101 @@ pub(super) async fn handle_prepared_daemon_request(
                 error: Some(error),
             }
         }
+    }
+}
+
+/// A reply is never bigger than this once serialized; one that is would hold the relay (and the
+/// client's link) for the whole answer, so the client is told to ask for it in pages.
+const MAX_REPLY_BYTES: usize = 1024 * 1024;
+/// The answers a caller cannot ask for in pages: a terminal snapshot and a captured image have
+/// no offset, length or cursor, so refusing them at the ceiling would leave no way to get them.
+/// They travel as bounded chunks like any bulk reply and stay below what one transfer carries.
+const UNPAGED_REPLY_KINDS: [&str; 2] = ["terminal.room.snapshot", "screenshot.capture"];
+const MAX_UNPAGED_REPLY_BYTES: usize = 24 * 1024 * 1024;
+const REPLY_TOO_LARGE: &str =
+    "the answer is larger than one relay reply; ask for it in pages (offset/length or the list's cursor)";
+
+fn reply_ceiling(request_kind: &str) -> usize {
+    if UNPAGED_REPLY_KINDS.contains(&request_kind) {
+        MAX_UNPAGED_REPLY_BYTES
+    } else {
+        MAX_REPLY_BYTES
+    }
+}
+
+struct SealContext<'a> {
+    request_kind: &'static str,
+    command_id: Option<&'a str>,
+    received_at_ms: u64,
+    daemon_private_key: &'a str,
+    client_public_key: &'a str,
+}
+
+/// Measures, bounds and encrypts the serialized answer to a request.
+fn seal_reply(
+    plaintext: Vec<u8>,
+    display_event: Option<(String, u64, EncryptedRelayPayload)>,
+    context: SealContext<'_>,
+) -> RelayRequestOutcome {
+    let SealContext {
+        request_kind,
+        command_id,
+        received_at_ms,
+        daemon_private_key,
+        client_public_key,
+    } = context;
+    crate::runtime::perf_timing::record_relay_request(
+        request_kind,
+        received_at_ms,
+        plaintext.len(),
+    );
+    let ceiling = reply_ceiling(request_kind);
+    if plaintext.len() > ceiling {
+        crate::logging::warn_with_fields(
+            "daemon.relay_client",
+            "relay reply over the ceiling was not sent",
+            serde_json::json!({
+                "request_kind": request_kind,
+                "command_id": command_id,
+                "byte_len": plaintext.len(),
+                "ceiling_bytes": ceiling,
+            }),
+        );
+        return RelayRequestOutcome {
+            display_event: None,
+            encrypted_response: None,
+            error: Some(relay_error("reply_too_large", REPLY_TOO_LARGE, false)),
+        };
+    }
+    let elapsed_ms = crate::session::unix_epoch_ms().saturating_sub(received_at_ms);
+    if elapsed_ms >= RELAY_SLOW_REQUEST_LOG_MS {
+        crate::logging::info_with_fields(
+            "daemon.relay_client",
+            "relay daemon request slow",
+            serde_json::json!({
+                "request_kind": request_kind,
+                "command_id": command_id,
+                "byte_len": plaintext.len(),
+                "elapsed_ms": elapsed_ms,
+            }),
+        );
+    }
+    match relay_crypto::encrypt_payload_for_peer(daemon_private_key, client_public_key, &plaintext)
+    {
+        Ok(encrypted_response) => RelayRequestOutcome {
+            display_event,
+            encrypted_response: Some(encrypted_response),
+            error: None,
+        },
+        Err(error) => RelayRequestOutcome {
+            display_event: None,
+            encrypted_response: None,
+            error: Some(relay_error(
+                "relay_request_failed",
+                &format!("failed to encrypt relay response: {error}"),
+                false,
+            )),
+        },
     }
 }
 
@@ -1114,6 +1186,16 @@ async fn dispatch_relay_client_request(
         {
             CommandReservation::Wait(wait_rx) => {
                 return match wait_rx.await {
+                    // A retry's answer window starts when the result exists, not when the retry
+                    // arrived: retries of a command that ran for minutes would each claim an
+                    // expired window and all receive the result at once.
+                    Ok(_) if !command_result_cache.may_answer_retry(&command.command_id) => {
+                        RelayDispatchOutcome::RelayError(relay_error(
+                            "duplicate_command_unavailable",
+                            "original duplicate command result was unavailable",
+                            true,
+                        ))
+                    }
                     Ok(cached) => {
                         if let Err(error) = router
                             .runtime_state()
@@ -1420,5 +1502,79 @@ mod tests {
                     || response.to_string().contains("issued-client-token")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod reply_ceiling_tests {
+    use super::*;
+
+    fn seal(plaintext: Vec<u8>) -> RelayRequestOutcome {
+        let daemon = crate::config::DaemonConfig::for_tests();
+        let client = crate::config::DaemonConfig::for_tests();
+        seal_reply(
+            plaintext,
+            None,
+            SealContext {
+                request_kind: "machine_file.read",
+                command_id: Some("read-1"),
+                received_at_ms: crate::session::unix_epoch_ms(),
+                daemon_private_key: &daemon.relay_private_key,
+                client_public_key: &client.relay_public_key,
+            },
+        )
+    }
+
+    // The per-client bound on bulk replies only covers a reply the relay client queues as bulk:
+    // the largest file chunk must be one, or a download would run on the priority lane.
+    #[test]
+    fn a_full_file_chunk_reply_is_queued_as_bulk() {
+        use base64::Engine;
+        let data = vec![0u8; crate::local::KERNEL_FILE_MAX_CHUNK_BYTES as usize];
+        let reply = serde_json::to_vec(&serde_json::json!({
+            "response": {
+                "KernelFileChunk": {
+                    "path": "p".repeat(512),
+                    "offset": u64::MAX,
+                    "data_base64": base64::engine::general_purpose::STANDARD.encode(data),
+                    "size": u64::MAX,
+                    "eof": false
+                }
+            }
+        }))
+        .unwrap();
+        let sealed = seal(reply);
+        let on_the_wire = sealed.encrypted_response.as_ref().unwrap().ciphertext.len();
+        assert!(
+            on_the_wire <= 128 * 1024,
+            "a reply of {on_the_wire} bytes holds the link for too long"
+        );
+        let envelope = chariox_relay::protocol::RelayEnvelope::DaemonResponse {
+            relay_request_id: "chunk".into(),
+            encrypted_response: sealed.encrypted_response,
+            error: None,
+        };
+        assert!(crate::transport::relay_client::relay_envelope_uses_event_lane(&envelope));
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayflood): nothing bounded how big one reply could be.
+    #[test]
+    fn a_reply_over_the_ceiling_is_a_typed_error() {
+        let logs = crate::logging::capture::start();
+        let outcome = seal(vec![b'x'; 2 * 1024 * 1024]);
+        assert!(outcome.encrypted_response.is_none());
+        let error = outcome.error.expect("a 2 MiB reply is refused");
+        assert_eq!(error.code, "reply_too_large");
+        assert_eq!(error.message, REPLY_TOO_LARGE);
+        assert!(!error.retryable);
+        assert!(
+            logs.records().iter().any(|record| record
+                .contains("relay reply over the ceiling was not sent")
+                && record.contains("\"request_kind\":\"machine_file.read\"")),
+            "the log names the request kind"
+        );
+        // A file chunk (64 KiB of data, about 117 KB on the wire) stays well below the ceiling.
+        let chunk = seal(vec![b'x'; 90 * 1024]);
+        assert!(chunk.error.is_none() && chunk.encrypted_response.is_some());
     }
 }

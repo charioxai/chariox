@@ -740,6 +740,7 @@ fn local_request_api_rejects_invalid_workflow_code_artifact_import() {
         schema_version: crate::workflow_code::WORKFLOW_CODE_SCHEMA_VERSION,
         parameters_schema: None,
         workflow: crate::workflow_code::WorkflowCodeWorkflow {
+            gate: None,
             alias: Some("invalid_import".to_string()),
             prompt: None,
             flush_agent_context_before_run: None,

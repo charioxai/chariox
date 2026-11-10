@@ -1,16 +1,32 @@
+// MP-08 / MP-09 / MP-10 / MP-11 (PR5-A4): another user's agent deadline is readable by whoever
+// may view that agent's trace (its owner, who acts for the owner, Transparent and Full members);
+// a Private member cannot read it. Arming one stays with the owner.
+use super::historical_workflows::terminal_command;
 use super::*;
+use crate::session::CollaborationLevel;
 
-#[test]
-fn a_private_member_cannot_read_another_users_agent_deadline() {
-    run_remote_authorization_large_stack_test(
-        "a-private-member-cannot-read-another-users-agent-deadline",
-        a_private_member_cannot_read_another_users_agent_deadline_inner,
-    );
+const ENROLLED_OWNER: &str = "kernel-owner";
+const DEADLINE_MS: u64 = 4_102_444_800_000;
+
+struct Room {
+    router: CommandRouter,
+    session_id: String,
+    agent_id: String,
+    _worktree: crate::test_support::TestWorktree,
 }
 
-async fn a_private_member_cannot_read_another_users_agent_deadline_inner() {
-    let worktree = crate::test_support::TestWorktree::new("deadline-read-visibility");
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+/// A room with one agent of the room owner, armed with a deadline, and one member per level.
+async fn room_with_armed_deadline(label: &str, enrolled: bool) -> Room {
+    let worktree = crate::test_support::TestWorktree::new(label);
+    let mut config = DaemonConfig::for_tests();
+    if enrolled {
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: ENROLLED_OWNER.into(),
+            realm_id: "test-realm".into(),
+            ..Default::default()
+        });
+    }
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let session = app
         .sessions_mut()
         .create_session(worktree.session_request())
@@ -19,55 +35,128 @@ async fn a_private_member_cannot_read_another_users_agent_deadline_inner() {
     let agent_id = spawn_test_agent(&mut app, &session_id, "owned", "dev-stub")
         .id()
         .to_string();
-    let (_, invite) = app
-        .sessions_mut()
-        .create_session_invite(
-            &session_id,
-            "invite-user-2".to_string(),
-            DEFAULT_LOCAL_USER_ID.to_string(),
-            None,
-            Some(1),
-            crate::session::CollaborationLevel::Private,
-        )
-        .expect("invite should be created");
-    app.sessions_mut()
-        .join_session_invite(&session_id, invite.invite_id(), "user-2".to_string(), 1)
-        .expect("user should join session");
+    for (user, level) in [
+        ("private-user", CollaborationLevel::Private),
+        ("transparent-user", CollaborationLevel::Transparent),
+        ("full-user", CollaborationLevel::Full),
+    ] {
+        let (_, invite) = app
+            .sessions_mut()
+            .create_session_invite(
+                &session_id,
+                format!("invite-{user}"),
+                DEFAULT_LOCAL_USER_ID.to_string(),
+                None,
+                Some(1),
+                level,
+            )
+            .expect("invite should be created");
+        app.sessions_mut()
+            .join_session_invite(&session_id, invite.invite_id(), user.to_string(), 1)
+            .expect("user should join session");
+    }
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
-    let deadline_ms = 4_102_444_800_000_u64;
-    let set = serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
-        "SetAgentDeadline": {"session_id": session_id, "agent_id": agent_id, "deadline_ms": deadline_ms}
-    }))
-    .unwrap();
-    router
-        .dispatch(
-            remote_command_for_request(&set, Some(DEFAULT_LOCAL_USER_ID)),
-            set,
-        )
+    let room = Room {
+        router,
+        session_id,
+        agent_id,
+        _worktree: worktree,
+    };
+    room.set_as(DEFAULT_LOCAL_USER_ID)
         .await
         .expect("the owner arms the deadline");
-    let get = serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
-        "GetAgentDeadline": {"session_id": session_id, "agent_id": agent_id}
-    }))
-    .unwrap();
+    room
+}
 
-    let owner_read = router
-        .dispatch(
-            remote_command_for_request(&get, Some(DEFAULT_LOCAL_USER_ID)),
-            get.clone(),
-        )
-        .await
-        .expect("the owner reads the deadline");
-    assert_eq!(
-        serde_json::to_value(owner_read).unwrap()["AgentDeadline"]["deadline"]["deadline_ms"],
-        deadline_ms
-    );
-    assert_ownership_denied(
-        router
-            .dispatch(remote_command_for_request(&get, Some("user-2")), get)
+impl Room {
+    async fn set_as(&self, user: &str) -> Result<LocalDaemonResponse, DaemonError> {
+        let set = serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+            "SetAgentDeadline": {
+                "session_id": self.session_id,
+                "agent_id": self.agent_id,
+                "deadline_ms": DEADLINE_MS,
+            }
+        }))
+        .unwrap();
+        self.router
+            .dispatch(terminal_command(&set, Some(user)), set)
             .await
-            .expect_err("a Private member must not read another user's agent deadline"),
-        "user-2",
-        DEFAULT_LOCAL_USER_ID,
-    );
+    }
+
+    async fn read_as(&self, user: &str) -> Result<LocalDaemonResponse, DaemonError> {
+        let get = serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+            "GetAgentDeadline": {"session_id": self.session_id, "agent_id": self.agent_id}
+        }))
+        .unwrap();
+        self.router
+            .dispatch(terminal_command(&get, Some(user)), get)
+            .await
+    }
+
+    async fn assert_reads(&self, user: &str) {
+        let response = self
+            .read_as(user)
+            .await
+            .unwrap_or_else(|error| panic!("{user} must read the agent deadline: {error:?}"));
+        assert_eq!(
+            serde_json::to_value(response).unwrap()["AgentDeadline"]["deadline"]["deadline_ms"],
+            DEADLINE_MS,
+            "{user} read another deadline"
+        );
+    }
+}
+
+#[test]
+fn a_private_member_cannot_read_another_users_agent_deadline() {
+    run_remote_authorization_large_stack_test("deadline-read-private", || async {
+        let room = room_with_armed_deadline("deadline-read-private", false).await;
+        room.assert_reads(DEFAULT_LOCAL_USER_ID).await;
+        assert_ownership_denied(
+            room.read_as("private-user")
+                .await
+                .expect_err("a Private member must not read another user's agent deadline"),
+            "private-user",
+            DEFAULT_LOCAL_USER_ID,
+        );
+    });
+}
+
+#[test]
+fn a_transparent_member_reads_another_users_agent_deadline() {
+    run_remote_authorization_large_stack_test("deadline-read-transparent", || async {
+        let room = room_with_armed_deadline("deadline-read-transparent", false).await;
+        room.assert_reads("transparent-user").await;
+    });
+}
+
+#[test]
+fn a_full_member_reads_another_users_agent_deadline() {
+    run_remote_authorization_large_stack_test("deadline-read-full", || async {
+        let room = room_with_armed_deadline("deadline-read-full", false).await;
+        room.assert_reads("full-user").await;
+    });
+}
+
+#[test]
+fn the_enrolled_owner_reads_the_deadline_of_an_agent_made_before_enrollment() {
+    run_remote_authorization_large_stack_test("deadline-read-enrolled-owner", || async {
+        let room = room_with_armed_deadline("deadline-read-enrolled-owner", true).await;
+        room.assert_reads(ENROLLED_OWNER).await;
+    });
+}
+
+#[test]
+fn a_member_who_may_view_the_trace_still_cannot_arm_the_deadline() {
+    run_remote_authorization_large_stack_test("deadline-set-transparent-full", || async {
+        let room = room_with_armed_deadline("deadline-set-transparent-full", false).await;
+        for user in ["transparent-user", "full-user"] {
+            assert_ownership_denied(
+                room.set_as(user)
+                    .await
+                    .expect_err("only who acts for the owner arms an agent deadline"),
+                user,
+                DEFAULT_LOCAL_USER_ID,
+            );
+        }
+    });
 }

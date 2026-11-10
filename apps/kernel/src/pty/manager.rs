@@ -13,7 +13,7 @@ use tokio::sync::Notify;
 
 use super::handover::ReaderGate;
 #[cfg(unix)]
-use super::handover::{AdoptedChild, AdoptedMaster, PtyHandover};
+use super::handover::{AdoptedChild, AdoptedMaster, OutgoingPty, PtyHandover};
 use super::input_backlog::PtyInputBacklog;
 use crate::error::DaemonError;
 use crate::provider::RuntimeProviderRun;
@@ -1068,17 +1068,23 @@ impl PtyManager {
 
     /// The master and child a hot reload passes to the next kernel program.
     #[cfg(unix)]
-    pub(crate) fn handover(&self, provider_run_id: &str) -> Result<PtyHandover, DaemonError> {
+    pub(crate) fn handover(&self, provider_run_id: &str) -> Result<OutgoingPty, DaemonError> {
+        use std::os::fd::{AsRawFd, BorrowedFd};
         let process = self.process_for(provider_run_id)?;
         let unavailable = |message: &str| DaemonError::PtySpawn {
             provider_run_id: provider_run_id.to_string(),
             message: message.to_string(),
         };
-        Ok(PtyHandover {
-            master_fd: process
-                .master
-                .as_raw_fd()
-                .ok_or_else(|| unavailable("the PTY master has no descriptor"))?,
+        let master = process
+            .master
+            .as_raw_fd()
+            .ok_or_else(|| unavailable("the PTY master has no descriptor"))?;
+        // The master remains alive throughout this clone.
+        let master = unsafe { BorrowedFd::borrow_raw(master) }
+            .try_clone_to_owned()
+            .map_err(|error| unavailable(&error.to_string()))?;
+        let handover = PtyHandover {
+            master_fd: master.as_raw_fd(),
             pid: process
                 .child
                 .process_id()
@@ -1087,7 +1093,8 @@ impl PtyManager {
             cgroup: process.resources.cgroup_path(),
             agent: process.agent.clone(),
             submissions: process.resources.submissions(),
-        })
+        };
+        Ok(OutgoingPty { handover, master })
     }
 
     /// Takes over a PTY the previous kernel program handed over: its child is

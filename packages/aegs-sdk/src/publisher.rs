@@ -38,6 +38,7 @@ impl AedsPublisher {
         mut event: PublishEventRequest,
     ) -> Result<PublishEventResponse, String> {
         event.producer_id = self.producer_id.clone();
+        event.validate()?;
         let url = self.events_url.clone();
         let token = self.producer_token.clone();
         let timeout = self.request_timeout;

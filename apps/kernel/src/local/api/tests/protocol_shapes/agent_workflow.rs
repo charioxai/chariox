@@ -306,6 +306,9 @@ fn the_agent_tree_read_and_change_event_have_their_shapes() {
             alias: Some("worker".into()),
             provider: "codex".into(),
             model: None,
+            execution_mode: Some(crate::provider::AgentExecutionMode::Plan),
+            permission_level: Some(crate::provider::AgentPermissionLevel::Required),
+            effort: Some("high".into()),
             depth: 1,
             state: crate::local::AgentTreeState::Waiting,
             outcome: None,
@@ -319,7 +322,8 @@ fn the_agent_tree_read_and_change_event_have_their_shapes() {
         serde_json::json!({"AgentTree":{"tree":{"root":"root","rev":7,
             "totals":{"live":1,"running":0,"needs_user":1},
             "nodes":[{"agent_id":"child","parent_agent_id":"root","kernel_id":null,
-                "alias":"worker","provider":"codex","model":null,"depth":1,
+                "alias":"worker","provider":"codex","model":null,"execution_mode":"plan",
+                "permission_level":"required","effort":"high","depth":1,
                 "state":"waiting","outcome":null,"needs_user":true,"deadline_ms":null,"created_at_ms":5}]}}})
     );
     assert_eq!(

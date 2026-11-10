@@ -24,7 +24,8 @@ export type ParserConfig = {
 export type InputSchema = {
   type?: "object"
   required?: string[]
-  properties?: Record<string, { type?: "string" | "number" | "boolean" | "object" | "array" }>
+  properties?: Record<string, { type?: "string" | "integer" | "number" | "boolean" | "object" | "array" }>
+  additionalProperties?: boolean
 }
 
 export type TlsConfig = {
@@ -264,6 +265,7 @@ export type PublicationProviderReadiness = {
 }
 
 export type NormalizedInvocation = {
+  http_method?: string
   publication_id: string
   request_id: string
   caller: Record<string, unknown>
@@ -272,6 +274,7 @@ export type NormalizedInvocation = {
 }
 
 export type WorkflowPublicationInvocationEnvelope = {
+  http_method?: string
   publication_id: string
   hook_id?: string | null
   invocation_id: string
@@ -341,6 +344,7 @@ export type WorkflowRun = {
 }
 
 export type WorkflowInvocationResult = {
+  gate_entry?: import("@chariox/kernel-client").WorkflowGateEntry
   accepted: boolean
   queued?: boolean
   workflow_run?: WorkflowRun

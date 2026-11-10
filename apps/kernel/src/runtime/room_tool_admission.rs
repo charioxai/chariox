@@ -1,9 +1,29 @@
 //! MP-08 / MP-11: shared room admission and the subtree control policy.
 use crate::{agent::AgentInstance, error::DaemonError};
 
+/// Code a client sees for a refusal; the policy cannot change on a retry.
+pub(crate) const REFUSED_CODE: &str = "room_tool_refused";
+
+/// Code a client sees when the same call can succeed later; it may repeat it.
+pub(crate) const RETRY_CODE: &str = "room_tool_retry";
+
+/// Codes whose message the room tool wrote itself, as the sentence the user reads.
+pub(crate) fn is_public_code(code: &str) -> bool {
+    code == REFUSED_CODE || code == RETRY_CODE
+}
+
+/// The one way a room policy refuses: the message is the sentence the user reads.
 pub(crate) fn denied(message: impl Into<String>) -> DaemonError {
-    DaemonError::LocalTransport {
-        operation: "room tool admission",
+    DaemonError::MachineRequest {
+        code: REFUSED_CODE.into(),
+        message: message.into(),
+    }
+}
+
+/// A call that failed for a reason that passes: the sentence says when to repeat it.
+pub(crate) fn retry_later(message: impl Into<String>) -> DaemonError {
+    DaemonError::MachineRequest {
+        code: RETRY_CODE.into(),
         message: message.into(),
     }
 }
@@ -203,4 +223,88 @@ pub(crate) fn command_doc(mut value: serde_json::Value) -> serde_json::Value {
         }
     }
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::GridPosition;
+    use crate::transport::kernel_protocol::map_kernel_error;
+
+    fn agent(id: &str, room: &str, owner: &str) -> AgentInstance {
+        let mut agent = AgentInstance::new(
+            id,
+            format!("ref-{id}"),
+            room,
+            None,
+            "dev-stub",
+            None,
+            None,
+            None,
+            GridPosition {
+                row: 0,
+                col: 0,
+                row_span: 1,
+                col_span: 1,
+            },
+        );
+        agent.set_owner_user_id(owner);
+        agent
+    }
+
+    /// A refusal reaches the user as its own sentence under its own code, and a client
+    /// must not retry it.
+    fn assert_plain_refusal(error: DaemonError, sentence: &str) {
+        assert_eq!(error.to_string(), sentence);
+        let mapped = map_kernel_error(&error);
+        assert_eq!(mapped.code, REFUSED_CODE);
+        assert_eq!(mapped.message, sentence);
+        assert!(!mapped.retryable);
+    }
+
+    #[test]
+    fn a_failure_that_passes_is_a_plain_retryable_sentence() {
+        let error = retry_later("Public history changed; retry the query");
+        assert_eq!(error.to_string(), "Public history changed; retry the query");
+        let mapped = map_kernel_error(&error);
+        assert_eq!(mapped.code, RETRY_CODE);
+        assert_eq!(mapped.message, error.to_string());
+        assert!(mapped.retryable);
+    }
+
+    #[test]
+    fn every_admission_refusal_is_a_plain_non_retryable_sentence() {
+        let actor = agent("actor", "room", "alice");
+        let other_room = agent("stranger", "elsewhere", "bob");
+        let sibling = agent("sibling", "room", "alice");
+        let agents = vec![actor.clone(), sibling.clone()];
+
+        assert_plain_refusal(
+            resolve_agent(&agents, "room", "nobody").unwrap_err(),
+            "agent is unavailable in this room",
+        );
+        let twin = agent("twin", "room", "alice");
+        let mut aliased = vec![twin.clone(), twin];
+        aliased.push(actor.clone());
+        assert_plain_refusal(
+            resolve_agent(&aliased, "room", "twin").unwrap_err(),
+            "ambiguous room agent reference",
+        );
+        assert_plain_refusal(
+            in_subtree(&actor, &sibling, &agents).unwrap_err(),
+            "only the agents above an agent in this room can control it",
+        );
+        assert_plain_refusal(
+            workflow_node(&actor, &sibling, &agents).unwrap_err(),
+            "only the agents above an agent in this room can control it",
+        );
+        assert_plain_refusal(
+            workflow_execution_target(&actor, &other_room).unwrap_err(),
+            "workflow execution target is outside the caller room",
+        );
+        assert_plain_refusal(
+            command(&["agent".to_owned(), "unknown".to_owned()]).unwrap_err(),
+            "command is outside the regular room surface",
+        );
+    }
 }

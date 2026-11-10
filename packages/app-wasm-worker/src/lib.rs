@@ -2,6 +2,7 @@
 
 pub mod containment;
 pub mod engine;
+mod gate;
 #[cfg(target_os = "macos")]
 mod macos_code;
 mod supervised;

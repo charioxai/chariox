@@ -448,6 +448,7 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::UpdateWorkflowCanvasLayout(request) => request.session_id.clone(),
         LocalDaemonRequest::SetWorkflowRunOutputSchema(request) => request.session_id.clone(),
         LocalDaemonRequest::SetWorkflowFlushContext(request) => request.session_id.clone(),
+        LocalDaemonRequest::WorkflowGate(request) => request.session_id.clone(),
         LocalDaemonRequest::InvokeWorkflowEndpoint(request) => request.session_id.clone(),
         LocalDaemonRequest::ListWorkflowRuns(request) => request.session_id.clone(),
         LocalDaemonRequest::GetWorkflowRun(request) => request.session_id.clone(),

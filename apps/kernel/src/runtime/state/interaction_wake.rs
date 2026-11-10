@@ -91,6 +91,15 @@ impl WakeDriver for InteractionWakeDriver {
         Ok(Cancel::Done)
     }
     fn recover(&self, wake: &AgentWake) -> Recovery {
+        // What a payment card approves lives only in kernel memory, so its Allow could approve
+        // nothing after a restart: the card is withdrawn and the agent asks again.
+        if super::vault_use::is_vault_payment_decision(&wake.id)
+            && !self.owned.vault_payment_asked(&wake.id)
+        {
+            return Recovery::Lost(
+                "the payment ask ended with the restart; fill the card again to ask again".into(),
+            );
+        }
         if let Err(error) = self.arm(wake) {
             return Recovery::Lost(error.to_string());
         }
@@ -361,6 +370,7 @@ impl KernelRuntimeOwnedState {
                 end: Some(WakeEnd::Succeeded),
                 now: crate::session::unix_epoch_ms(),
             })?;
+        self.settle_vault_payment(interaction, resolution);
         Ok(())
     }
 
@@ -370,16 +380,31 @@ impl KernelRuntimeOwnedState {
             .mutation
             .lock()
             .map_err(|_| ledger::error("interaction store unavailable"))?;
-        self.pending_interactions.write().remove(&wake.id);
+        let pending = self.pending_interactions.write().remove(&wake.id);
+        self.forget_vault_payment_ask(&wake.id);
         let mut sessions = self.session_store.write();
-        let Ok(mut session) = sessions.get_session(&wake.room_id) else {
-            return Ok(());
-        };
-        if session.remove_active_interaction(&wake.id).is_none() {
+        let card = sessions
+            .get_session(&wake.room_id)
+            .ok()
+            .and_then(|mut session| {
+                let card = session.remove_active_interaction(&wake.id)?;
+                sessions.restore_session(session);
+                Some(card)
+            });
+        drop(sessions);
+        // After a restart only the card says it was a passkey prompt.
+        if pending.is_some_and(|pending| pending.passkey_prompt.is_some())
+            || card.as_ref().is_some_and(|card| {
+                card.choices()
+                    .iter()
+                    .any(crate::session::RuntimeInteractionChoice::requires_passkey)
+            })
+        {
+            self.close_withdrawn_passkey_prompt(&wake.room_id, &wake.id);
+        }
+        if card.is_none() {
             return Ok(());
         }
-        sessions.restore_session(session);
-        drop(sessions);
         self.record_notice_for_agent(
             &wake.room_id,
             None,

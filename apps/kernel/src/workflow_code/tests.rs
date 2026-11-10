@@ -10,6 +10,7 @@ fn minimal_definition() -> WorkflowCodeDefinition {
         schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
         parameters_schema: None,
         workflow: WorkflowCodeWorkflow {
+            gate: None,
             alias: Some("toy".to_string()),
             prompt: Some("Run the toy workflow.".to_string()),
             flush_agent_context_before_run: Some(true),
@@ -48,6 +49,7 @@ fn minimal_definition() -> WorkflowCodeDefinition {
         }],
         edges: Vec::new(),
         endpoints: vec![WorkflowCodeEndpointDefinition {
+            entry_nodes: vec![],
             handle: "entry".to_string(),
             entry_node: "planner".to_string(),
             alias: Some("entry".to_string()),
@@ -67,6 +69,7 @@ fn minimal_definition() -> WorkflowCodeDefinition {
 fn multi_endpoint_definition() -> WorkflowCodeDefinition {
     let mut definition = minimal_definition();
     definition.endpoints.push(WorkflowCodeEndpointDefinition {
+        entry_nodes: vec![],
         handle: "review".to_string(),
         entry_node: "planner".to_string(),
         alias: Some("review".to_string()),

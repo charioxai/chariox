@@ -1,3 +1,5 @@
+import { executeWorkflowGateCommand } from "./shell-workflow-gate-command.js"
+import type { WorkflowGateEntry } from "./kernel-types.js"
 import type {
   RuntimeSession,
   SessionConfigState,
@@ -185,6 +187,10 @@ export async function executeWorkflowCommand(
         .join(" ")
         .trim() || null
       const response = await deps.client.send(invokeWorkflowEndpointRequest(sessionId, workflowRef, endpointRef, prompt, queueRef))
+      if ("WorkflowEntryAccepted" in response) {
+        const payload = response.WorkflowEntryAccepted as {entry: WorkflowGateEntry}
+        return {ok:true,message:`workflow entry ${payload.entry.entry_id} [${payload.entry.disposition}]`,data:payload}
+      }
       if ("WorkflowRunInvoked" in response) {
         const payload = response.WorkflowRunInvoked as {
           workflow_run: WorkflowRun
@@ -328,6 +334,8 @@ export async function executeWorkflowCommand(
         contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
       }
     }
+    case "gate":
+      return executeWorkflowGateCommand(args, context, deps)
     case "node":
       return executeWorkflowNodeCommand(args, parsed, context, deps)
     case "edge":

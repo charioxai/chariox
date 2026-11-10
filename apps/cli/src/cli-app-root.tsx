@@ -1150,6 +1150,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     focusedAgentInteraction, interactionChoiceStore, renderAgentInteractions, handleHotkeysToggleShortcut,
     handleKernelApprovalKey: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => appActions?.handleKey(event) || kernelApprovals.handleKey(event) || userAppViews?.handleKey(event) || false,
     openKernelApprovals: kernelApprovals.openFromCommand,
+    showPasskeyPrompt: kernelApprovals.showPasskeyPrompt,
     kernelApprovalOwnsInput: () => kernelApprovals.ownsInput() || Boolean(appActions?.ownsInput()) || Boolean(userAppViews?.ownsInput()),
     hydrateComposer, hydratePromptInputHistory, dialogOverlayOpen, closeActiveDialogOverlay, activePrompt, handleCommandCenterKey,
     handleQueuedPromptKey: handleQueuedPromptStripKey,

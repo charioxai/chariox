@@ -99,7 +99,7 @@ mod app_view_runtime;
 mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod critical_approval_passkey;
-mod kernel_access;
+pub(in crate::runtime) mod kernel_access;
 pub(crate) use kernel_access::reach;
 pub(crate) use kernel_access::AccessSubmission;
 mod outside_events;
@@ -188,6 +188,7 @@ mod room_display;
 mod room_environment_health;
 mod room_environment_placement;
 mod room_environment_state;
+mod room_exec_place_runtime_state;
 mod room_exec_runtime_state;
 mod room_screenshot;
 mod room_secret_observation;
@@ -240,6 +241,12 @@ pub(crate) struct KernelRuntimeState {
     peer_outcome_deliveries: lifecycle_sweep_flight::SweepFlight,
     /// The relay link is back: the next delivery pass sends every owed outcome, due or not.
     peer_outcomes_owed_now: Arc<std::sync::atomic::AtomicBool>,
+    /// One settlement pass over the follows of peers this kernel no longer pairs with at a time,
+    /// apart from the lifecycle sweep.
+    unpaired_peer_follow_settlements: lifecycle_sweep_flight::SweepFlight,
+    /// The work the lifecycle sweep started for a task and does not wait for, once per task and kind.
+    task_work: task_work_flight::TaskWorkFlight,
+    trigger_firings: agent_trigger_firings::TriggerFirings,
     /// What the person granted with "Allow for this session" on Claude permission prompts, per
     /// agent, so a restarted Claude process starts with it again.
     claude_session_grants: claude_permission_rules::StandingGrants,
@@ -319,6 +326,11 @@ struct KernelRuntimeOwnedState {
     room_display_leases: room_shared_display::RoomDisplayLeases,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
     kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations,
+    /// MP-08 / MP-09 / MP-10 / MP-11: card payments the owner approved, briefly.
+    vault_payment_grants: Arc<std::sync::Mutex<Vec<vault_use::VaultPaymentGrant>>>,
+    /// Card payments waiting on the owner's card, by decision id.
+    vault_payment_asks:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, vault_use::VaultPayment>>>,
     room_terminals: crate::room_terminal::RoomTerminalService,
     room_execs: crate::room_exec::RoomExecService,
     disk_usage: crate::runtime::disk_usage::DiskUsageStore,
@@ -653,8 +665,10 @@ mod kernel_browser_receipts;
 mod kernel_browser_runtime;
 mod kernel_browser_secret_runtime;
 mod kernel_browser_state_wait;
+mod kernel_browser_tool_ops;
 mod kernel_browser_upload;
 mod kernel_browser_vault_capture;
+mod kernel_browser_wait;
 mod owner_handoff_runtime;
 pub(crate) use owner_handoff_runtime::{is_handoff_interaction_id, HANDOFF_OBLIGATION_KIND};
 mod declined_workspace_trust_runtime;
@@ -701,6 +715,8 @@ mod workflow_source_request_runtime_state;
 use workflow_prompt_dispatches::*;
 mod outside_agent_notification;
 mod room_workflow_control_runtime_state;
+mod workflow_gate_inputs;
+mod workflow_gate_runtime;
 mod workflow_notification_grants;
 mod workflow_notification_peers;
 mod workflow_notification_remote;
@@ -1095,6 +1111,9 @@ impl KernelRuntimeState {
             lifecycle_sweeps: Default::default(),
             peer_outcome_deliveries: Default::default(),
             peer_outcomes_owed_now: Default::default(),
+            unpaired_peer_follow_settlements: Default::default(),
+            task_work: Default::default(),
+            trigger_firings: Default::default(),
             claude_session_grants: claude_permission_rules::StandingGrants::default(),
             terminal_input_grants: terminal_input_grants::TerminalInputGrants::default(),
             terminal_wake_driver: None,
@@ -1105,6 +1124,8 @@ impl KernelRuntimeState {
                     crate::runtime::provider_usage_refresh::ProviderUsageRefresher::for_kernel(
                         provider_account_profiles.clone(),
                         provider_run_projection.clone(),
+                        session_projection.clone(),
+                        config_projection.clone(),
                     ),
                 app_control,
                 dev_app_bindings: Default::default(),
@@ -1169,6 +1190,8 @@ impl KernelRuntimeState {
                     config.private_runtime_state_root().join("kernel-browser/observations"),
                     BTreeSet::new(),
                 ).with_identity(&config.relay_private_key),
+                vault_payment_grants: Default::default(),
+                vault_payment_asks: Default::default(),
                 room_terminals,
                 room_execs: Default::default(),
                 disk_usage: Default::default(),
@@ -1591,6 +1614,8 @@ mod agent_assessment_result;
 mod agent_delegation_runtime;
 pub(crate) use agent_assessment_result::PrivateAssessmentDispatch;
 mod agent_deadline_runtime;
+mod spawned_agent_facts;
+pub(crate) use spawned_agent_facts::SpawnedAgentFacts;
 mod agent_goal_context;
 mod agent_goal_migration;
 mod agent_goal_native_approval;
@@ -1625,6 +1650,7 @@ mod agent_task_human_control_wait;
 mod agent_task_owner_interactions;
 mod agent_task_owner_resolution;
 mod agent_task_projection;
+mod agent_trigger_firings;
 #[cfg(test)]
 mod agent_turn_task_tests;
 mod agent_wake_cancellation;
@@ -1639,8 +1665,11 @@ mod lifecycle_sweep_flight;
 #[cfg(test)]
 mod peer_gone_tests;
 #[cfg(test)]
+mod pump_stall_tests;
+#[cfg(test)]
 mod resident_room_scan_tests;
 mod room_dispatch_obligation;
+mod task_work_flight;
 mod terminal_wake;
 mod terminal_wake_worker;
 #[cfg(test)]

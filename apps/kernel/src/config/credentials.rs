@@ -23,6 +23,9 @@ pub struct UserCredentialConfig {
 pub struct UserCredentialMetadataConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub use_binding: Option<super::VaultUseBinding>,
+    /// MP-08 / MP-09 / MP-10 / MP-11: the owner list's card details; never the number or code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment_card: Option<super::PaymentCardSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

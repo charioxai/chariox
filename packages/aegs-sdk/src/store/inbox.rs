@@ -121,7 +121,37 @@ pub enum Requeue {
     Queued,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct InboxMetrics {
+    pub pending_events: u64,
+    pub pending_deliveries: u64,
+    pub failed_deliveries: u64,
+    pub unmatched_events: u64,
+}
+
 impl AegsStore {
+    /// Bounded, payload-free health counters for operator diagnostics.
+    pub fn inbox_metrics(&self) -> Result<InboxMetrics, String> {
+        let db = self.lock()?;
+        db.query_row(
+            "SELECT
+              (SELECT COUNT(*) FROM webhook_inbox WHERE selected=0),
+              (SELECT COUNT(*) FROM webhook_inbox_delivery WHERE status='pending'),
+              (SELECT COUNT(*) FROM webhook_inbox_delivery WHERE status='failed'),
+              (SELECT COUNT(*) FROM webhook_inbox i WHERE selected=1 AND NOT EXISTS
+                (SELECT 1 FROM webhook_inbox_delivery d WHERE d.delivery_id=i.delivery_id))",
+            [],
+            |r| {
+                Ok(InboxMetrics {
+                    pending_events: r.get::<_, i64>(0)? as u64,
+                    pending_deliveries: r.get::<_, i64>(1)? as u64,
+                    failed_deliveries: r.get::<_, i64>(2)? as u64,
+                    unmatched_events: r.get::<_, i64>(3)? as u64,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())
+    }
     /// Stores a verified webhook. Returns `false` when `delivery_id` was already stored, in which
     /// case the existing entry is left untouched.
     pub fn record_inbox_event(
@@ -789,6 +819,7 @@ mod tests {
             occurred_at: "2026-10-17T10:48:33Z".into(),
             connection_scope: "scope".into(),
             prompt: "prompt".into(),
+            data: None,
             metadata: serde_json::json!({"repository": "charioxai/chariox", "number": 1026}),
             reply_context: None,
         }

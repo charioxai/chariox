@@ -85,3 +85,22 @@ pub fn runtime_identity(
         },
     )
 }
+
+/// A distinct identity keeps gate fuel, stack and integer features out of App
+/// caches. Gates never deserialize uploaded or App-profile native code.
+pub const GATE_ENGINE_CONFIG: &str = chariox_app_runtime::workflow_gate::PROFILE;
+pub(crate) fn gate_configuration() -> Config {
+    let mut config = configuration();
+    config.wasm_component_model_async(false);
+    config.consume_fuel(true);
+    config.max_wasm_stack(256 * 1024);
+    config
+        .wasm_simd(false)
+        .wasm_relaxed_simd(false)
+        .wasm_gc(false)
+        .wasm_memory64(false)
+        .wasm_multi_memory(false)
+        .wasm_tail_call(false)
+        .wasm_extended_const(false);
+    config
+}

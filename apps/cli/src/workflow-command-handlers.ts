@@ -1,3 +1,4 @@
+import { createDefaultShellContext, executeWorkflowGateCommand } from "@chariox/kernel-client"
 import type { AppInstallationSummary } from "@chariox/kernel-client/kernel-types"
 import type {
   AgentInstance,
@@ -260,6 +261,14 @@ export async function handleWorkflowSlashCommand(
 
   if (!subcommand) {
     await handleWorkflowRootCommand(deps)
+    return
+  }
+
+  if (subcommand === "gate") {
+    if (!deps.sendWorkflowEventPublicationRequest) { deps.flashFooter("workflow gate commands unavailable", "error"); return }
+    const session=deps.sessionState()
+    const result=await executeWorkflowGateCommand(args.slice(1),createDefaultShellContext({workspace:deps.currentWorkspaceTarget(),worktree:session.worktree_id ?? deps.currentWorkspaceTarget(),sessionId:session.id}),{client:{send:deps.sendWorkflowEventPublicationRequest}})
+    if (result.message) { deps.appendNotice(result.message); deps.flashFooter(result.message.split("\n")[0]!,result.ok ? "info" : "error") }
     return
   }
 

@@ -1,13 +1,18 @@
 //! MP-08 / MP-10 / MP-11: bounded opaque multiplexing (532 / peer 140).
+#[cfg(test)]
+use crate::drain_window::FLOOR_BYTES;
+use crate::drain_window::{DrainWindow, SendStamp};
 use crate::frame_transport::{
-    binary_chunk, TransportFrame, BINARY_CHUNK_PAYLOAD_BYTES, CHUNK_BYTES, MAX_ASSEMBLY_BYTES,
-    MAX_MESSAGE_BYTES, MAX_TRANSFERS, PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES, WINDOW_BYTES,
+    binary_chunk, text_chunk, TransportFrame, BINARY_CHUNK_PAYLOAD_BYTES, CHUNK_BYTES,
+    MAX_ASSEMBLY_BYTES, MAX_MESSAGE_BYTES, MAX_TRANSFERS, PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES,
 };
 use crate::meter::{ConnectionMeter, Direction, CONTROL_SCOPE, DISPLAY_TUNNEL_SCOPE};
+use crate::outgoing::{backlog_close_frame, OutgoingQueue};
 use futures_util::{Sink, SinkExt};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 
 enum Stream {
@@ -104,7 +109,8 @@ struct Transfer {
     waiting: usize,
 }
 impl Transfer {
-    fn next_chunk(&self) -> Option<(Message, usize)> {
+    /// The next frame; a text frame stays within `limit` bytes.
+    fn next_chunk(&self, limit: usize) -> Option<(Message, usize)> {
         if let Some(Message::Binary(binary)) = &self.binary {
             if binary.len() > CHUNK_BYTES {
                 if self.offset == binary.len() {
@@ -133,26 +139,8 @@ impl Transfer {
             .ok()?;
             return Some((Message::Text(checkpoint.into()), 0));
         }
-        if self.offset == self.text.len() {
-            return None;
-        }
-        let mut end = (self.offset + CHUNK_BYTES).min(self.text.len());
-        loop {
-            while !self.text.is_char_boundary(end) {
-                end -= 1;
-            }
-            let text = serde_json::to_string(&TransportFrame::TransportChunk {
-                transfer_id: self.id,
-                offset: self.offset as u32,
-                total_bytes: self.text.len() as u32,
-                payload: self.text[self.offset..end].to_string(),
-            })
-            .ok()?;
-            if text.len() <= CHUNK_BYTES {
-                return Some((Message::Text(text.into()), end));
-            }
-            end = self.offset + (end - self.offset) / 2;
-        }
+        text_chunk(self.id, &self.text, self.offset, limit)
+            .map(|(frame, end)| (Message::Text(frame.into()), end))
     }
     fn finished(&self) -> bool {
         // MP-08/MP-10/MP-11: assembly/lane occupancy ends when all bytes are
@@ -166,16 +154,33 @@ impl Transfer {
 }
 // Receipts follow wire order, including across transfer IDs. A later transfer's
 // receipt cannot forge credit for earlier chunks or binary envelopes.
-#[derive(Default)]
 struct WireCredit {
-    pending: VecDeque<(u32, u32, usize, bool)>,
+    pending: VecDeque<(u32, u32, usize, bool, SendStamp)>,
     bytes: usize,
     // Bytes of `bytes` held by single-chunk messages.
     small: usize,
+    drain: DrainWindow,
 }
 impl WireCredit {
+    fn new() -> Self {
+        Self {
+            pending: VecDeque::new(),
+            bytes: 0,
+            small: 0,
+            drain: DrainWindow::new(Instant::now()),
+        }
+    }
+    fn sent(&mut self, id: u32, end: u32, bytes: usize, small: bool) {
+        let stamp = self.drain.sent(Instant::now(), self.pending.is_empty());
+        self.bytes += bytes;
+        if small {
+            self.small += bytes;
+        }
+        self.pending.push_back((id, end, bytes, small, stamp));
+    }
     fn receipt(&mut self, id: u32, offset: u32, active: &mut VecDeque<Transfer>) -> bool {
-        let Some(&(expected_id, expected_offset, bytes, small)) = self.pending.front() else {
+        let Some(&(expected_id, expected_offset, bytes, small, stamp)) = self.pending.front()
+        else {
             return false;
         };
         if (id, offset) != (expected_id, expected_offset) {
@@ -194,6 +199,7 @@ impl WireCredit {
         if small {
             self.small -= bytes;
         }
+        self.drain.received(Instant::now(), bytes, stamp, !small);
         true
     }
 }
@@ -258,15 +264,19 @@ pub(super) struct WriterUsage {
     meter: ConnectionMeter,
     /// The scope of this socket's own subscription, if the id is one.
     scope_of: ScopeOf,
+    /// What the writer has taken off this connection's queue.
+    queue: Arc<OutgoingQueue>,
 }
 impl WriterUsage {
     pub(super) fn new(
         meter: ConnectionMeter,
         scope_of: impl Fn(&str) -> Option<Arc<str>> + Send + 'static,
+        queue: Arc<OutgoingQueue>,
     ) -> Self {
         Self {
             meter,
             scope_of: Box::new(scope_of),
+            queue,
         }
     }
     /// Display subscriptions keep their own queue per stream.
@@ -277,9 +287,18 @@ impl WriterUsage {
     /// A writer without a meter whose every subscription is (or is not) a display one.
     #[cfg(test)]
     fn fixture(display: bool) -> Self {
-        Self::new(ConnectionMeter::detached(), move |_| {
-            display.then(|| Arc::from(crate::frame_transport::DISPLAY_EVENT_SCOPE))
-        })
+        Self::fixture_with_queue(
+            display,
+            crate::outgoing::RelaySender::detached(mpsc::channel(1).0).queue(),
+        )
+    }
+    #[cfg(test)]
+    fn fixture_with_queue(display: bool, queue: Arc<OutgoingQueue>) -> Self {
+        Self::new(
+            ConnectionMeter::detached(),
+            move |_| display.then(|| Arc::from(crate::frame_transport::DISPLAY_EVENT_SCOPE)),
+            queue,
+        )
     }
     fn scope(&self, stream: Option<&Stream>) -> Arc<str> {
         match stream {
@@ -289,6 +308,9 @@ impl WriterUsage {
         }
         .unwrap_or_else(|| Arc::from(CONTROL_SCOPE))
     }
+    fn released(&self, queued: &Queued) {
+        self.queue.release(queued.admitted);
+    }
     fn sent(&self, scope: &str, message: &Message) {
         if matches!(message, Message::Text(_) | Message::Binary(_)) {
             self.meter.record(Direction::Out, scope, message.len());
@@ -297,16 +319,19 @@ impl WriterUsage {
 }
 struct Queued {
     message: Message,
+    /// The size the sender queued it at; `receiver_message` may change the message.
+    admitted: usize,
     lane: Lane,
     key: Option<String>,
     scope: Arc<str>,
 }
 impl Queued {
-    fn new(message: Message, usage: &WriterUsage) -> Self {
+    fn new(message: Message, admitted: usize, usage: &WriterUsage) -> Self {
         let (lane, key, stream) = lane(&message, usage);
         let scope = usage.scope(stream.as_ref());
         Self {
             message,
+            admitted,
             lane,
             key,
             scope,
@@ -321,7 +346,9 @@ fn eligible(pending: &VecDeque<Queued>, index: usize, active: &VecDeque<Transfer
     let current = pending[index].lane;
     if current == Lane::Reply {
         // Reserve lanes for events and requests. This also bounds receiver state.
-        return active.iter().filter(|t| t.lane == Lane::Reply).count() < 2;
+        // A single-chunk reply completes as it is written, so bulk replies never hold it back.
+        return pending[index].small()
+            || active.iter().filter(|t| t.lane == Lane::Reply).count() < 2;
     }
     if current == Lane::Ordered {
         return index == 0 && active.is_empty();
@@ -339,13 +366,14 @@ fn eligible(pending: &VecDeque<Queued>, index: usize, active: &VecDeque<Transfer
             .any(|m| matches!(m.lane, Lane::Ordered) || same(m.lane, &m.key))
 }
 // Bulk transfers leave the last slot of each idle control lane (requests,
-// correlated replies) free, so display bulk can never hold every receiver slot.
+// correlated replies) free, so display bulk can never hold every receiver slot,
+// and always one slot, so a small frame never waits for a whole bulk transfer.
 fn leaves_control_slots(lane: Lane, active: &VecDeque<Transfer>) -> bool {
     let idle = [Lane::Reply, Lane::Request]
         .into_iter()
         .filter(|&l| l != lane && !active.iter().any(|t| t.lane == l))
         .count();
-    MAX_TRANSFERS - active.len() > idle
+    MAX_TRANSFERS - active.len() > idle.max(1)
 }
 // Consecutive small sends allowed while a bulk transfer waits for its turn.
 const SMALL_STREAK: usize = 4;
@@ -364,13 +392,18 @@ where
     let capacity = outgoing.max_capacity();
     let mut pending = VecDeque::new();
     let mut active = VecDeque::<Transfer>::new();
-    let mut credit = WireCredit::default();
+    let mut credit = WireCredit::new();
     let mut next_id = 0u32;
     let mut small_streak = 0;
     let mut open = true;
     let mut receipts_open = true;
     let mut controls_open = true;
     loop {
+        // A receiver too far behind is closed before anything else is written to it.
+        if usage.queue.backlog_closed() {
+            let _ = write(&mut writer, backlog_close_frame()).await;
+            return "receiver_backlogged";
+        }
         while let Ok(message) = controls.try_recv() {
             let terminal = matches!(message, Message::Close(_));
             if !write(&mut writer, message).await || terminal {
@@ -385,10 +418,13 @@ where
         active.retain(|t| !t.finished());
         while pending.len() < capacity {
             match outgoing.try_recv() {
-                Ok(message) => match receiver_message(message, binary_events) {
-                    Some(m) => pending.push_back(Queued::new(m, &usage)),
-                    None => return "bad_outgoing_message",
-                },
+                Ok(message) => {
+                    let admitted = message.len();
+                    match receiver_message(message, binary_events) {
+                        Some(m) => pending.push_back(Queued::new(m, admitted, &usage)),
+                        None => return "bad_outgoing_message",
+                    }
+                }
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     open = false;
                     break;
@@ -397,7 +433,9 @@ where
             }
         }
         if let Some(index) = pending.iter().position(|queued| control(&queued.message)) {
-            let message = pending.remove(index).unwrap().message;
+            let queued = pending.remove(index).unwrap();
+            usage.released(&queued);
+            let message = queued.message;
             let terminal = matches!(message, Message::Close(_));
             if !write(&mut writer, message).await || terminal {
                 return "control_write";
@@ -406,6 +444,7 @@ where
         }
         if !chunks {
             if let Some(queued) = pending.pop_front() {
+                usage.released(&queued);
                 let message = queued.message;
                 if message.len() > CHUNK_BYTES {
                     upgrade(&mut writer).await;
@@ -439,6 +478,7 @@ where
                 .or_else(|| (0..pending.len()).find(|&i| startable(i)))
             {
                 let queued = pending.remove(index).unwrap();
+                usage.released(&queued);
                 let class = queued.lane;
                 let key = queued.key.clone();
                 let scope = queued.scope.clone();
@@ -496,7 +536,7 @@ where
                     };
                     transfer.id = id;
                 }
-                if let Some((message, end)) = transfer.next_chunk() {
+                if let Some((message, end)) = transfer.next_chunk(credit.drain.chunk_bytes()) {
                     let small_binary = transfer
                         .binary
                         .as_ref()
@@ -509,25 +549,22 @@ where
                         };
                     // While bulk is active, small traffic may hold only its reserve,
                     // so it can never keep the window above what a bulk chunk needs.
+                    // The bulk window follows the measured drain rate, so bulk
+                    // never queues more than about two round trips ahead of a small frame.
+                    let window = credit.drain.bytes();
                     let fits = credit.pending.len() < PEER_RECEIPT_FRAMES
                         && if transfer.small {
-                            credit.bytes + bytes <= WINDOW_BYTES + SMALL_RESERVE_BYTES
+                            credit.bytes + bytes <= window + SMALL_RESERVE_BYTES
                                 && (active.iter().all(|t| t.small)
                                     || credit.small + bytes <= SMALL_RESERVE_BYTES)
                         } else {
-                            credit.bytes + bytes <= WINDOW_BYTES
+                            credit.bytes == 0 || credit.bytes + bytes <= window
                         };
                     if fits {
                         if starting {
                             next_id = transfer.id;
                         }
-                        credit.bytes += bytes;
-                        if transfer.small {
-                            credit.small += bytes;
-                        }
-                        credit
-                            .pending
-                            .push_back((transfer.id, end as u32, bytes, transfer.small));
+                        credit.sent(transfer.id, end as u32, bytes, transfer.small);
                         small_streak = if transfer.small { small_streak + 1 } else { 0 };
                         transfer.offset = end;
                         transfer.waiting += 1;
@@ -573,6 +610,7 @@ where
             return "receipts_closed";
         }
         tokio::select! {
+            () = usage.queue.close_requested() => {}
             message=controls.recv(),if controls_open=>{
                 if let Some(message)=message {let terminal=matches!(message,Message::Close(_));if !write(&mut writer,message).await||terminal{return "control_write";}}else{controls_open=false;}
             }
@@ -581,7 +619,7 @@ where
                 if !credit.receipt(id,offset,&mut active){return "bad_receipt";}
             }
             message=outgoing.recv(),if open && pending.len()<capacity=>{
-                match message {Some(message)=>match receiver_message(message,binary_events){Some(m)=>pending.push_back(Queued::new(m, &usage)),None=>return "bad_outgoing_message"},None=>open=false}
+                match message {Some(message)=>{let admitted=message.len();match receiver_message(message,binary_events){Some(m)=>pending.push_back(Queued::new(m,admitted,&usage)),None=>return "bad_outgoing_message"}},None=>open=false}
             }
         }
     }
@@ -590,6 +628,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outgoing::RelaySender;
     use futures_util::StreamExt;
     use std::time::Duration;
     async fn sockets() -> (
@@ -728,11 +767,9 @@ mod tests {
                 waiting: 1,
             },
         ]);
-        let mut credit = WireCredit {
-            pending: VecDeque::from([(1, 1, 100, false), (2, 1, 200, false)]),
-            bytes: 300,
-            small: 0,
-        };
+        let mut credit = WireCredit::new();
+        credit.sent(1, 1, 100, false);
+        credit.sent(2, 1, 200, false);
         assert!(!credit.receipt(2, 1, &mut active));
         assert_eq!(credit.bytes, 300);
         assert!(credit.receipt(1, 1, &mut active));
@@ -777,7 +814,7 @@ mod tests {
         {
             wire += message.len();
             assert!(
-                wire <= WINDOW_BYTES + SMALL_RESERVE_BYTES,
+                wire <= FLOOR_BYTES + SMALL_RESERVE_BYTES,
                 "combined byte credit exceeded"
             );
             match message {
@@ -798,7 +835,7 @@ mod tests {
             "small messages stalled on receipt/assembly slots: {ids:?}"
         );
         assert!(
-            ids.len() < (WINDOW_BYTES + SMALL_RESERVE_BYTES) / 4096 + 2,
+            ids.len() < (FLOOR_BYTES + SMALL_RESERVE_BYTES) / 4096 + 2,
             "byte window must stop an unacknowledged stream"
         );
         assert_eq!(ids, (1..=ids.len() as u64).collect::<Vec<_>>());
@@ -838,8 +875,9 @@ mod tests {
             "{frames} unacknowledged frames exceed the peer receipt queue"
         );
     }
-    // S1: a large message waits one round trip per window. 480 KB (a mirror
-    // first packet) must need at most two flights, not one per 64 KiB.
+    // S1: a large message waits one round trip per window. On a connection
+    // whose window has measured the path, 480 KB (a mirror first packet) must
+    // need at most two flights, not one per 64 KiB.
     #[tokio::test]
     async fn s1_large_message_completes_in_two_round_trips() {
         let (wire_tx, mut wire) = mpsc::unbounded_channel();
@@ -853,8 +891,6 @@ mod tests {
         let (tx, rx) = mpsc::channel(4);
         let (ack_tx, ack_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
         let (_ct, cr) = mpsc::channel(8);
-        let reply = serde_json::json!({"kind":"client_response","request_id":"mirror","payload":"y".repeat(480_000)}).to_string();
-        tx.send(Message::Text(reply.clone().into())).await.unwrap();
         let task = tokio::spawn(run_writer(
             sink,
             rx,
@@ -865,38 +901,334 @@ mod tests {
             WriterUsage::fixture(true),
         ));
         let mut receiver = crate::frame_transport::FrameReceiver::default();
-        let (mut flights, mut done) = (0, None);
-        loop {
-            // A flight is everything the writer sends before it must wait for receipts.
-            let mut flight = Vec::new();
-            while let Ok(Some(message)) =
-                tokio::time::timeout(Duration::from_millis(40), wire.recv()).await
-            {
-                flight.push(message);
+        let mut flights_for = async |id: &str, bytes: usize| {
+            let reply = serde_json::json!({"kind":"client_response","request_id":id,"payload":"y".repeat(bytes)}).to_string();
+            tx.send(Message::Text(reply.clone().into())).await.unwrap();
+            let (mut flights, mut done) = (0, None);
+            loop {
+                // A flight is everything the writer sends before it must wait for receipts.
+                let mut flight = Vec::new();
+                while let Ok(Some(message)) =
+                    tokio::time::timeout(Duration::from_millis(40), wire.recv()).await
+                {
+                    flight.push(message);
+                }
+                if flight.is_empty() {
+                    break;
+                }
+                flights += 1;
+                for message in flight {
+                    let Message::Text(text) = message else {
+                        panic!("unexpected frame")
+                    };
+                    let (complete, receipt) = receiver.receive(&text).unwrap();
+                    done = done.or(complete);
+                    let TransportFrame::TransportAck {
+                        transfer_id,
+                        offset,
+                    } = serde_json::from_str(&receipt.unwrap()).unwrap()
+                    else {
+                        panic!("receipt expected")
+                    };
+                    ack_tx.send((transfer_id, offset)).await.unwrap();
+                }
             }
-            if flight.is_empty() {
-                break;
+            assert_eq!(done, Some(reply));
+            flights
+        };
+        flights_for("warm-up", 2_000_000).await;
+        let flights = flights_for("mirror", 480_000).await;
+        task.abort();
+        assert!(flights <= 2, "480 KB needed {flights} round trips");
+    }
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayflood): a receiver that cannot write holds at most
+    // its bulk byte budget, however much is offered to it.
+    #[tokio::test]
+    async fn bulk_to_one_receiver_stays_within_its_byte_budget() {
+        use crate::outgoing::{SendRefused, RECEIVER_BULK_BUDGET};
+        const REPLY: usize = 350_000;
+        let sink = Box::pin(futures_util::sink::unfold(
+            (),
+            |(), _: Message| async move {
+                std::future::pending::<()>().await;
+                Ok::<_, std::convert::Infallible>(())
+            },
+        ));
+        let (_control, controls) = mpsc::channel(8);
+        let (sender, outgoing) = RelaySender::channel(1024);
+        let (_ack_tx, ack_rx) = mpsc::channel(16);
+        let queue = sender.queue();
+        let task = tokio::spawn(run_writer(
+            sink,
+            outgoing,
+            true,
+            true,
+            ack_rx,
+            controls,
+            WriterUsage::fixture_with_queue(true, queue.clone()),
+        ));
+        let (mut admitted, mut refused) = (0, 0);
+        for n in 0..100 {
+            let reply = serde_json::json!({"kind":"client_response","request_id":format!("r{n}"),"payload":"y".repeat(REPLY)});
+            match sender.try_send(Message::Text(reply.to_string().into())) {
+                Ok(()) => admitted += 1,
+                Err(SendRefused::Backlogged) => refused += 1,
+                Err(SendRefused::Gone) => panic!("the writer ended"),
             }
-            flights += 1;
-            for message in flight {
-                let Message::Text(text) = message else {
-                    panic!("unexpected frame")
-                };
-                let (complete, receipt) = receiver.receive(&text).unwrap();
-                done = done.or(complete);
+            assert!(queue.queued_bytes() <= RECEIVER_BULK_BUDGET + REPLY + 100);
+            tokio::task::yield_now().await;
+        }
+        task.abort();
+        assert!(refused > 0, "all {admitted} replies were queued");
+        assert!(queue.stats().queued_bytes_high_water <= RECEIVER_BULK_BUDGET + REPLY + 100);
+    }
+    // A message larger than the budget still reaches a receiver whose bulk queue is empty.
+    #[tokio::test]
+    async fn a_message_over_the_budget_passes_an_empty_queue() {
+        use crate::outgoing::{SendRefused, RECEIVER_BULK_BUDGET};
+        let (sender, mut receiver) = RelaySender::detached_channel(8);
+        let big = || Message::Binary(vec![0; RECEIVER_BULK_BUDGET + 1].into());
+        sender.try_send(big()).expect("an empty queue admits it");
+        assert_eq!(sender.try_send(big()), Err(SendRefused::Backlogged));
+        receiver.recv().await.unwrap();
+        sender.try_send(big()).expect("the queue emptied");
+    }
+    // Control and small replies are written ahead of the bulk behind them.
+    #[tokio::test]
+    async fn control_is_not_delayed_by_a_bulk_backlog() {
+        let (wire_tx, mut wire) = mpsc::unbounded_channel();
+        let sink = Box::pin(futures_util::sink::unfold(
+            wire_tx,
+            |tx, message: Message| async move {
+                let _ = tx.send(message);
+                Ok::<_, std::convert::Infallible>(tx)
+            },
+        ));
+        let (control, controls) = mpsc::channel(8);
+        let (sender, outgoing) = RelaySender::channel(64);
+        let (_ack_tx, ack_rx) = mpsc::channel(16);
+        for n in 0..20 {
+            let bulk = serde_json::json!({"kind":"client_response","request_id":format!("bulk-{n}"),"payload":"y".repeat(300_000)});
+            sender
+                .try_send(Message::Text(bulk.to_string().into()))
+                .unwrap();
+        }
+        let small =
+            serde_json::json!({"kind":"client_response","request_id":"small-reply","payload":"ok"});
+        sender
+            .try_send(Message::Text(small.to_string().into()))
+            .unwrap();
+        control.try_send(Message::Ping(Vec::new().into())).unwrap();
+        let queue = sender.queue();
+        let task = tokio::spawn(run_writer(
+            sink,
+            outgoing,
+            true,
+            true,
+            ack_rx,
+            controls,
+            WriterUsage::fixture_with_queue(true, queue),
+        ));
+        let mut written = Vec::new();
+        while let Ok(Some(message)) =
+            tokio::time::timeout(Duration::from_millis(300), wire.recv()).await
+        {
+            written.push(message);
+        }
+        task.abort();
+        assert!(
+            matches!(written.first(), Some(Message::Ping(_))),
+            "the ping goes first"
+        );
+        let small_at = written
+            .iter()
+            .position(|m| matches!(m, Message::Text(t) if t.contains("small-reply")))
+            .expect("the small reply was written while bulk waited for credit");
+        let bulk_frames_before = written[..small_at]
+            .iter()
+            .filter(|m| matches!(m, Message::Text(t) if t.contains("bulk-")))
+            .count();
+        assert!(
+            bulk_frames_before <= 4,
+            "{bulk_frames_before} bulk frames before the small reply"
+        );
+    }
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayflood): on a 256 KiB/s link carrying three bulk transfers
+    // a small reply is delayed only by what the writer already put on the wire, never by the
+    // bulk still queued behind the credit window.
+    #[tokio::test]
+    async fn a_small_reply_waits_only_for_the_window_on_a_slow_link() {
+        const RATE: usize = 256 * 1024;
+        let start = tokio::time::Instant::now();
+        let (wire_tx, mut wire) = mpsc::unbounded_channel();
+        let sink = Box::pin(futures_util::sink::unfold(
+            wire_tx,
+            |tx, message: Message| async move {
+                tokio::time::sleep(Duration::from_secs_f64(message.len() as f64 / RATE as f64))
+                    .await;
+                let _ = tx.send((tokio::time::Instant::now(), message));
+                Ok::<_, std::convert::Infallible>(tx)
+            },
+        ));
+        let (_control, controls) = mpsc::channel(8);
+        let (sender, outgoing) = RelaySender::channel(1024);
+        let (ack_tx, ack_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
+        let queue = sender.queue();
+        let task = tokio::spawn(run_writer(
+            sink,
+            outgoing,
+            true,
+            true,
+            ack_rx,
+            controls,
+            WriterUsage::fixture_with_queue(false, queue),
+        ));
+        let bulk = |kind: &str, n: usize| {
+            let message = serde_json::json!({"kind":kind,"request_id":format!("bulk-{n}"),"payload":"y".repeat(20 * 1024 * 1024)});
+            Message::Text(message.to_string().into())
+        };
+        for (n, kind) in ["client_response", "daemon_request", "client_event"]
+            .into_iter()
+            .enumerate()
+        {
+            while sender.try_send(bulk(kind, n)).is_err() {
+                tokio::task::yield_now().await;
+            }
+        }
+        // The peer reads each frame, then returns its receipt.
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        let mut sent_small_at = None;
+        let mut small_delay = None;
+        while small_delay.is_none() {
+            let (arrived, message) = wire.recv().await.expect("the writer ended");
+            let Message::Text(text) = message else {
+                continue;
+            };
+            let (_, receipt) = receiver.receive(&text).unwrap();
+            if let Some(receipt) = receipt {
                 let TransportFrame::TransportAck {
                     transfer_id,
                     offset,
-                } = serde_json::from_str(&receipt.unwrap()).unwrap()
+                } = serde_json::from_str(&receipt).unwrap()
                 else {
                     panic!("receipt expected")
                 };
                 ack_tx.send((transfer_id, offset)).await.unwrap();
             }
+            if sent_small_at.is_none() && arrived.duration_since(start) > Duration::from_secs(2) {
+                let small = serde_json::json!({"kind":"client_response","request_id":"small-reply","payload":"ok"});
+                sender
+                    .try_send(Message::Text(small.to_string().into()))
+                    .unwrap();
+                sent_small_at = Some(tokio::time::Instant::now());
+            }
+            if text.contains("small-reply") {
+                small_delay = Some(arrived.duration_since(sent_small_at.unwrap()));
+            }
         }
         task.abort();
-        assert_eq!(done, Some(reply));
-        assert!(flights <= 2, "480 KB needed {flights} round trips");
+        let delay = small_delay.unwrap();
+        let bound =
+            Duration::from_secs_f64((FLOOR_BYTES + SMALL_RESERVE_BYTES) as f64 / RATE as f64 + 0.5);
+        assert!(
+            delay <= bound,
+            "the small reply waited {delay:?}, bound {bound:?}"
+        );
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayproof r3): on a 1 Mbit/s link with a 60 ms round
+    // trip, a small reply queued behind bulk waits for what the window keeps in the
+    // bottleneck queue. Frames sized to the measured rate (about 25 ms each, at least 4 KiB)
+    // and a floor of two such frames keep that near one frame; 16 KiB frames and a 32 KiB
+    // floor kept about 200 ms queued (the bar is RTT + 100 ms).
+    #[tokio::test(start_paused = true)]
+    async fn a_small_reply_waits_one_short_frame_on_a_1_mbit_link() {
+        const RATE: f64 = 125_000.0;
+        const ONE_WAY: Duration = Duration::from_millis(30);
+        // The socket takes every frame at once; the bottleneck sends them in order at RATE.
+        let (wire_tx, mut wire_rx) = mpsc::unbounded_channel::<Message>();
+        let sink = Box::pin(futures_util::sink::unfold(
+            wire_tx,
+            |tx, message: Message| async move {
+                let _ = tx.send(message);
+                Ok::<_, std::convert::Infallible>(tx)
+            },
+        ));
+        let (arrived_tx, mut arrived) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let mut free_at = tokio::time::Instant::now();
+            while let Some(message) = wire_rx.recv().await {
+                free_at = free_at.max(tokio::time::Instant::now())
+                    + Duration::from_secs_f64(message.len() as f64 / RATE);
+                tokio::time::sleep_until(free_at).await;
+                let arrived_tx = arrived_tx.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(ONE_WAY).await;
+                    let _ = arrived_tx.send((tokio::time::Instant::now(), message));
+                });
+            }
+        });
+        let (_control, controls) = mpsc::channel(8);
+        let (sender, outgoing) = RelaySender::channel(1024);
+        let (ack_tx, ack_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
+        let task = tokio::spawn(run_writer(
+            sink,
+            outgoing,
+            true,
+            true,
+            ack_rx,
+            controls,
+            WriterUsage::fixture_with_queue(false, sender.queue()),
+        ));
+        let bulk = serde_json::json!({"kind":"client_response","request_id":"bulk","payload":"y".repeat(2 * 1024 * 1024)});
+        sender
+            .try_send(Message::Text(bulk.to_string().into()))
+            .unwrap();
+        let start = tokio::time::Instant::now();
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        // Eight small replies, 300 ms apart once the window has measured the path.
+        let mut next_small = start + Duration::from_secs(3);
+        let (mut sent_small_at, mut delays) = (None, Vec::new());
+        while delays.len() < 8 {
+            let (at, message) = arrived.recv().await.expect("the writer ended");
+            let Message::Text(text) = message else {
+                continue;
+            };
+            if text.contains("small-reply") {
+                delays.push(at.duration_since(sent_small_at.take().unwrap()));
+            }
+            let (_, receipt) = receiver.receive(&text).unwrap();
+            if let Some(receipt) = receipt {
+                let TransportFrame::TransportAck {
+                    transfer_id,
+                    offset,
+                } = serde_json::from_str(&receipt).unwrap()
+                else {
+                    panic!("receipt expected")
+                };
+                let ack_tx = ack_tx.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(ONE_WAY).await;
+                    let _ = ack_tx.send((transfer_id, offset)).await;
+                });
+            }
+            if sent_small_at.is_none() && at >= next_small {
+                let small = serde_json::json!({"kind":"client_response","request_id":"small-reply","payload":"ok"});
+                sender
+                    .try_send(Message::Text(small.to_string().into()))
+                    .unwrap();
+                sent_small_at = Some(tokio::time::Instant::now());
+                next_small = at + Duration::from_millis(300);
+            }
+        }
+        task.abort();
+        // One way (30 ms), the frame on the wire and what the window keeps queued.
+        let bound = Duration::from_millis(30 + 100);
+        let worst = delays.iter().max().unwrap();
+        assert!(
+            *worst <= bound,
+            "the small replies waited {delays:?}, bound {bound:?}"
+        );
     }
     // MP-08/MP-10: queued mirror credits answer back-to-back. A written reply
     // must not hold one of the two reply slots until its WAN receipt returns
@@ -939,11 +1271,9 @@ mod tests {
     #[test]
     fn mp08_mp10_mp11_retired_writes_keep_exact_ordered_byte_credit() {
         let mut active = VecDeque::new();
-        let mut credit = WireCredit {
-            pending: VecDeque::from([(1, 10, 100, false), (2, 0, 200, false)]),
-            bytes: 300,
-            small: 0,
-        };
+        let mut credit = WireCredit::new();
+        credit.sent(1, 10, 100, false);
+        credit.sent(2, 0, 200, false);
         assert!(!credit.receipt(2, 0, &mut active));
         assert_eq!(credit.bytes, 300);
         assert!(!credit.receipt(1, 11, &mut active));
@@ -1000,7 +1330,7 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(80), client.next()).await
         {
             total += message.len();
-            assert!(total <= WINDOW_BYTES);
+            assert!(total <= FLOOR_BYTES);
             match message {
                 Message::Binary(b) => {
                     assert_eq!(&b[..], &binary);
@@ -1237,7 +1567,7 @@ mod tests {
             wire += message.len();
         }
         assert!(
-            wire >= WINDOW_BYTES - CHUNK_BYTES,
+            wire >= FLOOR_BYTES - CHUNK_BYTES,
             "bulk must fill the window first"
         );
         tx.send(display_event("band", 1, "band".into()))
@@ -1501,7 +1831,65 @@ mod tests {
             );
         }
     }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayproof r4): the eight-entry control lane carries the
+    // peer's upload receipts, so a slow bidirectional receiver can fill it while the writer waits
+    // on the socket. A backlogged receiver must still be closed then, and closed by the writer.
+    #[tokio::test]
+    async fn a_backlogged_receiver_is_closed_while_the_control_lane_is_full() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let (wire_tx, mut wire) = mpsc::unbounded_channel();
+        let sink = Box::pin(futures_util::sink::unfold(
+            (wire_tx, gate.clone()),
+            |(tx, gate), message: Message| async move {
+                gate.acquire().await.unwrap().forget();
+                let _ = tx.send(message);
+                Ok::<_, std::convert::Infallible>((tx, gate))
+            },
+        ));
+        let (control, controls) = mpsc::channel(8);
+        let (sender, outgoing) = RelaySender::channel(64);
+        let (_ack_tx, ack_rx) = mpsc::channel(16);
+        let queue = sender.queue();
+        let small = serde_json::json!({"kind":"client_response","request_id":"r","payload":"ok"});
+        sender
+            .try_send(Message::Text(small.to_string().into()))
+            .unwrap();
+        let task = tokio::spawn(run_writer(
+            sink,
+            outgoing,
+            true,
+            true,
+            ack_rx,
+            controls,
+            WriterUsage::fixture_with_queue(true, queue),
+        ));
+        // The writer is stuck in the socket write of the first message.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        for _ in 0..8 {
+            control.try_send(Message::Ping(Vec::new().into())).unwrap();
+        }
+        assert!(sender.close_backlogged());
+        gate.add_permits(1_000);
+        let mut closed = false;
+        while let Ok(Some(message)) =
+            tokio::time::timeout(Duration::from_millis(500), wire.recv()).await
+        {
+            closed |=
+                matches!(message, Message::Close(Some(frame)) if u16::from(frame.code) == 1013);
+        }
+        let ended = tokio::time::timeout(Duration::from_millis(500), task).await;
+        assert!(closed, "the receiver was never told to try again later");
+        assert!(
+            ended.is_ok(),
+            "the writer kept running after the close was due"
+        );
+    }
 }
+
+#[cfg(test)]
+#[path = "slow_link_tests.rs"]
+mod slow_link_tests;
 
 #[cfg(test)]
 mod binary_reply_regression {

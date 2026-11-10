@@ -97,7 +97,10 @@ pub(crate) use provider_output_claude_native::{
     claude_workspace_trust_declined, format_claude_permission_message, ClaudeNativeDispatchAttempt,
     ClaudeNativeProcessOutcome, NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
-pub(crate) use provider_tool_close::{ended_open_provider_tool_rows, ProviderToolEnding};
+pub(crate) use provider_tool_close::{
+    ended_background_provider_tool_rows, ended_open_provider_tool_rows, EndedProviderToolRow,
+    ProviderToolEnding,
+};
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
 };

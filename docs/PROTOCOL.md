@@ -4269,6 +4269,18 @@ Injection retains the original durable admission until steering acceptance, join
 ancestry to the selected run, and falls back to ordinary queue on idle/ended turns
 or multiple active workflow runs. Subscribers always belong to workflows.
 
+### Waiting gated entry (MP-08 / MP-09 / MP-10 / MP-11)
+
+A gated handoff whose entry node dispatch is refused for a provider account the
+user can fix stays `Ready` and is retried, so it resumes once the account is
+fixed. Its `WorkflowNodeRun.waiting_reason` names why, as a fixed kernel class:
+`provider_profile_unavailable`, `provider_profile_unverified`,
+`provider_profile_unauthenticated` or `provider_profile_usage_exhausted`. It is
+never error or provider text; clients show their own phrase for each class. The
+field is absent while nothing waits and is cleared on dispatch. The wait ends at
+the gate entry's own `deadline_ms`: the run then fails with the same refusal an
+ungated invoke returns. The shared Landing 7 protocol pair carries the field.
+
 ### MP-08 / MP-09 / MP-10 / MP-11 — transitional durable agent lifecycle (A02)
 
 Local daemon protocol **452** adds `RuntimeSession.agent_tasks`; relay82 is inherited
@@ -5207,9 +5219,9 @@ authority for its own sessions, agents, terminals and files.
 - Kernel files (kernel API requests, any kernel, owner only: a Chariox terminal or a local grant holder, or the
   gateway acting for one): `StatKernelFile { path, with_sha256 }` -> `KernelFileStat { stat: {path, exists, kind,
   size, modified_ms, sha256, partial_size} }`; `ListKernelDirectory { path }` -> `KernelDirectoryListed { path,
-  entries, truncated }` (2000 entries); `ReadKernelFile { path, offset, length }` (length <= 256 KiB) ->
+  entries, truncated }` (2000 entries); `ReadKernelFile { path, offset, length }` (length <= 64 KiB) ->
   `KernelFileChunk { path, offset, data_base64, size, eof }`; `WriteKernelFile { path, offset, data_base64,
-  total_size, sha256?, overwrite }` (chunk <= 256 KiB, in order) -> `KernelFileWritten { path, received, complete,
+  total_size, sha256?, overwrite }` (chunk <= 64 KiB; chunks may be sent without waiting for each answer, and one that arrives ahead of the staged bytes waits up to 2 s for them) -> `KernelFileWritten { path, received, complete,
   sha256 }`. Paths are absolute or `~/`. An upload lives in `<path>.chariox-partial` and the file appears at `path`
   only when `total_size` is reached and `sha256`, if sent, matches (otherwise `file_hash_mismatch` and nothing is
   kept); a chunk at the wrong offset is `file_offset_mismatch` and the message names the offset to continue at.
@@ -5947,9 +5959,33 @@ requests and responses, using its existing bounded framing and flow control.
 - Observed process `held` and `paused` states still describe programs that have
   already executed. Their existing Run anyway control continues the same
   process. They cannot be converted into new launch intents or placed elsewhere.
-  Selected-kernel placement, VM acquisition, verified context transfer and
-  durable remote claim/results remain separate unfinished work; this protocol
-  change does not advertise them.
+  VM acquisition, verified context transfer and durable remote claim/results
+  remain separate unfinished work; this protocol change does not advertise them.
+- `exec_place { exec_id, kernel, directory? }` runs a launch that is still
+  `queued` on another of the owner's kernels and answers `exec_opened { exec_id }`
+  (the same ID stays the handle on this kernel). A started or finished exec is
+  refused `exec_not_queued`; the launch then keeps running where it is. The caller
+  is the owner's person (under the owner's own gateway grant, `owner:<user>`) or
+  the agent that started the launch (under its own live reach, so ending the run
+  ends the placement); another agent, a stranger, a worker host (`host_agent`) and a
+  request that arrives through a gateway are refused (`exec_not_yours`,
+  `exec_place_not_here`, ownership errors). `kernel` is a name `chariox kernels`
+  lists; an unknown, ambiguous, offline, unpaired or too old kernel is refused with
+  the gateway's own typed error and the launch stays queued. The kernel first makes
+  a Room on the target in `directory` (default: the target kernel's own default Room
+  directory, read with `GetWaitingRoomPublicSnapshot` under command id
+  `place:<exec_id>:target`; a target without one refuses with
+  `exec_target_no_directory`; command id `place:<exec_id>:room`), then opens the command there (`place:<exec_id>:open`) and
+  forwards stdin offsets, output cursors and cancellation to it. A request whose
+  outcome stays unknown after one retry with the same command id ends the launch
+  `failed`, saying the other kernel may have started it; it is never replayed. The
+  target labels the process `<origin kernel>/<agent>`; the holding kernel keeps its
+  own agent as the owner of the row. The Room made on the target is not removed
+  when the command ends.
+- `exec_listed` rows may carry `placeable_on: [kernel name]` on a `queued` row:
+  the owner's other online, gateway-ready kernels, for a caller that may place that
+  launch (the owner's person, or the agent that started it). Absent otherwise,
+  and when the kernel list cannot be had; clients offer placement only from it.
 - `exec_list {}` returns `exec_listed { execs }` for this Room only. Each entry
   has `exec_id`, tagged `state`, `age_ms`, `buffered_bytes`, `command` and `owner`.
   It uses the same Room authority and worker forwarding as all exec operations.
@@ -6450,6 +6486,8 @@ and `node --test apps/kernel/slice-linux-docker/docker/kernel-browser-card-regio
 
 ### Agent reach — local 974
 
+Retired: Room agents no longer get `chariox-reach` (`docs/KERNEL_ACCESS.md`, agent reach); no wire shape changed. The record below is history.
+
 A Room agent of the kernel owner reaches other rooms and kernels through a second runtime MCP server,
 `chariox-reach` at `/mcp/reach` (tools `kernels`, `sessions`, `request`, `events_subscribe`, `events_wait`,
 `events_ack`, `guide`; see `docs/KERNEL_ACCESS.md`). The identity is the agent's own live provider run
@@ -6646,18 +6684,16 @@ how much was free, the floor, its write rate, what it wrote and what it held in 
 `process` outside event carries the same reason as `ended`. A command that is held before it starts
 still waits for room in the one queue shared with memory.
 
-Below the floor the kernel first trims idle scratch, then puts one turn to each of the three
-agents holding the most (`PromptOrigin::Notification`): what is free, their writing processes with
-the bytes they wrote and the deleted files they keep open, their `$TMPDIR` and its biggest entries,
-and the biggest folders of their workspace. The agents decide what to free; the kernel deletes
-nothing but its own scratch.
+Below the floor the kernel trims idle scratch harder (items nothing wrote for a minute) and, when that
+frees nothing, logs one line per volume at most once a minute. It sends no agent a prompt about disk
+space and deletes nothing but its own scratch.
 
 Every agent's processes get `TMPDIR`, `TMP` and `TEMP` set to `<home>/t/<room>/<agent>` (eight
 characters of each id, private, created at launch). An entry in it that nothing wrote for
 `CHARIOX_TEMP_IDLE_SECONDS` (one hour) is removed once a minute, unless a process has it open, works
 in it or maps it; a Room that ends clears its folder at once. Focused checks:
 `cargo test -p chariox-kernel --lib -- agent_temp disk_scan disk_pressure disk_use process_resources`
-and `node scripts/drills/process-admission-live.mjs --scenario temp|trim|ask|runaway`.
+and `node scripts/drills/process-admission-live.mjs --scenario temp|trim|runaway`.
 
 ### MP-08 / MP-09 / MP-10 / MP-11: current disk occupancy — local 991 / peer 430
 
@@ -6884,7 +6920,7 @@ Local daemon protocol 1000 adds `ListDescendants { session_id, agent_id }`, answ
 `AgentTree { tree }` (`root`, `rev`, `totals {live, running, needs_user}` and `nodes` in creation order). A node
 carries `state` (starting|running|waiting|idle|ended|error|unreachable), `outcome` (how its latest turn ended, null
 while it runs or before it ran) and `needs_user` (the user holds a pending decision of that node;
-`totals.needs_user` counts them; `totals.live` counts the nodes starting, running, waiting or unreachable, so an idle node, finished or not started, is not live); no holder, path or card. `rev` moves only when the read differs. The follow event
+`totals.needs_user` counts them; `totals.live` counts the nodes starting, running, waiting or unreachable, so an idle node, finished or not started, is not live); no holder, path or card. A node also carries `execution_mode` (build|plan) and `permission_level` (required|yolo), the values its approvals really use after the limit of its parent chain, and `effort` (omitted when it has none); all three are omitted for a collaborator who may not view parameters. `rev` moves only when the read differs. The follow event
 `agent_tree { root, rev }` is published once per change of the tree below `root`. Sub-agents are never listed, counted
 or announced as room members.
 
@@ -6907,15 +6943,12 @@ omitted when absent; no protocol number of its own): an export whose start names
 held unlock and, when it has to ask again, shows the unlock card in the session that ran that launch's preflight, so
 two launches in flight never ask in each other's room whichever machine is ready first. Without a `launchId` the hold is
 found by the launching session, else the latest launch. Focused check:
-`each_export_asks_in_the_room_of_its_launch_in_either_ready_order`. A package without a transferred Vault that reaches a machine whose Vault is not open
-still imports, without those logins: the import receipt names each one in `providerAccounts.omitted`, the relay peer
-receipt in `omitted_provider_accounts` and the local `ManagedContextTransferStatus` receipt in
-`omittedProviderAccounts`, each `{provider, profileId, label, reason: "vault_closed", nextStep: "sign_in_again"}`
-(snake_case keys on the relay peer wire). Nothing keeps those logins for later; the owner signs the account in on the
-new machine. The list is omitted when every selected login was installed. Focused checks:
-`cargo test -p chariox-kernel --lib vault_login`, `vault_login_1000_shapes_are_pinned` and
-`managed_context_omitted_logins_1000_snapshot_and_hash`
-(`protocol_shapes/managed-context-omitted-logins-1000.json`).
+`each_export_asks_in_the_room_of_its_launch_in_either_ready_order`. A package that carries Vault logins and reaches a machine whose Vault is not open
+is refused whole, before anything is imported, with `target_vault_locked` (unless the package installs that Vault
+itself); the retry after the owner unlocks completes. The `omittedProviderAccounts` receipt (relay peer
+`omitted_provider_accounts`, import `providerAccounts.omitted`) is retired with local 1002 / relay peer 441. Focused
+checks: `cargo test -p chariox-kernel --lib vault_login`, `vault_login_1000_shapes_are_pinned` and
+`the_closed_receiving_vault_reason_classes_are_wire_stable`.
 
 ### Remote notification follows fenced by generation at the source — relay peer 439
 
@@ -6971,6 +7004,17 @@ inbox kind), the room clients' `agent_tree_changed` event and the typed `kernel_
 refusal. Relay peer 440 carries the same peers across kernels of one owner, below. Managed upgrades
 admit 1000 and 1001.
 
+### Workflow entry gates, held launch placement and the sub-agent node's settings — local 1002
+
+Landing 7 carries local daemon protocol 1002 (temporary number). It adds the owner's `WorkflowGate`
+control (`put_module`, `state`, `reset_state`, `entry`, `cancel`, `entries`) with gated entry
+acceptance and typed event data, `exec_place` and `placeable_on` on a held launch (above), and the
+optional `execution_mode`, `permission_level` and `effort` of an `AgentTreeNode`. Placement travels
+over the owner's local API and the existing kernel gateway. Relay peer 441 (temporary number) is the
+pair's peer number for chunked kernel uploads. Managed upgrades admit 1000 and 1001. Snapshots: `protocol_shapes/workflow-gate-1002.json`,
+`fixtures/room-exec-protocol.json`, `fixtures/agent-tree-finished.json`. Focused check:
+`cargo test -p chariox-kernel --lib -- workflow_gate exec_place placeable_on agent_tree protocol_shapes`.
+
 ### Peers across kernels of one owner — relay peer 440
 
 MP-08 / MP-10 / MP-11: an agent messages, steers, cancels, follows or spawns an ordinary agent in a
@@ -6988,3 +7032,20 @@ authority rule (level and mode at least the target's) runs. A message is an inbo
 with `sender_kernel_id`, never a prompt; one `request_id` of one kernel is one delivery. The client
 minimums do not change. Snapshot: `fixtures/peer-agent-link-protocol.json`.
 Focused check: `cargo test -p chariox-kernel --lib -- peer_rooms::kernels peer_agent_link_shapes peer_agent_stamp`.
+
+### Chunked kernel uploads and the measured window — relay peer 441
+
+MP-08 / MP-09 / MP-10 / MP-11: a small or control frame waits about a round trip behind bulk on a
+slow link, whatever the transfer size. A kernel offers the request header `x-chariox-upload:
+chunks-v2` on its relay socket; a relay that reassembles kernel uploads answers with the same
+header. The kernel then sends every message above 16 KiB in the existing chunks-v2 frames
+(`transport_chunk`, or `CXB1` binary chunks) and the relay acknowledges each chunk with
+`transport_ack`, written ahead of anything queued for the kernel. Each writer lane sends one message
+at a time, and the priority lane passes event bulk between any two chunks. Without the answer (a
+peer 440 relay) the kernel writes whole messages; the relay keeps reading whole messages from
+kernels that do not offer (peer 440). Both writers (relay to any peer, kernel to relay) bound the
+unacknowledged bulk by a window sized from the receipts: twice the measured delivery rate times
+the lowest round trip, between 32 KiB and 1 MiB (`apps/relay/src/drain_window.rs`). The relay
+writer also keeps one transfer slot free for small frames. No client minimum changes. Focused
+checks: `cargo test -p chariox-relay -- upload slow_link_tests drain_window` and
+`cargo test -p chariox-kernel --lib -- connector::upload connector::writer`.

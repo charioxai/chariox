@@ -25,11 +25,7 @@ impl KernelRuntimeState {
             &defaults.provider,
         );
         request.agent_defaults = Some(defaults);
-        if request.kernel_ref.as_deref().is_some_and(|kernel_ref| {
-            kernel_ref_matches_local_config(&self.owned.config_projection.snapshot(), kernel_ref)
-        }) {
-            request.kernel_ref = None;
-        }
+        request.kernel_ref = self.settle_kernel_ref(request.kernel_ref.take()).await?;
         let slice_ref = request.slice_ref.clone();
         let kernel_ref = request.kernel_ref.clone();
         if request.metaagent {
@@ -593,7 +589,7 @@ impl KernelRuntimeState {
         mut request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.authorize_current_external_command()?;
-        self.normalize_local_kernel_ref(&mut request);
+        request.kernel_ref = self.settle_kernel_ref(request.kernel_ref.take()).await?;
         if request.kernel_ref.is_none() {
             self.keep_child_folder_inside_parent(&request)?;
             request = self.prepare_local_agent_worktree_placement(request)?;
@@ -625,19 +621,6 @@ impl KernelRuntimeState {
         };
         let session = self.owned.session_store.get_session(&request.session_id)?;
         crate::agent::authority_limit::check_directory(&parent, &session, directory)
-    }
-
-    pub(super) fn normalize_local_kernel_ref(
-        &self,
-        request: &mut crate::agent::CreateAgentRequest,
-    ) {
-        let Some(kernel_ref) = request.kernel_ref.as_deref() else {
-            return;
-        };
-        let config = self.owned.config_projection.snapshot();
-        if kernel_ref_matches_local_config(&config, kernel_ref) {
-            request.kernel_ref = None;
-        }
     }
 
     pub(super) fn prepare_local_agent_worktree_placement(

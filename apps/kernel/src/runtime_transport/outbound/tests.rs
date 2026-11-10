@@ -409,6 +409,7 @@ fn account_copy_refusals_are_constant_at_public_error_boundary() {
         "provider_account_copy_unavailable",
         "provider_account_copy_unsupported",
         "provider_account_copy_vault_locked",
+        "provider_account_copy_target_vault_locked",
         "provider_account_copy_conflict",
         "provider_account_copy_rejected",
         "provider_account_copy_verification_failed",
@@ -424,6 +425,21 @@ fn account_copy_refusals_are_constant_at_public_error_boundary() {
         assert!(error.retryable);
         assert!(!error.message.contains(CANARY));
     }
+}
+
+#[test]
+fn a_locked_receiving_vault_refusal_is_constant_at_public_error_boundary() {
+    let error = project_error(
+        &serde_json::json!({"code":"target_vault_locked","message":CANARY,"retryable":true}),
+    );
+    assert_eq!(error.code, "target_vault_locked");
+    assert!(error.retryable);
+    assert!(
+        error.message.contains("Vault is locked") && error.message.contains("repeat"),
+        "{}",
+        error.message
+    );
+    assert!(!error.message.contains(CANARY));
 }
 
 #[test]

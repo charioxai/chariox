@@ -175,6 +175,13 @@ fn apply_stream_event(
 }
 
 fn apply_rate_limit_event(value: &Value, batch: &mut ProviderPromptSignalBatch) {
+    merge_claude_account_usage(&mut batch.account_usage, claude_rate_limit_snapshot(value));
+}
+
+/// The account windows one `rate_limit_event` reports.
+pub(crate) fn claude_rate_limit_snapshot(
+    value: &Value,
+) -> crate::account_profile::ProviderAccountUsageSnapshot {
     use crate::account_profile::{
         ProviderAccountUsageAvailability, ProviderAccountUsageMeter, ProviderAccountUsageMeterKind,
         ProviderAccountUsageMeterScope, ProviderAccountUsageMeterState,
@@ -189,10 +196,28 @@ fn apply_rate_limit_event(value: &Value, batch: &mut ProviderPromptSignalBatch) 
     let limit_type = string_field(info, "rate_limit_type")
         .or_else(|| string_field(info, "rateLimitType"))
         .unwrap_or_else(|| "account".to_string());
+    // Below its first warning threshold Claude Code reports no top-level
+    // `utilization`: the percent of every window it tracks is only in
+    // `unifiedWindows`, as a 0-1 fraction.
+    let windows = info.get("unifiedWindows").and_then(Value::as_object);
+    let window_fraction = |window_id: &str| {
+        windows
+            .and_then(|windows| windows.get(window_id))
+            .and_then(|window| window.get("utilization"))
+            .and_then(Value::as_f64)
+            .map(|fraction| (fraction * 10_000.0).round() / 100.0)
+    };
+    let window_reset = |window_id: &str| {
+        windows
+            .and_then(|windows| windows.get(window_id))
+            .and_then(|window| window.get("resetsAt").or_else(|| window.get("resets_at")))
+            .and_then(super::usage::timestamp_ms)
+    };
     let utilization = info
         .get("utilization")
         .and_then(Value::as_f64)
-        .map(|value| if value <= 1.0 { value * 100.0 } else { value });
+        .map(|value| if value <= 1.0 { value * 100.0 } else { value })
+        .or_else(|| window_fraction(&limit_type));
     let status = string_field(info, "status").unwrap_or_else(|| "unknown".to_string());
     let overage_status =
         string_field(info, "overage_status").or_else(|| string_field(info, "overageStatus"));
@@ -201,64 +226,98 @@ fn apply_rate_limit_event(value: &Value, batch: &mut ProviderPromptSignalBatch) 
         || overage_status
             .as_deref()
             .is_some_and(|status| status.eq_ignore_ascii_case("exhausted"));
-    let state = if exhausted || utilization.is_some_and(|value| value >= 100.0) {
+    let percent_state = |utilization: Option<f64>| {
+        if utilization.is_some_and(|value| value >= 100.0) {
+            ProviderAccountUsageMeterState::Exhausted
+        } else if utilization.is_some_and(|value| value >= 80.0) {
+            ProviderAccountUsageMeterState::Warning
+        } else if utilization.is_some() {
+            ProviderAccountUsageMeterState::Healthy
+        } else {
+            ProviderAccountUsageMeterState::Unknown
+        }
+    };
+    let state = if exhausted {
         ProviderAccountUsageMeterState::Exhausted
-    } else if utilization.is_some_and(|value| value >= 80.0) {
-        ProviderAccountUsageMeterState::Warning
-    } else if utilization.is_some() || status.eq_ignore_ascii_case("allowed") {
+    } else if status.eq_ignore_ascii_case("allowed") && utilization.is_none() {
         ProviderAccountUsageMeterState::Healthy
     } else {
-        ProviderAccountUsageMeterState::Unknown
+        percent_state(utilization)
     };
-    let window_duration_minutes = match limit_type.as_str() {
+    let window_duration_minutes = |window_id: &str| match window_id {
         "five_hour" | "five-hour" => Some(5 * 60),
         "seven_day" | "seven-day" => Some(7 * 24 * 60),
-        _ => info
-            .get("window_duration_minutes")
-            .or_else(|| info.get("windowDurationMinutes"))
-            .and_then(Value::as_u64),
+        _ => None,
     };
-    let resets_at_ms = info
+    let meter = |window_id: &str,
+                 used_percent: Option<f64>,
+                 resets_at_ms: Option<u64>,
+                 state: ProviderAccountUsageMeterState,
+                 window_duration_minutes: Option<u64>| ProviderAccountUsageMeter {
+        meter_id: format!("rate_limit/{window_id}"),
+        label: match window_id {
+            "five_hour" | "five-hour" => "5-hour".to_string(),
+            "seven_day" | "seven-day" => "Weekly".to_string(),
+            _ => window_id.replace(['_', '-'], " "),
+        },
+        service_id: None,
+        kind: ProviderAccountUsageMeterKind::RollingLimit,
+        scope: if window_id.to_ascii_lowercase().contains("model") {
+            ProviderAccountUsageMeterScope::Model
+        } else {
+            ProviderAccountUsageMeterScope::Account
+        },
+        used_percent,
+        used: None,
+        remaining: None,
+        total: None,
+        unit: None,
+        window_duration_minutes,
+        resets_at_ms,
+        state,
+        source: "claude.rate_limit_event".to_string(),
+        observed_at_ms,
+    };
+    let primary_resets_at_ms = info
         .get("resets_at")
         .or_else(|| info.get("resetsAt"))
-        .and_then(super::usage::timestamp_ms);
-    let scope = if limit_type.to_ascii_lowercase().contains("model") {
-        ProviderAccountUsageMeterScope::Model
-    } else {
-        ProviderAccountUsageMeterScope::Account
-    };
-    let snapshot = ProviderAccountUsageSnapshot {
+        .and_then(super::usage::timestamp_ms)
+        .or_else(|| window_reset(&limit_type));
+    let mut meters = vec![meter(
+        &limit_type,
+        utilization,
+        primary_resets_at_ms,
+        state,
+        window_duration_minutes(&limit_type).or_else(|| {
+            info.get("window_duration_minutes")
+                .or_else(|| info.get("windowDurationMinutes"))
+                .and_then(Value::as_u64)
+        }),
+    )];
+    for window_id in windows.into_iter().flat_map(|windows| windows.keys()) {
+        if *window_id == limit_type {
+            continue;
+        }
+        let used_percent = window_fraction(window_id);
+        meters.push(meter(
+            window_id,
+            used_percent,
+            window_reset(window_id),
+            percent_state(used_percent),
+            window_duration_minutes(window_id),
+        ));
+    }
+    ProviderAccountUsageSnapshot {
         // The run-owning kernel replaces this placeholder with the selected
         // stable profile ID before persisting it.
         profile_id: String::new(),
         provider: "claude".to_string(),
         availability: ProviderAccountUsageAvailability::Available,
-        meters: vec![ProviderAccountUsageMeter {
-            meter_id: format!("rate_limit/{limit_type}"),
-            label: match limit_type.as_str() {
-                "five_hour" | "five-hour" => "5-hour".to_string(),
-                "seven_day" | "seven-day" => "Weekly".to_string(),
-                _ => limit_type.replace(['_', '-'], " "),
-            },
-            service_id: None,
-            kind: ProviderAccountUsageMeterKind::RollingLimit,
-            scope,
-            used_percent: utilization,
-            used: None,
-            remaining: None,
-            total: None,
-            unit: None,
-            window_duration_minutes,
-            resets_at_ms,
-            state,
-            source: "claude.rate_limit_event".to_string(),
-            observed_at_ms,
-        }],
+        meters,
         observed_at_ms: Some(observed_at_ms),
         source: "claude.rate_limit_event".to_string(),
         management_url: Some("https://claude.ai/settings/usage".to_string()),
-    };
-    merge_claude_account_usage(&mut batch.account_usage, snapshot);
+    }
 }
 
 fn apply_assistant_message(

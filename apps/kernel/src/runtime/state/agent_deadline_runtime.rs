@@ -12,6 +12,11 @@ fn refusal(code: &str, message: &str) -> DaemonError {
     }
 }
 
+/// A leased agent runs on a worker, which has to enforce its deadline.
+fn leased_agent_deadline_refusal() -> DaemonError {
+    refusal("agent_deadline_requires_executor", "arm an agent deadline on its executing kernel; leased-agent deadlines require worker enforcement")
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn ensure_agent_before_deadline(
         &self,
@@ -33,6 +38,25 @@ impl KernelRuntimeOwnedState {
 }
 
 impl KernelRuntimeState {
+    /// A Room spawn that carries a deadline asks this before it creates anything: an agent that
+    /// would run on a worker or in a slice cannot be armed, and the refusal must come before the
+    /// worker leases a session or creates a checkout that nothing would remove.
+    pub(crate) async fn ensure_spawn_deadline_runs_here(
+        &self,
+        kernel_ref: Option<&str>,
+        in_slice: bool,
+    ) -> Result<(), DaemonError> {
+        let on_worker = in_slice
+            || self
+                .settle_kernel_ref(kernel_ref.map(str::to_string))
+                .await?
+                .is_some();
+        if on_worker {
+            return Err(leased_agent_deadline_refusal());
+        }
+        Ok(())
+    }
+
     pub(crate) fn set_agent_deadline(
         &self,
         caller_user_id: &str,
@@ -51,7 +75,7 @@ impl KernelRuntimeState {
             });
         }
         if agent.remote_execution().is_some() {
-            return Err(refusal("agent_deadline_requires_executor", "arm an agent deadline on its executing kernel; leased-agent deadlines require worker enforcement"));
+            return Err(leased_agent_deadline_refusal());
         }
         // A deadline is never later than an ancestor's: the parent's deadline ends its team.
         let agents = self
@@ -104,15 +128,18 @@ impl KernelRuntimeState {
         })
     }
 
-    /// A client's read: the deadline says when another user's work stops, so only who acts for
-    /// the agent's owner reads it.
+    /// A client's read: the deadline says when the agent's work stops, so whoever may view the
+    /// agent's trace reads it. Arming one stays with who acts for its owner.
     pub(crate) fn read_agent_deadline(
         &self,
         caller_user_id: &str,
         request: GetAgentDeadlineRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.owned
-            .ensure_agent_owner(&request.agent_id, caller_user_id, "read agent deadline")?;
+        self.owned.ensure_agent_trace_access(
+            &request.agent_id,
+            caller_user_id,
+            "read agent deadline",
+        )?;
         self.get_agent_deadline(request)
     }
 

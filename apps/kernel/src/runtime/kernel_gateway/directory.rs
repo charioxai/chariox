@@ -71,15 +71,15 @@ impl Directory {
 
     /// The one live kernel `name` means; unknown, ambiguous and offline are errors.
     pub(super) async fn resolve(&self, name: &str) -> Result<RelayKernelPresence, GatewayError> {
-        // A request is never held for the kernel list: a kernel the last list showed live is
-        // used at once and the list is renewed behind the request. Only an unknown or offline
-        // name, or no list at all, asks for a fresh list before answering.
-        if self.source.is_usable() {
-            self.merge();
-            if let Ok(kernel) = self.lookup(name) {
-                self.refresh_behind();
-                return Ok(kernel);
-            }
+        // A request is never held for the kernel list: a kernel any earlier list showed live
+        // is used at once and the list is renewed behind the request, however old that list
+        // is. The relay knows whether the kernel is connected now and answers `not_connected`
+        // at once when it is not. Only an unknown or offline name, or no list at all, asks
+        // for a fresh list before answering.
+        self.merge();
+        if let Ok(kernel) = self.lookup(name) {
+            self.refresh_behind();
+            return Ok(kernel);
         }
         self.refresh().await?;
         self.lookup(name)
@@ -215,9 +215,6 @@ mod tests {
         fn refreshed_within(&self, _max_age_ms: u64) -> bool {
             true
         }
-        fn is_usable(&self) -> bool {
-            true
-        }
         fn refresh(
             &self,
         ) -> Pin<Box<dyn Future<Output = Result<(), crate::error::DaemonError>> + Send + '_>>
@@ -257,7 +254,7 @@ mod tests {
         (Directory::new(source.clone()), source)
     }
 
-    /// A list that is old but usable answers at once and is renewed behind the request.
+    /// A list that is old answers at once and is renewed behind the request.
     struct Stale {
         listed: Vec<RelayKernelPresence>,
         refreshes: std::sync::atomic::AtomicU32,
@@ -275,9 +272,6 @@ mod tests {
         }
         fn refreshed_within(&self, _max_age_ms: u64) -> bool {
             false
-        }
-        fn is_usable(&self) -> bool {
-            true
         }
         fn refresh(
             &self,
@@ -310,9 +304,6 @@ mod tests {
         fn refreshed_within(&self, _max_age_ms: u64) -> bool {
             false
         }
-        fn is_usable(&self) -> bool {
-            true
-        }
         fn refresh(
             &self,
         ) -> Pin<Box<dyn Future<Output = Result<(), crate::error::DaemonError>> + Send + '_>>
@@ -341,7 +332,7 @@ mod tests {
         let directory = Directory::new(source.clone());
         let found = tokio::time::timeout(Duration::from_secs(2), directory.resolve("b3"))
             .await
-            .expect("a usable list answers without waiting for the refresh")
+            .expect("an old list answers without waiting for the refresh")
             .unwrap();
         assert_eq!(found.kernel_id, "k-b3");
         // Only one refresh runs behind the requests, however many arrive.
@@ -354,6 +345,52 @@ mod tests {
         let unknown =
             tokio::time::timeout(Duration::from_millis(300), directory.resolve("nope")).await;
         assert!(unknown.is_err(), "an unknown name waits for the fresh list");
+    }
+
+    /// The relay cannot renew the list: every renewal opens a new socket to it, and a link
+    /// busy with a bulk transfer lets each one time out.
+    struct Unrenewable {
+        listed: Vec<RelayKernelPresence>,
+    }
+
+    impl InventorySource for Unrenewable {
+        fn via(&self) -> GatewayKernelVia {
+            GatewayKernelVia::Hosted
+        }
+        fn kernels(&self) -> Vec<RelayKernelPresence> {
+            self.listed.clone()
+        }
+        fn is_fresh(&self) -> bool {
+            false
+        }
+        fn refreshed_within(&self, _max_age_ms: u64) -> bool {
+            false
+        }
+        fn refresh(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::error::DaemonError>> + Send + '_>>
+        {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayflood, 2026-11-09 06:13-06:19Z): a bulk download
+    // kept every list renewal from reaching the relay; five minutes later every call to a
+    // kernel the last list showed failed with "the kernel list did not refresh in time".
+    #[tokio::test(start_paused = true)]
+    async fn a_list_the_relay_cannot_renew_still_routes_to_a_kernel_it_showed() {
+        let source = Arc::new(Unrenewable {
+            listed: vec![kernel("k-b3", Some("b3"), "ovh-b3", true)],
+        });
+        let directory = Directory::new(source.clone());
+        assert_eq!(directory.resolve("b3").await.unwrap().kernel_id, "k-b3");
+        // The incident: no renewal reached the relay for more than five minutes.
+        tokio::time::advance(Duration::from_secs(6 * 60)).await;
+        let found = tokio::time::timeout(Duration::from_secs(2), directory.resolve("b3"))
+            .await
+            .expect("a kernel the last list showed is routed to while the list cannot be renewed")
+            .expect("a kernel the last list showed stays routable");
+        assert_eq!(found.kernel_id, "k-b3");
     }
 
     #[test]

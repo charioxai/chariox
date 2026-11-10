@@ -4,6 +4,7 @@ use rusqlite::{params, OptionalExtension};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReceiptState {
     Accepted,
+    EntryOwned,
     Queued,
     Delivered,
     Retryable,
@@ -14,6 +15,7 @@ impl ReceiptState {
     fn parse(value: &str) -> Result<Self> {
         match value {
             "accepted" => Ok(Self::Accepted),
+            "entry_owned" => Ok(Self::EntryOwned),
             "queued" => Ok(Self::Queued),
             "delivered" => Ok(Self::Delivered),
             "retryable" => Ok(Self::Retryable),
@@ -41,6 +43,7 @@ pub struct Receipt {
     pub accepted_at_ms: u64,
     pub expires_at_ms: u64,
     pub next_attempt_at_ms: u64,
+    pub gate_entry_id: Option<String>,
     pub queued_prompt_id: Option<String>,
     pub queued_session_id: Option<String>,
     pub payload: Option<String>,
@@ -70,7 +73,7 @@ pub(super) fn initialize(connection: &Connection) -> Result<()> {
             event_name TEXT NOT NULL, schema_digest TEXT NOT NULL, content_digest TEXT NOT NULL,
             automation_revision INTEGER NOT NULL, accepted_generation INTEGER NOT NULL,
             payload_json TEXT, invocation_json TEXT, accepted_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL,
-            state TEXT NOT NULL CHECK(state IN ('accepted','queued','delivered','retryable','failed','expired')),
+            state TEXT NOT NULL CHECK(state IN ('accepted','entry_owned','queued','delivered','retryable','failed','expired')),
             revision INTEGER NOT NULL CHECK(revision>0), attempts INTEGER NOT NULL CHECK(attempts>=0 AND attempts<=8),
             next_attempt_at_ms INTEGER NOT NULL, queued_prompt_id TEXT, queued_session_id TEXT, queued_agent_id TEXT,
             UNIQUE(owner_id,installation_id,automation_id,event_version,occurrence_id,schedule_revision)
@@ -81,6 +84,45 @@ pub(super) fn initialize(connection: &Connection) -> Result<()> {
             WHEN (SELECT count(*) FROM app_automations WHERE owner_id=NEW.owner_id AND installation_id=NEW.installation_id)>=256
             BEGIN SELECT RAISE(ABORT,'app_automation_limit'); END;"
     )?;
+    // Rebuild the current receipt constraint without changing existing delivery
+    // identities or indexes. Entry ownership is distinct from queue ownership.
+    let ddl: String = connection.query_row(
+        "SELECT sql FROM sqlite_schema WHERE type='table' AND name='app_outbox'",
+        [],
+        |r| r.get(0),
+    )?;
+    if !ddl.contains("'entry_owned'") {
+        let indexes = {
+            let mut query=connection.prepare("SELECT sql FROM sqlite_schema WHERE tbl_name='app_outbox' AND type IN ('index','trigger') AND sql IS NOT NULL")?;
+            let rows = query.query_map([], |r| r.get::<_, String>(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        connection.execute_batch("SAVEPOINT gate_receipts")?;
+        let migrated = (|| -> rusqlite::Result<()> {
+            connection.execute_batch(
+                &ddl.replacen("app_outbox", "app_outbox_gate", 1)
+                    .replace("'accepted','queued'", "'accepted','entry_owned','queued'"),
+            )?;
+            connection.execute_batch("INSERT INTO app_outbox_gate SELECT * FROM app_outbox; DROP TABLE app_outbox; ALTER TABLE app_outbox_gate RENAME TO app_outbox;")?;
+            for index in indexes {
+                connection.execute_batch(&index)?;
+            }
+            Ok(())
+        })();
+        if migrated.is_err() {
+            connection.execute_batch("ROLLBACK TO gate_receipts")?;
+        }
+        connection.execute_batch("RELEASE gate_receipts")?;
+        migrated?;
+    }
+    let has_gate: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_outbox') WHERE name='gate_entry_id')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_gate {
+        connection.execute_batch("ALTER TABLE app_outbox ADD COLUMN gate_entry_id TEXT;")?;
+    }
     // Pre-release protocol 290 rows have no canonical invocation. Preserve
     // their receipts/digests; they cannot be delivered by the 291 handoff. Never
     // infer a prompt from an event's domain payload during migration.
@@ -232,7 +274,7 @@ pub(super) fn accept(
     receipt(tx, &automation.owner, automation.installation_id(), &id)
 }
 
-const COLUMNS:&str="receipt_id,automation_id,occurrence_id,event_version,state,revision,attempts,accepted_at_ms,expires_at_ms,next_attempt_at_ms,queued_prompt_id,payload_json,content_digest,automation_revision,occurred_at_ms,schedule_revision,invocation_json,queued_session_id";
+const COLUMNS:&str="receipt_id,automation_id,occurrence_id,event_version,state,revision,attempts,accepted_at_ms,expires_at_ms,next_attempt_at_ms,queued_prompt_id,payload_json,content_digest,automation_revision,occurred_at_ms,schedule_revision,invocation_json,queued_session_id,gate_entry_id";
 fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<Receipt> {
     let positive = |index: usize| -> rusqlite::Result<u64> {
         u64::try_from(row.get::<_, i64>(index)?).map_err(|_| rusqlite::Error::InvalidQuery)
@@ -249,6 +291,7 @@ fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<Receipt> {
         accepted_at_ms: positive(7)?,
         expires_at_ms: positive(8)?,
         next_attempt_at_ms: positive(9)?,
+        gate_entry_id: row.get(18)?,
         queued_prompt_id: row.get(10)?,
         queued_session_id: row.get(17)?,
         payload: row.get(11)?,
@@ -353,6 +396,20 @@ impl AppOutbox {
         if changed != 1 {
             return Err(OutboxError::Conflict);
         }
+        receipt(tx, &automation.owner, automation.installation_id(), id)
+    }
+
+    /// Transfer a receipt to the kernel gate journal in the same transaction.
+    pub fn mark_entry_owned_in(
+        tx: &Transaction<'_>,
+        automation: &VerifiedAutomation,
+        id: &str,
+        revision: u64,
+        entry_id: &str,
+        now: u64,
+    ) -> Result<Receipt> {
+        Self::mark_queued_in(tx, automation, id, revision, entry_id, now)?;
+        tx.execute("UPDATE app_outbox SET state='entry_owned',gate_entry_id=?2,queued_prompt_id=NULL WHERE receipt_id=?1",params![id,entry_id])?;
         receipt(tx, &automation.owner, automation.installation_id(), id)
     }
 

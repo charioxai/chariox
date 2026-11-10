@@ -59,6 +59,7 @@ pub struct Memory {
     last_growth: usize,
     tables: usize,
     last_table_growth: usize,
+    gate: bool,
 }
 impl Memory {
     pub fn new(limit: usize) -> Self {
@@ -68,6 +69,15 @@ impl Memory {
             last_growth: 0,
             tables: 0,
             last_table_growth: 0,
+            gate: false,
+        }
+    }
+}
+impl Memory {
+    pub(crate) fn gate() -> Self {
+        Self {
+            gate: true,
+            ..Self::new(chariox_app_wit::gate::MAX_MEMORY_BYTES)
         }
     }
 }
@@ -98,7 +108,14 @@ impl ResourceLimiter for Memory {
         _maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
         let growth = desired.saturating_sub(current);
-        if growth > (1_usize << 20).saturating_sub(self.tables) {
+        if growth
+            > (if self.gate {
+                chariox_app_wit::gate::MAX_TABLE_ELEMENTS
+            } else {
+                1_usize << 20
+            })
+            .saturating_sub(self.tables)
+        {
             return Err(MemoryLimit.into());
         }
         self.tables += growth;
@@ -111,13 +128,25 @@ impl ResourceLimiter for Memory {
         Ok(())
     }
     fn instances(&self) -> usize {
-        32
+        if self.gate {
+            16
+        } else {
+            32
+        }
     }
     fn memories(&self) -> usize {
-        8
+        if self.gate {
+            1
+        } else {
+            8
+        }
     }
     fn tables(&self) -> usize {
-        32
+        if self.gate {
+            1
+        } else {
+            32
+        }
     }
 }
 

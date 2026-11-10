@@ -363,6 +363,7 @@ fn envelope_to(
             .unwrap()
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         prompt: "canonical fixture prompt".into(),
+        data: None,
         artifacts: vec![],
         metadata: json!({"event":event,"emissionFirst":emission(automations[0]),"emissionSecond":emission(automations[1])}),
         reply_context: Some(json!({"thread":"safe-fixture"})),

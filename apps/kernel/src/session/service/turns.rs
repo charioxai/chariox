@@ -830,6 +830,38 @@ impl SessionService {
         Ok(stopped)
     }
 
+    /// Records why a Ready node is held; returns whether the record changed.
+    pub fn hold_workflow_node_run(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+        reason: crate::session::WorkflowNodeWaitingReason,
+    ) -> Result<bool, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow_run = session.workflow_run_mut(workflow_run_id).ok_or_else(|| {
+            DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_id.to_string(),
+            }
+        })?;
+        let Some(node_run) = workflow_run
+            .node_runs_mut()
+            .iter_mut()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+        else {
+            return Ok(false);
+        };
+        let before = node_run.waiting_reason();
+        node_run.set_waiting_reason(reason);
+        Ok(node_run.waiting_reason() != before)
+    }
+
     pub fn fail_workflow_node_run(
         &mut self,
         session_id: &str,

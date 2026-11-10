@@ -140,7 +140,7 @@ pub(super) fn settle_unstarted_delegates(
         };
         let admitted: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM agent_task_workflows WHERE run_id=?1 AND node_run_id=?2)",
-            params![source, node.id()], |r| r.get(0),
+            params![run.id(), node.id()], |r| r.get(0),
         ).map_err(sql)?;
         if admitted {
             continue;
@@ -185,6 +185,10 @@ fn load_run(
     room: &str,
     run: &str,
 ) -> Result<Option<crate::session::WorkflowRun>, DaemonError> {
+    if run.starts_with("gate_") {
+        let raw:Option<String>=tx.query_row("SELECT r.payload_json FROM workflow_gate_entries e JOIN durable_workflow_runs r ON r.owner_id=?1 AND r.session_id=e.session_id AND json_extract(r.payload_json,'$.queue_item_id')=json_extract(coalesce(e.summary_json,json_extract(nullif(e.body_json,''),'$.entry')),'$.queued_prompt_id') WHERE e.session_id=?2 AND e.entry_id=?3",params![owner_id,room,run],|r|r.get(0)).optional().map_err(sql)?;
+        return raw.map(|raw| decode(&raw)).transpose();
+    }
     let raw: Option<String> = tx
         .query_row(
             "SELECT payload_json FROM durable_workflow_runs WHERE owner_id=?1 AND session_id=?2 AND run_id=?3",

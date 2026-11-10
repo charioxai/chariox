@@ -10,6 +10,7 @@
 use crate::runtime::bounded_process::AsyncBoundedCommandExt as _;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -49,6 +50,36 @@ struct Handover {
     // not lock the Vault again. Keys never reach the handover file.
     vault_fd: Option<i32>,
     listeners: BTreeMap<String, i32>,
+}
+
+impl Handover {
+    fn with_terminals(terminals: Vec<TerminalHandover>) -> Self {
+        Self {
+            format: HANDOVER_FORMAT,
+            terminals,
+            providers: Vec::new(),
+            attachments: Vec::new(),
+            released_jobs: Vec::new(),
+            admission: Vec::new(),
+            user_domain: Default::default(),
+            revoked_reach_runs: Vec::new(),
+            credentials_fd: None,
+            vault_fd: None,
+            listeners: lock(&LISTENERS).clone(),
+        }
+    }
+
+    /// The descriptors the handover names, which the next program inherits.
+    fn inherited_fds(&self) -> Vec<i32> {
+        self.terminals
+            .iter()
+            .map(TerminalHandover::master_fd)
+            .chain(self.providers.iter().flat_map(ProviderHandover::fds))
+            .chain(self.credentials_fd)
+            .chain(self.vault_fd)
+            .chain(self.listeners.values().copied())
+            .collect()
+    }
 }
 
 /// A client's attachment to a session: the client resumes its subscription on
@@ -593,19 +624,30 @@ impl PreparedForTests {
     pub(crate) fn new() -> Self {
         *lock(&PREPARED) = Some(Prepared {
             handover: Handover::default(),
+            masters: Vec::new(),
+            kernel: None,
             path: PathBuf::new(),
             offered_ptys: BTreeMap::new(),
         });
         Self
     }
 
-    /// What the next program receives of this swap, as it reads it from the handover file.
-    pub(crate) fn reload(&self) {
-        let prepared = lock(&PREPARED);
-        let body = serde_json::to_vec(&prepared.as_ref().expect("a prepared swap").handover)
-            .expect("the handover serializes");
-        let handover: Handover = serde_json::from_slice(&body).expect("the handover reads back");
-        *lock(&RECEIVED_REVOKED_REACH_RUNS) = handover.revoked_reach_runs;
+    /// A swap prepared as on a SIGUSR2, with the running terminals of `terminals`.
+    pub(crate) fn with_terminals(terminals: &RoomTerminalService) -> Self {
+        let terminals = terminals
+            .hand_over()
+            .expect("the terminals are handed over");
+        *lock(&PREPARED) = Some(Prepared::new(terminals, PathBuf::new()));
+        Self
+    }
+
+    /// The descriptors the swap names for the next program to inherit.
+    pub(crate) fn inherited_fds(&self) -> Vec<i32> {
+        lock(&PREPARED)
+            .as_ref()
+            .expect("a prepared swap")
+            .handover
+            .inherited_fds()
     }
 }
 
@@ -613,6 +655,15 @@ impl PreparedForTests {
 impl Drop for PreparedForTests {
     fn drop(&mut self) {
         *lock(&PREPARED) = None;
+    }
+}
+
+/// Takes the stopped kernel's state when its run returns, before `finish`.
+/// A prepared swap keeps it until `exec`: the PTY processes it hands over
+/// would end with it.
+pub(crate) fn keep_until_exec(kernel: Box<dyn std::any::Any + Send>) {
+    if let Some(prepared) = lock(&PREPARED).as_mut() {
+        prepared.kernel = Some(kernel);
     }
 }
 
@@ -661,9 +712,12 @@ pub(crate) fn hand_over_attachments(attachments: &[crate::attachment::RuntimeAtt
 
 /// Offers a provider server's PTY to a running turn that may be handed over.
 /// The PTY of a run whose turn is not handed over ends before the swap.
-pub(crate) fn offer_provider_pty(run_id: &str, pty: crate::pty::PtyHandover) {
+pub(crate) fn offer_provider_pty(run_id: &str, pty: crate::pty::OutgoingPty) {
     if let Some(prepared) = lock(&PREPARED).as_mut() {
-        prepared.offered_ptys.insert(run_id.to_string(), pty);
+        prepared.masters.push(pty.master);
+        prepared
+            .offered_ptys
+            .insert(run_id.to_string(), pty.handover);
     }
 }
 
@@ -712,8 +766,27 @@ fn provider_handover(
 /// stops as for a planned restart before `finish` replaces the program.
 struct Prepared {
     handover: Handover,
+    // The PTY masters the handover names, owned by the swap alone until
+    // `exec`: the terminals and runs that handed them over close their own
+    // descriptors whenever the kernel's stop drops them.
+    masters: Vec<OwnedFd>,
+    // The stopped kernel's state, which owns the handed-over PTY processes.
+    kernel: Option<Box<dyn std::any::Any + Send>>,
     path: PathBuf,
     offered_ptys: BTreeMap<String, crate::pty::PtyHandover>,
+}
+
+impl Prepared {
+    fn new(terminals: Vec<(TerminalHandover, OwnedFd)>, path: PathBuf) -> Self {
+        let (terminals, masters) = terminals.into_iter().unzip();
+        Self {
+            handover: Handover::with_terminals(terminals),
+            masters,
+            kernel: None,
+            path,
+            offered_ptys: BTreeMap::new(),
+        }
+    }
 }
 
 static PREPARED: Mutex<Option<Prepared>> = Mutex::new(None);
@@ -735,12 +808,9 @@ pub async fn requested(terminals: RoomTerminalService, handover_path: PathBuf) {
     };
     while requests.recv().await.is_some() {
         match prepare(&terminals).await {
-            Ok(handover) => {
-                *PREPARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Prepared {
-                    handover,
-                    path: handover_path,
-                    offered_ptys: BTreeMap::new(),
-                });
+            Ok(terminals) => {
+                *PREPARED.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(Prepared::new(terminals, handover_path));
                 return;
             }
             Err(reason) => crate::logging::error_with_fields(
@@ -753,24 +823,14 @@ pub async fn requested(terminals: RoomTerminalService, handover_path: PathBuf) {
     std::future::pending().await
 }
 
-async fn prepare(terminals: &RoomTerminalService) -> Result<Handover, String> {
+async fn prepare(
+    terminals: &RoomTerminalService,
+) -> Result<Vec<(TerminalHandover, OwnedFd)>, String> {
     let start = START.get().ok_or("the kernel program path is unknown")?;
     verify(start).await?;
     let handing = terminals.clone();
     match tokio::task::spawn_blocking(move || handing.hand_over()).await {
-        Ok(Ok(terminals)) => Ok(Handover {
-            format: HANDOVER_FORMAT,
-            terminals,
-            providers: Vec::new(),
-            attachments: Vec::new(),
-            released_jobs: Vec::new(),
-            admission: Vec::new(),
-            user_domain: Default::default(),
-            revoked_reach_runs: Vec::new(),
-            credentials_fd: None,
-            vault_fd: None,
-            listeners: lock(&LISTENERS).clone(),
-        }),
+        Ok(Ok(terminals)) => Ok(terminals),
         Ok(Err(error)) => {
             terminals.release_handover();
             Err(error.to_string())
@@ -832,19 +892,8 @@ fn replace_program() -> Option<String> {
     }
     let inherited: Vec<i32> = prepared
         .handover
-        .terminals
-        .iter()
-        .map(TerminalHandover::master_fd)
-        .chain(
-            prepared
-                .handover
-                .providers
-                .iter()
-                .flat_map(ProviderHandover::fds),
-        )
-        .chain(prepared.handover.credentials_fd)
-        .chain(prepared.handover.vault_fd)
-        .chain(prepared.handover.listeners.values().copied())
+        .inherited_fds()
+        .into_iter()
         .chain(crate::slice::hand_over_managed_docker_broker())
         .collect();
     crate::logging::info_with_fields(

@@ -32,3 +32,4 @@ pub mod worker_peer;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub mod worker_process;
 pub mod worker_readiness;
+pub mod workflow_gate;

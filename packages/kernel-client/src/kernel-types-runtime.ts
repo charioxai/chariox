@@ -173,6 +173,52 @@ export type RuntimeInteraction = RuntimeInteractionSubject & {
   requested_at_ms: number
   /** Protocol 477: a protected owner hand-off (safe metadata only). */
   handoff?: import("./owner-handoff.js").RuntimeHandoff | null
+  /** MP-08 / MP-09 / MP-10 / MP-11: a `vault-card-*` decision for one card payment. */
+  payment?: VaultPaymentApproval | null
+}
+
+/** One card payment the owner approves. `origin` is the page the kernel observed;
+ * `agent_claim` is what the asking agent says the payment is, shown as its claim. */
+export type VaultPaymentApproval = {
+  origin: string
+  entry: string
+  card_last4?: string
+  card_brand?: string
+  agent_claim?: VaultPaymentClaim
+  requested_by_agent_id?: string
+  session_id?: string
+}
+
+export type VaultPaymentClaim = {
+  merchant: string
+  /** Decimal, e.g. "12.50". */
+  amount: string
+  /** Three capital letters, e.g. "EUR". */
+  currency: string
+}
+
+/** A Vault entry's one declared use. A payment card is saved for `any_site`. */
+export type VaultUseTarget =
+  | { kind: "site"; origin: string }
+  | { kind: "command_environment"; name: string; origin: string }
+  | { kind: "command_stdin"; origin: string }
+  | { kind: "file"; path: string }
+  | { kind: "totp"; origin: string }
+  | { kind: "web_authn"; origin: string; rp_id: string }
+  | { kind: "any_site" }
+
+export type VaultUseBinding = {
+  target: VaultUseTarget
+  value_kind?: "secret" | "payment_card"
+}
+
+/** What the owner's Vault list shows about a saved card. */
+export type PaymentCardSummary = {
+  last4: string
+  expiry_month: number
+  expiry_year: number
+  name?: string
+  brand?: string
 }
 
 export type RuntimeInteractionChoice = {
@@ -585,6 +631,10 @@ export interface AgentTreeNode {
   alias: string | null
   provider: string
   model: string | null
+  /** The mode, permission level and variant the node really runs with; absent when not reported. */
+  execution_mode?: 'build' | 'plan'
+  permission_level?: 'required' | 'yolo'
+  effort?: string
   depth: number
   state: AgentTreeState
   outcome: TurnOutcomeKind | null

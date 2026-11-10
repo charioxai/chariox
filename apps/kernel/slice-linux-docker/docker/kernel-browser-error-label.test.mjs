@@ -63,11 +63,23 @@ test('launch failures retain specific safe namespace, sandbox and executable cau
   ['Missing X server or $DISPLAY',undefined,'browser_display_unavailable'],
   ['', 'ENOENT','browser_executable_missing'],
   ['', 'EACCES','browser_executable_permission_denied'],
+  ['', 'ENOSPC','browser_disk_full'],
+  ['', 'ENOMEM','browser_out_of_memory'],
+  ['chrome: error while loading shared libraries: libnss3.so private-canary',undefined,'browser_executable_missing'],
+  ['[1:1:FATAL] write failed: No space left on device private-canary',undefined,'browser_disk_full'],
+  ['[FATAL] Cannot allocate memory private-canary',undefined,'browser_out_of_memory'],
+  ['The profile appears to be in use by another Chromium process private-canary',undefined,'browser_profile_locked'],
   ['private-canary', 'private-canary','browser_launch_failed'],
  ]){
   const code=browserLaunchFailureReason(stderr,spawnCode);assert.equal(code,reason);
   const reply=hostFailureMessage({code,message:stderr});assert(reply.includes(reason));assert(!reply.includes('private-canary'));assert(!reply.includes('/proc/'));
  }
+});
+
+test('a startup that never answers CDP is a timeout class, not unknown',()=>{
+ assert.equal(browserLaunchFailureReason('private-canary',undefined,'browser_cdp_timeout'),'browser_startup_timeout');
+ assert.equal(browserLaunchFailureReason('private-canary',undefined,undefined),'browser_launch_failed');
+ assert(hostFailureMessage({code:'browser_startup_timeout',message:'private-canary'}).includes('browser_startup_timeout'));
 });
 
 test('MP-08/MP-10/MP-11 navigation and detached CDP failures preserve safe causes without page descriptions',()=>{

@@ -5,6 +5,7 @@ import { FILES_VERBS, runFilesVerb, type SendRequest } from "./kernel-files.js"
 import { runTerminalVerb, TERMINAL_ATTACH_USAGE, TERMINAL_VERBS, waitMsOf, type TerminalFlags, type TerminalVerb } from "./terminal-verbs.js"
 
 import { runExec } from "./exec-command.js"
+import { runExecPlace } from "./exec-place-command.js"
 
 import { EVENT_VERBS, eventTimeoutSeconds, runEventsVerb } from "./events-command.js"
 import { runEventsMcp, type KernelRoutes } from "./events-mcp.js"
@@ -160,10 +161,12 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
     console.log(`${TERMINAL_ATTACH_USAGE}\n${familyUsageOf("terminal", TERMINAL_VERBS)}`)
     return true
   }
+  // `chariox exec place` has its own flags: --kernel names where the held command runs.
+  const execPlace = command === "exec" && rest[0] === "place"
   if (wantsHelp(rest)) {
     const family = command === "events" ? EVENT_VERBS : command === "files" ? FILES_VERBS : undefined
     const verb = family?.find(name => name === rest[0])
-    console.log(family && !verb ? familyUsageOf(command, family) : usageOf(family ? `${command} ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : command))
+    console.log(family && !verb ? familyUsageOf(command, family) : usageOf(family ? `${command} ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : execPlace ? "exec place" : command))
     return true
   }
   let kernel: string | null = null
@@ -185,12 +188,19 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
     const verb = command === "files" ? FILES_VERBS.find(name => name === rest[0]) : undefined
     if (command === "files" && !verb) throw new CommandFailure("usage", familyUsageOf("files", FILES_VERBS))
     // What follows `--` of `terminal open` is the program to run, not options.
-    const split = terminalVerb === "open" || command === "exec" ? rest.indexOf("--") : -1
+    const split = terminalVerb === "open" || (command === "exec" && !execPlace) ? rest.indexOf("--") : -1
     const program = split < 0 ? [] : rest.slice(split + 1)
     const options = split < 0 ? rest : rest.slice(0, split)
-    const { flags, positionals } = parseArguments(verb ? `files ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : command, verb ? options.slice(1) : terminalVerb ? options.slice(1) : options)
+    const { flags, positionals } = parseArguments(verb ? `files ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : execPlace ? "exec place" : command, verb || terminalVerb || execPlace ? options.slice(1) : options)
     const socket = flags.get("--socket") as string | undefined
-    if (command === "exec") {
+    if (execPlace) {
+      const session = flags.get("--session") as string | undefined
+      const target = flags.get("--kernel") as string | undefined
+      if (positionals.length !== 1 || session === undefined || target === undefined) throw new CommandFailure("usage", usageOf("exec place"))
+      const placed = await withKernel({ socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS }, send =>
+        runExecPlace({ session, execId: positionals[0]!, kernel: target, directory: flags.get("--directory") as string | undefined }, send))
+      console.log(JSON.stringify(placed))
+    } else if (command === "exec") {
       if (positionals.length || program.length === 0 || Boolean(flags.get("--session")) === Boolean(flags.get("--workspace")) || (flags.has("--host-agent") && !flags.has("--session"))) {
         throw new CommandFailure("usage", "Usage: chariox exec [--kernel NAME] (--session ROOM | --workspace PATH) [--host-agent AGENT] -- argv...")
       }

@@ -92,3 +92,5 @@ export * from "./notes.js"
 export * from "./user-domain-refusal.js"
 
 export * from "./provider-account-copy.js"
+
+export * from "./shell-workflow-gate-command.js"

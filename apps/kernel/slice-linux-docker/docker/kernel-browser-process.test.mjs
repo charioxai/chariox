@@ -199,3 +199,16 @@ test('the kernel browser is headless on macOS whatever the environment says, and
  assert.equal(headlessLaunch('linux',{CHARIOX_KERNEL_BROWSER_HEADLESS:'1'}),true);
  assert.throws(()=>headlessLaunch('win32',{}),/Linux and macOS only/,'Windows never launches a browser');
 });
+
+test('MP-08/10/11 every launch flag states what a page can observe of it',async()=>{
+ const {launchArguments,launchFlagVisibility}=await import('./kernel-browser-process.mjs');
+ const {headlessIdentityArguments}=await import('./kernel-browser-identity.mjs');
+ const used=new Set();
+ for(const headless of [false,true])for(const display of [false,true])
+  for(const arg of launchArguments('/p',headless,display,2,['--enable-features=AcceleratedVideoDecodeLinuxGL'],headlessIdentityArguments('linux',155)))used.add(arg.split('=')[0]);
+ used.delete('about:blank');
+ const unlisted=[...used].filter(flag=>!(flag in launchFlagVisibility));
+ assert.deepEqual(unlisted,[],'a new launch flag must say what pages can observe of it (launchFlagVisibility) and be covered by the signal test');
+ const stale=Object.keys(launchFlagVisibility).filter(flag=>!used.has(flag));
+ assert.deepEqual(stale,[],'a removed launch flag must leave the table');
+});

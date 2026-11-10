@@ -222,8 +222,6 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
             extension_count: 1,
             dependency_count: 2,
         },
-        // A full import: the hash below proves the field stays out of its shape.
-        omitted_provider_accounts: Vec::new(),
         receipt_sha256: "e".repeat(64),
     };
     let relay_serialized = serde_json::to_value(&relay_receipt)

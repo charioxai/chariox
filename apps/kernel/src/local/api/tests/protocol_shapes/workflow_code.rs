@@ -105,6 +105,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         schema_version: crate::workflow_code::WORKFLOW_CODE_SCHEMA_VERSION,
         parameters_schema: None,
         workflow: crate::workflow_code::WorkflowCodeWorkflow {
+            gate: None,
             alias: Some("toy".to_string()),
             prompt: Some("Run this scripted workflow.".to_string()),
             flush_agent_context_before_run: Some(true),
@@ -140,6 +141,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         }],
         edges: Vec::new(),
         endpoints: vec![crate::workflow_code::WorkflowCodeEndpointDefinition {
+            entry_nodes: vec![],
             handle: "entry".to_string(),
             entry_node: "planner".to_string(),
             alias: Some("entry".to_string()),

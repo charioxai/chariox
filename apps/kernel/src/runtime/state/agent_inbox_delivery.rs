@@ -328,18 +328,15 @@ impl KernelRuntimeState {
                         self.spawn_remote_prompt_dispatch(dispatch);
                     }
                     if let Some(dispatch) = submission.dispatch.take() {
-                        let _permit = self
+                        // The caller can hold another run's lane (a child's settling turn wakes
+                        // its parent), and a holder of the recipient's lane can wait for that
+                        // one: a held recipient lane is waited for outside the caller.
+                        match self
                             .provider_runtime_lanes
-                            .acquire(&dispatch.provider_run_id)
-                            .await;
-                        let result = self
-                            .enqueue_prompt_dispatch_with_acceptance(&dispatch)
-                            .await;
-                        self.record_agent_event_dispatch_result(&dispatch, &result)?;
-                        // The receipt above is exact; the shared failure path then
-                        // frees the active prompt the way a spawned dispatch does.
-                        if let Err(error) = result {
-                            self.fail_prompt_dispatch(dispatch, error).await?;
+                            .try_acquire(&dispatch.provider_run_id)
+                        {
+                            Some(_permit) => self.dispatch_agent_event_prompt(dispatch).await?,
+                            None => self.spawn_agent_event_dispatch(dispatch),
                         }
                     }
                 }
@@ -368,6 +365,38 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
+    /// The caller holds the dispatch's run lane.
+    async fn dispatch_agent_event_prompt(
+        &self,
+        dispatch: crate::app::KernelPromptDispatch,
+    ) -> Result<(), DaemonError> {
+        let result = self
+            .enqueue_prompt_dispatch_with_acceptance(&dispatch)
+            .await;
+        self.record_agent_event_dispatch_result(&dispatch, &result)?;
+        // The receipt above is exact; the shared failure path then
+        // frees the active prompt the way a spawned dispatch does.
+        if let Err(error) = result {
+            self.fail_prompt_dispatch(dispatch, error).await?;
+        }
+        Ok(())
+    }
+
+    fn spawn_agent_event_dispatch(&self, dispatch: crate::app::KernelPromptDispatch) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let _permit = state
+                .provider_runtime_lanes
+                .acquire(&dispatch.provider_run_id)
+                .await;
+            let prompt_id = dispatch.prompt_id.clone();
+            if let Err(error) = state.dispatch_agent_event_prompt(dispatch).await {
+                tracing::warn!(%error, %prompt_id,
+                    "inbox dispatch result retained for the inbox sweep");
+            }
+        });
+    }
+
     /// The rows one wake carries with its lead row, nothing waiting for more:
     /// a steer wake every pending urgent row, an idle or queued wake every
     /// pending row. Rows whose task finished are retired on the way, and the
