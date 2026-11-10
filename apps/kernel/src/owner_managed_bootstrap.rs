@@ -556,23 +556,17 @@ mod self_setup_tests {
 #[cfg(test)]
 mod review_contract_tests {
     use super::*;
+    // The file is what Cloud's strict schema accepts; Cloud checks it against that schema.
     #[test]
-    fn byom_mp11_ticket_body_matches_cloud302_strict_schema() {
-        let config = DaemonConfig::for_tests();
+    fn byom_mp11_ticket_body_is_what_cloud_accepts() {
+        let mut config = DaemonConfig::for_tests();
+        config.machine_name_for_tests = Some("fixture-machine".into());
         let body = ticket_enrollment_body(&config, "synthetic-single-use-code");
-        let allowed = [
-            "ticket",
-            "machineId",
-            "kernelId",
-            "publicKeyThumbprint",
-            "machineName",
-        ];
-        assert!(body
-            .as_object()
-            .unwrap()
-            .keys()
-            .all(|field| allowed.contains(&field.as_str())));
-        assert!(body.get("kernelAlias").is_none());
+        let expected: Value = serde_json::from_str(include_str!(
+            "../tests/cloud-contract/ticket-redeem-request.json"
+        ))
+        .unwrap();
+        assert_eq!(body, expected);
     }
     #[tokio::test]
     async fn byom_mp11_distinct_account_and_user_enroll_without_losing_consumed_credential() {

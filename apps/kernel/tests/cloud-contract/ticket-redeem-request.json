@@ -1,0 +1,7 @@
+{
+  "ticket": "synthetic-single-use-code",
+  "machineId": "machine-test",
+  "kernelId": "daemon-test",
+  "publicKeyThumbprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "machineName": "fixture-machine"
+}

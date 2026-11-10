@@ -144,6 +144,11 @@ mod enrollment_display_tests {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.machine_name_for_tests = Some("fixture-machine".into());
         let body = kernel_device_enrollment_body(&config);
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/cloud-contract/device-start-request.json"
+        ))
+        .unwrap();
+        assert_eq!(body, expected, "the file is what Cloud's strict schema accepts");
         assert_eq!(body["machineName"], "fixture-machine");
         assert!(body.get("machineAlias").is_none());
         assert!(body.get("kernelAlias").is_none());

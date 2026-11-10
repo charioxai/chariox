@@ -348,6 +348,26 @@ mod tests {
         assert_eq!(subject.machine_id, None);
     }
 
+    // The file is what Cloud's strict schema accepts; Cloud checks it against that schema.
+    #[test]
+    fn presence_body_has_exactly_the_fields_cloud_accepts() {
+        let mut kernel_profile = profile();
+        kernel_profile.machine_credential = None;
+        kernel_profile.kernel_credential = Some("kcred_synthetic".to_string());
+        let mut config = config(Some(kernel_profile.clone()));
+        config.machine_name_for_tests = Some("fixture-machine".into());
+        let body = cloud_kernel_presence_body(&config, &kernel_profile, true, None)
+            .expect("presence body should build");
+        let accepted: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/cloud-contract/presence-request.json"
+        ))
+        .unwrap();
+        let fields = |value: &serde_json::Value| {
+            value.as_object().unwrap().keys().cloned().collect::<Vec<_>>()
+        };
+        assert_eq!(fields(&body), fields(&accepted));
+    }
+
     #[test]
     fn presence_body_requires_machine_and_uses_machine_credentials_first() {
         let body = cloud_kernel_presence_body(&config(Some(profile())), &profile(), true, None)
