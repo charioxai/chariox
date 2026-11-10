@@ -183,7 +183,10 @@ fn provider_installed(provider: &str) -> bool {
 /// open stays cheap while an account switched in the provider's own CLI shows up
 /// within a minute of the next open. Codex is never rechecked on its own: its
 /// server keeps the login it saw at its start and only an explicit refresh
-/// reloads it.
+/// reloads it. A profile rejected as `Error` is rechecked the same way: the
+/// default login owns an account's identity while it is signed in as that
+/// account, so a linked profile it displaced is valid again once the default
+/// switches back.
 const LOGIN_RECHECK_MS: u64 = 60 * 1000;
 
 /// Only profiles on the machine's own provider login are checked here; a profile
@@ -196,13 +199,13 @@ fn needs_validation(profile: &ProviderAccountProfile, now_ms: u64) -> bool {
         ProviderAccountAuthState::Unknown => true,
         ProviderAccountAuthState::NotConfigured
         | ProviderAccountAuthState::Expired
-        | ProviderAccountAuthState::Authenticated => {
+        | ProviderAccountAuthState::Authenticated
+        | ProviderAccountAuthState::Error => {
             profile.provider != "codex"
                 && profile
                     .last_validated_at_ms
                     .is_none_or(|checked| now_ms.saturating_sub(checked) >= LOGIN_RECHECK_MS)
         }
-        ProviderAccountAuthState::Error => false,
     }
 }
 
