@@ -12,6 +12,18 @@ const EMPHASIS_REPLY: &str =
 const HEADING: &str = include_str!("tests/fixtures/claude-2.1.296-reply-with-heading.pty.jsonl");
 const HEADING_REPLY: &str =
     include_str!("tests/fixtures/claude-2.1.296-reply-with-heading.reply.txt");
+/// A 10,561-character essay: the reply scrolls, and Claude draws the screen again mid-reply.
+const ESSAY: &[u8] = include_bytes!("tests/fixtures/claude-2.1.296-essay-40x120.pty.jsonl.gz");
+const ESSAY_REPLY: &str = include_str!("tests/fixtures/claude-2.1.296-essay-40x120.reply.txt");
+
+fn gunzip(bytes: &[u8]) -> String {
+    use std::io::Read;
+    let mut text = String::new();
+    flate2::read::GzDecoder::new(bytes)
+        .read_to_string(&mut text)
+        .unwrap();
+    text
+}
 
 /// The terminal reads of a recording, with the second each arrived at.
 fn terminal_output(recording: &str) -> Vec<(f64, Vec<u8>)> {
@@ -123,6 +135,34 @@ fn a_reply_taller_than_the_screen_streams_row_by_row_and_the_transcript_continue
 }
 
 #[test]
+fn a_long_essay_streams_exactly_through_scrolls_and_redraws() {
+    let mut reply = LiveReply::new(40, 120);
+    let streamed = stream(&mut reply, &terminal_output(&gunzip(ESSAY)), ESSAY_REPLY);
+    assert_streams_as_shown(&streamed, ESSAY_REPLY, 99);
+    assert!(
+        streamed.deltas.len() >= 50,
+        "{} pieces",
+        streamed.deltas.len()
+    );
+    let text = streamed.text();
+    assert!(
+        ESSAY_REPLY.starts_with(&text),
+        "streamed text left the transcript's at byte {}",
+        text.bytes()
+            .zip(ESSAY_REPLY.bytes())
+            .take_while(|(a, b)| a == b)
+            .count()
+    );
+    assert_eq!(
+        reply.adopt(ESSAY_REPLY),
+        Adoption::Streamed {
+            merge_key_suffix: "assistant:live-prompt-1-1:0".to_string(),
+            rest: Some(ESSAY_REPLY[text.len()..].to_string()),
+        }
+    );
+}
+
+#[test]
 fn a_reply_that_fits_the_screen_streams_the_same_way() {
     let mut reply = LiveReply::new(40, 120);
     let streamed = stream(&mut reply, &terminal_output(PLAIN), PLAIN_REPLY);
@@ -216,6 +256,9 @@ fn rows_join_the_way_claude_wrapped_them() {
     assert!(wraps_into(118, "of the harbor", 120));
     assert!(!wraps_into(60, "of the harbor", 120));
     assert!(wraps_into(110, "considerably", 120));
+    // Claude moves a word that would reach the last column to the next row.
+    assert!(wraps_into(116, "its", 120));
+    assert!(!wraps_into(115, "its", 120));
 }
 
 #[test]
