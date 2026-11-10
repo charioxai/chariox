@@ -197,6 +197,11 @@ impl KernelRuntimeState {
         request: &LocalDaemonRequest,
     ) -> Result<String, DaemonError> {
         let turn = self.sudo_window_bound(id)?;
+        if teardown_request(request) {
+            return Err(error(
+                "sudo cannot end or delete a Room, Project or kernel; ask the owner to do it from a Chariox client",
+            ));
+        }
         if sudo_request_forbidden(request) {
             return Err(error("sudo cannot answer approvals, grant authority, read secrets, change the passkey or access configuration"));
         }
@@ -215,10 +220,23 @@ impl KernelRuntimeState {
     }
 }
 
-pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
+/// Ending or deleting a Room, Project or kernel is the owner's decision, with or without /sudo.
+pub(crate) fn teardown_request(request: &LocalDaemonRequest) -> bool {
     matches!(
         request,
-        LocalDaemonRequest::RequestKernelSudo(_)
+        LocalDaemonRequest::EndSession(_)
+            | LocalDaemonRequest::DeleteSession(_)
+            | LocalDaemonRequest::ArchiveProject(_)
+            | LocalDaemonRequest::DeleteProject(_)
+            | LocalDaemonRequest::DeleteKernel(_)
+    )
+}
+
+pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
+    teardown_request(request)
+        || matches!(
+            request,
+            LocalDaemonRequest::RequestKernelSudo(_)
         | LocalDaemonRequest::ExtendKernelSudo(_)
         | LocalDaemonRequest::RenewKernelSudoRequester(_)
         // Approvals belong to the user, including for elevated agents.
@@ -246,11 +264,6 @@ pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::GetUserConfig(_)
             | LocalDaemonRequest::ArchiveAgent(_)
             | LocalDaemonRequest::SetAgentParent(_)
-            | LocalDaemonRequest::EndSession(_)
-            | LocalDaemonRequest::DeleteSession(_)
-            | LocalDaemonRequest::ArchiveProject(_)
-            | LocalDaemonRequest::DeleteProject(_)
-            | LocalDaemonRequest::DeleteKernel(_)
             | LocalDaemonRequest::ListCredentials(_)
             // Sudo must not serialize literal MCP env/header credentials either.
             | LocalDaemonRequest::GetMcpServer(_)
@@ -287,7 +300,8 @@ pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::SetProviderAccountCredential(_)
             | LocalDaemonRequest::GetProviderAccountProfile(_)
             | LocalDaemonRequest::ImportNativeProviderAccountProfile(_)
-    ) || matches!(request, LocalDaemonRequest::SetUserConfigValue(config) if sudo_config_forbidden(&config.path))
+        )
+        || matches!(request, LocalDaemonRequest::SetUserConfigValue(config) if sudo_config_forbidden(&config.path))
         || matches!(request, LocalDaemonRequest::UnsetUserConfigValue(config) if sudo_config_forbidden(&config.path))
         || matches!(request, LocalDaemonRequest::SubmitPrompt(prompt) if is_sudo_prompt(&prompt.prompt) || is_sudo_control(&prompt.prompt))
         || matches!(request, LocalDaemonRequest::SubmitPrompts(prompts) if prompts.prompts.iter().any(|prompt| is_sudo_prompt(&prompt.prompt) || is_sudo_control(&prompt.prompt)))

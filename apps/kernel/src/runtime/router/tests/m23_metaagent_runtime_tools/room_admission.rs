@@ -1522,3 +1522,43 @@ async fn room_notification_subscription() {
     );
     assert!(triggers(a.id().to_string()).await.is_empty());
 }
+
+// Tearing down a Room, Project or kernel is refused for an agent caller whether or not the Room
+// tool surface is switched on (it is opt-in, and the older metaagent path runs without it).
+#[test]
+fn room_admission_refuses_teardown_with_room_agent_tools_off() {
+    run_large_stack_async_test("room-teardown-tools-off", teardown_with_tools_off);
+}
+
+async fn teardown_with_tools_off() {
+    let env = TestMetaRuntimeEnv::new("room-teardown-tools-off");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = false;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, actor) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let project_id = session.project_id().to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    assert!(!router.runtime_state.room_agent_tools_enabled());
+    for value in [
+        serde_json::json!({"EndSession":{"session_id":session.id()}}),
+        serde_json::json!({"DeleteSession":{"session_ref":session.id(),"workspace_id":null}}),
+        serde_json::json!({"ArchiveProject":{"project_id":project_id}}),
+        serde_json::json!({"DeleteProject":{"project_id":project_id}}),
+    ] {
+        let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+        assert!(
+            router
+                .runtime_state
+                .authorize_room_agent_request(actor.id(), &request)
+                .is_err(),
+            "{value} reached its handler"
+        );
+    }
+}

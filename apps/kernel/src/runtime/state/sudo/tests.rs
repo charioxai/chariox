@@ -521,8 +521,8 @@ async fn sudo_cannot_archive_or_delete_a_project() {
             )
             .await;
         assert!(
-            result.is_err(),
-            "a sudo window tore down the Project's Rooms with {request}: {result:?}"
+            matches!(&result, Err(error) if error.to_string().contains("cannot end or delete a Room, Project or kernel")),
+            "a sudo window tore down the Project's Rooms with {request}, or without saying why: {result:?}"
         );
     }
     assert!(f.state.owned.session_store.get_project(&project_id).is_ok());

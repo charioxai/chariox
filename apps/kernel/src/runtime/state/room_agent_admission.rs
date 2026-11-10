@@ -78,6 +78,11 @@ impl KernelRuntimeState {
         if matches!(request, LocalDaemonRequest::SetAgentParent(_)) {
             return Err(denied("only the user can change an agent's parent"));
         }
+        if super::sudo::teardown_request(request) {
+            return Err(denied(
+                "room agents cannot tear down sessions, projects or kernels",
+            ));
+        }
         if !self.room_agent_tools_enabled() {
             return Ok(());
         }

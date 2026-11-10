@@ -15,9 +15,11 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         authenticated_user_id: &str,
     ) -> Result<(), DaemonError> {
-        // A missing run is the handler's `provider run not found`.
-        let Ok(provider_run) = self.owned.provider_store.get_run(provider_run_id) else {
-            return Ok(());
+        let provider_run = match self.owned.provider_store.get_run(provider_run_id) {
+            Ok(provider_run) => provider_run,
+            // A missing run is the handler's `provider run not found`.
+            Err(DaemonError::ProviderRunNotFound { .. }) => return Ok(()),
+            Err(error) => return Err(error),
         };
         crate::runtime::provider_run_control::ensure_provider_run_visible_to_user(
             &provider_run,
