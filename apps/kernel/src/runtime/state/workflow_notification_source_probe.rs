@@ -5,7 +5,6 @@
 use super::workflow_notification_peers::{accepted_source_list, VERSION};
 use super::*;
 use crate::durable_state::workflow_notifications::NotificationOperation;
-use crate::session::{AgentTriggerNotificationSource, AgentTriggerSource};
 
 /// How often each source kernel is asked.
 const PROBE_INTERVAL_MS: u64 = 10_000;
@@ -32,7 +31,7 @@ impl NotificationSourceProbes {
     }
 
     /// The kernels to ask now, each marked as being asked until its answer is recorded. A
-    /// kernel no trigger listens to any more is forgotten.
+    /// kernel no subscription follows any more is forgotten.
     fn claim_due(&self, wanted: &BTreeSet<(String, String)>, now: u64) -> Vec<(String, String)> {
         let mut state = self.lock();
         state.retain(|key, _| wanted.contains(key));
@@ -88,37 +87,14 @@ impl KernelRuntimeState {
 
     pub(super) fn claim_due_notification_source_probes(&self, now: u64) -> Vec<(String, String)> {
         let home = self.owned.config_projection.snapshot().daemon_id;
-        let mut wanted = BTreeSet::new();
-        for session in self.owned.session_store.read().list_sessions() {
-            let owner = session.owner_user_id();
-            let sources: Vec<_> = session
-                .agent_triggers()
-                .iter()
-                .filter_map(|trigger| match trigger.source() {
-                    AgentTriggerSource::Notification {
-                        source: AgentTriggerNotificationSource::Workflow { source_id },
-                        ..
-                    } => Some(source_id.clone()),
-                    _ => None,
-                })
-                .collect();
-            if sources.is_empty() {
-                continue;
-            }
-            let Ok(cached) = self
-                .owned
-                .durable_state_store
-                .notification_cached_sources(owner)
-            else {
-                continue;
-            };
-            wanted.extend(
-                cached
-                    .into_iter()
-                    .filter(|s| s.kernel_id != home && sources.contains(&s.source_id))
-                    .map(|s| (owner.to_owned(), s.kernel_id)),
-            );
-        }
+        // The durable subscriptions keep the kernel of the source while the source is disabled
+        // or missing from the kernel's list, so the kernel is still asked when it comes back.
+        let wanted = self
+            .agent_notification_subscriptions()
+            .into_iter()
+            .filter(|s| s.source_kernel_id != home)
+            .map(|s| (s.owner_user_id, s.source_kernel_id))
+            .collect();
         self.owned
             .notification_source_probes
             .claim_due(&wanted, now)
