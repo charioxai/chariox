@@ -257,7 +257,7 @@ impl PreparedDomain {
                 "resource domain requires an owned child PID",
             ));
         }
-        sampling::ensure_available()?;
+        sampling::ensure_available(pid)?;
         self.watch(sampling::ProcessTree::new(pid), None)
     }
 
@@ -269,7 +269,7 @@ impl PreparedDomain {
         tree: sampling::ProcessTree,
         listing: projection::Listing,
     ) -> std::io::Result<()> {
-        sampling::ensure_available()?;
+        sampling::ensure_available(tree.root())?;
         let domain = self.watch(tree, Some(listing))?;
         // The watch owns itself from here, as for any released workload.
         drop(domain);
@@ -993,5 +993,7 @@ pub(crate) fn has_key(key: &str) -> bool {
 
 #[cfg(test)]
 pub(crate) fn snapshot_row_count_for_test() -> usize {
-    sampling::process_rows().map(|rows| rows.len()).unwrap_or(0)
+    sampling::process_rows(std::process::id())
+        .map(|rows| rows.len())
+        .unwrap_or(0)
 }
