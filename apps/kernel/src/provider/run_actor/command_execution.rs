@@ -356,7 +356,7 @@ pub(super) fn execute_selection_sync_command(
     run: &RuntimeProviderRun,
 ) -> Result<OpenCodeRunSelection, DaemonError> {
     let slot = runtime_registry.opencode_slot(run_id)?;
-    let (base_url, session_id) = {
+    let (base_url, session_id, run_has_prompted) = {
         let guard = slot.lock().expect("opencode runtime slot poisoned");
         let state = guard
             .as_ref()
@@ -365,7 +365,11 @@ pub(super) fn execute_selection_sync_command(
                 operation: "opencode_session_missing",
                 message: "no OpenCode session is bound to this provider run".to_string(),
             })?;
-        (state.base_url().to_string(), state.session_id().to_string())
+        (
+            state.base_url().to_string(),
+            state.session_id().to_string(),
+            state.has_submitted_prompt(),
+        )
     };
     sync_opencode_run_selection_for_session(
         run_id,
@@ -373,6 +377,8 @@ pub(super) fn execute_selection_sync_command(
         &session_id,
         run.model(),
         run.variant(),
+        // A native session is steered from OpenCode itself, so its messages always say what is selected.
+        run_has_prompted || !run.client_interface().is_chariox(),
     )
 }
 
