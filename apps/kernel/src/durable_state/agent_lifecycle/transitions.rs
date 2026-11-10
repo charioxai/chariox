@@ -455,11 +455,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     selected.push(r);
                 }
             }
-            // Only work still running needs a source: once an obligation has an outcome (done,
-            // failed, cancelled or its child deleted) that outcome reaches the agent by itself.
+            // Only work still running needs a source; the settlement of the turn applies the
+            // same rule.
             if t.obligations
                 .iter()
-                .filter(|o| o.status == "open" && o.requires_resolution())
+                .filter(|o| o.needs_live_source())
                 .any(|o| {
                     !selected
                         .iter()
@@ -617,7 +617,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         .all(|id| regs.iter().any(|r| &r.id == id && (r.live || pending > 0)))
                     && t.obligations
                         .iter()
-                        .filter(|o| o.requires_resolution())
+                        .filter(|o| o.needs_live_source())
                         .all(|o| {
                             regs.iter().any(|r| {
                                 w.registration_ids.contains(&r.id)

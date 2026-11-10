@@ -43,6 +43,24 @@ fn yield_on(f: &Fixture, ids: &[&str]) -> Result<Outcome, DaemonError> {
     })
 }
 
+/// The provider ends its turn after the yield: the wait that was admitted must hold, as it did
+/// at admission, instead of the turn being corrected or blocked.
+fn end_the_turn_waiting(f: &Fixture) {
+    let Outcome::Settled { correction, .. } = f.apply(Operation::Settle {
+        room: "room".into(),
+        agent: "parent".into(),
+        prompt: "p".into(),
+        run: "run".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 3,
+    }) else {
+        panic!("the turn did not settle")
+    };
+    assert!(!correction, "an admitted wait needs no correction");
+    assert_eq!(f.task().state, ExecutionState::Waiting);
+}
+
 fn ask_for_reply(f: &Fixture) -> InboxEvent {
     let mut request = occurrence(
         "room",
@@ -84,6 +102,7 @@ fn a_reply_that_arrived_does_not_block_a_yield_on_another_source() {
     // The reply event is still unhandled in the inbox: the kernel delivers it on its own.
     yield_on(&f, &["running-reg"]).expect("a yield on the running worker");
     assert_eq!(f.task().wait.unwrap().registration_ids, ["running-reg"]);
+    end_the_turn_waiting(&f);
 }
 
 #[test]
@@ -104,6 +123,7 @@ fn a_handled_reply_registration_is_dropped_from_a_yield_instead_of_refusing_it()
     let settled = format!("completion-reply-{}", request.sequence);
     yield_on(&f, &[&settled, "running-reg"]).expect("the settled reply is not a wait source");
     assert_eq!(f.task().wait.unwrap().registration_ids, ["running-reg"]);
+    end_the_turn_waiting(&f);
 }
 
 #[test]
@@ -120,6 +140,7 @@ fn a_cancelled_spawn_does_not_block_a_yield_on_another_source() {
     assert_eq!(f.task().obligations[0].status, "cancelled");
     yield_on(&f, &["reg", "running-reg"]).expect("the cancelled follow is not a wait source");
     assert_eq!(f.task().wait.unwrap().registration_ids, ["running-reg"]);
+    end_the_turn_waiting(&f);
 }
 
 #[test]
@@ -139,6 +160,7 @@ fn a_deleted_child_does_not_block_a_yield_on_another_source() {
     });
     assert_eq!(f.task().obligations[0].status, "failed");
     yield_on(&f, &["running-reg"]).expect("the deleted child ended; its loss is in the inbox");
+    end_the_turn_waiting(&f);
 }
 
 #[test]
