@@ -413,7 +413,34 @@ Steps:
   let bRestartAt = null, remoteSeenAt = null, reportAt = null, fallbackAnswers = 0, peerSentAt = null, goAt = null, idleSince = null, fenceProbeAt = null, fenceProbeDone = false
   const reportPath = join(work, "orchestrator-report.json")
   let attachedNow = attached
+  // An outside observer drives faults: one JSON line per op ({"op":"stop|cont|kill|start","kernel":"a|b"}), run in order.
+  const controlPath = flags.get("--control-file")
+  let controlRead = 0
+  const controlOps = async () => {
+    if (!controlPath || !existsSync(controlPath)) return
+    const lines = readFileSync(controlPath, "utf8").split("\n").filter(Boolean)
+    for (; controlRead < lines.length; controlRead++) {
+      const op = JSON.parse(lines[controlRead]), r = op.kernel === "b" ? b : a
+      if (op.op === "stop" || op.op === "cont") r.child.kill(op.op === "stop" ? "SIGSTOP" : "SIGCONT")
+      else if (op.op === "kill") {
+        await r.client.close().catch(() => {})
+        r.child.kill("SIGKILL")
+        await until(() => r.child.exitCode !== null || r.child.signalCode !== null, `${r.name} exits after kill`, 10000)
+      } else if (op.op === "start") {
+        r.child = start(binary, r.env, `${r.name}-started`)
+        r.client = new LocalIpcClient(r.url, { localAuthEnvironment: r.env, controlRequestRetryDeadlineMs: 1000 })
+        clients.push(r.client)
+        await until(async () => { try { return !!(await r.rpc({ RelayStatus: null })).RelayStatus } catch { return false } }, `${r.name} ready again`, 90000)
+        if (r === a) {
+          attachedNow = (await a.rpc({ AttachToSession: { session_id: R, client_id: "orch-owner-ctl", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
+          await a.client.subscribeToKernelEvents(R, attachedNow)
+        }
+      } else { note("control-refused", op); continue }
+      note("control", { ...op, pid: r.child.pid })
+    }
+  }
   while (Date.now() - since < budgetMs) {
+    await controlOps()
     await a.rpc({ PumpTerminalOutput: { session_id: R, attachment_id: attachedNow } }).catch(() => {})
     const s = await state(a, R).catch(() => null)
     if (s) {
