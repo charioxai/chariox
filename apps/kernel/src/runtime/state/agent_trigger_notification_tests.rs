@@ -197,23 +197,14 @@ impl Rig {
     }
 
     fn trigger_listening(&self, trigger_id: &str) -> bool {
-        let session = self
-            .runtime
-            .owned
-            .session_snapshot(&self.session_id)
-            .unwrap();
-        match session
-            .agent_triggers()
-            .iter()
-            .find(|t| t.id() == trigger_id)
-            .unwrap()
-            .source()
-        {
-            AgentTriggerSource::Notification {
-                source_available, ..
-            } => *source_available,
-            other => panic!("not a notification trigger: {other:?}"),
-        }
+        trigger_listening_in(
+            &self
+                .runtime
+                .owned
+                .session_snapshot(&self.session_id)
+                .unwrap(),
+            trigger_id,
+        )
     }
 
     async fn set_source_enabled(&self, workflow: &str, enabled: bool) {
@@ -233,6 +224,21 @@ impl Rig {
             )
             .await;
         result.unwrap();
+    }
+}
+
+fn trigger_listening_in(session: &crate::session::RuntimeSession, trigger_id: &str) -> bool {
+    match session
+        .agent_triggers()
+        .iter()
+        .find(|t| t.id() == trigger_id)
+        .unwrap()
+        .source()
+    {
+        AgentTriggerSource::Notification {
+            source_available, ..
+        } => *source_available,
+        other => panic!("not a notification trigger: {other:?}"),
     }
 }
 
@@ -3127,5 +3133,72 @@ async fn a_notification_trigger_follows_the_removal_of_its_local_exit() {
     assert!(
         !rig.trigger_listening(&trigger),
         "an exit that is gone leaves the trigger unavailable"
+    );
+}
+
+// MP-08 / MP-10: the projection a workflow command publishes, and the response it returns, carry
+// the availability the command just changed.
+#[tokio::test]
+async fn the_workflow_actor_publishes_the_trigger_availability_its_command_changed() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    let trigger = rig.trigger_on(&source).await;
+    rig.runtime
+        .sync_agent_notification_trigger_availability()
+        .unwrap();
+    assert!(rig.trigger_listening(&trigger));
+    let session = rig.runtime.owned.session_snapshot(&rig.session_id).unwrap();
+    let exit = session
+        .workflow(&workflow)
+        .unwrap()
+        .nodes()
+        .iter()
+        .find(|node| node.can_complete_workflow_run())
+        .unwrap()
+        .id()
+        .to_owned();
+
+    let actor = crate::runtime::workflow_actor::WorkflowRuntime::new(
+        rig.runtime.clone(),
+        rig.runtime.owned.session_projection.clone(),
+        rig.runtime.owned.agent_runtime_projection.clone(),
+    );
+    let request = LocalDaemonRequest::SetWorkflowNodeCanCompleteRun(
+        crate::local::SetWorkflowNodeCanCompleteRunRequest {
+            session_id: rig.session_id.clone(),
+            workflow_ref: workflow.clone(),
+            node_id: exit,
+            can_complete_workflow_run: false,
+            expected_workflow_revision: None,
+        },
+    );
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "workflow-actor",
+        None,
+        None,
+        &request,
+    );
+    let response = actor
+        .dispatch_workflow_command(command, request)
+        .await
+        .unwrap();
+
+    let LocalDaemonResponse::WorkflowNodeCanCompleteRunUpdated { session, .. } = response else {
+        panic!("wrong response")
+    };
+    assert!(
+        !trigger_listening_in(&session, &trigger),
+        "the response still shows the trigger available"
+    );
+    let published = rig
+        .runtime
+        .owned
+        .session_projection
+        .get(&rig.session_id)
+        .unwrap();
+    assert!(
+        !trigger_listening_in(&published, &trigger),
+        "the published projection still shows the trigger available"
     );
 }
