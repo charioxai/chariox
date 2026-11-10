@@ -396,6 +396,7 @@ fn leaves_control_slots(lane: Lane, active: &VecDeque<Transfer>) -> bool {
 }
 // Consecutive small sends allowed while a bulk transfer waits for its turn.
 const SMALL_STREAK: usize = 4;
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_writer<S>(
     mut writer: S,
     mut outgoing: mpsc::Receiver<Message>,
