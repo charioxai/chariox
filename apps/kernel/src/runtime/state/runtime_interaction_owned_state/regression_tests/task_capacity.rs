@@ -359,3 +359,81 @@ async fn owner_task_decision_restores_its_reply_channel_after_reload() {
     .await
     .expect("the owner can answer the restored decision without a second Resume");
 }
+
+// MP-08/MP-09/MP-10/MP-11: a kernel-owned card for a hidden agent brings it back even while queued work is retained.
+#[tokio::test]
+async fn a_blocked_task_card_returns_a_hidden_agent_with_retained_queued_work() {
+    use crate::session::{PromptQueueItem, PromptStatus};
+    let f = Fixture::with_room_tools();
+    let agent = native_goal_agent(&f);
+    let store = &f.state.owned.durable_state_store;
+    let prompt = f.id("hidden-active");
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: agent.clone(),
+            prompt: prompt.clone(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    f.state
+        .owned
+        .session_store
+        .mirror_agent_prompt_state(
+            &f.session,
+            &agent,
+            Some(PromptQueueItem::new(
+                prompt.clone(),
+                "attachment",
+                &agent,
+                "work",
+                PromptStatus::Running,
+            )),
+            std::collections::VecDeque::from([PromptQueueItem::new(
+                f.id("hidden-queued"),
+                "attachment",
+                &agent,
+                "more work",
+                PromptStatus::Queued,
+            )]),
+        )
+        .unwrap();
+    f.state
+        .owned
+        .agent_store
+        .set_agent_hidden(&agent, true)
+        .unwrap();
+    let Outcome::Task(blocked) = store
+        .agent_lifecycle(Operation::Block {
+            task: prompt.clone(),
+            prompt,
+            reason: "Owner decision required".into(),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    f.state
+        .ensure_task_owner_interaction(blocked)
+        .await
+        .unwrap();
+    assert!(
+        !f.state
+            .owned
+            .agent_store
+            .get_agent(&agent)
+            .unwrap()
+            .hidden(),
+        "the Resume/Cancel card concerns this agent, so it must be visible again"
+    );
+    let session = f.state.owned.session_store.get_session(&f.session).unwrap();
+    assert_eq!(
+        session
+            .queued_prompts_for_agent(&agent)
+            .map(|held| held.len()),
+        Some(1),
+        "the queued work is retained"
+    );
+}
