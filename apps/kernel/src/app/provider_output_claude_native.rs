@@ -40,7 +40,7 @@ use attachments::{
     extract_claude_native_prompt_attachments, format_claude_attachment_context,
     format_claude_native_attachment_prompt_suffix, join_claude_context,
 };
-use cancel_fence::{claude_cancelled_turn_fence_ms, lift_claude_cancelled_turn_fence};
+use cancel_fence::{claude_stopped_turn, release_claude_cancelled_turn, StoppedTurn};
 use permission::{
     append_claude_headless_debug, claude_headless_bypass_confirmation_visible,
     claude_headless_bypass_selection_pending, claude_headless_composer_visible,
@@ -1148,33 +1148,27 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .ok()
                     .flatten()
             });
-        // The tail of a stopped turn is read and dropped, until a prompt
-        // started after the Stop takes over.
-        let stopped_turn_tail = match claude_cancelled_turn_fence_ms(context_file) {
-            Some(cancelled_at_ms)
-                if active_prompt
-                    .as_ref()
-                    .is_some_and(|prompt| prompt.created_at_ms() > cancelled_at_ms) =>
-            {
-                lift_claude_cancelled_turn_fence(context_file);
-                false
+        // The tail of a stopped turn is read and dropped, until another
+        // prompt is handed to Claude.
+        let turn_cutoff_ms = active_prompt
+            .as_ref()
+            .map(|prompt| prompt.created_at_ms())
+            .or_else(|| {
+                self.app
+                    .providers
+                    .get_run(provider_run_id)
+                    .ok()
+                    .map(|run| run.started_at_ms())
+            });
+        let minimum_timestamp_ms = match claude_stopped_turn(
+            context_file,
+            active_prompt.as_ref().map(|prompt| prompt.id()),
+        ) {
+            StoppedTurn::None => turn_cutoff_ms,
+            StoppedTurn::Dropping => Some(u64::MAX),
+            StoppedTurn::ReleasedAt(released_at_ms) => {
+                Some(turn_cutoff_ms.unwrap_or_default().max(released_at_ms))
             }
-            Some(_) => true,
-            None => false,
-        };
-        let minimum_timestamp_ms = if stopped_turn_tail {
-            Some(u64::MAX)
-        } else {
-            active_prompt
-                .as_ref()
-                .map(|prompt| prompt.created_at_ms())
-                .or_else(|| {
-                    self.app
-                        .providers
-                        .get_run(provider_run_id)
-                        .ok()
-                        .map(|run| run.started_at_ms())
-                })
         };
         let drain = drain_claude_transcript_raw_since(
             &path,
@@ -2010,6 +2004,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }) {
             return Ok(());
         }
+        release_claude_cancelled_turn(context_file, prompt.id);
         fs::write(
             format!("{context_file}.approval-origin"),
             prompt.origin_prompt_id,

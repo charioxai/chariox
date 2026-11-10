@@ -1461,7 +1461,7 @@ impl KernelRuntimeState {
             }
             let input = dispatch.pty_input;
             if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
-                crate::app::fence_cancelled_claude_turn(&provider_run);
+                crate::app::fence_cancelled_claude_turn(&provider_run, &dispatch.prompt_id);
             }
             owned.terminal_stream.record_input(
                 &dispatch.session_id,
