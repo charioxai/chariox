@@ -1,0 +1,17 @@
+{
+ "provider": "claude",
+ "kind": "WebFetch",
+ "source": "live 2026-11-10: record from the kernel history of a real claude turn on the lane kernel",
+ "record": {
+  "id": "toolu_01YPgJ9z2xF8Y1zeLhvnBbhT",
+  "input": {
+   "prompt": "Summarize what this page says.",
+   "url": "https://example.com"
+  },
+  "output": "The page is a placeholder for the Example Domain. It says the domain can be used in documentation examples without asking for permission. It also states that the domain is not a service, so it shouldn't be used for testing or monitoring.",
+  "started_at_ms": 1794313821474,
+  "status": "completed",
+  "tool": "WebFetch"
+ },
+ "shows": "https://example\\.com"
+}

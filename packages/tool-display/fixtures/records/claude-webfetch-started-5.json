@@ -1,0 +1,16 @@
+{
+ "provider": "claude",
+ "kind": "WebFetch",
+ "source": "live 2026-11-10: record from the kernel history of a real claude turn on the lane kernel",
+ "record": {
+  "id": "toolu_01YPgJ9z2xF8Y1zeLhvnBbhT",
+  "input": {
+   "prompt": "Summarize what this page says.",
+   "url": "https://example.com"
+  },
+  "started_at_ms": 1794313821474,
+  "status": "started",
+  "tool": "WebFetch"
+ },
+ "shows": "https://example\\.com"
+}

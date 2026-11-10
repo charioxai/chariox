@@ -73,7 +73,7 @@ export function toolDisplayTitle(update: ToolTranscriptUpdate, patchFiles: reado
       return `${verb("Listed", "Listing")} ${toolTitleShort(path) ?? "files"}`
     case "websearch":
     case "webquery":
-      return pattern ? `${verb("Searched", "Searching")} the web for ${toolTitleShort(pattern)}` : verb("Searched the web", "Searching the web")
+      return webSearchTitle(input, pattern, verb)
     case "webfetch":
     case "fetch":
     case "fetchurl":
@@ -287,6 +287,15 @@ function toolTitlePatchObject(files: readonly ApplyPatchFile[], active = false) 
   // A call still running has no settled count to give.
   const counts = !active && (added || removed) ? ` (+${added} −${removed})` : ""
   return files.length === 1 ? `${toolTitleShort(files[0]!.filePath)}${counts}` : `${files.length} files${counts}`
+}
+
+// A web search is a query, or a page it opened, or a look inside that page for some text.
+function webSearchTitle(input: Record<string, unknown> | null, pattern: string | null, verb: (done: string, running: string) => string) {
+  const url = toolTitleString(input, "url")
+  if (url) {
+    return input?.pattern && typeof input.pattern === "string" ? `${verb("Looked", "Looking")} for ${toolTitleShort(input.pattern)} in ${toolTitleShort(url)}` : `${verb("Opened", "Opening")} ${toolTitleShort(url)}`
+  }
+  return pattern ? `${verb("Searched", "Searching")} the web for ${toolTitleShort(pattern)}` : verb("Searched the web", "Searching the web")
 }
 
 function toolTitleCalledName(update: ToolTranscriptUpdate) {

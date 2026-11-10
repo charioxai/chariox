@@ -1,0 +1,16 @@
+{
+ "provider": "claude",
+ "kind": "ToolSearch",
+ "source": "live 2026-11-10: record from the kernel history of a real claude turn on the lane kernel",
+ "record": {
+  "id": "toolu_01ELEqwBptACoTTEX9iiEGdz",
+  "input": {
+   "max_results": 5,
+   "query": "select:TodoWrite,Glob,Grep,LS,Task"
+  },
+  "started_at_ms": 1794314914249,
+  "status": "started",
+  "tool": "ToolSearch"
+ },
+ "shows": "select:TodoWrite,Glob,Gr"
+}

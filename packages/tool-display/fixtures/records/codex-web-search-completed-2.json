@@ -1,0 +1,15 @@
+{
+ "provider": "codex",
+ "kind": "web_search",
+ "source": "live 2026-11-10: record from the kernel history of a real codex turn on the lane kernel",
+ "record": {
+  "id": "exec-3c606bea-5059-423e-8f99-a4698caa7e59",
+  "tool": "web_search",
+  "status": "completed",
+  "input": {
+   "query": "Granada Spain official tourism Alhambra UNESCO facts"
+  },
+  "started_at_ms": 1794313671613
+ },
+ "shows": "Granada\\ Spain\\ official\\ t"
+}

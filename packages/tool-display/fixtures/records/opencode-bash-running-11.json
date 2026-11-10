@@ -1,0 +1,14 @@
+{
+ "provider": "opencode",
+ "kind": "bash",
+ "source": "live 2026-11-10: record from the kernel history of a real opencode turn on the lane kernel",
+ "record": {
+  "id": "prt_1c57c4374001WeqjnPsWAB6sYW",
+  "tool": "bash",
+  "status": "running",
+  "input": {
+   "command": "echo hello-allrows && ls"
+  }
+ },
+ "shows": "echo\\ hello\\-allrows\\ \\&\\&\\ ls"
+}
