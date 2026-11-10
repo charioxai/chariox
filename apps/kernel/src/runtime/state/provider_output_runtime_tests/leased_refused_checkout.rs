@@ -1,6 +1,5 @@
 // MP-08 / MP-11: a leased spawn that is refused after the worker made its checkout removes the
 // checkout and the branch it created, like a local spawn does.
-use super::*;
 use crate::project_environment::{
     ProjectEnvironmentRecord, ProjectEnvironmentStore, PROJECT_ENVIRONMENT_SCHEMA,
 };
