@@ -1,7 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: exact task cancellation via normal runtime paths.
 use super::*;
 use crate::durable_state::agent_lifecycle::{
-    AgentTaskExecution, CancelInitiator, ExecutionState, Operation, Outcome,
+    AgentTaskExecution, ExecutionState, Operation, Outcome,
 };
 impl KernelRuntimeOwnedState {
     /// A01-S01: removed queued prompts never reached a provider. A wake or
@@ -73,12 +73,9 @@ impl KernelRuntimeOwnedState {
                 task.prompt_id == prompt || task.pending_prompt_id.as_deref() == Some(prompt)
             });
         if let Some(task) = task {
+            let initiator = task.recorded_cancel_initiator();
             self.durable_state_store
-                .agent_lifecycle(Operation::CancelTask {
-                    task: task.task_id,
-                    owner,
-                    revision: task.revision,
-                })?;
+                .agent_lifecycle(initiator.cancel_task(task.task_id, owner, task.revision))?;
         }
         Ok(())
     }
@@ -194,18 +191,10 @@ impl KernelRuntimeState {
         }
         let (task_id, owner, revision) =
             (task.task_id, session.owner_user_id().into(), task.revision);
-        let cancel = match self.owned.cancel_initiator(&request.attachment_id) {
-            CancelInitiator::Owner => Operation::CancelTask {
-                task: task_id,
-                owner,
-                revision,
-            },
-            CancelInitiator::Agent => Operation::CancelTaskByAgent {
-                task: task_id,
-                owner,
-                revision,
-            },
-        };
+        let cancel = self
+            .owned
+            .cancel_initiator(&request.attachment_id)
+            .cancel_task(task_id, owner, revision);
         let Outcome::Task(cancelled) = self.owned.durable_state_store.agent_lifecycle(cancel)?
         else {
             unreachable!()

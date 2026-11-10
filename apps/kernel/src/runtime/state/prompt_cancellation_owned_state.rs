@@ -668,7 +668,7 @@ impl KernelRuntimeState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.into(),
             })?;
-        use crate::durable_state::agent_lifecycle::{CancelInitiator, Operation, Outcome};
+        use crate::durable_state::agent_lifecycle::Outcome;
         let mut provider_run_id = prompt
             .durable_delivery_provider_run_id()
             .map(str::to_string);
@@ -685,24 +685,14 @@ impl KernelRuntimeState {
                     .private_work_results
                     .discard(session_id, target_agent_id, prompt_id, run);
             }
-            let cancel = |task: String, revision: u64| {
-                let owner = session.owner_user_id().into();
-                match initiator {
-                    CancelInitiator::Owner => Operation::CancelTask {
-                        task,
-                        owner,
-                        revision,
-                    },
-                    CancelInitiator::Agent => Operation::CancelTaskByAgent {
-                        task,
-                        owner,
-                        revision,
-                    },
-                }
-            };
-            let Outcome::Task(task) = owned
-                .durable_state_store
-                .agent_lifecycle(cancel(task.task_id, task.revision))?
+            let Outcome::Task(task) =
+                owned
+                    .durable_state_store
+                    .agent_lifecycle(initiator.cancel_task(
+                        task.task_id,
+                        session.owner_user_id().into(),
+                        task.revision,
+                    ))?
             else {
                 unreachable!()
             };
