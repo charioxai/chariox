@@ -220,3 +220,45 @@ fn a_captured_image_above_the_reply_ceiling_is_sent() {
         outcome.error
     );
 }
+
+// The kernel browser's own screenshot command has no offset or size control and its host
+// returns up to 4 MiB of image data, so a valid answer between 1 and 24 MiB must not be refused.
+#[test]
+fn a_kernel_browser_screenshot_above_the_reply_ceiling_is_sent() {
+    let request = LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+        command: crate::local::KernelBrowserCommand::Screenshot {
+            tab_id: "tab-1".into(),
+            generation: 2,
+        },
+    });
+    let image = vec![0x89u8; 3 * 1024 * 1024];
+    let answer = serde_json::to_vec(&serde_json::json!({"KernelBrowser":{"result":{
+        "generation": 2,
+        "tab_id": "tab-1",
+        "document_id": "document",
+        "mime_type": "image/png",
+        "data_base64": base64::engine::general_purpose::STANDARD.encode(image),
+        "width": 2560,
+        "height": 1600,
+    }}}))
+    .unwrap();
+    assert!(answer.len() > 1024 * 1024);
+    let daemon = crate::config::DaemonConfig::for_tests();
+    let client = crate::config::DaemonConfig::for_tests();
+    let outcome = seal_reply(
+        answer,
+        None,
+        SealContext {
+            request_kind: relay_request_kind(&request),
+            command_id: Some("screenshot-1"),
+            received_at_ms: crate::session::unix_epoch_ms(),
+            daemon_private_key: &daemon.relay_private_key,
+            client_public_key: &client.relay_public_key,
+        },
+    );
+    assert!(
+        outcome.error.is_none() && outcome.encrypted_response.is_some(),
+        "the screenshot was refused: {:?}",
+        outcome.error
+    );
+}

@@ -3,7 +3,9 @@
 use chariox_relay::protocol::RelayError;
 
 use crate::error::DaemonError;
-use crate::local::{LocalDaemonRequest, RoomTerminalOperation};
+use crate::local::{
+    KernelBrowserCommand, KernelBrowserRequest, LocalDaemonRequest, RoomTerminalOperation,
+};
 
 pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
     match error {
@@ -198,6 +200,9 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         }
         LocalDaemonRequest::RoomTerminal(_) => "terminal.room",
         LocalDaemonRequest::CaptureVisibleRegion(_) => "screenshot.capture",
+        LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
+            command: KernelBrowserCommand::Screenshot { .. },
+        }) => "screenshot.capture",
         LocalDaemonRequest::SubmitRoomEnvironmentAction(_) => "environment.action.submit",
         LocalDaemonRequest::SubmitRoomEnvironmentBrowserAction(_) => {
             "environment.browser_action.submit"
