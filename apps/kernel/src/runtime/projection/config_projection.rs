@@ -21,6 +21,13 @@ impl DaemonConfigProjectionStore {
             .clone()
     }
 
+    pub(crate) fn set_runtime_mcp_port(&self, port: u16) {
+        self.config
+            .lock()
+            .expect("daemon config projection lock should not be poisoned")
+            .runtime_mcp_port = port;
+    }
+
     pub(crate) fn local_owner_user_id(&self) -> String {
         self.config
             .lock()

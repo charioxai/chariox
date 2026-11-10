@@ -14,6 +14,8 @@ struct RunningKernel {
     session_id: String,
     server: JoinHandle<Result<(), chariox_kernel::DaemonError>>,
     shutdown: oneshot::Sender<()>,
+    // The provider run's working directory: removed when this drops.
+    _workspace: ExecutionWorkspace,
 }
 
 /// A kernel with its own websocket port and the runtime MCP port left at the
@@ -24,7 +26,7 @@ fn start_kernel(default_runtime_mcp_port: u16) -> RunningKernel {
     let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
     config.kernel_websocket_port = kernel_websocket_port;
     config.runtime_mcp_port = default_runtime_mcp_port;
-    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let session_id = app
         .sessions_mut()
         .create_session(workspace.session_request())
@@ -45,6 +47,7 @@ fn start_kernel(default_runtime_mcp_port: u16) -> RunningKernel {
         session_id,
         server,
         shutdown,
+        _workspace: workspace,
     }
 }
 

@@ -570,6 +570,10 @@ impl DaemonApp {
         &self.config
     }
 
+    pub(crate) fn set_runtime_mcp_port(&mut self, port: u16) {
+        self.config.runtime_mcp_port = port;
+    }
+
     pub(crate) fn slices(&self) -> crate::slice::SliceStore {
         self.slices.clone()
     }

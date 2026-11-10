@@ -74,9 +74,17 @@ impl CommandRouter {
             .runtime_tool_catalog_changed_for_auth_token(token);
     }
 
-    pub(crate) fn runtime_mcp_bind_address(&self) -> (String, u16) {
+    pub(crate) fn runtime_mcp_bind_address(&self) -> (String, crate::config::ListenPort) {
         let config = self.config_projection.snapshot();
-        (config.runtime_mcp_host, config.runtime_mcp_port)
+        let port = config.runtime_mcp_listen_port();
+        (config.runtime_mcp_host, port)
+    }
+
+    /// Every URL a provider is given reads the port the endpoint is bound to,
+    /// not the one it preferred.
+    pub(crate) async fn publish_runtime_mcp_port(&self, port: u16) {
+        self.config_projection.set_runtime_mcp_port(port);
+        self.app.lock().await.set_runtime_mcp_port(port);
     }
 
     pub(crate) async fn dispatch_authenticated_mcp_proxy_call(
