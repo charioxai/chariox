@@ -353,6 +353,25 @@ async fn approval_is_a_prompt_of_every_owner_terminal_that_never_expires() {
         crate::local::AppInstallPromptOperation::Install
     );
     assert!(install.review["appId"].is_string() && install.review["capabilities"].is_object());
+    // The kernel-operation default of five minutes would decline an approval nobody had seen yet: this one has none.
+    let challenge = {
+        let state = f.control().0.state.lock().unwrap();
+        let Step::Waiting { challenge, .. } = &state.entries.values().next().unwrap().step else {
+            panic!("waiting")
+        };
+        challenge.clone()
+    };
+    let question = super::pump::approval_interaction(&challenge);
+    assert_eq!(question.timeout_sec(), None);
+    assert_eq!(question.default_on_timeout(), None);
+    // The registered question has none either, which the kernel accepts only for an App install.
+    assert!(
+        f.state
+            .passkey_prompts_for("alice")
+            .iter()
+            .all(|prompt| prompt.expires_at_ms == crate::local::NEVER_EXPIRES_MS),
+        "the registered approval is the one without a timeout"
+    );
     // A decline through the prompt's own ids ends the operation like any other answer.
     f.state
         .resolve_terminal_runtime_interaction(

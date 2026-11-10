@@ -7079,7 +7079,7 @@ prompt stays until it is answered or cancelled, and a kernel restart asks a new 
 account of the verified package (`appId`, `version`, `publisherId`, `publisherName`, `keyId`,
 `keyFingerprint`, `packageDigest`, `capabilitiesDigest`, `capabilities`, `authoritySet`, `actions`). A client
 reads the outcome after the owner approves with `GetAppInstallOperation { request_id }`: phase `failed`
-carries the `failure` code (for example `app_wasm_runtime`). The decision itself keeps a 30 second limit that
+carries the `failure` code (for example `app_wasm_runtime`). The approval's interaction has no timeout either (`timeout_sec` absent; the kernel accepts that for an App install only). The decision itself keeps a 30 second limit that
 starts at the owner's answer (it used to be the first five minutes from the prompt, which ended an approval
 nobody had seen yet with `app_install_approval_expired`). The kernel-operation interaction is unchanged for
 clients that show it in the Room (`install:<installation>`, its message still lists the review).

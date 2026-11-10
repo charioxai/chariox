@@ -17,6 +17,43 @@ struct Prompt {
     challenge: Arc<InstallApprovalChallenge>,
 }
 
+/// The question the owner is asked: a kernel-operation decision with the App's review attached, and no timeout of its
+/// own (the default kernel-operation timeout would end an approval nobody has seen yet).
+pub(super) fn approval_interaction(challenge: &InstallApprovalChallenge) -> RuntimeInteraction {
+    let (title, question, action, operation) = if challenge.is_reinstall() {
+        ("Reinstall App", "Reinstall this App into its kept data with the declared capabilities? Its earlier automations, inbox routes and connection grants are not restored.", "Reinstall", AppInstallPromptOperation::Reinstall)
+    } else if challenge.is_update() {
+        ("Update App", "Replace the installed App with this release and its declared capabilities? Its data is kept.", "Update", AppInstallPromptOperation::Update)
+    } else {
+        (
+            "Install App",
+            "Install this App with the declared capabilities?",
+            "Install",
+            AppInstallPromptOperation::Install,
+        )
+    };
+    let message = format!(
+        "{question}\n\n{}",
+        serde_json::to_string_pretty(challenge.review()).unwrap_or_default()
+    );
+    RuntimeInteraction::for_kernel_operation(
+        challenge.interaction_id(),
+        format!("install:{}", challenge.installation_id()),
+        title,
+        message,
+        vec![
+            RuntimeInteractionChoice::new("approve", action, "approve", None),
+            RuntimeInteractionChoice::new("decline", "Cancel", "decline", None),
+        ],
+    )
+    .with_app_install(AppInstallPresentation {
+        request_id: challenge.request_id().to_owned(),
+        operation,
+        review: challenge.review().clone(),
+    })
+    .without_timeout()
+}
+
 fn spawn(
     state: &mut State,
     shared: Arc<Shared>,
@@ -274,43 +311,7 @@ impl AppInstallControl {
                 }
                 continue;
             }
-            let (title, question, action) = if prompt.challenge.is_reinstall() {
-                ("Reinstall App", "Reinstall this App into its kept data with the declared capabilities? Its earlier automations, inbox routes and connection grants are not restored.", "Reinstall")
-            } else if prompt.challenge.is_update() {
-                ("Update App", "Replace the installed App with this release and its declared capabilities? Its data is kept.", "Update")
-            } else {
-                (
-                    "Install App",
-                    "Install this App with the declared capabilities?",
-                    "Install",
-                )
-            };
-            let message = format!(
-                "{question}\n\n{}",
-                serde_json::to_string_pretty(prompt.challenge.review()).unwrap_or_default()
-            );
-            let operation = if prompt.challenge.is_reinstall() {
-                AppInstallPromptOperation::Reinstall
-            } else if prompt.challenge.is_update() {
-                AppInstallPromptOperation::Update
-            } else {
-                AppInstallPromptOperation::Install
-            };
-            let interaction = RuntimeInteraction::for_kernel_operation(
-                prompt.challenge.interaction_id(),
-                format!("install:{}", prompt.challenge.installation_id()),
-                title,
-                message,
-                vec![
-                    RuntimeInteractionChoice::new("approve", action, "approve", None),
-                    RuntimeInteractionChoice::new("decline", "Cancel", "decline", None),
-                ],
-            )
-            .with_app_install(AppInstallPresentation {
-                request_id: prompt.challenge.request_id().to_owned(),
-                operation,
-                review: prompt.challenge.review().clone(),
-            });
+            let interaction = approval_interaction(&prompt.challenge);
             let result = runtime
                 .create_kernel_operation_interaction(&prompt.session, &prompt.key.0, interaction)
                 .await;
