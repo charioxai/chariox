@@ -494,4 +494,5 @@ pub use workspace::*;
 /// Temporary 1002 (landing 7): workflow entry gates (`WorkflowGate`, gated entry acceptance, typed event
 /// data), `exec_place` with `placeable_on` on held launches, and a sub-agent tree node's mode, permission
 /// level and effort.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1002;
+/// Temporary 1003 (landing 8): a notification agent trigger's summary carries `source_available`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1003;

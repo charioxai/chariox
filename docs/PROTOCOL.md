@@ -6532,7 +6532,7 @@ release's outgoing events (`name`, `label`). The envelope is `{source_id, displa
 output, ancestry, deadline_ms}`; there is no status, subject or fields. An agent subscribes itself with
 `CreateAgentTrigger` and source `{kind:"notification", source:{workflow:{source_id}}}`: `busy_policy` is
 now optional on the request, a notification trigger refuses a value, and the trigger summary is
-`{kind:"notification", source, subscription_id, display_name}`. Prompts of this kind carry
+`{kind:"notification", source, subscription_id, display_name}` (local 1003 adds `source_available`). Prompts of this kind carry
 origin `notification`. Peer 433 renames `SubscribeWorkflowNotifications.source_workflow_ref` to `source_id`,
 carries the exit fields in `ListWorkflowNotificationSources` and admits an agent `target_ref`. The
 `UpdateQueuedWorkflowPrompt.retry_delivery` field and the inject delivery path are gone. Clients carry no
@@ -7005,6 +7005,17 @@ over the owner's local API and the existing kernel gateway. Relay peer 441 (temp
 pair's peer number for chunked kernel uploads. Managed upgrades admit 1000 and 1001. Snapshots: `protocol_shapes/workflow-gate-1002.json`,
 `fixtures/room-exec-protocol.json`, `fixtures/agent-tree-finished.json`. Focused check:
 `cargo test -p chariox-kernel --lib -- workflow_gate exec_place placeable_on agent_tree protocol_shapes`.
+
+### Source availability of a notification trigger — local 1003
+
+Landing 8 carries local daemon protocol 1003 (temporary number). The summary of an agent's notification
+trigger is `{kind:"notification", source, subscription_id, display_name, source_available}`.
+`source_available` is false while the source's kernel is not reachable or the source is gone; the kernel
+recomputes it from the notification inventory each time the inventory refreshes, and a trigger that is off
+keeps it too. Clients show an enabled trigger with `source_available: false` as "offline", the word the
+workflow source picker and entry point list already use. The relay peer number is unchanged. Managed
+upgrades admit 1001 and 1002. Snapshot: `agent_notification_trigger_shape_carries_source_availability`.
+Focused check: `cargo test -p chariox-kernel --lib -- notification protocol_shapes`.
 
 ### Peers across kernels of one owner — relay peer 440
 
