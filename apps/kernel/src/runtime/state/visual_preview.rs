@@ -9,8 +9,6 @@ const HOSTS: &str =
     "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com https://esm.sh";
 const HEIGHT_MARK: &str = "chariox-content-height=";
 const WINDOW_HEIGHT: u32 = 1600;
-/// The headless window keeps about 150 px of browser chrome, so a page taller than this is cut off in the picture.
-const VISIBLE_HEIGHT: u32 = WINDOW_HEIGHT - 150;
 const CONSOLE_LINES: usize = 40;
 const CONSOLE_LINE_CHARS: usize = 300;
 
@@ -48,7 +46,7 @@ fn framed(page: &str) -> String {
     );
     // The pane's own measure: the page's content, not the frame it sits in.
     let report = format!(
-        r#"<script>addEventListener("load",function(){{setTimeout(function(){{var r=document.documentElement;console.log("{HEIGHT_MARK}"+Math.ceil(r.scrollHeight>r.clientHeight?r.scrollHeight:r.getBoundingClientRect().height))}},400)}})</script>"#
+        r#"<script>addEventListener("load",function(){{setTimeout(function(){{var r=document.documentElement;console.log("{HEIGHT_MARK}"+Math.ceil(r.scrollHeight>r.clientHeight?r.scrollHeight:r.getBoundingClientRect().height)+"/"+innerHeight)}},400)}})</script>"#
     );
     let lower = page.to_ascii_lowercase();
     let after_tag = |tag: &str| {
@@ -88,21 +86,27 @@ pub(super) async fn preview(page: &str, width: u32) -> Result<serde_json::Value,
     let rendered = render(&browser, &work, page, width).await;
     let _ = std::fs::remove_dir_all(&work);
     let (png, log) = rendered?;
-    let mut height = None;
+    let mut measured = None;
     let mut console = Vec::new();
     for message in log.lines().filter_map(console_message) {
-        match message.strip_prefix(HEIGHT_MARK).map(str::parse::<u32>) {
-            Some(Ok(value)) => height = Some(value),
-            _ if console.len() < CONSOLE_LINES => console.push(message),
-            _ => {}
+        match message
+            .strip_prefix(HEIGHT_MARK)
+            .and_then(|sizes| sizes.split_once('/'))
+        {
+            Some((height, viewport)) => {
+                measured = height.parse::<u32>().ok().zip(viewport.parse::<u32>().ok())
+            }
+            None if console.len() < CONSOLE_LINES => console.push(message),
+            None => {}
         }
     }
     Ok(serde_json::json!({
         "mime_type": "image/png",
         "image_base64": base64::engine::general_purpose::STANDARD.encode(&png),
         "width": width,
-        "content_height": height,
-        "clipped": height.is_some_and(|height| height > VISIBLE_HEIGHT),
+        "content_height": measured.map(|(height, _)| height),
+        // A page taller than the window is cut off in the picture.
+        "clipped": measured.is_some_and(|(height, viewport)| height > viewport),
         "console": console,
     }))
 }

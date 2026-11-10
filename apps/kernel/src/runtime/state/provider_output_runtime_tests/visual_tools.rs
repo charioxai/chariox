@@ -175,4 +175,15 @@ async fn preview_returns_a_picture_the_height_and_the_console() {
     assert_eq!(payload["content_height"], 700);
     assert_eq!(payload["clipped"], false);
     assert_eq!(payload["console"], serde_json::json!(["chart ready"]));
+    // A page taller than the window is cut off in the picture, and says so.
+    let tall = r#"<!doctype html><html><body style="margin:0"><div style="height:4000px"></div></body></html>"#;
+    let payload = call(
+        &runtime,
+        "chariox.visual.preview",
+        serde_json::json!({"html": tall}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(payload["content_height"], 4000);
+    assert_eq!(payload["clipped"], true);
 }
