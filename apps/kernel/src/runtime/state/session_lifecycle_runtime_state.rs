@@ -643,19 +643,15 @@ impl KernelRuntimeState {
         }
     }
 
-    /// The checkout made for a spawn that was then refused leaves nothing behind.
+    /// The checkout made for a spawn that failed before any agent was registered leaves nothing
+    /// behind. A failure after the agent was registered (its event or dispatch receipt) keeps it.
     pub(super) fn discard_unused_checkouts(
         &self,
         checkouts: impl IntoIterator<Item = crate::git_worktree_placement::PreparedWorktree>,
     ) {
+        let agents = self.owned.agent_store.list_agents();
         for checkout in checkouts {
-            if let Err(error) = checkout.discard("agent.spawn") {
-                crate::logging::warn_with_fields(
-                    "agent.spawn.checkout_not_removed",
-                    "a refused spawn left its checkout behind",
-                    serde_json::json!({"path": checkout.path, "error": error.to_string()}),
-                );
-            }
+            checkout.discard_unless_used(&agents, "agent.spawn");
         }
     }
 

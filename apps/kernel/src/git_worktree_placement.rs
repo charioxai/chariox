@@ -497,8 +497,31 @@ pub(crate) struct PreparedWorktree {
 }
 
 impl PreparedWorktree {
-    /// Removes the checkout and the branch it created when the agent it was made for was refused.
-    pub(crate) fn discard(&self, operation: &'static str) -> Result<(), DaemonError> {
+    /// Removes the checkout of a spawn that failed, unless an agent registered before the failure
+    /// already works in it: that agent exists and keeps its folder. Removal that fails is logged,
+    /// since the spawn's own error is the one to report.
+    pub(crate) fn discard_unless_used(
+        &self,
+        agents: &[crate::agent::AgentInstance],
+        operation: &'static str,
+    ) {
+        if agents
+            .iter()
+            .any(|agent| agent.worktree_id() == Some(self.path.as_str()))
+        {
+            return;
+        }
+        if let Err(error) = self.discard(operation) {
+            crate::logging::warn_with_fields(
+                "agent.spawn.checkout_not_removed",
+                "a refused spawn left its checkout behind",
+                serde_json::json!({"path": self.path, "error": error.to_string()}),
+            );
+        }
+    }
+
+    /// Removes the checkout and the branch it created.
+    fn discard(&self, operation: &'static str) -> Result<(), DaemonError> {
         remove_git_worktree(&self.repo_root, Path::new(&self.path), operation)?;
         if let Some(branch) = &self.created_branch {
             run_git_for(
@@ -859,6 +882,68 @@ mod tests {
         .expect("a checkout hook slower than the query cap must complete");
         assert!(Path::new(&selected).join("README.md").exists());
         let _ = std::fs::remove_dir_all(&target);
+        let _ = std::fs::remove_dir_all(&repository);
+    }
+
+    #[test]
+    fn a_failed_spawn_removes_its_checkout_unless_an_agent_is_registered_in_it() {
+        let repository = plain_temp_directory("discard-unless-used");
+        run_test_git(&repository, &["init", "-b", "main"]);
+        run_test_git(
+            &repository,
+            &[
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "seed",
+            ],
+        );
+        let prepare = |name: &str| {
+            let placement = GitWorktreePlacement {
+                target_directory: Some(repository.join(name).display().to_string()),
+                branch: Some(name.to_string()),
+                from_ref: Some("HEAD".to_string()),
+            };
+            super::prepare_git_worktree_checked(
+                &placement,
+                &repository,
+                None,
+                "prepare test checkout",
+                |_| Ok(()),
+            )
+            .expect("checkout should be made")
+        };
+        let kept = prepare("kept");
+        let agent = crate::agent::AgentInstance::new(
+            "agent-1",
+            "ref-1",
+            "room",
+            None,
+            "dev-stub",
+            None,
+            None,
+            Some(kept.path.clone()),
+            crate::agent::GridPosition::new(0, 0, 1, 1),
+        );
+        kept.discard_unless_used(&[agent], "discard test checkout");
+        assert!(
+            Path::new(&kept.path).exists(),
+            "a registered agent lost its folder"
+        );
+
+        let unused = prepare("unused");
+        unused.discard_unless_used(&[], "discard test checkout");
+        assert!(!Path::new(&unused.path).exists());
+        let branches = crate::process_spawn::command("git")
+            .args(["branch", "--list", "unused"])
+            .current_dir(&repository)
+            .output()
+            .unwrap();
+        assert!(branches.stdout.is_empty(), "the branch it created is gone");
         let _ = std::fs::remove_dir_all(&repository);
     }
 

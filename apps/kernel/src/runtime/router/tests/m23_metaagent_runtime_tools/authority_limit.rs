@@ -798,3 +798,121 @@ async fn refused_spawn_is_atomic() {
         "a refused spawn deleted a branch it did not create"
     );
 }
+
+fn fail_events_of_kind(world: &World, kind: &str, message: &str) {
+    let path = world
+        .app
+        .try_lock()
+        .expect("app is idle")
+        .durable_state_store()
+        .path()
+        .to_owned();
+    rusqlite::Connection::open(path)
+        .expect("failure injection connection should open")
+        .execute_batch(&format!(
+            "CREATE TRIGGER fail_{kind_name} BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = '{kind}'
+             BEGIN SELECT RAISE(FAIL, '{message}'); END;",
+            kind_name = kind.replace('.', "_"),
+        ))
+        .expect("append failure should install");
+}
+
+fn checkout_and_branch_exist(
+    workspace: &std::path::Path,
+    target: &std::path::Path,
+    branch: &str,
+) -> bool {
+    target.exists()
+        && !git(workspace, &["branch", "--list", branch])
+            .trim()
+            .is_empty()
+}
+
+#[test]
+fn a_single_agent_registered_before_the_failure_keeps_its_checkout() {
+    run_large_stack_async_test("authority-spawn-retained", single_agent_keeps_checkout);
+}
+
+async fn single_agent_keeps_checkout() {
+    let mut world = world("authority-spawn-retained").await;
+    let workspace = world._env.root.join("workspace");
+    git(&workspace, &["init", "-q"]);
+    git(&workspace, &["commit", "-q", "--allow-empty", "-m", "x"]);
+    let s = world.ids["s"].clone();
+    let token = launch(&world.app, &world.room, &s).await;
+    world.tokens.insert("s", token);
+    // The agent is registered before its creation event is written, so the spawn fails with the
+    // agent in place.
+    fail_events_of_kind(&world, "agent.created", "injected agent.created failure");
+    let target = workspace.join("wt-single");
+    let failed = room_command(
+        &world,
+        "s",
+        &format!(
+            "agent spawn single --provider dev-stub --worktree {} --branch single-branch",
+            target.display()
+        ),
+    )
+    .await;
+    assert!(
+        !failed.ok && error_text(&failed).contains("injected agent.created failure"),
+        "{failed:?}"
+    );
+    assert!(
+        alias_exists(&world, "single").await,
+        "the agent stays registered"
+    );
+    assert!(
+        checkout_and_branch_exist(&workspace, &target, "single-branch"),
+        "a registered agent lost its checkout"
+    );
+}
+
+#[test]
+fn a_batch_registered_before_the_failure_keeps_its_checkouts() {
+    run_large_stack_async_test("authority-batch-retained", batch_keeps_checkouts);
+}
+
+async fn batch_keeps_checkouts() {
+    let world = world("authority-batch-retained").await;
+    let workspace = world._env.root.join("workspace");
+    git(&workspace, &["init", "-q"]);
+    git(&workspace, &["commit", "-q", "--allow-empty", "-m", "x"]);
+    // Every agent is registered when the batch event fails.
+    fail_events_of_kind(&world, "agents.created", "injected agents.created failure");
+    let first = workspace.join("wt-batch-1");
+    let second = workspace.join("wt-batch-2");
+    let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
+        "SpawnAgents": {"session_id": world.room, "agents": [
+            {"provider": "dev-stub", "alias": "batch-1", "worktree_placement":
+                {"target_directory": first, "branch": "batch-1", "from_ref": null}},
+            {"provider": "dev-stub", "alias": "batch-2", "worktree_placement":
+                {"target_directory": second, "branch": "batch-2", "from_ref": null}},
+        ]}
+    }))
+    .expect("public request");
+    let mut command = KernelCommand::from_local_request("batch", None, None, &request);
+    command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+    let failed = world
+        .router
+        .dispatch(command, request)
+        .await
+        .expect_err("the batch event fails");
+    assert!(
+        failed
+            .to_string()
+            .contains("injected agents.created failure"),
+        "{failed}"
+    );
+    for (alias, target) in [("batch-1", &first), ("batch-2", &second)] {
+        assert!(
+            alias_exists(&world, alias).await,
+            "{alias} stays registered"
+        );
+        assert!(
+            checkout_and_branch_exist(&workspace, target, alias),
+            "{alias} lost its checkout"
+        );
+    }
+}
