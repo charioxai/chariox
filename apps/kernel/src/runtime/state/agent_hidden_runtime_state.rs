@@ -31,8 +31,8 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeOwnedState {
-    /// A hidden agent comes back when its last active or queued prompt is over, in every client's Room.
-    pub(super) fn unhide_finished_agent(&self, agent_id: &str) -> Result<(), DaemonError> {
+    /// A hidden agent comes back in every client's Room: when its last active or queued prompt is over, or when it needs a decision.
+    pub(super) fn unhide_agent(&self, agent_id: &str) -> Result<(), DaemonError> {
         let Ok(agent) = self.agent_store.get_agent(agent_id) else {
             return Ok(());
         };
@@ -46,5 +46,22 @@ impl KernelRuntimeOwnedState {
             serde_json::json!({ "agent": agent, "capability_name": serde_json::Value::Null }),
         )?;
         Ok(())
+    }
+
+    /// A workflow settlement removes the prompt without the mirror above, so it asks whether any work is left.
+    pub(super) fn unhide_agent_without_prompt_work(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        if session.active_prompt_for_agent(agent_id).is_some()
+            || session
+                .queued_prompts_for_agent(agent_id)
+                .is_some_and(|held| !held.is_empty())
+        {
+            return Ok(());
+        }
+        self.unhide_agent(agent_id)
     }
 }

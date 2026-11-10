@@ -167,6 +167,73 @@ async fn a01_workflow_node_turn_settles_without_a_plain_completion_check() {
     assert!(settled.pending_prompt_id.is_none(), "{settled:?}");
 }
 
+// MP-08/MP-09/MP-10/MP-11: an agent hidden during its last workflow prompt returns when the workflow settles it.
+#[tokio::test]
+async fn a_hidden_agent_returns_when_its_last_workflow_prompt_settles() {
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("hidden-workflow-settle"),
+        crate::config::DaemonConfig::for_tests(),
+        false,
+    );
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let prompt = owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    owned
+        .prompt_state_owner
+        .remove_queued_prompts_by_workflow_run(&session, &fixture.workflow_run_id);
+    // The fixture also queues an unrelated prompt for this agent; the workflow prompt must be its last work.
+    owned.prompt_state_owner.remove_queued_prompt(
+        &session,
+        &fixture.target_agent_id,
+        &fixture.target_unrelated_prompt_id,
+    );
+    for agent in owned.agent_store.get_session_agents(&fixture.session_id) {
+        let (active, queued) = owned.prompt_state_owner.state_parts(&session, agent.id());
+        owned
+            .session_store
+            .mirror_agent_prompt_state(&fixture.session_id, agent.id(), active, queued)
+            .unwrap();
+    }
+    owned
+        .agent_store
+        .set_agent_hidden(&fixture.target_agent_id, true)
+        .unwrap();
+    let (reserved, _) = owned
+        .reserve_local_workflow_prompt_completion_if_matches(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            prompt.id(),
+        )
+        .unwrap()
+        .expect("reserve the workflow prompt");
+    owned
+        .workflow_complete_prompt(&fixture.session_id, &reserved, None)
+        .unwrap();
+    owned
+        .finalize_reserved_local_workflow_prompt_completion(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            "interrupt-provider-run",
+            reserved,
+            crate::session::unix_epoch_ms(),
+        )
+        .unwrap();
+    assert!(
+        !owned
+            .agent_store
+            .get_agent(&fixture.target_agent_id)
+            .unwrap()
+            .hidden(),
+        "the workflow prompt is over, so the agent is back in every client's Room"
+    );
+}
+
 // A12-S06: a workflow node turn dispatched before an upgrade has no task on the
 // new kernel; the task its settlement creates keeps the node, so the run stays
 // supervised and a continuation of that turn stays inside the invocation.

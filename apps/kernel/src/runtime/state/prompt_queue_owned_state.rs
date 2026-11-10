@@ -298,7 +298,7 @@ impl KernelRuntimeOwnedState {
             }
         }
         if finished {
-            self.unhide_finished_agent(agent_id)?;
+            self.unhide_agent(agent_id)?;
         }
         activity_mutation.record();
         self.withdraw_stale_agent_interactions();
