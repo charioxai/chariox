@@ -913,3 +913,33 @@ async fn goal_objective_survives_registered_room_values() {
     assert_eq!(goals.len(), 1);
     assert_eq!(goals[0].objective, "ship the quarterly report");
 }
+
+/// MP-08 / MP-09 / MP-10 / MP-11: a prompt admitted before the agent's deadline whose handoff
+/// brief finishes after it is not delivered, whether or not a deadline tick has run.
+#[tokio::test]
+async fn final_handoff_envelope_rechecks_the_agent_deadline_after_the_brief() {
+    let fixture = PausedBrief::new(false, false).await;
+    fixture.prepare().await;
+    let deadline_ms = crate::session::unix_epoch_ms() + 300;
+    fixture
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(
+            crate::durable_state::agent_lifecycle::Operation::SetDeadline {
+                room: fixture.session_id.clone(),
+                agent: fixture.agent_id.clone(),
+                deadline: deadline_ms,
+            },
+        )
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    fixture.release();
+    tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+    let inputs = std::fs::read_to_string(fixture.root.path().join("final-provider-envelope"))
+        .unwrap_or_default();
+    assert!(
+        !inputs.contains("cancelled request"),
+        "the expired agent was handed the prompt: {inputs}"
+    );
+}
