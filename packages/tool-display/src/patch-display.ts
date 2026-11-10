@@ -191,7 +191,8 @@ function readWorkspaceLiveSyncChange(value: unknown): ApplyPatchFile | null {
   const change = value as WorkspaceLiveSyncChange
   const filePath = readString(change.path)
   const diff = readString(change.diff)
-  if (!filePath || !diff) {
+  // A binary file's diff is its header alone: it says nothing the call's own input does not (a size, a path), so the input's view is shown.
+  if (!filePath || !diff || !/^[+-](?![+-]{2}(?:\s|$))/m.test(diff)) {
     return null
   }
   const kind = normalizeFileChangeKind(readString(change.kind), null)
