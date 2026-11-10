@@ -376,9 +376,6 @@ pub use workspace::*;
 /// MP-08/MP-09/MP-10/MP-11: landing union 636 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
 /// health events), 632 (binary Room exec) and 636 (archived-agent discovery); every earlier contract is retained.
 /// Protocol 641 adds `CoverKernelAccessProcess`: a grant covers a named background process by identity.
-/// Allocated 670 lets a user retry (`UpdateQueuedWorkflowPrompt.retry_delivery`) or discard
-/// (`RemoveQueuedWorkflowPrompt`) a workflow notification whose delivery is uncertain, and projects that hold as
-/// `WorkflowQueuedPrompt.delivery_uncertain_until_ms`.
 /// Recipient account offers and kernel-owned copy consent.
 /// MP-08 / MP-09 / MP-10 / MP-11: 780 persists semantic session activity; public snapshot schema 14.
 /// MP-08/MP-10/MP-11: 720 adds the Tab display (display_subscribe tab_display, display_park; P1 of
