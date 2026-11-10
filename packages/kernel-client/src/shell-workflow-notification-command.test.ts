@@ -70,3 +70,21 @@ test("MP-08 / MP-10: list shows every subscription id and diagnostics so detach 
   const attached = await executeWorkflowNotificationTrigger(["attach", "Reviewer-2"], context, deps)
   assert.match(attached.message ?? "", /sub-1/)
 })
+test("MP-08 / MP-10: the source list names kernels by their machine alias, not their id", async () => {
+  const remote = { ...source, source_id: "remote", display_name: "Nightly", kernel_id: "3600ab5f-4ebc-4aaa-b77e-7c688238ae1d", available: false }
+  const own = { ...source, source_id: "own", display_name: "Reviewer", kernel_id: "0dec3ee9-8612-4f84-907f-28101d7057f3" }
+  const unknown = { ...source, source_id: "unknown", display_name: "Index", kernel_id: "ffffffff-0000-0000-0000-000000000000" }
+  const deps = { client: { async send(request: Record<string, unknown>) {
+    if ("ListWorkflowNotifications" in request) return { WorkflowNotifications: { sources: [own, remote, unknown], subscriptions: [], diagnostics: [] } }
+    if ("RelayStatus" in request) return { RelayStatus: { status: { daemon_id: own.kernel_id, machine_id: "machine-own", machine_alias: "Studio" } } }
+    if ("ListRemoteMachines" in request) return { RemoteMachinesListed: { machines: [{ machine_id: "machine-b", machine_alias: "Build room", display_name: "Build room", kernel_count: 1, online: true }] } }
+    if ("ListRemoteMachineKernels" in request) return { RemoteMachineKernelsListed: { machine_ref: "machine-b", kernels: [{ kernel_id: remote.kernel_id, machine_id: "machine-b" }] } }
+    throw new Error(`unexpected ${JSON.stringify(request)}`)
+  } } }
+  const listed = await executeWorkflowNotificationTrigger(["list"], context, deps)
+  const lines = (listed.message ?? "").split("\n")
+  assert.ok(lines.includes("own Reviewer (Studio)"), listed.message)
+  assert.ok(lines.includes("remote Nightly (Build room) — kernel offline/source not available"), listed.message)
+  assert.ok(lines.includes(`unknown Index (${unknown.kernel_id})`), listed.message)
+  assert.ok(!(listed.message ?? "").includes(own.kernel_id) && !(listed.message ?? "").includes(remote.kernel_id), "a resolved kernel id is not shown")
+})
