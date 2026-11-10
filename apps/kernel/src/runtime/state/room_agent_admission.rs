@@ -151,8 +151,12 @@ impl KernelRuntimeState {
             LocalDaemonRequest::UpdateAgentSubstitutes(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::EndSession(_)
             | LocalDaemonRequest::DeleteSession(_)
+            | LocalDaemonRequest::ArchiveProject(_)
+            | LocalDaemonRequest::DeleteProject(_)
             | LocalDaemonRequest::DeleteKernel(_) => {
-                return Err(denied("room agents cannot tear down sessions or kernels"));
+                return Err(denied(
+                    "room agents cannot tear down sessions, projects or kernels",
+                ));
             }
             LocalDaemonRequest::ForkAgent(_) => {
                 return Err(denied(

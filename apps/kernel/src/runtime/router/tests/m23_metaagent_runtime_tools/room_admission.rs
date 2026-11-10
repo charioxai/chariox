@@ -582,8 +582,19 @@ async fn room_boundaries() {
         )
         .is_err());
     // MP-11: raw/native host-shaped requests cannot broaden descendant rights.
+    let project_id = app
+        .lock()
+        .await
+        .session_state_store()
+        .get_session(session.id())
+        .unwrap()
+        .project_id()
+        .to_string();
     for value in [
         serde_json::json!({"EndSession":{"session_id":session.id()}}),
+        // Archiving or deleting a Project ends or deletes its Rooms, as the two above do.
+        serde_json::json!({"ArchiveProject":{"project_id":project_id}}),
+        serde_json::json!({"DeleteProject":{"project_id":project_id}}),
         serde_json::json!({"DeleteSession":{"session_ref":session.id(),"workspace_id":null}}),
         serde_json::json!({"UpdateAgentProfile":{"session_id":session.id(),"agent_id":peer.id(),"model":"takeover"}}),
     ] {
