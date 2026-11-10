@@ -6,5 +6,7 @@ mod command_idempotency;
 mod event_streaming;
 #[path = "kernel_websocket_integration/replay_resume.rs"]
 mod replay_resume;
+#[path = "kernel_websocket_integration/runtime_mcp_port.rs"]
+mod runtime_mcp_port;
 #[path = "kernel_websocket_integration/transport_lifecycle.rs"]
 mod transport_lifecycle;

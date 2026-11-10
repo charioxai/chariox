@@ -1983,7 +1983,8 @@ pub struct KernelBootListener {
 impl KernelBootListener {
     pub fn bind(host: &str, port: u16) -> Result<Self, DaemonError> {
         #[cfg(unix)]
-        let listener = crate::hot_reload::tcp_listener("kernel", host, port);
+        let listener =
+            crate::hot_reload::tcp_listener("kernel", host, crate::config::ListenPort::Exact(port));
         #[cfg(not(unix))]
         let listener = StdTcpListener::bind((host, port));
         let listener = listener.map_err(|error| DaemonError::LocalTransport {
