@@ -166,10 +166,12 @@ fn put_bytes(
                 );
                 *next = offset + length;
             }
-            rename_marker_keys(object, false);
+            // Children first, in the key order the encoder walked them; unescaping the keys
+            // before would reorder siblings and break the contiguous segments.
             for child in object.values_mut() {
                 put_bytes(child, depth + 1, payload, next)?;
             }
+            rename_marker_keys(object, false);
         }
         Value::Array(items) => {
             for child in items {
@@ -315,5 +317,72 @@ mod tests {
         assert!(round_trip(&json) == json);
         let json = serde_json::json!({"request": {"X": {"data_base64": 7, "$bytes": "s"}}});
         assert!(round_trip(&json) == json);
+    }
+
+    #[test]
+    fn escaped_siblings_next_to_a_lifted_chunk_keep_their_order() {
+        let json = serde_json::json!({"request": {"RunWorkflowRegistryEntry": {
+            "parameters": {
+                "$bytes": {"data_base64": STANDARD.encode(b"a")},
+                "$abytes": {"data_base64": STANDARD.encode(b"b")},
+            },
+        }}});
+        assert!(round_trip(&json) == json);
+    }
+
+    #[test]
+    fn several_escaped_siblings_survive_at_depth() {
+        let json = serde_json::json!({"parameters": {
+            "$bytes": {"data_base64": STANDARD.encode(b"one")},
+            "$$bytes": {"$bytes": {"data_base64": STANDARD.encode(b"two")}},
+            "$abytes": {"nested": {"data_base64": STANDARD.encode(b"three")}},
+            "a": {"$$$bytes": {"data_base64": STANDARD.encode(b"four")}},
+            "data_base64": STANDARD.encode(b"top"),
+        }});
+        let framed = frame(&serde_json::to_vec(&json).unwrap());
+        assert!(
+            !contains(&framed[8..framed.len() - 18], DATA_KEY.as_bytes()),
+            "all five lifted"
+        );
+        assert!(round_trip(&json) == json);
+    }
+
+    #[test]
+    fn generated_maps_with_marker_keys_and_chunks_round_trip() {
+        const KEYS: [&str; 8] = [
+            "$bytes",
+            "$$bytes",
+            "$abytes",
+            "a",
+            "b",
+            "z",
+            "data_base64",
+            "$",
+        ];
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        fn grow(depth: usize, next: &mut dyn FnMut(usize) -> usize) -> Value {
+            let mut object = Map::new();
+            for _ in 0..1 + next(4) {
+                let key = KEYS[next(KEYS.len())];
+                let value = match (key, next(3)) {
+                    ("data_base64", _) => Value::String(STANDARD.encode([next(256) as u8; 3])),
+                    (_, 0 | 2) if depth < 3 => grow(depth + 1, next),
+                    (_, 1) => serde_json::json!([next(9), next(9)]),
+                    _ => Value::String("v".into()),
+                };
+                object.insert(key.into(), value);
+            }
+            Value::Object(object)
+        }
+        for _ in 0..2000 {
+            let json = grow(0, &mut next);
+            assert!(round_trip(&json) == json, "{json}");
+        }
     }
 }
