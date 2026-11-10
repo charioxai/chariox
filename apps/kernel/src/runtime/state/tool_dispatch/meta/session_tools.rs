@@ -606,6 +606,7 @@ mod tests {
                 queued_prompt_controls: std::collections::BTreeMap::new(),
                 active_turn: None,
                 last_completed_turn: None,
+                liveness: Default::default(),
             },
         );
 

@@ -37,13 +37,11 @@ mod session_sweep;
 mod submissions;
 mod terminal_groups;
 mod waits;
-#[cfg(test)]
 pub(crate) use admission::WaitReason;
 pub(crate) use admission::{adopt_admission, volume_floor, HeldCommand};
 #[cfg(test)]
 pub(crate) use projection::released_keys_for_session;
 pub(crate) use projection::SessionProcessState;
-#[cfg(test)]
 pub(crate) use projection::Waiting;
 pub(crate) use projection::{for_session, keys_for_session};
 pub use projection::{SessionProcess, SessionProcessOwner};
