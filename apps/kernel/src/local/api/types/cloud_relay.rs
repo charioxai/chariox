@@ -99,8 +99,6 @@ pub struct CloudRelayProfile {
     #[serde(default)]
     pub machine_id: Option<String>,
     #[serde(default)]
-    pub machine_alias: Option<String>,
-    #[serde(default)]
     pub kernel_id: Option<String>,
     #[serde(default)]
     pub kernel_enrolled: bool,

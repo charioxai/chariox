@@ -261,11 +261,6 @@ impl LiveWorker {
         }
         home_state.config.daemon_id = "environment-home".to_string();
         worker_state.config.daemon_id = worker_kernel_id.clone();
-        worker_state.config.daemon_alias = Some(if managed_slice_worker {
-            "slice:desktop".to_string()
-        } else {
-            "desktop-worker".to_string()
-        });
         worker_state.config.host_machine_id = if managed_slice_worker {
             home_state.config.host_machine_id.clone()
         } else {

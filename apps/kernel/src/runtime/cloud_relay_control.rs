@@ -355,7 +355,7 @@ mod tests {
             .expect("presence body should build");
         assert_eq!(body["machineCredential"], "machine-secret");
         assert_eq!(body["status"], "ONLINE");
-        assert_eq!(body["kernelAlias"], "dev kernel");
+        assert!(body.get("kernelAlias").is_none());
         assert_eq!(body["metadata"]["host"], "127.0.0.1");
         assert_eq!(body["metadata"]["port"], 43118);
         assert_eq!(body["metadata"]["relay_public_key"], "public");

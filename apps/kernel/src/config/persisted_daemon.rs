@@ -45,8 +45,6 @@ pub struct PersistedCloudRelayProfile {
     #[serde(default)]
     pub machine_id: Option<String>,
     #[serde(default)]
-    pub machine_alias: Option<String>,
-    #[serde(default)]
     pub machine_credential: Option<String>,
     #[serde(default)]
     pub kernel_id: Option<String>,
@@ -72,8 +70,6 @@ impl PersistedCloudRelayProfile {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedMachineRegistration {
     pub machine_id: String,
-    #[serde(default)]
-    pub alias: Option<String>,
     #[serde(default)]
     pub public_key_thumbprint: Option<String>,
     #[serde(default)]
@@ -196,7 +192,6 @@ pub(super) fn upsert_machine_registration<'a>(
     }
     entries.push(PersistedMachineRegistration {
         machine_id: machine_id.to_string(),
-        alias: None,
         public_key_thumbprint: None,
         paired_at_ms: None,
         approved: false,

@@ -565,7 +565,7 @@ mod review_contract_tests {
             "machineId",
             "kernelId",
             "publicKeyThumbprint",
-            "kernelAlias",
+            "machineName",
         ];
         assert!(body
             .as_object()

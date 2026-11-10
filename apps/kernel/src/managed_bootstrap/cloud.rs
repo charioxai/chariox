@@ -47,7 +47,6 @@ pub(super) struct ManagedCloudRelayProfile {
     pub(super) relay_url: String,
     pub(super) issuer_id: String,
     pub(super) machine_id: String,
-    pub(super) machine_alias: String,
     pub(super) machine_credential: String,
 }
 

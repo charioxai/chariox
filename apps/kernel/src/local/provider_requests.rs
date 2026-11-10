@@ -9,7 +9,6 @@ use chariox_relay::protocol::ClientTarget;
 use super::api::{
     ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
     LaunchProviderRunRequest, ListRemoteMachineKernelsRequest, LocalDaemonResponse, RelayStatus,
-    RenameRemoteMachineRequest,
 };
 
 mod blocking;
@@ -177,10 +176,7 @@ impl DaemonApp {
         ))
         .unwrap_or_default();
         let machine = resolve_machine_for_registry(&request.machine_ref, &live)?;
-        DaemonConfig::approve_remote_machine(
-            machine.machine_id.clone(),
-            machine.machine_alias.clone(),
-        )?;
+        DaemonConfig::approve_remote_machine(machine.machine_id.clone())?;
         self.provider_catalog_cache.clear();
         let machine = record_for_machine_id(machine.machine_id, live, &config.host_machine_id)?;
         Ok(LocalDaemonResponse::RemoteMachineApproved { machine })
@@ -196,26 +192,10 @@ impl DaemonApp {
         ))
         .unwrap_or_default();
         let machine = resolve_machine_id_for_registry(&request.machine_ref, &live)?;
-        let saved = DaemonConfig::forget_remote_machine(machine.clone())?;
+        DaemonConfig::forget_remote_machine(machine.clone())?;
         self.provider_catalog_cache.clear();
-        let machine = forgotten_machine_record(machine, saved.alias, live, &config.host_machine_id);
+        let machine = forgotten_machine_record(machine, live, &config.host_machine_id);
         Ok(LocalDaemonResponse::RemoteMachineForgotten { machine })
-    }
-
-    pub(super) fn rename_remote_machine_response(
-        &mut self,
-        request: RenameRemoteMachineRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let config = self.config().clone();
-        let live = block_on_relay_query(crate::transport::relay_discovery::list_live_machines(
-            &config,
-        ))
-        .unwrap_or_default();
-        let machine = resolve_machine_id_for_registry(&request.machine_ref, &live)?;
-        DaemonConfig::rename_remote_machine(machine.clone(), request.alias)?;
-        self.provider_catalog_cache.clear();
-        let machine = record_for_machine_id(machine, live, &config.host_machine_id)?;
-        Ok(LocalDaemonResponse::RemoteMachineRenamed { machine })
     }
 }
 

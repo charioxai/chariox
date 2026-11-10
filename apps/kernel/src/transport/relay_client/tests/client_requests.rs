@@ -246,9 +246,9 @@ async fn authenticated_public_client_preserves_worker_relay_retryability_async()
     let provider = relay_discovery::list_live_kernels_for_machine(
         &config_home,
         config_worker
-            .host_machine_alias
+            .machine_name()
             .as_deref()
-            .expect("worker machine alias should be configured"),
+            .expect("worker machine name should be configured"),
     )
     .await
     .expect("worker kernels should be discoverable")

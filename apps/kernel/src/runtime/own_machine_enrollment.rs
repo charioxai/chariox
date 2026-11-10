@@ -11,7 +11,6 @@ use zeroize::{Zeroize, Zeroizing};
 const TICKET_SECONDS: i64 = 600;
 // Cloud and kernel clocks may differ slightly.
 const CLOCK_SKEW_SECONDS: i64 = 3;
-const LABEL_LIMIT: usize = 200;
 
 fn error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
@@ -70,7 +69,6 @@ fn owner_profile<'a>(
 
 fn issue_blocking(
     profile: &crate::config::PersistedCloudRelayProfile,
-    label: Option<&str>,
 ) -> Result<Ticket, DaemonError> {
     crate::owner_managed_bootstrap::admit_api_url(&profile.api_url)?;
     let credential = profile.kernel_credential.as_deref().unwrap_or_default();
@@ -81,7 +79,7 @@ fn issue_blocking(
         .post(&format!("{}/v1/kernel-enrollment-tickets", profile.api_url.trim_end_matches('/')))
         .set("x-chariox-kernel-credential", credential)
         .set("content-type", "application/json")
-        .send_string(&json!({"purpose":"owner_managed_machine","machine_label":label,"ttl_seconds":TICKET_SECONDS}).to_string())
+        .send_string(&json!({"purpose":"owner_managed_machine","ttl_seconds":TICKET_SECONDS}).to_string())
         .map_err(|_| error("Chariox refused to issue an enrollment ticket; check this kernel's sign-in and retry"))?;
     let mut bytes = Zeroizing::new(Vec::new());
     response
@@ -190,9 +188,8 @@ fn checked_expiry(expires_at: &str, now: chrono::DateTime<chrono::Utc>) -> Resul
 
 fn issue_command(
     profile: &crate::config::PersistedCloudRelayProfile,
-    label: Option<&str>,
 ) -> Result<OwnMachineEnrollmentCommand, DaemonError> {
-    let ticket = issue_blocking(profile, label)?;
+    let ticket = issue_blocking(profile)?;
     let built = checked_expiry(&ticket.expires_at, chrono::Utc::now()).and_then(|()| {
         let install_url = ticket
             .setup_install_url
@@ -215,19 +212,10 @@ fn issue_command(
 pub(crate) async fn execute(
     config: DaemonConfig,
     command: &KernelCommand,
-    request: crate::local::IssueOwnMachineEnrollmentRequest,
+    _request: crate::local::IssueOwnMachineEnrollmentRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let profile = owner_profile(&config, command)?.clone();
-    let label = request.machine_label.filter(|l| !l.trim().is_empty());
-    if label
-        .as_deref()
-        .is_some_and(|l| l.chars().count() > LABEL_LIMIT)
-    {
-        return Err(error(
-            "the machine name is too long; use at most 200 characters",
-        ));
-    }
-    let enrollment = tokio::task::spawn_blocking(move || issue_command(&profile, label.as_deref()))
+    let enrollment = tokio::task::spawn_blocking(move || issue_command(&profile))
         .await
         .map_err(|_| error("the enrollment task failed"))??;
     Ok(LocalDaemonResponse::OwnMachineEnrollment { enrollment })
@@ -313,9 +301,7 @@ mod tests {
     }
 
     fn command(user: Option<&str>) -> (KernelCommand, IssueOwnMachineEnrollmentRequest) {
-        let request = IssueOwnMachineEnrollmentRequest {
-            machine_label: Some("build box".into()),
-        };
+        let request = IssueOwnMachineEnrollmentRequest {};
         let mut command = KernelCommand::from_local_request(
             "enroll",
             None,
@@ -354,7 +340,7 @@ mod tests {
         assert_eq!(log.len(), 1, "no ticket is revoked: {log:?}");
         assert!(log[0].starts_with("POST /v1/kernel-enrollment-tickets "));
         assert!(log[0].contains(r#""purpose":"owner_managed_machine""#));
-        assert!(log[0].contains(r#""machine_label":"build box""#));
+        assert!(!log[0].contains("machine_label"), "the machine names itself: {}", log[0]);
     }
 
     #[tokio::test]

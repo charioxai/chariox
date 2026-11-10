@@ -202,9 +202,8 @@ impl DaemonConfig {
     /// renames it everywhere on the next check-in.
     pub(crate) fn machine_name(&self) -> Option<String> {
         #[cfg(test)]
-        if let Some(name) = &self.machine_name_for_tests {
-            return Some(name.clone());
-        }
+        return self.machine_name_for_tests.clone();
+        #[cfg(not(test))]
         os_machine::machine_name()
     }
 

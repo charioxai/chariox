@@ -6,8 +6,7 @@ fn for_tests_uses_fixed_runtime_identity() {
     let config = DaemonConfig::for_tests();
     assert_eq!(config.daemon_id, "daemon-test");
     assert_eq!(config.host_machine_id, "machine-test");
-    assert_eq!(config.host_machine_alias, None);
-    assert_eq!(config.daemon_alias, None);
+    assert_eq!(config.machine_name(), None);
 }
 
 #[test]
@@ -37,8 +36,6 @@ fn generated_runtime_identity_has_expected_prefixes() {
     let identity = RuntimeIdentity {
         daemon_id: format!("daemon-{}", generate_identity_suffix()),
         machine_id: format!("machine-{}", generate_identity_suffix()),
-        machine_alias: None,
-        daemon_alias: None,
         relay_public_key,
         relay_private_key,
     };
@@ -92,6 +89,42 @@ fn runtime_identity_is_stable_per_host_port() {
     );
     assert_eq!(default_identity.host_machine_id, other_port.host_machine_id);
     assert_ne!(default_identity.daemon_id, other_port.daemon_id);
+}
+
+#[test]
+fn kernels_in_two_homes_on_one_computer_share_the_os_machine_id() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-config-two-homes-test-{}",
+        generate_identity_suffix()
+    ));
+    let old_home = env::var_os("CHARIOX_HOME");
+    let old_machine_id = env::var_os("CHARIOX_MACHINE_ID");
+    let old_kernel_port = env::var_os("CHARIOX_KERNEL_PORT");
+    unsafe {
+        env::remove_var("CHARIOX_MACHINE_ID");
+        env::set_var("CHARIOX_KERNEL_PORT", "43120");
+    }
+    let load_in = |name: &str| {
+        unsafe {
+            env::set_var("CHARIOX_HOME", root.join(name));
+        }
+        DaemonConfig::load_from_env()
+    };
+    let main = load_in("main");
+    let reviewer = load_in("reviewer-b");
+    unsafe {
+        restore_env_var("CHARIOX_HOME", old_home);
+        restore_env_var("CHARIOX_MACHINE_ID", old_machine_id);
+        restore_env_var("CHARIOX_KERNEL_PORT", old_kernel_port);
+    }
+    let _ = fs::remove_dir_all(root);
+
+    let os_machine_id = os_machine::machine_id().expect("this computer has an OS machine ID");
+    assert_eq!(main.host_machine_id, os_machine_id);
+    assert_eq!(reviewer.host_machine_id, os_machine_id);
+    assert_ne!(main.daemon_id, reviewer.daemon_id);
 }
 
 #[test]
@@ -185,8 +218,6 @@ fn protected_room_restart_preserves_retained_identity_and_validates_slice_bindin
             RuntimeIdentity {
                 daemon_id: "retained-kernel".to_string(),
                 machine_id: "retained-machine".to_string(),
-                machine_alias: None,
-                daemon_alias: None,
                 relay_public_key: "synthetic-public".to_string(),
                 relay_private_key: "synthetic-private-sentinel".to_string(),
             }
@@ -342,8 +373,6 @@ fn protected_slice_announces_its_canonical_worker_ref_with_retained_keys() {
         DaemonConfig::load_from_env_with_identity_loader(|_, _| RuntimeIdentity {
             daemon_id: "retained-kernel".to_string(),
             machine_id: "retained-machine".to_string(),
-            machine_alias: None,
-            daemon_alias: None,
             relay_public_key: "synthetic-public".to_string(),
             relay_private_key: "synthetic-private-sentinel".to_string(),
         })

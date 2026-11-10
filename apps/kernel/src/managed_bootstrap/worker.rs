@@ -254,7 +254,6 @@ mod tests {
             relay_url: "wss://relay.example.test".to_string(),
             issuer_id: "issuer-1".to_string(),
             machine_id: "worker-machine".to_string(),
-            machine_alias: "worker-1".to_string(),
             machine_credential: format!("mcred_{}", "c".repeat(40)),
         })
     }
@@ -946,7 +945,6 @@ mod tests {
             &home.join("machine/identity.json"),
             &serde_json::to_vec(&serde_json::json!({
                 "machine_id": machine_id,
-                "machine_alias": "test-worker",
             }))
             .expect("encode machine identity"),
         )
@@ -956,8 +954,6 @@ mod tests {
             &serde_json::to_vec(&serde_json::json!({
                 "daemon_id": daemon_id,
                 "machine_id": machine_id,
-                "machine_alias": "test-worker",
-                "daemon_alias": "disposable-worker",
                 "relay_public_key": public_key,
                 "relay_private_key": private_key,
             }))
@@ -987,7 +983,6 @@ mod tests {
             client_id: None,
             client_alias: None,
             machine_id: Some(machine_id.to_string()),
-            machine_alias: Some(machine_id.to_string()),
             machine_credential: Some(machine_credential.to_string()),
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,

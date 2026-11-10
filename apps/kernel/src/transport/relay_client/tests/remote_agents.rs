@@ -66,7 +66,7 @@ async fn public_remote_completion_preserves_worker_termination_async(already_set
                     machine_alias: Some("termination-machine".to_string()),
                     os_name: Some("Linux".to_string()),
                     kernel_started_at_ms: crate::session::unix_epoch_ms(),
-                    daemon_alias: worker_config.daemon_alias.clone(),
+                    daemon_alias: None,
                     kernel_alias: Some("termination-worker".to_string()),
                     public_key: worker_public_key.clone(),
                     capabilities: vec!["kernel_ws".to_string()],

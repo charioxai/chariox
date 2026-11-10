@@ -164,7 +164,7 @@ pub use api::{
     RemoveEnvironmentRequest, RemoveEventConnectionRequest, RemoveQueuedWorkflowPromptRequest,
     RemoveScriptRequest, RemoveSliceProviderAuthRequest, RemoveWorkflowEdgeRequest,
     RemoveWorkflowNodeRequest, RemoveWorkflowPromptQueueRequest, RemoveWorkflowScheduleRequest,
-    RemoveWorkflowWatchdogRequest, RenameProjectRequest, RenameRemoteMachineRequest,
+    RemoveWorkflowWatchdogRequest, RenameProjectRequest,
     ReplayEventConnectionEventRequest, RequestCredentialEnrollmentInteractionRequest,
     RequestNativeProviderTurnInteractionRequest, RequestRoomEnvironmentInputTakeoverRequest,
     ResendTriggerDeliveryRequest, ResetAllPromptSettingsRequest, ResetPromptSettingRequest,

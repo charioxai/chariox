@@ -65,7 +65,7 @@ async fn home_does_not_settle_a_completion_the_worker_refuses_for_a_run_change_a
                     machine_alias: Some("run-change-machine".to_string()),
                     os_name: Some("Linux".to_string()),
                     kernel_started_at_ms: crate::session::unix_epoch_ms(),
-                    daemon_alias: worker_config.daemon_alias.clone(),
+                    daemon_alias: None,
                     kernel_alias: Some("run-change-worker".to_string()),
                     public_key: worker_config.relay_public_key.clone(),
                     capabilities: vec!["kernel_ws".to_string()],

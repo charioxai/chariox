@@ -24,20 +24,18 @@ const PROBE_DEADLINE: Duration = Duration::from_secs(5);
 /// What a paired kernel says about itself in its status answer.
 pub(super) struct TargetStatus {
     pub(super) capabilities: Vec<String>,
-    pub(super) kernel_alias: Option<String>,
     pub(super) machine_alias: Option<String>,
 }
 
 impl TargetStatus {
-    /// Takes the names the kernel gives itself: the pairing link only carried its ids.
+    /// Takes the name the kernel gives itself: the pairing link only carried its ids.
     pub(super) fn apply_to(self, presence: &mut RelayKernelPresence) {
         presence.capabilities = self.capabilities;
-        presence.kernel_alias = self.kernel_alias.or(presence.kernel_alias.take());
         presence.machine_alias = self.machine_alias.or(presence.machine_alias.take());
     }
 }
 
-/// The status of a kernel (capabilities such as `kernel_gateway_v1`, and its aliases).
+/// The status of a kernel (capabilities such as `kernel_gateway_v1`, and its machine name).
 pub(super) async fn status_of(link: &Link) -> Result<TargetStatus, LinkFailure> {
     let request = serde_json::to_vec(
         &serde_json::json!({"request": LocalDaemonRequest::RelayStatus(RelayStatusRequest)}),
@@ -64,7 +62,6 @@ pub(super) async fn status_of(link: &Link) -> Result<TargetStatus, LinkFailure> 
         capabilities: status("capabilities")
             .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default(),
-        kernel_alias: text("daemon_alias"),
         machine_alias: text("machine_alias"),
     })
 }
