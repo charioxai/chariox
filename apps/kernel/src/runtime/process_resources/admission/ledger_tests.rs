@@ -23,7 +23,8 @@ fn volume(free: &Arc<AtomicU64>) -> Box<Volume> {
 fn room<'a>(memory: u64, tight: bool, volume: &'a Volume) -> Room<'a> {
     Room {
         memory,
-        tight,
+        margin: if tight { memory + 1 } else { 0 },
+        growing: 0,
         light: 512 * MIB,
         growth_room: GIB,
         capacity: 64 * GIB,
@@ -890,6 +891,194 @@ fn growing_builds_finish_one_after_another_under_tight_memory() {
         .filter(|pid| !finished.contains(pid))
         .collect::<Vec<_>>();
     panic!("builds {paused:?} never finished: all paused under tight memory");
+}
+
+/// What five growing builds do in one scope that cannot hold them together,
+/// tick by tick (the 2026-11-10 b3 incident: every build was paused, each
+/// kept its memory and nothing ever resumed).
+#[derive(Default)]
+struct ScopeTrace {
+    /// Builds paused on one tick, with the builds still unfinished.
+    all_paused_at: Option<u64>,
+    /// The first build (the oldest) was ever waiting.
+    oldest_paused_at: Option<u64>,
+    finished: Vec<u32>,
+    /// Pauses (SIGSTOP) and resumes (SIGCONT) in order: (tick, pid).
+    stops: Vec<(u64, u32)>,
+    resumes: Vec<(u64, u32)>,
+}
+
+/// Whether the command waits; an ended command does not.
+fn waits(member: &Arc<Mutex<Observation>>, pid: u32) -> bool {
+    member
+        .lock()
+        .unwrap()
+        .admission
+        .get(&pid)
+        .is_some_and(|entry| entry.wait.is_some())
+}
+
+fn builds_in_a_scope_too_small_for_them() -> ScopeTrace {
+    const BUILDS: u32 = 5;
+    // The pool's own rule: room is the ceiling less the reserve left for
+    // the machine, and it is tight below the reserve or the growth of
+    // everything that runs.
+    const CEILING: u64 = 20 * GIB;
+    const RESERVE: u64 = GIB;
+    const PEAK: u64 = 16 * GIB;
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    let mut ledger = Ledger::new(None);
+    let owners = (1..=BUILDS)
+        .map(|pid| owner(&format!("build-{pid}"), true, Vec::new(), Vec::new()))
+        .collect::<Vec<_>>();
+    let mut resident = BTreeMap::<u32, u64>::new();
+    for (pid, member) in (1..=BUILDS).zip(&owners) {
+        submit(member, true);
+        run_line(member, &[pid]);
+        resident.insert(pid, GIB);
+        start(&mut ledger, member, pid, GIB);
+    }
+    let mut trace = ScopeTrace::default();
+    let mut waiting = BTreeMap::<u32, bool>::new();
+    for tick in 0..400u64 {
+        for (pid, member) in (1..=BUILDS).zip(&owners) {
+            if trace.finished.contains(&pid) {
+                continue;
+            }
+            let paused = waits(member, pid);
+            let grown = if paused { 0 } else { 2 * GIB };
+            let held = resident[&pid] + grown;
+            resident.insert(pid, held);
+            if held >= PEAK {
+                member.lock().unwrap().commands.clear();
+                resident.insert(pid, 0);
+                trace.finished.push(pid);
+            } else {
+                member.lock().unwrap().commands = vec![command(pid, held, grown)];
+            }
+        }
+        let total = resident.values().sum::<u64>();
+        // A tick is a second: one command continues per second.
+        unsettle(&mut ledger);
+        for member in &owners {
+            ledger.register(member, 512 * MIB);
+            // Waiting commands do not count as growing.
+            let growing = owners
+                .iter()
+                .map(|member| {
+                    let member = member.lock().unwrap();
+                    member
+                        .commands
+                        .iter()
+                        .filter(|command| {
+                            member
+                                .admission
+                                .get(&command.pid)
+                                .is_none_or(|entry| entry.wait.is_none())
+                        })
+                        .map(|command| command.growth)
+                        .sum::<u64>()
+                })
+                .sum::<u64>();
+            let memory = (CEILING - RESERVE).saturating_sub(total);
+            let room = Room {
+                margin: RESERVE,
+                growing,
+                ..room(memory, false, &volume)
+            };
+            ledger.pass(&owners, member, &room);
+        }
+        let unfinished = (1..=BUILDS)
+            .filter(|pid| !trace.finished.contains(pid))
+            .collect::<Vec<_>>();
+        for (pid, member) in (1..=BUILDS).zip(&owners) {
+            if trace.finished.contains(&pid) {
+                continue;
+            }
+            let now = waits(member, pid);
+            match (waiting.insert(pid, now).unwrap_or(false), now) {
+                (false, true) => trace.stops.push((tick, pid)),
+                (true, false) => trace.resumes.push((tick, pid)),
+                _ => {}
+            }
+        }
+        if !unfinished.is_empty()
+            && unfinished
+                .iter()
+                .all(|pid| waits(&owners[*pid as usize - 1], *pid))
+        {
+            trace.all_paused_at.get_or_insert(tick);
+        }
+        if waits(&owners[0], 1) {
+            trace.oldest_paused_at.get_or_insert(tick);
+        }
+        if unfinished.is_empty() {
+            break;
+        }
+    }
+    trace
+}
+
+#[test]
+fn builds_too_big_for_the_scope_are_never_all_paused_and_the_oldest_never_waits() {
+    let trace = builds_in_a_scope_too_small_for_them();
+    assert!(
+        trace.all_paused_at.is_none(),
+        "every unfinished build was paused on tick {:?}: nothing could finish",
+        trace.all_paused_at
+    );
+    assert!(
+        trace.oldest_paused_at.is_none(),
+        "the oldest build was paused on tick {:?}",
+        trace.oldest_paused_at
+    );
+    assert_eq!(trace.finished.len(), 5, "finished: {:?}", trace.finished);
+    assert_eq!(trace.finished[0], 1, "the oldest build finishes first");
+}
+
+#[test]
+fn paused_builds_resume_in_line_when_memory_frees_and_are_not_stopped_again_at_once() {
+    let trace = builds_in_a_scope_too_small_for_them();
+    // The builds continue in line, the one that arrived first (and made the
+    // most progress) first.
+    let paused = trace.stops.iter().map(|(_, pid)| *pid).collect::<Vec<_>>();
+    let resumed = trace
+        .resumes
+        .iter()
+        .map(|(_, pid)| *pid)
+        .collect::<Vec<_>>();
+    let mut first_pauses = Vec::new();
+    for pid in &paused {
+        if !first_pauses.contains(pid) {
+            first_pauses.push(*pid);
+        }
+    }
+    let mut first_resumes = Vec::new();
+    for pid in &resumed {
+        if !first_resumes.contains(pid) {
+            first_resumes.push(*pid);
+        }
+    }
+    let mut by_arrival = first_pauses.clone();
+    by_arrival.sort();
+    assert_eq!(
+        first_resumes, by_arrival,
+        "resumes {:?} stops {:?}",
+        trace.resumes, trace.stops
+    );
+    // A build that just continued is not stopped on the next tick, and no
+    // build is stopped more often than there are builds that can run before it.
+    for (resumed_at, pid) in &trace.resumes {
+        assert!(
+            !trace.stops.iter().any(|(tick, stopped)| stopped == pid
+                && tick <= &(resumed_at + 1)
+                && tick > resumed_at),
+            "build {pid} was stopped again right after it continued on tick {resumed_at}: {:?}",
+            trace.stops
+        );
+    }
+    assert!(trace.stops.len() <= 2 * 5, "pause storm: {:?}", trace.stops);
 }
 
 #[test]

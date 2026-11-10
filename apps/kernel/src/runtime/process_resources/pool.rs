@@ -210,7 +210,8 @@ impl Pool {
         // can strand a paused descendant while its parent keeps the reservation.
         let room = admission::Room {
             memory: sampled.memory,
-            tight: sampled.memory < self.margin.max(growing),
+            margin: self.margin,
+            growing,
             light,
             growth_room: admission::growth_room(self.ceiling),
             capacity: self.ceiling.saturating_sub(self.margin),
