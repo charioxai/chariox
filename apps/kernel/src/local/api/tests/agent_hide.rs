@@ -76,13 +76,16 @@ fn hide_agent_never_stops_its_run_or_queue_and_comes_back_when_the_work_is_done(
         crate::provider::ProviderRunState::Ended,
         "hiding must not end the run"
     );
-    assert!(h.with_app(|app| {
-        let room = app.sessions().get_session(session.id()).unwrap();
-        room.active_prompt_for_agent(agent.id()).is_some()
-            && room
-                .queued_prompts_for_agent(agent.id())
-                .is_some_and(|queue| queue.len() == 1)
-    }), "hiding must keep the active and the queued prompt");
+    assert!(
+        h.with_app(|app| {
+            let room = app.sessions().get_session(session.id()).unwrap();
+            room.active_prompt_for_agent(agent.id()).is_some()
+                && room
+                    .queued_prompts_for_agent(agent.id())
+                    .is_some_and(|queue| queue.len() == 1)
+        }),
+        "hiding must keep the active and the queued prompt"
+    );
     assert!(hidden_in_snapshot(&h, session.id(), agent.id()));
 
     h.dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
@@ -140,5 +143,45 @@ fn hide_agent_protocol_shape_and_hash() {
     assert_eq!(
         value,
         serde_json::json!({"HideAgent": {"session_id":"room", "agent_id":"agent", "hidden":true}})
+    );
+}
+
+#[test]
+fn hidden_agent_is_flagged_in_the_public_snapshot() {
+    let worktree = crate::test_support::TestWorktree::new("agent-hide-public");
+    let h = LocalRouterTestHarness::new();
+    let LocalDaemonResponse::SessionCreated { session, agent, .. } = h
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree.session_request(),
+        ))
+        .unwrap()
+    else {
+        panic!("session")
+    };
+    let flagged = |h: &LocalRouterTestHarness| {
+        let LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } = h
+            .dispatch(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
+                GetWaitingRoomPublicSnapshotRequest,
+            ))
+            .unwrap()
+        else {
+            panic!("expected snapshot")
+        };
+        serde_json::to_value(snapshot).unwrap()["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|room| room["id"] == session.id())
+            .flat_map(|room| room["agents"].as_array().unwrap().clone())
+            .find(|each| each["id"] == agent.id())
+            .map(|each| each["hidden"] == true)
+            .unwrap_or(false)
+    };
+    assert!(!flagged(&h));
+    h.dispatch(hide_request(session.id(), agent.id(), true))
+        .unwrap();
+    assert!(
+        flagged(&h),
+        "the Navigator's snapshot names the hidden agent"
     );
 }
