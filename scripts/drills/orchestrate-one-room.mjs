@@ -12,7 +12,7 @@ import { resolve, join, dirname } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { LocalIpcClient } from "../../packages/kernel-client/dist/ipc.js"
 import { submitPromptRequest } from "../../packages/kernel-client/dist/ipc-requests.js"
-import { startOwnerCloud } from "./local-owner-cloud.mjs"
+import { startOwnerCloud } from "./local-owner-cloud.test-support.mjs"
 import { hiddenBrief, runHidden } from "./hidden-subagents-scenario.mjs"
 import { kindsBrief, orchBrief, decisionsTwoBrief, kindsDriver, sudoProbe, lateParentAnswer, controlProbes } from "./subagents-landing5-scenarios.mjs"
 import { listDescendantsRequest } from "../../packages/kernel-client/dist/ipc-agent-requests.js"
@@ -187,7 +187,7 @@ async function main() {
   if (flags.get("--single") !== "yes") start(relayBinary, { HOME: root, CHARIOX_HOME: join(root, "relay"), CHARIOX_RELAY_HOST: "127.0.0.1", CHARIOX_RELAY_PORT: String(relayPort), CHARIOX_RELAY_SCOPED_ISSUER: issuer, CHARIOX_RELAY_SCOPED_HMAC_SECRET: secret }, "relay")
   const single = flags.get("--single") === "yes"
   // --owner-profile: the kernels start the way a managed kernel does, with their owner's profile in the environment and a loopback stand-in for the few Cloud endpoints
-  // they use (local-owner-cloud.mjs), so peer agents of other kernels act for the one owner of the local relay's realm.
+  // they use (local-owner-cloud.test-support.mjs), so peer agents of other kernels act for the one owner of the local relay's realm.
   const profileEnv = flags.get("--owner-profile") === "yes" ? await startOwnerCloud({ token, note, realm: issuer, relayPort }) : {}
   const a = await role("a", profileEnv), b = single ? { name: "b", dir: join(root, "b"), status: { daemon_id: "single-kernel" }, rpc: async () => ({}) } : await role("b", profileEnv)
   if (!single) for (const w of ["w1", "w2", "w3", "w4", "w5"]) mkdirSync(join(root, "b/work", w), { recursive: true })
