@@ -72,6 +72,10 @@ impl KernelRuntimeState {
             }
         }
 
+        let source_update = matches!(
+            request,
+            LocalDaemonRequest::RegisterWorkflowNotificationSource(_)
+        );
         let outcome = match request {
             request @ (LocalDaemonRequest::RegisterWorkflowNotificationSource(_)
             | LocalDaemonRequest::AttachWorkflowNotification(_)
@@ -583,6 +587,13 @@ impl KernelRuntimeState {
             ),
         };
         if outcome.0.is_ok() {
+            // A source switched off, or a workflow or exit removed, leaves the triggers that
+            // listen to it unavailable.
+            if source_update || outcome.1.is_some() {
+                if let Err(error) = self.sync_agent_notification_trigger_availability() {
+                    return (Err(error), outcome.1);
+                }
+            }
             if let Some(session) = outcome.1.as_ref() {
                 if let Err(error) = self
                     .append_session_durable_event("session.updated", session, "workflow")

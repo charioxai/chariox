@@ -183,6 +183,57 @@ impl Rig {
     fn subscriptions(&self) -> Vec<WorkflowNotificationSubscription> {
         self.runtime.agent_notification_subscriptions()
     }
+
+    async fn trigger_on(&self, source_id: &str) -> String {
+        let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = self
+            .runtime
+            .create_agent_trigger(self.request(source_id), "local")
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        trigger.id().into()
+    }
+
+    fn trigger_listening(&self, trigger_id: &str) -> bool {
+        let session = self
+            .runtime
+            .owned
+            .session_snapshot(&self.session_id)
+            .unwrap();
+        match session
+            .agent_triggers()
+            .iter()
+            .find(|t| t.id() == trigger_id)
+            .unwrap()
+            .source()
+        {
+            AgentTriggerSource::Notification {
+                source_available, ..
+            } => *source_available,
+            other => panic!("not a notification trigger: {other:?}"),
+        }
+    }
+
+    async fn set_source_enabled(&self, workflow: &str, enabled: bool) {
+        let (result, _) = self
+            .runtime
+            .execute_workflow_request(
+                LocalDaemonRequest::RegisterWorkflowNotificationSource(
+                    RegisterWorkflowNotificationSourceRequest {
+                        session_id: self.session_id.clone(),
+                        workflow_ref: workflow.into(),
+                        exit_node_id: "exit-1".into(),
+                        enabled,
+                    },
+                ),
+                "local".into(),
+                None,
+            )
+            .await;
+        result.unwrap();
+    }
 }
 
 // MP-08 / MP-10: the trigger tells every client whether its source's kernel is reachable.
@@ -3011,4 +3062,70 @@ async fn subscribing_again_after_a_detach_queues_the_next_occurrence() {
     let queued = rig.queued_prompts();
     assert_eq!(queued.len(), 1, "{queued:?}");
     assert!(queued[0].contains("release 0 approved"), "{queued:?}");
+}
+
+// MP-08 / MP-10: turning a local source off or on updates the trigger that listens to it.
+#[tokio::test]
+async fn a_notification_trigger_follows_its_local_source_enabled_state() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    let trigger = rig.trigger_on(&source).await;
+    rig.runtime
+        .sync_agent_notification_trigger_availability()
+        .unwrap();
+    assert!(rig.trigger_listening(&trigger));
+
+    rig.set_source_enabled(&workflow, false).await;
+    assert!(
+        !rig.trigger_listening(&trigger),
+        "a disabled source no longer reaches the trigger"
+    );
+    rig.set_source_enabled(&workflow, true).await;
+    assert!(rig.trigger_listening(&trigger), "the trigger recovers");
+}
+
+// MP-08 / MP-10: a workflow whose exit stops completing runs no longer feeds its trigger.
+#[tokio::test]
+async fn a_notification_trigger_follows_the_removal_of_its_local_exit() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    let trigger = rig.trigger_on(&source).await;
+    rig.runtime
+        .sync_agent_notification_trigger_availability()
+        .unwrap();
+    assert!(rig.trigger_listening(&trigger));
+
+    let session = rig.runtime.owned.session_snapshot(&rig.session_id).unwrap();
+    let exit = session
+        .workflow(&workflow)
+        .unwrap()
+        .nodes()
+        .iter()
+        .find(|node| node.can_complete_workflow_run())
+        .unwrap()
+        .id()
+        .to_owned();
+    let (result, _) = rig
+        .runtime
+        .execute_workflow_request(
+            LocalDaemonRequest::SetWorkflowNodeCanCompleteRun(
+                crate::local::SetWorkflowNodeCanCompleteRunRequest {
+                    session_id: rig.session_id.clone(),
+                    workflow_ref: workflow.clone(),
+                    node_id: exit,
+                    can_complete_workflow_run: false,
+                    expected_workflow_revision: None,
+                },
+            ),
+            "local".into(),
+            None,
+        )
+        .await;
+    result.unwrap();
+    assert!(
+        !rig.trigger_listening(&trigger),
+        "an exit that is gone leaves the trigger unavailable"
+    );
 }
