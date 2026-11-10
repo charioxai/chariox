@@ -70,3 +70,26 @@ test("private-use marks inside an inline code span that runs over several lines 
     assert.ok(!/[\uE200-\uE2FF]/.test(rest), `${name}: the marks around a directive outside the span are removed`)
   }
 })
+
+// #1323 review: a backtick the reply escapes (\`) is text, not the opener of a code span. Taking it for one paired it with the opener of a
+// real span on a later line of the paragraph and removed the marks inside that span.
+test("an escaped backtick on an earlier line does not pair with a real code span's opener", () => {
+  const mark = (name: string, args: string) => `\uE200${name}\uE202${args}\uE201`
+  const wrapped = mark("visualize", '{"path":"/w/chart.html"}')
+  const text = `Write \\\` to quote text:\nCodex writes \`the call ${wrapped} ends\` for it, and ${wrapped} stays a directive.`
+  for (const [name, html] of [["renderMarkdownHtml", renderMarkdownHtml(text)], ["renderMarkdownInlineHtml", renderMarkdownInlineHtml(text)]] as const) {
+    const span = /<code>([^<]*)<\/code>/.exec(html)
+    assert.ok(span, `${name}: the code span keeps its wrapper`)
+    assert.ok(/\uE200visualize\uE202[^]*\uE201/.test(span[1]!), `${name}: the marks inside the span are untouched`)
+    const rest = html.slice(span.index + span[0].length)
+    assert.ok(!/[\uE200-\uE2FF]/.test(rest), `${name}: the marks around a directive outside the span are removed`)
+  }
+})
+
+test("a code span that quotes an escaped backtick keeps the marks inside it", () => {
+  const wrapped = `\uE200visualize\uE202{"path":"/w/chart.html"}\uE201`
+  const html = renderMarkdownHtml(`Use \`a \\\` ${wrapped}\` here, then ${wrapped}.`)
+  const span = /<code>([^<]*)<\/code>/.exec(html)
+  assert.ok(span && /\uE200visualize/.test(span[1]!), "the marks inside the span are untouched")
+  assert.ok(!/[\uE200-\uE2FF]/.test(html.slice(span.index + span[0].length)), "the directive after the span is unwrapped")
+})

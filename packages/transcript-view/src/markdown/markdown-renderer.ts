@@ -80,13 +80,23 @@ function unwrapVisualizeDirectives(text: string): string {
   return output.join("\n")
 }
 
-// Applies `transform` to the text between inline code spans (CommonMark backtick runs of equal length).
+// Applies `transform` to the text between inline code spans. Openers and closers follow the renderer: a backtick the text escapes (\`)
+// is not an opener, a span that quotes an escaped backtick ends at the first unescaped one, and any other span ends at the next
+// backtick run of equal length.
 function outsideCodeSpans(text: string, transform: (text: string) => string): string {
   let output = ""
   let plainStart = 0
   let index = 0
   while (index < text.length) {
     if (text[index] !== "`") { index += 1; continue }
+    if (isEscaped(text, index)) { index += 1; continue }
+    const quoting = escapedCodeSpanPattern.exec(text.slice(index))
+    if (quoting?.[1]!.includes("\\`")) {
+      output += transform(text.slice(plainStart, index)) + quoting[0]
+      index += quoting[0].length
+      plainStart = index
+      continue
+    }
     let runEnd = index
     while (text[runEnd] === "`") runEnd += 1
     const run = text.slice(index, runEnd)
@@ -102,6 +112,12 @@ function outsideCodeSpans(text: string, transform: (text: string) => string): st
     plainStart = index
   }
   return output + transform(text.slice(plainStart))
+}
+
+function isEscaped(text: string, index: number): boolean {
+  let slashes = 0
+  while (text[index - 1 - slashes] === "\\") slashes += 1
+  return slashes % 2 === 1
 }
 
 function createMarkdown(): MarkdownItInstance {
