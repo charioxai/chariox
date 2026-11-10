@@ -176,6 +176,21 @@ impl KernelRuntimeState {
                 return Err(error);
             }
         };
+        if crate::provider::provider_run_is_claude_headless(&provider_run) && !chunks.is_empty() {
+            let terminal_bytes = chunks
+                .iter()
+                .flat_map(|chunk| chunk.bytes.iter().copied())
+                .collect::<Vec<u8>>();
+            self.with_app_side_effect(|app| {
+                app.stream_claude_reply_for_runtime(
+                    session_id,
+                    provider_run_id,
+                    &provider_run,
+                    &terminal_bytes,
+                )
+            })
+            .await?;
+        }
         if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
             let rendered = chunks
                 .iter()

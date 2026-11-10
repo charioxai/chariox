@@ -21,6 +21,7 @@ mod attachments;
 mod cancel_fence;
 mod context_delivery;
 mod hidden_context;
+mod live_reply;
 mod permission;
 mod question;
 mod readiness;
@@ -40,7 +41,10 @@ use attachments::{
     extract_claude_native_prompt_attachments, format_claude_attachment_context,
     format_claude_native_attachment_prompt_suffix, join_claude_context,
 };
-use cancel_fence::{claude_stopped_turn, release_claude_cancelled_turn, StoppedTurn};
+use cancel_fence::{
+    claude_stopped_turn, claude_turn_fenced, release_claude_cancelled_turn, StoppedTurn,
+};
+use live_reply::Adoption;
 use permission::{
     append_claude_headless_debug, claude_headless_bypass_confirmation_visible,
     claude_headless_bypass_selection_pending, claude_headless_composer_visible,
@@ -1258,6 +1262,26 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             ) {
                 saw_runtime_activity = true;
             }
+            // A text block streamed from the terminal takes the place of its live row.
+            if chunk.kind == TerminalOutputKind::ProviderOutput
+                && chunk.merge_key_suffix.starts_with("assistant:")
+            {
+                if let Adoption::Streamed {
+                    merge_key_suffix,
+                    rest,
+                } = live_reply::adopt(provider_run_id, &chunk.text)
+                {
+                    fanout.fan_out_live_reply(
+                        session_id,
+                        provider_run_id,
+                        format!("claude-transcript:{provider_run_id}:{merge_key_suffix}"),
+                        recipient_attachment_ids.clone(),
+                        rest.as_deref().unwrap_or_default(),
+                        &chunk.text,
+                    );
+                    continue;
+                }
+            }
             fanout.fan_out(
                 session_id,
                 provider_run_id,
@@ -1725,6 +1749,55 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 claude_question_updated_input(&event, &answers),
             );
         });
+    }
+
+    /// Reads the terminal output of a headless run for the reply Claude is
+    /// writing, and sends what is new as it appears (see `live_reply`).
+    pub(crate) fn stream_reply(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        provider_run: &RuntimeProviderRun,
+        terminal_bytes: &[u8],
+    ) -> Result<(), DaemonError> {
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return Ok(());
+        };
+        let prompt = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+            .filter(|prompt| prompt.status() != crate::session::PromptStatus::Cancelling);
+        // What a stopped turn writes next belongs to no turn.
+        let reading = prompt.as_ref().filter(|prompt| {
+            provider_run
+                .pty_env()
+                .get("CHARIOX_CLAUDE_NATIVE_CONTEXT")
+                .is_none_or(|context_file| !claude_turn_fenced(context_file, prompt.id()))
+        });
+        let deltas = live_reply::read_terminal(
+            provider_run_id,
+            reading.map(|prompt| prompt.id()),
+            terminal_bytes,
+        );
+        if deltas.is_empty() {
+            return Ok(());
+        }
+        let recipients = self.app.attachments.list_session_attachment_ids(session_id);
+        let fanout = ProviderOutputFanout::new(self.app);
+        for delta in deltas {
+            fanout.fan_out_live_reply(
+                session_id,
+                provider_run_id,
+                format!(
+                    "claude-transcript:{provider_run_id}:{}",
+                    delta.merge_key_suffix
+                ),
+                recipients.clone(),
+                &delta.text,
+                &delta.text_so_far,
+            );
+        }
+        Ok(())
     }
 
     /// One injection attempt for a prompt dispatch. Claude-headless confirms
