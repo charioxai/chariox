@@ -545,6 +545,32 @@ impl KernelRuntimeState {
         .await
     }
 
+    /// Refuses a leased prompt past the deadline of the agent that would run it. The refusal is
+    /// definite, so a prompt with a new receipt settles it as rejected.
+    async fn ensure_leased_prompt_before_deadline(
+        &self,
+        leased_agent_id: &str,
+        leased: &LeasedAgent,
+        new_receipt_prompt: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let Err(error) = self
+            .owned
+            .ensure_agent_before_deadline(&leased.backing_session_id, &leased.backing_agent_id)
+        else {
+            return Ok(());
+        };
+        if let Some(home_prompt_id) = new_receipt_prompt {
+            self.update_relay_leased_prompt_admission_receipt(
+                leased_agent_id,
+                home_prompt_id,
+                WorkerPromptReceiptPhase::Rejected,
+                None,
+            )
+            .await?;
+        }
+        Err(error)
+    }
+
     // Keep the relay request fields explicit, like the adjacent lease adapters.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn submit_relay_leased_prompt(
@@ -788,6 +814,13 @@ impl KernelRuntimeState {
             }
             return Err(error);
         }
+        // The worker owns the deadline: a request the home sent before it can arrive after it.
+        self.ensure_leased_prompt_before_deadline(
+            &leased_agent_id,
+            &prepared.leased_agent,
+            home_prompt_id.as_deref().filter(|_| new_receipt),
+        )
+        .await?;
         // Fence replay durably before any launch or prompt side effect. Permanent
         // preparation failures above also create their definitive rejection.
         if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt) {
@@ -829,6 +862,13 @@ impl KernelRuntimeState {
                 }
             }
         };
+        // The launch took time: the deadline may have passed since the check above.
+        self.ensure_leased_prompt_before_deadline(
+            &leased_agent_id,
+            &prepared.leased_agent,
+            home_prompt_id.as_deref().filter(|_| new_receipt),
+        )
+        .await?;
         if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt) {
             self.update_relay_leased_prompt_admission_receipt(
                 &leased_agent_id,
