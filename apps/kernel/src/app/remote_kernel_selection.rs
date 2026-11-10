@@ -165,8 +165,7 @@ pub(super) fn usable_kernel_refs_message(
 }
 
 fn kernel_presence_matches_machine_ref(kernel: &RelayKernelPresence, machine_ref: &str) -> bool {
-    kernel.machine_id == machine_ref
-        || kernel.machine_alias.as_deref() == Some(machine_ref)
+    kernel.machine_id == machine_ref || kernel.machine_alias.as_deref() == Some(machine_ref)
 }
 
 fn format_kernel_targets<'a>(kernels: impl Iterator<Item = &'a RelayKernelPresence>) -> String {

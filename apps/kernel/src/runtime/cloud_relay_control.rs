@@ -363,7 +363,12 @@ mod tests {
         ))
         .unwrap();
         let fields = |value: &serde_json::Value| {
-            value.as_object().unwrap().keys().cloned().collect::<Vec<_>>()
+            value
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
         };
         assert_eq!(fields(&body), fields(&accepted));
     }

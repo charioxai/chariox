@@ -69,10 +69,18 @@ pub(super) fn find<'a>(
             .filter(|k| names(k).into_iter().flatten().any(|own| own == name))
             .collect::<Vec<_>>()
     };
-    by(all.iter().copied().filter(|k| k.kernel_id == name).collect())
-        .or_else(|| by(named(|k| [k.kernel_alias.as_deref(), k.relay_alias.as_deref()])))
-        .or_else(|| by(named(|k| [k.machine_alias.as_deref(), None])))
-        .unwrap_or_else(|| Err(GatewayError::Unknown { name: name.into() }))
+    by(all
+        .iter()
+        .copied()
+        .filter(|k| k.kernel_id == name)
+        .collect())
+    .or_else(|| {
+        by(named(|k| {
+            [k.kernel_alias.as_deref(), k.relay_alias.as_deref()]
+        }))
+    })
+    .or_else(|| by(named(|k| [k.machine_alias.as_deref(), None])))
+    .unwrap_or_else(|| Err(GatewayError::Unknown { name: name.into() }))
 }
 
 #[cfg(test)]

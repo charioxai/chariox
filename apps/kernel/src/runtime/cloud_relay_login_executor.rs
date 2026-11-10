@@ -125,7 +125,9 @@ pub(crate) async fn execute_logout_cloud_relay_request(
     Ok(LocalDaemonResponse::CloudRelayLoggedOut)
 }
 
-pub(crate) fn kernel_device_enrollment_body(config: &crate::config::DaemonConfig) -> serde_json::Value {
+pub(crate) fn kernel_device_enrollment_body(
+    config: &crate::config::DaemonConfig,
+) -> serde_json::Value {
     let mut body = serde_json::json!({
         "enrollmentKind": "KERNEL", "kernelId": config.daemon_id, "machineId": config.host_machine_id,
         "publicKeyThumbprint": crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key),
@@ -148,7 +150,10 @@ mod enrollment_display_tests {
             "../../tests/cloud-contract/device-start-request.json"
         ))
         .unwrap();
-        assert_eq!(body, expected, "the file is what Cloud's strict schema accepts");
+        assert_eq!(
+            body, expected,
+            "the file is what Cloud's strict schema accepts"
+        );
         assert_eq!(body["machineName"], "fixture-machine");
         assert!(body.get("machineAlias").is_none());
         assert!(body.get("kernelAlias").is_none());

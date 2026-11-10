@@ -334,9 +334,7 @@ fn load_env_cloud_relay_profile() -> Option<PersistedCloudRelayProfile> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        parse_event_generator_management_targets,
-    };
+    use super::parse_event_generator_management_targets;
 
     #[test]
     fn event_generator_management_targets_allow_https_and_loopback_http() {

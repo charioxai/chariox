@@ -880,7 +880,9 @@ impl RelayRegistry {
                     .get(&registration.machine_id)
                     .map(MachineName::label)
                     .unwrap_or_default();
-                let ordinal = kernels_seen.entry(registration.machine_id.as_str()).or_default();
+                let ordinal = kernels_seen
+                    .entry(registration.machine_id.as_str())
+                    .or_default();
                 *ordinal += 1;
                 let mut label = name.clone();
                 if *ordinal > 1 {

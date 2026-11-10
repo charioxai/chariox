@@ -201,9 +201,6 @@ mod tests {
             machine_alias: Some("Studio Box".into()),
         }
         .apply_to(&mut presence);
-        assert_eq!(
-            super::super::names::display_name(&presence),
-            "Studio Box"
-        );
+        assert_eq!(super::super::names::display_name(&presence), "Studio Box");
     }
 }

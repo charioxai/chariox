@@ -25,7 +25,11 @@ fn machine_id_from_os_value(raw: &str) -> Result<String, String> {
         return Err("the OS machine ID is empty".to_string());
     }
     let digest = Sha256::digest(format!("chariox-machine-id/v1\n{normalized}").as_bytes());
-    let hex = digest.iter().take(16).map(|byte| format!("{byte:02x}")).collect::<String>();
+    let hex = digest
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     Ok(format!("machine-{hex}"))
 }
 
@@ -41,7 +45,12 @@ fn read_os_machine_id() -> Result<String, String> {
 fn read_os_machine_id() -> Result<String, String> {
     let output = command_output(
         "reg",
-        &["query", r"HKLM\SOFTWARE\Microsoft\Cryptography", "/v", "MachineGuid"],
+        &[
+            "query",
+            r"HKLM\SOFTWARE\Microsoft\Cryptography",
+            "/v",
+            "MachineGuid",
+        ],
     )
     .ok_or_else(|| "the registry did not report MachineGuid".to_string())?;
     parse_machine_guid(&output).ok_or_else(|| "the registry MachineGuid is empty".to_string())
@@ -87,7 +96,9 @@ fn parse_machine_guid(output: &str) -> Option<String> {
 /// The OS's official name for this computer, read at most every two seconds.
 pub(crate) fn machine_name() -> Option<String> {
     static CACHE: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
-    let mut cache = CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some((read_at, name)) = cache.as_ref() {
         if read_at.elapsed() < NAME_CACHE_TTL {
             return name.clone();
@@ -134,7 +145,10 @@ fn parse_pretty_hostname(machine_info: &str) -> Option<String> {
     })
 }
 
-#[cfg_attr(not(any(target_os = "macos", target_os = "windows", target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows", target_os = "linux")),
+    allow(dead_code)
+)]
 fn command_output(command: &str, args: &[&str]) -> Option<String> {
     use crate::runtime::bounded_process::BoundedCommandExt as _;
     let output = crate::process_spawn::command(command)
@@ -160,7 +174,9 @@ mod tests {
         assert_eq!(upper, lower);
         assert!(upper.starts_with("machine-"));
         assert_eq!(upper.len(), "machine-".len() + 32);
-        assert!(upper["machine-".len()..].bytes().all(|b| b.is_ascii_hexdigit()));
+        assert!(upper["machine-".len()..]
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit()));
         assert!(!upper.contains("a1b2c3d4"));
         assert_ne!(upper, machine_id_from_os_value("another-computer").unwrap());
     }
@@ -191,7 +207,10 @@ mod tests {
     #[test]
     fn linux_pretty_hostname_wins_when_set() {
         let info = "CHASSIS=laptop\nPRETTY_HOSTNAME=\"Miguel's Laptop\"\n";
-        assert_eq!(parse_pretty_hostname(info).as_deref(), Some("Miguel's Laptop"));
+        assert_eq!(
+            parse_pretty_hostname(info).as_deref(),
+            Some("Miguel's Laptop")
+        );
         assert_eq!(parse_pretty_hostname("PRETTY_HOSTNAME=\n"), None);
         assert_eq!(parse_pretty_hostname("CHASSIS=server\n"), None);
     }

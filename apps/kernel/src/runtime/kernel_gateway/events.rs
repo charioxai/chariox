@@ -39,8 +39,7 @@ impl KernelGateway {
             })?;
         let mut normalized = Vec::new();
         for target in targets {
-            let local = target.kernel == "local"
-                || target.kernel == config.daemon_id;
+            let local = target.kernel == "local" || target.kernel == config.daemon_id;
             let kernel = if local {
                 config.daemon_id.clone()
             } else {

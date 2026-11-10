@@ -333,12 +333,8 @@ mod tests {
         env::set_var("HOME", &task_root);
         env::set_var("CHARIOX_KERNEL_STARTED_MARKER", &worker_started_marker);
 
-        let mut worker_app_config = isolated_worker_test_config(
-            &worker_root,
-            "worker-kernel",
-            "worker-machine",
-            43119,
-        );
+        let mut worker_app_config =
+            isolated_worker_test_config(&worker_root, "worker-kernel", "worker-machine", 43119);
         let worker_private_key = worker_app_config.relay_private_key.clone();
         let worker_public_key = worker_app_config.relay_public_key.clone();
         init_worker_test_identity_with_key(
@@ -351,12 +347,8 @@ mod tests {
 
         let home_machine_id = "source-machine-test";
         let home_kernel_id = "home-kernel";
-        let mut home_app_config = isolated_worker_test_config(
-            &home_root,
-            home_kernel_id,
-            home_machine_id,
-            43120,
-        );
+        let mut home_app_config =
+            isolated_worker_test_config(&home_root, home_kernel_id, home_machine_id, 43120);
         let home_public_key = home_app_config.relay_public_key.clone();
         let worker_receipt_path = fixture
             .config

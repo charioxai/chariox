@@ -340,7 +340,11 @@ mod tests {
         assert_eq!(log.len(), 1, "no ticket is revoked: {log:?}");
         assert!(log[0].starts_with("POST /v1/kernel-enrollment-tickets "));
         assert!(log[0].contains(r#""purpose":"owner_managed_machine""#));
-        assert!(!log[0].contains("machine_label"), "the machine names itself: {}", log[0]);
+        assert!(
+            !log[0].contains("machine_label"),
+            "the machine names itself: {}",
+            log[0]
+        );
     }
 
     #[tokio::test]

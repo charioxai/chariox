@@ -143,7 +143,10 @@ mod tests {
             client_name(Some("Studio"), &profile),
             "Agent gateway of Studio"
         );
-        assert_eq!(client_name(Some(" "), &profile), "Agent gateway of this machine");
+        assert_eq!(
+            client_name(Some(" "), &profile),
+            "Agent gateway of this machine"
+        );
     }
 
     async fn register(
