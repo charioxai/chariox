@@ -22,6 +22,23 @@ pub const CHUNK_BYTES: usize = 16 * 1024;
 const BINARY_CHUNK_MAGIC: &[u8; 4] = b"CXB1";
 pub const BINARY_CHUNK_HEADER_BYTES: usize = 16;
 pub const BINARY_CHUNK_PAYLOAD_BYTES: usize = CHUNK_BYTES - BINARY_CHUNK_HEADER_BYTES;
+/// The smallest payload of a binary chunk that is not the last of its message, like the smallest
+/// bulk text frame, so the receipts of a transfer stay a few percent of its bytes.
+pub const MIN_BINARY_PAYLOAD_BYTES: usize =
+    crate::drain_window::MIN_CHUNK_BYTES - BINARY_CHUNK_HEADER_BYTES;
+
+/// The payload of the next binary chunk toward a peer that offered binary requests: as long as
+/// a bulk text frame of the measured link (`DrainWindow::chunk_bytes`), so a small frame queued
+/// behind it waits about `FRAME_TIME` and not a whole 16 KiB at the link's rate. A peer that did
+/// not offer them takes only full chunks.
+pub fn binary_chunk_payload(frame_limit: usize, adaptive: bool) -> usize {
+    if !adaptive {
+        return BINARY_CHUNK_PAYLOAD_BYTES;
+    }
+    frame_limit
+        .saturating_sub(BINARY_CHUNK_HEADER_BYTES)
+        .clamp(MIN_BINARY_PAYLOAD_BYTES, BINARY_CHUNK_PAYLOAD_BYTES)
+}
 
 /// The same socket-local transfer/receipt contract, without encoding ciphertext as text.
 pub fn binary_chunk(transfer_id: u32, offset: usize, total: usize, payload: &[u8]) -> Vec<u8> {
@@ -143,12 +160,14 @@ impl FrameReceiver {
         let offset = u32::from_be_bytes(bytes[8..12].try_into().unwrap()) as usize;
         let total = u32::from_be_bytes(bytes[12..16].try_into().unwrap()) as usize;
         let payload = &bytes[BINARY_CHUNK_HEADER_BYTES..];
-        // Full non-final chunks bound both fragment storage and receipt pressure.
+        // Non-final chunks of at least MIN_BINARY_PAYLOAD_BYTES bound both fragment storage and
+        // receipt pressure.
         if transfer_id == 0
             || total == 0
             || total > MAX_MESSAGE_BYTES
             || offset > total
-            || payload.len() != BINARY_CHUNK_PAYLOAD_BYTES.min(total - offset)
+            || payload.len() > BINARY_CHUNK_PAYLOAD_BYTES.min(total - offset)
+            || (payload.len() < MIN_BINARY_PAYLOAD_BYTES && payload.len() != total - offset)
         {
             return Err("invalid binary transport chunk bounds");
         }
@@ -332,6 +351,47 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn binary_chunks_follow_the_link_only_toward_a_peer_that_takes_them() {
+        assert_eq!(
+            binary_chunk_payload(4096, false),
+            BINARY_CHUNK_PAYLOAD_BYTES
+        );
+        assert_eq!(binary_chunk_payload(4096, true), MIN_BINARY_PAYLOAD_BYTES);
+        assert_eq!(
+            binary_chunk_payload(8192, true),
+            8192 - BINARY_CHUNK_HEADER_BYTES
+        );
+        assert_eq!(
+            binary_chunk_payload(CHUNK_BYTES, true),
+            BINARY_CHUNK_PAYLOAD_BYTES
+        );
+        assert_eq!(
+            binary_chunk_payload(1 << 20, true),
+            BINARY_CHUNK_PAYLOAD_BYTES
+        );
+    }
+
+    #[test]
+    fn a_receiver_takes_short_binary_chunks_down_to_the_minimum_and_a_short_last_one() {
+        let total = 3 * MIN_BINARY_PAYLOAD_BYTES + 100;
+        let message = vec![9u8; total];
+        let mut receiver = FrameReceiver::default();
+        let mut offset = 0;
+        let mut complete = None;
+        while offset < total {
+            let end = (offset + MIN_BINARY_PAYLOAD_BYTES).min(total);
+            let chunk = binary_chunk(1, offset, total, &message[offset..end]);
+            let (done, receipt) = receiver.receive_binary(&chunk).unwrap();
+            assert!(receipt.is_some());
+            complete = done;
+            offset = end;
+        }
+        assert!(complete.as_deref() == Some(message.as_slice()));
+        let mut receiver = FrameReceiver::default();
+        let too_short = binary_chunk(1, 0, total, &message[..MIN_BINARY_PAYLOAD_BYTES - 1]);
+        assert!(receiver.receive_binary(&too_short).is_err());
+    }
     #[test]
     fn transport_urls_preserve_paths_and_normalize_empty_paths() {
         assert_eq!(

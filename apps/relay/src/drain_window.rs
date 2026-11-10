@@ -88,6 +88,15 @@ impl DrainWindow {
         })
     }
 
+    /// The size of the next bulk frame toward a peer that takes frames of any size: the smallest
+    /// until a rate is measured. The lowest round trip is the sticky input of the window, and a
+    /// first frame of CHUNK_BYTES would put its own drain time (131 ms at 1 Mbit/s) into it for
+    /// good, keeping the window, and the queue ahead of a small frame, about twice as long.
+    pub fn first_chunk_bytes(&self) -> usize {
+        self.max_rate()
+            .map_or(MIN_CHUNK_BYTES, |_| self.chunk_bytes())
+    }
+
     /// The bulk bytes allowed unacknowledged now. A sender always may write one
     /// frame when nothing is unacknowledged, whatever its size.
     pub fn bytes(&self) -> usize {

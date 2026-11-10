@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 
 use chariox_relay::drain_window::{DrainWindow, SendStamp};
 use chariox_relay::frame_transport::{
-    binary_chunk, text_chunk, TransportFrame, BINARY_CHUNK_PAYLOAD_BYTES, CHUNK_BYTES,
+    binary_chunk, binary_chunk_payload, text_chunk, TransportFrame, CHUNK_BYTES,
 };
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
@@ -41,13 +41,14 @@ struct Upload {
 }
 
 impl Upload {
-    /// A text frame stays within `limit`; a binary frame is always one full chunk.
-    fn next_chunk(&self, id: u32, limit: usize) -> Option<(Message, usize)> {
+    /// A text frame stays within `limit`; so does a binary one toward a relay that takes chunks
+    /// shorter than a full one (`adaptive`), otherwise it is always one full chunk.
+    fn next_chunk(&self, id: u32, limit: usize, adaptive: bool) -> Option<(Message, usize)> {
         match &self.message {
             Message::Text(text) => text_chunk(id, text, self.offset, limit)
                 .map(|(frame, end)| (Message::Text(frame.into()), end)),
             Message::Binary(bytes) if self.offset < bytes.len() => {
-                let end = (self.offset + BINARY_CHUNK_PAYLOAD_BYTES).min(bytes.len());
+                let end = (self.offset + binary_chunk_payload(limit, adaptive)).min(bytes.len());
                 let chunk = binary_chunk(id, self.offset, bytes.len(), &bytes[self.offset..end]);
                 Some((Message::Binary(chunk.into()), end))
             }
@@ -65,10 +66,13 @@ pub(crate) struct Uploads {
     bytes: usize,
     window: DrainWindow,
     last_id: u32,
+    adaptive_binary: bool,
 }
 
 impl Uploads {
-    pub(crate) fn new() -> Self {
+    /// `adaptive_binary`: the relay accepted binary requests, and with them binary chunks sized
+    /// to the link like text ones.
+    pub(crate) fn new(adaptive_binary: bool) -> Self {
         Self {
             priority: None,
             event: None,
@@ -76,6 +80,7 @@ impl Uploads {
             bytes: 0,
             window: DrainWindow::new(Instant::now()),
             last_id: 0,
+            adaptive_binary,
         }
     }
 
@@ -116,6 +121,7 @@ impl Uploads {
                 message: Message::Text(_),
                 ..
             }) => self.window.chunk_bytes(),
+            Some(_) if self.adaptive_binary => self.window.first_chunk_bytes(),
             Some(_) => CHUNK_BYTES,
             None => return false,
         };
@@ -125,10 +131,15 @@ impl Uploads {
     /// The lane's next chunk; the lane is free again after its last one.
     pub(crate) fn next_chunk(&mut self, lane: Lane) -> Option<Message> {
         let next_id = self.last_id.checked_add(1)?;
-        let limit = self.window.chunk_bytes();
+        let adaptive = self.adaptive_binary;
+        let limit = if adaptive {
+            self.window.first_chunk_bytes()
+        } else {
+            self.window.chunk_bytes()
+        };
         let upload = self.slot(lane).as_mut()?;
         let id = if upload.id == 0 { next_id } else { upload.id };
-        let (chunk, end) = upload.next_chunk(id, limit)?;
+        let (chunk, end) = upload.next_chunk(id, limit, adaptive)?;
         upload.id = id;
         upload.offset = end;
         if end == upload.message.len() {
@@ -179,7 +190,7 @@ mod tests {
             "é".repeat(40_000)
         );
         let binary = vec![7u8; 100_000];
-        let mut uploads = Uploads::new();
+        let mut uploads = Uploads::new(false);
         assert!(uploads
             .start(Lane::Event, Message::Text(text.clone().into()))
             .is_none());

@@ -5,6 +5,7 @@ use std::future::Future;
 use super::*;
 use crate::runtime::cloud_relay_control::cloud_relay_token_is_expired;
 
+mod binary_request;
 mod managed_slice_activation;
 mod writer;
 #[cfg(test)]
@@ -876,6 +877,8 @@ async fn run_daemon_relay_connector_inner(
             Ok(Ok((socket, handshake))) => {
                 let binary_events =
                     crate::transport::relay_socket_connect::binary_events_accepted(&handshake);
+                let binary_requests =
+                    crate::transport::relay_socket_connect::binary_requests_accepted(&handshake);
                 // A relay that reassembles chunked uploads answers the offer; an older one does not.
                 let upload_chunks =
                     crate::transport::relay_socket_connect::upload_chunks_accepted(&handshake);
@@ -887,6 +890,7 @@ async fn run_daemon_relay_connector_inner(
                         "relay_url": relay_url,
                         "connect_ms": connect_ms,
                         "upload_chunks": upload_chunks,
+                        "binary_requests": binary_requests,
                     }),
                 );
                 let registration_started = Instant::now();
@@ -912,6 +916,7 @@ async fn run_daemon_relay_connector_inner(
                         transport_receipt_rx,
                         upload_chunks.then_some(upload_receipt_rx),
                         binary_events,
+                        binary_requests,
                         writer_closing,
                         writer_notes,
                     )
@@ -1060,13 +1065,16 @@ async fn run_daemon_relay_connector_inner(
                             last_read_at = tokio::time::Instant::now();
                             reader_progress.progress();
                             match incoming {
-                                Some(Ok(Message::Text(payload))) => {
-                                    let (payload, receipt) = match upload_chunks.then(|| crate::transport::relay_upload::receipt(&payload)).flatten() {
-                                        // Receipts for the kernel's own chunks free its upload window.
-                                        Some(receipt) if upload_receipt_tx.try_send(receipt).is_ok() => continue,
-                                        Some(_) => (Some("{\"kind\":\"close\",\"reason\":\"relay upload receipt lost\"}".to_string()), None),
-                                        None => relay_frames.receive(&payload).unwrap_or_else(|_| (
-                                            Some("{\"kind\":\"close\",\"reason\":\"invalid relay transport frame\"}".to_string()), None)),
+                                Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) => {
+                                    let (payload, receipt) = match message {
+                                        Message::Text(payload) => match upload_chunks.then(|| crate::transport::relay_upload::receipt(&payload)).flatten() {
+                                            // Receipts for the kernel's own chunks free its upload window.
+                                            Some(receipt) if upload_receipt_tx.try_send(receipt).is_ok() => continue,
+                                            Some(_) => (Some("{\"kind\":\"close\",\"reason\":\"relay upload receipt lost\"}".to_string()), None),
+                                            None => relay_frames.receive(&payload).unwrap_or_else(|_| (
+                                                Some("{\"kind\":\"close\",\"reason\":\"invalid relay transport frame\"}".to_string()), None)),
+                                        },
+                                        binary => binary_request::payload(&mut relay_frames, binary, binary_requests),
                                     };
                                     if let Some(receipt) = receipt {
                                         if !queue_transport_receipt(&transport_receipt_tx, receipt).await {

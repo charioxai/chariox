@@ -72,7 +72,12 @@ pub fn message_signature(message: &Message) -> Option<u64> {
     match message {
         Message::Binary(bytes) => crate::binary_event::decode(bytes)
             .ok()
-            .map(|(_, bytes)| signature(bytes)),
+            .map(|(_, bytes)| signature(bytes))
+            .or_else(|| {
+                crate::binary_request::decode(bytes)
+                    .ok()
+                    .map(|(_, bytes)| signature(bytes))
+            }),
         Message::Text(text) => serde_json::from_str(text)
             .ok()
             .and_then(|envelope| envelope_signature(&envelope)),
