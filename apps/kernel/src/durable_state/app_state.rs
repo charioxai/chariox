@@ -494,6 +494,15 @@ pub(crate) fn fixture_browser_tool_package(
     (catalog, bytes, publisher)
 }
 
+/// MP-08 / MP-10: a distinct installation/origin of the existing browser fixture.
+#[cfg(test)]
+pub(crate) fn fixture_browser_installation(
+    store: &DurableKernelStateStore,
+    installation: &str,
+) -> Arc<EventCatalog> {
+    tests::install_package(store, "alice", installation, tests::browser_tool_package())
+}
+
 /// Stages the tool fixture's release again as an update of `installation`
 /// (at generation 1) and approves it, without starting it.
 #[cfg(test)]
