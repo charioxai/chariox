@@ -5477,6 +5477,18 @@ ordinary `ListAgents` omits them. Session snapshots retain the archived flag,
 including across restart. New archive UI requires local636. See AGENT_ARCHIVE.md
 for edge cases, resource ownership and the proposal approval requirement.
 
+### MP-08 / MP-09 / MP-10 / MP-11 — hide an agent (Landing 8)
+
+`HideAgent { session_id, agent_id, hidden }` keeps an agent out of the Room's panes
+without touching its work: the run, queued prompts, wakes and triggers all go on.
+`AgentHidden { session, agent }` returns the result. The agent's `hidden` flag
+(absent when false) is part of every session snapshot, so every client of the Room
+sees it. The kernel clears the flag when the agent's last active or queued prompt
+finishes, which is how a hidden working agent comes back for every client; hiding
+an idle agent holds until `hidden: false`. Only the owner hides or unhides, and an
+agent cannot do it through sudo. Archive stays for its own uses. Drill:
+`local::api::tests::agent_hide`.
+
 ### Held notification delivery (670)
 
 A workflow notification whose injection into a running agent has no proven outcome is held by the

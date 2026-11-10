@@ -142,6 +142,15 @@ pub struct ArchiveAgentRequest {
     pub archived: bool,
 }
 
+/// Keeps an agent out of the Room's panes without touching its work. Unlike archive, a run, queued prompts,
+/// wakes and triggers all go on; the kernel clears the flag when the agent's last prompt finishes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HideAgentRequest {
+    pub session_id: String,
+    pub agent_id: String,
+    pub hidden: bool,
+}
+
 /// Only the user moves an agent in the tree. `parent_agent_id: None` makes it a
 /// root of its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

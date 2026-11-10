@@ -53,6 +53,7 @@ pub(super) fn session_response_projection_action(
         | LocalDaemonResponse::AgentConfigUpdated { session, .. }
         | LocalDaemonResponse::AgentProfileUpdated { session, .. }
         | LocalDaemonResponse::AgentArchived { session, .. }
+        | LocalDaemonResponse::AgentHidden { session, .. }
         | LocalDaemonResponse::AgentForked { session, .. }
         | LocalDaemonResponse::SessionConfigUpdated { session, .. }
         | LocalDaemonResponse::AgentTriggerCreated { session, .. }

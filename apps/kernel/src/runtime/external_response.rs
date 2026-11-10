@@ -464,6 +464,7 @@ response_policies! {
         HomeExtensionAuditListed,
         SliceAuditListed,
         AgentArchived,
+        AgentHidden,
         AgentParentChanged,
         AgentDestroyed,
         AgentFocused,

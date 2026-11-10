@@ -66,6 +66,7 @@ impl SessionActor {
                 | LocalDaemonRequest::UndoTurn(_)
                 | LocalDaemonRequest::ForkAgent(_)
                 | LocalDaemonRequest::ArchiveAgent(_)
+                | LocalDaemonRequest::HideAgent(_)
                 | LocalDaemonRequest::DestroyAgent(_)
                 | LocalDaemonRequest::EndSession(_)
                 | LocalDaemonRequest::DeleteSession(_)

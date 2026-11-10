@@ -787,6 +787,25 @@ impl SessionRuntimeStore {
         self.with_session_projection_action_result(result).await
     }
 
+    pub(in crate::runtime::session_actor) async fn hide_agent(
+        &self,
+        request: crate::local::HideAgentRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = match self.state.hide_agent_in_session(&request, &caller_user_id) {
+            Ok(agent) => self
+                .state
+                .session_snapshot(&request.session_id)
+                .await
+                .map(|session| LocalDaemonResponse::AgentHidden { session, agent }),
+            Err(error) => Err(error),
+        };
+        self.with_session_projection_action_result(result).await
+    }
+
     pub(in crate::runtime::session_actor) async fn destroy_agent(
         &self,
         request: DestroyAgentRequest,

@@ -189,6 +189,10 @@ export function archiveAgentRequest(sessionId: string, agentId: string, archived
   return { ArchiveAgent: { session_id: sessionId, agent_id: agentId, archived } }
 }
 
+export function hideAgentRequest(sessionId: string, agentId: string, hidden: boolean) {
+  return { HideAgent: { session_id: sessionId, agent_id: agentId, hidden } }
+}
+
 export function destroyAgentRequest(sessionId: string, agentId: string) {
   return {
     DestroyAgent: {

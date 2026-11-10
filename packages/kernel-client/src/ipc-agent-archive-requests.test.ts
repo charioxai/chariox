@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { archiveAgentRequest, listArchivedAgentsRequest, supportsReversibleAgentArchive } from "./ipc-agent-requests.js"
+import { archiveAgentRequest, hideAgentRequest, listArchivedAgentsRequest, supportsReversibleAgentArchive } from "./ipc-agent-requests.js"
 
 test("agent archive discovery and restoration use the shared protocol", () => {
   assert.deepEqual(listArchivedAgentsRequest("room"), { ListArchivedAgents: { session_id: "room" } })
@@ -10,4 +10,8 @@ test("agent archive discovery and restoration use the shared protocol", () => {
 test("agent archive UI requires the expanded cleanup protocol", () => {
   for (const version of [null, undefined, 592, 629, 635]) assert.equal(supportsReversibleAgentArchive(version), false)
   for (const version of [636, 637]) assert.equal(supportsReversibleAgentArchive(version), true)
+})
+
+test("hiding an agent uses the shared HideAgent request", () => {
+  assert.deepEqual(hideAgentRequest("room", "agent", true), { HideAgent: { session_id: "room", agent_id: "agent", hidden: true } })
 })

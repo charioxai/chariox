@@ -527,6 +527,19 @@ impl AgentService {
         self.get_agent(agent_id)
     }
 
+    pub(crate) fn set_agent_hidden(
+        &mut self,
+        agent_id: &str,
+        hidden: bool,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.get_agent(agent_id)?;
+        self.store
+            .get_mut(agent_id)
+            .expect("agent checked")
+            .set_hidden(hidden);
+        self.get_agent(agent_id)
+    }
+
     pub(crate) fn repair_stale_session_focus(
         &mut self,
         session_id: &str,
