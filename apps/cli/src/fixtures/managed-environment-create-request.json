@@ -1,0 +1,15 @@
+{
+  "accountId": "account-1",
+  "clientRequestId": "create-request-1",
+  "region": "hel1",
+  "computeClass": "agent-small",
+  "managedRepositoryRoot": "/home/chariox",
+  "shutdownPolicy": { "kind": "last_work_finished", "warningSeconds": 30 },
+  "contextPlan": {
+    "sourceTargetId": null,
+    "kernelContext": "empty",
+    "developmentSetup": { "kind": "empty" },
+    "providerAccounts": { "kind": "none" },
+    "gitCredentials": { "kind": "none" }
+  }
+}
