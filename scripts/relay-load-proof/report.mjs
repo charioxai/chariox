@@ -19,6 +19,7 @@ for (const name of rows) {
   if (r.fatal) fails.push(`harness error: ${r.fatal}`)
   const frozen = r.variant === "stalled"
   if (!frozen && (!r.transfers || done.length !== r.transfers.length)) fails.push(`${(r.transfers ?? []).length - done.length} transfer(s) failed`)
+  if (!frozen && typeof r.fileShare === "number" && r.fileShare < 0.9) fails.push(`file bytes ${pct(r.fileShare)} of the wire < 90%`)
   if (!frozen && r.wireDownRate !== null && r.wireDownRate !== undefined && r.wireDownRate < 0.9) fails.push(`link use ${pct(r.wireDownRate)} < 90%`)
   if (!frozen && r.probes && r.probes.small.p95 > bar) fails.push(`small p95 ${ms(r.probes.small.p95)} ms > ${bar} ms`)
   if (!frozen && r.probes && r.probes.small.failed) fails.push(`${r.probes.small.failed} small probe(s) failed`)
@@ -45,6 +46,7 @@ for (const name of rows) {
   }
   out.push("| transfer | elapsed s | ideal s (size / link) | payload rate vs link | ok |", "|---|---|---|---|---|")
   ;(r.transfers ?? []).forEach((t, i) => out.push(`| ${i + 1} | ${t.elapsedMs ? (t.elapsedMs / 1000).toFixed(1) : "-"} | ${(r.sizeBytes / (r.link.down * 125)).toFixed(1)} | ${pct(r.payloadRate?.[i])} | ${t.code === 0 && t.hashOk ? "yes" : `no (${(t.error ?? "").slice(0, 120)})`} |`))
+  if (typeof r.fileShare === "number") out.push("", `File bytes over wire bytes (verified file bytes / bytes the relay put on the ${r.direction === "put" ? "uplink" : "downlink"}, probes' cost taken off): ${pct(r.fileShare)} (${r.fileBytes} B in ${r.wire.downBytes} B); the bar is 90%.`)
   out.push("", `Wire use of the ${r.direction === "put" ? "uplink" : "downlink"} by the transfers (bytes the relay sent through the shaped link / window / link rate, the probes' own idle cost taken off; raw ${pct(r.wireDownRateRaw)}): ${pct(r.wireDownRate)}; a probe pair costs ${r.wire?.probePairBytes ?? '-'} B. Window ${ms(r.windowMs / 1000)} s; the ideal for all bytes is ${r.idealSeconds ? r.idealSeconds.toFixed(0) : "-"} s of payload.`)
   if (r.cpuSeconds) out.push(`CPU seconds used during the run (debug builds): relay ${r.cpuSeconds.relay}, serving kernel ${r.cpuSeconds.worker}, client kernel ${r.cpuSeconds.home}.`)
   out.push(`Relay RSS KiB: before ${r.relayRssKib?.before}, max ${r.relayRssKib?.max}, after ${r.relayRssKib?.after}${r.relayRssKib?.duringStall ? `, during stall ${r.relayRssKib.duringStall}` : ""}.`)
