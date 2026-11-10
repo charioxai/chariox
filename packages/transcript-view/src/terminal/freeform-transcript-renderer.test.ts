@@ -35,7 +35,22 @@ test("a visualize line in Codex's wrapper marks names the page, and no private-u
     assert.match(html, /▣ visual: [\w.-]+\.html · \/[\w/.-]+\.html \(open in the web app\)/, JSON.stringify(text))
     assert.doesNotMatch(html, /visualize|[-]/, JSON.stringify(text))
   }
-  const other = renderFreeformMessage("agent", `A note stays.\n\nvisualize{"mode":"wide"}`)
+  const other = renderFreeformMessage("agent", `A note stays.\n\nvisualize{"mode":"wide"}`)
   assert.doesNotMatch(other, /[-]/)
   assert.match(other, /A note stays\./)
+})
+
+// Only the visualize wrapper is a directive the pane reads. Text in code, and marks of any other directive, are the reply's own
+// characters: removing them from the whole source would change what a code sample or a quotation says.
+test("private-use marks in code spans, fences and other directives are left as written", () => {
+  const mark = (name: string, args: string) => `\uE200${name}\uE202${args}\uE201`
+  const wrapped = mark("visualize", '{"path":"/w/chart.html"}')
+  const span = renderFreeformMessage("agent", `Codex writes \`${wrapped}\` for it.`)
+  assert.match(span, /<code>\uE200visualize\uE202\{[^<]*\uE201<\/code>/, "the code span is untouched")
+  assert.doesNotMatch(span, /▣ visual/)
+  const fence = renderFreeformMessage("agent", `\`\`\`text\n${wrapped}\n\`\`\``)
+  assert.match(fence, /\uE200visualize\uE202[^<]*\uE201/, "the fence is untouched")
+  assert.doesNotMatch(fence, /▣ visual/)
+  const other = mark("cite", "turn0search0")
+  assert.ok(renderFreeformMessage("agent", `Sourced ${other}.`).includes(other), "another directive is not rewritten")
 })
