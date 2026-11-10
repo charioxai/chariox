@@ -556,10 +556,10 @@ export function deriveWaitingRoomControlActivationDecision(options: {
       if (machine.online === false || machine.pending || machine.kernel_count === 0) {
         return { action: "info", message: `press D twice to delete machine ${label}` }
       }
-      const target = machine.machine_alias ?? machine.machine_id
+      // The id has no spaces; a computer's name can (`Miguel's Mac Studio`) and would split into arguments.
       return {
         action: "stage-command",
-        command: `/machine kernels ${target}`,
+        command: `/machine kernels ${machine.machine_id}`,
         message: `press Enter to list kernels for ${label}`,
       }
     }

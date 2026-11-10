@@ -695,7 +695,7 @@ test("deriveWaitingRoomControlActivationDecision handles machine activation", ()
 
   assert.deepEqual(approved, {
     action: "stage-command",
-    command: "/machine kernels builder",
+    command: "/machine kernels machine-1",
     message: "press Enter to list kernels for builder",
   })
   assert.deepEqual(inactive, {

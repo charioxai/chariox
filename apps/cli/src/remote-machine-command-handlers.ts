@@ -177,8 +177,7 @@ function remoteMachineNextAction(machine: RemoteMachineSummary): string {
 
 function remoteKernelNextAction(kernel: RemoteMachineKernelSummary): string {
   const kernelLabel = remoteKernelLabel(kernel)
-  const machineLabel = kernel.machine_alias ?? kernel.machine_id
-  const inspect = machineLabel ? `run /machine kernels ${machineLabel}; ` : ""
+  const inspect = kernel.machine_id ? `run /machine kernels ${kernel.machine_id}; ` : ""
   const readiness = remoteKernelReadiness(kernel)
   if (readiness === "blocked") {
     return `${inspect}enable remote leases on ${kernelLabel} or choose another worker`
