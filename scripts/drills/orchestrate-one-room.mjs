@@ -8,10 +8,11 @@ import http from "node:http"
 import { createHmac, createHash, randomBytes, randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync } from "node:fs"
 import { createServer } from "node:net"
-import { resolve, join } from "node:path"
+import { resolve, join, dirname } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { LocalIpcClient } from "../../packages/kernel-client/dist/ipc.js"
 import { submitPromptRequest } from "../../packages/kernel-client/dist/ipc-requests.js"
+import { startOwnerCloud } from "./local-owner-cloud.mjs"
 import { hiddenBrief, runHidden } from "./hidden-subagents-scenario.mjs"
 import { kindsBrief, orchBrief, decisionsTwoBrief, kindsDriver, sudoProbe, lateParentAnswer, controlProbes } from "./subagents-landing5-scenarios.mjs"
 import { listDescendantsRequest } from "../../packages/kernel-client/dist/ipc-agent-requests.js"
@@ -25,6 +26,7 @@ const codexProfilePath = provider === "codex" ? need("--codex-profile-path") : n
 const model = flags.get("--model") ?? (provider === "codex" ? "gpt-6-luna" : "claude-haiku-5-5")
 const budgetMs = Number(flags.get("--budget-seconds") ?? 1800) * 1000
 const tokenFile = "/root/.claude-lanes/oauth-token"
+const controlPath = flags.get("--control-file") ? resolve(flags.get("--control-file")) : null
 if (!stateRoot.startsWith("/root/.chariox/dev/")) throw new Error("state must be lane-owned")
 mkdirSync(stateRoot, { recursive: true, mode: 0o700 })
 mkdirSync(evidence, { recursive: true })
@@ -39,10 +41,10 @@ const note = (name, data = {}) => {
 const redact = text => String(text).replace(/sk-ant-[A-Za-z0-9_-]+/g, "<redacted>")
 const env = { PATH: process.env.PATH, NODE_OPTIONS: "--max-old-space-size=3072", IS_SANDBOX: "1", SHELL: "/bin/bash" }
 const secret = randomBytes(32).toString("base64url"), issuer = `orch-${randomUUID()}`
-function token(subject, kind, actions) {
+function token(subject, kind, actions, thumbprint, targets) {
   const head = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url")
   const body = Buffer.from(JSON.stringify({ iss: issuer, sub: subject, subject_kind: kind, realm_id: issuer, allowed_actions: actions,
-    allowed_targets: null, iat: Math.floor(Date.now() / 1000) - 1, exp: Math.floor(Date.now() / 1000) + 7200, jti: randomUUID(), user_id: "local" })).toString("base64url")
+    allowed_targets: targets ?? null, ...(thumbprint ? { public_key_thumbprint: thumbprint } : {}), iat: Math.floor(Date.now() / 1000) - 1, exp: Math.floor(Date.now() / 1000) + 7200, jti: randomUUID(), user_id: "local" })).toString("base64url")
   return `${head}.${body}.${createHmac("sha256", secret).update(`${head}.${body}`).digest("base64url")}`
 }
 async function freePort() {
@@ -75,7 +77,7 @@ async function stop(child) {
   }
   note("process-exit", { pid: child.pid, code: child.exitCode, signal: child.signalCode })
 }
-async function role(name) {
+async function role(name, extraEnv = {}) {
   const dir = join(root, name), ports = []
   for (let i = 0; i < 4; i++) ports.push(await freePort())
   for (const sub of ["chariox", "home", "tmp", "work", "logs", "history", "config", "cache", "state"]) mkdirSync(join(dir, sub), { recursive: true, mode: 0o700 })
@@ -83,7 +85,7 @@ async function role(name) {
   const localEnv = { ...env, HOME: join(dir, "home"), TMPDIR: join(dir, "tmp"), XDG_CONFIG_HOME: join(dir, "config"), XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"),
     CHARIOX_HOME: join(dir, "chariox"), CHARIOX_LOG_DIR: join(dir, "logs"), CHARIOX_SESSION_HISTORY_DIR: join(dir, "history"),
     CHARIOX_DAEMON_SOCKET: join("/var/tmp/rch", `orch-${name}-${process.pid}.sock`), CHARIOX_DAEMON_ALIAS: `orch-${name}`, CHARIOX_MACHINE_ALIAS: `orch-${name}-machine`,
-    CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_OPENCODE_PORT: String(ports[2]), CHARIOX_CODEX_PORT: String(ports[3]) }
+    CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_OPENCODE_PORT: String(ports[2]), CHARIOX_CODEX_PORT: String(ports[3]), ...extraEnv }
   mkdirSync("/var/tmp/rch", { recursive: true })
   const r = { name, dir, env: localEnv, passkey: randomBytes(24).toString("hex"), mcpPort: ports[1] }
   r.url = `ws://127.0.0.1:${ports[0]}/kernel`
@@ -184,13 +186,18 @@ async function main() {
   mkdirSync(join(root, "relay"), { mode: 0o700 })
   if (flags.get("--single") !== "yes") start(relayBinary, { HOME: root, CHARIOX_HOME: join(root, "relay"), CHARIOX_RELAY_HOST: "127.0.0.1", CHARIOX_RELAY_PORT: String(relayPort), CHARIOX_RELAY_SCOPED_ISSUER: issuer, CHARIOX_RELAY_SCOPED_HMAC_SECRET: secret }, "relay")
   const single = flags.get("--single") === "yes"
-  const a = await role("a"), b = single ? { name: "b", dir: join(root, "b"), status: { daemon_id: "single-kernel" }, rpc: async () => ({}) } : await role("b")
-  if (!single) mkdirSync(join(root, "b/work/w5"), { recursive: true })
-  if (!single) for (const r of [a, b]) {
+  // --owner-profile: the kernels start the way a managed kernel does, with their owner's profile in the environment and a loopback stand-in for the few Cloud endpoints
+  // they use (local-owner-cloud.mjs), so peer agents of other kernels act for the one owner of the local relay's realm.
+  const profileEnv = flags.get("--owner-profile") === "yes" ? await startOwnerCloud({ token, note, realm: issuer, relayPort }) : {}
+  const a = await role("a", profileEnv), b = single ? { name: "b", dir: join(root, "b"), status: { daemon_id: "single-kernel" }, rpc: async () => ({}) } : await role("b", profileEnv)
+  if (!single) for (const w of ["w1", "w2", "w3", "w4", "w5"]) mkdirSync(join(root, "b/work", w), { recursive: true })
+  const owned = flags.get("--owner-profile") === "yes"
+  if (!single && !owned) for (const r of [a, b]) {
     await r.rpc({ ConfigureRelay: { relay_url: `ws://127.0.0.1:${relayPort}`, relay_token: token(r.status.daemon_id, "kernel", ["daemon.register", "daemon.heartbeat", "packet.route", "peer.request", "peer.event", ...(flags.get("--kernel-metadata") === "yes" ? ["client.metadata.read"] : [])]) } })
     await until(async () => (await r.rpc({ RelayStatus: null })).RelayStatus.status.connected, `${r.name} relay registration`)
   }
-  if (!single) {
+  if (!single && owned) for (const r of [a, b]) await until(async () => (await r.rpc({ RelayStatus: null })).RelayStatus.status.connected, `${r.name} relay registration`, 60000)
+  if (!single && !owned) {
   const pairing = (await b.rpc({ CreateTerminalPairingLink: { terminal_type: "cli", expires_in_ms: 300000 } })).TerminalPairingLinkCreated.pairing
   await a.rpc({ JoinKernelLink: { link: pairing.pairing_link, relay_token: token("orch-operator", "client", ["client.connect", "client.metadata.read", "packet.route"]) } })
   note("paired", { from: "a", to: "b", b: b.status.daemon_id })
@@ -374,7 +381,7 @@ Keep ${join(work, "orchestrator-state.json")} updated after every step.
     if (flags.has("--other-room-prompt")) await host.rpc(submitPromptRequest(otherRoom.R2, att2, otherRoom.q, flags.get("--other-room-prompt"), [])).then(() => note("other-room-prompted"), e => note("other-room-prompt-refused", { message: e.message.slice(0, 200) }))
   }
   const briefFile = flags.get("--brief-file")
-  const brief = briefFile ? readFileSync(briefFile, "utf8").replaceAll("{{R}}", R).replaceAll("{{WORK}}", work).replaceAll("{{MODEL}}", model).replaceAll("{{ORCH}}", orch).replaceAll("{{ROOT}}", root).replaceAll("{{Q}}", otherRoom.q).replaceAll("{{R2}}", otherRoom.R2).replaceAll("{{B}}", b.status.daemon_id) : scenario === "decisions" ? decisionsTwoBrief({ R, model, work }) : scenario === "kinds" ? kindsBrief({ R, model, work, payPort }) : scenario === "orch" ? orchBrief({ R, model, work }) : scenario === "decisions" ? decisionsBrief : scenario === "authority" ? authorityBrief : scenario === "ask" ? askBrief : scenario === "messages" ? messagesBrief : scenario === "batchyield" ? batchYieldBrief : scenario === "batch" ? batchBrief : scenario === "heartbeat" ? heartbeatBrief : scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
+  const brief = briefFile ? readFileSync(briefFile, "utf8").replaceAll("{{R}}", R).replaceAll("{{WORK}}", work).replaceAll("{{MODEL}}", model).replaceAll("{{ORCH}}", orch).replaceAll("{{ROOT}}", root).replaceAll("{{Q}}", otherRoom.q).replaceAll("{{R2}}", otherRoom.R2).replaceAll("{{B}}", b.status.daemon_id).replaceAll("{{GO}}", goPath).replaceAll("{{CTL}}", dirname(controlPath ?? join(root, "ctl"))) : scenario === "decisions" ? decisionsTwoBrief({ R, model, work }) : scenario === "kinds" ? kindsBrief({ R, model, work, payPort }) : scenario === "orch" ? orchBrief({ R, model, work }) : scenario === "decisions" ? decisionsBrief : scenario === "authority" ? authorityBrief : scenario === "ask" ? askBrief : scenario === "messages" ? messagesBrief : scenario === "batchyield" ? batchYieldBrief : scenario === "batch" ? batchBrief : scenario === "heartbeat" ? heartbeatBrief : scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Run a small team inside THIS Room using only the tools of an ordinary room agent:
 the room commands (chariox room run_command), list_session_agents, send_agent_message, history and the chariox events tools (subscribe, yield, inbox, ack). There is NO /sudo.
 Do not ask the owner anything. Never retry a refused call more than once; record the exact refusal code and message instead.
@@ -414,7 +421,6 @@ Steps:
   const reportPath = join(work, "orchestrator-report.json")
   let attachedNow = attached
   // An outside observer drives faults: one JSON line per op ({"op":"stop|cont|kill|start","kernel":"a|b"}), run in order.
-  const controlPath = flags.get("--control-file")
   let controlRead = 0
   const controlOps = async () => {
     if (!controlPath || !existsSync(controlPath)) return
