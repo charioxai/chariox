@@ -705,9 +705,7 @@ impl DaemonApp {
 
     pub(crate) fn kernel_ref_is_local(&self, kernel_ref: &str) -> bool {
         let kernel_ref = kernel_ref.trim();
-        !kernel_ref.is_empty()
-            && (self.config.daemon_id == kernel_ref
-                || self.config.daemon_alias.as_deref() == Some(kernel_ref))
+        !kernel_ref.is_empty() && self.config.daemon_id == kernel_ref
     }
 
     pub(crate) fn spawn_worker_agent(

@@ -139,6 +139,7 @@ pub(crate) async fn projected_relay_status(
             && config.relay_url.is_some()
             && state.connected_relay_url() == config.relay_url
     };
+    let machine_alias = config.machine_name();
     RelayStatus {
         local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
         runtime_process_identity: crate::runtime::kernel_process_identity::current(),
@@ -151,9 +152,8 @@ pub(crate) async fn projected_relay_status(
         relay_url: config.relay_url,
         relay_token_configured: config.relay_token.is_some(),
         daemon_id: config.daemon_id,
-        daemon_alias: config.daemon_alias,
         machine_id: config.host_machine_id,
-        machine_alias: config.host_machine_alias,
+        machine_alias,
     }
 }
 
@@ -238,7 +238,7 @@ mod tests {
         config.relay_token = Some("token".to_string());
         config.daemon_id = "daemon-1".to_string();
         config.host_machine_id = "machine-1".to_string();
-        config.host_machine_alias = Some("laptop".to_string());
+        config.machine_name_for_tests = Some("laptop".to_string());
 
         let status = projected_relay_status(
             Arc::new(RwLock::new(RelayClientState::default())),

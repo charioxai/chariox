@@ -50,7 +50,6 @@ async fn home_does_not_settle_a_completion_the_worker_refuses_for_a_run_change_a
     let relay_url = format!("ws://{}:{}", addr.ip(), addr.port());
     let mut worker_config = DaemonConfig::for_tests();
     worker_config.daemon_id = "run-change-worker".to_string();
-    worker_config.daemon_alias = Some("run-change-worker".to_string());
     worker_config.host_machine_id = "run-change-machine".to_string();
     let worker_private_key = worker_config.relay_private_key.clone();
     let (mut worker_socket, _) = connect_async(&relay_url)

@@ -38,8 +38,7 @@ impl KernelRuntimeState {
         });
         let config = self.owned.config_projection.snapshot();
         let home_name = config
-            .daemon_alias
-            .clone()
+            .machine_name()
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| config.daemon_id.clone());
         let route = match agent.remote_execution() {

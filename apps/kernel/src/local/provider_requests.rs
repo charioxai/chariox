@@ -133,9 +133,8 @@ impl DaemonApp {
             relay_url: self.config().relay_url.clone(),
             relay_token_configured: self.config().relay_token.is_some(),
             daemon_id: self.config().daemon_id.clone(),
-            daemon_alias: self.config().daemon_alias.clone(),
             machine_id: self.config().host_machine_id.clone(),
-            machine_alias: self.config().host_machine_alias.clone(),
+            machine_alias: self.config().machine_name(),
         })
     }
 

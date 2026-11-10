@@ -435,7 +435,6 @@ impl KernelGateway {
                 GATEWAY_CLIENT_ID,
                 &identity.thumbprint,
                 grant_id,
-                snapshot.daemon_alias.as_deref(),
                 target,
             )
             .await

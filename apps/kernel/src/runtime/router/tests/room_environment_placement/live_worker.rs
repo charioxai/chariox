@@ -288,7 +288,6 @@ impl LiveWorker {
             let slice = slices.resolve("desktop").unwrap();
             worker_kernel_id = slice.worker_kernel_ref;
             worker_state.config.daemon_id = worker_kernel_id.clone();
-            worker_state.config.daemon_alias = Some("slice:desktop".to_string());
             worker_state.config.host_machine_id = slice.owner_machine_id;
             slices
                 .set_relay_endpoint(

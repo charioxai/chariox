@@ -115,8 +115,8 @@ async fn enroll(
 fn ticket_enrollment_body(config: &DaemonConfig, ticket: &str) -> Value {
     let mut body = json!({"ticket":ticket,"kernelId":config.daemon_id,"machineId":config.host_machine_id,
         "publicKeyThumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key)});
-    if let Some(alias) = &config.daemon_alias {
-        body["kernelAlias"] = json!(alias);
+    if let Some(name) = config.machine_name() {
+        body["machineName"] = json!(name);
     }
     body
 }
@@ -205,14 +205,11 @@ pub async fn enroll_device_from_stdin() -> Result<(), DaemonError> {
         println!("{}", public_identity(&config)?);
         return Ok(());
     }
-    let request = serde_json::from_value(json!({"api_url":api_url})).map_err(|_| error())?;
     let started: CloudDeviceStartResponse = enrollment_exchange(
         api_url.clone(),
         "/auth/device/start",
         201,
-        crate::runtime::cloud_relay_login_executor::kernel_device_enrollment_body(
-            &config, &request,
-        ),
+        crate::runtime::cloud_relay_login_executor::kernel_device_enrollment_body(&config),
     )
     .await?;
     let code = Zeroizing::new(started.device_code);

@@ -559,7 +559,6 @@ async fn start_agent_slice_worker(
     worker_state.config.relay_token = fixture.home_state.config.relay_token.clone();
     worker_state.config.relay_heartbeat_ms = 50;
     worker_state.config.daemon_id = worker_kernel_id.to_string();
-    worker_state.config.daemon_alias = Some(format!("slice:{slice_id}:worker:test"));
     worker_state.config.host_machine_id = worker_machine_id.to_string();
     let worker = Arc::new(CommandRouter::with_interactive_capacity(
         Arc::new(Mutex::new(

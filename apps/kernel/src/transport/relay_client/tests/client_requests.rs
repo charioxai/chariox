@@ -216,16 +216,14 @@ async fn authenticated_public_client_preserves_worker_relay_retryability_async()
 
     let mut config_home = DaemonConfig::for_tests();
     config_home.daemon_id = "daemon-public-retry-home".to_string();
-    config_home.daemon_alias = Some("public-retry-home".to_string());
     config_home.host_machine_id = "machine-public-retry-home".to_string();
     config_home.relay_url = Some(relay_url.clone());
     config_home.relay_token = Some("secret".to_string());
     config_home.relay_heartbeat_ms = 50;
     let mut config_worker = DaemonConfig::for_tests();
     config_worker.daemon_id = "daemon-public-retry-worker".to_string();
-    config_worker.daemon_alias = Some("public-retry-worker".to_string());
     config_worker.host_machine_id = "machine-public-retry-worker".to_string();
-    config_worker.host_machine_alias = Some("public-retry-worker".to_string());
+    config_worker.machine_name_for_tests = Some("public-retry-worker".to_string());
     config_worker.relay_url = Some(relay_url.clone());
     config_worker.relay_token = Some("secret".to_string());
     config_worker.relay_heartbeat_ms = 50;

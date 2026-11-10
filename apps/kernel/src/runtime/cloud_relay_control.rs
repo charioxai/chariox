@@ -177,8 +177,8 @@ pub(crate) fn cloud_kernel_presence_body(
         "kernelId".to_string(),
         serde_json::Value::String(config.daemon_id.clone()),
     );
-    if let Some(alias) = config.daemon_alias.clone() {
-        body.insert("kernelAlias".to_string(), serde_json::Value::String(alias));
+    if let Some(name) = config.machine_name() {
+        body.insert("machineName".to_string(), serde_json::Value::String(name));
     }
     body.insert(
         "status".to_string(),
@@ -243,7 +243,6 @@ mod tests {
 
     fn config(profile: Option<PersistedCloudRelayProfile>) -> DaemonConfig {
         let mut config = DaemonConfig::new("kernel-1", "host-1", "tester");
-        config.daemon_alias = Some("dev kernel".to_string());
         config.relay_url = Some("wss://relay.test".to_string());
         config.relay_token = Some(bound_token("public"));
         config.cloud_relay = profile;

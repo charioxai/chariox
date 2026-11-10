@@ -65,8 +65,7 @@ impl KernelRuntimeState {
 
     pub(super) fn machine_label(config: &crate::config::DaemonConfig) -> String {
         config
-            .host_machine_alias
-            .clone()
+            .machine_name()
             .unwrap_or_else(|| config.host_machine_id.clone())
     }
 
