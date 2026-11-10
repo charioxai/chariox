@@ -17,7 +17,7 @@ async fn session_alias_attaches_default_agent_to_slice() {
         json!({"CreateSession": {
             "workspace_id":"workspace", "worktree_id":"worktree",
             "agent_defaults":{"provider":"managed-dev-stub", "model":"default"},
-            "kernel_ref":"desktop-worker", "worktree_placement":placement
+            "kernel_ref":fixture.worker_kernel_id(), "worktree_placement":placement
         }}),
     )
     .await
@@ -168,7 +168,7 @@ async fn standard_worker_does_not_infer_project_transfer() {
             "worktree_id":target_worktree_id.clone(),
             "project_selection":{"kind":"existing", "project_id":project_id.clone()},
             "agent_defaults":{"provider":"managed-dev-stub", "model":"default"},
-            "kernel_ref":"desktop-worker"
+            "kernel_ref":fixture.worker_kernel_id()
         }}),
     )
     .await
