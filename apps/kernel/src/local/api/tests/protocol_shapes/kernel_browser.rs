@@ -785,3 +785,12 @@ fn show_tab_is_a_person_command_with_its_tab_and_generation() {
         "no field names who asks"
     );
 }
+
+#[test]
+fn a_popup_tab_names_its_opener_tab_without_a_protocol_bump() {
+    let wire = serde_json::json!({"KernelBrowser":{"result":{"generation":2,"state":"ready","active_tab_id":"popup","tabs":[
+        {"tab_id":"source","document_id":"d0","url":"https://example.com/","title":"Example"},
+        {"tab_id":"popup","document_id":"d1","url":"https://login.example/","title":"Sign in","opener_tab_id":"source"}]}}});
+    let response: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(response).unwrap(), wire);
+}
