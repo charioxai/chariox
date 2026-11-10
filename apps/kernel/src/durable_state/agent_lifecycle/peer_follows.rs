@@ -10,6 +10,27 @@ const OUTBOX_TTL_MS: u64 = 24 * 60 * 60 * 1_000;
 /// The occurrence of a followed agent or room that is gone; the follower's event says so.
 pub(crate) const SOURCE_LOST_OCCURRENCE: &str = "source-lost-";
 
+/// A follow reports every turn of its peer, so it outlives the turns it reports; only the loss
+/// of the peer (`agent-gone-*`, `source-lost-*`) or an unfollow ends it.
+pub(super) fn outlives(registration: &Registration, occurrence: &str) -> bool {
+    registration.peer && occurrence.starts_with("task-terminal-")
+}
+
+/// The live follows an agent made in any of its tasks: a follow outlives the turn that made it.
+pub(super) fn held_by(
+    db: &Connection,
+    room: &str,
+    agent: &str,
+) -> Result<Vec<Registration>, DaemonError> {
+    let mut q = db
+        .prepare("SELECT r.payload FROM agent_registrations r JOIN agent_tasks t ON t.task_id=r.task_id WHERE t.room_id=?1 AND t.agent_id=?2 AND json_valid(r.payload) AND COALESCE(json_extract(r.payload,'$.peer'),0)=1 AND COALESCE(json_extract(r.payload,'$.live'),0)=1 ORDER BY r.rowid")
+        .map_err(sql)?;
+    let rows = q
+        .query_map(params![room, agent], |r| r.get::<_, String>(0))
+        .map_err(sql)?;
+    rows.map(|row| decode(&row.map_err(sql)?)).collect()
+}
+
 pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS peer_agent_followers(subscription_id TEXT PRIMARY KEY,subscriber_kernel_id TEXT NOT NULL,owner TEXT NOT NULL,target_room TEXT NOT NULL,target_agent TEXT NOT NULL,generation INTEGER NOT NULL,live INTEGER NOT NULL);

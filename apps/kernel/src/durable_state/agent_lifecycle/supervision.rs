@@ -127,9 +127,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .1
                 .map(|v| decode::<serde_json::Value>(&v))
                 .transpose()?;
-            // A follow reports every turn of its peer, so it outlives the turns it reports; the
-            // end of the peer itself (or an unfollow) ends it.
-            let peer_turn = id.starts_with("task-terminal-");
             for mut t in source_tasks(tx, &room, &source)? {
                 let held = registrations(tx, &t.task_id);
                 // A finished task is done with its sources, unless it still follows this peer.
@@ -192,7 +189,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         && !(success && super::delegation::unbound(&t, &reg))
                     {
                         peers_ended |= reg.peer;
-                        if !(reg.peer && peer_turn) {
+                        if !super::peer_follows::outlives(&reg, &id) {
                             reg.live = false;
                             tx.execute(
                                 "UPDATE agent_registrations SET payload=?2 WHERE id=?1",

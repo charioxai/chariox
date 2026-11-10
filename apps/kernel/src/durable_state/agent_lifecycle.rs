@@ -358,6 +358,15 @@ impl DurableKernelStateStore {
         let db = self.lock_connection("agent.lifecycle.subscriptions")?;
         registrations(&db, task)
     }
+    /// The live follows of peers an agent made in any of its tasks.
+    pub(crate) fn agent_peer_follows(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> Result<Vec<Registration>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.subscriptions")?;
+        peer_follows::held_by(&db, room, agent)
+    }
     pub(crate) fn agent_delivery_front(
         &self,
         room: &str,
