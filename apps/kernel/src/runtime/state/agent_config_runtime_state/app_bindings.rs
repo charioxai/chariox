@@ -469,9 +469,9 @@ impl KernelRuntimeState {
         }
     }
 
-    /// Preserve the broken binding for inspectors while the inactive App has
-    /// no authority or tools. The existing reinstall gate removes it before
-    /// an approved release can become active, so reinstall never regrants it.
+    /// Preserve the binding while the inactive App has no authority or tools:
+    /// inspectors see it as broken, and reinstalling the kept installation
+    /// makes it live again.
     pub(crate) async fn refresh_uninstalled_app_bindings(&self, owner: &str, installation: &str) {
         self.app_control()
             .views()

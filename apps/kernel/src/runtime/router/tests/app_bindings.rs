@@ -476,8 +476,17 @@ async fn a_foreground_app_binds_the_focus_agent_follows_focus_and_explicit_revoc
         .await
         .unwrap();
     assert!(granted(&app, &second).await);
-    state.unbind_uninstalled_app("alice", "installed").await;
+    for agent in [&first, &second] {
+        state
+            .revoke_agent_extension(agent, ExtensionKind::App, "installed", "alice")
+            .await
+            .unwrap();
+    }
     assert!(!granted(&app, &first).await && !granted(&app, &second).await);
+    state
+        .app_control()
+        .views()
+        .forget_installation("alice", "installed");
     // Its Tab stays on screen, unbound: it is no foreground App.
     let third = spawn_alice_agent(&app, &session).await;
     state
@@ -831,7 +840,7 @@ async fn a_fork_copies_app_bindings_through_the_checked_audited_grant() {
 }
 
 #[tokio::test]
-async fn uninstall_keeps_missing_binding_visible_without_tools_or_a_reinstall_regrant() {
+async fn uninstall_keeps_missing_binding_visible_without_tools_and_a_reinstall_restores_it() {
     let fixture = Fixture::new();
     let (app, router, session, agent, _auth) =
         fixture.router(crate::provider::AgentPermissionLevel::Yolo);
@@ -874,8 +883,12 @@ async fn uninstall_keeps_missing_binding_visible_without_tools_or_a_reinstall_re
         .app_extension_tools_for_agent(&bound, &std::collections::BTreeSet::new())
         .unwrap()
         .is_empty());
-    // Exercise the actual reinstall request and its approval boundary, rather
-    // than invoking the helper directly: skipping the gate must fail this test.
+    // That listing left the App out, so the agent's catalog is refreshed once
+    // the reinstalled App starts.
+    assert!(state
+        .app_control()
+        .app_unlisted("alice", "installed", &agent));
+    // Exercise the actual reinstall request and its approval boundary.
     use base64::Engine;
     use chariox_app_package::VerifiedApp;
     use sha2::Digest;
@@ -952,8 +965,8 @@ async fn uninstall_keeps_missing_binding_visible_without_tools_or_a_reinstall_re
         crate::local::AppInstallOperationPhase::Preparing
     );
     assert!(
-        !granted(&app, &agent).await,
-        "reinstall retained the old grant before approval"
+        granted(&app, &agent).await,
+        "reinstall dropped the agent's grant"
     );
     tokio::time::timeout(std::time::Duration::from_secs(8), async {
         loop {
@@ -970,7 +983,7 @@ async fn uninstall_keeps_missing_binding_visible_without_tools_or_a_reinstall_re
             let LocalDaemonResponse::AppInstallOperationStatus { operation } = response else {
                 panic!("reinstall status: {response:?}")
             };
-            assert!(!granted(&app, &agent).await);
+            assert!(granted(&app, &agent).await);
             assert!(store
                 .get_app_installation("alice", "installed")
                 .unwrap()
@@ -988,7 +1001,7 @@ async fn uninstall_keeps_missing_binding_visible_without_tools_or_a_reinstall_re
         }
     })
     .await
-    .expect("reinstall reaches approval with no old grant");
+    .expect("reinstall reaches approval with the old grant kept");
     let control = state.app_control().installs().clone();
     let handle = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || control.shutdown_blocking(handle))
