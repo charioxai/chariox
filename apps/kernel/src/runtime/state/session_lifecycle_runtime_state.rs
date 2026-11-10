@@ -719,14 +719,6 @@ impl KernelRuntimeState {
         let local_agent =
             self.owned
                 .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to remote")?;
-        if self
-            .owned
-            .durable_state_store
-            .agent_deadline(session_id, local_agent.id())?
-            .is_some()
-        {
-            return Err(DaemonError::MachineRequest { code: "agent_deadline_requires_executor".into(), message: "an agent with a lane deadline must stay on its executing kernel; start a new lane on the worker".into() });
-        }
         let slice_admission = self
             .guard_slice_execution(
                 Some(session_id),

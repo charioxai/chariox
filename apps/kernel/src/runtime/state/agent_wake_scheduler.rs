@@ -95,12 +95,6 @@ impl KernelRuntimeState {
         let mut recovered = false;
         let mut worker_recovered = false;
         loop {
-            if let Err(error) = self
-                .tick_agent_deadlines(crate::session::unix_epoch_ms())
-                .await
-            {
-                tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: deadline cleanup retained for retry");
-            }
             if !worker_recovered {
                 worker_recovered = self
                     .recover_worker_leased_processes(crate::session::unix_epoch_ms())
@@ -216,11 +210,6 @@ impl KernelRuntimeState {
 
     /// Dead-man switch run by the 30 s lifecycle sweep.
     pub(super) async fn sweep_agent_wakes(&self, now: u64) -> Result<(), DaemonError> {
-        // A deadline whose sources are still stopping retries on its own; it
-        // must not hold back supervision of every other wake.
-        if let Err(error) = self.tick_agent_deadlines(now).await {
-            tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: deadline cleanup retained for retry");
-        }
         let monitor = &self.owned.agent_wakes;
         monitor.sweep_ms.store(now, Ordering::Release);
         monitor.sweep_stall_alerted.store(false, Ordering::Release);

@@ -95,8 +95,6 @@ impl KernelRuntimeState {
             return Err(denied("registry request is outside the caller room"));
         }
         let (room, target_id, deleting) = match request {
-            LocalDaemonRequest::SetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
-            LocalDaemonRequest::GetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::AliasAgent(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::DestroyAgent(r) => (&r.session_id, &r.agent_id, true),
             LocalDaemonRequest::UpdateAgentConfig(r) => (&r.session_id, &r.agent_id, false),

@@ -7,7 +7,6 @@ pub enum LocalDaemonResponse {
     EventsListed { events: Vec<OutsideEvent>, next_cursor: u64, oldest_cursor: u64, timed_out: bool },
     EventsAcknowledged { cursor: u64 },
     EventsCursorExpired { oldest_cursor: u64 },
-    AgentDeadline { deadline: Option<AgentDeadline> },
     SshMachine { machine: SshMachineResult },
     EnvironmentUnsupportedFeature { feature: crate::project_environment::EnvironmentCapability, supported_schema: u32 },
     ProjectEnvironmentDiff { diff: crate::project_environment::EnvironmentRevisionDiff },
@@ -37,8 +36,6 @@ pub enum LocalDaemonResponse {
     GatewayKernelJoined { kernel: GatewayKernel, },
     GatewayKernelForgotten { kernel_id: String, },
     /// Protocol 568: the machine file requests.
-    KernelFileStat { stat: KernelFileStat, },
-    KernelDirectoryListed { path: String, entries: Vec<KernelDirectoryEntry>, truncated: bool, },
     KernelFileChunk { path: String, offset: u64, data_base64: String, size: u64, eof: bool, },
     KernelFileWritten { path: String, received: u64, complete: bool, sha256: Option<String>, },
     RoomBrowserArtifact { result: crate::transport::runtime_tools::RuntimeToolResult },

@@ -701,23 +701,6 @@ Ambiguous post-commit failures retain intent;
 PR1 does not add automatic replay, settlement, yield or recovery scheduling.
 Those lifecycle semantics belong to PR2.
 
-### Executor-local lane deadlines (MP-08 / MP-09 / MP-10 / MP-11)
-
-Allocated local protocol **585** adds `SetAgentDeadline {session_id, agent_id,
-deadline_ms}` and `GetAgentDeadline {session_id, agent_id}`. Both return
-`AgentDeadline {deadline}` with the executing kernel's durable deadline receipt.
-A deadline can shorten, never extend. The kernel rejects new work after it is
-reached and retries physical cleanup; `reached_at_ms` and `stopped_at_ms` distinguish
-admission fencing from completed cleanup. A kernel restart enforces overdue
-work on startup. This does not add a relay shape; peer **181** is inherited.
-Leased executors require their own deadline enforcement and are refused here.
-
-`RelayStatus.status.capabilities` advertises `agent_deadline_v1` only when these
-requests are implemented. Coordinator adapters check that capability before
-sending either request. Without it they report no kernel deadline and may keep
-a coordinator-side timer, whose process, network and access grant are required;
-that timer is not durable kernel enforcement.
-
 ## 3.3.5 Durable Agent Tasks and Events (MP-08 / MP-09 / MP-10 / MP-11, A02)
 
 MP-08 / MP-09 / MP-10 / MP-11: the integrated acceptance contract uses local
@@ -4947,9 +4930,7 @@ authority for its own sessions, agents, terminals and files.
   another kernel. Grant revoke, expiry and holder exit stop forwarding at once; work already started on the
   target keeps running.
 - Kernel files (kernel API requests, any kernel, owner only: a Chariox terminal or a local grant holder, or the
-  gateway acting for one): `StatKernelFile { path, with_sha256 }` -> `KernelFileStat { stat: {path, exists, kind,
-  size, modified_ms, sha256, partial_size} }`; `ListKernelDirectory { path }` -> `KernelDirectoryListed { path,
-  entries, truncated }` (2000 entries); `ReadKernelFile { path, offset, length }` (length <= 256 KiB) ->
+  gateway acting for one): `ReadKernelFile { path, offset, length }` (length <= 256 KiB; length 0 only reports `size`) ->
   `KernelFileChunk { path, offset, data_base64, size, eof }`; `WriteKernelFile { path, offset, data_base64,
   total_size, sha256?, overwrite }` (chunk <= 256 KiB, in order) -> `KernelFileWritten { path, received, complete,
   sha256 }`. Paths are absolute or `~/`. An upload lives in `<path>.chariox-partial` and the file appears at `path`
@@ -4957,6 +4938,9 @@ authority for its own sessions, agents, terminals and files.
   kept); a chunk at the wrong offset is `file_offset_mismatch` and the message names the offset to continue at.
   The first chunk replaces whatever is at the staging name; later chunks continue only a private regular file of the
   kernel's user, never a link or another user's file (`file_staging_untrusted`: remove it and upload again).
+  A zero-length read of `<path>.chariox-partial` answers with the bytes an unfinished upload holds (`file_not_found`:
+  none), which is where to continue. Listing a directory, stat, hashing and small reads go through a terminal on that
+  kernel (`ls -la`, `stat`, `sha256sum`, `head -c`); there is no request for them as of local protocol 615.
   A file is at most 2 GiB (`file_too_large`). Reads and write chunks name their offset, so a retry is safe and they
   skip the at-most-once ledger. Typed errors: `file_path_invalid`, `file_not_found`, `file_permission_denied`,
   `file_not_a_file`, `file_too_large`, `file_chunk_too_large`, `file_offset_mismatch`, `file_hash_mismatch`,
@@ -5266,17 +5250,18 @@ no other detail.
 ### Outside event inbox (MP-08 / MP-09 / MP-10 / MP-11)
 
 Allocated local protocol 585 covers the external-agent / agent-model union,
-outside event subscriptions and agent deadlines; relay peer 181 retains the
+outside event subscriptions; relay peer 181 retains the
 merged peer contracts. The event requests are available to external Unix
 access grants and their kernel gateway only. They are absent from session-agent
 tools and sudo's allowed request vocabulary.
 
 `SubscribeEvents { targets }` follows `{ kernel, session_id, agent_id? }` targets;
 omitting the agent follows every agent in the session, including later additions.
-`UnsubscribeEvents { targets | all }`, `GetEventSubscription`, `ListEvents
-{ since?, limit }`, `WaitEvents { since?, timeout_ms, limit }` and `AckEvents
+`UnsubscribeEvents { targets | all }`, `GetEventSubscription`,
+`WaitEvents { since?, timeout_ms, limit }` and `AckEvents
 { cursor }` share one grant-owned inbox. A wait returns pending records immediately
-or an empty timed-out batch, with a maximum wait of fifteen minutes. Batches are
+or an empty timed-out batch, with a maximum wait of fifteen minutes; `timeout_ms: 0`
+reads what is pending now and returns (there is no separate list request). Batches are
 oldest first, limited to 1,000 records and the existing relay envelope budget.
 Omitting `since` starts after the acknowledged cursor. Cursor expiry returns
 `EventsCursorExpired { oldest_cursor }` rather than skipping missing records.

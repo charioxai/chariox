@@ -687,10 +687,6 @@ impl KernelRuntimeState {
                     remote_dispatch: None,
                 });
             }
-            owned.ensure_agent_before_deadline(
-                &prepared.session_id,
-                prepared.prompt.target_agent_id(),
-            )?;
             owned.validate_goal_prompt(&prepared)?;
             self.with_external_command_authority(authority)
                 .refresh_project_prompt_provider(

@@ -29,14 +29,6 @@ pub struct UnsubscribeEventsRequest {
 #[serde(deny_unknown_fields)]
 pub struct GetEventSubscriptionRequest {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ListEventsRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub since: Option<u64>,
-    #[serde(default = "default_event_limit")]
-    pub limit: usize,
-}
 fn default_event_limit() -> usize {
     1000
 }
@@ -46,6 +38,7 @@ fn default_event_limit() -> usize {
 pub struct WaitEventsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<u64>,
+    /// 0 reads what is pending now and returns.
     pub timeout_ms: u64,
     #[serde(default = "default_event_limit")]
     pub limit: usize,

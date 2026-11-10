@@ -1,7 +1,7 @@
 // MP-08 / MP-09 / MP-10 / MP-11: short event commands for outside agents.
 import assert from "node:assert/strict"
 import test from "node:test"
-import { parseArguments, exitCodeFor } from "./agent-command-table.js"
+import { parseArguments, exitCodeFor, guideText } from "./agent-command-table.js"
 
 test("outside event commands parse session and single-agent targets", () => {
   const parsed = parseArguments("events subscribe", ["--kernel", "b3/lane", "--session", "room", "--agent", "agent"])
@@ -17,7 +17,7 @@ test("outside event cursor expiry and ending have actionable exit codes", () => 
   assert.equal(exitCodeFor("subscription_ended"), 3)
 })
 
-import { runEventsVerb } from "./events-command.js"
+import { EVENT_VERBS, runEventsVerb } from "./events-command.js"
 import { CommandFailure } from "./agent-command-table.js"
 
 test("wait drains a batch, preserving the cursor and timeout outcome", async () => {
@@ -30,8 +30,16 @@ test("wait drains a batch, preserving the cursor and timeout outcome", async () 
   assert.deepEqual(sent, [{ WaitEvents: { since: 12, timeout_ms: 540000, limit: 1000 } }])
   assert.deepEqual(output, [{ events: [], next_cursor: 12, oldest_cursor: 1, timed_out: true }])
 })
-test("cursor expiry preserves oldest_cursor for resynchronization", async () => {
-  await assert.rejects(runEventsVerb("list", new Map(), [], async () => ({ EventsCursorExpired: { oldest_cursor: 42 } }), () => {}), error => error instanceof CommandFailure && error.code === "cursor_expired" && error.details?.oldest_cursor === 42)
+test("wait --timeout 0 is the one-shot read and cursor expiry preserves oldest_cursor", async () => {
+  const sent: unknown[] = []
+  await assert.rejects(runEventsVerb("wait", new Map([["--timeout", "0"]]), [], async request => { sent.push(request); return { EventsCursorExpired: { oldest_cursor: 42 } } }, () => {}), error => error instanceof CommandFailure && error.code === "cursor_expired" && error.details?.oldest_cursor === 42)
+  assert.deepEqual(sent, [{ WaitEvents: { limit: 1000, timeout_ms: 0 } }])
+})
+test("events list is gone: reading what is pending is wait --timeout 0", () => {
+  assert.equal((EVENT_VERBS as readonly string[]).includes("list"), false)
+  assert.throws(() => parseArguments("events list", []), /unknown command events list/)
+  assert.match(guideText(), /events wait --timeout 0/)
+  assert.doesNotMatch(guideText(), /events list/)
 })
 test("watch emits records once and carries next_cursor into the next wait", async () => {
   const sent: unknown[] = [], output: unknown[] = []
