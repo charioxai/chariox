@@ -1523,6 +1523,120 @@ async fn room_notification_subscription() {
     assert!(triggers(a.id().to_string()).await.is_empty());
 }
 
+// A room agent's typed request is confined to its own room whichever way the request names the
+// room: a plain `session_id`, a batch over several rooms, or a kernel request whose membership
+// scope is empty because the handler checks the agent owner itself.
+#[test]
+fn room_admission_fence_reads_every_way_a_request_names_another_room() {
+    run_large_stack_async_test("room-fence-other-room", other_room_fence);
+}
+
+async fn other_room_fence() {
+    let env = TestMetaRuntimeEnv::new("room-fence-other-room");
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let mut room = |name: &str| {
+        let workspace = env.root.join(name);
+        std::fs::create_dir_all(&workspace).unwrap();
+        crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                workspace.to_string_lossy(),
+                workspace.to_string_lossy(),
+            ))
+            .unwrap()
+    };
+    let (own, actor) = room("own");
+    let (other, _) = room("other");
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let launch = |session: &str| {
+        serde_json::json!({"session_id":session,"agent_id":null,"adapter_key":"dev-stub",
+            "provider":"dev-stub","account_profile":"default","model":"m","variant":null})
+    };
+    let naming = |room: &str| {
+        [
+            (
+                "UndoTurn",
+                serde_json::json!({"UndoTurn":{"session_id":room}}),
+            ),
+            (
+                "SetWorkspaceLiveSyncMode",
+                serde_json::json!({"SetWorkspaceLiveSyncMode":{"session_id":room,"mode":"tracked"}}),
+            ),
+            (
+                "GenerateWorkspaceCommitMessage",
+                serde_json::json!({"GenerateWorkspaceCommitMessage":{"workspace_id":"w",
+                    "worktree_id":"w","compare_ref":null,"session_id":room,"agent_id":"x"}}),
+            ),
+            (
+                "AcceptAppHostAction",
+                serde_json::json!({"AcceptAppHostAction":{"session_id":room,"operation_id":"o"}}),
+            ),
+            (
+                "SaveAppFileExport",
+                serde_json::json!({"SaveAppFileExport":{"session_id":room,"operation_id":"o"}}),
+            ),
+            (
+                "GrantAppFile",
+                serde_json::json!({"GrantAppFile":{"session_id":room,"operation_id":"o","files":[]}}),
+            ),
+            (
+                "ApplyWorkflowCodeArtifact",
+                serde_json::json!({"ApplyWorkflowCodeArtifact":{"session_id":room,"name":"n",
+                    "provider_rebindings":[],"agent_rebindings":[]}}),
+            ),
+            (
+                "RunWorkflowCodeArtifact",
+                serde_json::json!({"RunWorkflowCodeArtifact":{"session_id":room,"name":"n",
+                    "provider_rebindings":[],"agent_rebindings":[],"endpoint":null,
+                    "queue_ref":null,"prompt":"p"}}),
+            ),
+            (
+                "RebuildWorkflowCodeSource",
+                serde_json::json!({"RebuildWorkflowCodeSource":{"session_id":room,
+                    "workflow_ref":"w","expected_workflow_revision":1,"confirm":true}}),
+            ),
+            (
+                "UpdateWorkflowCodeSourceFromWorkflow",
+                serde_json::json!({"UpdateWorkflowCodeSourceFromWorkflow":{"session_id":room,
+                    "workflow_ref":"w","expected_workflow_revision":1,
+                    "expected_generated_source_sha256":null,"confirm":true}}),
+            ),
+        ]
+    };
+    let admitted = |value: serde_json::Value| {
+        let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
+        router
+            .runtime_state
+            .authorize_room_agent_request(actor.id(), &request)
+            .is_ok()
+    };
+    let leaked: Vec<_> = naming(other.id())
+        .into_iter()
+        .filter(|(_, value)| admitted(value.clone()))
+        .map(|(name, _)| name)
+        .collect();
+    assert!(leaked.is_empty(), "admitted for another room: {leaked:?}");
+    let refused_own: Vec<_> = naming(own.id())
+        .into_iter()
+        .filter(|(_, value)| !admitted(value.clone()))
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        refused_own.is_empty(),
+        "refused in its own room: {refused_own:?}"
+    );
+    let batch = |rooms: &[&str]| {
+        serde_json::json!({"LaunchProviderRuns":{"launches":
+            rooms.iter().map(|room| launch(room)).collect::<Vec<_>>()}})
+    };
+    assert!(admitted(batch(&[own.id(), own.id()])));
+    assert!(
+        !admitted(batch(&[own.id(), other.id()])),
+        "a batch reaching another room"
+    );
+}
+
 // Tearing down a Room, Project or kernel is refused for an agent caller whether or not the Room
 // tool surface is switched on (it is opt-in, and the older metaagent path runs without it).
 #[test]
