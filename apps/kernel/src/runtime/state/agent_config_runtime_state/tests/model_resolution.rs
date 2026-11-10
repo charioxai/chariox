@@ -262,3 +262,90 @@ async fn start_up_leaves_an_agent_that_already_has_model_and_variant_as_it_is() 
     assert_eq!(kept.model(), Some("retired-model"));
     assert_eq!(kept.effort(), Some("low"));
 }
+
+// MP-08 / MP-10: a model whose catalog entry has no variants is complete, so a restart neither
+// rewrites the agent nor retires the workflow copies that were made from it.
+#[tokio::test]
+async fn start_up_keeps_a_variantless_model_and_the_workflow_copies_made_from_it() {
+    let request = crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
+        .with_agent_defaults(crate::session::SessionAgentDefaults {
+            provider: "claude-p".into(),
+            ..Default::default()
+        });
+    let (app, runtime, session, agent) = agent_config_runtime_in_worktree(
+        crate::config::DaemonConfig::for_tests(),
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        request,
+    )
+    .await;
+    super::seeded_catalog::seed_claude_aliases(&app, "claude-p").await;
+    runtime
+        .update_agent_profile(
+            &session,
+            &agent,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
+            None,
+            Some("haiku".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    let (workflow, revision) = {
+        let mut store = runtime.owned.session_store.write();
+        let workflow = store
+            .create_workflow(&session, Some("review".into()))
+            .unwrap();
+        let node = store
+            .add_workflow_node(&session, workflow.id(), &agent)
+            .unwrap();
+        let endpoint = store
+            .create_workflow_endpoint(&session, workflow.id(), node.id(), Some("entry".into()))
+            .unwrap();
+        let workflow = store.resolve_workflow_ref(&session, workflow.id()).unwrap();
+        let node_agents = workflow
+            .nodes()
+            .iter()
+            .map(|node| (node.id().to_string(), node.agent_id().to_string()))
+            .collect();
+        store
+            .register_workflow_runtime_instance(
+                &session,
+                crate::session::WorkflowEndpointRuntimeInstance::new(
+                    "instance-copy",
+                    workflow.id(),
+                    endpoint.id(),
+                    workflow.revision(),
+                    2,
+                    false,
+                    node_agents,
+                    "worktree-2",
+                ),
+            )
+            .unwrap();
+        (workflow.id().to_string(), workflow.revision())
+    };
+    let kept = runtime
+        .list_agents()
+        .into_iter()
+        .find(|a| a.id() == agent)
+        .unwrap();
+    assert!(kept.model() == Some("haiku") && kept.effort().is_none());
+
+    for _ in 0..2 {
+        runtime.resolve_stored_agent_models().await;
+    }
+
+    let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+    let after = snapshot.workflow(&workflow).unwrap();
+    assert!(
+        after.revision() == revision,
+        "a restart bumped the workflow from revision {revision} to {}",
+        after.revision()
+    );
+    let copy = snapshot.workflow_runtime_instance("instance-copy");
+    assert!(
+        copy.is_some_and(|copy| copy.workflow_revision() == revision),
+        "the workflow copy was retired by a restart"
+    );
+}

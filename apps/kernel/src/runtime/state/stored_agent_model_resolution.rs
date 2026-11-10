@@ -16,21 +16,41 @@ impl KernelRuntimeState {
             .collect()
     }
 
-    /// Gives each such agent the model and variant its account offers. An agent that is busy or
-    /// whose account catalog cannot be read stays as it is and is logged; the next start retries.
+    /// Gives each such agent the model and variant its account offers. An agent whose catalog
+    /// entry confirms what it already runs (a model without variants is complete) is left alone, so
+    /// a restart never retires the workflow copies made from it. An agent that is busy or whose
+    /// account catalog cannot be read stays as it is and is logged; the next start retries.
     pub(crate) async fn resolve_stored_agent_models(&self) {
         for agent in self.agents_missing_model_choice() {
-            let result = self
-                .update_agent_profile(
-                    agent.session_id(),
-                    agent.id(),
+            let resolved = self
+                .resolve_new_agent_selection(
                     agent.owner_user_id(),
-                    None,
-                    None,
-                    None,
-                    None,
+                    agent.provider(),
+                    Some(agent.provider_account_profile()),
+                    agent.model().map(str::to_string),
+                    agent.effort().map(str::to_string),
                 )
                 .await;
+            let result = match resolved {
+                Ok((model, effort))
+                    if model.as_deref() == agent.model() && effort.as_deref() == agent.effort() =>
+                {
+                    continue;
+                }
+                Ok(_) => self
+                    .update_agent_profile(
+                        agent.session_id(),
+                        agent.id(),
+                        agent.owner_user_id(),
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await
+                    .map(drop),
+                Err(error) => Err(error),
+            };
             if let Err(error) = result {
                 crate::logging::error_with_fields(
                     "agent.model",

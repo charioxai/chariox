@@ -1162,6 +1162,7 @@ fn same_agent_profile_update_keeps_active_provider_run() {
     };
     assert_eq!(agent.provider(), "codex");
     let model = agent.model().expect("created agent model").to_string();
+    assert_eq!(agent.effort(), Some("high"));
     let active_run_id = harness.with_app_mut(|app| {
         let profile = crate::test_support::authenticate_provider_account(
             &app.provider_account_profile_registry(),
@@ -1178,7 +1179,8 @@ fn same_agent_profile_update_keeps_active_provider_run() {
                 &profile.profile_id,
                 &model,
             )
-            .with_agent_id(agent.id()),
+            .with_agent_id(agent.id())
+            .with_variant(Some("high".into())),
         )
         .expect("provider launch should succeed")
         .id()
