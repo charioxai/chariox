@@ -42,10 +42,6 @@ pub struct AgentTaskExecution {
     pub no_progress_wakes: u32,
     pub correction_used: bool,
     pub pending_prompt_id: Option<String>,
-    /// An agent (a peer, or a parent) asked to cancel this turn. A cancel it issues ends the
-    /// task, not the agent: unlike an owner's stop, later messages still run.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub cancel_requested_by_agent: bool,
 }
 impl AgentTaskExecution {
     /// The owner stopped this turn; the agent stays stopped until prompted again.
@@ -57,6 +53,12 @@ impl AgentTaskExecution {
                     | super::supervision::AGENT_ARCHIVED_REASON
             )
     }
+}
+/// Who stops a running turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CancelInitiator {
+    Owner,
+    Agent,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentObligation {
@@ -528,11 +530,18 @@ pub(crate) enum Operation {
         owner: String,
         revision: u64,
     },
-    /// Records, before its cancellation is issued, that an agent (not the owner) cancels this
-    /// turn; `false` withdraws the record when the cancellation failed.
-    MarkAgentCancel {
+    /// [`Operation::CancelTask`] for a cancel an agent (a peer, or a parent) issues: it ends the
+    /// task, not the agent, so later messages still run.
+    CancelTaskByAgent {
         task: String,
-        by_agent: bool,
+        owner: String,
+        revision: u64,
+    },
+    /// Records who is stopping a running turn whose task settles as cancelled later. The owner's
+    /// Stop always wins; an agent's cancel never overwrites it.
+    NoteTurnCancel {
+        task: String,
+        initiator: CancelInitiator,
     },
     /// Rolls back an admission whose prompt submission was rejected.
     Withdraw {

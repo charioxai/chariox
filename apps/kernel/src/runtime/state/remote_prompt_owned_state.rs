@@ -586,6 +586,13 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         };
         if active_prompt.status() == crate::session::PromptStatus::Cancelling {
+            self.note_turn_cancel(
+                session_id,
+                target_agent_id,
+                active_prompt.id(),
+                attachment_id,
+                false,
+            );
             let session = self.session_snapshot(session_id)?;
             return Ok(Some(crate::app::KernelPromptCancellation {
                 cancellation: crate::session::PromptCancellation {
@@ -603,6 +610,13 @@ impl KernelRuntimeOwnedState {
         ) else {
             return Ok(None);
         };
+        self.note_turn_cancel(
+            session_id,
+            target_agent_id,
+            prompt.id(),
+            attachment_id,
+            true,
+        );
         let (active_prompt, queued_prompts) = self
             .prompt_state_owner
             .state_parts(&session, target_agent_id);

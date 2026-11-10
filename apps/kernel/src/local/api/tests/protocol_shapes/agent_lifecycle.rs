@@ -48,7 +48,6 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
         progress_sequence: 0,
         no_progress_wakes: 1,
         correction_used: false,
-        cancel_requested_by_agent: false,
         pending_prompt_id: None,
     };
     let mut session = room_session();

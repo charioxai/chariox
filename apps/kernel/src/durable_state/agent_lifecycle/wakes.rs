@@ -878,7 +878,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         }
                         continue;
                     }
-                    super::supervision::cancel_intent(tx, &mut t)?;
+                    super::supervision::cancel_intent(tx, &mut t, false)?;
                     t.reason = "Room ended or agent removed".into();
                     t.revision += 1;
                     save(tx, &t)?;
