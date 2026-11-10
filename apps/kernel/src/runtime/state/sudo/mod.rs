@@ -25,7 +25,9 @@ mod process;
 mod receipts;
 mod scope;
 mod window;
-pub(crate) use policy::{is_sudo_control, is_sudo_prompt, sudo_request_forbidden};
+pub(crate) use policy::{
+    is_sudo_control, is_sudo_prompt, sudo_request_forbidden, teardown_request,
+};
 pub(crate) use window::sudo_window_minutes;
 #[cfg(test)]
 pub(crate) use window::SUDO_WINDOW_LENGTH_FOR_TEST;

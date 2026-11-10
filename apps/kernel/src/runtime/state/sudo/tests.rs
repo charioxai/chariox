@@ -472,6 +472,62 @@ async fn sudo_room_tools_preserve_host_authority_and_revocation() {
     );
 }
 
+// MP-08 / MP-11: archiving or deleting a Project ends or deletes its Rooms; /sudo cannot do that
+// to a Room (`EndSession`, `DeleteSession`), so it cannot do it through the Project either.
+#[tokio::test]
+async fn sudo_cannot_archive_or_delete_a_project() {
+    let f = fixture_with_options(None, true);
+    let turn = running(&f);
+    // The turn's own Project has a running prompt, so it is never idle; archive another one.
+    let other_room = {
+        let mut app = f.app.lock().await;
+        crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "other-workspace",
+                "other-worktree",
+            ))
+            .unwrap()
+            .0
+    };
+    let project_id = other_room.project_id().to_string();
+    assert_ne!(
+        project_id,
+        f.state
+            .owned
+            .session_store
+            .get_session(&turn.session_id)
+            .unwrap()
+            .project_id()
+    );
+    let control = f
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox_kernel_request",
+            serde_json::json!({"request":{"ListSessions":null}}),
+        )
+        .await;
+    assert!(control.is_ok(), "the sudo window is live: {control:?}");
+    for request in [
+        serde_json::json!({"ArchiveProject":{"project_id":project_id}}),
+        serde_json::json!({"DeleteProject":{"project_id":project_id}}),
+    ] {
+        let result = f
+            .router
+            .dispatch_authenticated_runtime_tool_call(
+                "sudo-fixture-bearer",
+                "chariox_kernel_request",
+                serde_json::json!({"request":request}),
+            )
+            .await;
+        assert!(
+            matches!(&result, Err(error) if error.to_string().contains("cannot end or delete a Room, Project or kernel")),
+            "a sudo window tore down the Project's Rooms with {request}, or without saying why: {result:?}"
+        );
+    }
+    assert!(f.state.owned.session_store.get_project(&project_id).is_ok());
+}
+
 pub(super) fn running(f: &Fixture) -> KernelSudoTurn {
     let agent = f.request.target_agent_id.as_deref().unwrap();
     let session = f

@@ -7,6 +7,27 @@ impl KernelRuntimeState {
         self.owned.provider_store.list_runs()
     }
 
+    /// The read handler schedules a selection sync and publishes the run, so a caller who may
+    /// not see the run is refused before it runs (the projected read applies the same check).
+    pub(crate) fn ensure_provider_run_readable(
+        &self,
+        provider_run_id: &str,
+        caller_user_id: &str,
+        authenticated_user_id: &str,
+    ) -> Result<(), DaemonError> {
+        let provider_run = match self.owned.provider_store.get_run(provider_run_id) {
+            Ok(provider_run) => provider_run,
+            // A missing run is the handler's `provider run not found`.
+            Err(DaemonError::ProviderRunNotFound { .. }) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        crate::runtime::provider_run_control::ensure_provider_run_visible_to_user(
+            &provider_run,
+            caller_user_id,
+            authenticated_user_id,
+        )
+    }
+
     pub(crate) fn provider_run_response(
         &self,
         request: crate::local::GetProviderRunRequest,
