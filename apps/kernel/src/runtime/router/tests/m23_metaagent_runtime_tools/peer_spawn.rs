@@ -416,3 +416,48 @@ async fn peer_lifetime() {
         "the peer is still there"
     );
 }
+
+#[test]
+fn a_room_spawn_with_slice_options_is_refused_before_any_slice_exists() {
+    run_large_stack_async_test("peer-spawn-own-room-slice", own_room_slice);
+}
+
+async fn own_room_slice() {
+    let world = world("peer-spawn-own-room-slice").await;
+    let own = world.room.clone();
+    let slices_before = world.router.runtime_state().list_slices().len();
+    for option in ["--slice new", "--slice new:headed"] {
+        let refused = spawn_into(&world, "a", &own, option).await;
+        assert!(
+            !refused.ok && error_text(&refused).contains("does not accept --slice"),
+            "{option}: {refused:?}"
+        );
+    }
+    assert_eq!(
+        world.router.runtime_state().list_slices().len(),
+        slices_before,
+        "the parser refuses the options before a slice is made"
+    );
+}
+
+#[test]
+fn a_delete_naming_the_callers_own_room_is_told_to_drop_the_room_option() {
+    run_large_stack_async_test("delete-own-room", delete_own_room);
+}
+
+async fn delete_own_room() {
+    let world = world("delete-own-room").await;
+    let own = world.room.clone();
+    let refused = room_command(&world, "a", &format!("agent delete b --room {own}")).await;
+    let text = error_text(&refused);
+    assert!(
+        !refused.ok && text.contains("without --room") && !text.contains("belongs to that room"),
+        "{refused:?}"
+    );
+    let other = world.other_room.clone();
+    let refused = room_command(&world, "a", &format!("agent delete q --room {other}")).await;
+    assert!(
+        !refused.ok && error_text(&refused).contains("belongs to that room and its owner"),
+        "{refused:?}"
+    );
+}
