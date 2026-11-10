@@ -95,7 +95,7 @@ export class AppPublisherEnrollment {
       if (failure) {
         if (failure.code === "busy" && retry < 2) { await delay(200); continue }
         const messages: Record<string, string> = { unauthorized: "This connection cannot review publishers", not_found: "Publisher review is not yet found; no cancellation or enrollment is confirmed",
-          conflict: "The publisher review changed; inspect its status", limit_exceeded: "The kernel's publisher review limit has been reached", storage_unavailable: "Publisher storage is unavailable", invalid_request: "The kernel rejected the public publisher material" }
+          conflict: "The publisher review changed; inspect its status", limit_exceeded: "The kernel's publisher review limit has been reached", storage_unavailable: "Publisher storage is unavailable", invalid_request: "The kernel rejected the public publisher material", reserved_publisher: "local_dev is the kernel's own publisher for Apps pushed from a developer Room; it cannot be enrolled" }
         throw new Error(`${messages[String(failure.code)] ?? "Publisher request failed"}. Review ${id}.`)
       }
       const value = (reply.AppPublisherEnrollmentStatus as { operation?: AppPublisherEnrollmentSummary } | undefined)?.operation

@@ -1063,6 +1063,22 @@ fn saved_snapshot_restore_protocol_410_shape_and_hash() {
 }
 
 #[test]
+fn a_reserved_publisher_enrollment_refuses_with_its_own_error_code() {
+    let response = LocalDaemonResponse::AppRequestFailed {
+        code: AppRequestErrorCode::ReservedPublisher,
+    };
+    let value = serde_json::to_value(&response).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"AppRequestFailed": {"code": "reserved_publisher"}})
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonResponse>(value).unwrap(),
+        response
+    );
+}
+
+#[test]
 fn receipt_expiry_protocol_416_refuses_with_a_stable_error_shape() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,

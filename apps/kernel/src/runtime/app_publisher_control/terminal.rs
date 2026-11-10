@@ -11,6 +11,7 @@ fn failed(code: AppRequestErrorCode) -> LocalDaemonResponse {
 fn error(value: PublisherOperationError) -> LocalDaemonResponse {
     failed(match value {
         PublisherOperationError::Invalid => AppRequestErrorCode::InvalidRequest,
+        PublisherOperationError::ReservedPublisher => AppRequestErrorCode::ReservedPublisher,
         PublisherOperationError::NotFound => AppRequestErrorCode::NotFound,
         PublisherOperationError::Conflict => AppRequestErrorCode::Conflict,
         PublisherOperationError::Limit => AppRequestErrorCode::LimitExceeded,

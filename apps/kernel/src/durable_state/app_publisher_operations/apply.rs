@@ -26,7 +26,7 @@ pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<R
             model::text(&request)?;
             input.publisher()?;
             if input.publisher_id == chariox_app_package::v2::DEV_PUBLISHER_ID {
-                return Err(PublisherOperationError::Invalid);
+                return Err(PublisherOperationError::ReservedPublisher);
             }
             check(&budget)?;
             let tx = sql(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;

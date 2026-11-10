@@ -262,6 +262,9 @@ pub enum AppRequestErrorCode {
     StorageUnavailable,
     /// Protocol 416: this command identity was evicted; it must never execute again.
     ReceiptExpired,
+    /// The publisher id belongs to the kernel (`local_dev`, the Apps pushed
+    /// from a developer Room); it cannot be enrolled as a publisher.
+    ReservedPublisher,
 }
 
 /// Protocol 345: owner-scoped App worker control. The kernel derives the
