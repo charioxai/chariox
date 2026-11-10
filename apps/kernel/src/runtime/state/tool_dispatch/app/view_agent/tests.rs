@@ -583,6 +583,56 @@ async fn the_catalog_lists_each_open_view_and_says_why_one_cannot_be_read() {
 }
 
 #[tokio::test]
+async fn the_catalog_lists_an_unopened_view_as_openable() {
+    let mut rig = rig_for_catalog(true);
+    rig.grant().await;
+    rig.stage_signed_v2_fixture();
+    let listed = rig.runtime.view_catalog(&rig.agent).await;
+    let view = &listed["views"][0];
+    assert_eq!(view["app"], APP);
+    assert_eq!(view["openable"], true, "{view}");
+    assert!(
+        view.get("unavailable").is_none(),
+        "an unopened view is not unavailable: {view}"
+    );
+}
+
+#[tokio::test]
+async fn an_agent_whose_app_was_uninstalled_gets_a_definitive_tool_error() {
+    let mut rig = rig();
+    rig.grant().await;
+    let generation = rig.installation_generation();
+    rig.runtime
+        .owned
+        .durable_state_store
+        .mutate_app_installation(
+            "alice",
+            crate::durable_state::apps::AppRegistryMutation::Uninstall {
+                installation_id: APP.into(),
+                expected_generation: generation,
+                now_ms: 5,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        rig.tool_names(),
+        TOOLS,
+        "the kept grant keeps the view tools, so the agent can be told"
+    );
+    let call = |name: &'static str, arguments: Value| {
+        rig.runtime
+            .app_view_tool_for_run_id(rig.run.id(), &rig.agent, name, arguments)
+    };
+    let refused = call(STATE, json!({"view": APP})).await.unwrap_err();
+    assert_eq!(refused.code, "APP_NOT_INSTALLED");
+    let listed = call(CATALOG, json!({})).await.unwrap();
+    assert_eq!(
+        listed["views"][0]["unavailable"]["code"],
+        "APP_NOT_INSTALLED"
+    );
+}
+
+#[tokio::test]
 async fn an_undeclared_action_or_bad_input_is_refused_before_the_page() {
     let mut rig = rig();
     rig.grant().await;

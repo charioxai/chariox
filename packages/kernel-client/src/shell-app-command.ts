@@ -359,6 +359,7 @@ function appFailure(response: Record<string, unknown>, action?: string): ShellCo
     busy: "App requests are busy. Try again shortly.",
     receipt_expired: "App receipt expired. This request was not re-executed; check the App state before issuing a new command.",
     storage_unavailable: "App storage is unavailable.",
+    reserved_publisher: "local_dev is the kernel's own publisher for Apps pushed from a developer Room; it cannot be enrolled.",
     conflict: "The request conflicts with the App's current state (for example a stale revision). Refresh and try again.",
     limit_exceeded: "An App limit was reached.",
   }
