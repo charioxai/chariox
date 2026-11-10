@@ -42,9 +42,6 @@ pub(crate) fn focus_projection_refresh(request: &LocalDaemonRequest) -> FocusPro
                 session_id: request.session_id.clone(),
             }
         }
-        LocalDaemonRequest::ArchiveAgent(request) => FocusProjectionRefresh::SnapshotSession {
-            session_id: request.session_id.clone(),
-        },
         LocalDaemonRequest::HideAgent(request) => FocusProjectionRefresh::SnapshotSession {
             session_id: request.session_id.clone(),
         },
@@ -117,7 +114,6 @@ impl SessionProjectionRefresh {
                 | LocalDaemonResponse::AgentAliased { agent, .. }
                 | LocalDaemonResponse::AgentConfigUpdated { agent, .. }
                 | LocalDaemonResponse::AgentProfileUpdated { agent, .. }
-                | LocalDaemonResponse::AgentArchived { agent, .. }
                 | LocalDaemonResponse::AgentHidden { agent, .. }
                 | LocalDaemonResponse::AgentDestroyed { agent }
                 | LocalDaemonResponse::AgentFocused { agent } => {
@@ -153,7 +149,6 @@ pub(crate) fn session_projection_refresh(request: &LocalDaemonRequest) -> Sessio
         | LocalDaemonRequest::UpdateAgentConfig(_)
         | LocalDaemonRequest::UpdateAgentProfile(_)
         | LocalDaemonRequest::UpdateAgentSubstitutes(_)
-        | LocalDaemonRequest::ArchiveAgent(_)
         | LocalDaemonRequest::HideAgent(_)
         | LocalDaemonRequest::DestroyAgent(_) => SessionProjectionRefresh::SnapshotAgentResponse,
         LocalDaemonRequest::CompletePrompt(_) | LocalDaemonRequest::CancelActivePrompt(_) => {

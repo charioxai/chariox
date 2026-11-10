@@ -9,9 +9,9 @@ impl KernelRuntimeState {
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.authorize_current_external_command()?;
-        let agent = self
-            .owned
-            .ensure_agent_owner(&request.agent_id, caller_user_id, "hide agent")?;
+        let agent =
+            self.owned
+                .ensure_agent_owner(&request.agent_id, caller_user_id, "hide agent")?;
         if agent.session_id() != request.session_id {
             return Err(DaemonError::AgentNotInSession {
                 session_id: request.session_id.clone(),

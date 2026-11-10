@@ -72,9 +72,6 @@ impl KernelRuntimeState {
         actor_id: &str,
         request: &LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
-        if matches!(request, LocalDaemonRequest::ArchiveAgent(_)) {
-            return Err(denied("only the owner can archive or unarchive agents"));
-        }
         if matches!(request, LocalDaemonRequest::HideAgent(_)) {
             return Err(denied("only the owner can hide or unhide agents"));
         }
@@ -145,9 +142,6 @@ impl KernelRuntimeState {
             LocalDaemonRequest::GetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::ListDescendants(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::AliasAgent(r) => (&r.session_id, &r.agent_id, false),
-            LocalDaemonRequest::ArchiveAgent(_) => {
-                return Err(denied("only the owner can archive or unarchive agents"))
-            }
             LocalDaemonRequest::HideAgent(_) => {
                 return Err(denied("only the owner can hide or unhide agents"))
             }

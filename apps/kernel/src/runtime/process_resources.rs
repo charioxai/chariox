@@ -7,11 +7,9 @@ use std::time::Duration;
 mod control;
 mod disk_use;
 use control::WatchCommand;
-pub(crate) use control::{
-    end_owner, outside_ended_for_key, start_now_for_key, stop_for_key, stop_released,
-};
+pub(crate) use control::{end_owner, outside_ended_for_key, start_now_for_key, stop_for_key};
 #[cfg(test)]
-pub(crate) use control::{hold_registry_for_test, pause_sampling_for_key};
+pub(crate) use control::{hold_registry_for_test, pause_sampling_for_key, stop_released};
 pub use control::{ProcessControlOutcome, ProcessControlResult, ProcessControlTarget};
 pub(crate) use handover::{adopt_released, hand_over_released, ReleasedJobs};
 

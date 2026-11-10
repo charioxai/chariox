@@ -231,7 +231,6 @@ mod tests {
             .expect("focus should succeed");
     }
 
-    mod agent_archive;
     mod agent_messaging;
     mod agent_triggers;
     mod app_bindings;

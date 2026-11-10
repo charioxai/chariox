@@ -578,6 +578,7 @@ impl AgentInstance {
         self.hidden = hidden;
     }
 
+    #[cfg(test)]
     pub(crate) fn set_archived(&mut self, archived: bool) {
         self.archived = archived;
         if archived {

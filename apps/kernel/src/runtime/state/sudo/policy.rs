@@ -244,7 +244,6 @@ pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::GetCredential(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::GetUserConfig(_)
-            | LocalDaemonRequest::ArchiveAgent(_)
             | LocalDaemonRequest::HideAgent(_)
             | LocalDaemonRequest::SetAgentParent(_)
             | LocalDaemonRequest::EndSession(_)

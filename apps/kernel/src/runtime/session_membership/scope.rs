@@ -400,9 +400,6 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::MoveAgentToLocal(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
-        LocalDaemonRequest::ArchiveAgent(request) => Some(SessionMembershipScope::SessionId(
-            request.session_id.clone(),
-        )),
         LocalDaemonRequest::HideAgent(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -421,8 +418,7 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CycleAgentFocus(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
-        LocalDaemonRequest::ListArchivedAgents(request)
-        | LocalDaemonRequest::ListAgents(request) => Some(SessionMembershipScope::SessionId(
+        LocalDaemonRequest::ListAgents(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::RegisterWorkflowNotificationSource(r) => {

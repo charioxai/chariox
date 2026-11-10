@@ -177,6 +177,7 @@ impl AgentServiceStore {
             .create_default_agent(session_id, worktree_id, provider, sessions)
     }
 
+    #[cfg(test)]
     pub(crate) fn archive_agent(
         &self,
         agent_id: &str,

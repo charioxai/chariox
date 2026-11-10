@@ -145,9 +145,6 @@ pub(super) async fn resolve_session_lane_key(
         LocalDaemonRequest::ForkAgent(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
-        LocalDaemonRequest::ArchiveAgent(request) => {
-            resolve_direct_session_lane_key(session_projection, &request.session_id)
-        }
         LocalDaemonRequest::HideAgent(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }

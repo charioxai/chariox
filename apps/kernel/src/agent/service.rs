@@ -485,6 +485,8 @@ impl AgentService {
         Ok(agent)
     }
 
+    /// Only tests build archived agents: no request archives an agent any more, so the flag stays false in the product.
+    #[cfg(test)]
     pub(crate) fn archive_agent(
         &mut self,
         agent_id: &str,

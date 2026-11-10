@@ -135,15 +135,8 @@ pub struct MoveAgentToLocalRequest {
     pub agent_ref: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArchiveAgentRequest {
-    pub session_id: String,
-    pub agent_id: String,
-    pub archived: bool,
-}
-
-/// Keeps an agent out of the Room's panes without touching its work. Unlike archive, a run, queued prompts,
-/// wakes and triggers all go on; the kernel clears the flag when the agent's last prompt finishes.
+/// Keeps an agent out of the Room's panes without touching its work. A run, queued prompts,
+/// wakes and triggers all go on; the kernel clears the flag when the agent's last prompt finishes or it raises a decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HideAgentRequest {
     pub session_id: String,
