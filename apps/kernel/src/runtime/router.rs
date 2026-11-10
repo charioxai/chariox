@@ -39,6 +39,7 @@ pub(crate) use managed_context_bridge::{
 };
 mod app_event_routes;
 mod app_pre_lane;
+mod created_peer_release;
 mod meta_runtime_command;
 mod peer_agent_spawn;
 mod pre_lane_dispatch;

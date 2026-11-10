@@ -8,7 +8,7 @@ use crate::session::{
 use crate::transport::relay_peer::{PeerAgentOutcome, PeerFollow};
 
 /// What the relay answers when `kernel` is not connected, or dropped after it took the request.
-fn relay_error(code: &str) -> DaemonError {
+pub(in super::super) fn relay_error(code: &str) -> DaemonError {
     DaemonError::RelayTransport {
         operation: "read relay peer response",
         code: code.into(),
@@ -18,7 +18,7 @@ fn relay_error(code: &str) -> DaemonError {
 }
 
 /// `kernel` is stopped: the relay answers every request with `target_not_connected`.
-fn link_stopped(kernel: &Kernel) {
+pub(in super::super) fn link_stopped(kernel: &Kernel) {
     peer_agent_link_for_tests::register(
         &kernel.id,
         &kernel.name,
@@ -120,7 +120,7 @@ fn link_timing_out_after_the_first_message(kernel: &Kernel) {
 }
 
 /// `kernel` boots again on the state it left, as after a restart, and answers peers again.
-async fn restarted(kernel: Kernel) -> Kernel {
+pub(in super::super) async fn restarted(kernel: Kernel) -> Kernel {
     let config = kernel.app.lock().await.config().clone();
     peer_agent_link_for_tests::unregister(&kernel.id);
     let Kernel {
@@ -841,6 +841,11 @@ fn every_peer_request(a: &Kernel, b: &Kernel) -> Vec<RelayPeerRequest> {
                 subscription_id: "fence-spawn-follow".into(),
                 generation: 1,
             }),
+        },
+        RelayPeerRequest::DeleteRoomPeer {
+            protocol_version: v,
+            request_id: "fence-spawn".into(),
+            sender: sender.clone(),
         },
         RelayPeerRequest::DeliverPeerAgentOutcome {
             protocol_version: v,

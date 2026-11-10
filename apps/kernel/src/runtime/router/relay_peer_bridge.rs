@@ -46,6 +46,11 @@ impl CommandRouter {
         {
             return self.spawn_room_peer(kernel, owner, request).await;
         }
+        if let request @ crate::transport::relay_peer::RelayPeerRequest::DeleteRoomPeer { .. } =
+            request
+        {
+            return self.delete_room_peer(kernel, owner, request).await;
+        }
         self.runtime_state
             .receive_peer_agent_request(kernel, owner, request)
             .await

@@ -105,6 +105,7 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
         RelayPeerRequest::SubscribePeerAgent { .. } => "subscribe_peer_agent",
         RelayPeerRequest::UnsubscribePeerAgent { .. } => "unsubscribe_peer_agent",
         RelayPeerRequest::SpawnRoomPeer { .. } => "spawn_room_peer",
+        RelayPeerRequest::DeleteRoomPeer { .. } => "delete_room_peer",
         RelayPeerRequest::DeliverPeerAgentOutcome { .. } => "deliver_peer_agent_outcome",
         RelayPeerRequest::RoomBrowserController { .. } => "room_browser_controller",
         RelayPeerRequest::OpenRoomSharedDisplay { .. } => "open_room_shared_display_with_audience",

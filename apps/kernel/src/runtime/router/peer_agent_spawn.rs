@@ -4,7 +4,7 @@ use super::CommandRouter;
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest};
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
-use crate::runtime::state::peer_agent_inbound::PeerSpawnClaim;
+use crate::runtime::state::peer_agent_inbound::peer_spawn_key;
 use crate::transport::relay_peer::{
     PeerAgentRefusal, RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
 };
@@ -61,18 +61,17 @@ impl CommandRouter {
             ));
         }
         let store = self.runtime_state.durable_state_store();
-        let _in_flight = loop {
-            match self.runtime_state.claim_peer_spawn(kernel, &request_id) {
-                PeerSpawnClaim::Claimed(in_flight) => break in_flight,
-                PeerSpawnClaim::Busy(mut first) => {
-                    // Closed when the first attempt ends; its answer, if any, is kept by then.
-                    let _ = first.changed().await;
-                }
-            }
-        };
+        let _in_flight = self
+            .runtime_state
+            .claim_peer_spawn_when_free(kernel, &request_id)
+            .await;
         if let Some(answer) = store.peer_agent_request_answer(kernel, &request_id)? {
             let mut answer: RelayPeerResponse = serde_json::from_str(&answer)
                 .map_err(|error| crate::durable_state::agent_lifecycle::error(error.to_string()))?;
+            // The creator ended before this spawn ran, and its delete cancelled it.
+            if matches!(answer, RelayPeerResponse::RoomPeerDeleted { .. }) {
+                return Ok(refused(PeerAgentRefusal::RoomUnavailable));
+            }
             if let RelayPeerResponse::RoomPeerSpawned {
                 duplicate, agent, ..
             } = &mut answer
@@ -101,7 +100,7 @@ impl CommandRouter {
             Ok(admitted) => admitted,
             Err(refusal) => return Ok(refused(refusal)),
         };
-        let spawn_key = format!("peer-spawn-{kernel}-{request_id}");
+        let spawn_key = peer_spawn_key(kernel, &request_id);
         let created_before = self
             .runtime_state
             .session_agents(&room)

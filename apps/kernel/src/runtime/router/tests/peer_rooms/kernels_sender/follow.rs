@@ -8,7 +8,7 @@ use crate::transport::relay_peer::{
 };
 use crate::transport::relay_peer_agents::PeerEventKind;
 
-mod offline;
+pub(super) mod offline;
 mod pre_enrollment;
 
 /// A's room agent gets a durable task for its running turn, as an admitted turn has.
