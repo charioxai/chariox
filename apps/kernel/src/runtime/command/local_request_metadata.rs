@@ -72,9 +72,6 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
     use KernelCommandPriority::{Background, Interactive, Normal};
 
     match request {
-        LocalDaemonRequest::ListArchivedAgents(request) => {
-            LocalRequestMetadata::new("agent.archived.list", Normal).session(&request.session_id)
-        }
         LocalDaemonRequest::SetRoomPinned(request) => {
             LocalRequestMetadata::new("room.pin", Interactive).session(&request.session_id)
         }
@@ -490,8 +487,8 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::ForkAgent(request) => {
             LocalRequestMetadata::new("agent.fork", Interactive).session(&request.session_id)
         }
-        LocalDaemonRequest::ArchiveAgent(request) => {
-            LocalRequestMetadata::new("agent.archive", Interactive)
+        LocalDaemonRequest::HideAgent(request) => {
+            LocalRequestMetadata::new("agent.hide", Interactive)
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
@@ -1007,14 +1004,13 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ForkAgent(_) => "agent.fork",
         LocalDaemonRequest::MoveAgentToRemote(_) => "agent.move_remote",
         LocalDaemonRequest::MoveAgentToLocal(_) => "agent.move_local",
-        LocalDaemonRequest::ArchiveAgent(_) => "agent.archive",
+        LocalDaemonRequest::HideAgent(_) => "agent.hide",
         LocalDaemonRequest::SetAgentParent(_) => "agent.parent.set",
         LocalDaemonRequest::DestroyAgent(_) => "agent.destroy",
         LocalDaemonRequest::GrantAgentExtension(_) => "agent.extension.grant",
         LocalDaemonRequest::RevokeAgentExtension(_) => "agent.extension.revoke",
         LocalDaemonRequest::SyncRemoteExtensionManifest(_) => "agent.extension.manifest_sync",
         LocalDaemonRequest::ListHomeExtensionAudit(_) => "agent.extension.audit",
-        LocalDaemonRequest::ListArchivedAgents(_) => "agent.archived.list",
         LocalDaemonRequest::ListAgents(_) => "agent.list",
         LocalDaemonRequest::RegisterWorkflowNotificationSource(_) => {
             "workflow.notifications.register"

@@ -437,8 +437,8 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::ForkAgent(request) => {
                 Box::pin(async move { self.store.fork_agent(request, caller_user_id).await })
             }
-            LocalDaemonRequest::ArchiveAgent(request) => {
-                Box::pin(async move { self.store.archive_agent(request, caller_user_id).await })
+            LocalDaemonRequest::HideAgent(request) => {
+                Box::pin(async move { self.store.hide_agent(request, caller_user_id).await })
             }
             LocalDaemonRequest::DestroyAgent(request) => Box::pin(async move {
                 self.store

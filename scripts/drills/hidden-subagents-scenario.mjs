@@ -51,12 +51,10 @@ export async function runHidden(ctx) {
   await until(async () => { const s = await a.rpc({ GetSessionState: { session_id: R } }); return !s.SessionState.session.prompt_states?.[orch]?.active_prompt }, "orchestrator idle", 300000).catch(() => note("orchestrator-still-busy"))
 
   const listed = (await a.rpc({ ListAgents: { session_id: R } })).AgentsListed.agents
-  const archived = (await a.rpc({ ListArchivedAgents: { session_id: R } })).AgentsListed?.agents ?? []
   const snapshot = (await a.rpc({ GetSessionState: { session_id: R } })).SessionState.session
   const rooms = (await a.rpc({ ListSessions: null })).SessionsListed.sessions
   const room = rooms.find(s => s.id === R)
   check("ListAgents shows only the room agent", listed.length === 1 && listed[0].id === orch, { aliases: listed.map(x => x.alias) })
-  check("archived list shows no sub-agent", archived.every(x => !WORKERS.includes(x.alias)), { count: archived.length })
   check("snapshot shows only the room agent", (snapshot.agents ?? []).length === 1, { count: (snapshot.agents ?? []).length })
   check("room list shows only the room agent", (room?.agents ?? []).length === 1, { count: (room?.agents ?? []).length })
   // max_agents is 2 for this kernel (see the driver config): the room agent plus one peer fill it, five sub-agents do not count.
@@ -67,7 +65,7 @@ export async function runHidden(ctx) {
   const overview = read("overview.txt")
   note("room-command-answers", { overview: overview?.slice(0, 1500) ?? null, agent_list: read("agent-list.txt")?.slice(0, 600) ?? null, children: read("children.txt")?.slice(0, 600) ?? null })
   check("room overview counts only the room agent", overview !== null && !WORKERS.some(w => overview.includes(`"alias":"${w}"`) || overview.includes(`"alias": "${w}"`)), { has_text: overview !== null })
-  writeFileSync(join(evidence, "views.json"), JSON.stringify({ listed, archived, snapshot_agents: snapshot.agents, room_agents: room?.agents, tree: nodes }, null, 1), { mode: 0o600 })
+  writeFileSync(join(evidence, "views.json"), JSON.stringify({ listed, snapshot_agents: snapshot.agents, room_agents: room?.agents, tree: nodes }, null, 1), { mode: 0o600 })
 
   // A request by agent id keeps working: the driver prompts a hidden worker as a client addressing it by id.
   const before = Date.now()

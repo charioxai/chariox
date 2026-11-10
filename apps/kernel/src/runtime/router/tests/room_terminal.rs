@@ -610,17 +610,10 @@ fn a_one_shot_session_state_lists_the_rooms_processes() {
     });
 }
 
-/// How the agent whose Room terminal detached a job goes away.
-#[derive(Clone, Copy, Debug)]
-enum AgentEnd {
-    Archive,
-    Delete,
-}
-
 /// MP-08 / MP-09 / MP-10 / MP-11: a job an agent's Room terminal detached
-/// before its command returned ends with the agent's archive or deletion,
+/// before its command returned ends with the agent's deletion,
 /// whether the ended terminal is still listed or the agent already closed it.
-async fn agent_end_ends_a_detached_terminal_job(end: AgentEnd, close_first: bool, name: &str) {
+async fn agent_deletion_ends_a_detached_terminal_job(close_first: bool, name: &str) {
     let worktree = crate::test_support::TestWorktree::new(name);
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon boots");
     let session = app
@@ -700,23 +693,13 @@ async fn agent_end_ends_a_detached_terminal_job(end: AgentEnd, close_first: bool
         .await
         .expect("the agent closes its ended terminal");
     }
-    let (label, request) = match end {
-        AgentEnd::Archive => (
-            "agent-archive",
-            LocalDaemonRequest::ArchiveAgent(crate::local::ArchiveAgentRequest {
-                session_id: session_id.clone(),
-                agent_id: agent.id().to_string(),
-                archived: true,
-            }),
-        ),
-        AgentEnd::Delete => (
-            "agent-destroy",
-            LocalDaemonRequest::DestroyAgent(crate::local::DestroyAgentRequest {
-                session_id: session_id.clone(),
-                agent_id: agent.id().to_string(),
-            }),
-        ),
-    };
+    let (label, request) = (
+        "agent-destroy",
+        LocalDaemonRequest::DestroyAgent(crate::local::DestroyAgentRequest {
+            session_id: session_id.clone(),
+            agent_id: agent.id().to_string(),
+        }),
+    );
     let command = KernelCommand::from_local_request(label, None, None, &request);
     let ended_agent = router.dispatch(command, request).await;
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
@@ -728,46 +711,20 @@ async fn agent_end_ends_a_detached_terminal_job(end: AgentEnd, close_first: bool
     ended_agent.expect("the agent goes away");
     assert!(
         !survived,
-        "the agent's detached terminal job kept running after {end:?} (terminal closed: {close_first})"
+        "the agent's detached terminal job kept running after deletion (terminal closed: {close_first})"
     );
-}
-
-#[test]
-fn archiving_an_agent_ends_the_detached_job_of_its_ended_terminal() {
-    run("archive-terminal-job-listed", || {
-        agent_end_ends_a_detached_terminal_job(
-            AgentEnd::Archive,
-            false,
-            "archive_terminal_job_listed",
-        )
-    });
-}
-
-#[test]
-fn archiving_an_agent_ends_the_detached_job_of_its_closed_terminal() {
-    run("archive-terminal-job-closed", || {
-        agent_end_ends_a_detached_terminal_job(
-            AgentEnd::Archive,
-            true,
-            "archive_terminal_job_closed",
-        )
-    });
 }
 
 #[test]
 fn deleting_an_agent_ends_the_detached_job_of_its_ended_terminal() {
     run("delete-terminal-job-listed", || {
-        agent_end_ends_a_detached_terminal_job(
-            AgentEnd::Delete,
-            false,
-            "delete_terminal_job_listed",
-        )
+        agent_deletion_ends_a_detached_terminal_job(false, "delete_terminal_job_listed")
     });
 }
 
 #[test]
 fn deleting_an_agent_ends_the_detached_job_of_its_closed_terminal() {
     run("delete-terminal-job-closed", || {
-        agent_end_ends_a_detached_terminal_job(AgentEnd::Delete, true, "delete_terminal_job_closed")
+        agent_deletion_ends_a_detached_terminal_job(true, "delete_terminal_job_closed")
     });
 }

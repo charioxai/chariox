@@ -257,10 +257,15 @@ impl KernelRuntimeOwnedState {
         activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
     ) -> Result<(), DaemonError> {
         let before = self.session_store.get_session(session_id)?;
+        let had_prompt_work = before.active_prompt_for_agent(agent_id).is_some()
+            || before
+                .queued_prompts_for_agent(agent_id)
+                .is_some_and(|held| !held.is_empty());
         let previous_active = before
             .active_prompt_for_agent(agent_id)
             .map(|prompt| prompt.id());
         let next_active = active_prompt.as_ref().map(|prompt| prompt.id());
+        let finished = had_prompt_work && active_prompt.is_none() && queued_prompts.is_empty();
         let submitted = queued_prompts.iter().any(|prompt| {
             !before
                 .queued_prompts_for_agent(agent_id)
@@ -291,6 +296,9 @@ impl KernelRuntimeOwnedState {
                     crate::session::TriggerDeliveryState::Resent,
                 )?;
             }
+        }
+        if finished {
+            self.unhide_agent(agent_id)?;
         }
         activity_mutation.record();
         self.withdraw_stale_agent_interactions();

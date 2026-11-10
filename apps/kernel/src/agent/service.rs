@@ -485,6 +485,8 @@ impl AgentService {
         Ok(agent)
     }
 
+    /// Only tests build archived agents: no request archives an agent any more, so the flag stays false in the product.
+    #[cfg(test)]
     pub(crate) fn archive_agent(
         &mut self,
         agent_id: &str,
@@ -524,6 +526,19 @@ impl AgentService {
                 .set_position(agent.position().clone());
         }
         self.repair_stale_session_focus(&session_id, sessions)?;
+        self.get_agent(agent_id)
+    }
+
+    pub(crate) fn set_agent_hidden(
+        &mut self,
+        agent_id: &str,
+        hidden: bool,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.get_agent(agent_id)?;
+        self.store
+            .get_mut(agent_id)
+            .expect("agent checked")
+            .set_hidden(hidden);
         self.get_agent(agent_id)
     }
 

@@ -185,8 +185,8 @@ export function moveAgentToLocalRequest(sessionId: string, agentRef: string) {
   }
 }
 
-export function archiveAgentRequest(sessionId: string, agentId: string, archived: boolean) {
-  return { ArchiveAgent: { session_id: sessionId, agent_id: agentId, archived } }
+export function hideAgentRequest(sessionId: string, agentId: string, hidden: boolean) {
+  return { HideAgent: { session_id: sessionId, agent_id: agentId, hidden } }
 }
 
 export function destroyAgentRequest(sessionId: string, agentId: string) {
@@ -233,16 +233,6 @@ export function setAgentParentRequest(sessionId: string, agentId: string, parent
 }
 export function getAgentDeadlineRequest(sessionId: string, agentId: string) {
   return { GetAgentDeadline: { session_id: sessionId, agent_id: agentId } }
-}
-
-export const AGENT_ARCHIVE_MINIMUM_PROTOCOL_VERSION = 636
-
-export function supportsReversibleAgentArchive(protocolVersion: number | null | undefined): boolean {
-  return typeof protocolVersion === "number" && protocolVersion >= AGENT_ARCHIVE_MINIMUM_PROTOCOL_VERSION
-}
-
-export function listArchivedAgentsRequest(sessionId: string) {
-  return { ListArchivedAgents: { session_id: sessionId } }
 }
 
 /** Requires local protocol 638. Restores the source route of a pending Move/Return. */

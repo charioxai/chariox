@@ -127,23 +127,6 @@ async fn deleting_a_followed_peer_in_another_room_tells_its_follower() {
 }
 
 #[tokio::test]
-async fn archiving_a_followed_peer_in_another_room_tells_its_follower() {
-    let f = Fixture::new(true, false);
-    f.runtime
-        .archive_agent_in_session(
-            &crate::local::ArchiveAgentRequest {
-                session_id: f.peer_room.clone(),
-                agent_id: f.peer.clone(),
-                archived: true,
-            },
-            &f.owner,
-        )
-        .await
-        .unwrap();
-    f.assert_told_once("peer_event");
-}
-
-#[tokio::test]
 async fn ending_the_room_of_a_followed_peer_tells_its_follower() {
     let f = Fixture::new(true, false);
     f.runtime.delete_session_id(&f.peer_room).await.unwrap();

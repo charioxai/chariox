@@ -90,6 +90,8 @@ impl KernelRuntimeOwnedState {
         completed: crate::session::PromptQueueItem,
         settled_at_ms: u64,
     ) -> Result<OwnedPromptCompletion, DaemonError> {
+        // The workflow transition has committed, so the agent's prompt work is over unless more is queued.
+        self.unhide_agent_without_prompt_work(session_id, agent_id)?;
         self.record_completed_prompt_settlement(
             session_id,
             agent_id,

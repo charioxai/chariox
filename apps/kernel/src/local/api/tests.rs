@@ -99,4 +99,4 @@ mod workspace_capabilities;
 mod provider_login_input;
 mod usage_snapshot;
 
-mod agent_archive;
+mod agent_hide;
