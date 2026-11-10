@@ -276,3 +276,19 @@ test("buildApplyPatchNewPreview hides old-side lines", () => {
     { kind: "context", text: "context()" },
   ])
 })
+
+test("a namespaced Chariox write shows the kernel's returned diff, removals included, not a preview made from its input", () => {
+  for (const tool of ["mcp__chariox__chariox_write_artifact", "mcp__chariox__write_artifact", "chariox_chariox_write_artifact"]) {
+    const display = formatToolDisplay({
+      id: "call_overwrite",
+      tool,
+      status: "completed",
+      input: { path: "src/app.ts", content_text: "next()\n", domain: "text" },
+      output: JSON.stringify({ applied: true, change: { path: "src/app.ts", kind: "update", diff: "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,1 +1,1 @@\n-old()\n+next()", diff_truncated: false } }),
+    })
+    const patch = display.blocks.find((block) => block.kind === "patch")
+    assert.ok(patch && patch.kind === "patch", tool)
+    assert.ok(patch.files[0]!.diff?.includes("-old()"), `${tool}: the returned diff, with its removal, is kept`)
+    assert.equal(display.title, "Wrote src/app.ts (+1 −1)", tool)
+  }
+})

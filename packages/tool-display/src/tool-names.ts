@@ -17,7 +17,8 @@ export function canonicalToolName(tool: unknown) {
     return ""
   }
   const normalized = tool.trim()
-  const compact = normalized.replace(/[._-]/g, "").toLowerCase()
+  // The MCP bridge namespaces a tool ("mcp__chariox__chariox_write_artifact"): the server's name and its own prefix are one "chariox".
+  const compact = normalized.replace(/[._-]/g, "").toLowerCase().replace(/^mcp(?=chariox)/, "").replace(/^(?:chariox)+(?=[a-z])/, "chariox")
   if (compact === "charioxwriteartifact" || compact === "writeartifact") return "chariox.write_artifact"
   if (compact === "charioxeditartifact" || compact === "editartifact") return "chariox.edit_artifact"
   if (

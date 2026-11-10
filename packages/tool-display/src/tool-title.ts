@@ -172,7 +172,7 @@ function toolTitleSimpleProgram(script: string) {
   return /^[^|;&<>`$()\n]+$/.test(line) ? line.split(/\s+/)[0]!.split("/").pop() ?? null : null
 }
 
-const TOOL_TITLE_WRITE = new Set(["write", "writefile", "create", "charioxwriteartifact", "writeartifact"])
+const TOOL_TITLE_WRITE = new Set(["write", "writefile", "create", "charioxwriteartifact", "writeartifact", "mcpcharioxwriteartifact", "mcpcharioxcharioxwriteartifact", "charioxcharioxwriteartifact"])
 
 const TOOL_TITLE_SHELL = new Set([
   "bash", "shell", "sh", "shellcommand", "execcommand", "runcommand", "runshellcommand",
