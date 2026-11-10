@@ -78,14 +78,31 @@ pub(crate) async fn execute_provider_account_request(
             })
         }
         LocalDaemonRequest::LinkProviderAccountProfile(request) => {
-            Ok(LocalDaemonResponse::ProviderAccountProfile {
-                profile: registry.link_existing(
-                    &owner_user_id,
+            let path = PathBuf::from(request.path);
+            let profile =
+                registry.link_existing(&owner_user_id, &request.provider, &request.label, &path)?;
+            // Other kernels of this OS user can reuse a root that lives outside any
+            // kernel's private home. Failing to publish it never fails the link.
+            if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+                let private_root = config
+                    .account_profile_registry_path()
+                    .parent()
+                    .map(PathBuf::from)
+                    .unwrap_or_default();
+                if let Err(error) = crate::provider_discovery::record_machine_location(
+                    &home,
+                    &private_root,
                     &request.provider,
-                    &request.label,
-                    &PathBuf::from(request.path),
-                )?,
-            })
+                    &path,
+                ) {
+                    crate::logging::warn_with_fields(
+                        "daemon.account_profile",
+                        "linked account location was not published for other kernels",
+                        serde_json::json!({ "error": error.to_string() }),
+                    );
+                }
+            }
+            Ok(LocalDaemonResponse::ProviderAccountProfile { profile })
         }
         LocalDaemonRequest::ImportNativeProviderAccountProfile(request) => {
             let native_owner = runtime_for_checks

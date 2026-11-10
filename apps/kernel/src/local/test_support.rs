@@ -160,6 +160,37 @@ impl LocalRouterTestHarness {
         self.router.runtime_state()
     }
 
+    /// One machine-discovery pass followed by the catalog warm-up a started kernel does.
+    pub(crate) fn run_provider_discovery_pass(&self) {
+        self.runtime
+            .block_on(self.router.discover_machine_providers());
+    }
+
+    /// The background task a started kernel runs, stopped by the returned sender.
+    pub(crate) fn spawn_provider_discovery(
+        &self,
+    ) -> (
+        tokio::sync::watch::Sender<bool>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (stop, shutdown) = tokio::sync::watch::channel(false);
+        let router = self.router.clone();
+        let task = self
+            .runtime
+            .spawn(async move { router.run_provider_discovery(shutdown).await });
+        (stop, task)
+    }
+
+    pub(crate) fn warmed_default_catalog(
+        &self,
+    ) -> Option<crate::provider::OpenCodeProviderCatalog> {
+        self.router.warmed_default_catalog()
+    }
+
+    pub(crate) fn client_catalog_change_sequence(&self) -> u64 {
+        self.router.client_catalog_change_sequence()
+    }
+
     pub(crate) fn spawn_test_task<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
     where
         F: std::future::Future + Send + 'static,

@@ -31,6 +31,8 @@ pub(super) async fn catalog_snapshot(
     request: GetClientCatalogSnapshotRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let known = request.known;
+    // A client opening the waiting room is the moment to notice new logins.
+    accounts.request_discovery();
     let mut snapshot = load(
         providers,
         config,

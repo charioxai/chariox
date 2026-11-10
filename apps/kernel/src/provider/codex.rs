@@ -58,7 +58,13 @@ fn resolve_codex_executable_unlocked() -> Result<PathBuf, DaemonError> {
     }
 
     CODEX_EXECUTABLE_RESOLUTION
-        .resolve(|| resolve_candidate(PathBuf::from("codex"), false))
+        .resolve(|| {
+            resolve_candidate(PathBuf::from("codex"), false).or_else(|| {
+                super::executable_resolution::standard_install_candidates("codex")
+                    .into_iter()
+                    .find_map(|candidate| resolve_candidate(candidate, true))
+            })
+        })
         .ok_or_else(|| DaemonError::ProviderExecutableNotFound {
             adapter_key: "codex".to_string(),
             executable: "codex".to_string(),
