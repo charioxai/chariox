@@ -163,15 +163,10 @@ fn provider_installed(provider: &str) -> bool {
     }
 }
 
-/// A signed-out answer is rechecked only now and then. Codex is slower to ask:
-/// a recheck restarts its server so that it sees a login made since it started.
-fn signed_out_recheck_ms(provider: &str) -> u64 {
-    if provider == "codex" {
-        10 * 60 * 1000
-    } else {
-        60 * 1000
-    }
-}
+/// A signed-out answer is rechecked at most once a minute, so asking again on
+/// every client open stays cheap. Codex is never rechecked on its own: its server
+/// keeps the login it saw at its start and only an explicit refresh reloads it.
+const SIGNED_OUT_RECHECK_MS: u64 = 60 * 1000;
 
 /// Only profiles on the machine's own provider login are checked here; a profile
 /// Chariox created needs its own sign-in.
@@ -182,9 +177,10 @@ fn needs_validation(profile: &ProviderAccountProfile, now_ms: u64) -> bool {
     match profile.auth_state {
         ProviderAccountAuthState::Unknown => true,
         ProviderAccountAuthState::NotConfigured | ProviderAccountAuthState::Expired => {
-            profile.last_validated_at_ms.is_none_or(|checked| {
-                now_ms.saturating_sub(checked) >= signed_out_recheck_ms(&profile.provider)
-            })
+            profile.provider != "codex"
+                && profile
+                    .last_validated_at_ms
+                    .is_none_or(|checked| now_ms.saturating_sub(checked) >= SIGNED_OUT_RECHECK_MS)
         }
         ProviderAccountAuthState::Authenticated | ProviderAccountAuthState::Error => false,
     }
@@ -197,24 +193,15 @@ fn validate(
     profile: &ProviderAccountProfile,
     config: &DaemonConfig,
 ) -> bool {
-    let result = if profile.provider == "codex" {
-        // A running Codex server keeps the login it saw at its start.
-        crate::local::provider_requests::refresh_provider_account_profile_explicitly(
-            registry,
-            owner_user_id,
-            &profile.provider,
-            &profile.profile_id,
-            config,
-        )
-    } else {
-        crate::local::provider_requests::refresh_provider_account_profile_with_config(
-            registry,
-            owner_user_id,
-            &profile.provider,
-            &profile.profile_id,
-            config,
-        )
-    };
+    // Authentication only: a usage probe that fails must not hide a valid login,
+    // and a running Codex server that owns a pending device login is left alone.
+    let result = crate::local::provider_requests::refresh_provider_account_auth_with_config(
+        registry,
+        owner_user_id,
+        &profile.provider,
+        &profile.profile_id,
+        config,
+    );
     match result {
         Ok(_) => true,
         Err(error) => {
