@@ -220,6 +220,8 @@ async fn native_child(team: &Team, dir: &std::path::Path) -> crate::provider::Ru
             );
             run.mark_running();
             app.providers_mut().insert_run_for_test(run.clone());
+            app.update_provider_run_projection(run.clone());
+            super::spawn_inert_pty_for_run(app, run.id());
             run
         })
         .await
@@ -289,11 +291,58 @@ async fn a_native_notification_turn_that_executes_beyond_the_grace_is_held_until
     );
     assert!(child_finished(&team).is_empty());
 
+    // The notification turn ends with the provider's Stop hook, and its last answer reaches the
+    // transcript after the hook, so the pump's final drain must capture it.
+    let events = dir.join("events.jsonl");
+    let final_line = line("m2", "the server exited with code 0").to_string();
+    let (flushed, late) = final_line.split_at(final_line.len() / 2);
+    std::fs::write(
+        &transcript,
+        format!("{}\n{flushed}", line("m1", "reading the server output")),
+    )
+    .unwrap();
+    std::fs::write(
+        &events,
+        serde_json::json!({
+            "hook_event_name": "Stop",
+            "transcript_path": transcript.display().to_string(),
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let late_flush = {
+        let (transcript, late) = (transcript.clone(), format!("{late}\n"));
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(transcript)
+                .unwrap();
+            std::io::Write::write_all(&mut file, late.as_bytes()).unwrap();
+        })
+    };
     team.runtime
-        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, false)
+        .pump_owned_provider_output(&team.room, &team.child_run, vec![], true)
         .await
         .unwrap();
+    late_flush.await.unwrap();
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1, "{events:?}");
+    let excerpt = events[0].payload["public_answer"]["excerpt"]
+        .as_str()
+        .unwrap();
+    assert!(
+        excerpt.contains("the server exited with code 0"),
+        "{excerpt}"
+    );
+    sweep(&team).await;
     assert_eq!(child_finished(&team).len(), 1);
+    let child_run = team.child_run.clone();
+    team.runtime
+        .with_app_side_effect(move |app| {
+            let _ = app.pty_mut().remove_process(&child_run);
+        })
+        .await;
     let _ = std::fs::remove_dir_all(dir);
 }
 
