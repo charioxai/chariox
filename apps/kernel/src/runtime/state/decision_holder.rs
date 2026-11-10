@@ -1,6 +1,7 @@
 //! One decision is one card: the interaction a sub-agent raises stays one object, and the
 //! kernel only moves its holder (the parent agent that may answer it, or the user). The
 //! holder is kernel state for routing and audit; clients never read it.
+use super::runtime_interaction_state::ParentAnswer;
 use super::*;
 use crate::agent::authority_limit::{ancestors, descendants};
 use crate::durable_state::agent_lifecycle::{self as ledger, ExecutionState, Operation};
@@ -11,6 +12,8 @@ pub(crate) const CHILD_DECISION_EVENT: &str = "child_decision";
 pub(crate) const HOLDER_CHANGED: &str = "decision holder changed";
 /// A one-line question is at most this many characters in the holder's inbox event.
 const QUESTION_LIMIT: usize = 160;
+/// The card's own text (the command it allows) is at most this many characters in the event.
+const DETAIL_LIMIT: usize = 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DecisionHolder {
@@ -502,6 +505,25 @@ fn child_decision_occurrence(interaction_id: &str, holder: &str, tenure: u32) ->
     format!("child-decision-{interaction_id}-{holder}-{tenure}")
 }
 
+/// What the card says beyond its title, so a holder can tell which command it is asked to allow.
+/// Secret-shaped values are redacted before the text is cut, so a cut never leaves half a token.
+/// A card with no title already has its text as the question. The flag is true when the text was
+/// cut: the part that was cut can be the part that matters, so a holder must be able to tell.
+fn card_detail(interaction: &crate::session::RuntimeInteraction) -> Option<(String, bool)> {
+    let title = interaction.title()?;
+    let message = interaction.message();
+    if message.trim().is_empty() || message == title {
+        return None;
+    }
+    let redacted = crate::secret_redaction::redact_secrets(message);
+    let mut detail: String = redacted.chars().take(DETAIL_LIMIT).collect();
+    let truncated = redacted.chars().count() > DETAIL_LIMIT;
+    if truncated {
+        detail.push('…');
+    }
+    Some((detail, truncated))
+}
+
 impl KernelRuntimeOwnedState {
     /// Records the holder agent's urgent `child_decision` event for its current tenure and returns
     /// that holder. A decision the user holds tells no agent.
@@ -541,24 +563,31 @@ impl KernelRuntimeOwnedState {
             .chars()
             .take(QUESTION_LIMIT)
             .collect::<String>();
+        let mut payload = serde_json::json!({
+            "interaction_id": interaction_id,
+            "child_agent_id": child,
+            "child_alias": alias,
+            "question": question,
+            "choices": interaction.choices().iter().map(|choice| serde_json::json!({
+                "id": choice.id(),
+                "label": choice.label(),
+            })).collect::<Vec<_>>(),
+            "text_allowed": interaction.custom_choice().is_some(),
+            "needs_answer": true,
+        });
+        if let Some((detail, truncated)) = card_detail(interaction) {
+            payload["detail"] = detail.into();
+            if truncated {
+                payload["detail_truncated"] = true.into();
+            }
+        }
         let mut event = ledger::occurrence(
             session_id,
             &holder,
             child,
             &child_decision_occurrence(interaction_id, &holder, pending.holder_tenure),
             CHILD_DECISION_EVENT,
-            serde_json::json!({
-                "interaction_id": interaction_id,
-                "child_agent_id": child,
-                "child_alias": alias,
-                "question": question,
-                "choices": interaction.choices().iter().map(|choice| serde_json::json!({
-                    "id": choice.id(),
-                    "label": choice.label(),
-                })).collect::<Vec<_>>(),
-                "text_allowed": interaction.custom_choice().is_some(),
-                "needs_answer": true,
-            }),
+            payload,
         );
         event.urgent = true;
         self.durable_state_store
@@ -864,6 +893,7 @@ impl KernelRuntimeState {
         else {
             return Ok(ChildDecisionStatus::SettledByUser);
         };
+        let child = subject_agent(interaction).unwrap_or_default().to_owned();
         let (choice_id, reply) = if interaction.choice(answer).is_some() {
             (answer.to_owned(), None)
         } else if let Some(custom) = interaction.custom_choice() {
@@ -884,7 +914,19 @@ impl KernelRuntimeState {
             None,
             Some(holder),
         ) {
-            Ok(()) => Ok(ChildDecisionStatus::Answered),
+            Ok(()) => {
+                self.audit_interaction_answered(
+                    session_id,
+                    interaction_id,
+                    &choice_id,
+                    None,
+                    Some(ParentAnswer {
+                        holder,
+                        child: &child,
+                    }),
+                );
+                Ok(ChildDecisionStatus::Answered)
+            }
             Err(error) => match error.to_string() {
                 text if text.contains(HOLDER_CHANGED) => Ok(ChildDecisionStatus::NotHolder),
                 text if text.contains("not pending") || text.contains("no longer pending") => {

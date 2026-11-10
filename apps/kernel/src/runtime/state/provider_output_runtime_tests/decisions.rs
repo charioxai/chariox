@@ -1362,7 +1362,9 @@ async fn a_holder_that_yields_before_reading_the_decision_keeps_it() {
     );
 }
 
+mod answer_audit;
 mod asked_without_waiting;
+mod detail;
 mod holder_inbox_reads;
 mod reparent;
 mod restored;
