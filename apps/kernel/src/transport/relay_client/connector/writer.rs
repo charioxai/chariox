@@ -151,13 +151,14 @@ pub(super) async fn run_relay_writer<S>(
     mut transport_receipt_rx: tokio::sync::mpsc::Receiver<String>,
     mut upload_receipt_rx: Option<tokio::sync::mpsc::Receiver<(u32, u32)>>,
     binary_events: bool,
+    binary_requests: bool,
     closing: std::sync::Arc<AtomicBool>,
     notes: std::sync::Arc<ReplyNotes>,
 ) where
     S: Sink<Message> + Unpin,
 {
     let chunked = upload_receipt_rx.is_some();
-    let mut uploads = Uploads::new();
+    let mut uploads = Uploads::new(binary_requests);
     let mut priority_open = true;
     let mut event_open = true;
     while priority_open
@@ -274,6 +275,7 @@ mod tests {
                 receipt_rx,
                 None,
                 false,
+                false,
                 Arc::new(AtomicBool::new(false)),
                 Arc::default(),
             );
@@ -331,6 +333,7 @@ mod tests {
             pong_rx,
             receipt_rx,
             Some(upload_receipt_rx),
+            false,
             false,
             Arc::new(AtomicBool::new(false)),
             Arc::default(),
@@ -423,6 +426,7 @@ mod tests {
             receipt_rx,
             Some(upload_receipt_rx),
             false,
+            false,
             Arc::new(AtomicBool::new(false)),
             Arc::default(),
         ));
@@ -475,6 +479,7 @@ mod tests {
             pong_rx,
             receipt_rx,
             None,
+            false,
             false,
             Arc::new(AtomicBool::new(false)),
             Arc::default(),

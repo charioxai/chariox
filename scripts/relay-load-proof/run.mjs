@@ -325,6 +325,9 @@ async function runVariant(variant) {
     result.wire = { direction, downBytes: wireTo[direction === "put" ? "up" : "down"] - wireFrom[direction === "put" ? "up" : "down"], probePairBytes: Math.round(probeWireDown), probePairs }
     result.wireDownRateRaw = result.wire.downBytes / (windowMs / 1000) / bytesPerSecondLink
     result.wireDownRate = (result.wire.downBytes - probeWireDown * probePairs) / (windowMs / 1000) / bytesPerSecondLink
+    // File bytes that arrived intact over the bytes the relay put on the shaped link for them: the cost of the framing and encoding.
+    result.fileBytes = result.transfers.filter(t => t.code === 0 && t.hashOk).length * sizeBytes
+    result.fileShare = result.fileBytes / Math.max(1, result.wire.downBytes - probeWireDown * probePairs)
   } catch (error) {
     result.fatal = error.message
   } finally {

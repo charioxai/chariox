@@ -126,6 +126,7 @@ pub(crate) async fn handle_connection(
     let mut chunks = false;
     let mut unsupported_transport = false;
     let mut binary_events = false;
+    let mut binary_requests = false;
     let mut upload_chunks = false;
     let mut initial_resume_negotiated = false;
     let mut hello = token_refusal::ConnectionHello::default();
@@ -191,6 +192,17 @@ pub(crate) async fn handle_connection(
                     .headers_mut()
                     .insert(crate::binary_event::VERSION_HEADER, "98".parse().unwrap());
             }
+            binary_requests = binary_events
+                && request
+                    .headers()
+                    .get(crate::binary_request::HEADER)
+                    .is_some_and(|value| value == crate::binary_request::OFFER);
+            if binary_requests {
+                response.headers_mut().insert(
+                    crate::binary_request::HEADER,
+                    crate::binary_request::OFFER.parse().unwrap(),
+                );
+            }
             upload_chunks = chunks
                 && request
                     .headers()
@@ -212,7 +224,7 @@ pub(crate) async fn handle_connection(
         Err(_) => return Ok(()),
     };
     hello.transport = format!(
-        "chunks={chunks} binary_events={binary_events} upload_chunks={upload_chunks} display_resume={initial_resume_negotiated}"
+        "chunks={chunks} binary_events={binary_events} binary_requests={binary_requests} upload_chunks={upload_chunks} display_resume={initial_resume_negotiated}"
     );
     if unsupported_transport {
         // MP-08 / MP-10 / MP-11: old TUIs discard HTTP 426 bodies, but surface
@@ -238,6 +250,7 @@ pub(crate) async fn handle_connection(
         outgoing_rx,
         chunks,
         binary_events,
+        binary_requests,
         receipt_rx,
         control_rx,
         writer::WriterUsage::new(
@@ -415,6 +428,19 @@ pub(crate) async fn handle_connection(
                     let envelope = crate::binary_response::into_envelope(&bytes)?;
                     if !matches!(envelope, RelayEnvelope::DaemonResponse { .. }) {
                         return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,"invalid daemon response route"));
+                    }
+                    Message::Text(serde_json::to_string(&envelope).map_err(std::io::Error::other)?.into())
+                }
+                Message::Binary(bytes) if bytes.starts_with(b"CXR3") => {
+                    connection_meter.record(Direction::In, CONTROL_SCOPE, bytes.len());
+                    counted = true;
+                    if !binary_requests {
+                        send_close(&outgoing_tx,"binary requests require a negotiated connection".into());
+                        break;
+                    }
+                    let envelope = crate::binary_request::into_envelope(&bytes)?;
+                    if !matches!(envelope, RelayEnvelope::ClientRequest { .. }) {
+                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,"invalid client request route"));
                     }
                     Message::Text(serde_json::to_string(&envelope).map_err(std::io::Error::other)?.into())
                 }

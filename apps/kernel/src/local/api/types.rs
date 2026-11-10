@@ -497,4 +497,6 @@ pub use workspace::*;
 /// Temporary 1002 (landing 7): workflow entry gates (`WorkflowGate`, gated entry acceptance, typed event
 /// data), `exec_place` with `placeable_on` on held launches, and a sub-agent tree node's mode, permission
 /// level and effort.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1002;
+/// Temporary 1003 (landing 8): a gateway request and its answer may carry their bytes as bytes
+/// (`framed_plaintext_v1`), and the relay takes requests as `CXR3` frames (peer 442).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1003;

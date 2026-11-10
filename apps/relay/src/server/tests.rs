@@ -1,7 +1,9 @@
 mod admission;
 mod backlog;
 mod binary_event;
+mod binary_request;
 mod client_renewal;
+mod control_during_bulk;
 mod daemon;
 mod display;
 mod display_resume_connect;

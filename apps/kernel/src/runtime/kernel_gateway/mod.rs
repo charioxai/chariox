@@ -269,6 +269,11 @@ impl KernelGateway {
             .expect("on_behalf_of serializes");
         }
         let plaintext = serde_json::to_vec(&envelope).expect("envelope serializes");
+        let plaintext = if directory::reads_framed_plaintext(&kernel) {
+            crate::transport::framed_plaintext::frame(&plaintext)
+        } else {
+            plaintext
+        };
         let link = self.link_for(target, &kernel).await?;
         if grant_live {
             self.ensure_access_live(origin, target)?;
@@ -282,12 +287,13 @@ impl KernelGateway {
             .request_keeping_token_fresh(&link, &kernel, target, request_id, &plaintext, deadline)
             .await
         {
-            Ok(bytes) => {
-                serde_json::from_slice(&bytes).map_err(|error| GatewayError::Unreachable {
+            Ok(bytes) => crate::transport::framed_plaintext::open(&bytes)
+                .map_err(str::to_owned)
+                .and_then(|(json, _)| serde_json::from_slice(&json).map_err(|e| e.to_string()))
+                .map_err(|detail| GatewayError::Unreachable {
                     name: target.into(),
-                    detail: format!("unreadable answer: {error}"),
-                })
-            }
+                    detail: format!("unreadable answer: {detail}"),
+                }),
             Err(failure) => {
                 if matches!(&failure, LinkFailure::Relay(error) if error.message.starts_with("invalid relay request payload"))
                 {

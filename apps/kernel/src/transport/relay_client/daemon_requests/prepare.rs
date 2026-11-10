@@ -8,6 +8,8 @@ pub(in crate::transport::relay_client) struct PreparedDaemonRequest {
     pub(super) caller_identity: Option<RelayCallerIdentity>,
     pub(super) encrypted_request: EncryptedRelayPayload,
     pub(super) request_memory: request_limits::RequestMemoryGuard,
+    /// The request came with its bytes as bytes (`framed_plaintext`): the answer goes out that way.
+    pub(super) framed: bool,
 }
 impl PreparedDaemonRequest {
     /// Who the reply to this request is for, named in write diagnostics and traffic counters.
@@ -142,7 +144,15 @@ pub(in crate::transport::relay_client) fn prepare_daemon_request(
                     false,
                 ))
             })?;
-    let message = parse_relay_client_request(&decrypted.plaintext).map_err(|error| {
+    let (json, framed) =
+        crate::transport::framed_plaintext::open(&decrypted.plaintext).map_err(|error| {
+            refusal(relay_error(
+                "invalid_request",
+                &format!("invalid relay request payload: {error}"),
+                false,
+            ))
+        })?;
+    let message = parse_relay_client_request(&json).map_err(|error| {
         refusal(relay_error(
             "invalid_request",
             &crate::transport::request_decode_error::message(
@@ -152,7 +162,8 @@ pub(in crate::transport::relay_client) fn prepare_daemon_request(
             false,
         ))
     })?;
-    request_limits::validate_kind(&message, decrypted.plaintext.len()).map_err(refusal)?;
+    request_limits::validate_kind(&message, json.len()).map_err(refusal)?;
+    drop(json);
     Ok(PreparedDaemonRequest {
         message,
         client_public_key: decrypted.sender_public_key,
@@ -160,6 +171,7 @@ pub(in crate::transport::relay_client) fn prepare_daemon_request(
         caller_identity,
         encrypted_request,
         request_memory,
+        framed,
     })
 }
 
@@ -186,6 +198,7 @@ mod tests {
             daemon_private_key: String::new(),
             encrypted_request,
             request_memory,
+            framed: false,
             caller_identity: Some(RelayCallerIdentity {
                 realm_id: "realm".into(),
                 subject: "terminal".into(),

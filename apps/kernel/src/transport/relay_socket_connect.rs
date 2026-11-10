@@ -27,7 +27,9 @@ pub(crate) fn connect_binary_events(relay_url: &str) -> ConnectFuture<'_> {
     match chariox_relay::binary_event::connection_request(
         &chariox_relay::frame_transport::transport_url(relay_url),
     ) {
-        Ok(request) => Box::pin(connect_websocket(offer_upload_chunks(request))),
+        Ok(request) => Box::pin(connect_websocket(offer_upload_chunks(
+            chariox_relay::binary_request::offer(request),
+        ))),
         Err(error) => Box::pin(async move { Err(error) }),
     }
 }
@@ -50,6 +52,15 @@ pub(crate) fn binary_events_accepted(handshake: &Response) -> bool {
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u32>().ok())
         .is_some_and(|version| version >= chariox_relay::binary_event::PROTOCOL_VERSION)
+}
+
+/// True when the relay answered the binary request offer: requests then travel as `CXR3`
+/// frames in both directions of this connection.
+pub(crate) fn binary_requests_accepted(handshake: &Response) -> bool {
+    handshake
+        .headers()
+        .get(chariox_relay::binary_request::HEADER)
+        .is_some_and(|value| value == chariox_relay::binary_request::OFFER)
 }
 
 /// True when the relay answered the upload offer in its handshake.

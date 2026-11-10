@@ -82,3 +82,16 @@ and a full queue pauses the sender).
 Notes on what the model cannot show: the proxy's queue (256 KiB per direction) plays the bottleneck buffer, so the
 small-request latency during bulk contains the time a small frame waits behind queued bulk bytes. That head-of-line
 wait is the effect a TCP-level bound on unsent bytes is meant to remove.
+
+## File bytes over wire bytes (relay8)
+
+The bar "verified file bytes / bytes the relay put on the shaped link for them >= 90 %" is measured by every
+`run.mjs` run (`fileShare` in `result.json`, a line in `report.mjs`) and repeated by `file-share.mjs`:
+
+```sh
+node scripts/relay-load-proof/file-share.mjs --kernel-binary K --relay-binary R --evidence-dir DIR --label base --repeat 3 --size-mb 30
+```
+
+It runs `files get` (8m profile) and `files put` (8m-sym) `--repeat` times each, one at a time, prints each share and the median
+per direction, and writes `<label>-file-share.md` and `.json`. The share is a ratio of byte counts: a loaded host slows the run but
+does not change it.
