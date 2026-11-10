@@ -104,6 +104,20 @@ impl WorkerEngine {
         #[cfg(not(target_os = "macos"))]
         Component::new(&self.engine, bytes)
     }
+    /// Load the supervisor's authenticated AOT component. macOS hardened
+    /// runtime executes code only from this engine's owned MAP_JIT memory.
+    ///
+    /// # Safety
+    /// The caller must authenticate the artifact's compiler/configuration and
+    /// integrity. App package bytes must never enter this native-code API.
+    pub unsafe fn deserialize_component(&self, bytes: &[u8]) -> wasmtime::Result<Component> {
+        #[cfg(target_os = "macos")]
+        return unsafe { self.code.component(&self.engine, bytes) };
+        #[cfg(not(target_os = "macos"))]
+        unsafe {
+            Component::deserialize(&self.engine, bytes)
+        }
+    }
     /// Load a module produced by this exact engine/configuration for native probes.
     ///
     /// # Safety

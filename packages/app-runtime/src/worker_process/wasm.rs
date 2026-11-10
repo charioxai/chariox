@@ -26,6 +26,7 @@ pub mod storage;
 
 pub struct WasmRuntime {
     pub(super) executable: File,
+    path: PathBuf,
     identity: AotRuntimeIdentity,
 }
 impl WasmRuntime {
@@ -53,7 +54,7 @@ impl WasmRuntime {
             hash.update(&buffer[..size]);
         }
         let output = compile::run(
-            &executable_path(std::os::fd::AsRawFd::as_raw_fd(&executable)),
+            &executable_path(program, std::os::fd::AsRawFd::as_raw_fd(&executable)),
             &["identity"],
             &[],
             16 * 1024,
@@ -65,6 +66,7 @@ impl WasmRuntime {
         }
         Ok(Self {
             executable,
+            path: program.to_owned(),
             identity,
         })
     }
@@ -82,9 +84,13 @@ impl WasmRuntime {
     pub fn identity(&self) -> &AotRuntimeIdentity {
         &self.identity
     }
+    /// What to exec for the verified worker held at `descriptor`.
+    pub(super) fn program(&self, descriptor: i32) -> PathBuf {
+        executable_path(&self.path, descriptor)
+    }
     pub fn compile(&self, component: &VerifiedComponent) -> Result<Vec<u8>, AotError> {
         compile::run(
-            &executable_path(std::os::fd::AsRawFd::as_raw_fd(&self.executable)),
+            &self.program(std::os::fd::AsRawFd::as_raw_fd(&self.executable)),
             &["precompile-stdio", component.world()],
             component.bytes(),
             crate::release_store::aot_cache::MAX_ARTIFACT_BYTES,
@@ -253,7 +259,7 @@ impl PreparedWorker {
         };
         record.encode()?;
         let prepared = Self {
-            program: CString::new(executable_path(8).as_os_str().as_encoded_bytes())
+            program: CString::new(runtime.program(8).as_os_str().as_encoded_bytes())
                 .map_err(|_| WorkerError::Preparation)?,
             arguments: vec![CString::new("serve-supervised").unwrap()],
             record,
@@ -351,14 +357,19 @@ pub(super) fn input_file(root: &Dir, bytes: &[u8]) -> Result<File, WorkerError> 
     Ok(file)
 }
 
-pub(super) fn executable_path(descriptor: i32) -> PathBuf {
+/// Linux execs the verified descriptor itself. macOS cannot exec /dev/fd/N
+/// (EACCES), so it execs the verified path in its trusted installed parent;
+/// the worker hashes its own executable and the kernel checks that build.
+fn executable_path(path: &Path, descriptor: i32) -> PathBuf {
     #[cfg(target_os = "linux")]
     {
+        let _ = path;
         PathBuf::from(format!("/proc/self/fd/{descriptor}"))
     }
     #[cfg(target_os = "macos")]
     {
-        PathBuf::from(format!("/dev/fd/{descriptor}"))
+        let _ = descriptor;
+        path.to_owned()
     }
 }
 
