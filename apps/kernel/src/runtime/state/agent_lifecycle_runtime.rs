@@ -805,6 +805,22 @@ impl KernelRuntimeState {
         );
         self.finish_agent_task_settlement(settlement, &source).await
     }
+    /// The provider's turn about an ended background call is the last part of the work of a child
+    /// held for it: the parent hears of the finish now.
+    pub(super) async fn release_tasks_held_for_notification(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        for task in
+            self.owned
+                .held_tasks_after_notification(session_id, agent_id, provider_run_id)?
+        {
+            Box::pin(self.release_held_task(&task)).await?;
+        }
+        Ok(())
+    }
     pub(super) async fn finish_agent_task_settlement(
         &self,
         settlement: Option<(AgentTaskExecution, bool)>,
