@@ -633,21 +633,29 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .app
             .sessions
             .environment_project_for_checkout(&lease.owner_user_id, &source_checkout)?;
+        let mut checkout = None;
         let worktree = if let Some(placement) = worktree_placement {
-            let worktree = crate::git_worktree_placement::prepare_git_worktree(
+            let prepared = crate::git_worktree_placement::prepare_git_worktree_checked(
                 &placement,
                 base_directory,
                 worktree_id.as_deref(),
                 "create remote git worktree",
+                |_| Ok(()),
             )?;
-            crate::project_environment::ProjectEnvironmentStore::new(
+            let worktree = prepared.path.clone();
+            checkout = Some(prepared);
+            let copied = crate::project_environment::ProjectEnvironmentStore::new(
                 &self.app.config().private_runtime_state_root(),
             )
             .copy_files_into_worktree(
                 &self.app.sessions,
                 base_directory,
                 Path::new(&worktree),
-            )?;
+            );
+            if let Err(error) = copied {
+                self.discard_refused_checkout(checkout.as_ref());
+                return Err(error);
+            }
             worktree
         } else {
             match worktree_id {
@@ -655,7 +663,56 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 None => base_directory.display().to_string(),
             }
         };
-        let worktree_path = Path::new(&worktree);
+        let created = self.register_leased_agent(
+            &lease,
+            lease_id,
+            &worktree,
+            source_project.as_ref(),
+            provider,
+            account_profile,
+            model,
+            effort,
+            execution_mode,
+            permission_level,
+            workspace_live_sync_mode,
+        );
+        if created.is_err() {
+            self.discard_refused_checkout(checkout.as_ref());
+        }
+        created
+    }
+
+    /// A refused leased spawn removes the checkout it made on this worker, unless a backing agent
+    /// was already registered in it.
+    fn discard_refused_checkout(
+        &self,
+        checkout: Option<&crate::git_worktree_placement::PreparedWorktree>,
+    ) {
+        if let Some(checkout) = checkout {
+            checkout
+                .discard_unless_used(&self.app.agents.list_agents(), "create remote git worktree");
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The leased agent is built from the lease, its folder and the requested profile"
+    )]
+    fn register_leased_agent(
+        &mut self,
+        lease: &ExecutionLease,
+        lease_id: &str,
+        worktree: &str,
+        source_project: Option<&crate::session::RuntimeProject>,
+        provider: &str,
+        account_profile: &str,
+        model: Option<String>,
+        effort: Option<String>,
+        execution_mode: Option<crate::provider::AgentExecutionMode>,
+        permission_level: Option<crate::provider::AgentPermissionLevel>,
+        workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
+    ) -> Result<LeasedAgent, DaemonError> {
+        let worktree_path = Path::new(worktree);
         if !worktree_path.exists() {
             return Err(DaemonError::LocalTransport {
                 operation: "resolve leased agent working directory",
@@ -693,7 +750,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     && session.owner_user_id() == lease.owner_user_id
                     && session.project_id()
                         == source_project
-                            .as_ref()
                             .map(|project| project.id())
                             .unwrap_or_default()
             });
@@ -713,10 +769,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 }
             }
             None => {
-                let mut request = CreateSessionRequest::new(workspace_id.clone(), worktree.clone())
+                let mut request = CreateSessionRequest::new(workspace_id.clone(), worktree)
                     .with_hidden(true)
                     .with_owner_user_id(lease.owner_user_id.clone());
-                if let Some(project) = &source_project {
+                if let Some(project) = source_project {
                     request = request.with_project_selection(
                         crate::session::SessionProjectSelection::Existing {
                             project_id: project.id().to_string(),

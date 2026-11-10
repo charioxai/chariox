@@ -168,6 +168,7 @@ mod inbox_sender;
 mod large_codex_resume;
 mod leased_folder;
 mod leased_output;
+mod leased_refused_checkout;
 mod mcp_catalog_reload;
 mod peer_events;
 mod process_tool_settlement;
