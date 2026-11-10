@@ -12,10 +12,18 @@ export type WaitingRoomLaunchKernelInput = {
   relay_alias?: string | null
 }
 
+/** The kernel this client is connected to, as its relay status reports it. */
+export type WaitingRoomLaunchConnectedKernelInput = {
+  daemon_id?: string | null
+  daemon_alias?: string | null
+  machine_id?: string | null
+}
+
 export type WaitingRoomLaunchRemoteState = {
   machines?: readonly WaitingRoomLaunchMachineInput[]
   kernels?: readonly WaitingRoomLaunchKernelInput[]
   managedEnvironments?: readonly WaitingRoomLaunchManagedEnvironmentInput[]
+  relay?: WaitingRoomLaunchConnectedKernelInput | null
 }
 
 export type WaitingRoomLaunchManagedEnvironmentInput = {
@@ -101,6 +109,7 @@ export function waitingRoomLaunchKernelOptions<TKernel extends WaitingRoomLaunch
   remote: {
     kernels?: readonly TKernel[]
     managedEnvironments?: readonly WaitingRoomLaunchManagedEnvironmentInput[]
+    relay?: WaitingRoomLaunchConnectedKernelInput | null
   } = {},
   machineRef = "local",
 ): WaitingRoomLaunchKernelOption<TKernel>[] {
@@ -115,7 +124,7 @@ export function waitingRoomLaunchKernelOptions<TKernel extends WaitingRoomLaunch
     machineRef = environment.runtimeMachineId!
   }
   if (machineRef === NEW_MANAGED_MACHINE_REF) return []
-  return (remote.kernels ?? [])
+  const options: WaitingRoomLaunchKernelOption<TKernel>[] = (remote.kernels ?? [])
     .filter((kernel) => kernel.machine_id === machineRef)
     .map((kernel) => ({
       id: kernel.kernel_id,
@@ -123,6 +132,19 @@ export function waitingRoomLaunchKernelOptions<TKernel extends WaitingRoomLaunch
       machineId: kernel.machine_id,
       kernel,
     }))
+  // MP-08/MP-11: a kernel leaves itself out of its relay kernel list, so once this client is
+  // connected to the chosen machine's kernel that kernel is known only from the relay status.
+  const connected = remote.relay
+  if (connected?.daemon_id && connected.machine_id === machineRef
+    && !options.some((option) => option.id === connected.daemon_id)) {
+    options.push({
+      id: connected.daemon_id,
+      label: connected.daemon_alias ?? connected.daemon_id,
+      machineId: machineRef,
+      kernel: null,
+    })
+  }
+  return options
 }
 
 export function waitingRoomSelectedLaunchKernelRef(
