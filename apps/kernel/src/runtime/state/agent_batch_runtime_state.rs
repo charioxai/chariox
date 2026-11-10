@@ -18,12 +18,26 @@ impl KernelRuntimeState {
         for request in &mut requests {
             self.normalize_local_kernel_ref(request);
         }
+        // Checkouts made for agents that are then refused are removed with the refusal.
+        let mut checkouts = Vec::new();
         if requests.iter().all(|request| request.kernel_ref.is_none()) {
-            let prepared = requests
-                .into_iter()
-                .map(|request| self.prepare_local_agent_worktree_placement(request))
-                .collect::<Result<_, _>>()?;
-            return self.owned.spawn_agents(prepared);
+            let mut prepared = Vec::new();
+            for request in requests {
+                match self.prepare_local_agent_worktree_placement(request) {
+                    Ok((request, checkout)) => {
+                        prepared.push(request);
+                        checkouts.extend(checkout);
+                    }
+                    Err(error) => {
+                        self.discard_unused_checkouts(checkouts);
+                        return Err(error);
+                    }
+                }
+            }
+            return self
+                .owned
+                .spawn_agents(prepared)
+                .inspect_err(|_| self.discard_unused_checkouts(checkouts));
         }
 
         let mut ordered_agents = vec![None; requests.len()];
@@ -32,7 +46,10 @@ impl KernelRuntimeState {
             let mut local_indices = Vec::new();
             for (index, request) in requests.into_iter().enumerate() {
                 if request.kernel_ref.is_none() {
-                    local_requests.push(self.prepare_local_agent_worktree_placement(request)?);
+                    let (request, checkout) =
+                        self.prepare_local_agent_worktree_placement(request)?;
+                    local_requests.push(request);
+                    checkouts.extend(checkout);
                     local_indices.push(index);
                 } else {
                     ordered_agents[index] = Some(self.spawn_agent(request).await?);
@@ -65,10 +82,14 @@ impl KernelRuntimeState {
         .await;
         match result {
             Ok(agents) => Ok(agents),
-            Err(error) => Err(self
-                .with_external_command_authority(None)
-                .rollback_agent_batch(ordered_agents, slice_refs, caller_user_id, error)
-                .await),
+            Err(error) => {
+                let error = self
+                    .with_external_command_authority(None)
+                    .rollback_agent_batch(ordered_agents, slice_refs, caller_user_id, error)
+                    .await;
+                self.discard_unused_checkouts(checkouts);
+                Err(error)
+            }
         }
     }
 

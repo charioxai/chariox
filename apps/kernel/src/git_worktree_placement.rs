@@ -485,6 +485,31 @@ pub(crate) fn prepare_git_worktree(
         operation,
         |_| Ok(()),
     )
+    .map(|prepared| prepared.path)
+}
+
+/// A checkout made for an agent that does not exist yet.
+pub(crate) struct PreparedWorktree {
+    pub(crate) path: String,
+    repo_root: PathBuf,
+    /// Set only when this checkout created the branch, so a branch that was already there is kept.
+    created_branch: Option<String>,
+}
+
+impl PreparedWorktree {
+    /// Removes the checkout and the branch it created when the agent it was made for was refused.
+    pub(crate) fn discard(&self, operation: &'static str) -> Result<(), DaemonError> {
+        remove_git_worktree(&self.repo_root, Path::new(&self.path), operation)?;
+        if let Some(branch) = &self.created_branch {
+            run_git_for(
+                &self.repo_root,
+                &["branch", "-D", branch],
+                operation,
+                Work::Mutation,
+            )?;
+        }
+        Ok(())
+    }
 }
 
 /// `check_target` sees the resolved target directory before anything is created.
@@ -494,7 +519,7 @@ pub(crate) fn prepare_git_worktree_checked(
     target_hint: Option<&str>,
     operation: &'static str,
     check_target: impl FnOnce(&Path) -> Result<(), DaemonError>,
-) -> Result<String, DaemonError> {
+) -> Result<PreparedWorktree, DaemonError> {
     let base_directory = base_directory.as_ref();
     preflight_working_directory(base_directory, operation, false, &[])?;
     let repo_root = run_git(base_directory, &["rev-parse", "--show-toplevel"], operation)?;
@@ -531,6 +556,7 @@ pub(crate) fn prepare_git_worktree_checked(
     check_target(&target_directory)?;
     let target = target_directory.display().to_string();
     preflight_working_directory(&target_directory, operation, true, &[])?;
+    let mut created_branch = None;
     let args = if let Some(branch) = placement.branch.as_deref() {
         if git_branch_exists(&repo_root, branch, operation)? {
             vec![
@@ -540,6 +566,7 @@ pub(crate) fn prepare_git_worktree_checked(
                 branch.to_string(),
             ]
         } else {
+            created_branch = Some(branch.to_string());
             vec![
                 "worktree".to_string(),
                 "add".to_string(),
@@ -559,7 +586,18 @@ pub(crate) fn prepare_git_worktree_checked(
     };
     let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
     run_git_for(&repo_root, &arg_refs, operation, Work::Mutation)?;
-    resolve_existing_worktree(&target, Path::new("."), operation)
+    let prepared = |path| PreparedWorktree {
+        path,
+        repo_root: repo_root.clone(),
+        created_branch: created_branch.clone(),
+    };
+    match resolve_existing_worktree(&target, Path::new("."), operation) {
+        Ok(path) => Ok(prepared(path)),
+        Err(error) => {
+            let _ = prepared(target).discard(operation);
+            Err(error)
+        }
+    }
 }
 
 pub(crate) fn remove_git_worktree(

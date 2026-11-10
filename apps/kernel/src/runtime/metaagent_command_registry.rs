@@ -340,6 +340,12 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
                 message: "routed extension commands: `extension import providers` and `extension grant|revoke app <owned-agent-ref> <installation-id>`".to_string(),
             }),
         },
+        "room" => match tokens.get(1).map(String::as_str) {
+            Some("list") => Some(MetaCommandExecutionPolicy::Routed),
+            _ => Some(MetaCommandExecutionPolicy::NotRouted {
+                message: "only `room list` is routed for room commands".to_string(),
+            }),
+        },
         "slice" => match tokens.get(1).map(String::as_str) {
             Some("list" | "ls" | "show" | "get" | "start" | "stop" | "save" | "save-state" | "status" | "backup") => {
                 Some(MetaCommandExecutionPolicy::Routed)

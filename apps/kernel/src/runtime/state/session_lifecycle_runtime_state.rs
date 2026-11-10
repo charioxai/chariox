@@ -596,10 +596,13 @@ impl KernelRuntimeState {
         self.normalize_local_kernel_ref(&mut request);
         if request.kernel_ref.is_none() {
             self.keep_child_folder_inside_parent(&request)?;
-            request = self.prepare_local_agent_worktree_placement(request)?;
+            let (request, checkout) = self.prepare_local_agent_worktree_placement(request)?;
             #[cfg(test)]
             crate::agent::authority_limit::run_hook_before_spawn_commit(&request.session_id);
-            return self.owned.spawn_agent(request);
+            return self
+                .owned
+                .spawn_agent(request)
+                .inspect_err(|_| self.discard_unused_checkouts(checkout));
         }
         self.with_app_side_effect(|app| {
             self.authorize_current_external_command()?;
@@ -640,10 +643,34 @@ impl KernelRuntimeState {
         }
     }
 
+    /// The checkout made for a spawn that was then refused leaves nothing behind.
+    pub(super) fn discard_unused_checkouts(
+        &self,
+        checkouts: impl IntoIterator<Item = crate::git_worktree_placement::PreparedWorktree>,
+    ) {
+        for checkout in checkouts {
+            if let Err(error) = checkout.discard("agent.spawn") {
+                crate::logging::warn_with_fields(
+                    "agent.spawn.checkout_not_removed",
+                    "a refused spawn left its checkout behind",
+                    serde_json::json!({"path": checkout.path, "error": error.to_string()}),
+                );
+            }
+        }
+    }
+
+    /// Makes the checkout a spawn asks for. The checkout is returned so the caller removes it if
+    /// the agent is then refused.
     pub(super) fn prepare_local_agent_worktree_placement(
         &self,
         mut request: crate::agent::CreateAgentRequest,
-    ) -> Result<crate::agent::CreateAgentRequest, DaemonError> {
+    ) -> Result<
+        (
+            crate::agent::CreateAgentRequest,
+            Option<crate::git_worktree_placement::PreparedWorktree>,
+        ),
+        DaemonError,
+    > {
         let session = self.owned.session_store.get_session(&request.session_id)?;
         let base_worktree = request
             .worktree_id
@@ -655,7 +682,7 @@ impl KernelRuntimeState {
             "agent.spawn",
         )?;
         let Some(placement) = request.worktree_placement.take() else {
-            return Ok(request);
+            return Ok((request, None));
         };
         let parent = request
             .parent_agent_id
@@ -673,12 +700,15 @@ impl KernelRuntimeState {
                 None => Ok(()),
             },
         )?;
-        self.copy_environment_files_into_worktree(
+        if let Err(error) = self.copy_environment_files_into_worktree(
             std::path::Path::new(base_worktree),
-            std::path::Path::new(&resolved),
-        )?;
-        request.worktree_id = Some(resolved);
-        Ok(request)
+            std::path::Path::new(&resolved.path),
+        ) {
+            self.discard_unused_checkouts([resolved]);
+            return Err(error);
+        }
+        request.worktree_id = Some(resolved.path.clone());
+        Ok((request, Some(resolved)))
     }
 
     pub(crate) async fn resolve_slice_worker_kernel_ref(

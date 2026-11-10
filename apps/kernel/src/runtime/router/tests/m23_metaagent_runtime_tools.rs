@@ -303,6 +303,7 @@ mod authority_limit;
 mod decisions;
 mod hidden_subagents;
 mod peer_spawn;
+mod reach_lists;
 mod room_admission;
 mod room_prompt_dispatch;
 mod subtree;

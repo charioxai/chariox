@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, path::Path};
+use std::{
+    collections::VecDeque,
+    path::{Path, PathBuf},
+};
 
 use crate::agent::CreateAgentRequest;
 use crate::agent::GitWorktreePlacement;
@@ -481,6 +484,40 @@ impl<'a> RemoteLeaseRuntime<'a> {
     ) -> Result<(), DaemonError> {
         self.authorize_execution_lease_caller(lease_id, caller)?;
         self.destroy_execution_lease(lease_id)
+    }
+
+    /// The folder of a leased agent spawned without one: its own, under the worker's home. The
+    /// worker's working directory is a service directory (`/` under a service manager), never a
+    /// place for an agent to work.
+    pub(crate) fn fresh_leased_agent_folder(&self, lease_id: &str) -> Result<String, DaemonError> {
+        let lease = self.app.execution_leases.get(lease_id).ok_or_else(|| {
+            DaemonError::ExecutionLeaseNotFound {
+                lease_id: lease_id.to_string(),
+            }
+        })?;
+        let name = lease.home_agent_id.as_str();
+        let name_is_safe = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|home| home.is_absolute() && home != Path::new("/"));
+        let (true, Some(home)) = (name_is_safe, home) else {
+            return Err(DaemonError::LocalTransport {
+                operation: "resolve leased agent working directory",
+                message: "no folder was given and this worker has no home folder to create one in; pass --dir <folder on the worker>".to_string(),
+            });
+        };
+        let folder = home.join("chariox-workspaces").join(name);
+        std::fs::create_dir_all(&folder).map_err(|error| DaemonError::LocalTransport {
+            operation: "resolve leased agent working directory",
+            message: format!(
+                "cannot create the agent folder `{}`: {error}; pass --dir <folder on the worker>",
+                folder.display()
+            ),
+        })?;
+        Ok(folder.display().to_string())
     }
 
     #[allow(
