@@ -488,8 +488,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
 
     /// The folder of a leased agent spawned without one: its own, under the worker's home. The
     /// worker's working directory is a service directory (`/` under a service manager), never a
-    /// place for an agent to work.
-    pub(crate) fn fresh_leased_agent_folder(&self, lease_id: &str) -> Result<String, DaemonError> {
+    /// place for an agent to work. Nothing is created here, so a refusal leaves the lease's
+    /// authorization for the retry; a folder that exists belongs to an earlier leased agent of the
+    /// same home agent and is never shared.
+    pub(crate) fn resolve_fresh_leased_agent_folder(
+        &self,
+        lease_id: &str,
+    ) -> Result<PathBuf, DaemonError> {
         let lease = self.app.execution_leases.get(lease_id).ok_or_else(|| {
             DaemonError::ExecutionLeaseNotFound {
                 lease_id: lease_id.to_string(),
@@ -510,14 +515,59 @@ impl<'a> RemoteLeaseRuntime<'a> {
             });
         };
         let folder = home.join("chariox-workspaces").join(name);
-        std::fs::create_dir_all(&folder).map_err(|error| DaemonError::LocalTransport {
+        if folder.exists() {
+            return Err(DaemonError::LocalTransport {
+                operation: "resolve leased agent working directory",
+                message: format!(
+                    "the agent folder `{}` already exists: an earlier leased agent of this home agent works there; pass --dir <folder on the worker>",
+                    folder.display()
+                ),
+            });
+        }
+        Ok(folder)
+    }
+
+    /// Makes the folder `resolve_fresh_leased_agent_folder` named; it must still not exist.
+    pub(crate) fn create_fresh_leased_agent_folder(
+        &self,
+        folder: &Path,
+    ) -> Result<(), DaemonError> {
+        let refused = |error: std::io::Error| DaemonError::LocalTransport {
             operation: "resolve leased agent working directory",
             message: format!(
                 "cannot create the agent folder `{}`: {error}; pass --dir <folder on the worker>",
                 folder.display()
             ),
-        })?;
-        Ok(folder.display().to_string())
+        };
+        if let Some(parent) = folder.parent() {
+            std::fs::create_dir_all(parent).map_err(refused)?;
+        }
+        std::fs::create_dir(folder).map_err(refused)
+    }
+
+    /// A refused leased spawn removes the fresh folder it made, unless a backing agent was already
+    /// registered in it. A folder that stays is named in the refusal.
+    pub(crate) fn remove_unused_fresh_folder(
+        &self,
+        folder: &Path,
+        error: DaemonError,
+    ) -> DaemonError {
+        let used = self
+            .app
+            .agents
+            .list_agents()
+            .iter()
+            .any(|agent| agent.worktree_id() == Some(folder.to_string_lossy().as_ref()));
+        if used {
+            return error;
+        }
+        let leftover = std::fs::remove_dir(folder).err().map(|remove| {
+            format!(
+                "the failed spawn left its agent folder `{}` behind ({remove})",
+                folder.display()
+            )
+        });
+        crate::git_worktree_placement::with_leftover(error, leftover.into_iter().collect())
     }
 
     #[allow(
