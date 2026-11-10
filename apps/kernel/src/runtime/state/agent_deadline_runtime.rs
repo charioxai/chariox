@@ -382,7 +382,12 @@ impl KernelRuntimeState {
             let Some(ended) = owned.durable_state_store.agent_task(&task_id)? else {
                 continue;
             };
-            if let Err(error) = self.announce_child_finished(&ended, None, None).await {
+            let answer = owned.answer_with_running_background_note(&ended, None)?;
+            owned.background_holds.release(&ended.task_id);
+            if let Err(error) = self
+                .announce_child_finished(&ended, None, answer.as_ref())
+                .await
+            {
                 tracing::warn!(%error, agent_id=%agent,
                     "child_finished retained for the inbox sweep");
             }

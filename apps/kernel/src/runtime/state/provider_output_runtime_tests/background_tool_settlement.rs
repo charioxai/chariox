@@ -4,7 +4,7 @@ use crate::terminal::TerminalOutputKind;
 
 // MP-08 / MP-10: the snapshots the Claude and Codex adapters emit for a
 // background command (their tests pin them to this protocol fixture).
-fn lifecycle(name: &str) -> serde_json::Value {
+pub(super) fn lifecycle(name: &str) -> serde_json::Value {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../local/api/tests/protocol_shapes/provider-tool-background-lifecycle.json"
     ))
@@ -12,7 +12,7 @@ fn lifecycle(name: &str) -> serde_json::Value {
     fixture[name].clone()
 }
 
-fn tool_chunk(payload: &serde_json::Value) -> ProviderPromptChunk {
+pub(super) fn tool_chunk(payload: &serde_json::Value) -> ProviderPromptChunk {
     ProviderPromptChunk {
         kind: TerminalOutputKind::ProviderTool,
         merge_key: payload["id"].as_str().map(str::to_string),

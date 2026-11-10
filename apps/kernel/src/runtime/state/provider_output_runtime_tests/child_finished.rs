@@ -214,7 +214,9 @@ pub(super) async fn family_with_history_root(
     }
 }
 
-fn child_finished(team: &Team) -> Vec<crate::durable_state::agent_lifecycle::InboxEvent> {
+pub(super) fn child_finished(
+    team: &Team,
+) -> Vec<crate::durable_state::agent_lifecycle::InboxEvent> {
     team.runtime
         .owned
         .durable_state_store

@@ -119,6 +119,15 @@ impl KernelRuntimeState {
             if owned.clear_prompt_activity(provider_run_id) {
                 self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             }
+            // The provider's turn about an ended background call is the last part of the work
+            // of a child held for it: the parent hears of the finish now.
+            if prompt_completed {
+                for task in
+                    owned.held_tasks_after_notification(session_id, &agent_id, provider_run_id)?
+                {
+                    Box::pin(self.release_held_task(&task)).await?;
+                }
+            }
             self.observe_git_after_provider_activity_if_pending(provider_run_id)
                 .await;
             let _ = owned.sync_focused_provider_run_if_idle(session_id);
