@@ -906,3 +906,23 @@ fn disk_io_sample_reports_real_owned_process_writes() {
         "the shared process sample carries actual disk I/O: {wire}"
     );
 }
+
+/// The line a paused command is told reaches the pipe an agent's tool reads
+/// the command's error stream from, not only a file.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_notice_reaches_the_pipe_a_tool_reads_the_error_stream_from() {
+    use std::io::Read;
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let notice = "chariox: this command is paused while it grows for memory.\n";
+    announce(child.id(), notice);
+    let mut heard = vec![0; notice.len()];
+    child.stderr.take().unwrap().read_exact(&mut heard).unwrap();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(String::from_utf8(heard).unwrap(), notice);
+}

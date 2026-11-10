@@ -324,8 +324,11 @@ pub(super) type Volume = dyn Fn(&Path) -> Option<Space> + Send + Sync;
 pub(super) struct Room<'a> {
     /// Memory left under the pressure line.
     pub memory: u64,
-    /// Memory is short: pause the newest growing command.
-    pub tight: bool,
+    /// What the pool keeps for the machine: memory below it is short.
+    pub margin: u64,
+    /// Bytes per second everything that runs grows by: memory below it is
+    /// short too, since it would be gone in a second.
+    pub growing: u64,
     pub light: u64,
     pub growth_room: u64,
     /// The whole pool: what a command can never exceed, however long it waits.
@@ -335,6 +338,25 @@ pub(super) struct Room<'a> {
     /// reserve only growth beyond them, independently for each resource.
     pub launches: &'a BTreeMap<String, super::launch::Reservation>,
     pub launch_memory: BTreeMap<String, u64>,
+}
+
+impl Room<'_> {
+    /// Memory is short: pause the newest growing command.
+    pub(super) fn tight(&self) -> bool {
+        self.memory < self.margin.max(self.growing)
+    }
+
+    /// A paused command that grows at `rate` continues only if the pool then
+    /// stays out of short memory for `AHEAD` seconds at the rate of everything
+    /// that runs; otherwise the next sample would pause it again.
+    fn room_to_continue(&self, rate: u64) -> bool {
+        let growing = self.growing.saturating_add(rate);
+        self.memory
+            >= self
+                .margin
+                .max(growing)
+                .saturating_add(growing.saturating_mul(AHEAD))
+    }
 }
 
 impl Ledger {
@@ -532,7 +554,7 @@ impl Ledger {
         let mut changed = Vec::new();
         self.hold(current, room, &mut state);
         let mut may_stop = false;
-        if room.tight {
+        if room.tight() {
             match self.pause(members, WaitReason::Memory, |entry, command| {
                 (entry.resident >= room.light
                     && command.growth >= GROWING
@@ -546,7 +568,7 @@ impl Ledger {
         // Paused commands keep their memory, so a tight pool stays tight
         // until one of them finishes. When nothing heavy runs any more, the
         // next in line continues anyway: one command always makes progress.
-        if !room.tight || !state.heavy_running {
+        if !room.tight() || !state.heavy_running {
             if let Some(owner) = self.resume(members, WaitReason::Memory, &mut state, room) {
                 changed.push(owner);
             }
@@ -841,6 +863,12 @@ impl Ledger {
             let volume = entry.disk(room);
             let fits = (memory <= state.memory_room(&unit, room) || !state.heavy_running)
                 && volume.is_none_or(|volume| disk <= state.spare(volume, &unit, room));
+            let paused_memory =
+                reason == WaitReason::Memory && matches!(entry.wait, Some(Wait::Paused(_)));
+            let fits = fits
+                && (!paused_memory
+                    || !state.heavy_running
+                    || room.room_to_continue(entry.paused_rate));
             if !fits {
                 continue;
             }
