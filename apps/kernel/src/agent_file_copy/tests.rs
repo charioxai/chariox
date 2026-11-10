@@ -522,3 +522,41 @@ async fn a_refused_copy_deletes_nothing_beside_its_destination() {
     );
     assert_eq!(digest_of(&worker.root.join("docs")), neighbour);
 }
+
+#[tokio::test]
+async fn a_lost_answer_on_a_single_slice_push_still_reports_the_copy() {
+    let (home, worker) = workspaces();
+    for (name, size) in [("one", 100), ("empty", 0)] {
+        let sha256 = plant(&home.root, name, size);
+        let remote = FakeWorker::cued(worker.clone(), |request| {
+            if request == 0 {
+                Fault::AnswerLost
+            } else {
+                Fault::None
+            }
+        });
+        let pushed = push(&home, name, &remote, name, &CopyOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(pushed.sha256, sha256, "{name}");
+        assert_eq!(digest_of(&worker.root.join(name)), sha256, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn a_lost_answer_does_not_make_an_unrelated_destination_count_as_copied() {
+    let (home, worker) = workspaces();
+    plant(&home.root, "one", 100);
+    plant(&worker.root, "one", 90);
+    let remote = FakeWorker::cued(worker.clone(), |request| {
+        if request == 0 {
+            Fault::AnswerLost
+        } else {
+            Fault::None
+        }
+    });
+    let error = push(&home, "one", &remote, "one", &CopyOptions::default())
+        .await
+        .unwrap_err();
+    assert!(error.contains("already exists"), "{error}");
+}

@@ -103,6 +103,9 @@ pub(crate) fn write_slice(
         sha256: Some(slice.sha256.to_owned()),
     };
     if slice.offset == 0 {
+        if !slice.overwrite && holds(&path, slice.total_size, slice.sha256) {
+            return Ok(published());
+        }
         let folder = path.parent().unwrap_or(&workspace.root);
         let budget = crate::managed_context::limits::disk_budget(folder);
         if slice.total_size > budget {
