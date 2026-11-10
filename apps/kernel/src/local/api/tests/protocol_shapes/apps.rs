@@ -1092,8 +1092,9 @@ fn receipt_expiry_protocol_416_refuses_with_a_stable_error_shape() {
     );
 }
 
-/// Pinned without a protocol bump: the Landing 8 union stamps the number once.
-/// Both fields are optional and absent on the wire when an App declares none.
+/// Pinned without a protocol bump: the Landing 8 union stamps the number once
+/// and then renames this hash fixture to that number. Both fields are optional
+/// and absent on the wire when an App declares none.
 #[test]
 fn app_summaries_pin_the_signed_display_name_and_icon_fields() {
     let release = AppReleaseSummary {
@@ -1119,6 +1120,10 @@ fn app_summaries_pin_the_signed_display_name_and_icon_fields() {
         data_kept: false,
     };
     let json = serde_json::to_value(&installation).unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&json).unwrap())),
+        "03af825fd22365bf8214beb4937258c05d0071179322aa5c6852bd020598f0a7"
+    );
     assert_eq!(json["display_name"], "Todo list");
     assert_eq!(json["icon"], "data:image/svg+xml;base64,PHN2Zy8+");
     assert_eq!(json["active_release"]["display_name"], "Todo list");
