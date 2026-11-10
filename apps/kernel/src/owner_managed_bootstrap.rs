@@ -561,11 +561,14 @@ mod review_contract_tests {
     fn byom_mp11_ticket_body_is_what_cloud_accepts() {
         let mut config = DaemonConfig::for_tests();
         config.machine_name_for_tests = Some("fixture-machine".into());
-        let body = ticket_enrollment_body(&config, "synthetic-single-use-code");
+        let mut body = ticket_enrollment_body(&config, "synthetic-single-use-code");
         let expected: Value = serde_json::from_str(include_str!(
             "../tests/cloud-contract/ticket-redeem-request.json"
         ))
         .unwrap();
+        // The thumbprint is of a key made for the test; the file carries a stand-in of the same shape.
+        assert_eq!(body["publicKeyThumbprint"].as_str().unwrap().len(), 64);
+        body["publicKeyThumbprint"] = expected["publicKeyThumbprint"].clone();
         assert_eq!(body, expected);
     }
     #[tokio::test]

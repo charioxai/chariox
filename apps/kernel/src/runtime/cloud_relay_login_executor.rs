@@ -145,11 +145,14 @@ mod enrollment_display_tests {
     fn enrollment_reports_the_os_machine_name_and_no_kernel_name() {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.machine_name_for_tests = Some("fixture-machine".into());
-        let body = kernel_device_enrollment_body(&config);
+        let mut body = kernel_device_enrollment_body(&config);
         let expected: serde_json::Value = serde_json::from_str(include_str!(
             "../../tests/cloud-contract/device-start-request.json"
         ))
         .unwrap();
+        // The thumbprint is of a key made for the test; the file carries a stand-in of the same shape.
+        assert_eq!(body["publicKeyThumbprint"].as_str().unwrap().len(), 64);
+        body["publicKeyThumbprint"] = expected["publicKeyThumbprint"].clone();
         assert_eq!(
             body, expected,
             "the file is what Cloud's strict schema accepts"

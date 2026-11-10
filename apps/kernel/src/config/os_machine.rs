@@ -94,6 +94,7 @@ fn parse_machine_guid(output: &str) -> Option<String> {
 }
 
 /// The OS's official name for this computer, read at most every two seconds.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn machine_name() -> Option<String> {
     static CACHE: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
     let mut cache = CACHE
@@ -110,6 +111,7 @@ pub(crate) fn machine_name() -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
+#[cfg_attr(test, allow(dead_code))]
 fn read_os_machine_name() -> Option<String> {
     command_output("scutil", &["--get", "ComputerName"])
 }
@@ -146,7 +148,10 @@ fn parse_pretty_hostname(machine_info: &str) -> Option<String> {
 }
 
 #[cfg_attr(
-    not(any(target_os = "macos", target_os = "windows", target_os = "linux")),
+    any(
+        test,
+        not(any(target_os = "macos", target_os = "windows", target_os = "linux"))
+    ),
     allow(dead_code)
 )]
 fn command_output(command: &str, args: &[&str]) -> Option<String> {
