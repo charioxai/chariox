@@ -313,3 +313,6 @@ fn log_failure(provider: &str, step: &str, error: &DaemonError) {
         serde_json::json!({ "provider": provider, "step": step, "error": error.to_string() }),
     );
 }
+
+#[cfg(test)]
+mod tests;
