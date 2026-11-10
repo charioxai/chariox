@@ -99,7 +99,7 @@ function todoLines(value: unknown): string | null {
   return lines.length > 0 ? lines.join("\n") : null
 }
 
-type SearchResult = { readonly title: string; readonly url: string }
+type SearchResult = { readonly title: string; readonly url: string; readonly published?: string; readonly excerpts: readonly string[] }
 
 const decoded = (quoted: string) => {
   try {
@@ -109,29 +109,55 @@ const decoded = (quoted: string) => {
   }
 }
 
-// Claude: `Links: [{"title":..,"url":..}, ...]` on its own line, around a written summary. OpenCode: JSON `{"results":[{"url","title",..}]}`,
-// which the kernel may have cut short, so a cut list is read entry by entry.
-function parseSearchResults(output: string): { results: SearchResult[]; rest: string } | null {
-  const entries = (value: unknown): SearchResult[] => Array.isArray(value) ? value.flatMap((entry): SearchResult[] => isObjectValue(entry) && typeof entry.url === "string" ? [{ title: typeof entry.title === "string" && entry.title.trim() ? entry.title : entry.url, url: entry.url }] : []) : []
+const TRUNCATION_NOTICE = /\[chariox: output truncated[^\]]*\]/
+
+// A result the kernel cut short: its excerpts are the quoted strings after `"excerpts": [`, the last one possibly unterminated.
+function cutExcerpts(segment: string): string[] {
+  const start = segment.search(/"excerpts":\s*\[/)
+  if (start < 0) return []
+  const strings: string[] = []
+  const quoted = /"((?:[^"\\]|\\.)*)("?)/g
+  quoted.lastIndex = segment.indexOf("[", start) + 1
+  for (let match = quoted.exec(segment); match && match[1] !== undefined; match = quoted.exec(segment)) {
+    strings.push(decoded(match[1]))
+    if (!match[2]) break
+  }
+  return strings
+}
+
+// Claude: `Links: [{"title":..,"url":..}, ...]` on its own line, around a written summary. OpenCode: JSON `{"results":[{"url","title","publish_date","excerpts"}]}`,
+// which the kernel may have cut short, so a cut list is read entry by entry. The kernel's truncation notice is kept.
+function parseSearchResults(output: string): { results: SearchResult[]; rest: string; notice: string | null } | null {
+  const entries = (value: unknown): SearchResult[] => Array.isArray(value) ? value.flatMap((entry): SearchResult[] => isObjectValue(entry) && typeof entry.url === "string" ? [{
+    title: typeof entry.title === "string" && entry.title.trim() ? entry.title : entry.url,
+    url: entry.url,
+    ...typeof entry.publish_date === "string" && entry.publish_date.trim() ? { published: entry.publish_date } : {},
+    excerpts: Array.isArray(entry.excerpts) ? entry.excerpts.filter((excerpt): excerpt is string => typeof excerpt === "string" && excerpt.trim() !== "") : [],
+  }] : []) : []
   const links = output.match(/^Links:\s*(\[.*\])\s*$/m)
   if (links) {
     try {
       const results = entries(JSON.parse(links[1]!))
-      if (results.length > 0) return { results, rest: output.replace(links[0], "").replace(/\n{3,}/g, "\n\n").trim() }
+      if (results.length > 0) return { results, rest: output.replace(links[0], "").replace(/\n{3,}/g, "\n\n").trim(), notice: null }
     } catch {
       // Not the list shape: the raw text is shown.
     }
   }
-  const json = normalizeJsonLike(output)
+  const notice = output.match(TRUNCATION_NOTICE)?.[0] ?? null
+  const body = notice ? output.replace(notice, "").trimEnd() : output
+  const json = normalizeJsonLike(body)
   const listed = isObjectValue(json) ? entries(json.results) : []
-  if (listed.length > 0) return { results: listed, rest: "" }
-  if (output.includes('"results"')) {
+  if (listed.length > 0) return { results: listed, rest: "", notice }
+  if (body.includes('"results"')) {
     const found: SearchResult[] = []
     const pair = /"url":\s*"((?:[^"\\]|\\.)*)",\s*"title":\s*"((?:[^"\\]|\\.)*)"/g
-    for (let match = pair.exec(output); match; match = pair.exec(output)) {
-      found.push({ title: decoded(match[2]!), url: decoded(match[1]!) })
-    }
-    if (found.length > 0) return { results: found, rest: "" }
+    const matches = [...body.matchAll(pair)]
+    matches.forEach((match, index) => {
+      const segment = body.slice(match.index! + match[0].length, matches[index + 1]?.index ?? body.length)
+      const published = segment.match(/"publish_date":\s*"((?:[^"\\]|\\.)*)"/)?.[1]
+      found.push({ title: decoded(match[2]!), url: decoded(match[1]!), ...published ? { published: decoded(published) } : {}, excerpts: cutExcerpts(segment).filter((excerpt) => excerpt.trim() !== "") })
+    })
+    if (found.length > 0) return { results: found, rest: "", notice }
   }
   return null
 }
@@ -141,8 +167,10 @@ export function searchResultBlocks(update: ToolTranscriptUpdate, output: string)
   if (contentKind(update.tool) !== "web_search") return null
   const parsed = parseSearchResults(output)
   if (!parsed) return null
+  const dated = parsed.results.some((result) => result.published)
+  const excerpts = parsed.results.filter((result) => result.excerpts.length > 0).map((result) => [`**${result.title}**${result.published ? ` · ${result.published}` : ""}`, ...result.excerpts].join("\n\n"))
   return [
-    { kind: "table", columns: ["Title", "URL"], rows: parsed.results.map((result) => [result.title, result.url]) },
-    ...parsed.rest ? [{ kind: "text", text: parsed.rest } as ToolDisplayBlock] : [],
+    { kind: "table", columns: dated ? ["Title", "URL", "Published"] : ["Title", "URL"], rows: parsed.results.map((result) => dated ? [result.title, result.url, result.published ?? ""] : [result.title, result.url]) },
+    ...[parsed.rest, ...excerpts, parsed.notice ?? ""].filter(Boolean).map((text): ToolDisplayBlock => ({ kind: "text", text })),
   ]
 }

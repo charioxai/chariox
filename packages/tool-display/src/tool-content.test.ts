@@ -82,3 +82,24 @@ test("a web search result list is a table of titles and addresses", () => {
   const table = blocks.find((block: ToolDisplayBlock) => block.kind === "table")
   assert.ok(table && table.kind === "table" && table.rows[0]![1] === "https://example.com/a")
 })
+
+// Review of #1326: OpenCode's web search gives excerpts, publication dates and (when long) a truncation notice; the opened row keeps them.
+test("an OpenCode web search row keeps the excerpts, the publication dates and the truncation notice (LIVE record)", () => {
+  const live = fixtures.find((fixture) => fixture.name === "opencode-websearch-completed-3.json")!
+  const shown = textOf(formatToolDisplay(live.record).blocks)
+  assert.match(shown, /Published/)
+  assert.match(shown, /2025-02-17/)
+  assert.match(shown, /2016-07-06/)
+  assert.match(shown, /Declarada Patrimonio Mundial por la Unesco desde 1984/, "the first excerpt")
+  assert.match(shown, /The Albayzin quarter is an indispensable complement/, "an excerpt further down")
+  assert.match(shown, /output truncated, omitted 14181 bytes/, "the truncation notice")
+})
+
+test("an OpenCode web search with whole JSON keeps excerpts and dates too (FIXTURE)", () => {
+  const output = JSON.stringify({ search_id: "s", results: [{ url: "https://example.com/a", title: "Alhambra", publish_date: "2024-01-02", excerpts: ["a palace", "built by the Nasrids"] }, { url: "https://example.com/g", title: "Granada", excerpts: [] }] }, null, 2)
+  const blocks = formatToolDisplay({ id: "c", tool: "websearch", status: "completed", input: { query: "alhambra" }, output }).blocks
+  const shown = textOf(blocks)
+  assert.match(shown, /2024-01-02/)
+  assert.match(shown, /a palace[\s\S]*built by the Nasrids/)
+  assert.match(shown, /Granada\s+https:\/\/example\.com\/g/)
+})
