@@ -120,7 +120,7 @@ fn link_timing_out_after_the_first_message(kernel: &Kernel) {
 }
 
 /// `kernel` boots again on the state it left, as after a restart, and answers peers again.
-async fn restarted(kernel: Kernel) -> Kernel {
+pub(in super::super) async fn restarted(kernel: Kernel) -> Kernel {
     let config = kernel.app.lock().await.config().clone();
     peer_agent_link_for_tests::unregister(&kernel.id);
     let Kernel {

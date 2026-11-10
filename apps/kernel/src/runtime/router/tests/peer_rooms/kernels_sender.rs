@@ -5,6 +5,7 @@ use super::*;
 use crate::runtime::state::peer_agent_outbound::peer_agent_link_for_tests;
 use crate::transport::relay_peer::RelayPeerRequest;
 
+mod created_peers;
 mod follow;
 
 const OWNER: &str = "owner-p5b";
