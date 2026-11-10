@@ -182,6 +182,11 @@ impl KernelRuntimeOwnedState {
             }
         }
         let matches = self.prompt_dispatch_matches_active_prompt(dispatch)?;
+        if matches {
+            // Every send to a provider passes here last, after admission and any awaited
+            // preparation: time can cross the deadline in between, ahead of the tick.
+            self.ensure_agent_before_deadline(&dispatch.session_id, &dispatch.agent_id)?;
+        }
         if matches || !dispatch.steering {
             return Ok(matches);
         }

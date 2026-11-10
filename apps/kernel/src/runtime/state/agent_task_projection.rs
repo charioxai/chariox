@@ -100,9 +100,12 @@ impl KernelRuntimeOwnedState {
         )
         .concat();
         let excerpt = answer_tail(output.trim(), 1_024);
-        let mut answer = serde_json::json!({"agent_id":task.agent_id,"task_id":task.task_id,"prompt_id":task.prompt_id,"excerpt":excerpt});
-        crate::secret_redaction::redact_json_secrets(&mut answer);
-        Ok(Some(answer))
+        let answer = serde_json::json!({"agent_id":task.agent_id,"task_id":task.task_id,"prompt_id":task.prompt_id,"excerpt":excerpt});
+        let mut answer = self.answer_with_running_background_note(task, Some(answer))?;
+        if let Some(answer) = answer.as_mut() {
+            crate::secret_redaction::redact_json_secrets(answer);
+        }
+        Ok(answer)
     }
 
     /// What a waiter reads when a task ends because its turn failed: the typed

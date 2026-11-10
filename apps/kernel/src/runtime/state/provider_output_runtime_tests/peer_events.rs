@@ -1,6 +1,6 @@
 //! An agent that follows a peer (neither above nor below it) hears of the peer's turns as
 //! `peer_event`, through the same subscribe tool, inbox and wake as every other source.
-use super::child_finished::{family, Family};
+use super::child_finished::{family, family_with_history_root, Family};
 use super::*;
 use crate::durable_state::agent_lifecycle::{InboxEvent, Operation, Outcome};
 
@@ -104,6 +104,279 @@ async fn a_peers_finished_turn_reaches_its_follower_as_a_peer_event() {
     assert_eq!(view["source"]["relation"], "peer");
     assert!(view["summary"].as_str().unwrap().chars().count() <= 160);
     assert_eq!(read["untrusted"], true);
+}
+
+/// The follower is not told what the peer answered, but where to read the exact turn.
+#[tokio::test]
+async fn a_peer_event_points_at_the_exact_turn_without_its_text() {
+    let team = family("peer-event-turn", 2, None, true).await;
+    let (follower, peer) = (team.kids[0].child.clone(), team.kids[1].child.clone());
+    follow(&team, 0, &peer).await;
+    finish(&team, 1, false).await;
+
+    let events = inbox(&team, &follower);
+    assert_eq!(events.len(), 1, "{events:?}");
+    let turn = &events[0].payload["turn"];
+    assert_eq!(turn["agent_id"], peer.as_str(), "{:?}", events[0]);
+    assert_eq!(
+        turn["turn_ref"],
+        team.kids[1].child_prompt.id(),
+        "{:?}",
+        events[0]
+    );
+    assert!(events[0].payload.get("public_answer").is_none());
+    assert!(turn.get("excerpt").is_none(), "{:?}", events[0]);
+}
+
+/// A task keeps its id while its turns change: after a correction the event names the turn that
+/// ended the task, which the history tool opens, and not the task's first one.
+#[tokio::test]
+async fn a_peer_event_after_a_correction_opens_the_turn_that_ended_the_task() {
+    use crate::durable_state::agent_lifecycle::Registration;
+    use crate::history::{HistoryEventKind, HistoryEventRole, HistoryEventTurnContext};
+
+    let history_root =
+        std::env::temp_dir().join(format!("chariox-peer-turn-{:016x}", rand::random::<u64>()));
+    std::fs::create_dir(&history_root).unwrap();
+    let team = family_with_history_root(
+        "peer-event-corrected-turn",
+        2,
+        None,
+        true,
+        Some(history_root.join("history")),
+    )
+    .await;
+    let (follower, peer) = (team.kids[0].child.clone(), team.kids[1].child.clone());
+    follow(&team, 0, &peer).await;
+    let store = &team.runtime.owned.durable_state_store;
+    let first = &team.kids[1];
+    let task_id = first.task.task_id.clone();
+    let owner = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap()
+        .owner_user_id()
+        .to_string();
+
+    // The peer ends its first turn with a delegate it never released: it is corrected once.
+    store
+        .agent_lifecycle(Operation::RegisterObligation {
+            owner: "local".into(),
+            room: team.room.clone(),
+            agent: peer.clone(),
+            prompt: first.child_prompt.id().into(),
+            run: Some(first.child_run.clone()),
+            id: "late".into(),
+            kind: "delegate".into(),
+            resource: Some("late-worker".into()),
+            now: 2,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Subscribe {
+            task: task_id.clone(),
+            prompt: first.child_prompt.id().into(),
+            registration: Registration {
+                id: "late-reg".into(),
+                task_id: task_id.clone(),
+                source_id: "late-worker".into(),
+                obligation_id: Some("late".into()),
+                source_cursor: 0,
+                live: true,
+                peer: false,
+            },
+        })
+        .unwrap();
+    let Outcome::Settled {
+        correction: true, ..
+    } = store
+        .agent_lifecycle(Operation::Settle {
+            room: team.room.clone(),
+            agent: peer.clone(),
+            prompt: first.child_prompt.id().into(),
+            run: first.child_run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now: 3,
+        })
+        .unwrap()
+    else {
+        panic!("the unfinished first turn is corrected")
+    };
+    store
+        .agent_lifecycle(Operation::ReleaseSpawn {
+            room: team.room.clone(),
+            source: "late-worker".into(),
+        })
+        .unwrap();
+    let corrected = store
+        .agent_task(&task_id)
+        .unwrap()
+        .unwrap()
+        .pending_prompt_id
+        .expect("the correction turn is pending");
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: team.room.clone(),
+            agent: peer.clone(),
+            prompt: corrected.clone(),
+            run: Some(first.child_run.clone()),
+            now: 4,
+        })
+        .unwrap();
+    let Outcome::Settled { task, correction } = store
+        .agent_lifecycle(Operation::Settle {
+            room: team.room.clone(),
+            agent: peer.clone(),
+            prompt: corrected.clone(),
+            run: first.child_run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now: 5,
+        })
+        .unwrap()
+    else {
+        panic!("settled")
+    };
+    assert_ne!(
+        task.task_id, task.prompt_id,
+        "the task outlived its first turn"
+    );
+    assert_eq!(task.prompt_id, corrected);
+
+    let append = |prompt: &str, text: &str| {
+        team.runtime
+            .owned
+            .operational_history_store
+            .append_operational_event(
+                HistoryEventKind::ProviderOutput,
+                Some(HistoryEventRole::Assistant),
+                Some(text.into()),
+                Default::default(),
+                HistoryEventTurnContext {
+                    session_id: Some(team.room.clone()),
+                    agent_id: Some(peer.clone()),
+                    turn_id: Some(prompt.into()),
+                    prompt_id: Some(prompt.into()),
+                    provider_run_id: Some(first.child_run.clone()),
+                    public_history_owner_user_id: Some(owner.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    };
+    append(&task_id, "the first turn, before the correction");
+    append(&corrected, "the corrected turn that ended the task");
+    team.runtime
+        .owned
+        .complete_local_prompt_without_advance(&team.room, &peer, Some(&first.child_run))
+        .unwrap();
+    team.runtime
+        .finish_agent_task_settlement(Some((task, correction)), &first.child_prompt)
+        .await
+        .unwrap();
+
+    team.runtime
+        .flush_provider_history(&first.child_run)
+        .await
+        .unwrap();
+    let events = inbox(&team, &follower);
+    let turn = &events[0].payload["turn"];
+    assert_eq!(turn["turn_ref"], corrected.as_str(), "{:?}", events[0]);
+    let read = team
+        .runtime
+        .dispatch_meta_runtime_tool_call_for_agent(
+            &team.room,
+            &follower,
+            "chariox.history.turn",
+            serde_json::json!({"agent_ref": peer, "turn_ref": turn["turn_ref"]}),
+        )
+        .await
+        .unwrap();
+    assert!(read.ok, "{read:?}");
+    let text = read.payload["events"].to_string();
+    assert!(
+        text.contains("the corrected turn that ended the task"),
+        "{text}"
+    );
+    assert!(!text.contains("before the correction"), "{text}");
+    drop(team);
+    std::fs::remove_dir_all(history_root).unwrap();
+}
+
+/// What a steer asked for is answered like a message: the steerer hears the peer's reply.
+#[tokio::test]
+async fn a_steer_that_asked_for_the_reply_gets_the_peers_answer_as_its_reply() {
+    let team = family("peer-steer-reply", 2, None, true).await;
+    let (steerer, peer) = (team.kids[0].child.clone(), team.kids[1].child.clone());
+    let store = &team.runtime.owned.durable_state_store;
+    let mut steer = crate::durable_state::agent_lifecycle::occurrence(
+        &team.room,
+        &peer,
+        &steerer,
+        "steer",
+        "message",
+        serde_json::json!({"message":"stop editing"}),
+    );
+    steer.urgent = true;
+    steer.reply_requested = true;
+    let Outcome::Event(sent) = store
+        .agent_lifecycle(Operation::Send {
+            task: team.kids[0].task.task_id.clone(),
+            prompt: team.kids[0].child_prompt.id().into(),
+            event: steer,
+        })
+        .unwrap()
+    else {
+        panic!("steer not admitted")
+    };
+    let target = team.kids[1].child_prompt.id().to_owned();
+    store
+        .agent_lifecycle(Operation::Attempt {
+            room: team.room.clone(),
+            agent: peer.clone(),
+            sequence: sent.sequence,
+            prompt: format!("agent-event-{peer}-{}", sent.sequence),
+            target: Some(target),
+            run: Some(team.kids[1].child_run.clone()),
+            now: 2,
+            work: None,
+            through: 0,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Receipt {
+            room: team.room.clone(),
+            agent: peer.clone(),
+            sequence: sent.sequence,
+            state: "accepted".into(),
+            now: 3,
+        })
+        .unwrap();
+    // The peer reads the steer during its turn, as a steer that was never shown is not answered.
+    store
+        .agent_lifecycle(Operation::MarkShown {
+            room: team.room.clone(),
+            agent: peer.clone(),
+            sequences: vec![sent.sequence],
+        })
+        .unwrap();
+    finish(&team, 1, false).await;
+
+    let heard = inbox(&team, &steerer);
+    let reply = heard
+        .iter()
+        .find(|event| event.kind == "source_completed")
+        .unwrap_or_else(|| panic!("the steerer hears the reply: {heard:?}"));
+    assert_eq!(
+        reply.source_id,
+        format!("agent-event-{peer}-{}", sent.sequence)
+    );
+    assert_eq!(reply.payload["public_answer"]["agent_id"], peer.as_str());
+    assert!(reply.payload["public_answer"]["excerpt"].is_string());
 }
 
 #[tokio::test]

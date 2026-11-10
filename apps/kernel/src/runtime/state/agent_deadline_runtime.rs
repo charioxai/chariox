@@ -12,11 +12,6 @@ fn refusal(code: &str, message: &str) -> DaemonError {
     }
 }
 
-/// A leased agent runs on a worker, which has to enforce its deadline.
-fn leased_agent_deadline_refusal() -> DaemonError {
-    refusal("agent_deadline_requires_executor", "arm an agent deadline on its executing kernel; leased-agent deadlines require worker enforcement")
-}
-
 impl KernelRuntimeOwnedState {
     pub(super) fn ensure_agent_before_deadline(
         &self,
@@ -38,26 +33,7 @@ impl KernelRuntimeOwnedState {
 }
 
 impl KernelRuntimeState {
-    /// A Room spawn that carries a deadline asks this before it creates anything: an agent that
-    /// would run on a worker or in a slice cannot be armed, and the refusal must come before the
-    /// worker leases a session or creates a checkout that nothing would remove.
-    pub(crate) async fn ensure_spawn_deadline_runs_here(
-        &self,
-        kernel_ref: Option<&str>,
-        in_slice: bool,
-    ) -> Result<(), DaemonError> {
-        let on_worker = in_slice
-            || self
-                .settle_kernel_ref(kernel_ref.map(str::to_string))
-                .await?
-                .is_some();
-        if on_worker {
-            return Err(leased_agent_deadline_refusal());
-        }
-        Ok(())
-    }
-
-    pub(crate) fn set_agent_deadline(
+    pub(crate) async fn set_agent_deadline(
         &self,
         caller_user_id: &str,
         request: SetAgentDeadlineRequest,
@@ -73,9 +49,6 @@ impl KernelRuntimeState {
                 session_id: request.session_id,
                 agent_id: request.agent_id,
             });
-        }
-        if agent.remote_execution().is_some() {
-            return Err(leased_agent_deadline_refusal());
         }
         // A deadline is never later than an ancestor's: the parent's deadline ends its team.
         let agents = self
@@ -95,6 +68,10 @@ impl KernelRuntimeState {
                 ));
             }
         }
+        // The worker enforces a leased agent's deadline itself, so the home asks it first: a
+        // refused request leaves no deadline the worker does not hold.
+        self.arm_leased_agent_deadline(&agent, request.deadline_ms)
+            .await?;
         let Outcome::Deadline(deadline) =
             self.owned
                 .durable_state_store
@@ -114,6 +91,8 @@ impl KernelRuntimeState {
                 .agent_deadline(&request.session_id, descendant.id())?
                 .is_none_or(|own| own.deadline_ms > request.deadline_ms);
             if later {
+                self.arm_leased_agent_deadline(descendant, request.deadline_ms)
+                    .await?;
                 self.owned
                     .durable_state_store
                     .agent_lifecycle(Operation::SetDeadline {
@@ -126,6 +105,71 @@ impl KernelRuntimeState {
         Ok(LocalDaemonResponse::AgentDeadline {
             deadline: Some(deadline),
         })
+    }
+
+    /// Asks the worker that runs a leased agent to arm the deadline on its backing agent. An
+    /// agent that runs on this kernel needs nothing here.
+    async fn arm_leased_agent_deadline(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        deadline_ms: u64,
+    ) -> Result<(), DaemonError> {
+        let Some(remote_execution) = agent.remote_execution().cloned() else {
+            return Ok(());
+        };
+        if self
+            .owned
+            .durable_state_store
+            .agent_deadline(agent.session_id(), agent.id())?
+            .is_some_and(|own| deadline_ms > own.deadline_ms)
+        {
+            return Err(refusal(
+                "agent_deadline_extension_refused",
+                "an agent deadline cannot be extended; start a new agent",
+            ));
+        }
+        self.authorize_current_external_command()?;
+        let mut config = self.config_snapshot().await;
+        if let (Some(relay_url), Some(relay_token)) = (
+            remote_execution.relay_url.clone(),
+            remote_execution.relay_token.clone(),
+        ) {
+            config.apply_remote_relay_override(relay_url, relay_token);
+        }
+        let response = tokio::time::timeout(Duration::from_secs(5), async {
+            self.enqueue_leased_worker_request_authorized(
+                &config,
+                chariox_relay::protocol::ClientTarget {
+                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                    daemon_alias: None,
+                },
+                crate::transport::relay_peer::RelayPeerRequest::SetLeasedAgentDeadline {
+                    leased_agent_id: remote_execution.leased_agent_id.clone(),
+                    deadline_ms,
+                },
+                Duration::from_secs(5),
+                || self.authorize_current_external_command(),
+            )
+            .await?
+            .wait()
+            .await
+        })
+        .await
+        .map_err(|_| {
+            refusal(
+                "agent_deadline_worker_unreachable",
+                "the worker did not confirm the agent deadline in time; retry when it is reachable",
+            )
+        })??;
+        match response {
+            crate::transport::relay_peer::RelayPeerResponse::LeasedAgentDeadlineSet { .. } => {
+                Ok(())
+            }
+            other => Err(refusal(
+                "agent_deadline_worker_refused",
+                &format!("unexpected worker deadline response: {other:?}"),
+            )),
+        }
     }
 
     /// A client's read: the deadline says when the agent's work stops, so whoever may view the
@@ -338,7 +382,12 @@ impl KernelRuntimeState {
             let Some(ended) = owned.durable_state_store.agent_task(&task_id)? else {
                 continue;
             };
-            if let Err(error) = self.announce_child_finished(&ended, None, None).await {
+            let answer = owned.answer_with_running_background_note(&ended, None)?;
+            owned.background_holds.release(&ended.task_id);
+            if let Err(error) = self
+                .announce_child_finished(&ended, None, answer.as_ref())
+                .await
+            {
                 tracing::warn!(%error, agent_id=%agent,
                     "child_finished retained for the inbox sweep");
             }

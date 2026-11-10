@@ -119,6 +119,10 @@ impl KernelRuntimeState {
             if owned.clear_prompt_activity(provider_run_id) {
                 self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             }
+            if prompt_completed {
+                self.release_tasks_held_for_notification(session_id, &agent_id, provider_run_id)
+                    .await?;
+            }
             self.observe_git_after_provider_activity_if_pending(provider_run_id)
                 .await;
             let _ = owned.sync_focused_provider_run_if_idle(session_id);
