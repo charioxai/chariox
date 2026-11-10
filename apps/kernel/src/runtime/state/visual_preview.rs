@@ -25,16 +25,29 @@ fn refusal(message: impl Into<String>) -> DaemonError {
 
 /// The browser that renders the preview: the one the kernel browser is pinned to, else a Chromium on the PATH.
 fn browser() -> Result<std::path::PathBuf, DaemonError> {
-    if let Some(pinned) =
-        std::env::var_os("CHARIOX_KERNEL_BROWSER_EXECUTABLE").filter(|v| !v.is_empty())
-    {
+    resolve_browser(
+        std::env::var_os("CHARIOX_KERNEL_BROWSER_EXECUTABLE").filter(|v| !v.is_empty()),
+        std::env::consts::OS,
+        std::env::var_os("HOME").map(std::path::PathBuf::from),
+        &std::env::var_os("PATH").unwrap_or_default(),
+        |candidate| candidate.is_file(),
+    )
+}
+
+fn resolve_browser(
+    pinned: Option<std::ffi::OsString>,
+    _os: &str,
+    _home: Option<std::path::PathBuf>,
+    path: &std::ffi::OsStr,
+    is_file: impl Fn(&std::path::Path) -> bool,
+) -> Result<std::path::PathBuf, DaemonError> {
+    if let Some(pinned) = pinned {
         return Ok(pinned.into());
     }
-    let path = std::env::var_os("PATH").unwrap_or_default();
     ["google-chrome", "chromium", "chromium-browser", "chrome"]
         .into_iter()
-        .flat_map(|name| std::env::split_paths(&path).map(move |dir| dir.join(name)))
-        .find(|candidate| candidate.is_file())
+        .flat_map(|name| std::env::split_paths(path).map(move |dir| dir.join(name)))
+        .find(|candidate| is_file(candidate))
         .ok_or_else(|| refusal("this machine has no Chromium or Chrome to render with; check the page with the browser tools instead"))
 }
 
@@ -181,5 +194,125 @@ mod tests {
             r#"[1110/101010.123:INFO:CONSOLE(12)] "chart ready", source: file:///x/page.html (12)"#;
         assert_eq!(console_message(line).as_deref(), Some("chart ready"));
         assert_eq!(console_message("[1110/1:ERROR:gpu_init.cc(1)] nope"), None);
+    }
+
+    fn found(os: &str, home: Option<&str>, path: &str, files: &[&str]) -> Option<String> {
+        resolve_browser(
+            None,
+            os,
+            home.map(Into::into),
+            std::ffi::OsStr::new(path),
+            |candidate| {
+                files
+                    .iter()
+                    .any(|file| candidate == std::path::Path::new(file))
+            },
+        )
+        .ok()
+        .map(|found| found.display().to_string())
+    }
+
+    const MAC_CHROME: &str = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+
+    #[test]
+    fn a_mac_renders_with_the_chrome_in_applications() {
+        assert_eq!(
+            found("macos", Some("/Users/a"), "/usr/bin", &[MAC_CHROME]).as_deref(),
+            Some(MAC_CHROME)
+        );
+    }
+
+    #[test]
+    fn a_mac_renders_with_a_chrome_in_the_users_applications() {
+        let user = "/Users/a/Applications/Chromium.app/Contents/MacOS/Chromium";
+        assert_eq!(
+            found("macos", Some("/Users/a"), "", &[user]).as_deref(),
+            Some(user)
+        );
+    }
+
+    #[test]
+    fn a_mac_prefers_the_system_applications_and_chromium_like_the_kernel_browser() {
+        let chromium = "/Applications/Chromium.app/Contents/MacOS/Chromium";
+        let user = "/Users/a/Applications/Chromium.app/Contents/MacOS/Chromium";
+        assert_eq!(
+            found("macos", Some("/Users/a"), "", &[MAC_CHROME, chromium, user]).as_deref(),
+            Some(chromium)
+        );
+        assert_eq!(
+            found("macos", Some("/Users/a"), "", &[MAC_CHROME, user]).as_deref(),
+            Some(user)
+        );
+    }
+
+    #[test]
+    fn a_linux_machine_renders_with_a_chromium_on_the_path_or_the_pinned_one() {
+        assert_eq!(
+            found("linux", None, "/opt/bin:/usr/bin", &["/usr/bin/chromium"]).as_deref(),
+            Some("/usr/bin/chromium")
+        );
+        let pinned = "/usr/lib/chariox/browser/chromium/155.0.8059.79/chrome-linux64/chrome";
+        assert_eq!(
+            found("linux", None, "/usr/bin", &[pinned]).as_deref(),
+            Some(pinned)
+        );
+    }
+
+    #[test]
+    fn the_pinned_browser_wins_and_a_machine_without_one_says_so() {
+        let pinned = resolve_browser(
+            Some("/opt/chrome".into()),
+            "macos",
+            None,
+            std::ffi::OsStr::new(""),
+            |_| false,
+        );
+        assert_eq!(pinned.unwrap(), std::path::PathBuf::from("/opt/chrome"));
+        assert_eq!(found("macos", Some("/Users/a"), "/usr/bin", &[]), None);
+    }
+
+    const FAKE_BROWSER: &str = r#"#!/bin/sh
+for argument in "$@"; do
+  case "$argument" in
+    --screenshot=*) picture="${argument#--screenshot=}" ;;
+    file://*) page="${argument#file://}" ;;
+  esac
+done
+sleep 0.3
+cp "$page" "$picture"
+"#;
+
+    #[tokio::test]
+    async fn previews_started_together_each_render_their_own_page() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _environment = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "visual-preview-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let browser = root.join("browser.sh");
+        std::fs::write(&browser, FAKE_BROWSER).unwrap();
+        std::fs::set_permissions(&browser, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("CHARIOX_HOME", root.join("home"));
+        std::env::set_var("CHARIOX_KERNEL_BROWSER_EXECUTABLE", &browser);
+        let previews = (0..4).map(|n| async move {
+            let shown = preview(&format!("<p>page-number-{n}</p>"), 800).await;
+            (n, shown)
+        });
+        let results = futures_util::future::join_all(previews).await;
+        let _ = std::fs::remove_dir_all(&root);
+        for (n, shown) in results {
+            let shown = shown.unwrap_or_else(|error| panic!("preview {n} failed: {error:?}"));
+            let png = base64::engine::general_purpose::STANDARD
+                .decode(shown["image_base64"].as_str().unwrap())
+                .unwrap();
+            let rendered = String::from_utf8(png).unwrap();
+            assert!(
+                rendered.contains(&format!("page-number-{n}<")),
+                "preview {n} got another page: {rendered}"
+            );
+        }
     }
 }
