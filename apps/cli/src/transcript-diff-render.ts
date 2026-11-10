@@ -8,7 +8,7 @@ import {
 import {
   diffStat,
   diffView,
-  parseUnifiedDiff,
+  patchFileView,
   type DiffFileView,
   type DiffRow,
 } from "@chariox/tool-display"
@@ -65,20 +65,7 @@ export class TranscriptDiffRenderable extends BoxRenderable {
 }
 
 export function applyPatchDiffFiles(files: TranscriptApplyPatchFiles): DiffFileView[] {
-  return files.map((file) => {
-    const parsed = parseUnifiedDiff(file.diff ?? "")
-    const rows: DiffRow[] = parsed.flatMap((part) => part.rows)
-    const commonTitles = ["Patched", "Created", "Deleted", "Edited", "Wrote"].map(verb => `${verb} ${file.filePath}`)
-    if (file.title && !commonTitles.includes(file.title)) rows.unshift({ kind: "meta", text: file.title })
-    return {
-      path: file.filePath,
-      previousPath: parsed[0]?.previousPath ?? null,
-      change: file.kind,
-      additions: parsed.reduce((sum, part) => sum + part.additions, 0),
-      deletions: parsed.reduce((sum, part) => sum + part.deletions, 0),
-      rows,
-    }
-  })
+  return files.map(patchFileView)
 }
 
 export function buildApplyPatchDiffContent(renderer: RenderContext, body: BoxRenderable, files: TranscriptApplyPatchFiles): void {

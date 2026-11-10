@@ -48,6 +48,7 @@ export {
   type DiffRow,
   type DiffView,
 } from "./diff-view.js"
+export { patchFileView } from "./patch-file-view.js"
 export {
   ACTIVE_STATUS_FALLBACK,
   getProviderActivityLabel,
