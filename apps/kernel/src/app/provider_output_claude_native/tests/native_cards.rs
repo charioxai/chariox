@@ -44,10 +44,12 @@ struct Fixture {
 }
 
 fn fixture(level: crate::provider::AgentPermissionLevel) -> Fixture {
+    static FIXTURES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let root = std::env::temp_dir().join(format!(
-        "chariox-claude-question-test-{}-{}",
+        "chariox-claude-question-test-{}-{}-{}",
         std::process::id(),
-        timestamp_millis()
+        timestamp_millis(),
+        FIXTURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     fs::create_dir_all(&root).expect("test root should be created");
     let context_file = root.join("hidden-context.txt");
@@ -213,13 +215,13 @@ fn a_card_is_withdrawn_only_when_it_closed_unanswered_before_its_deadline() {
         choice_id: None,
         reply: None,
     };
-    let deadline =
+    let wait =
         std::time::Duration::from_secs(crate::provider::CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS);
-    let asked_just_now = std::time::Instant::now();
-    let asked_a_full_wait_ago = std::time::Instant::now() - deadline;
-    assert!(claude_card_withdrawn(&timed_out, asked_just_now));
+    let open_for_a_full_wait = std::time::Instant::now() + wait;
+    let due_now = std::time::Instant::now();
+    assert!(claude_card_withdrawn(&timed_out, open_for_a_full_wait));
     assert!(
-        !claude_card_withdrawn(&timed_out, asked_a_full_wait_ago),
+        !claude_card_withdrawn(&timed_out, due_now),
         "a card nobody answered in time is a timeout, not a stop"
     );
     let answered = crate::provider::ProviderNativeInteractionResolution {
@@ -227,7 +229,7 @@ fn a_card_is_withdrawn_only_when_it_closed_unanswered_before_its_deadline() {
         choice_id: Some("option-0".to_string()),
         reply: Some("Red".to_string()),
     };
-    assert!(!claude_card_withdrawn(&answered, asked_just_now));
+    assert!(!claude_card_withdrawn(&answered, open_for_a_full_wait));
 }
 
 #[test]
@@ -249,6 +251,148 @@ fn a_tool_approval_withdrawn_with_its_stopped_turn_interrupts_claude() {
     assert_eq!(
         response["interrupt"], true,
         "Stop must end the turn instead of letting Claude retry the call: {response}"
+    );
+    let _ = fs::remove_dir_all(&fixture.root);
+}
+
+/// Answers each card with the next scripted choice, after a pause.
+#[derive(Clone)]
+struct ScriptedBridge {
+    interactions: std::sync::Arc<std::sync::Mutex<Vec<RuntimeInteraction>>>,
+    answers: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<(String, String)>>>,
+    pause: std::time::Duration,
+}
+
+impl ScriptedBridge {
+    fn new(answers: &[(&str, &str)], pause: std::time::Duration) -> Self {
+        Self {
+            interactions: Default::default(),
+            answers: std::sync::Arc::new(std::sync::Mutex::new(
+                answers
+                    .iter()
+                    .map(|(id, reply)| (id.to_string(), reply.to_string()))
+                    .collect(),
+            )),
+            pause,
+        }
+    }
+}
+
+impl ProviderNativeInteractionBridge for ScriptedBridge {
+    fn request_blocking(
+        &self,
+        _session_id: &str,
+        interaction: RuntimeInteraction,
+    ) -> Result<crate::provider::ProviderNativeInteractionResolution, DaemonError> {
+        self.interactions.lock().unwrap().push(interaction);
+        std::thread::sleep(self.pause);
+        let (choice_id, reply) = self
+            .answers
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("a card nobody scripted an answer for");
+        Ok(crate::provider::ProviderNativeInteractionResolution {
+            status: "answered".to_string(),
+            choice_id: Some(choice_id),
+            reply: Some(reply),
+        })
+    }
+}
+
+fn resolve_scripted(fixture: &Fixture, bridge: &ScriptedBridge, event: &serde_json::Value) {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .resolve_permission_event(
+            "session-question",
+            fixture.run.id(),
+            "agent-question",
+            &fixture.context_file,
+            &fixture.run,
+            Some(std::sync::Arc::new(bridge.clone())),
+            event,
+        )
+        .expect("the question should resolve");
+}
+
+fn labels(card: &RuntimeInteraction) -> Vec<&str> {
+    card.choices().iter().map(|choice| choice.label()).collect()
+}
+
+#[test]
+fn a_multi_select_question_collects_every_choice_before_it_answers() {
+    let fixture = fixture(crate::provider::AgentPermissionLevel::Required);
+    let event = serde_json::json!({
+        "hook_event_name": "PermissionRequest",
+        "hook_context_request_id": "request-question",
+        "permission_mode": "default",
+        "tool_name": "AskUserQuestion",
+        "tool_input": {
+            "questions": [{
+                "question": "Which colors do you like?",
+                "header": "Colors",
+                "multiSelect": true,
+                "options": [{ "label": "Red" }, { "label": "Blue" }, { "label": "Green" }]
+            }]
+        },
+    });
+    let bridge = ScriptedBridge::new(
+        &[("option-0", "Red"), ("option-2", "Green"), ("done", "Done")],
+        std::time::Duration::ZERO,
+    );
+
+    resolve_scripted(&fixture, &bridge, &event);
+
+    let response = hook_response(&fixture);
+    let cards = bridge.interactions.lock().unwrap();
+    assert_eq!(cards.len(), 3, "one card per choice, then Done");
+    assert_eq!(labels(&cards[0]), ["Red", "Blue", "Green"]);
+    assert_eq!(labels(&cards[1]), ["Blue", "Green", "Done"]);
+    assert_eq!(labels(&cards[2]), ["Blue", "Done"]);
+    assert_eq!(response["behavior"], "allow");
+    assert_eq!(
+        response["updatedInput"]["answers"]["Which colors do you like?"],
+        "Red, Green"
+    );
+    let _ = fs::remove_dir_all(&fixture.root);
+}
+
+#[test]
+fn the_questions_of_one_call_share_one_deadline() {
+    let fixture = fixture(crate::provider::AgentPermissionLevel::Required);
+    let mut event = question_event("default");
+    event["tool_input"]["questions"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "question": "Large or small?",
+            "header": "Size",
+            "multiSelect": false,
+            "options": [{ "label": "Large" }, { "label": "Small" }]
+        }));
+    let bridge = ScriptedBridge::new(
+        &[("option-0", "Red"), ("option-1", "Small")],
+        std::time::Duration::from_millis(1_100),
+    );
+
+    resolve_scripted(&fixture, &bridge, &event);
+
+    let response = hook_response(&fixture);
+    let cards = bridge.interactions.lock().unwrap();
+    assert_eq!(cards.len(), 2);
+    assert_eq!(
+        cards[0].timeout_sec(),
+        Some(crate::provider::CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS)
+    );
+    assert!(
+        cards[1].timeout_sec().unwrap() < crate::provider::CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+        "the second card gets only what the first left of the hook's wait: {:?}",
+        cards[1].timeout_sec()
+    );
+    assert_eq!(
+        response["updatedInput"]["answers"]["Large or small?"],
+        "Small"
     );
     let _ = fs::remove_dir_all(&fixture.root);
 }
