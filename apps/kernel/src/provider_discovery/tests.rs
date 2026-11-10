@@ -259,3 +259,80 @@ fn only_claude_and_opencode_authenticated_logins_are_checked_again_when_stale() 
         "codex only reloads its login on an explicit refresh"
     );
 }
+
+#[test]
+fn an_unusable_location_is_probed_again_after_a_growing_pause() {
+    crate::test_support::isolated_env_test!();
+    let machine = Machine::new("backoff");
+    machine.claude_config_dir(".claude-work");
+    let registry = machine.open_registry();
+    let config = DaemonConfig::for_tests();
+    let pass = |now_ms: u64| discover_at(&registry, OWNER, &machine.home, &config, now_ms);
+    let start = crate::session::unix_epoch_ms();
+    let second = 1000;
+
+    pass(start);
+    assert_eq!(machine.probes(".claude-work"), 1);
+    pass(start + 30 * second);
+    assert_eq!(
+        machine.probes(".claude-work"),
+        1,
+        "30 s after the first failure"
+    );
+    pass(start + 61 * second);
+    assert_eq!(
+        machine.probes(".claude-work"),
+        2,
+        "a minute after the first failure"
+    );
+    pass(start + 61 * second + 119 * second);
+    assert_eq!(
+        machine.probes(".claude-work"),
+        2,
+        "the second pause is two minutes"
+    );
+
+    machine.cli_answers(".claude-work", BOB);
+    let outcome = pass(start + 61 * second + 121 * second);
+    assert_eq!(
+        outcome.adopted.len(),
+        1,
+        "the login is found once the pause is over"
+    );
+    assert_eq!(machine.probes(".claude-work"), 3);
+}
+
+#[test]
+fn the_pause_between_probes_of_an_unusable_location_stops_growing_at_half_an_hour() {
+    crate::test_support::isolated_env_test!();
+    let machine = Machine::new("backoff-cap");
+    machine.claude_config_dir(".claude-work");
+    let registry = machine.open_registry();
+    let config = DaemonConfig::for_tests();
+    let minute = 60 * 1000;
+    let mut now_ms = crate::session::unix_epoch_ms();
+    for probes in 1..=12 {
+        discover_at(&registry, OWNER, &machine.home, &config, now_ms);
+        assert_eq!(machine.probes(".claude-work"), probes);
+        now_ms += 31 * minute;
+    }
+
+    discover_at(
+        &registry,
+        OWNER,
+        &machine.home,
+        &config,
+        now_ms - 3 * minute,
+    );
+    assert_eq!(
+        machine.probes(".claude-work"),
+        12,
+        "29 min after the last probe"
+    );
+    discover_at(&registry, OWNER, &machine.home, &config, now_ms);
+    assert_eq!(
+        machine.probes(".claude-work"),
+        13,
+        "31 min after the last probe"
+    );
+}

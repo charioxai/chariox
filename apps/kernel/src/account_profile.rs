@@ -1068,6 +1068,8 @@ pub struct ProviderAccountProfileRegistry {
     vault_login_slots: vault_login::VaultLoginSlots,
     /// Tells the kernel when who is signed in changed, however it changed.
     auth_changes: Arc<discovery::AuthChanges>,
+    /// Machine locations whose last probe found no usable login; memory only.
+    probe_backoff: Arc<discovery::ProbeBackoff>,
 }
 
 type ProviderAccountUsageRefreshKey = (String, String, String);
@@ -1157,6 +1159,7 @@ impl ProviderAccountProfileRegistry {
             generation: Arc::new(AtomicU64::new(0)),
             vault_login_slots: vault_login::VaultLoginSlots::default(),
             auth_changes,
+            probe_backoff: Arc::default(),
         };
         if changed {
             let document = registry.read_document()?;
@@ -1988,14 +1991,7 @@ impl ProviderAccountProfileRegistry {
         let provider = normalize_provider(provider)?;
         let mut document = self.write_document()?;
         let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
-        let removed = document.profiles.remove(index);
-        if removed.public.is_default {
-            if let Some(next) = document.profiles.iter_mut().find(|profile| {
-                profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
-            }) {
-                next.public.is_default = true;
-            }
-        }
+        let removed = take_registration(&mut document, owner_user_id, provider, index);
         self.persist_locked(&document)?;
         Ok(project_usage_freshness(removed.public))
     }
@@ -4470,6 +4466,23 @@ fn resolve_stored_profile_mut<'a>(
 ) -> Result<&'a mut StoredProviderAccountProfile, DaemonError> {
     let index = resolved_profile_index(document, owner_user_id, provider, profile_id)?;
     Ok(&mut document.profiles[index])
+}
+
+fn take_registration(
+    document: &mut RegistryDocument,
+    owner_user_id: &str,
+    provider: &str,
+    index: usize,
+) -> StoredProviderAccountProfile {
+    let removed = document.profiles.remove(index);
+    if removed.public.is_default {
+        if let Some(next) = document.profiles.iter_mut().find(|profile| {
+            profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
+        }) {
+            next.public.is_default = true;
+        }
+    }
+    removed
 }
 
 fn resolved_profile_index(

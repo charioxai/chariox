@@ -114,6 +114,22 @@ pub(crate) fn discover_machine_providers(
     home: &Path,
     config: &DaemonConfig,
 ) -> DiscoveryOutcome {
+    discover_at(
+        registry,
+        owner_user_id,
+        home,
+        config,
+        crate::session::unix_epoch_ms(),
+    )
+}
+
+fn discover_at(
+    registry: &ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    home: &Path,
+    config: &DaemonConfig,
+    now_ms: u64,
+) -> DiscoveryOutcome {
     let mut outcome = DiscoveryOutcome::default();
     if crate::provider::managed_provider_isolation_required() {
         return outcome;
@@ -131,22 +147,22 @@ pub(crate) fn discover_machine_providers(
         };
         for profile in profiles
             .iter()
-            .filter(|profile| needs_validation(profile, crate::session::unix_epoch_ms()))
+            .filter(|profile| needs_validation(profile, now_ms))
         {
             if validate(registry, owner_user_id, profile, config) {
                 outcome.validated.push(profile.profile_id.clone());
             }
         }
         for root in candidate_roots(provider, home) {
-            match registry.claim_machine_location(provider, &root) {
+            match registry.machine_location_due(provider, &root, now_ms) {
                 Ok(true) => {}
                 Ok(false) => continue,
                 Err(error) => {
-                    log_failure(provider, "remember machine location", &error);
+                    log_failure(provider, "check machine location", &error);
                     continue;
                 }
             }
-            if let Some(profile) = adopt(registry, owner_user_id, provider, &root, config) {
+            if let Some(profile) = adopt(registry, owner_user_id, provider, &root, config, now_ms) {
                 outcome.adopted.push(profile.profile_id);
             }
         }
@@ -163,10 +179,12 @@ fn provider_installed(provider: &str) -> bool {
     }
 }
 
-/// A signed-out answer is rechecked at most once a minute, so asking again on
-/// every client open stays cheap. Codex is never rechecked on its own: its server
-/// keeps the login it saw at its start and only an explicit refresh reloads it.
-const SIGNED_OUT_RECHECK_MS: u64 = 60 * 1000;
+/// A login is rechecked at most once a minute, so asking again on every client
+/// open stays cheap while an account switched in the provider's own CLI shows up
+/// within a minute of the next open. Codex is never rechecked on its own: its
+/// server keeps the login it saw at its start and only an explicit refresh
+/// reloads it.
+const LOGIN_RECHECK_MS: u64 = 60 * 1000;
 
 /// Only profiles on the machine's own provider login are checked here; a profile
 /// Chariox created needs its own sign-in.
@@ -176,13 +194,15 @@ fn needs_validation(profile: &ProviderAccountProfile, now_ms: u64) -> bool {
     }
     match profile.auth_state {
         ProviderAccountAuthState::Unknown => true,
-        ProviderAccountAuthState::NotConfigured | ProviderAccountAuthState::Expired => {
+        ProviderAccountAuthState::NotConfigured
+        | ProviderAccountAuthState::Expired
+        | ProviderAccountAuthState::Authenticated => {
             profile.provider != "codex"
                 && profile
                     .last_validated_at_ms
-                    .is_none_or(|checked| now_ms.saturating_sub(checked) >= SIGNED_OUT_RECHECK_MS)
+                    .is_none_or(|checked| now_ms.saturating_sub(checked) >= LOGIN_RECHECK_MS)
         }
-        ProviderAccountAuthState::Authenticated | ProviderAccountAuthState::Error => false,
+        ProviderAccountAuthState::Error => false,
     }
 }
 
@@ -212,13 +232,15 @@ fn validate(
 }
 
 /// Register a native root as a linked profile when its login is valid and is a
-/// different account from every profile already registered.
+/// different account from every profile already registered. Otherwise the root
+/// is left as if never seen, so a login that appears there later is found.
 fn adopt(
     registry: &ProviderAccountProfileRegistry,
     owner_user_id: &str,
     provider: &str,
     root: &Path,
     config: &DaemonConfig,
+    now_ms: u64,
 ) -> Option<ProviderAccountProfile> {
     let profile = match registry.link_existing(owner_user_id, provider, "", root) {
         Ok(profile) => profile,
@@ -237,8 +259,15 @@ fn adopt(
             .get(owner_user_id, provider, &profile.profile_id)
             .ok();
     }
-    // A signed-out directory or a second path to an account already registered.
-    if let Err(error) = registry.remove_registration(owner_user_id, provider, &profile.profile_id) {
+    // A failed probe, a signed-out directory or a second path to an account
+    // already registered.
+    if let Err(error) = registry.withdraw_discovered_link(
+        owner_user_id,
+        provider,
+        &profile.profile_id,
+        root,
+        now_ms,
+    ) {
         log_failure(provider, "undo machine login link", &error);
     }
     None
