@@ -226,7 +226,7 @@ impl KernelRuntimeState {
             match (RoomAppViewHost { state: self, session: session_id }).command(request.clone()).await {
                 Ok(Some(value)) => return serde_json::from_value(value)
                     .map_err(|_| open_error("The Room browser returned an invalid App view response. Restart the Room Environment and try again.")),
-                Ok(None) => return Err(open_error("This Room has no browser controller available. Bind an Environment with /room bind <slice> and start it with /room start, then retry /app open.")),
+                Ok(None) => return Err(no_browser_controller()),
                 Err(error)
                     if (open
                         && tokio::time::Instant::now() < deadline
@@ -1066,6 +1066,16 @@ fn view_tool(
         .tools()
         .find(|tool| tool.local_name == local)
         .map(|tool| tool.name.clone())
+}
+
+const NO_BROWSER_CONTROLLER: &str = "This Room has no browser controller available. Bind an Environment with /room bind <slice> and start it with /room start, then retry /app open.";
+
+pub(super) fn no_browser_controller() -> DaemonError {
+    open_error(NO_BROWSER_CONTROLLER)
+}
+
+pub(super) fn is_no_browser_controller(error: &DaemonError) -> bool {
+    matches!(error, DaemonError::AppViewUnavailable { message } if message == NO_BROWSER_CONTROLLER)
 }
 
 pub(super) fn open_error(message: &str) -> DaemonError {
