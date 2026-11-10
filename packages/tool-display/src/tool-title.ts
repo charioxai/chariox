@@ -57,11 +57,13 @@ export function toolDisplayTitle(update: ToolTranscriptUpdate, patchFiles: reado
       return `${verb("Moved", "Moving")} ${toolTitleShort(path) ?? "a file"}`
     case "charioxvisualshow":
     case "visualshow":
+    case "charioxcharioxvisualshow":
     case "mcpcharioxvisualshow":
     case "mcpcharioxcharioxvisualshow":
       return verb("Showed a page", "Showing a page")
     case "charioxvisualpreview":
     case "visualpreview":
+    case "charioxcharioxvisualpreview":
     case "mcpcharioxvisualpreview":
     case "mcpcharioxcharioxvisualpreview":
       return verb("Previewed a page", "Previewing a page")
