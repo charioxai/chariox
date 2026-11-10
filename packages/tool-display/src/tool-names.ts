@@ -17,19 +17,16 @@ export function canonicalToolName(tool: unknown) {
     return ""
   }
   const normalized = tool.trim()
-  const compact = normalized.replace(/[._-]/g, "").toLowerCase()
-  if (compact === "charioxwriteartifact" || compact === "writeartifact") return "chariox.write_artifact"
-  if (compact === "charioxeditartifact" || compact === "editartifact") return "chariox.edit_artifact"
-  if (
-    compact === "charioxapplypatch"
-    || compact === "charioxpatchartifact"
-    || compact === "mcpcharioxpatchartifact"
-    || compact === "mcpcharioxcharioxpatchartifact"
-  ) return "chariox.apply_patch"
-  if (compact === "patchartifact") return "chariox.apply_patch"
-  if (compact === "applypatch") return "apply_patch"
-  if (compact === "charioxdeleteartifact" || compact === "deleteartifact") return "chariox.delete_artifact"
-  if (compact === "charioxmoveartifact" || compact === "moveartifact") return "chariox.move_artifact"
-  if (compact === "charioxreadartifact" || compact === "readartifact") return "chariox.read_artifact"
+  // The bridge's tools arrive as "chariox.x", "chariox_x" or, through a provider's MCP client, "mcp__chariox__chariox_x": one name each.
+  const compact = normalized.replace(/[._-]/g, "").toLowerCase().replace(/^mcp(?=chariox)/, "")
+  const chariox = compact.startsWith("chariox")
+  const verb = compact.replace(/^(?:chariox)+/, "")
+  if (verb === "writeartifact") return "chariox.write_artifact"
+  if (verb === "editartifact") return "chariox.edit_artifact"
+  if (verb === "patchartifact" || (chariox && verb === "applypatch")) return "chariox.apply_patch"
+  if (verb === "applypatch") return "apply_patch"
+  if (verb === "deleteartifact") return "chariox.delete_artifact"
+  if (verb === "moveartifact") return "chariox.move_artifact"
+  if (verb === "readartifact") return "chariox.read_artifact"
   return normalized
 }
