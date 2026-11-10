@@ -509,6 +509,8 @@ mod agent_archive_runtime_state;
 mod agent_config_owned_state;
 mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
+mod agent_model_choice;
+mod agent_model_resolution;
 mod agent_notification_ancestry;
 mod agent_notification_app;
 mod agent_notification_expiry;

@@ -56,6 +56,25 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "join-header")?.focused, true)
 })
 
+test("a model without variants shows None, never a default entry", () => {
+  const catalog = fallbackProviderCatalog()
+  const modelOptions = catalogModelOptions(catalog, "opencode")
+  const rows = waitingRoomStartRows(
+    waitingRoomState({}),
+    { providerId: "opencode", model: modelOptions[0] ?? null, effort: "" },
+    {
+      modelOptions,
+      remote: { slices: [] },
+      targets: { workspacePath: "/workspace", worktreePath: "/workspace" },
+      inventoryLoading: false,
+      loadingText: "loading",
+      visibleSessionCount: 0,
+      titleWidth: 24,
+    },
+  )
+  assert.equal(rows.find((row) => row.id === "effort")?.value, "None")
+})
+
 test("waiting room start rows place project selection below Kernel", () => {
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "opencode")

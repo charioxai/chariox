@@ -480,7 +480,7 @@ function formatWaitingRoomModelValue(
 }
 
 function formatVariantValue(effort: string, fallback = false) {
-  const label = effort ? formatTitleCase(effort) : "Default"
+  const label = effort ? formatTitleCase(effort) : "None"
   return fallback ? `${label} (local list)` : label
 }
 
