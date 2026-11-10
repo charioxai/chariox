@@ -194,3 +194,71 @@ async fn a_new_agent_and_a_new_room_get_the_account_default() {
     assert_eq!(defaults.model.as_deref(), Some("claude-sonnet-5-5"));
     assert_eq!(defaults.effort.as_deref(), Some("high"));
 }
+
+async fn stored_codex_agent_without_model(
+) -> (Arc<Mutex<DaemonApp>>, KernelRuntimeState, String, String) {
+    let request = crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
+        .with_agent_defaults(crate::session::SessionAgentDefaults {
+            provider: "codex".into(),
+            ..Default::default()
+        });
+    agent_config_runtime_in_worktree(
+        crate::config::DaemonConfig::for_tests(),
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        request,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn start_up_gives_a_stored_agent_without_model_its_account_default() {
+    let (app, runtime, _session, agent) = stored_codex_agent_without_model().await;
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let stored = runtime
+        .list_agents()
+        .into_iter()
+        .find(|a| a.id() == agent)
+        .unwrap();
+    assert!(stored.model().is_none() && stored.effort().is_none());
+    seed_account_catalog(&app, owner, "codex", stored.provider_account_profile()).await;
+
+    runtime.resolve_stored_agent_models().await;
+
+    let resolved = runtime
+        .list_agents()
+        .into_iter()
+        .find(|a| a.id() == agent)
+        .unwrap();
+    assert_eq!(resolved.model(), Some("gpt-6.1-sol"));
+    assert_eq!(resolved.effort(), Some("high"));
+    assert!(runtime.agents_missing_model_choice().is_empty());
+}
+
+#[tokio::test]
+async fn start_up_leaves_an_agent_that_already_has_model_and_variant_as_it_is() {
+    let (_app, runtime, session, agent) = stored_codex_agent_without_model().await;
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    runtime
+        .update_agent_profile(
+            &session,
+            &agent,
+            owner,
+            None,
+            None,
+            Some("retired-model".into()),
+            Some(Some("low".into())),
+        )
+        .await
+        .unwrap();
+    assert!(runtime.agents_missing_model_choice().is_empty());
+
+    runtime.resolve_stored_agent_models().await;
+
+    let kept = runtime
+        .list_agents()
+        .into_iter()
+        .find(|a| a.id() == agent)
+        .unwrap();
+    assert_eq!(kept.model(), Some("retired-model"));
+    assert_eq!(kept.effort(), Some("low"));
+}

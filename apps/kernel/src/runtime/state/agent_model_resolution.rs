@@ -23,14 +23,16 @@ impl KernelRuntimeState {
             return Ok((model, effort));
         };
         let account_owner = self.provider_account_authority_owner_user_id(owner_user_id);
-        let profile = self
-            .provider_account_profile_registry()
-            .get(
-                &account_owner,
-                provider,
-                account_profile.unwrap_or("default"),
-            )?
-            .profile_id;
+        // An account the owner does not have is refused by the launch admission that follows, with
+        // the action to take; this step only chooses among the models of an account that exists.
+        let Ok(profile) = self.provider_account_profile_registry().get(
+            &account_owner,
+            provider,
+            account_profile.unwrap_or("default"),
+        ) else {
+            return Ok((model, effort));
+        };
+        let profile = profile.profile_id;
         let model_named = model.is_some();
         let catalog = match self
             .read_account_catalog(owner_user_id, provider, family, &profile)
@@ -99,11 +101,24 @@ impl KernelRuntimeState {
         };
         let model_named = selections.model.is_some();
         let effort_named = matches!(selections.effort, Some(Some(_)));
-        let family_changed = crate::provider::canonical_provider_family(&target.provider)
-            != crate::provider::canonical_provider_family(original.provider());
-        let account_changed =
-            family_changed || target.account_profile != original.provider_account_profile();
+        let family_changed = family
+            != crate::provider::canonical_provider_family(original.provider()).unwrap_or_default();
+        // The stored selector may be the alias `default`; compare the account it stands for.
+        let account_owner = self.provider_account_authority_owner_user_id(caller_user_id);
+        let original_account = self
+            .provider_account_profile_registry()
+            .get(
+                &account_owner,
+                original.provider(),
+                original.provider_account_profile(),
+            )
+            .map_or_else(
+                |_| original.provider_account_profile().to_string(),
+                |profile| profile.profile_id,
+            );
+        let account_changed = family_changed || target.account_profile != original_account;
         let model_changed = target.model.as_deref() != original.model();
+        let keeps_model = !account_changed && target.model.is_some();
         let settled = target.model.is_some() && target.effort.is_some();
         if (model_named && effort_named)
             || (settled && !account_changed && !model_changed && !model_named)
@@ -120,7 +135,15 @@ impl KernelRuntimeState {
             .await
         {
             Ok(catalog) => catalog,
-            Err(_) if model_named => return Ok(selections),
+            // The agent keeps a model it already runs; only its variant waits for a readable catalog.
+            Err(error) if model_named || keeps_model => {
+                crate::logging::warn_with_fields(
+                    "agent.model",
+                    "the model list could not be read; the agent keeps what it has",
+                    serde_json::json!({ "agent": original.id(), "error": error.to_string() }),
+                );
+                return Ok(selections);
+            }
             Err(error) => return Err(error),
         };
         let choice = choose(
@@ -128,7 +151,9 @@ impl KernelRuntimeState {
             &target.provider,
             Requested {
                 value: target.model.as_deref(),
-                explicit: model_named,
+                // A model the agent already runs on the same account stays even when the
+                // catalog does not list it (an alias or a withdrawn model).
+                explicit: model_named || keeps_model,
             },
             Requested {
                 value: target.effort.as_deref(),
@@ -136,8 +161,14 @@ impl KernelRuntimeState {
             },
         )
         .map_err(|NoModelOffered| no_model_offered(&target.provider, &target.account_profile))?;
-        selections.model = Some(choice.model);
-        selections.effort = Some(choice.effort);
+        // Selections that already match the validated target stay as they are, so a true
+        // no-op is still recognised as one.
+        if target.model.as_deref() != Some(choice.model.as_str()) {
+            selections.model = Some(choice.model);
+        }
+        if target.effort != choice.effort {
+            selections.effort = Some(choice.effort);
+        }
         Ok(selections)
     }
 
@@ -148,7 +179,9 @@ impl KernelRuntimeState {
         family: &str,
         profile_id: &str,
     ) -> Result<crate::provider::OpenCodeProviderCatalog, DaemonError> {
-        let projection = self.app.lock().await.provider_catalog_projection_store();
+        let projection = self
+            .with_app_side_effect(|app| app.provider_catalog_projection_store())
+            .await;
         let request = crate::local::GetProviderCatalogRequest {
             provider: Some(provider.to_string()),
             account_profiles: BTreeMap::from([(family.to_string(), profile_id.to_string())]),

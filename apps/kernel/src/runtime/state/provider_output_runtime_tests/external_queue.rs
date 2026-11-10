@@ -902,8 +902,9 @@ async fn provider_only_switch_selects_compatible_defaults_atomically() {
         .unwrap();
     assert_eq!(changed.provider(), "codex");
     assert_eq!(changed.provider_account_profile(), expected.profile_id);
-    assert_eq!(changed.model(), None);
-    assert_eq!(changed.effort(), None);
+    // The new provider's default model and variant are chosen, never left empty.
+    assert_eq!(changed.model(), Some("gpt-6.1-sol"));
+    assert!(changed.effort().is_some());
     let before = changed.clone();
     let rejected = runtime
         .update_agent_profile(

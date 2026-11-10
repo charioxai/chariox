@@ -10,6 +10,8 @@ mod profile_selection;
 
 #[path = "tests/profile_native_identity.rs"]
 mod profile_native_identity;
+#[path = "tests/seeded_catalog.rs"]
+mod seeded_catalog;
 
 #[path = "tests/remote_profile_active_run.rs"]
 mod remote_profile_active_run;
