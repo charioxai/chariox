@@ -244,4 +244,20 @@ async fn docs() {
             "{command}: {doc:?}"
         );
     }
+    let room_list = world
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            "chariox.commands.docs",
+            serde_json::json!({"command": "room list"}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        room_list.payload["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("`agent spawn --room` refuses your own room"),
+        "the list says its own room is not valid for spawn: {room_list:?}"
+    );
 }

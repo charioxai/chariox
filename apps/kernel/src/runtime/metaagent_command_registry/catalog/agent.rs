@@ -15,7 +15,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "read-only; the rooms of this owner on this kernel",
         routed: true,
-        description: "List the rooms `--room <room>` accepts on this kernel (`agent spawn`, `agent message`, `agent steer`, `agent cancel`): your own room, marked `current`, and the other rooms of the same owner. A room of another owner is not listed. A guest of a room sees only that room.",
+        description: "List the rooms `--room <room>` accepts on this kernel (`agent spawn`, `agent message`, `agent steer`, `agent cancel`): your own room, marked `current`, and the other rooms of the same owner. `agent spawn --room` refuses your own room (omit `--room` to create a sub-agent in it); the other commands accept it. A room of another owner is not listed. A guest of a room sees only that room.",
     },
     MetaCommandDoc {
         name: "session overview",
