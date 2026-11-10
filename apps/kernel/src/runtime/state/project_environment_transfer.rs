@@ -11,7 +11,7 @@ use crate::project_environment::{
     SourceSnapshot, UserRegistrations, MAX_IMPORT_FILE_BYTES,
 };
 use crate::transport::relay_peer::{
-    RelayPeerRequest, RelayPeerResponse, RemoteCredentialSecretInput, RemoteEnvironmentFileBytes,
+    RelayPeerRequest, RelayPeerResponse, RemoteCredentialSecretInput, RemoteFileBytes,
     RemoteProjectRegistration,
 };
 use std::path::PathBuf;
@@ -376,7 +376,7 @@ impl KernelRuntimeState {
             return Ok(RelayPeerResponse::ProjectEnvironmentFilePulled {
                 size_bytes: slice.size_bytes,
                 sha256: Some(slice.sha256),
-                content: Some(RemoteEnvironmentFileBytes::encode(&slice.bytes)),
+                content: Some(RemoteFileBytes::encode(&slice.bytes)),
             });
         }
         let held = source_holdings(

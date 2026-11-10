@@ -125,7 +125,7 @@ fn sha256_of(path: &Path) -> Result<String, DaemonError> {
 }
 
 /// Hashes the open file from its first byte, whatever its descriptor offset.
-fn sha256_of_open(file: &std::fs::File, path: &Path) -> Result<String, DaemonError> {
+pub(crate) fn sha256_of_open(file: &std::fs::File, path: &Path) -> Result<String, DaemonError> {
     use std::os::unix::fs::FileExt;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 256 * 1024];
@@ -349,9 +349,53 @@ pub(crate) fn write(request: &WriteKernelFileRequest) -> Result<LocalDaemonRespo
         ));
     }
     let path = resolve(&request.path)?;
-    let partial = partial_of(&path);
-    let existing = std::fs::symlink_metadata(&path);
-    if existing.is_ok() && !request.overwrite {
+    let written = write_at(
+        &path,
+        &partial_of(&path),
+        &StagedChunk {
+            offset: request.offset,
+            total_size: request.total_size,
+            data: &data,
+            overwrite: request.overwrite,
+            sha256: request.sha256.as_deref(),
+        },
+    )?;
+    Ok(LocalDaemonResponse::KernelFileWritten {
+        path: path.display().to_string(),
+        received: written.received,
+        complete: written.sha256.is_some(),
+        sha256: written.sha256,
+    })
+}
+
+/// One chunk of an upload into an already resolved path.
+pub(crate) struct StagedChunk<'a> {
+    pub offset: u64,
+    pub total_size: u64,
+    pub data: &'a [u8],
+    pub overwrite: bool,
+    /// Checked against the whole file before it appears under its name.
+    pub sha256: Option<&'a str>,
+}
+
+/// Where an upload stands after a chunk: the bytes staged so far, and the digest of the file once
+/// it is complete and installed.
+pub(crate) struct StagedWrite {
+    pub received: u64,
+    pub sha256: Option<String>,
+}
+
+/// Stages `chunk` for `path` in the file `staging` and installs the file when its last byte lands;
+/// nothing appears under the name before then, and an existing file is replaced only with
+/// `overwrite`.
+pub(crate) fn write_at(
+    path: &Path,
+    staging: &Path,
+    chunk: &StagedChunk<'_>,
+) -> Result<StagedWrite, DaemonError> {
+    let partial = staging.to_path_buf();
+    let existing = std::fs::symlink_metadata(path);
+    if existing.is_ok() && !chunk.overwrite {
         return Err(fail(
             "file_exists",
             format!(
@@ -369,42 +413,45 @@ pub(crate) fn write(request: &WriteKernelFileRequest) -> Result<LocalDaemonRespo
             ),
         ));
     }
-    let end = request.offset.saturating_add(data.len() as u64);
-    if end > request.total_size {
+    let end = chunk.offset.saturating_add(chunk.data.len() as u64);
+    if end > chunk.total_size {
         return Err(fail(
             "file_offset_mismatch",
             format!(
                 "The chunk ends at {end}, past total_size {}.",
-                request.total_size
+                chunk.total_size
             ),
         ));
     }
-    wait_for_turn(&partial, request.offset);
-    let mut file = open_staging(&partial, &path, request.offset)?;
-    file.write_all(&data)
+    wait_for_turn(&partial, chunk.offset);
+    let mut file = open_staging(&partial, path, chunk.offset)?;
+    file.write_all(chunk.data)
         .map_err(|e| io_failure(&partial, &e))?;
     file.flush().map_err(|e| io_failure(&partial, &e))?;
-    if end < request.total_size {
-        return Ok(LocalDaemonResponse::KernelFileWritten {
-            path: path.display().to_string(),
+    if end < chunk.total_size {
+        return Ok(StagedWrite {
             received: end,
-            complete: false,
             sha256: None,
         });
     }
-    let sha256 = publish(
-        &file,
-        &partial,
-        &path,
-        request.overwrite,
-        request.sha256.as_deref(),
-    )?;
-    Ok(LocalDaemonResponse::KernelFileWritten {
-        path: path.display().to_string(),
+    let sha256 = publish(&file, &partial, path, chunk.overwrite, chunk.sha256)?;
+    Ok(StagedWrite {
         received: end,
-        complete: true,
         sha256: Some(sha256),
     })
+}
+
+/// Bytes the staging file `staging` of an unfinished upload holds.
+pub(crate) fn staged_bytes(staging: &Path) -> u64 {
+    std::fs::symlink_metadata(staging)
+        .ok()
+        .filter(std::fs::Metadata::is_file)
+        .map_or(0, |metadata| metadata.len())
+}
+
+/// Drops the staging file `staging` of an unfinished upload.
+pub(crate) fn discard_staging(staging: &Path) {
+    let _ = std::fs::remove_file(staging);
 }
 
 fn staging_replaced(partial: &Path) -> DaemonError {

@@ -203,7 +203,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08 / MP-09 / MP-10 / MP-11: peer 441 sends the kernel's large messages to the relay in
 /// chunks-v2 frames (`x-chariox-upload`); toward a relay that does not answer the offer the
 /// kernel writes whole messages, and the relay keeps reading whole messages from 440 kernels.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 441;
+/// MP-08 / MP-09 / MP-10 / MP-11: peer 443 carries `chariox.file.copy`: the leased agent file
+/// requests `read_leased_agent_file`, `write_leased_agent_file` and `discard_leased_agent_file`.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 443;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -555,12 +557,12 @@ impl std::fmt::Debug for RemoteCredentialSecretInput {
     }
 }
 
-/// A Project file's bytes (base64) inside an encrypted kernel-to-kernel response; it can hold secrets.
+/// A file's bytes (base64) inside an encrypted kernel-to-kernel message; it can hold secrets.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct RemoteEnvironmentFileBytes(String);
+pub struct RemoteFileBytes(String);
 
-impl RemoteEnvironmentFileBytes {
+impl RemoteFileBytes {
     pub fn encode(bytes: &[u8]) -> Self {
         use base64::Engine;
         Self(base64::engine::general_purpose::STANDARD.encode(bytes))
@@ -586,13 +588,13 @@ impl std::fmt::Debug for RemoteProjectRegistration {
     }
 }
 
-impl Drop for RemoteEnvironmentFileBytes {
+impl Drop for RemoteFileBytes {
     fn drop(&mut self) {
         zeroize::Zeroize::zeroize(&mut self.0);
     }
 }
 
-impl std::fmt::Debug for RemoteEnvironmentFileBytes {
+impl std::fmt::Debug for RemoteFileBytes {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("[redacted Project file bytes]")
     }
@@ -1029,6 +1031,29 @@ pub enum RelayPeerRequest {
         leased_agent_id: String,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     },
+    /// `chariox.file.copy` from the leased agent: one slice of a file in its workspace, starting
+    /// at `offset`.
+    ReadLeasedAgentFile {
+        leased_agent_id: String,
+        path: String,
+        offset: u64,
+    },
+    /// `chariox.file.copy` to the leased agent: one slice of a file arriving into its workspace.
+    /// The file appears under `path` only when its last slice lands with digest `sha256`.
+    WriteLeasedAgentFile {
+        leased_agent_id: String,
+        path: String,
+        offset: u64,
+        total_size: u64,
+        sha256: String,
+        overwrite: bool,
+        content: RemoteFileBytes,
+    },
+    /// Drops what an unfinished `WriteLeasedAgentFile` staged for `path`.
+    DiscardLeasedAgentFile {
+        leased_agent_id: String,
+        path: String,
+    },
     LaunchLeasedNativeProviderRun {
         leased_agent_id: String,
         adapter_key: String,
@@ -1358,7 +1383,7 @@ pub enum RelayPeerResponse {
         /// the file is not there.
         sha256: Option<String>,
         /// The slice at the requested offset; absent when the file is not there.
-        content: Option<RemoteEnvironmentFileBytes>,
+        content: Option<RemoteFileBytes>,
     },
     AgentMove {
         response: crate::agent_move::peer::AgentMovePeerResponse,
@@ -1488,6 +1513,29 @@ pub enum RelayPeerResponse {
     },
     LeasedAgentMetaModeUpdated {
         leased_agent: LeasedAgent,
+    },
+    LeasedAgentFileRead {
+        /// The whole file's size, so the home knows when it has everything.
+        size_bytes: u64,
+        /// SHA-256 of the whole file; sent with the slice at offset 0.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+        /// Changes whenever the file is written or replaced; every slice of one copy carries the
+        /// same one.
+        revision: String,
+        content: RemoteFileBytes,
+    },
+    LeasedAgentFileWritten {
+        /// Bytes staged so far; the home continues from here.
+        received: u64,
+        /// The published file's digest, once the last slice landed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+    },
+    LeasedAgentFileDiscarded,
+    /// The worker will not read or write that file; repeating the request cannot change it.
+    LeasedAgentFileRefused {
+        reason: String,
     },
     LeasedAgentRemoteExtensionManifestUpdated {
         leased_agent_id: String,
