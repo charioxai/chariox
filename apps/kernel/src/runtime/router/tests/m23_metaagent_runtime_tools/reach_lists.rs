@@ -59,7 +59,7 @@ async fn room_list() {
         } else {
             &world.room
         };
-        assert_eq!(&current, &[own.clone()], "{who}");
+        assert_eq!(current, std::slice::from_ref(own), "{who}");
     }
     // Every listed room other than its own is a room `agent spawn --room` accepts.
     let accepted = room_command(
