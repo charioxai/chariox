@@ -1,4 +1,4 @@
-import { managedEnvironmentIdFromMachineRef, NEW_MANAGED_MACHINE_REF } from "@chariox/kernel-client/waiting-room-runtime-placement"
+import { managedEnvironmentIdFromMachineRef, managedEnvironmentMachineRef, NEW_MANAGED_MACHINE_REF } from "@chariox/kernel-client/waiting-room-runtime-placement"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import { getWorkspaceGitOverviewRequest, listWorkspaceWorktreesRequest } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
@@ -28,8 +28,11 @@ export function waitingRoomWorkspaceSelection(
   const environmentId = managedEnvironmentIdFromMachineRef(state.selectedMachineRef)
   const sourceSelection = state.selectedMachineRef === NEW_MANAGED_MACHINE_REF
   if (sourceSelection) return { machineId: home.machineId || "", kernelId: home.kernelId || "" }
+  // A managed machine that is still being created (or was deleted) has no machine id yet; its ref keeps the home's
+  // inventory and workspace reads away from it until its own kernel reports.
   const machineId = state.selectedMachineRef === "local" ? home.machineId || ""
-    : environmentId ? environments.find(environment => environment.environmentId === environmentId)?.runtimeMachineId || ""
+    : environmentId ? environments.find(environment => environment.environmentId === environmentId)?.runtimeMachineId
+      || managedEnvironmentMachineRef(environmentId)
     : state.selectedMachineRef || home.machineId || ""
   return {
     machineId,
@@ -266,7 +269,7 @@ export function createWaitingRoomWorkspacePlacementController(deps: {
       if (machineId) deps.beginMachineSelection(machineId, source.kernelId || undefined)
       const isActive = () => requestedGeneration === placementGeneration && (deps.getState().selectedKernelRef ?? "") === kernelRef
         && deps.getState().selectedMachineRef === machineRef
-      const browseManaged = environmentId && machineId ? deps.browseManaged : undefined
+      const browseManaged = environmentId && machineId && machineId !== machineRef ? deps.browseManaged : undefined
       browsingManagedWorkspace = Boolean(browseManaged)
       const connectHome = browseManaged || creatingMachine
       void deps.connect(connectHome ? "local" : kernelRef, connectHome ? "local" : machineRef, isActive).then(async connected => {

@@ -277,6 +277,19 @@ test("TUI does not use the home kernel as a filesystem fallback for an unconnect
   assert.deepEqual(target, { machineId: "remote-machine", kernelId: "" })
 })
 
+test("TUI keeps the home inventory away from a managed machine that has no machine yet", () => {
+  const managedRef = managedEnvironmentMachineRef("env")
+  const controller = createWaitingRoomWorkspaceController({
+    getWorkspace: () => "/repo", getWorktree: () => "/repo", setWorkspace: () => {}, setWorktree: () => {},
+    resetSelection: () => {}, render: () => {},
+    getSelection: () => waitingRoomWorkspaceSelection({ selectedMachineRef: managedRef },
+      { machineId: "home-machine", kernelId: "home-machine-1" }, [{ environmentId: "env", runtimeMachineId: null }]),
+    send: async () => { throw new Error("must not read through home") },
+    withClient: async () => { throw new Error("Choose a connected kernel before reading its workspace.") },
+  })
+  assert.equal(controller.acceptsInventory(inventory("home-machine", "/repo")), false)
+})
+
 test("TUI machine creation keeps source filesystem identity separate from the requested placement", () => {
   assert.deepEqual(waitingRoomWorkspaceSelection({ selectedMachineRef: NEW_MANAGED_MACHINE_REF },
     { machineId: "home-machine", kernelId: "home-kernel" }, []), { machineId: "home-machine", kernelId: "home-kernel" })
