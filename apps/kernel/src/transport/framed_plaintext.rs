@@ -3,10 +3,12 @@
 //! wire than the file bytes. Between two kernels that advertise `framed_plaintext_v1` the
 //! plaintext starts with `CXF1`, a big-endian u32 header length, the JSON with every
 //! `data_base64` string replaced by `"$bytes":[offset,length]`, then the raw bytes those
-//! entries point to. Segments are contiguous and cover the payload exactly. JSON never starts
-//! with this magic, so a kernel reads either form; it answers in the form it was asked in.
+//! entries point to. Segments are contiguous and cover the payload exactly. A key of the
+//! caller's own that reads `$bytes` (any number of `$`, then `bytes`) is written with one more
+//! `$` and loses it again on reading, so the segment key is the only plain `$bytes`. JSON never
+//! starts with this magic, so a kernel reads either form; it answers in the form it was asked in.
 use base64::{engine::general_purpose::STANDARD, Engine};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 pub(crate) const CAPABILITY: &str = "framed_plaintext_v1";
 const MAGIC: &[u8; 4] = b"CXF1";
@@ -16,7 +18,7 @@ const BYTES_KEY: &str = "$bytes";
 const MAX_DEPTH: usize = 4;
 
 /// The plaintext in framed form. Whatever has no `data_base64` to lift is framed with its JSON
-/// untouched, so the receiver learns that this sender reads framed answers.
+/// as it is, so the receiver learns that this sender reads framed answers.
 pub(crate) fn frame(json: &[u8]) -> Vec<u8> {
     let (header, payload) = lift(json).unwrap_or_else(|| (json.to_vec(), Vec::new()));
     let mut bytes = Vec::with_capacity(8 + header.len() + payload.len());
@@ -28,26 +30,58 @@ pub(crate) fn frame(json: &[u8]) -> Vec<u8> {
 }
 
 fn lift(json: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
-    if !contains(json, DATA_KEY.as_bytes()) {
+    if !contains(json, DATA_KEY.as_bytes()) && !contains(json, BYTES_KEY.as_bytes()) {
         return None;
     }
     let mut value: Value = serde_json::from_slice(json).ok()?;
     let mut payload = Vec::new();
-    take_bytes(&mut value, 0, &mut payload)?;
-    if payload.is_empty() {
-        return None;
-    }
+    take_bytes(&mut value, 0, &mut payload);
     Some((serde_json::to_vec(&value).ok()?, payload))
 }
 
-fn take_bytes(value: &mut Value, depth: usize, payload: &mut Vec<u8>) -> Option<()> {
+/// `$`s followed by `bytes`: how many `$`s, when the key is one of the marker family.
+fn marker_dollars(key: &str) -> Option<usize> {
+    let dollars = key.strip_suffix("bytes")?;
+    (!dollars.is_empty() && dollars.bytes().all(|byte| byte == b'$')).then_some(dollars.len())
+}
+
+/// Rename every marker-family key of `object`: one more `$` going out, one fewer coming back.
+fn rename_marker_keys(object: &mut Map<String, Value>, escape: bool) {
+    let renames: Vec<(String, String)> = object
+        .keys()
+        .filter_map(|key| {
+            let dollars = marker_dollars(key)?;
+            let renamed = if escape {
+                format!("${key}")
+            } else if dollars >= 2 {
+                key[1..].to_string()
+            } else {
+                return None;
+            };
+            Some((key.clone(), renamed))
+        })
+        .collect();
+    let moved: Vec<(String, Value)> = renames
+        .into_iter()
+        .filter_map(|(key, renamed)| Some((renamed, object.remove(&key)?)))
+        .collect();
+    object.extend(moved);
+}
+
+/// Lift every base64 `data_base64` string within `MAX_DEPTH`; a value that is not canonical
+/// base64 stays in the JSON, so reading it back restores exactly what was framed.
+fn take_bytes(value: &mut Value, depth: usize, payload: &mut Vec<u8>) {
     if depth > MAX_DEPTH {
-        return Some(());
+        return;
     }
     match value {
         Value::Object(object) => {
-            if let Some(Value::String(encoded)) = object.get(DATA_KEY) {
-                let bytes = STANDARD.decode(encoded).ok()?;
+            rename_marker_keys(object, true);
+            let lifted = match object.get(DATA_KEY) {
+                Some(Value::String(encoded)) => STANDARD.decode(encoded).ok(),
+                _ => None,
+            };
+            if let Some(bytes) = lifted {
                 object.remove(DATA_KEY);
                 object.insert(
                     BYTES_KEY.into(),
@@ -56,17 +90,16 @@ fn take_bytes(value: &mut Value, depth: usize, payload: &mut Vec<u8>) -> Option<
                 payload.extend_from_slice(&bytes);
             }
             for child in object.values_mut() {
-                take_bytes(child, depth + 1, payload)?;
+                take_bytes(child, depth + 1, payload);
             }
         }
         Value::Array(items) => {
             for child in items {
-                take_bytes(child, depth + 1, payload)?;
+                take_bytes(child, depth + 1, payload);
             }
         }
         _ => {}
     }
-    Some(())
 }
 
 /// The JSON of a plaintext and whether it was framed. A plaintext that is not framed is JSON
@@ -133,6 +166,7 @@ fn put_bytes(
                 );
                 *next = offset + length;
             }
+            rename_marker_keys(object, false);
             for child in object.values_mut() {
                 put_bytes(child, depth + 1, payload, next)?;
             }
@@ -229,5 +263,57 @@ mod tests {
         let mut lying = framed;
         lying[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
         assert!(open(&lying).is_err());
+    }
+
+    fn round_trip(json: &Value) -> Value {
+        let framed = frame(&serde_json::to_vec(json).unwrap());
+        let (opened, was_framed) = open(&framed).unwrap();
+        assert!(was_framed);
+        serde_json::from_slice(&opened).unwrap()
+    }
+
+    #[test]
+    fn a_literal_bytes_key_with_a_string_survives_without_a_chunk() {
+        let json = serde_json::json!({"request": {"RunWorkflowRegistryEntry": {
+            "parameters": {"payload": {"$bytes": "literal"}},
+        }}});
+        assert!(round_trip(&json) == json);
+    }
+
+    #[test]
+    fn a_literal_bytes_key_with_a_pair_survives_without_a_chunk() {
+        let json = serde_json::json!({"request": {"Run": {"payload": {"$bytes": [0, 0]}}}});
+        assert!(round_trip(&json) == json);
+    }
+
+    #[test]
+    fn literal_bytes_keys_survive_next_to_a_lifted_chunk() {
+        let json = serde_json::json!({"request": {"WriteKernelFile": {
+            "$bytes": [0, 3], "$$bytes": "twice", "$bytesx": 1,
+            "data_base64": STANDARD.encode(b"abc"),
+            "extra": {"$bytes": "inner", "data_base64": STANDARD.encode(b"de")},
+        }}});
+        let framed = frame(&serde_json::to_vec(&json).unwrap());
+        assert!(framed.ends_with(b"abcde"));
+        assert!(round_trip(&json) == json);
+    }
+
+    #[test]
+    fn literal_bytes_keys_survive_at_every_depth() {
+        let mut json = serde_json::json!({"$bytes": "leaf"});
+        for _ in 0..=MAX_DEPTH + 2 {
+            json = serde_json::json!({"$bytes": [1, 2], "child": json});
+        }
+        assert!(round_trip(&json) == json);
+    }
+
+    #[test]
+    fn data_that_is_not_base64_travels_as_the_json_it_is() {
+        let json = serde_json::json!({"request": {"X": {
+            "data_base64": "not base64!", "$bytes": [0, 0],
+        }}});
+        assert!(round_trip(&json) == json);
+        let json = serde_json::json!({"request": {"X": {"data_base64": 7, "$bytes": "s"}}});
+        assert!(round_trip(&json) == json);
     }
 }

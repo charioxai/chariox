@@ -7070,7 +7070,9 @@ a get. Three additions bring both directions to the size of the bytes plus a few
 - **`CXF1` plaintext.** A kernel that advertises the capability `framed_plaintext_v1` reads a sealed
   plaintext that starts with `CXF1`, a big-endian u32 header length, the JSON with every
   `data_base64` string (at most four levels deep) replaced by `"$bytes":[offset,length]`, then the
-  raw bytes, contiguous and covering the payload exactly. The kernel gateway frames every request to
+  raw bytes, contiguous and covering the payload exactly. A key of the request's own that is `$`s
+  followed by `bytes` is written with one more `$` and read back with one fewer, so the segment key
+  is the only plain `$bytes` and the JSON comes back unchanged. The kernel gateway frames every request to
   such a kernel; the kernel answers a framed request in a framed answer and a JSON request in JSON.
   The reply size ceilings apply to the JSON before it is framed.
 - **Link-sized binary chunks.** To a peer that negotiated `CXR3`, binary `CXB1` chunks follow the
