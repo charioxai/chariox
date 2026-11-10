@@ -49,3 +49,10 @@ test("MP-08/MP-10/MP-11: HTTP trigger strips have a loopback URL and no countdow
   assert.equal(item?.localUrl, "http://127.0.0.1:32123/local-ingress/")
   assert.equal(item?.nextRunAtMs, null)
 })
+
+test("MP-08/MP-10: a notification trigger whose source kernel is down reads offline", () => {
+  const notification = (id: string, source_available: boolean, enabled = true) => trigger({ id, agent_id: "agent-1", enabled,
+    source: { kind: "notification", source: { workflow: { source_id: "wf" } }, subscription_id: "sub", display_name: "srcwf", source_available } })
+  const items = agentTriggersForAgent({ agent_triggers: [notification("up", true), notification("down", false), trigger({ id: "timer", agent_id: "agent-1" })] }, "agent-1")
+  assert.deepEqual(items.map((item) => [item.id, item.offline]), [["timer", false], ["down", true], ["up", false]])
+})

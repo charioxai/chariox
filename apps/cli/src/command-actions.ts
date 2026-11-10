@@ -511,7 +511,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         ? "No triggers on this agent. Add one with /trigger every <minutes> [--steer] <prompt>."
         : ["Triggers", ...triggers.map((trigger) => [
           `${trigger.id}  ${trigger.label} · ${trigger.busyPolicy}`,
-          trigger.enabled ? trigger.localUrl ?? (trigger.nextRunAtMs === null ? "listening" : `next ${new Date(trigger.nextRunAtMs).toLocaleTimeString()}`) : "off",
+          trigger.enabled ? trigger.localUrl ?? (trigger.offline ? "offline" : trigger.nextRunAtMs === null ? "listening" : `next ${new Date(trigger.nextRunAtMs).toLocaleTimeString()}`) : "off",
           `${trigger.fired} fired`,
           trigger.lastError ? `last error: ${trigger.lastError}` : "",
         ].filter(Boolean).join(" · ")), ...deliveries.map(delivery => [

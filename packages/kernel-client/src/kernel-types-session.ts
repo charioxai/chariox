@@ -140,6 +140,8 @@ export type AgentTriggerSource = { kind: "http"; ingress_id: string; port: numbe
   subscription_id: string
   /** The source as the picker named it when the trigger was created. */
   display_name: string
+  /** Protocol 1003: false while the source's kernel is not reachable or the source is gone. */
+  source_available: boolean
 }
 
 /** Protocol 900: what fires prompts into an agent's own conversation. */

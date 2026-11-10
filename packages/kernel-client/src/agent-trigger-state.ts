@@ -9,6 +9,8 @@ export type AgentTriggerStripItem = {
   readonly nextRunAtMs: number | null
   readonly fired: number
   readonly lastError: string | null
+  /** A notification trigger whose source's kernel is down: shown as "offline", like the workflow picker. */
+  readonly offline: boolean
   readonly localUrl?: string
 }
 
@@ -34,6 +36,7 @@ function agentTriggerStripItem(trigger: AgentTrigger): AgentTriggerStripItem {
     ...(localUrl ? { localUrl } : {}),
     fired: trigger.fired,
     lastError: trigger.last_error?.trim() || null,
+    offline: trigger.enabled && trigger.source.kind === "notification" && !trigger.source.source_available,
   }
 }
 
