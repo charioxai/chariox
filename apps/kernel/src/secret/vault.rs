@@ -136,6 +136,10 @@ pub struct CharioxVaultUnlockStatus {
     /// The owner's "Just this once" unlock, which the next credential operation uses up.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub single_use: bool,
+    /// The kernel has no Vault yet: its owner's client gives it one with
+    /// `CreateCredentialVault`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub awaiting_passphrase: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -361,6 +365,7 @@ pub fn unlock_chariox_encrypted_vault(
             },
         );
     Ok(CharioxVaultUnlockStatus {
+        awaiting_passphrase: false,
         path,
         unlocked: true,
         expires_at_ms,
@@ -399,6 +404,7 @@ pub fn unlock_existing_chariox_encrypted_vault(
             },
         );
     Ok(Some(CharioxVaultUnlockStatus {
+        awaiting_passphrase: false,
         path,
         unlocked: true,
         expires_at_ms,
@@ -598,6 +604,7 @@ pub fn change_chariox_encrypted_vault_passphrase(
         ))
     })?;
     Ok(Some(CharioxVaultUnlockStatus {
+        awaiting_passphrase: false,
         path,
         unlocked: expires_at_ms.is_some(),
         expires_at_ms: expires_at_ms.flatten(),
@@ -633,6 +640,7 @@ pub fn extend_chariox_encrypted_vault(
     };
     vault.single_use = lease == VaultUnlockLease::SingleUse;
     Ok(CharioxVaultUnlockStatus {
+        awaiting_passphrase: false,
         path,
         unlocked: true,
         expires_at_ms: vault.expires_at_ms,
@@ -707,6 +715,7 @@ pub fn chariox_encrypted_vault_status(
         None => (false, None, false),
     };
     Ok(CharioxVaultUnlockStatus {
+        awaiting_passphrase: !path.exists(),
         path,
         unlocked: is_unlocked,
         expires_at_ms,

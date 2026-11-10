@@ -51,6 +51,7 @@ fn unlock_credential_vault_912_363_shapes_are_pinned() {
     }
     let status = LocalDaemonResponse::CredentialVaultStatus {
         status: crate::secret::CharioxVaultUnlockStatus {
+            awaiting_passphrase: false,
             path: "/vault.json".into(),
             unlocked: false,
             expires_at_ms: None,
@@ -77,6 +78,7 @@ fn unlock_credential_vault_912_363_shapes_are_pinned() {
     );
     let response = LocalDaemonResponse::CredentialVaultUnlocked {
         status: crate::secret::CharioxVaultUnlockStatus {
+            awaiting_passphrase: false,
             path: "/vault.json".into(),
             unlocked: true,
             expires_at_ms: Some(7),
@@ -93,6 +95,7 @@ fn unlock_credential_vault_912_363_shapes_are_pinned() {
     );
     // Local 1002: a Just this once unlock says so; the next Vault read ends it.
     let single_use = crate::secret::CharioxVaultUnlockStatus {
+        awaiting_passphrase: false,
         path: "/vault.json".into(),
         unlocked: true,
         expires_at_ms: None,
@@ -108,5 +111,17 @@ fn unlock_credential_vault_912_363_shapes_are_pinned() {
         )
         .unwrap(),
         single_use
+    );
+    // A kernel with no Vault yet says so; the field is absent otherwise.
+    let awaiting = crate::secret::CharioxVaultUnlockStatus {
+        path: "/vault.json".into(),
+        unlocked: false,
+        expires_at_ms: None,
+        single_use: false,
+        awaiting_passphrase: true,
+    };
+    assert_eq!(
+        serde_json::to_value(&awaiting).unwrap(),
+        serde_json::json!({"path": "/vault.json", "unlocked": false, "awaiting_passphrase": true})
     );
 }
