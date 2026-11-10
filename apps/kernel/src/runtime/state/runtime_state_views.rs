@@ -151,17 +151,10 @@ impl KernelRuntimeState {
         crate::runtime::projection::annotate_waits(
             &mut activity,
             &self.session_processes(session.id()),
-            &self
-                .owned
-                .durable_state_store
-                .agent_tasks(Some(session.id()), None)
-                .unwrap_or_default(),
-            &self
-                .owned
-                .durable_state_store
-                .agent_wakes(Some(session.id()), None)
-                .unwrap_or_default(),
-            &[],
+            &crate::runtime::projection::YieldedSources::of_room(
+                &self.owned.durable_state_store,
+                session.id(),
+            ),
         );
         activity
     }

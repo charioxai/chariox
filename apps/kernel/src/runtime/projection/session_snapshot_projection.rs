@@ -198,17 +198,10 @@ impl SessionSnapshotProjection {
             app.providers(),
             &app.room_terminals(),
         );
-        let durable = app.durable_state_store();
         super::annotate_waits(
             &mut agent_activity,
             &processes,
-            &durable
-                .agent_tasks(Some(session_id), None)
-                .unwrap_or_default(),
-            &durable
-                .agent_wakes(Some(session_id), None)
-                .unwrap_or_default(),
-            &[],
+            &super::YieldedSources::of_room(&app.durable_state_store(), session_id),
         );
         Ok(Self {
             disk_usage: Vec::new(),

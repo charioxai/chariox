@@ -135,13 +135,10 @@ pub(crate) fn silent_agents(
 pub(crate) fn annotate_waits(
     activity: &mut BTreeMap<String, AgentRuntimeActivity>,
     processes: &[SessionProcess],
-    tasks: &[AgentTaskExecution],
-    wakes: &[AgentWake],
-    registrations: &[Registration],
+    yielded: &YieldedSources,
 ) {
     for (agent_id, activity) in activity.iter_mut() {
-        let waiting = command_wait(agent_id, processes)
-            .or_else(|| yielded_wait(agent_id, tasks, wakes, registrations));
+        let waiting = command_wait(agent_id, processes).or_else(|| yielded_wait(agent_id, yielded));
         if let Some(waiting) = waiting {
             activity.liveness.waiting_on = Some(waiting);
         }
@@ -170,37 +167,94 @@ fn waiting_on(kind: AgentWaitKind, waiting: &Waiting) -> AgentWaitingOn {
     }
 }
 
-/// The oldest live wake of the agent's waiting task.
-fn yielded_wait(
-    agent_id: &str,
-    tasks: &[AgentTaskExecution],
-    wakes: &[AgentWake],
-    _registrations: &[Registration],
-) -> Option<AgentWaitingOn> {
+/// The oldest thing a waiting task of the agent yielded on: a live wake
+/// (background command or timer) or another source, such as a delegate, a
+/// task or a workflow, that has not reported yet.
+fn yielded_wait(agent_id: &str, yielded: &YieldedSources) -> Option<AgentWaitingOn> {
+    let YieldedSources {
+        tasks,
+        wakes,
+        registrations,
+    } = yielded;
     let waiting_tasks = tasks
         .iter()
         .filter(|task| task.agent_id == agent_id && task.state == ExecutionState::Waiting)
-        .map(|task| task.task_id.as_str())
         .collect::<Vec<_>>();
-    wakes
+    let live_wakes = wakes
         .iter()
-        .filter(|wake| wake.agent_id == agent_id && waiting_tasks.contains(&wake.task_id.as_str()))
-        .filter(|wake| matches!(wake.state.as_str(), "scheduled" | "starting" | "running"))
-        .min_by_key(|wake| wake.created_at_ms)
-        .map(|wake| AgentWaitingOn {
-            kind: match wake.kind.as_str() {
-                "process" | "terminal" => AgentWaitKind::BackgroundCommand,
-                "timer" => AgentWaitKind::Timer,
-                _ => AgentWaitKind::Source,
-            },
-            detail: if wake.command.is_empty() {
-                wake.label.clone()
-            } else {
-                wake.command.join(" ")
-            },
-            resource: None,
-            since_ms: wake.created_at_ms,
+        .filter(|wake| {
+            wake.agent_id == agent_id
+                && waiting_tasks
+                    .iter()
+                    .any(|task| task.task_id == wake.task_id)
         })
+        .filter(|wake| matches!(wake.state.as_str(), "scheduled" | "starting" | "running"))
+        .collect::<Vec<_>>();
+    let wake_waits = live_wakes.iter().map(|wake| AgentWaitingOn {
+        kind: match wake.kind.as_str() {
+            "process" | "terminal" => AgentWaitKind::BackgroundCommand,
+            "timer" => AgentWaitKind::Timer,
+            _ => AgentWaitKind::Source,
+        },
+        detail: if wake.command.is_empty() {
+            wake.label.clone()
+        } else {
+            wake.command.join(" ")
+        },
+        resource: None,
+        since_ms: wake.created_at_ms,
+    });
+    let source_waits = waiting_tasks.iter().flat_map(|task| {
+        let wait = task.wait.as_ref();
+        let live_wakes = &live_wakes;
+        registrations
+            .iter()
+            .filter(move |registration| {
+                registration.live
+                    && registration.task_id == task.task_id
+                    && wait.is_some_and(|wait| wait.registration_ids.contains(&registration.id))
+                    && !live_wakes
+                        .iter()
+                        .any(|wake| wake.registration_id == registration.id)
+            })
+            .map(move |registration| AgentWaitingOn {
+                kind: AgentWaitKind::Source,
+                detail: registration.source_id.clone(),
+                resource: None,
+                since_ms: wait.map_or(task.last_progress_at_ms, |wait| wait.started_at_ms),
+            })
+    });
+    wake_waits
+        .chain(source_waits)
+        .min_by_key(|wait| wait.since_ms)
+}
+
+/// What the waiting tasks of a room yielded on, read once for the activity of its agents.
+#[derive(Default)]
+pub(crate) struct YieldedSources {
+    pub tasks: Vec<AgentTaskExecution>,
+    pub wakes: Vec<AgentWake>,
+    pub registrations: Vec<Registration>,
+}
+
+impl YieldedSources {
+    pub(crate) fn of_room(
+        store: &crate::durable_state::DurableKernelStateStore,
+        room: &str,
+    ) -> Self {
+        let tasks = store.agent_tasks(Some(room), None).unwrap_or_default();
+        let wakes = store.agent_wakes(Some(room), None).unwrap_or_default();
+        let registrations = tasks
+            .iter()
+            .filter(|task| task.state == ExecutionState::Waiting)
+            .flat_map(|task| store.agent_registrations(&task.task_id).unwrap_or_default())
+            .collect();
+        Self {
+            tasks,
+            wakes,
+            registrations,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -332,7 +386,7 @@ mod tests {
             row("a", paused_since(5_000)),
             row("b", paused_since(1)),
         ];
-        annotate_waits(&mut activity, &processes, &[], &[], &[]);
+        annotate_waits(&mut activity, &processes, &YieldedSources::default());
         let waiting = activity["a"].liveness.waiting_on.clone().unwrap();
         assert_eq!(waiting.kind, AgentWaitKind::CommandPaused);
         assert_eq!(waiting.resource, Some(WaitReason::Memory));
@@ -374,7 +428,15 @@ mod tests {
             wake("a", "t1", "process", "exited", 1_000),
             wake("a", "t2", "process", "running", 2_000),
         ];
-        annotate_waits(&mut activity, &[], &tasks, &wakes, &[]);
+        annotate_waits(
+            &mut activity,
+            &[],
+            &YieldedSources {
+                tasks: tasks.to_vec(),
+                wakes: wakes.to_vec(),
+                registrations: Vec::new(),
+            },
+        );
         let waiting = activity["a"].liveness.waiting_on.clone().unwrap();
         assert_eq!(waiting.kind, AgentWaitKind::BackgroundCommand);
         assert_eq!(waiting.detail, "cargo build");
@@ -415,7 +477,15 @@ mod tests {
             registration("t1", "reg-1", "delegate-task-9", true),
             registration("t1", "reg-2", "finished-source", false),
         ];
-        annotate_waits(&mut activity, &[], &tasks, &[], &registrations);
+        annotate_waits(
+            &mut activity,
+            &[],
+            &YieldedSources {
+                tasks: tasks.to_vec(),
+                wakes: Vec::new(),
+                registrations: registrations.to_vec(),
+            },
+        );
         let waiting = activity["a"].liveness.waiting_on.clone().unwrap();
         assert_eq!(waiting.kind, AgentWaitKind::Source);
         assert_eq!(waiting.detail, "delegate-task-9");

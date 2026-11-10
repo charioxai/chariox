@@ -17,7 +17,7 @@ mod session_state_projection;
 mod test_support;
 mod transport_health;
 
-pub(crate) use agent_liveness::{annotate_waits, silent_agents};
+pub(crate) use agent_liveness::{annotate_waits, silent_agents, YieldedSources};
 pub use agent_liveness::{AgentLiveness, AgentWaitKind, AgentWaitingOn, SilentAgentHealth};
 pub(crate) use agent_runtime_projection::{AgentRuntimeProjection, AgentRuntimeProjectionStore};
 pub(crate) use config_projection::DaemonConfigProjectionStore;
