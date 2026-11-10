@@ -73,3 +73,10 @@ test("MP-08 a paragraph ending in a visualize line renders as markdown so the pa
   )
   assert.equal(transcriptRenderMode(transcriptEntry("assistant", { text: 'visualize{"path": 3}' })), "text", "not a page: plain text")
 })
+
+test("MP-08 a reply ending in Codex's wrapped visualize line renders as markdown so the page is named", () => {
+  assert.equal(
+    transcriptRenderMode(transcriptEntry("assistant", { text: 'Here is the chart.\n\nvisualize{"path":"/w/chart.html"}' })),
+    "markdown",
+  )
+})

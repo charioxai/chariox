@@ -77,3 +77,13 @@ test("a truncated tool diff keeps its warning in the TUI", async () => {
     assert.match(await frame(harness), /Patched a.py \(diff truncated\)/)
   } finally { harness.renderer.destroy() }
 })
+
+test("a binary write with no diff shows its note and size instead of an empty body", async () => {
+  const harness = await createTestRenderer({ width: 60, height: 12, useThread: false })
+  const body = new BoxRenderable(harness.renderer, {})
+  harness.renderer.root.add(body)
+  try {
+    buildApplyPatchDiffContent(harness.renderer, body, [{ kind: "update", filePath: "logo.png", title: "Wrote logo.png", diff: null, note: "Binary file · 12 KB" }])
+    assert.match(await frame(harness), /Binary file · 12 KB/)
+  } finally { harness.renderer.destroy() }
+})
