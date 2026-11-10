@@ -18,9 +18,11 @@ use crate::session::{
 use crate::terminal::TerminalOutputKind;
 
 mod attachments;
+mod cancel_fence;
 mod context_delivery;
 mod hidden_context;
 mod permission;
+mod question;
 mod readiness;
 mod session_start;
 mod startup_exit;
@@ -29,6 +31,7 @@ pub(crate) mod tests;
 mod transcript;
 mod workspace_trust;
 
+pub(crate) use cancel_fence::fence_cancelled_claude_turn;
 pub(crate) use context_delivery::clear_claude_context_delivery_for_settled_prompt;
 pub(crate) use permission::{claude_permission_title, format_claude_permission_message};
 pub(super) use startup_exit::claude_native_startup_exit;
@@ -37,6 +40,7 @@ use attachments::{
     extract_claude_native_prompt_attachments, format_claude_attachment_context,
     format_claude_native_attachment_prompt_suffix, join_claude_context,
 };
+use cancel_fence::{claude_cancelled_turn_fence_ms, lift_claude_cancelled_turn_fence};
 use permission::{
     append_claude_headless_debug, claude_headless_bypass_confirmation_visible,
     claude_headless_bypass_selection_pending, claude_headless_composer_visible,
@@ -58,9 +62,11 @@ use permission::{
     write_claude_headless_workspace_trust_denied_marker,
     write_claude_headless_workspace_trust_interaction_marker, write_claude_hook_context_response,
     write_claude_hook_permission_tombstone, write_claude_native_marker,
-    write_claude_permission_input, write_claude_permission_passthrough,
-    write_claude_permission_response, write_claude_workspace_trust_selection_marker,
+    write_claude_permission_input, write_claude_permission_interrupt,
+    write_claude_permission_passthrough, write_claude_permission_response,
+    write_claude_question_answers, write_claude_workspace_trust_selection_marker,
 };
+use question::{claude_question_interaction, claude_question_updated_input, claude_questions};
 use readiness::{
     CLAUDE_HEADLESS_RETRY_MS, CLAUDE_INITIAL_COMPOSER_WAIT_MS, CLAUDE_STARTUP_SETTLE_MS,
 };
@@ -68,7 +74,7 @@ use readiness::{
 use transcript::{drain_claude_transcript_file, drain_claude_transcript_file_since};
 use transcript::{
     drain_claude_transcript_raw_since, known_claude_transcript_paths,
-    load_claude_transcript_cursor, save_claude_transcript_cursor,
+    load_claude_transcript_cursor, remember_claude_transcript_path, save_claude_transcript_cursor,
 };
 
 const CLAUDE_ATTACHMENT_CONTEXT_BYTES: usize = 64 * 1024;
@@ -84,6 +90,19 @@ const CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED_PREFIX: &str =
 /// The failure of a trust question that was denied or never answered: the person chose nothing wrong, so it ends the turn like a Stop.
 pub(crate) fn claude_workspace_trust_declined(failure: &str) -> bool {
     failure == CLAUDE_WORKSPACE_TRUST_DENIED
+}
+
+/// A card that closed unanswered well before its own deadline was withdrawn,
+/// because its turn was stopped; one that ran out of time was ignored.
+fn claude_card_withdrawn(
+    resolution: &crate::provider::ProviderNativeInteractionResolution,
+    asked_at: std::time::Instant,
+) -> bool {
+    const DEADLINE_SLACK: std::time::Duration = std::time::Duration::from_secs(5);
+    resolution.choice_id.is_none()
+        && resolution.status == "timed_out"
+        && asked_at.elapsed() + DEADLINE_SLACK
+            < std::time::Duration::from_secs(crate::provider::CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS)
 }
 
 fn claude_workspace_trust_failure(context_file: &str) -> Option<&'static str> {
@@ -1080,12 +1099,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         transcript_path: &str,
     ) -> Result<Option<String>, DaemonError> {
         let provider_run = self.app.providers.get_run(provider_run_id)?;
-        let Some(transcript_path) =
-            crate::provider::provider_reported_transcript_on_kernel(&provider_run, transcript_path)
+        append_claude_headless_debug(context_file, "transcript_drain", transcript_path);
+        let Some(location) =
+            crate::provider::provider_reported_transcript_location(&provider_run, transcript_path)
         else {
             crate::logging::warn_with_fields(
                 "daemon.claude_headless",
-                "provider transcript unavailable or outside managed bindings",
+                "provider transcript outside managed bindings",
                 serde_json::json!({
                     "session_id": session_id,
                     "provider_run_id": provider_run_id,
@@ -1093,11 +1113,30 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             );
             return Ok(None);
         };
+        remember_claude_transcript_path(context_file, &location.to_string_lossy());
+        // Claude writes the file with its first message: until then there is nothing to read.
+        let Some(transcript_path) =
+            crate::provider::provider_reported_transcript_on_kernel(&provider_run, transcript_path)
+        else {
+            return Ok(None);
+        };
         let path = transcript_path.path.to_string_lossy().into_owned();
+        let mut cursor = load_claude_transcript_cursor(context_file);
+        if transcript_path
+            .len()
+            .is_some_and(|length| cursor.unchanged_since_last_read(&path, length))
+        {
+            return Ok(None);
+        }
         let Ok(raw) = transcript_path.read() else {
             return Ok(None);
         };
-        let minimum_timestamp_ms = self
+        append_claude_headless_debug(
+            context_file,
+            "transcript_read",
+            &format!("{path} {} bytes", raw.len()),
+        );
+        let active_prompt = self
             .app
             .providers
             .get_run(provider_run_id)
@@ -1108,16 +1147,35 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .prompt_owner_active_prompt_for_agent(session_id, &agent_id)
                     .ok()
                     .flatten()
-            })
-            .map(|prompt| prompt.created_at_ms())
-            .or_else(|| {
-                self.app
-                    .providers
-                    .get_run(provider_run_id)
-                    .ok()
-                    .map(|run| run.started_at_ms())
             });
-        let mut cursor = load_claude_transcript_cursor(context_file);
+        // The tail of a stopped turn is read and dropped, until a prompt
+        // started after the Stop takes over.
+        let stopped_turn_tail = match claude_cancelled_turn_fence_ms(context_file) {
+            Some(cancelled_at_ms)
+                if active_prompt
+                    .as_ref()
+                    .is_some_and(|prompt| prompt.created_at_ms() > cancelled_at_ms) =>
+            {
+                lift_claude_cancelled_turn_fence(context_file);
+                false
+            }
+            Some(_) => true,
+            None => false,
+        };
+        let minimum_timestamp_ms = if stopped_turn_tail {
+            Some(u64::MAX)
+        } else {
+            active_prompt
+                .as_ref()
+                .map(|prompt| prompt.created_at_ms())
+                .or_else(|| {
+                    self.app
+                        .providers
+                        .get_run(provider_run_id)
+                        .ok()
+                        .map(|run| run.started_at_ms())
+                })
+        };
         let drain = drain_claude_transcript_raw_since(
             &path,
             &raw,
@@ -1125,21 +1183,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             minimum_timestamp_ms,
             unix_epoch_ms(),
         );
+        cursor.note_read_length(&path, raw.len() as u64);
         save_claude_transcript_cursor(context_file, &cursor);
         let terminal_failure = drain.terminal_failure.clone();
-        let active_prompt_id = self
-            .app
-            .providers
-            .get_run(provider_run_id)
-            .ok()
-            .and_then(|run| run.agent_instance_id().map(str::to_string))
-            .and_then(|agent_id| {
-                self.app
-                    .prompt_owner_active_prompt_for_agent(session_id, &agent_id)
-                    .ok()
-                    .flatten()
-            })
-            .map(|prompt| prompt.id().to_string());
+        let active_prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
         record_claude_headless_enqueue(context_file, &drain.enqueued_prompts);
         acknowledge_claude_headless_steering_enqueue(
             context_file,
@@ -1462,6 +1509,23 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         else {
             return Ok(());
         };
+        if let Some(questions) = claude_questions(event) {
+            let Some(bridge) = native_interaction_bridge else {
+                write_claude_permission_passthrough(context_file, request_id);
+                return Ok(());
+            };
+            self.ask_claude_questions(
+                session_id,
+                provider_run_id,
+                agent_id,
+                context_file,
+                request_id,
+                event,
+                questions,
+                bridge,
+            );
+            return Ok(());
+        }
         if provider_run.permission_level() == crate::provider::AgentPermissionLevel::Yolo {
             write_claude_hook_permission_tombstone(context_file, event);
             clear_claude_permission_recent(context_file);
@@ -1522,11 +1586,20 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let session_id = session_id.to_string();
         let context_file = context_file.to_string();
         let request_id = request_id.to_string();
+        let asked_at = std::time::Instant::now();
         std::thread::spawn(
             move || match bridge.request_blocking(&session_id, interaction) {
                 Ok(resolution) => {
                     let allowed = resolution.reply.as_deref() == Some("allow")
                         || resolution.choice_id.as_deref() == Some("allow_once");
+                    if !allowed && claude_card_withdrawn(&resolution, asked_at) {
+                        write_claude_permission_interrupt(
+                            &context_file,
+                            &request_id,
+                            "The turn was stopped in Chariox.",
+                        );
+                        return;
+                    }
                     write_claude_permission_response(
                         &context_file,
                         &request_id,
@@ -1560,6 +1633,101 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             },
         );
         Ok(())
+    }
+
+    /// Shows each of Claude's questions as a card, one after the other, and
+    /// answers the waiting hook with what the person chose. A question nobody
+    /// answers denies the call, so the turn never waits on a menu no one sees.
+    #[allow(clippy::too_many_arguments)]
+    fn ask_claude_questions(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        context_file: &str,
+        request_id: &str,
+        event: &Value,
+        questions: Vec<question::ClaudeQuestion>,
+        bridge: std::sync::Arc<dyn ProviderNativeInteractionBridge>,
+    ) {
+        let origin = event
+            .get("native_prompt_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(
+                |prompt_id| crate::session::NativeInteractionOrigin::Prompt {
+                    provider_run_id: provider_run_id.into(),
+                    prompt_id: prompt_id.into(),
+                },
+            );
+        let session_id = session_id.to_string();
+        let provider_run_id = provider_run_id.to_string();
+        let agent_id = agent_id.to_string();
+        let context_file = context_file.to_string();
+        let request_id = request_id.to_string();
+        let event = event.clone();
+        std::thread::spawn(move || {
+            let mut answers = Vec::with_capacity(questions.len());
+            for (index, question) in questions.iter().enumerate() {
+                let interaction = claude_question_interaction(
+                    format!("claude-native-question-{provider_run_id}-{request_id}-{index}"),
+                    &agent_id,
+                    question,
+                    crate::provider::CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+                )
+                .with_native_origin(origin.clone());
+                let asked_at = std::time::Instant::now();
+                let resolution = match bridge.request_blocking(&session_id, interaction) {
+                    Ok(resolution) => resolution,
+                    Err(error) => {
+                        crate::logging::warn_with_fields(
+                            "daemon.provider_output",
+                            "Claude question bridge failed",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "request_id": request_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                        write_claude_permission_response(
+                            &context_file,
+                            &request_id,
+                            false,
+                            "Chariox could not ask the question.",
+                        );
+                        return;
+                    }
+                };
+                let answer = resolution
+                    .reply
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|reply| !reply.is_empty() && resolution.choice_id.is_some());
+                let Some(answer) = answer else {
+                    if claude_card_withdrawn(&resolution, asked_at) {
+                        write_claude_permission_interrupt(
+                            &context_file,
+                            &request_id,
+                            "The turn was stopped in Chariox.",
+                        );
+                    } else {
+                        write_claude_permission_response(
+                            &context_file,
+                            &request_id,
+                            false,
+                            "The person did not answer the question.",
+                        );
+                    }
+                    return;
+                };
+                answers.push((question.question.clone(), answer.to_string()));
+            }
+            write_claude_question_answers(
+                &context_file,
+                &request_id,
+                claude_question_updated_input(&event, &answers),
+            );
+        });
     }
 
     /// One injection attempt for a prompt dispatch. Claude-headless confirms

@@ -32,6 +32,20 @@ impl ProviderOutputDeadlineStore {
         )));
     }
 
+    /// Keeps an earlier check the run already has; otherwise sets this one.
+    pub(super) fn schedule_no_later_than(&self, provider_run_id: &str, due_at_ms: u64) {
+        let earlier_pending = self
+            .inner
+            .lock()
+            .expect("provider output deadline store poisoned")
+            .current
+            .get(provider_run_id)
+            .is_some_and(|(pending_at_ms, _)| *pending_at_ms <= due_at_ms);
+        if !earlier_pending {
+            self.schedule(provider_run_id, due_at_ms);
+        }
+    }
+
     pub(super) fn schedule_if_absent(&self, provider_run_id: &str, due_at_ms: u64) {
         let mut state = self
             .inner
@@ -128,6 +142,16 @@ mod tests {
         assert_eq!(store.next_due_at_ms(), Some(2_000));
         store.clear("run-1");
         assert_eq!(store.next_due_at_ms(), None);
+    }
+
+    #[test]
+    fn schedule_no_later_than_keeps_the_earlier_of_two_checks() {
+        let store = ProviderOutputDeadlineStore::default();
+        store.schedule_no_later_than("run-1", 600_000);
+        store.schedule_no_later_than("run-1", 250);
+        assert_eq!(store.next_due_at_ms(), Some(250));
+        store.schedule_no_later_than("run-1", 600_000);
+        assert_eq!(store.next_due_at_ms(), Some(250));
     }
 
     #[test]

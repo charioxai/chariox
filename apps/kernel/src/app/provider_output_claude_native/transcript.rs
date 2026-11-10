@@ -51,6 +51,26 @@ const PENDING_TOOL_CALLS: usize = 64;
 struct ClaudeTranscriptFileCursor {
     #[serde(default)]
     line_count: usize,
+    /// The file's size at the last read.
+    #[serde(default)]
+    byte_len: u64,
+}
+
+impl ClaudeTranscriptCursor {
+    /// A transcript the last read already covers needs no new read.
+    pub(super) fn unchanged_since_last_read(&self, path: &str, byte_len: u64) -> bool {
+        byte_len > 0
+            && self
+                .files
+                .get(path)
+                .is_some_and(|file| file.byte_len == byte_len)
+    }
+
+    pub(super) fn note_read_length(&mut self, path: &str, byte_len: u64) {
+        if let Some(file) = self.files.get_mut(path) {
+            file.byte_len = byte_len;
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +117,20 @@ pub(super) fn save_claude_transcript_cursor(context_file: &str, cursor: &ClaudeT
     if let Ok(raw) = serde_json::to_string(cursor) {
         let _ = fs::write(path, raw);
     }
+}
+
+/// Claude reports its transcript path before it has written the file: the
+/// bridge keeps reading that path on every pass, so the turn shows as it runs.
+pub(super) fn remember_claude_transcript_path(context_file: &str, transcript_path: &str) {
+    let mut cursor = load_claude_transcript_cursor(context_file);
+    if cursor.files.contains_key(transcript_path) {
+        return;
+    }
+    cursor.files.insert(
+        transcript_path.to_string(),
+        ClaudeTranscriptFileCursor::default(),
+    );
+    save_claude_transcript_cursor(context_file, &cursor);
 }
 
 pub(super) fn known_claude_transcript_paths(context_file: &str) -> Vec<String> {
@@ -225,6 +259,7 @@ pub(super) fn drain_claude_transcript_raw_since(
         file_key,
         ClaudeTranscriptFileCursor {
             line_count: consumed_line_count,
+            byte_len: 0,
         },
     );
     drain

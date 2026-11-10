@@ -1,6 +1,8 @@
 mod account_usage;
 mod background_commands;
 mod context_failure;
+mod live_transcript;
+mod native_cards;
 mod native_permission_race;
 mod prepared_context;
 
