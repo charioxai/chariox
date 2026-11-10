@@ -100,6 +100,19 @@ impl KernelRuntimeState {
             operation: "runtime_tool_send_secret_to_terminal",
             message: format!("invalid tool arguments: {error}"),
         })?;
+        let provider_run_id = provider_run.id().to_string();
+        let prompt_run_id = provider_run_id.clone();
+        if !self
+            .with_app_side_effect(move |app| {
+                app.provider_pty_password_prompt_for_runtime(&prompt_run_id)
+            })
+            .await?
+        {
+            return Ok(Some(super::credential::terminal_secret_result(
+                &args.credential_id,
+                false,
+            )));
+        }
         let Some(mut input) = self
             .resolve_remote_home_credential_secret(
                 provider_run,
@@ -113,19 +126,15 @@ impl KernelRuntimeState {
         if args.append_newline {
             input.push('\n');
         }
-        let provider_run_id = provider_run.id().to_string();
-        self.with_app_side_effect(move |app| {
-            app.write_provider_pty_input_for_runtime(&provider_run_id, input.as_bytes())
-        })
-        .await?;
-        Ok(Some(crate::transport::runtime_tools::RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({
-                "submitted": true,
-                "credential_id": args.credential_id,
-                "target": "current_provider_run",
-            }),
-        }))
+        let submitted = self
+            .with_app_side_effect(move |app| {
+                app.write_provider_pty_secret_for_runtime(&provider_run_id, input.as_bytes())
+            })
+            .await?;
+        Ok(Some(super::credential::terminal_secret_result(
+            &args.credential_id,
+            submitted,
+        )))
     }
 
     async fn remote_credential_context_for_provider_run(

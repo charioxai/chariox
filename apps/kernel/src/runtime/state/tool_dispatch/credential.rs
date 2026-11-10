@@ -334,18 +334,15 @@ impl KernelRuntimeState {
                     input.push('\n');
                 }
                 let provider_run_id = provider_run.id().to_string();
-                self.with_app_side_effect(move |app| {
-                    app.write_provider_pty_input_for_runtime(&provider_run_id, input.as_bytes())
-                })
-                .await?;
-                Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: true,
-                    payload: serde_json::json!({
-                        "submitted": true,
-                        "credential_id": args.credential_id,
-                        "target": "current_provider_run",
-                    }),
-                })
+                let submitted = self
+                    .with_app_side_effect(move |app| {
+                        app.write_provider_pty_secret_for_runtime(
+                            &provider_run_id,
+                            input.as_bytes(),
+                        )
+                    })
+                    .await?;
+                Ok(terminal_secret_result(&args.credential_id, submitted))
             }
             crate::transport::runtime_tools::MANAGE_CREDENTIAL_VAULT_TOOL => {
                 let args = serde_json::from_value::<
@@ -1049,5 +1046,30 @@ impl KernelRuntimeState {
             credentials,
             &user_config.credential_vault,
         )
+    }
+}
+
+/// The model-visible outcome of a terminal secret fill; it never carries the value.
+pub(super) fn terminal_secret_result(
+    credential_id: &str,
+    submitted: bool,
+) -> crate::transport::runtime_tools::RuntimeToolResult {
+    if submitted {
+        return crate::transport::runtime_tools::RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "submitted": true,
+                "credential_id": credential_id,
+                "target": "current_provider_run",
+            }),
+        };
+    }
+    crate::transport::runtime_tools::RuntimeToolResult {
+        ok: false,
+        payload: serde_json::json!({
+            "submitted": false,
+            "credential_id": credential_id,
+            "error": "no known password prompt (ssh, sudo, su, passwd, gpg, mysql, psql, docker, gh, git, npm, op, or a Python script) is waiting; nothing was written. Start the command that asks for the password, wait until it shows the prompt, then call send_secret_to_terminal again.",
+        }),
     }
 }

@@ -105,6 +105,22 @@ impl DaemonApp {
         self.pty.input_writer(provider_run_id)?.enqueue_input(bytes)
     }
 
+    /// Delivers a Vault secret only to a password prompt; false means it was not written.
+    pub(crate) fn write_provider_pty_secret_for_runtime(
+        &mut self,
+        provider_run_id: &str,
+        bytes: &[u8],
+    ) -> Result<bool, DaemonError> {
+        self.pty.write_secret_input(provider_run_id, bytes)
+    }
+
+    pub(crate) fn provider_pty_password_prompt_for_runtime(
+        &self,
+        provider_run_id: &str,
+    ) -> Result<bool, DaemonError> {
+        self.pty.password_prompt_foreground(provider_run_id)
+    }
+
     pub(crate) fn drain_provider_pty_output_for_runtime(
         &mut self,
         provider_run_id: &str,
