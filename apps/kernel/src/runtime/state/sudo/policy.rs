@@ -241,6 +241,7 @@ pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
         | LocalDaemonRequest::RenewKernelSudoRequester(_)
         // Approvals belong to the user, including for elevated agents.
         | LocalDaemonRequest::RespondToInteraction(_)
+        | LocalDaemonRequest::AcceptAppHostAction(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
         | LocalDaemonRequest::GetKernelAccessStatus(_)
         | LocalDaemonRequest::CoverKernelAccessProcess(_)
@@ -433,4 +434,21 @@ fn owner_vault_is_not_a_sudo_operation() {
     assert!(sudo_request_forbidden(&LocalDaemonRequest::OwnerVault(
         crate::local::OwnerVaultRequest::Reveal { id: "entry".into() }
     )));
+}
+
+// Accepting an App's host action releases the payload it asked to write or open; like every
+// approval it is the user's, also for an elevated agent.
+#[cfg(test)]
+#[test]
+fn sudo_cannot_accept_an_app_host_action() {
+    let request =
+        LocalDaemonRequest::AcceptAppHostAction(crate::local::AcceptAppHostActionRequest {
+            session_id: "s".into(),
+            operation_id: "o".into(),
+        });
+    assert!(sudo_request_forbidden(&request));
+    assert_eq!(
+        crate::runtime::state::reach::reach_need(&request),
+        crate::runtime::state::reach::ReachNeed::Excluded
+    );
 }
