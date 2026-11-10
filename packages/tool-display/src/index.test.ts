@@ -104,6 +104,25 @@ test("formatToolDisplay unwraps live MCP envelopes for Chariox read output", () 
   ])
 })
 
+// Review of c#616 (also the shared code here): the viewer folds a long read behind "Show more", so the block keeps every line (a middle cut cannot be brought back).
+for (const tool of ["chariox.read_artifact", "mcp__chariox__read_artifact", "mcp__chariox__chariox_read_artifact", "read"]) {
+  test(`formatToolDisplay keeps every line of a long read by ${tool}`, () => {
+    const lines = Array.from({ length: 60 }, (_, index) => `const line${index + 1} = ${index + 1}`)
+    const display = formatToolDisplay({
+      id: "call_long_read",
+      tool,
+      status: "completed",
+      input: tool === "read" ? { filePath: "src/app.ts" } : { path: "src/app.ts", domain: "text" },
+      output: tool === "read"
+        ? lines.join("\n")
+        : JSON.stringify({ _meta: null, content: [{ type: "text", text: JSON.stringify({ content_text: `${lines.join("\n")}\n`, domain: "text", path: "src/app.ts" }) }] }),
+    })
+    const code = display.blocks.find((block) => block.kind === "code")
+    assert.ok(code?.kind === "code", "a code block")
+    assert.ok(code.text === lines.join("\n"), `all 60 lines kept, got ${code.text.split("\n").length} lines`)
+  })
+}
+
 test("formatToolDisplay unwraps live MCP envelopes for Chariox mutation output", () => {
   const display = formatToolDisplay({
     id: "call_write",
