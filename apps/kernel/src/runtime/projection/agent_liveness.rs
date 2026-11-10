@@ -87,6 +87,46 @@ pub enum AgentWaitKind {
     CommandHeld,
 }
 
+/// A working agent in the health report: quiet since a time that is past the limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SilentAgentHealth {
+    pub session_id: String,
+    pub agent_id: String,
+    pub quiet_since_ms: u64,
+}
+
+/// The agents whose turn is running and whose provider run wrote nothing for
+/// longer than [`STALLED_AFTER_MS`]: what the health report flags.
+pub(crate) fn silent_agents(
+    agents: &[super::AgentRuntimeProjection],
+    runs: &[crate::provider::RuntimeProviderRun],
+    now_ms: u64,
+) -> Vec<SilentAgentHealth> {
+    agents
+        .iter()
+        .filter_map(|agent| {
+            let prompt = agent.active_prompt.as_ref()?;
+            if !matches!(
+                prompt.status(),
+                crate::session::PromptStatus::Running | crate::session::PromptStatus::Dispatching
+            ) {
+                return None;
+            }
+            let last_output = runs
+                .iter()
+                .filter(|run| run.agent_instance_id() == Some(agent.agent_id.as_str()))
+                .map(crate::provider::RuntimeProviderRun::last_activity_at_ms)
+                .max();
+            let quiet_since_ms = last_output.max(Some(prompt.created_at_ms()))?;
+            (now_ms.saturating_sub(quiet_since_ms) > STALLED_AFTER_MS).then(|| SilentAgentHealth {
+                session_id: agent.session_id.clone(),
+                agent_id: agent.agent_id.clone(),
+                quiet_since_ms,
+            })
+        })
+        .collect()
+}
+
 /// Names what each agent waits on from the commands admission holds and the
 /// wakes the agent yielded on. Command waits come first: they explain a
 /// quiet provider.
@@ -243,6 +283,41 @@ mod tests {
             AgentLiveness::of_provider(&AgentRuntimeStatus::Idle, Some(0), None, now)
                 == AgentLiveness::default()
         );
+    }
+
+    #[test]
+    fn a_running_turn_without_provider_output_for_over_the_limit_is_listed_as_silent() {
+        let now = 100 * MINUTE;
+        let prompt = |created: u64| {
+            let mut value = serde_json::to_value(crate::session::PromptQueueItem::new(
+                "p",
+                "attachment",
+                "agent-1",
+                "work",
+                crate::session::PromptStatus::Running,
+            ))
+            .unwrap();
+            value["created_at_ms"] = created.into();
+            serde_json::from_value::<crate::session::PromptQueueItem>(value).unwrap()
+        };
+        let agent = |id: &str, created: u64| super::super::AgentRuntimeProjection {
+            session_id: "room".into(),
+            agent_id: id.into(),
+            active_prompt: Some(prompt(created)),
+            next_queued_prompt: None,
+            queued_prompt_count: 0,
+        };
+        let silent = silent_agents(
+            &[
+                agent("agent-1", now - 20 * MINUTE),
+                agent("agent-2", now - MINUTE),
+            ],
+            &[],
+            now,
+        );
+        assert_eq!(silent.len(), 1);
+        assert_eq!(silent[0].agent_id, "agent-1");
+        assert_eq!(silent[0].quiet_since_ms, now - 20 * MINUTE);
     }
 
     #[test]

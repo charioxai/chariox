@@ -57,6 +57,7 @@ fn daemon_health_projection_records_actor_queue_snapshots() {
             projected_agents: 3,
             active_prompts: 1,
             queued_prompts: 2,
+            silent_agents: Vec::new(),
         },
         ProviderCatalogHealthSnapshot {
             cached: true,

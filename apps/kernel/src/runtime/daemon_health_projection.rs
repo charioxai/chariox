@@ -94,6 +94,11 @@ pub(crate) async fn build_daemon_health_projection(
             &provider_runs,
         ),
     );
+    projection.agent_runtime_projection.silent_agents = crate::runtime::projection::silent_agents(
+        &input.agent_runtime_projection.list(),
+        &provider_runs,
+        crate::session::unix_epoch_ms(),
+    );
     projection.app_lock = crate::runtime::app_lock::app_lock_health_snapshot();
     projection.durable_writer = input
         .runtime_state
