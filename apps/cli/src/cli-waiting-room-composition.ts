@@ -561,6 +561,8 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     ),
     createIdempotencyKey: randomUUID,
     environmentName: () => "Managed agent",
+    offeredRegions: (computeClass) => managedEnvironmentCatalog?.computeClasses
+      .find((option) => option.computeClass === computeClass)?.regions ?? [],
     delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     nowMs: Date.now,
   })

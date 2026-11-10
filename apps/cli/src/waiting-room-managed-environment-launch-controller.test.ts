@@ -309,6 +309,62 @@ test("managed TUI launch rolls back the kernel pivot when cancellation follows c
   assert.equal(harness.connectionRollbacks, 1)
 })
 
+test("MP-08/MP-09 a region without capacity names the region and the other offered regions, without retrying", async () => {
+  const noCapacity = environment("deleted", {
+    region: "nbg1",
+    desiredState: "deleted",
+    lastErrorCode: "resource_unavailable",
+    lastErrorMessage: "Infrastructure provider operation did not complete",
+  })
+  const harness = createHarness({
+    createResults: [result(environment("provisioning", { region: "nbg1" }))],
+    getResults: [noCapacity],
+    offeredRegions: { "agent-small": ["nbg1", "fsn1", "hel1"] },
+  })
+
+  await assert.rejects(
+    harness.controller.prepare({ ...newSelection(emptyPlan()), region: "nbg1" }, harness.attempt),
+    { message: "nbg1 has no free agent-small machines right now. Choose another region: fsn1, hel1." },
+  )
+  assert.equal(harness.createdInputs.length, 1)
+  assert.equal(harness.lifecycleRequests.length, 0)
+  assert.equal(harness.connectAttempts, 0)
+})
+
+test("MP-08/MP-09 a region without capacity says plainly when no other region is offered", async () => {
+  const harness = createHarness({
+    createResults: [result(environment("deleting", {
+      region: "fsn1",
+      desiredState: "deleted",
+      lastErrorCode: "resource_unavailable",
+      lastErrorMessage: null,
+    }))],
+    offeredRegions: { "agent-small": ["fsn1"] },
+  })
+
+  await assert.rejects(
+    harness.controller.prepare({ ...newSelection(emptyPlan()), region: "fsn1" }, harness.attempt),
+    { message: "fsn1 has no free agent-small machines right now. No other region is offered." },
+  )
+  assert.equal(harness.createdInputs.length, 1)
+})
+
+test("MP-08/MP-09 a deleted machine reports its failure before its deletion", async () => {
+  const harness = createHarness({
+    createResults: [result(environment("provisioning"))],
+    getResults: [environment("deleted", {
+      desiredState: "deleted",
+      lastErrorCode: "bootstrap_failed",
+      lastErrorMessage: "The machine did not finish bootstrapping.",
+    })],
+  })
+
+  await assert.rejects(
+    harness.controller.prepare(newSelection(emptyPlan()), harness.attempt),
+    { message: "The machine did not finish bootstrapping." },
+  )
+})
+
 type HarnessOptions = {
   existing?: ManagedEnvironmentSummary
   createResults?: ManagedEnvironmentResult[]
@@ -323,6 +379,7 @@ type HarnessOptions = {
   launchTargetResults?: Array<ManagedContextLaunchTarget | Error>
   connectResults?: Array<boolean | Error>
   cancelOnDelay?: number
+  offeredRegions?: Record<string, readonly string[]>
 }
 
 function createHarness(options: HarnessOptions) {
@@ -421,6 +478,7 @@ function createHarness(options: HarnessOptions) {
     },
     createIdempotencyKey: () => `key-${++keySequence}`,
     environmentName: () => "Managed agent",
+    offeredRegions: (computeClass) => options.offeredRegions?.[computeClass] ?? [],
     delay: async (ms) => {
       now += ms
       delayCount += 1

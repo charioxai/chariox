@@ -67,6 +67,8 @@ export type WaitingRoomManagedEnvironmentLaunchControllerDeps = {
   getLaunchTarget(contextId: string, planDigest: string): Promise<ManagedContextLaunchTarget>
   createIdempotencyKey(): string
   environmentName(): string
+  /** The regions the rent options offer for a compute class. */
+  offeredRegions(computeClass: string): readonly string[]
   delay(ms: number): Promise<void>
   nowMs(): number
   timeoutMs?: number
@@ -138,17 +140,13 @@ export class WaitingRoomManagedEnvironmentLaunchController {
       if (environmentReadyForSession(current)) {
         return await this.prepareReadyEnvironment(current, deadline, attempt, enrolled)
       }
-      if (current.desiredState === "deleted"
+      const ended = current.desiredState === "deleted"
         || current.observedState === "deleted"
-        || current.observedState === "deleting") {
-        throw new Error(`Managed machine ${current.name} is being deleted.`)
-      }
-      if (current.observedState === "failed") {
-        throw new Error(
-          current.lastErrorMessage
-          || current.lastErrorCode
-          || `Managed machine ${current.name} failed.`,
-        )
+        || current.observedState === "deleting"
+      if (ended || current.observedState === "failed") {
+        // MP-08/MP-09: Cloud deletes a machine whose create failed; the failure is the reason to report.
+        throw new Error(this.failureMessage(current)
+          ?? (ended ? `Managed machine ${current.name} is being deleted.` : `Managed machine ${current.name} failed.`))
       }
       if (current.desiredState === "stopped"
         && current.observedState === "stopped"
@@ -290,6 +288,17 @@ export class WaitingRoomManagedEnvironmentLaunchController {
       await connection.rollback()
       throw error
     }
+  }
+
+  private failureMessage(environment: ManagedEnvironmentSummary): string | null {
+    if (environment.lastErrorCode !== "resource_unavailable") {
+      return environment.lastErrorMessage || environment.lastErrorCode
+    }
+    const otherRegions = this.deps.offeredRegions(environment.computeClass)
+      .filter((region) => region !== environment.region)
+    return `${environment.region} has no free ${environment.computeClass} machines right now. ${
+      otherRegions.length > 0 ? `Choose another region: ${otherRegions.join(", ")}.` : "No other region is offered."
+    }`
   }
 
   private lifecycleKey(environment: ManagedEnvironmentSummary): string {
