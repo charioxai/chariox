@@ -760,9 +760,11 @@ pub(super) fn source_end(
     if peer {
         let mut payload = serde_json::json!({"task_id":task.task_id,"source_id":source,"occurrence_id":occurrence_id,"success":success,"event":peer_event_name(occurrence_id, success)});
         // The answer text stays with the peer; the turn is named so its history is one read away.
+        // A task keeps its id across corrections and continuations, so the turn is the prompt
+        // that ended it.
         if let Some(turn) = public_answer
             .as_ref()
-            .and_then(|answer| Some((answer.get("agent_id")?, answer.get("task_id")?)))
+            .and_then(|answer| Some((answer.get("agent_id")?, answer.get("prompt_id")?)))
         {
             payload["turn"] = serde_json::json!({"agent_id":turn.0,"turn_ref":turn.1});
         }
