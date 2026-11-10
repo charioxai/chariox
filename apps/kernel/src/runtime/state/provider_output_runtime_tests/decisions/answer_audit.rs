@@ -25,6 +25,7 @@ async fn a_parents_answer_is_recorded_with_the_parent_named() {
         .unwrap();
     assert_eq!(audit.len(), 1, "{audit:?}");
     assert_eq!(audit[0].payload["answered_by_agent"], t.p);
+    assert_eq!(audit[0].payload["child_agent_id"], t.c);
     assert_eq!(audit[0].payload["choice_id"], "allow");
     assert_eq!(audit[0].payload["session_id"], t.room);
 }

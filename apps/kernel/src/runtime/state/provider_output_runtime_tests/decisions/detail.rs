@@ -80,6 +80,57 @@ async fn a_long_command_is_cut_at_the_detail_limit_and_says_so() {
     assert!(detail.ends_with('…'), "a cut command must look cut");
 }
 
+// A cut can hide the part that matters (`... ; rm -rf ~`), and a closing mark in the text is not a
+// field a holder checks, so the payload says it.
+#[tokio::test]
+async fn a_cut_detail_is_flagged_in_the_payload_and_a_whole_one_is_not() {
+    let long = tree(
+        "decision-detail-cut-flag",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    long.raise(command_card(
+        "perm-detail-cut-flag",
+        &long.c,
+        &format!("Command:\n\n{} ; rm -rf ~", "x".repeat(2000)),
+    ))
+    .await;
+    let cut = read_payload(&long, &long.p);
+    assert_eq!(cut["detail_truncated"], true, "{cut}");
+    assert!(!cut["detail"].as_str().unwrap().contains("rm -rf"), "{cut}");
+
+    let whole = tree(
+        "decision-detail-whole-flag",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    whole
+        .raise(command_card(
+            "perm-detail-whole-flag",
+            &whole.c,
+            &format!("Command:\n\n{}", "x".repeat(990)),
+        ))
+        .await;
+    let payload = read_payload(&whole, &whole.p);
+    assert!(payload.get("detail_truncated").is_none(), "{payload}");
+}
+
+// The flag only helps a holder that is told what to do with it.
+#[test]
+fn the_answer_help_says_what_to_do_with_a_cut_detail() {
+    let docs = crate::runtime::metaagent_command_registry::command_docs(
+        crate::transport::runtime_tools::MetaCommandDocsArgs {
+            command: "agent answer".into(),
+        },
+    )
+    .unwrap();
+    let description = docs["description"].as_str().unwrap();
+    assert!(description.contains("detail_truncated"), "{description}");
+    assert!(description.contains("agent pass"), "{description}");
+}
+
 #[tokio::test]
 async fn a_secret_shaped_value_in_a_command_is_not_passed_on() {
     let t = tree(
@@ -179,7 +230,7 @@ async fn a_card_only_the_user_may_answer_reaches_no_parent_with_its_text() {
     }
 }
 
-// An event stored before `detail` existed is read as it was, and its decision is answered.
+// An event stored before `detail` existed is read as it was.
 #[tokio::test]
 async fn an_event_stored_without_detail_still_reads() {
     let t = tree(

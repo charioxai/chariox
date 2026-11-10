@@ -1,6 +1,7 @@
 //! One decision is one card: the interaction a sub-agent raises stays one object, and the
 //! kernel only moves its holder (the parent agent that may answer it, or the user). The
 //! holder is kernel state for routing and audit; clients never read it.
+use super::runtime_interaction_state::ParentAnswer;
 use super::*;
 use crate::agent::authority_limit::{ancestors, descendants};
 use crate::durable_state::agent_lifecycle::{self as ledger, ExecutionState, Operation};
@@ -506,8 +507,9 @@ fn child_decision_occurrence(interaction_id: &str, holder: &str, tenure: u32) ->
 
 /// What the card says beyond its title, so a holder can tell which command it is asked to allow.
 /// Secret-shaped values are redacted before the text is cut, so a cut never leaves half a token.
-/// A card with no title already has its text as the question.
-fn card_detail(interaction: &crate::session::RuntimeInteraction) -> Option<String> {
+/// A card with no title already has its text as the question. The flag is true when the text was
+/// cut: the part that was cut can be the part that matters, so a holder must be able to tell.
+fn card_detail(interaction: &crate::session::RuntimeInteraction) -> Option<(String, bool)> {
     let title = interaction.title()?;
     let message = interaction.message();
     if message.trim().is_empty() || message == title {
@@ -515,10 +517,11 @@ fn card_detail(interaction: &crate::session::RuntimeInteraction) -> Option<Strin
     }
     let redacted = crate::secret_redaction::redact_secrets(message);
     let mut detail: String = redacted.chars().take(DETAIL_LIMIT).collect();
-    if redacted.chars().count() > DETAIL_LIMIT {
+    let truncated = redacted.chars().count() > DETAIL_LIMIT;
+    if truncated {
         detail.push('…');
     }
-    Some(detail)
+    Some((detail, truncated))
 }
 
 impl KernelRuntimeOwnedState {
@@ -572,8 +575,11 @@ impl KernelRuntimeOwnedState {
             "text_allowed": interaction.custom_choice().is_some(),
             "needs_answer": true,
         });
-        if let Some(detail) = card_detail(interaction) {
+        if let Some((detail, truncated)) = card_detail(interaction) {
             payload["detail"] = detail.into();
+            if truncated {
+                payload["detail_truncated"] = true.into();
+            }
         }
         let mut event = ledger::occurrence(
             session_id,
@@ -887,6 +893,7 @@ impl KernelRuntimeState {
         else {
             return Ok(ChildDecisionStatus::SettledByUser);
         };
+        let child = subject_agent(interaction).unwrap_or_default().to_owned();
         let (choice_id, reply) = if interaction.choice(answer).is_some() {
             (answer.to_owned(), None)
         } else if let Some(custom) = interaction.custom_choice() {
@@ -913,7 +920,10 @@ impl KernelRuntimeState {
                     interaction_id,
                     &choice_id,
                     None,
-                    Some(holder),
+                    Some(ParentAnswer {
+                        holder,
+                        child: &child,
+                    }),
                 );
                 Ok(ChildDecisionStatus::Answered)
             }
