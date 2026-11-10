@@ -285,3 +285,178 @@ fn a_peer_ends_when_the_room_of_its_creator_ends_and_a_lost_spawn_answer_leaves_
         unlink(&[&a, &b]);
     });
 }
+
+async fn set_room_alias(kernel: &Kernel, alias: &str) {
+    let mut app = kernel.app.lock().await;
+    let mut room = app.sessions().get_session(&kernel.room).unwrap();
+    room.set_alias(Some(alias.into()));
+    app.sessions_mut().restore_session(room);
+}
+
+async fn links(kernel: &Kernel) -> usize {
+    kernel
+        .app
+        .lock()
+        .await
+        .durable_state_store()
+        .created_peers()
+        .unwrap()
+        .len()
+}
+
+#[test]
+fn a_lost_spawn_answer_keeps_its_link_when_the_retry_finds_the_kernel_offline() {
+    run_peer_test("created-peer-offline-retry", || async {
+        let (a, b) = two_kernels(
+            "created-peer-offline-retry",
+            AgentPermissionLevel::Required,
+            AgentPermissionLevel::Yolo,
+        );
+        let spawn = format!(
+            "agent spawn reviewer --room {} --kernel {} --no-follow",
+            b.room, b.name
+        );
+        link_dropping_after_the_spawn(&b);
+        let lost = a.command(spawn.clone()).await.unwrap_err();
+        assert!(lost.contains("uncertain"), "{lost}");
+
+        // B is down when the same call is made again: that attempt learns nothing about the peer.
+        link_stopped(&b);
+        a.command(spawn).await.unwrap_err();
+        assert_eq!(links(&a).await, 1, "the first attempt's link stays");
+
+        delete_agent(&a.router, &a.room, a.agent.id()).await;
+        finish_deletes(&a.router).await;
+        link(&b);
+        finish_deletes(&a.router).await;
+        assert!(
+            gone_from(&b, &b.room, "reviewer").await,
+            "the peer the first attempt created ends with its creator"
+        );
+        unlink(&[&a, &b]);
+    });
+}
+
+#[test]
+fn a_peer_ends_with_its_creator_though_its_room_was_renamed() {
+    run_peer_test("created-peer-renamed-room", || async {
+        let (a, b) = two_kernels(
+            "created-peer-renamed-room",
+            AgentPermissionLevel::Required,
+            AgentPermissionLevel::Yolo,
+        );
+        set_room_alias(&b, "review-room").await;
+        a.command(
+            "agent spawn reviewer --room review-room --kernel ".to_string()
+                + &b.name
+                + " --no-follow",
+        )
+        .await
+        .expect("a peer spawns by the room's alias");
+        set_room_alias(&b, "renamed-room").await;
+
+        delete_agent(&a.router, &a.room, a.agent.id()).await;
+        finish_deletes(&a.router).await;
+
+        assert!(
+            gone_from(&b, &b.room, "reviewer").await,
+            "the peer is found by its spawn, not by the alias the creator used"
+        );
+        assert_eq!(links(&a).await, 0, "and only then is the link released");
+        unlink(&[&a, &b]);
+    });
+}
+
+#[test]
+fn a_peer_whose_spawn_answer_was_lost_ends_with_its_creator_though_its_room_was_renamed() {
+    run_peer_test("created-peer-renamed-room-lost", || async {
+        let (a, b) = two_kernels(
+            "created-peer-renamed-room-lost",
+            AgentPermissionLevel::Required,
+            AgentPermissionLevel::Yolo,
+        );
+        set_room_alias(&b, "review-room").await;
+        link_dropping_after_the_spawn(&b);
+        a.command(
+            "agent spawn reviewer --room review-room --kernel ".to_string()
+                + &b.name
+                + " --no-follow",
+        )
+        .await
+        .unwrap_err();
+        set_room_alias(&b, "renamed-room").await;
+
+        delete_agent(&a.router, &a.room, a.agent.id()).await;
+        finish_deletes(&a.router).await;
+
+        assert!(
+            gone_from(&b, &b.room, "reviewer").await,
+            "the creator never learned the room's id; the spawn's own key finds the peer"
+        );
+        unlink(&[&a, &b]);
+    });
+}
+
+type HeldSpawn = Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>;
+
+/// `kernel` takes a spawn request but does not act on it until `gate` opens, and the sender's
+/// wait ends unanswered: a spawn still queued on `kernel` when its creator is deleted.
+fn link_holding_the_spawn(kernel: &Kernel, gate: Arc<tokio::sync::Notify>) -> HeldSpawn {
+    let held: HeldSpawn = Default::default();
+    let router = kernel.router.clone();
+    let slot = held.clone();
+    peer_agent_link_for_tests::register(
+        &kernel.id,
+        &kernel.name,
+        Arc::new(
+            move |from: String, owner: String, request: RelayPeerRequest| {
+                let router = router.clone();
+                let gate = gate.clone();
+                let slot = slot.clone();
+                Box::pin(async move {
+                    if matches!(request, RelayPeerRequest::SpawnRoomPeer { .. }) {
+                        *slot.lock().unwrap() = Some(tokio::spawn(async move {
+                            gate.notified().await;
+                            let _ = router.relay_peer_agent(&from, &owner, request).await;
+                        }));
+                        return Err(relay_error("target_disconnected"));
+                    }
+                    router.relay_peer_agent(&from, &owner, request).await
+                })
+            },
+        ),
+    );
+    held
+}
+
+#[test]
+fn a_delete_that_reaches_the_kernel_before_the_queued_spawn_leaves_no_orphan() {
+    run_peer_test("created-peer-delete-before-spawn", || async {
+        let (a, b) = two_kernels(
+            "created-peer-delete-before-spawn",
+            AgentPermissionLevel::Required,
+            AgentPermissionLevel::Yolo,
+        );
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let held = link_holding_the_spawn(&b, gate.clone());
+        a.command(format!(
+            "agent spawn reviewer --room {} --kernel {} --no-follow",
+            b.room, b.name
+        ))
+        .await
+        .unwrap_err();
+
+        delete_agent(&a.router, &a.room, a.agent.id()).await;
+        finish_deletes(&a.router).await;
+
+        // The queued spawn commits after the delete was answered.
+        gate.notify_one();
+        let spawn = held.lock().unwrap().take().expect("B took the spawn");
+        spawn.await.unwrap();
+        assert!(
+            !aliases(&b, &b.room).await.contains(&"reviewer".to_string()),
+            "a spawn of a creator that already ended creates nothing"
+        );
+        unlink(&[&a, &b]);
+    });
+}
