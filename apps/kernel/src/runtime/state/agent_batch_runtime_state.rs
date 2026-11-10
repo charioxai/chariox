@@ -29,15 +29,14 @@ impl KernelRuntimeState {
                         checkouts.extend(checkout);
                     }
                     Err(error) => {
-                        self.discard_unused_checkouts(checkouts);
-                        return Err(error);
+                        return Err(self.discard_unused_checkouts(checkouts, error));
                     }
                 }
             }
             return self
                 .owned
                 .spawn_agents(prepared)
-                .inspect_err(|_| self.discard_unused_checkouts(checkouts));
+                .map_err(|error| self.discard_unused_checkouts(checkouts, error));
         }
 
         let mut ordered_agents = vec![None; requests.len()];
@@ -87,8 +86,7 @@ impl KernelRuntimeState {
                     .with_external_command_authority(None)
                     .rollback_agent_batch(ordered_agents, slice_refs, caller_user_id, error)
                     .await;
-                self.discard_unused_checkouts(checkouts);
-                Err(error)
+                Err(self.discard_unused_checkouts(checkouts, error))
             }
         }
     }

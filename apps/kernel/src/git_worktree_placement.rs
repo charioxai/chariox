@@ -498,26 +498,31 @@ pub(crate) struct PreparedWorktree {
 
 impl PreparedWorktree {
     /// Removes the checkout of a spawn that failed, unless an agent registered before the failure
-    /// already works in it: that agent exists and keeps its folder. Removal that fails is logged,
-    /// since the spawn's own error is the one to report.
+    /// already works in it: that agent exists and keeps its folder. Removal that fails returns what
+    /// is left on disk, for the refusal to name.
     pub(crate) fn discard_unless_used(
         &self,
         agents: &[crate::agent::AgentInstance],
         operation: &'static str,
-    ) {
+    ) -> Option<String> {
         if agents
             .iter()
             .any(|agent| agent.worktree_id() == Some(self.path.as_str()))
         {
-            return;
+            return None;
         }
-        if let Err(error) = self.discard(operation) {
-            crate::logging::warn_with_fields(
-                "agent.spawn.checkout_not_removed",
-                "a refused spawn left its checkout behind",
-                serde_json::json!({"path": self.path, "error": error.to_string()}),
-            );
-        }
+        let error = self.discard(operation).err()?;
+        let branch = self
+            .created_branch
+            .as_deref()
+            .map(|branch| format!(" and branch `{branch}`"))
+            .unwrap_or_default();
+        Some(format!(
+            "the failed spawn left its checkout `{}`{branch} behind ({error}); remove it with `git -C {} worktree remove --force {}`",
+            self.path,
+            self.repo_root.display(),
+            self.path
+        ))
     }
 
     /// Removes the checkout and the branch it created.
@@ -532,6 +537,18 @@ impl PreparedWorktree {
             )?;
         }
         Ok(())
+    }
+}
+
+/// The spawn's own refusal, plus what its cleanup could not remove. Without a leftover the
+/// refusal is returned unchanged.
+pub(crate) fn with_leftover(error: DaemonError, leftover: Vec<String>) -> DaemonError {
+    if leftover.is_empty() {
+        return error;
+    }
+    DaemonError::LocalTransport {
+        operation: "agent.spawn",
+        message: format!("{error}; {}", leftover.join("; ")),
     }
 }
 
@@ -617,8 +634,11 @@ pub(crate) fn prepare_git_worktree_checked(
     match resolve_existing_worktree(&target, Path::new("."), operation) {
         Ok(path) => Ok(prepared(path)),
         Err(error) => {
-            let _ = prepared(target).discard(operation);
-            Err(error)
+            let leftover = prepared(target)
+                .discard(operation)
+                .err()
+                .map(|discard| format!("the checkout it made could not be removed ({discard})"));
+            Err(with_leftover(error, leftover.into_iter().collect()))
         }
     }
 }
@@ -929,14 +949,18 @@ mod tests {
             Some(kept.path.clone()),
             crate::agent::GridPosition::new(0, 0, 1, 1),
         );
-        kept.discard_unless_used(&[agent], "discard test checkout");
+        assert!(kept
+            .discard_unless_used(&[agent], "discard test checkout")
+            .is_none());
         assert!(
             Path::new(&kept.path).exists(),
             "a registered agent lost its folder"
         );
 
         let unused = prepare("unused");
-        unused.discard_unless_used(&[], "discard test checkout");
+        assert!(unused
+            .discard_unless_used(&[], "discard test checkout")
+            .is_none());
         assert!(!Path::new(&unused.path).exists());
         let branches = crate::process_spawn::command("git")
             .args(["branch", "--list", "unused"])
@@ -944,6 +968,61 @@ mod tests {
             .output()
             .unwrap();
         assert!(branches.stdout.is_empty(), "the branch it created is gone");
+        let _ = std::fs::remove_dir_all(&repository);
+    }
+
+    #[test]
+    fn a_checkout_that_cannot_be_removed_is_named_in_the_refusal() {
+        let repository = plain_temp_directory("discard-leftover");
+        run_test_git(&repository, &["init", "-b", "main"]);
+        run_test_git(
+            &repository,
+            &[
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "seed",
+            ],
+        );
+        let placement = GitWorktreePlacement {
+            target_directory: Some(repository.join("stuck").display().to_string()),
+            branch: Some("stuck-branch".to_string()),
+            from_ref: Some("HEAD".to_string()),
+        };
+        let checkout = super::prepare_git_worktree_checked(
+            &placement,
+            &repository,
+            None,
+            "prepare test checkout",
+            |_| Ok(()),
+        )
+        .expect("checkout should be made");
+        // A locked checkout is not removed by a single --force.
+        run_test_git(&repository, &["worktree", "lock", &checkout.path]);
+        let leftover = checkout
+            .discard_unless_used(&[], "discard test checkout")
+            .expect("a checkout that stays is reported");
+        assert!(
+            leftover.contains(&checkout.path) && leftover.contains("stuck-branch"),
+            "{leftover}"
+        );
+        let refusal = super::with_leftover(
+            crate::DaemonError::LocalTransport {
+                operation: "agent.spawn",
+                message: "the project environment file is too large".to_string(),
+            },
+            vec![leftover],
+        )
+        .to_string();
+        assert!(
+            refusal.contains("too large") && refusal.contains(&checkout.path),
+            "{refusal}"
+        );
+        run_test_git(&repository, &["worktree", "unlock", &checkout.path]);
         let _ = std::fs::remove_dir_all(&repository);
     }
 

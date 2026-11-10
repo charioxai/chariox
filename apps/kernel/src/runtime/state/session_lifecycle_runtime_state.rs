@@ -602,7 +602,7 @@ impl KernelRuntimeState {
             return self
                 .owned
                 .spawn_agent(request)
-                .inspect_err(|_| self.discard_unused_checkouts(checkout));
+                .map_err(|error| self.discard_unused_checkouts(checkout, error));
         }
         self.with_app_side_effect(|app| {
             self.authorize_current_external_command()?;
@@ -645,14 +645,18 @@ impl KernelRuntimeState {
 
     /// The checkout made for a spawn that failed before any agent was registered leaves nothing
     /// behind. A failure after the agent was registered (its event or dispatch receipt) keeps it.
+    /// What cannot be removed is named in the refusal that is returned.
     pub(super) fn discard_unused_checkouts(
         &self,
         checkouts: impl IntoIterator<Item = crate::git_worktree_placement::PreparedWorktree>,
-    ) {
+        error: DaemonError,
+    ) -> DaemonError {
         let agents = self.owned.agent_store.list_agents();
-        for checkout in checkouts {
-            checkout.discard_unless_used(&agents, "agent.spawn");
-        }
+        let leftover = checkouts
+            .into_iter()
+            .filter_map(|checkout| checkout.discard_unless_used(&agents, "agent.spawn"))
+            .collect();
+        crate::git_worktree_placement::with_leftover(error, leftover)
     }
 
     /// Makes the checkout a spawn asks for. The checkout is returned so the caller removes it if
@@ -700,8 +704,7 @@ impl KernelRuntimeState {
             std::path::Path::new(base_worktree),
             std::path::Path::new(&resolved.path),
         ) {
-            self.discard_unused_checkouts([resolved]);
-            return Err(error);
+            return Err(self.discard_unused_checkouts([resolved], error));
         }
         request.worktree_id = Some(resolved.path.clone());
         Ok((request, Some(resolved)))

@@ -653,8 +653,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 Path::new(&worktree),
             );
             if let Err(error) = copied {
-                self.discard_refused_checkout(checkout.as_ref());
-                return Err(error);
+                return Err(self.discard_refused_checkout(checkout.as_ref(), error));
             }
             worktree
         } else {
@@ -676,22 +675,26 @@ impl<'a> RemoteLeaseRuntime<'a> {
             permission_level,
             workspace_live_sync_mode,
         );
-        if created.is_err() {
-            self.discard_refused_checkout(checkout.as_ref());
-        }
-        created
+        created.map_err(|error| self.discard_refused_checkout(checkout.as_ref(), error))
     }
 
     /// A refused leased spawn removes the checkout it made on this worker, unless a backing agent
-    /// was already registered in it.
+    /// was already registered in it. A checkout that stays is named in the refusal.
     fn discard_refused_checkout(
         &self,
         checkout: Option<&crate::git_worktree_placement::PreparedWorktree>,
-    ) {
-        if let Some(checkout) = checkout {
-            checkout
-                .discard_unless_used(&self.app.agents.list_agents(), "create remote git worktree");
-        }
+        error: DaemonError,
+    ) -> DaemonError {
+        let leftover = checkout
+            .and_then(|checkout| {
+                checkout.discard_unless_used(
+                    &self.app.agents.list_agents(),
+                    "create remote git worktree",
+                )
+            })
+            .into_iter()
+            .collect();
+        crate::git_worktree_placement::with_leftover(error, leftover)
     }
 
     #[allow(
