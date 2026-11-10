@@ -157,6 +157,9 @@ async fn native_cancel_composer_fixture(settles_before_abort: bool, successor_be
             .input_records()
             .last()
             .map(|record| record.bytes.clone());
+        let stopped_turn_fenced = std::path::Path::new(context)
+            .with_file_name("cancelled-turn")
+            .exists();
         if successor_before_abort {
             assert_eq!(
                 runtime
@@ -191,6 +194,10 @@ async fn native_cancel_composer_fixture(settles_before_abort: bool, successor_be
                 Some(expected_input)
             },
             "marker={marker}"
+        );
+        assert_eq!(
+            stopped_turn_fenced, !successor_before_abort,
+            "a Stop fences what its turn writes next (marker={marker})"
         );
     }
 }
