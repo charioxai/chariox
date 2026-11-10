@@ -10,7 +10,8 @@ export type PatchFileInput = {
   readonly filePath: string
   readonly title?: string
   readonly diff: string | null
-  readonly note?: string
+  /** What a change without a diff is (a binary file's size, a move's target). */
+  readonly note?: string | undefined
 }
 
 export function renderUnifiedDiffHtml(text: string): string {

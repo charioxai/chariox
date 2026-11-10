@@ -55,6 +55,18 @@ export function toolDisplayTitle(update: ToolTranscriptUpdate, patchFiles: reado
     case "charioxmoveartifact":
     case "moveartifact":
       return `${verb("Moved", "Moving")} ${toolTitleShort(path) ?? "a file"}`
+    case "charioxvisualshow":
+    case "visualshow":
+    case "charioxcharioxvisualshow":
+    case "mcpcharioxvisualshow":
+    case "mcpcharioxcharioxvisualshow":
+      return verb("Showed a page", "Showing a page")
+    case "charioxvisualpreview":
+    case "visualpreview":
+    case "charioxcharioxvisualpreview":
+    case "mcpcharioxvisualpreview":
+    case "mcpcharioxcharioxvisualpreview":
+      return verb("Previewed a page", "Previewing a page")
     case "grep":
     case "search":
     case "rg":
@@ -160,7 +172,7 @@ function toolTitleSimpleProgram(script: string) {
   return /^[^|;&<>`$()\n]+$/.test(line) ? line.split(/\s+/)[0]!.split("/").pop() ?? null : null
 }
 
-const TOOL_TITLE_WRITE = new Set(["write", "writefile", "create", "charioxwriteartifact", "writeartifact"])
+const TOOL_TITLE_WRITE = new Set(["write", "writefile", "create", "charioxwriteartifact", "writeartifact", "mcpcharioxwriteartifact", "mcpcharioxcharioxwriteartifact", "charioxcharioxwriteartifact"])
 
 const TOOL_TITLE_SHELL = new Set([
   "bash", "shell", "sh", "shellcommand", "execcommand", "runcommand", "runshellcommand",

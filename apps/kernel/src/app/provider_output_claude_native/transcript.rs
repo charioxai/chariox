@@ -1,3 +1,4 @@
+use crate::provider_output_policy::output_bounds::shrink_strings_to_fit;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 #[cfg(test)]
@@ -374,10 +375,20 @@ fn track_pending_call(
     if pending_tool_calls.len() >= PENDING_TOOL_CALLS {
         return;
     }
+    // A file write carries its whole content: keep its path and the start of the content, which the row shows.
     let kept = if input.to_string().len() <= PENDING_TOOL_INPUT_BYTES {
         input.clone()
     } else {
-        Value::Null
+        let mut shrunk = input.clone();
+        if shrink_strings_to_fit(
+            &mut shrunk,
+            PENDING_TOOL_INPUT_BYTES,
+            "\n[chariox: tool transcript truncated]",
+        ) {
+            shrunk
+        } else {
+            Value::Null
+        }
     };
     pending_tool_calls.insert(
         id.to_string(),
