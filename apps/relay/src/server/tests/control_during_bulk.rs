@@ -117,7 +117,6 @@ async fn a_control_request_is_answered_while_a_bulk_answer_drains_slowly() {
     };
     // A receiver on a slow link: each chunk is acknowledged 80 ms after it arrived.
     let mut receiver = FrameReceiver::default();
-    let mut bulk_chunks = 0usize;
     let mut asked_at = None;
     let mut answered_in = None;
     let mut sent_bulk = false;
@@ -140,7 +139,6 @@ async fn a_control_request_is_answered_while_a_bulk_answer_drains_slowly() {
             let _ = serde_json::from_str::<TransportFrame>(&receipt).unwrap();
             sleep(Duration::from_millis(80)).await;
             client.send(Message::Text(receipt.into())).await.unwrap();
-            bulk_chunks += 1;
         }
         let envelope = complete.and_then(|text| serde_json::from_str::<RelayEnvelope>(&text).ok());
         match envelope {
