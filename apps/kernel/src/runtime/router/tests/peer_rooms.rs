@@ -153,6 +153,26 @@ impl Rooms {
             .is_some_and(|prompt| prompt.status() == PromptStatus::Running)
     }
 
+    /// Whether the kernel started a turn for the agent's first inbox message, the way it does
+    /// for an agent that is free to take it; a stopped agent keeps the message undelivered. The
+    /// stub provider cannot finish that turn, so its task is the evidence.
+    async fn message_was_delivered(&self, room: &str, agent: &str) -> bool {
+        let message = self
+            .inbox(room, agent)
+            .await
+            .pop()
+            .expect("the message is in the inbox");
+        let prompt = format!("agent-event-{agent}-{}", message.sequence);
+        self.app
+            .lock()
+            .await
+            .durable_state_store()
+            .agent_tasks(Some(room), Some(agent))
+            .unwrap()
+            .iter()
+            .any(|task| task.prompt_id == prompt)
+    }
+
     async fn inbox(
         &self,
         room: &str,

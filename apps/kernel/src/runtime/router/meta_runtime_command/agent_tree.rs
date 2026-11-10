@@ -190,6 +190,15 @@ impl CommandRouter {
                 target_agent_id: Some(target.id().to_string()),
                 expected_prompt_id: None,
             });
+        // The cancel ends the target's task, not the target: a later message still runs.
+        let marked =
+            match self
+                .runtime_state
+                .mark_agent_cancel(target.session_id(), target.id(), None)
+            {
+                Ok(marked) => marked,
+                Err(error) => return Ok(meta_command_failure_result(command, error)),
+            };
         match Box::pin(self.dispatch(meta_kernel_command(provider_run, parent, &request), request))
             .await
         {
@@ -199,7 +208,12 @@ impl CommandRouter {
                 parent,
                 self.runtime_state.room_agent_tools_enabled(),
             )),
-            Err(error) => Ok(meta_command_failure_result(command, error)),
+            Err(error) => {
+                if let Some(task) = marked {
+                    self.runtime_state.withdraw_agent_cancel(&task);
+                }
+                Ok(meta_command_failure_result(command, error))
+            }
         }
     }
 

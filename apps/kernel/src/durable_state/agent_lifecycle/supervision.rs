@@ -522,6 +522,16 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             Ok(Outcome::Task(t))
         }
+        Operation::MarkAgentCancel { task, by_agent } => {
+            let mut t = load(tx, &task)?;
+            if !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
+                && t.cancel_requested_by_agent != by_agent
+            {
+                t.cancel_requested_by_agent = by_agent;
+                save(tx, &t)?;
+            }
+            Ok(Outcome::Task(t))
+        }
         Operation::RetireRestartFailure {
             task,
             revision,
@@ -653,6 +663,8 @@ pub(super) const AGENT_ARCHIVED_REASON: &str =
     "Agent archived; its running and queued work was cancelled";
 /// Shown to the person on the Stopped stripe; the supervised cancellation state itself stays in the task's obligations.
 pub(super) const OWNER_CANCELLED_REASON: &str = "Stopped by you";
+/// An agent's cancel ends the turn; the agent stays reachable, so this is not `stopped_by_owner`.
+pub(super) const AGENT_CANCELLED_REASON: &str = "Stopped by an agent";
 pub(super) fn cancel_intent(
     tx: &Transaction<'_>,
     task: &mut AgentTaskExecution,
@@ -663,7 +675,12 @@ pub(super) fn cancel_intent(
     }
     task.state = ExecutionState::Cancelled;
     task.wait = None;
-    task.reason = OWNER_CANCELLED_REASON.into();
+    task.reason = if task.cancel_requested_by_agent {
+        AGENT_CANCELLED_REASON
+    } else {
+        OWNER_CANCELLED_REASON
+    }
+    .into();
     for obligation in &mut task.obligations {
         if matches!(obligation.status.as_str(), "failed" | "settling")
             || matches!(obligation.kind.as_str(), "reply" | "message")
@@ -704,7 +721,11 @@ pub(super) fn cancel_intent(
         serde_json::json!({
             "cancelled_task_id": task.task_id,
             "reason": task.reason,
-            "message": "The owner cancelled this task and its retained work. Keep it cancelled unless the owner starts new work.",
+            "message": if task.cancel_requested_by_agent {
+                "Another agent cancelled this task and its retained work. Keep it cancelled; a message from an agent is new work."
+            } else {
+                "The owner cancelled this task and its retained work. Keep it cancelled unless the owner starts new work."
+            },
         }),
     );
     // A cancellation is context for the next turn, never a new turn that

@@ -1159,6 +1159,7 @@ fn new_task(
         progress_sequence: 0,
         no_progress_wakes: 0,
         correction_used: false,
+        cancel_requested_by_agent: false,
         pending_prompt_id: None,
     }
 }

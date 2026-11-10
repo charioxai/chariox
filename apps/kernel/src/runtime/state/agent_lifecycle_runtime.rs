@@ -164,7 +164,7 @@ impl KernelRuntimeOwnedState {
             if !cancellations.is_empty() {
                 let notices = serde_json::to_string(&cancellations)
                     .map_err(|_| ledger::error("task cancellation context encoding failed"))?;
-                context.push_str(&format!("\n<chariox-owner-cancellations>The owner cancelled the tasks below. Keep their work cancelled. After handling each notice, use chariox.events.ack with its sequence and handled:true; do not restart that work or send a courtesy reply.\n{notices}\n</chariox-owner-cancellations>"));
+                context.push_str(&format!("\n<chariox-owner-cancellations>The tasks below were cancelled. Keep their work cancelled. After handling each notice, use chariox.events.ack with its sequence and handled:true; do not restart that work or send a courtesy reply.\n{notices}\n</chariox-owner-cancellations>"));
             }
         }
         if let Some(goal_context) = self.goal_continuation_context(&task)? {

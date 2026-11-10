@@ -31,6 +31,40 @@ fn a_peer_in_another_room_steers_and_cancels_with_equal_authority() {
 }
 
 #[test]
+fn a_message_after_a_peer_cancel_runs_on_the_cancelled_agent() {
+    run_peer_test("peer-room-cancel-then-message", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let cancel = rooms
+            .room_command(
+                &rooms.sender_token,
+                format!("agent cancel peer --room {}", rooms.peer_room),
+            )
+            .await;
+        assert!(cancel.ok, "{}", cancel.payload);
+        rooms
+            .router
+            .runtime_state
+            .end_agent_turn_for_tests(&rooms.peer_room, rooms.peer.id(), true)
+            .await
+            .expect("the cancelled turn settles");
+        rooms
+            .send(serde_json::json!({
+                "agent": "peer",
+                "room": rooms.peer_room,
+                "message": "take over parser.rs",
+            }))
+            .await
+            .expect("a peer may message");
+        assert!(
+            rooms
+                .message_was_delivered(&rooms.peer_room, rooms.peer.id())
+                .await,
+            "a cancel ends the current task, not the agent: the later message runs"
+        );
+    });
+}
+
+#[test]
 fn a_peer_with_less_authority_cannot_steer_or_cancel() {
     run_peer_test("peer-room-control-clamp", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Required, AgentPermissionLevel::Yolo);

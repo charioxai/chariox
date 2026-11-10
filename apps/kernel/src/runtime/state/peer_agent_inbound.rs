@@ -180,6 +180,7 @@ impl KernelRuntimeState {
         // As for a peer in another room: the kernel cancels through the target's own
         // delivery seat, so the caller never joins the room.
         let attachment = self.ensure_agent_message_attachment(target.session_id(), target)?;
+        let marked = self.mark_agent_cancel(target.session_id(), target.id(), Some(prompt))?;
         match self
             .cancel_agent_prompt_if_matches_with_external_authority(
                 target.session_id(),
@@ -193,7 +194,12 @@ impl KernelRuntimeState {
             Ok(_) => {}
             // The receipt's turn already ended, by this cancel's first attempt or otherwise.
             Err(DaemonError::NoActivePrompt { .. }) if duplicate => {}
-            Err(error) => return Err(error),
+            Err(error) => {
+                if let Some(task) = marked {
+                    self.withdraw_agent_cancel(&task);
+                }
+                return Err(error);
+            }
         }
         Ok(RelayPeerResponse::PeerAgentAccepted {
             protocol_version: VERSION,
