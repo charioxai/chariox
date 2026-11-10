@@ -195,13 +195,17 @@ async function main() {
   await a.rpc({ JoinKernelLink: { link: pairing.pairing_link, relay_token: token("orch-operator", "client", ["client.connect", "client.metadata.read", "packet.route"]) } })
   note("paired", { from: "a", to: "b", b: b.status.daemon_id })
   }
-  let profile = "default"
+  let profile = "default", profileB = "default"
   if (provider === "codex") {
-    // The profile directory already holds a product login; the kernel links it and never reads the credential.
-    const linked = (await a.rpc({ LinkProviderAccountProfile: { provider: "codex", label: "orch-codex", path: codexProfilePath } })).ProviderAccountProfile.profile
-    profile = linked.profile_id
-    await a.rpc({ RefreshProviderAccountProfile: { provider: "codex", account_profile: profile } })
-    note("codex-profile-linked", { profile })
+    // The profile directory already holds a product login; each kernel links it itself (its registry is its own) and never reads the credential.
+    const link = async kernel => {
+      const linked = (await kernel.rpc({ LinkProviderAccountProfile: { provider: "codex", label: "orch-codex", path: codexProfilePath } })).ProviderAccountProfile.profile
+      await kernel.rpc({ RefreshProviderAccountProfile: { provider: "codex", account_profile: linked.profile_id } })
+      return linked.profile_id
+    }
+    profile = await link(a)
+    profileB = single ? profile : await link(b)
+    note("codex-profile-linked", { profile, profileB })
   } else {
     const oauth = readFileSync(tokenFile, "utf8").trim()
     await provision(a, oauth)
@@ -359,10 +363,11 @@ Keep ${join(work, "orchestrator-state.json")} updated after every step.
   if (flags.has("--other-room")) {
     const host = flags.get("--other-room-kernel") === "b" && !single ? b : a
     const hostWork = host === b ? join(b.dir, "work") : work
-    const other = (await host.rpc({ CreateSession: { workspace_id: hostWork, worktree_id: hostWork, alias: "other-room", agent_defaults: { provider, account_profile: profile, model, effort: "low", permission_level: "yolo" } } })).SessionCreated
+    const hostProfile = host === b ? profileB : profile
+    const other = (await host.rpc({ CreateSession: { workspace_id: hostWork, worktree_id: hostWork, alias: "other-room", agent_defaults: { provider, account_profile: hostProfile, model, effort: "low", permission_level: "yolo" } } })).SessionCreated
     const att2 = (await host.rpc({ AttachToSession: { session_id: other.session.id, client_id: "orch-owner-r2", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
     await host.client.subscribeToKernelEvents(other.session.id, att2)
-    await host.rpc({ LaunchProviderRun: { session_id: other.session.id, agent_id: other.agent.id, adapter_key: provider, provider, account_profile: profile, model, variant: "low", native_tui: false } })
+    await host.rpc({ LaunchProviderRun: { session_id: other.session.id, agent_id: other.agent.id, adapter_key: provider, provider, account_profile: hostProfile, model, variant: "low", native_tui: false } })
     otherRoom = { R2: other.session.id, q: other.agent.id }
     note("other-room", { room: otherRoom.R2, agent: otherRoom.q })
     // The person gives the other Room's agent its own work, so a peer sees a turn it can follow and cancel.
