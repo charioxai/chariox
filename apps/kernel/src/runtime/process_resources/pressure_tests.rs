@@ -532,6 +532,39 @@ fn the_jobs_of_one_shell_command_are_paused_one_by_one() {
     assert!(!workload.waiting("big"), "the idle holder was paused");
 }
 
+/// The same shell, after one of its two jobs ended while the other was
+/// paused: the shell runs one job now, but that job stays a command of its
+/// own, with its wait. Were it folded back into the shell, its entry would
+/// vanish stopped, nothing would ever continue it, and the shell's `wait`
+/// would hang.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_paused_job_resumes_when_its_sibling_job_ends() {
+    let pool = pool(1536);
+    let jobs = "sh -c 'python3 \"$1/alloc.py\" 800 0 0 & echo $! > \"$1/big.pid\"; python3 \"$1/alloc.py\" 300 48 1000 & echo $! > \"$1/grow.pid\"; wait' sh \"$0\"";
+    let mut workload = Workload::run(domain(&pool, "agent", false), &[("jobs", jobs.into())]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !workload.dir.join("grow.pid").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the jobs did not start"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    settle(11);
+    assert!(workload.waiting("grow"), "the growing job was not paused");
+    unsafe { libc::kill(workload.pid("big"), libc::SIGKILL) };
+    settle(4);
+    assert!(
+        workload.alive("grow") && workload.alive("jobs"),
+        "the job or its shell was ended where room had freed"
+    );
+    assert!(
+        !workload.waiting("grow"),
+        "the paused job stayed stopped after its sibling ended, so its shell waits for ever"
+    );
+}
+
 fn runaway_is_paused_before_the_line(cgroup: bool) {
     // 512 MiB/s: the PC-06 runaway.
     let (mut a, mut b, mut c, pool) = pressure(cgroup, 0, 512, 4);
