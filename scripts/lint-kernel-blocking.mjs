@@ -7,6 +7,13 @@
 //  3. an `.await` that suspends a long-lived scheduler or pump loop itself without a bound
 //     (kernel-loop-waits.json lists the reviewed ones: { path, fn, call, reason }). A freeze of such a loop
 //     stops every timer, wake or output it serves, so its slow work runs timed out or as a single-flight task.
+//  4. a call to a process-resources registry lock entry point (lib/kernel-registry-lock-calls.mjs lists them) from a
+//     runtime thread: an async body, or the closure of `with_app_side_effect`, which runs inline under the app lock.
+//     The registry mutex is held by whatever ends, lists or hands over a process, so the runtime thread waits behind
+//     it (the healthnext r2 stack: remove_provider_pty_process -> unbind_key). Use `spawn_blocking` /
+//     `with_app_side_effect_blocking`, or review the site into kernel-registry-lock-calls.json
+//     ({ path, fn, call, reason }); the rows of the entry point table are checked against their definitions.
+//     The session-store lock is not covered: it is taken inline by design at ~200 production sites.
 //
 // Long-lived loops checked by rule 3 (add a loop here when it serves every room):
 //  | file                                      | function                       | serves                            |
@@ -21,6 +28,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { lockAcrossAwait } from './lib/kernel-lock-across-await.mjs'
 import { loopWaits } from './lib/kernel-loop-waits.mjs'
+import { registryLockOnRuntime, registryLockTable } from './lib/kernel-registry-lock-calls.mjs'
 import { productionSource } from './lib/rust-production-source.mjs'
 
 // Reviewed non-process receipt waits and domain output projections. Context
@@ -28,6 +36,7 @@ import { productionSource } from './lib/rust-production-source.mjs'
 const domainCalls = JSON.parse(readFileSync(new URL('./kernel-domain-waits.json', import.meta.url), 'utf8'))
 const lockAwaits = JSON.parse(readFileSync(new URL('./kernel-lock-awaits.json', import.meta.url), 'utf8'))
 const loopAwaits = JSON.parse(readFileSync(new URL('./kernel-loop-waits.json', import.meta.url), 'utf8'))
+const registryAwaits = JSON.parse(readFileSync(new URL('./kernel-registry-lock-calls.json', import.meta.url), 'utf8'))
 const loopFunctions = {
   'apps/kernel/src/runtime/state/agent_wake_scheduler.rs': ['run_agent_wake_scheduler', 'tick_agent_wakes', 'sweep_agent_wakes'],
   'apps/kernel/src/runtime/state/app_wake_pump_runtime.rs': ['run_app_wake_scheduler'],
@@ -52,6 +61,7 @@ export function blockingViolations(source, path) {
     for (const match of code.matchAll(/self\.write\(\)\s*\.\s*(?:start_run_provider_only|prepare_run_provider_only)\(/g)) add(match.index, 'provider connect under STORE')
   }
   violations.push(...lockAcrossAwait(code, path, lockAwaits))
+  violations.push(...registryLockOnRuntime(code, path, registryAwaits), ...registryLockTable(code, path))
   if (loopFunctions[path]) violations.push(...loopWaits(code, path, loopFunctions[path], loopAwaits))
   return violations
 }
