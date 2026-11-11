@@ -19,7 +19,7 @@ impl KernelRuntimeOwnedState {
             return;
         };
         let key = wait_merge_key(&task.task_id, wait.started_at_ms);
-        self.write_wait_row(
+        self.write_task_wait_row(
             task,
             &key,
             serde_json::json!({
@@ -52,7 +52,7 @@ impl KernelRuntimeOwnedState {
         };
         let key = wait_merge_key(&task.task_id, wait.started_at_ms);
         let finished = crate::session::unix_epoch_ms();
-        self.write_wait_row(
+        self.write_task_wait_row(
             task,
             &key,
             serde_json::json!({
@@ -62,6 +62,36 @@ impl KernelRuntimeOwnedState {
                 "woken_by": {"kind": kind, "source_id": source},
             }),
         );
+    }
+
+    /// A task that ended without a wake (the owner stopped it) closes the row of the wait it was in.
+    pub(super) fn record_wait_cancelled(&self, task: &AgentTaskExecution) {
+        let prefix = format!("wait:{}:", task.task_id);
+        let Ok(Some(event)) = self
+            .operational_history_store
+            .latest_transcript_by_merge_key_prefix(&task.room_id, &task.agent_id, &prefix)
+        else {
+            return;
+        };
+        let Some(entry) = event.to_session_history_entry() else {
+            return;
+        };
+        let (Some(key), Ok(mut row)) = (
+            entry.merge_key.clone(),
+            serde_json::from_str::<serde_json::Value>(&entry.text),
+        ) else {
+            return;
+        };
+        if row["status"] != "running" {
+            return;
+        }
+        row["status"] = "completed".into();
+        row["finished_at_ms"] = crate::session::unix_epoch_ms().into();
+        row["woken_by"] = serde_json::json!({"kind": "cancelled", "source_id": task.task_id});
+        let Some(run) = entry.provider_run_id.as_deref() else {
+            return;
+        };
+        self.write_wait_row(task, run, &key, row);
     }
 
     /// The agent's tasks whose wait is committed: what a wake can end.
@@ -74,7 +104,8 @@ impl KernelRuntimeOwnedState {
             .collect()
     }
 
-    fn write_wait_row(&self, task: &AgentTaskExecution, key: &str, row: serde_json::Value) {
+    /// The row of a wait is written in the run the task waits in.
+    fn write_task_wait_row(&self, task: &AgentTaskExecution, key: &str, row: serde_json::Value) {
         let Some(run) = task.provider_run_id.as_deref() else {
             crate::logging::warn_with_fields(
                 "daemon.agent_lifecycle",
@@ -83,6 +114,16 @@ impl KernelRuntimeOwnedState {
             );
             return;
         };
+        self.write_wait_row(task, run, key, row);
+    }
+
+    fn write_wait_row(
+        &self,
+        task: &AgentTaskExecution,
+        run: &str,
+        key: &str,
+        row: serde_json::Value,
+    ) {
         let text = row.to_string();
         let entry = SessionHistoryEntry::provider_output(
             &task.room_id,

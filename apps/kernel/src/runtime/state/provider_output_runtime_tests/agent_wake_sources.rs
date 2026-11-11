@@ -2478,3 +2478,72 @@ async fn a_yield_writes_one_wait_row_and_the_wake_updates_it_in_place() {
     let started = row["started_at_ms"].as_u64().unwrap();
     assert!(row["finished_at_ms"].as_u64().unwrap() >= started, "{row}");
 }
+
+// A wait the owner stops does not stay a running row in the transcript: the same row says it was cancelled.
+#[tokio::test]
+async fn stopping_a_waiting_task_closes_its_wait_row_in_place() {
+    let f = fixture("wait-row-cancelled", true).await;
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    let prompt = f
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &f.agent)
+        .unwrap();
+    let task = f.begin(&f.prompt_id);
+    let wake = f.arm(&task, "wake-a").unwrap();
+    let now = crate::session::unix_epoch_ms();
+    f.store()
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec![wake.registration_id.clone()],
+            cursor: 0,
+            deadline: now + 60_000,
+            reason: "Wait for the test source".into(),
+            now,
+        })
+        .unwrap();
+    f.runtime
+        .owned
+        .complete_local_prompt_without_advance(&f.room, &f.agent, Some(&f.run))
+        .unwrap();
+    let settlement = f
+        .runtime
+        .owned
+        .settle_agent_task(&f.room, &f.agent, &prompt, &f.run, false)
+        .unwrap();
+    f.runtime
+        .finish_agent_task_settlement(settlement, &prompt)
+        .await
+        .unwrap();
+    let before = f.wait_rows();
+    assert_eq!(before.len(), 1);
+
+    let waiting = f.task(&task.task_id);
+    let Outcome::Task(cancelled) = f
+        .store()
+        .agent_lifecycle(Operation::CancelTask {
+            task: task.task_id.clone(),
+            owner: "local".into(),
+            revision: waiting.revision,
+        })
+        .unwrap()
+    else {
+        panic!("the cancelled task")
+    };
+    f.runtime
+        .cancel_agent_task_resources(&cancelled)
+        .await
+        .unwrap();
+
+    let after = f.wait_rows();
+    assert_eq!(after.len(), 1, "{after:?}");
+    assert_eq!((after[0].0, &after[0].1), (before[0].0, &before[0].1));
+    assert_eq!(after[0].2["status"], "completed", "{}", after[0].2);
+    assert_eq!(
+        after[0].2["woken_by"]["kind"], "cancelled",
+        "{}",
+        after[0].2
+    );
+}
