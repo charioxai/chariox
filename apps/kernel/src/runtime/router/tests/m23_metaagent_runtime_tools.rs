@@ -195,6 +195,7 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
                 || spec.name == "chariox.vault.remove_capture"
                 || spec.name == "chariox.agent_auth.register"
                 || spec.name == "chariox.file.copy"
+                || matches!(spec.name.as_str(), "chariox.visual.show" | "chariox.visual.preview")
                 || matches!(spec.name.as_str(), "chariox.mandate.record_resource" | "chariox.mandate.list_resources" | "chariox.mandate.revoke_resource" | "chariox.mandate.set_resource_revoke")
                 || spec.name == crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
                 || spec.name == crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL

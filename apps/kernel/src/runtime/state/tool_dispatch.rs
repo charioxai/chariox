@@ -205,6 +205,7 @@ impl KernelRuntimeState {
                 input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
             });
             specs.push(super::vault_generate::vault_generate_spec());
+            specs.extend(super::visual::visual_tool_specs());
             specs.extend(super::environment_tools::environment_tool_specs());
             specs.push(super::vault_command::capture_command_spec());
             specs.push(super::vault_command::use_env_spec());
@@ -431,6 +432,9 @@ impl KernelRuntimeState {
         }
         if super::file_copy_tool::is_file_copy_tool(tool_name) {
             return Box::pin(self.file_copy_tool(auth_token, arguments)).await;
+        }
+        if super::visual::is_visual_tool(tool_name) {
+            return Box::pin(self.visual_tool(auth_token, tool_name, arguments)).await;
         }
         if tool_name == super::vault_generate::VAULT_GENERATE {
             return Box::pin(self.vault_generate(auth_token, arguments)).await;

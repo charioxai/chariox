@@ -397,6 +397,7 @@ fn bounded_provider_tool_json(bytes: &[u8]) -> Option<Vec<u8>> {
     let original_bytes = bytes.len().saturating_sub(image_bytes);
     let mut truncated = false;
     truncate_json_strings(&mut value, &mut truncated);
+    truncated |= serde_json::to_vec(&value).ok()?.len() > MAX_PROVIDER_OUTPUT_RECORD_BYTES;
     if truncated {
         if let Value::Object(object) = &mut value {
             object.insert("chariox_truncated".to_string(), Value::Bool(true));
@@ -405,6 +406,13 @@ fn bounded_provider_tool_json(bytes: &[u8]) -> Option<Vec<u8>> {
                 Value::Number((original_bytes as u64).into()),
             );
         }
+        // Many mid-size strings still overflow the record: shorten the longest until it fits, so
+        // the call keeps its tool, its path and the start of its content (a file write is shown by them).
+        shrink_strings_to_fit(
+            &mut value,
+            MAX_PROVIDER_OUTPUT_RECORD_BYTES,
+            "\n\n[chariox: output truncated]\n",
+        );
     }
     let encoded = serde_json::to_vec(&value).ok()?;
     if encoded.len() <= MAX_PROVIDER_OUTPUT_RECORD_BYTES {
@@ -446,6 +454,51 @@ fn bounded_provider_tool_json(bytes: &[u8]) -> Option<Vec<u8>> {
         ),
     );
     serde_json::to_vec(&Value::Object(fallback)).ok()
+}
+
+/// Shortens the longest strings in `value`, each cut at its end and closed by `marker`, until its
+/// encoding is at most `limit` bytes. Every key and every short field stays. False when the
+/// strings left are all too short to shorten and it still does not fit.
+pub(crate) fn shrink_strings_to_fit(value: &mut Value, limit: usize, marker: &str) -> bool {
+    const SHORTEST_KEPT_BYTES: usize = 256;
+    loop {
+        let Ok(encoded) = serde_json::to_vec(value) else {
+            return false;
+        };
+        if encoded.len() <= limit {
+            return true;
+        }
+        let excess = encoded.len() - limit;
+        let mut strings = Vec::new();
+        collect_strings(value, &mut strings);
+        let Some(longest) = strings.into_iter().max_by_key(|text| text.len()) else {
+            return false;
+        };
+        if longest.len() <= SHORTEST_KEPT_BYTES + marker.len() {
+            return false;
+        }
+        let keep = longest
+            .len()
+            .saturating_sub(excess + marker.len())
+            .max(SHORTEST_KEPT_BYTES);
+        let mut at = keep.min(longest.len());
+        while !longest.is_char_boundary(at) {
+            at -= 1;
+        }
+        longest.truncate(at);
+        longest.push_str(marker);
+    }
+}
+
+fn collect_strings<'a>(value: &'a mut Value, out: &mut Vec<&'a mut String>) {
+    match value {
+        Value::String(text) => out.push(text),
+        Value::Array(items) => items.iter_mut().for_each(|item| collect_strings(item, out)),
+        Value::Object(object) => object
+            .values_mut()
+            .for_each(|item| collect_strings(item, out)),
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
 }
 
 fn truncate_json_strings(value: &mut Value, truncated: &mut bool) {
@@ -688,6 +741,37 @@ mod tests {
             value.get("chariox_truncated").and_then(Value::as_bool),
             Some(true)
         );
+    }
+
+    // A completed file write carries the whole page in its input (17 KB seen live) and used to
+    // be replaced by "payload omitted", so its row had no path and no content to show.
+    #[test]
+    fn oversized_file_write_keeps_its_path_and_the_start_of_its_content() {
+        let page = format!("<!doctype html>\n{}", "<p>row</p>\n".repeat(1500));
+        let payload = serde_json::json!({
+            "id": "exec-1",
+            "tool": "chariox.write_artifact",
+            "status": "completed",
+            "title": "chariox",
+            "input": {"content_text": page, "domain": "text", "path": "monthly_active_users.html"},
+            // workspace live sync reports the whole change again in its result: a second large string
+            "output": serde_json::json!({"changes": [{"path": "monthly_active_users.html", "kind": "add", "diff": page}]}).to_string(),
+        });
+        let bytes = serde_json::to_vec(&payload).expect("payload should encode");
+        assert!(bytes.len() > MAX_PROVIDER_OUTPUT_RECORD_BYTES);
+
+        let bounded = bounded_terminal_output_bytes(&TerminalOutputKind::ProviderTool, &bytes);
+
+        assert!(bounded.len() <= MAX_PROVIDER_OUTPUT_RECORD_BYTES);
+        let value: Value = serde_json::from_slice(&bounded).expect("bounded tool is json");
+        assert_eq!(value["tool"], "chariox.write_artifact");
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["input"]["path"], "monthly_active_users.html");
+        let kept = value["input"]["content_text"]
+            .as_str()
+            .expect("content kept");
+        assert!(kept.starts_with("<!doctype html>\n<p>row</p>"));
+        assert_eq!(value["chariox_truncated"], true);
     }
 
     fn data_url(bytes: usize) -> String {

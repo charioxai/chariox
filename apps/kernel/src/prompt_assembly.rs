@@ -1464,10 +1464,10 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    // MP-08: as T3 Code tells every provider about its HTML render tool, an agent knows the pane draws an HTML page
-    // it names with Codex's visualize line, and what such a page may load.
+    // MP-08: as T3 Code tells every provider about its HTML render tool, an agent knows to preview an HTML page and show it
+    // with the Chariox visual tools, and what such a page may load.
     #[test]
-    fn mp08_runtime_instructions_offer_html_visuals_through_the_visualize_line() {
+    fn mp08_runtime_instructions_offer_html_visuals_through_the_visual_tools() {
         let root = temp_prompt_root("pane-visual-instructions");
         let registry = PromptTemplateRegistry::new(root.clone());
         registry.materialize_bundled_defaults().unwrap();
@@ -1482,7 +1482,8 @@ mod tests {
             .unwrap();
         for expected in [
             "self-contained HTML page",
-            r#"`visualize{"path":"<full path to the .html file>"}`"#,
+            "`chariox.visual.preview`",
+            "`chariox.visual.show`",
             "cdn.jsdelivr.net, cdnjs.cloudflare.com, unpkg.com or esm.sh",
             "cannot fetch data",
         ] {
@@ -1491,7 +1492,8 @@ mod tests {
                 "missing {expected}"
             );
         }
-        assert!(!envelope.visible_user_prompt.contains("visualize{"));
+        assert!(!envelope.hidden_system_context.contains("visualize{"));
+        assert!(!envelope.visible_user_prompt.contains("chariox.visual"));
         fs::remove_dir_all(root).unwrap();
     }
 

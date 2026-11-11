@@ -9,6 +9,8 @@ export type PatchFileInput = {
   readonly filePath: string
   readonly title?: string
   readonly diff: string | null
+  /** What a change without a diff is (a binary file's size, a move's target). */
+  readonly note?: string | undefined
 }
 
 export function renderUnifiedDiffHtml(text: string): string {
@@ -17,10 +19,11 @@ export function renderUnifiedDiffHtml(text: string): string {
 
 export function renderPatchFilesDiffHtml(files: readonly PatchFileInput[]): string {
   return renderDiffHtml(files.map((file) => {
-    const parsed = parseUnifiedDiff(file.diff ?? "")
+    const parsed = file.diff === null ? [] : parseUnifiedDiff(file.diff)
     const rows: DiffRow[] = parsed.flatMap((part) => part.rows)
     const commonTitles = ["Patched", "Created", "Deleted", "Edited", "Wrote"].map(verb => `${verb} ${file.filePath}`)
     if (file.title && !commonTitles.includes(file.title)) rows.unshift({ kind: "meta", text: file.title })
+    if (file.note && rows.length === 0) rows.push({ kind: "meta", text: file.note })
     return {
       path: file.filePath,
       previousPath: parsed[0]?.previousPath ?? null,

@@ -33,6 +33,8 @@ export type ApplyPatchFile = {
   filePath: string
   title: string
   diff: string | null
+  /** What to show in place of a diff that cannot be: a binary file's size. */
+  note?: string
 }
 
 export type ToolDisplayPatchLine = {
