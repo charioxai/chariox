@@ -2,12 +2,13 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import Fastify from "fastify"
 import {buildHostedAgentTriggerServer} from "./hosted-agent-trigger-server.js"
+import {remoteAdmission} from "./agent-trigger-admission.js"
 
 // MP-08 / MP-09 / MP-10 / MP-11: runtime bytes never enter the control-plane request.
 async function fixture() {
   const control = Fastify(), metadata: Array<{url: string; body: unknown; cookie: string | undefined}> = [], requests: unknown[] = []
   let denied = 0, closed = 0
-  control.post("/browser/agent-trigger-deployments/:id/admission", async (request, reply) => {
+  control.post("/admission-service/deployments/:id/admission", async (request, reply) => {
     metadata.push({url: request.url, body: request.body, cookie: request.headers.cookie})
     if (denied) return reply.code(denied).send({error: "refused"})
     reply.header("content-security-policy", "default-src 'self'; frame-ancestors 'none'")
@@ -18,7 +19,7 @@ async function fixture() {
   })
   await control.listen({host: "127.0.0.1", port: 0})
   const address = control.server.address();assert(address && typeof address === "object")
-  const app = buildHostedAgentTriggerServer({publicOrigin: "https://cloud.example", controlOrigin: `http://127.0.0.1:${address.port}`, connect: (async (kernel: string, bootstrap: (key: string) => Promise<unknown>, origin: string) => {
+  const app = buildHostedAgentTriggerServer({publicOrigin: "https://cloud.example", signInPath: "/auth/login", admission: remoteAdmission({url: `http://127.0.0.1:${address.port}/admission-service/deployments/{id}/admission`, publicOrigin: new URL("https://cloud.example"), forwardedHeaders: ["cookie", "x-chariox-browser-session", "accept"]}), connect: (async (kernel: string, bootstrap: (key: string) => Promise<unknown>, origin: string) => {
     assert.equal(kernel, "kernel");assert.equal(origin, "https://cloud.example");await bootstrap("a".repeat(64))
     return {send: async (value: unknown) => {requests.push(value);return {AgentTriggerInvoked: {invocation: {status: "accepted", prompt_id: `prompt-${requests.length}`, outcome: "queued"}}}}, close: async () => {closed++}}
   }) as never})

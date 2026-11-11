@@ -11,7 +11,7 @@ const id = `managed_release_update_${"a".repeat(36)}`
 const from = `sha256:${"b".repeat(64)}`
 const target = `sha256:${"c".repeat(64)}`
 
-test("MP-07 recovery binds the root journal to the original Cloud update", { skip: process.getuid() !== 0 }, async () => {
+test("MP-07 recovery binds the root journal to the original update", { skip: process.getuid() !== 0 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-mp07-recovery-"))
   try {
     const identity = join(root, "update-result-identity")
@@ -21,7 +21,7 @@ test("MP-07 recovery binds the root journal to the original Cloud update", { ski
     assert.equal(validate().status, 0)
     for (const values of [[id.replace(/a$/, "d"), from, target], [id, target, target], [id, from, from]]) {
       await writeIdentity(values)
-      assert.match(validate().stderr, /does not match the Cloud command/)
+      assert.match(validate().stderr, /does not match the update command/)
     }
     await writeIdentity([id, from, target])
     await chmod(identity, 0o666)

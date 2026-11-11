@@ -1,6 +1,6 @@
 // OF-18+: OSS product code stays free of compute-provider and Cloud-only business logic.
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
@@ -9,6 +9,8 @@ import { dirname, join, resolve } from 'node:path'
 import * as guard from './oss-boundary-guard.mjs'
 import { boundaryProblems, controlPlanePaths, enumVariants, isCheckedPath, providerNameFindings, vocabularyFindings } from './oss-boundary-guard.mjs'
 
+const boundaryFiles = root => execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\u0000').filter(Boolean)
+const isProductSource = path => /\.(?:ts|mjs|js)$/.test(path) && !/\.test(?:-support)?\.|\.bun-test\./.test(path)
 const kinds = (path, text) => providerNameFindings(path, text).map(f => f.kind)
 
 test('flags provider names, server types, API hosts and pinned addresses with their line', () => {
@@ -111,6 +113,27 @@ test('a planted Cloud vocabulary leak is red until it is listed, and a stale ent
   assert.deepEqual(problemsOf({ 'apps/cli/src/plan.ts': 'export const preset = 1\n' }, { leaks: [{ path: 'apps/cli/src/plan.ts', removedBy: 'item 2', row: 'OSB-09', slice: 'B2' }] }), ['stale leak entry: apps/cli/src/plan.ts'])
   assert.deepEqual(problemsOf(files, { leaks: [{ path: 'apps/cli/src/plan.ts', row: 'OSB-09', slice: 'B2' }] }), ['leak entry: apps/cli/src/plan.ts'])
   assert.deepEqual(problemsOf({ 'apps/cli/src/plan.test.ts': 'const rent = "auto-stop"' }), [])
+})
+
+test('deploy/managed-kernel names the update coordinator by role, never "Cloud" (OSB-06)', () => {
+  const words = text => vocabularyFindings('deploy/managed-kernel/upgrade-image.sh', text).map(f => f.kind)
+  assert.deepEqual(words('require_cloud_update_target "$root"'), ['connected-service word'])
+  assert.deepEqual(words('console.error("Cloud managed release update target")'), ['connected-service word'])
+  assert.deepEqual(words('# a cloud-init user-data file'), [])
+  assert.deepEqual(vocabularyFindings('apps/cli/src/x.ts', 'CloudRelayStatus cloud').map(f => f.kind), [])
+})
+
+test('OSB-07: the hosted trigger ingress in apps/server names no connected-service route', () => {
+  const root = resolve(fileURLToPath(import.meta.url), '../..')
+  const files = boundaryFiles(root).filter(f => f.startsWith('apps/server/src/') && isProductSource(f))
+  // An empty or truncated file list would pass the check below without scanning anything.
+  assert.ok(files.length >= 10 && files.includes('apps/server/src/agent-trigger-admission.ts'), `OSB-07 scanned ${files.length} files: ${files.slice(0, 3).join(', ')}`)
+  const scan = (list, read) => list.flatMap(f => controlPlanePaths(f, read(f)).map(c => `${f}:${c.line}: ${c.path}`))
+  assert.deepEqual(scan(['apps/server/src/planted.ts'], () => 'await fetch(`${base}/v1/managed-kernels/activity`)'), ['apps/server/src/planted.ts:1: /v1/managed-kernels/activity'], 'the scan reports a planted route')
+  const calls = scan(files, f => readFileSync(join(root, f), 'utf8'))
+  assert.ok(calls.length === 0, `apps/server calls a control-plane route; configure an admission URL instead:\n${calls.join('\n')}`)
+  const listed = JSON.parse(readFileSync(join(root, 'scripts/control-plane-paths.allow.json'), 'utf8')).filter(e => e.callers.some(c => c.startsWith('apps/server/')))
+  assert.ok(listed.length === 0, `scripts/control-plane-paths.allow.json still lists apps/server callers: ${listed.map(e => e.path).join(', ')}`)
 })
 
 test('a vendor host is allowed only in the default-host file', () => {
