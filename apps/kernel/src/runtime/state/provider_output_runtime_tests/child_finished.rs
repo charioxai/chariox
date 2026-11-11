@@ -17,6 +17,8 @@ pub(super) struct Family {
     pub(super) parent: String,
     pub(super) parent_run: String,
     pub(super) kids: Vec<Kid>,
+    pub(super) config: crate::config::DaemonConfig,
+    pub(super) _worktree: crate::test_support::TestWorktree,
 }
 
 pub(super) struct Team {
@@ -88,7 +90,7 @@ pub(super) async fn family_of(
     let worktree = crate::test_support::TestWorktree::new(label);
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
-    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
     let (session, parent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .unwrap();
@@ -209,6 +211,8 @@ pub(super) async fn family_of(
         parent_run: parent_run.id().into(),
         kids,
         runtime,
+        config,
+        _worktree: worktree,
     }
 }
 

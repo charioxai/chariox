@@ -1,6 +1,7 @@
 //! A parent that handled its child's `child_finished` receipt does not delete the child itself:
 //! the kernel ends a sub-agent the parent spawned once the parent acked its receipt as handled.
 use super::child_finished::{family_of, Family};
+use super::{owned_runtime_state, Arc, Mutex};
 use crate::durable_state::agent_lifecycle::Operation;
 
 /// Calls a runtime tool as the parent's running turn.
@@ -337,4 +338,94 @@ async fn a_handled_receipt_keeps_a_child_whose_older_task_is_unfinished() {
         !child_exists(&team, &child),
         "with nothing left unfinished, the handled receipt ends the child"
     );
+}
+
+/// The parent's turn ends while it acks: the receipt is handled, but the cleanup is refused.
+async fn ack_with_a_retired_turn(team: &Family, sequence: u64) {
+    let retired = team
+        .runtime
+        .with_room_provider_origin(Some(&team.parent), Some("retired-provider-run"));
+    let _ = retired
+        .ack_agent_inbox(
+            &team.room,
+            &team.parent,
+            &serde_json::json!({"sequence": sequence, "handled": true}),
+            crate::session::unix_epoch_ms(),
+        )
+        .await;
+    let receipt = team
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_inbox(&team.room, &team.parent, 0)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.sequence == sequence)
+        .unwrap();
+    assert_eq!(receipt.state, "handled");
+}
+
+// Review P2: a kernel stop between the handled ack and the delete must not lose the delete.
+#[tokio::test]
+async fn a_stop_between_the_ack_and_the_delete_is_finished_after_a_restart() {
+    let team = family_of("child-cleanup-restart", 1, None, true, true).await;
+    let child = team.kids[0].child.clone();
+    let (_, receipt) = parent_waits_and_child_finishes(&team).await;
+    ack_with_a_retired_turn(&team, receipt).await;
+    assert!(
+        child_exists(&team, &child),
+        "the stop came before the delete"
+    );
+    let Family {
+        runtime,
+        room,
+        parent,
+        parent_run,
+        kids,
+        config,
+        _worktree,
+    } = team;
+    drop(runtime);
+    let app = crate::test_support::bootstrap_after_test_owner_exit(config.clone()).await;
+    let runtime = owned_runtime_state(&Arc::new(Mutex::new(app))).await;
+    let team = Family {
+        runtime,
+        room,
+        parent,
+        parent_run,
+        kids,
+        config,
+        _worktree,
+    };
+    assert!(
+        child_exists(&team, &child),
+        "the restart alone deletes nothing"
+    );
+    team.runtime.end_orphaned_sub_agents().await;
+    assert!(
+        !child_exists(&team, &child),
+        "the first pass of the restarted kernel ends the handled child"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_cleanup_is_retried_not_lost() {
+    let team = family_of("child-cleanup-retry", 1, None, true, true).await;
+    let child = team.kids[0].child.clone();
+    let (_, receipt) = parent_waits_and_child_finishes(&team).await;
+    ack_with_a_retired_turn(&team, receipt).await;
+    let retired = team
+        .runtime
+        .with_room_provider_origin(Some(&team.parent), Some("retired-provider-run"));
+    assert_eq!(
+        retired.end_orphaned_sub_agents().await,
+        0,
+        "the pass is refused too"
+    );
+    assert!(
+        child_exists(&team, &child),
+        "a failed cleanup keeps the child"
+    );
+    assert_eq!(team.runtime.end_orphaned_sub_agents().await, 1);
+    assert!(!child_exists(&team, &child), "the next pass ends it");
 }
