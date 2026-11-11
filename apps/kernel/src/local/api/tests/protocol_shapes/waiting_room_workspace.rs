@@ -20,7 +20,7 @@ fn mp02_mp08_owner13_workspace_git_protocol_542() {
     assert_eq!(actual, expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&actual).unwrap())),
-        "af0029e5490136eba195f99a73baad515750e261c5f6b66d74aecb177ce07393"
+        "1b2d62db8e571b0da0bed14f6de008dbbf766ed39472137b4aa33c4423aae08d"
     );
 }
 
