@@ -7,7 +7,7 @@ import { WaitingRoomManagedEnvironmentLaunchController } from "./waiting-room-ma
 
 // Cloud's POST /managed-environments route test (apps/api routes/managed-environment-create-request-contract.test.ts) feeds the same
 // file to the real route and control service; the Cloud repository also checks that its copy equals this one.
-const fixture = JSON.parse(readFileSync(new URL("../src/fixtures/managed-environment-create-request.json", import.meta.url), "utf8")) as Record<string, unknown>
+const fixture = JSON.parse(readFileSync(new URL("../src/test/fixtures/managed-environment-create-request.json", import.meta.url), "utf8")) as Record<string, unknown>
 
 test("a new managed machine launch posts exactly the shared create request, with no name", async () => {
   const stop = new Error("request captured")
