@@ -168,12 +168,6 @@
     "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
   },
   {
-    "path": "apps/kernel/src/room_exec/process.rs",
-    "fn": "supervise",
-    "call": "observe",
-    "reason": "known, tracked: LaunchPermit::observe reads samples_for_key, which takes the registry mutex inline in the async supervise loop every 250 ms"
-  },
-  {
     "path": "apps/kernel/src/runtime/state/session_process_control.rs",
     "fn": "start_session_process_now",
     "call": "keys_for_session",
