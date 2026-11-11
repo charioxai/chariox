@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import * as guard from './oss-boundary-guard.mjs'
-import { boundaryProblems, controlPlanePaths, enumVariants, isCheckedPath, providerNameFindings, vocabularyFindings } from './oss-boundary-guard.mjs'
+import { acceptedEntries, boundaryProblems, controlPlanePaths, enumVariants, isCheckedPath, providerNameFindings, vocabularyFindings } from './oss-boundary-guard.mjs'
 
 const kinds = (path, text) => providerNameFindings(path, text).map(f => f.kind)
 
@@ -98,9 +98,10 @@ function scratch(files, allow = {}) {
   write('scripts/oss-boundary-files.allow.json', JSON.stringify(allow.files ?? []))
   return { root, files: Object.keys(files), done: () => rmSync(root, { recursive: true, force: true }) }
 }
+// A scratch directory has no baseline by design; an empty environment keeps it out of the CI rule.
 const fullProblemsOf = (files, allow) => {
   const repo = scratch(files, allow)
-  try { return boundaryProblems(repo.root, repo.files) } finally { repo.done() }
+  try { return boundaryProblems(repo.root, repo.files, acceptedEntries(repo.root, {})) } finally { repo.done() }
 }
 const problemsOf = (files, allow) => fullProblemsOf(files, allow).map(p => `${p.kind}: ${p.file}`)
 
