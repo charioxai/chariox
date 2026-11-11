@@ -1454,6 +1454,8 @@ if [[ "$*" == *CHARIOX_AUTH_OK* ]]; then
     exit 0
 fi
 [[ " $* " == *" stream-json "* ]] || exit 0
+# The kernel's model discovery runs Claude Code as a bare print run; only the turn's own process counts.
+[[ " $* " == *" --no-session-persistence "* ]] && exit 0
 record="$CHARIOX_FAKE_CLAUDE_RECORD"
 echo "start $$ token=${CLAUDE_CODE_OAUTH_TOKEN:+set}" >> "$record/starts"
 session=11111111-2222-4333-8444-555555555555
@@ -2274,7 +2276,8 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
 }
 
 /// The fake Codex app-servers started for anything but the kernel's usage
-/// timer (989de4d0cd), which only reads rate limits and usage.
+/// timer (989de4d0cd) and model discovery, which only read rate limits, usage
+/// and the model list.
 fn app_servers_beyond_usage_reads(record: &Path) -> Vec<String> {
     let calls = lines(&record.join("calls"));
     lines(&record.join("starts"))
@@ -2287,12 +2290,19 @@ fn app_servers_beyond_usage_reads(record: &Path) -> Vec<String> {
                 .filter(|(caller, _)| *caller == pid)
                 .map(|(_, method)| method)
                 .collect();
-            let usage_read =
-                |method: &&str| matches!(*method, "account/rateLimits/read" | "account/usage/read");
-            !(methods.iter().any(usage_read)
-                && methods.iter().all(|method| {
-                    usage_read(method) || matches!(*method, "initialize" | "initialized")
-                }))
+            // Reads of usage, account and model lists start no turn.
+            let read_only = |method: &&str| {
+                matches!(
+                    *method,
+                    "initialize"
+                        | "initialized"
+                        | "account/rateLimits/read"
+                        | "account/usage/read"
+                        | "account/read"
+                        | "model/list"
+                )
+            };
+            !(!methods.is_empty() && methods.iter().all(read_only))
         })
         .collect()
 }
