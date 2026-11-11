@@ -1153,9 +1153,22 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
 
 // A busy native Claude turn writes to its transcript, not to a structured poll:
 // that output must move the run's output clock or the turn reads as stalled.
-#[test]
-fn a_native_claude_transcript_drain_that_wrote_output_is_not_a_quiet_run() {
-    let worktree = crate::test_support::TestWorktree::new("claude-native-output-clock");
+struct QuietNativeTurn {
+    app: std::sync::Arc<tokio::sync::Mutex<DaemonApp>>,
+    session_id: String,
+    agent_id: String,
+    run_id: String,
+    context_file: String,
+    transcript_file: PathBuf,
+    root: PathBuf,
+    _worktree: crate::test_support::TestWorktree,
+}
+
+// A native turn that started 20 minutes ago whose last output, as the published
+// run projection also reads, was 15 minutes ago.
+fn quiet_native_turn(name: &str) -> QuietNativeTurn {
+    use crate::test_support::working_agent_ages::{age_working_agent, WorkingAgentAges, MINUTE_MS};
+    let worktree = crate::test_support::TestWorktree::new(name);
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1215,33 +1228,86 @@ fn a_native_claude_transcript_drain_that_wrote_output_is_not_a_quiet_run() {
         },
     );
     run.mark_running();
-    app.providers_mut().insert_run_for_test(run.clone());
-    let before = app
+    age_working_agent(
+        &mut app,
+        run.clone(),
+        WorkingAgentAges {
+            prompt_queued_ms_ago: 20 * MINUTE_MS,
+            turn_started_ms_ago: 20 * MINUTE_MS,
+            last_output_ms_ago: 15 * MINUTE_MS,
+        },
+    );
+    QuietNativeTurn {
+        session_id: session.id().to_string(),
+        agent_id: agent.id().to_string(),
+        run_id: run.id().to_string(),
+        app: std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+        context_file,
+        transcript_file,
+        root,
+        _worktree: worktree,
+    }
+}
+
+async fn silent_agent_ids(turn: &QuietNativeTurn) -> Vec<String> {
+    crate::runtime::router::CommandRouter::with_interactive_capacity(turn.app.clone(), 1)
+        .daemon_health_projection(0)
+        .await
+        .agent_runtime_projection
+        .silent_agents
+        .into_iter()
+        .map(|silent| silent.agent_id)
+        .collect()
+}
+
+#[tokio::test]
+async fn health_lists_a_native_turn_with_no_new_output_as_silent() {
+    let turn = quiet_native_turn("claude-native-quiet-health");
+    assert_eq!(silent_agent_ids(&turn).await, [turn.agent_id.clone()]);
+    let _ = fs::remove_dir_all(&turn.root);
+}
+
+#[tokio::test]
+async fn a_native_claude_transcript_drain_that_wrote_output_is_not_a_quiet_run() {
+    let turn = quiet_native_turn("claude-native-output-clock");
+    let before = turn
+        .app
+        .lock()
+        .await
         .providers
-        .get_run(run.id())
+        .get_run(&turn.run_id)
         .expect("run should exist")
         .last_output_at_ms();
-    std::thread::sleep(std::time::Duration::from_millis(20));
 
-    ProviderOutputClaudeNativeBridge::new(&mut app)
-        .drain_claude_transcript(
-            session.id(),
-            run.id(),
-            &context_file,
-            &transcript_file.display().to_string(),
-        )
-        .expect("transcript should drain");
+    {
+        let mut app = turn.app.lock().await;
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .drain_claude_transcript(
+                &turn.session_id,
+                &turn.run_id,
+                &turn.context_file,
+                &turn.transcript_file.display().to_string(),
+            )
+            .expect("transcript should drain");
+    }
 
-    let after = app
+    let after = turn
+        .app
+        .lock()
+        .await
         .providers
-        .get_run(run.id())
+        .get_run(&turn.run_id)
         .expect("run should exist")
         .last_output_at_ms();
     assert!(
         after > before,
         "a native transcript drain that wrote output left the run reading as quiet"
     );
-    let _ = fs::remove_dir_all(root);
+    assert!(
+        silent_agent_ids(&turn).await.is_empty(),
+        "Health listed an agent that was writing transcript output as silent"
+    );
+    let _ = fs::remove_dir_all(&turn.root);
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11: Claude fires SessionEnd when a stop from Health

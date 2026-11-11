@@ -530,6 +530,12 @@ impl RuntimeProviderRun {
         self
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_last_output_at_ms_for_test(mut self, at_ms: u64) -> Self {
+        self.last_output_at_ms = at_ms;
+        self
+    }
+
     /// MP-08: Ephemeral utility clone only; never persist or mutate the ordinary run.
     pub(crate) fn set_metadata_only_discovery(&mut self, directory: PathBuf) {
         self.metadata_only_discovery = true;
