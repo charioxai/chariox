@@ -74,10 +74,13 @@ enum Fault {
     Dropped,
 }
 
+/// Decides the fault for the n-th request.
+type Cue = Box<dyn FnMut(usize, &RelayPeerRequest) -> Fault + Send>;
+
 /// Another machine's files behind a link a test can cut and slow down.
 struct Link {
     files: Machine,
-    cue: Mutex<Box<dyn FnMut(usize, &RelayPeerRequest) -> Fault + Send>>,
+    cue: Mutex<Cue>,
     served: AtomicUsize,
     requests: Mutex<Vec<RelayPeerRequest>>,
     delay: Duration,
@@ -511,10 +514,10 @@ async fn a_copy_stopped_by_a_long_outage_continues_from_the_staged_bytes_when_st
     let down = Arc::new(AtomicUsize::new(0));
     let cut = down.clone();
     let link = Link::with_cue(machine(), Duration::ZERO, move |_, request| {
-        if matches!(request, RelayPeerRequest::ReadMachineFile { .. }) {
-            if cut.fetch_add(1, Ordering::SeqCst) >= 4 {
-                return Fault::Dropped;
-            }
+        if matches!(request, RelayPeerRequest::ReadMachineFile { .. })
+            && cut.fetch_add(1, Ordering::SeqCst) >= 4
+        {
+            return Fault::Dropped;
         }
         Fault::None
     });
