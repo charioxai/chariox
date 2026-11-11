@@ -32,7 +32,7 @@ test("MP-08/MP-10/MP-11 mirror read ordering has a floor above the unordered tar
 test("managed upgrades retain the signed current release and the target", () => {
   const pair = JSON.parse(readFileSync(new URL("fixtures/protocol-versions.json", repositoryRoot), "utf8"))
   const policy = JSON.parse(readFileSync(new URL("apps/kernel/managed-upgrade-protocol-transitions.json", repositoryRoot), "utf8"))
-  assert.deepEqual(admittedPredecessorProtocols, [1001, 1002])
+  assert.deepEqual(admittedPredecessorProtocols, [1002, 1003])
   assert.deepEqual(policy.upgradeFrom, [...admittedPredecessorProtocols, pair.local])
   assert.deepEqual(policy.rollbackTo, policy.upgradeFrom)
 })
