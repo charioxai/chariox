@@ -58,9 +58,9 @@ impl KernelRuntimeState {
 
 impl KernelRuntimeState {
     /// Ends the sub-agents whose `child_finished` receipts the parent just handled.
-    /// Only a child the parent spawned (it carries the spawn key) and whose latest
-    /// task is the one reported goes: an agent a person moved under the parent, or
-    /// one given new work since, stays.
+    /// Only a child the parent spawned (it carries the spawn key) whose reported task
+    /// is over and which has no other unfinished task goes: an agent a person moved
+    /// under the parent, or one with work still going, stays.
     pub(super) async fn end_handled_children(
         &self,
         room: &str,
@@ -83,13 +83,13 @@ impl KernelRuntimeState {
             {
                 continue;
             }
-            let reported_is_latest = self
-                .owned
-                .durable_state_store
-                .agent_tasks(Some(room), Some(child_id))?
-                .last()
-                .is_some_and(|latest| latest.task_id == task_id);
-            if reported_is_latest {
+            let store = &self.owned.durable_state_store;
+            let reported_is_terminal = store.agent_task(task_id)?.is_some_and(|task| {
+                matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
+            });
+            if reported_is_terminal
+                && !store.agent_has_other_unfinished_task(room, child_id, task_id)?
+            {
                 self.destroy_one_agent(child_id, child.owner_user_id(), true)
                     .await?;
                 self.destroy_sub_agents_of(child_id).await;
