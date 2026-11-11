@@ -22,10 +22,11 @@ async fn supervise_keeps_the_runtime_running_while_cleanup_holds_the_registry() 
         command: argv.clone(),
     };
     let admission = LaunchAdmission::limited(512 << 20, u64::MAX);
-    let mut permit = admission
+    let permit = admission
         .reserve("supervise-lock", &argv, &dir, false)
         .unwrap();
     let mut process = spawn(&dir, &argv, &permit, &intent).unwrap();
+    let mut permit = Some(permit);
     let (cancel_tx, mut cancel) = watch::channel(None);
 
     // The holder releases by itself, so a stalled runtime cannot hang the test.
