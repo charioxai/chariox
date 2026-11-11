@@ -313,7 +313,7 @@ async function run(args) {
     await writeFile(destination, `${JSON.stringify(receipt, null, 2)}\n`, { flag: "wx", mode: 0o600 })
     return
   }
-  // MP-07: a settled root unit may replay only its exact Cloud transaction.
+  // MP-07: a settled root unit may replay only its exact update transaction.
   if (operation === "validate-update-recovery" && values.length === 4) {
     const [journal, id, from, target] = values
     if (!/^managed_release_update_[a-f0-9-]{36}$/.test(id) || !validDigest(from) || !validDigest(target)) {
@@ -331,7 +331,7 @@ async function run(args) {
       if (bytesRead > 4096 || fields.length !== 8 || fields[7] !== "" || fields[0] !== "1"
         || fields[1] !== id || fields[2] !== from || fields[3] !== target
         || fields.slice(4, 7).some(value => !/^[a-z0-9][a-z0-9._:-]{0,127}$/.test(value))) {
-        fail("managed update recovery journal does not match the Cloud command")
+        fail("managed update recovery journal does not match the update command")
       }
     } finally { await handle.close() }
     return

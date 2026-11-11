@@ -140,8 +140,15 @@ function patternFindings(path, text, patterns) {
   return findings
 }
 
+// deploy/managed-kernel installs a kernel on any machine a control plane or an operator provisions,
+// so its scripts name the update coordinator by role, never "Cloud" (OSB-06). `cloud-init` is the
+// Linux provisioning tool and stays allowed.
+export const NEUTRAL_DEPLOY_ROOT = 'deploy/managed-kernel/'
+const NEUTRAL_DEPLOY_PATTERNS = [['connected-service word', /(?<![A-Za-z0-9])cloud(?![A-Za-z0-9]|-init)/i]]
+
 export const providerNameFindings = (path, text) => patternFindings(path, text, PROVIDER_PATTERNS)
-export const vocabularyFindings = (path, text) => patternFindings(path, text, VOCABULARY_PATTERNS)
+export const vocabularyFindings = (path, text) => patternFindings(path, text,
+  path.startsWith(NEUTRAL_DEPLOY_ROOT) ? [...VOCABULARY_PATTERNS, ...NEUTRAL_DEPLOY_PATTERNS] : VOCABULARY_PATTERNS)
 
 // Product code for the path and request checks; the whole-file list only excuses names and vocabulary.
 const isProductPath = path => !SELF_FILES.has(path) && !EXEMPT_PATH.test(path)

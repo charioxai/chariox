@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto"
 import WebSocket from "ws"
 import {createRelayKeypair, encryptRelayPayload, decryptRelayPayload, type EncryptedRelayPayload, type RelayKeypair} from "./browser-relay-crypto.js"
+import { relayPublicKeyFromPrivateKey } from "./relay-crypto.js"
 import { RelayFrameReceiver, relayTransportUrl } from "./relay-frame-transport.js"
 
 export type AgentTriggerRelayBootstrap = { relayUrl: string; relayToken: string; relayTokenExpiresAt: string | Date; target: { daemonId?: string; kernelRef: string } }
@@ -17,6 +18,20 @@ function refusal(value: unknown): Error {
   const statusCode = /authorization_denied|unauthoriz|forbidden|permission|admission|not a member|cannot perform.*owned by/i.test(reason) ? 403
     : /not_found|was not found|no longer exists/i.test(reason) ? 404 : 409
   return Object.assign(Error(statusCode === 403 ? "agent access denied" : statusCode === 404 ? "trigger not found" : "agent request refused"), { statusCode })
+}
+
+/** A long-lived relay key (the 32 raw private bytes a paired terminal stores) for an ingress the kernel has paired. */
+export async function relayKeypairFromPrivateKey(privateKey: Uint8Array): Promise<RelayKeypair> {
+  const publicKeyBase64 = relayPublicKeyFromPrivateKey(Buffer.from(privateKey))
+  const point = Buffer.from(publicKeyBase64, "base64")
+  const jwk = { kty: "EC", crv: "P-256", d: Buffer.from(privateKey).toString("base64url"), x: point.subarray(1, 33).toString("base64url"), y: point.subarray(33, 65).toString("base64url") }
+  return { privateKey: await crypto.subtle.importKey("jwk", jwk, { name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]), publicKeyBase64 }
+}
+
+/** A relay is reached over wss://; a relay on this machine (self-hosted, loopback) may use ws://. */
+export function isSecureRelayUrl(value: string): boolean {
+  if (value.startsWith("wss://")) return true
+  try { const url = new URL(value); return url.protocol === "ws:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) } catch { return false }
 }
 
 /** A request is sent once. A lost reply must never replay an HTTP firing. */
@@ -41,11 +56,12 @@ export class AgentTriggerIngressClient {
     this.socket.on("close", () => { void this.close() })
   }
 
-  static async connect(kernelId: string, bootstrap: (thumbprint: string) => Promise<AgentTriggerRelayBootstrap>, origin: string): Promise<AgentTriggerIngressClient> {
-    const keypair = await createRelayKeypair()
+  static async connect(kernelId: string, bootstrap: (thumbprint: string) => Promise<AgentTriggerRelayBootstrap>, origin: string, identity?: RelayKeypair): Promise<AgentTriggerIngressClient> {
+    // A kernel that has no control plane admits only keys it paired, so a self-hosted ingress brings its paired key.
+    const keypair = identity ?? await createRelayKeypair()
     const thumbprint = createHash("sha256").update(keypair.publicKeyBase64, "utf8").digest("hex")
     const grant = await bootstrap(thumbprint)
-    if (!grant.relayUrl.startsWith("wss://") || grant.target.daemonId !== kernelId) throw Error("agent relay target unavailable")
+    if (!isSecureRelayUrl(grant.relayUrl) || grant.target.daemonId !== kernelId) throw Error("agent relay target unavailable")
     const expiresAt = new Date(grant.relayTokenExpiresAt).getTime()
     if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw Error("agent authorization expired")
     const socket = new WebSocket(relayTransportUrl(grant.relayUrl), { origin, maxPayload: 8 * 1024 * 1024, handshakeTimeout: 10_000 })
