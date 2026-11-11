@@ -16,8 +16,10 @@ import {
   managedEnvironmentDraftBlockReason,
   managedEnvironmentMachineRef,
   NEW_MANAGED_MACHINE_REF,
+  SIGNED_OUT_MANAGED_CATALOG,
   waitingRoomManagedCatalogRemoteState,
 } from "./waiting-room-managed-environments.js"
+import { waitingRoomLaunchMachineOptions } from "@chariox/kernel-client/waiting-room-runtime-placement"
 import { waitingRoomRows } from "./waiting-room-rows.js"
 import { waitingRoomManagedMachineDialogRows } from "./waiting-room-start-rows.js"
 import { createWaitingRoomState, normalizeWaitingRoomState } from "./waiting-room-state.js"
@@ -31,12 +33,14 @@ test("managed catalog projects the remote fields used by the deployment dialog",
     computeClasses: expected.managedComputeClasses ?? [],
     contextSources: expected.managedContextSources ?? [],
     environments: expected.managedEnvironments ?? [],
+    rentUnavailable: null,
   }
 
   assert.deepEqual(waitingRoomManagedCatalogRemoteState(catalog), {
     managedComputeClasses: catalog.computeClasses,
     managedContextSources: catalog.contextSources,
     managedEnvironments: catalog.environments,
+    managedRentUnavailable: null,
   })
   assert.deepEqual(waitingRoomManagedCatalogRemoteState(undefined), {})
 })
@@ -101,6 +105,26 @@ test("new managed Machine selection keeps managed configuration out of the sessi
       .filter((target) => target.focus.startsWith("managed-")),
     [],
   )
+})
+
+// MP-08: renting is never hidden; when it is impossible the person reads why and Enter does not rent.
+test("a new managed Machine stays offered and disabled with the reason when renting is impossible", () => {
+  const reason = "Sign in with /cloud login to rent a machine."
+  const signedOut = waitingRoomManagedCatalogRemoteState(SIGNED_OUT_MANAGED_CATALOG)
+  assert.equal(signedOut.managedRentUnavailable, reason)
+  const unavailable = {...remote(), ...signedOut}
+  const state = normalizeWaitingRoomState({
+    ...baseState(),
+    selectedMachineRef: NEW_MANAGED_MACHINE_REF,
+    selectedKernelRef: "",
+  }, [], catalog(), undefined, unavailable)
+  const rows = waitingRoomRows(state, [], catalog(), unavailable)
+  assert.ok(waitingRoomLaunchMachineOptions(unavailable).some((option) => option.id === NEW_MANAGED_MACHINE_REF), "the new machine stays in the Machine list")
+  assert.equal(rows.find((row) => row.id === "new")?.title, "Create machine and start session")
+  assert.equal(rows.find((row) => row.id === "new")?.value, reason, "the action shows why it cannot run")
+  assert.equal(managedEnvironmentDraftBlockReason(state, unavailable), reason, "Enter refuses with the same reason")
+  const notSetUp = {...remote(), managedRentUnavailable: "Renting machines is not set up on this Chariox Cloud."}
+  assert.equal(managedEnvironmentDraftBlockReason(state, notSetUp), "Renting machines is not set up on this Chariox Cloud.")
 })
 
 test("new managed Machine dialog owns every conditional configuration row", () => {

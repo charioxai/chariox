@@ -226,6 +226,8 @@ export type ManagedEnvironmentCatalog = {
   readonly computeClasses: readonly ManagedEnvironmentComputeClassOption[]
   readonly contextSources: readonly ManagedEnvironmentContextSourceOption[]
   readonly environments: readonly ManagedEnvironmentSummary[]
+  /** Why no machine can be rented now, in the person's words; null when renting is possible. */
+  readonly rentUnavailable: string | null
 }
 
 export type ManagedContextTransferTicket = {

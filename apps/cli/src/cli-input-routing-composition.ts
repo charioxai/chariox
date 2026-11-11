@@ -32,6 +32,7 @@ import { createWaitingRoomPromptBootstrapController } from "./waiting-room-promp
 import { handleWaitingRoomSlashCommand } from "./waiting-room-slash-command-policy.js"
 import { createWorkspaceShellSubmitController } from "./workspace-shell-controller.js"
 import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-controller.js"
+import { waitingRoomManagedCatalogRemoteState } from "./waiting-room-managed-environments.js"
 
 type AnyFn = (...args: any[]) => any
 
@@ -246,13 +247,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     return {
       ...(targets.workspaceId ? { workspaceId: targets.workspaceId } : {}),
       ...(targets.worktreeId ? { worktreeId: targets.worktreeId } : {}),
-      ...(managedEnvironmentCatalog
-        ? {
-            managedComputeClasses: managedEnvironmentCatalog.computeClasses,
-            managedContextSources: managedEnvironmentCatalog.contextSources,
-            managedEnvironments: managedEnvironmentCatalog.environments,
-          }
-        : {}),
+      ...waitingRoomManagedCatalogRemoteState(managedEnvironmentCatalog),
     }
   }
   const computerCommands = createComputerCommandController({client: deps.client, appendNotice: deps.appendNotice})

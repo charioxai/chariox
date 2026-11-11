@@ -90,6 +90,8 @@ import { existingProjectSelectionId } from "./waiting-room-projects.js"
 import {
   managedEnvironmentMachineRef,
   selectedManagedEnvironment,
+  SIGNED_OUT_MANAGED_CATALOG,
+  waitingRoomManagedCatalogRemoteState,
 } from "./waiting-room-managed-environments.js"
 import {
   WaitingRoomManagedEnvironmentReimageController,
@@ -202,13 +204,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     ...(sourceLaunchTarget
       ? { workspaceId: sourceLaunchTarget.workspaceId, worktreeId: sourceLaunchTarget.worktreeId }
       : {}),
-    ...(managedEnvironmentCatalog
-      ? {
-          managedComputeClasses: managedEnvironmentCatalog.computeClasses,
-          managedContextSources: managedEnvironmentCatalog.contextSources,
-          managedEnvironments: managedEnvironmentCatalog.environments,
-        }
-      : {}),
+    ...waitingRoomManagedCatalogRemoteState(managedEnvironmentCatalog),
   })
   let workspacePlacementController: ReturnType<typeof createWaitingRoomWorkspacePlacementController> | undefined
   const kernelConnectionController = createWaitingRoomKernelConnectionController({
@@ -327,7 +323,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   const getInventoryForClient = (client: LocalIpcClient) => getWaitingRoomInventory(client, async () => {
     try {
       const profile = await getCloudClientControlProfile(deps.cloudClient, client)
-      return profile ? await listManagedEnvironmentCatalog(profile) : undefined
+      return profile ? await listManagedEnvironmentCatalog(profile) : SIGNED_OUT_MANAGED_CATALOG
     } catch (error) {
       deps.appLogger?.warn("failed to load managed machine catalog", {error: deps.formatError(error)})
       return undefined

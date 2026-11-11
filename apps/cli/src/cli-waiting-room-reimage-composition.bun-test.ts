@@ -636,6 +636,7 @@ function createHarness(router: TestRouter, options: {
     computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
     contextSources: options.contextSources ?? [],
     environments: [oldEnvironment],
+    rentUnavailable: null,
   }
   let mutableClient!: MutableLocalIpcClient
   let observedThroughEndpoint: string | null = null
@@ -830,7 +831,7 @@ function createHarness(router: TestRouter, options: {
     cloudRequests.push({path: url.pathname, body})
     assert.equal(new Headers(init?.headers).get("authorization"), "Bearer synthetic-human-access")
     if (body) {assert.equal(body.accountId, "account-1"); assert.equal(body.kernelCredential, undefined)}
-    if (url.pathname.endsWith("/options")) return Response.json({computeClasses: catalog.computeClasses, contextSources: catalog.contextSources})
+    if (url.pathname.endsWith("/options")) return Response.json({computeClasses: catalog.computeClasses, contextSources: catalog.contextSources, rentUnavailable: catalog.rentUnavailable})
     if (url.pathname === "/managed-environments" && !body) return Response.json({environments: catalog.environments})
     if (url.pathname === "/managed-environments" && body) return Response.json({...reimageResult(replacementEnvironment, body.clientRequestId), operation: {...reimageResult(replacementEnvironment, body.clientRequestId).operation, kind: "create"}})
     if (url.pathname.endsWith("/reimage/preflight")) return Response.json(preflight())

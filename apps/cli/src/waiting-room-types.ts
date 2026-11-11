@@ -165,6 +165,8 @@ export type WaitingRoomRemoteState = {
   managedComputeClasses?: readonly ManagedEnvironmentComputeClassOption[]
   managedContextSources?: readonly ManagedEnvironmentContextSourceOption[]
   managedEnvironments?: readonly ManagedEnvironmentSummary[]
+  /** Why no machine can be rented now; null when renting is possible. */
+  managedRentUnavailable?: string | null
 }
 
 export type WaitingRoomTerminalType = "cli" | "web" | "ios" | "android"

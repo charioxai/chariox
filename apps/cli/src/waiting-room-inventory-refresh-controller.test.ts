@@ -58,6 +58,7 @@ test("waiting room inventory refresh applies managed catalog and exact launch ta
     computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
     contextSources: [],
     environments: [],
+    rentUnavailable: null,
   }
   const harness = createHarness({
     snapshots: [inventory("v1", {
@@ -80,6 +81,7 @@ test("waiting room inventory refresh preserves the last managed catalog on trans
     computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
     contextSources: [],
     environments: [],
+    rentUnavailable: null,
   }
   const harness = createHarness({
     snapshots: [
@@ -100,6 +102,7 @@ test("waiting room inventory refresh clears retained managed catalog across kern
     computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
     contextSources: [],
     environments: [],
+    rentUnavailable: null,
   }
   const harness = createHarness({
     snapshots: [
@@ -120,6 +123,7 @@ test("waiting room inventory refresh clears retained managed catalog across Clou
     computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
     contextSources: [],
     environments: [],
+    rentUnavailable: null,
   }
   const harness = createHarness({
     snapshots: [

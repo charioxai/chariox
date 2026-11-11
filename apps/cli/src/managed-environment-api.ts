@@ -23,7 +23,7 @@ export type ManagedEnvironmentCreateInput = Omit<CreateManagedEnvironmentInput, 
 // import, local launch and old-generation observation stay kernel-owned.
 export async function listManagedEnvironmentCatalog(profile: CloudControlProfile): Promise<ManagedEnvironmentCatalog> {
   const [options, environments] = await Promise.all([
-    managedEnvironmentJson<Pick<ManagedEnvironmentCatalog, "computeClasses" | "contextSources">>(profile, "/managed-environments/options"),
+    managedEnvironmentJson<Pick<ManagedEnvironmentCatalog, "computeClasses" | "contextSources" | "rentUnavailable">>(profile, "/managed-environments/options"),
     managedEnvironmentJson<Pick<ManagedEnvironmentCatalog, "environments">>(profile, "/managed-environments"),
   ])
   return {...options, ...environments}
