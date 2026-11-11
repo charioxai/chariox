@@ -454,6 +454,57 @@ fn pressure_pauses_the_newest_growing_command_before_stopping_any_in_cgroups() {
     slow_growth_is_paused_before_anything_is_stopped(true);
 }
 
+/// The shell of an agent's tool call starts a grower and ends: the grower is
+/// then a command of its own, seen for the first time. It must read as the
+/// grower it is, or a pass that finds the pool full cannot pause it and ends
+/// the idle command beside it instead.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_command_a_shell_leaves_behind_keeps_the_growth_it_had_inside_it() {
+    let pool = pool(4096);
+    let wrapper = "sh -c 'sed 2d \"$1/alloc.py\" > \"$1/grow.py\"; python3 \"$1/grow.py\" 300 100 3000 & echo $! > \"$1/grow.pid\"; sleep 2' sh \"$0\"";
+    let workload = Workload::run(
+        domain(&pool, "agent", false),
+        &[("wrapper", wrapper.into())],
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !workload.dir.join("grow.pid").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the grower did not start"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    let grower = std::fs::read_to_string(workload.dir.join("grow.pid"))
+        .unwrap()
+        .trim()
+        .parse::<u32>()
+        .unwrap();
+    // Its shell ends two seconds after starting it: the first time the grower
+    // is a command of its own, it has been growing all along.
+    let first = loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the grower never became a command of its own"
+        );
+        let seen = pool
+            .members()
+            .iter()
+            .flat_map(|member| member.lock().unwrap().commands.clone())
+            .find(|command| command.pid == grower);
+        if let Some(command) = seen {
+            break command;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(
+        first.growth >= admission::GROWING,
+        "a growing command read as idle on its first sample: {} bytes/s",
+        first.growth
+    );
+}
+
 fn runaway_is_paused_before_the_line(cgroup: bool) {
     // 512 MiB/s: the PC-06 runaway.
     let (mut a, mut b, mut c, pool) = pressure(cgroup, 0, 512, 4);
