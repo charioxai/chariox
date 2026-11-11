@@ -3,7 +3,7 @@
 use std::future::Future;
 
 use super::*;
-use crate::runtime::cloud_relay_control::cloud_relay_token_is_expired;
+use crate::runtime::cloud_relay_control::cloud_relay_token_unusable;
 
 mod binary_request;
 mod managed_slice_activation;
@@ -700,7 +700,9 @@ async fn run_daemon_relay_connector_inner(
                 }
             }
             let config = router.relay_config_snapshot();
-            if cloud_relay_token_is_expired(&config, crate::session::unix_epoch_ms()) {
+            if let Some(problem) =
+                cloud_relay_token_unusable(&config, crate::session::unix_epoch_ms())
+            {
                 let daemon_id = router.relay_daemon_id();
                 let delay = token_renewal_retry_delay(
                     &daemon_id,
@@ -714,17 +716,18 @@ async fn run_daemon_relay_connector_inner(
                     .unwrap_or_default();
                 crate::logging::warn_with_fields(
                     "daemon.relay_client",
-                    "cloud relay token is expired and could not be renewed; retrying the renewal",
+                    "cloud relay token is unusable and could not be renewed; retrying the renewal",
                     serde_json::json!({
                         "relay_url": relay_url,
+                        "reason": problem.reason(),
                         "retry_ms": delay.as_millis(),
                         "failures": token_refresh_failures,
                     }),
                 );
                 if token_refresh_failures == 0 {
-                    disconnect_relay(&state, "cloud relay token expired", presence).await;
+                    disconnect_relay(&state, problem.reason(), presence).await;
                 }
-                record_relay_reconnect(&router, &relay_url, "cloud relay token expired", delay);
+                record_relay_reconnect(&router, &relay_url, problem.reason(), delay);
                 token_refresh_failures = token_refresh_failures.saturating_add(1);
                 if wait_for_reconnect_delay(shutdown, delay).await {
                     return;
