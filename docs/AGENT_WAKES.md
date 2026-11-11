@@ -2,7 +2,7 @@
 
 The kernel owns the one durable answer to "what is this agent waiting for, and
 who wakes it?". An agent registers a kernel-owned wake source, ends its turn
-waiting on it with a finite deadline (`chariox.events.yield`), and the kernel
+waiting on it (`chariox.events.yield`; a deadline is optional and required only for a goal), and the kernel
 starts a new turn when the source occurs. Nothing in this path is silent: every
 state is stored, shown to every client, and has a visible failure.
 

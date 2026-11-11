@@ -119,7 +119,8 @@ impl AgentObligation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentWait {
     pub registration_ids: Vec<String>,
-    pub deadline_ms: u64,
+    /// Only a goal wait carries a deadline; any other wait ends with its sources.
+    pub deadline_ms: Option<u64>,
     pub started_at_ms: u64,
     pub inbox_cursor: u64,
     pub long_wait_notified: bool,
@@ -382,7 +383,7 @@ pub(crate) enum Operation {
         prompt: String,
         registrations: Vec<String>,
         cursor: u64,
-        deadline: u64,
+        deadline: Option<u64>,
         reason: String,
         now: u64,
     },
@@ -519,6 +520,16 @@ pub(crate) enum Operation {
         agent: String,
         sequence: u64,
         handled: bool,
+        now: u64,
+    },
+    /// A handled `Ack` of a `child_finished` receipt that, in the same write, marks the
+    /// reported sub-agent's `subtree` (the child first) as deleting, so a stop after the
+    /// ack still leaves the deletion for the lifecycle pass.
+    AckHandledChild {
+        room: String,
+        agent: String,
+        sequence: u64,
+        subtree: Vec<String>,
         now: u64,
     },
     Progress {

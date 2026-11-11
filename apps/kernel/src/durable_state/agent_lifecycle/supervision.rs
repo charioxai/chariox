@@ -291,7 +291,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                                 && !clock_rollback
                         });
                         if (dead && unread == 0)
-                            || w.deadline_ms <= now
+                            || w.deadline_ms.is_some_and(|deadline| deadline <= now)
                             || now < w.started_at_ms
                             || clock_rollback
                             || check_in.is_some()

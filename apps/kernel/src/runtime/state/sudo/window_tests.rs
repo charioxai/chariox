@@ -1324,7 +1324,7 @@ async fn sudo_expiry_wake_retries_after_a_failed_inbox_write() {
             prompt: task.clone(),
             registrations: vec!["expiry-reg".into()],
             cursor: 0,
-            deadline: now + 7_200_000,
+            deadline: Some(now + 7_200_000),
             reason: "waiting for review".into(),
             now,
         })

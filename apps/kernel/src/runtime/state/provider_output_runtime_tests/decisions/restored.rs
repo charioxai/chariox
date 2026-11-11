@@ -54,7 +54,7 @@ impl Tree {
                 prompt: task.prompt_id.clone(),
                 registrations: vec![wake.registration_id.clone()],
                 cursor: 0,
-                deadline: now + 7_200_000,
+                deadline: Some(now + 7_200_000),
                 reason: "waiting for the answer".into(),
                 now,
             })

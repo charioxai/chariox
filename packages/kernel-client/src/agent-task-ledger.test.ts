@@ -61,10 +61,17 @@ test("a blocked task wins over a waiting one and counts open obligations", () =>
   assert.deepEqual(status, { label: "BLOCKED: needs owner (1 obligations)", tone: "error" })
 })
 
-test("a waiting task without a finite deadline is blocked, never silently dormant", () => {
+test("a waiting task with an invalid deadline is blocked, never silently dormant", () => {
   const broken = task({ state: "waiting", wait: { ...waiting.wait!, deadline_ms: 0 } })
   const status = sessionAgentLedgerStatus(session({ agent_tasks: [broken] }), "a1")
   assert.deepEqual([status?.label, status?.tone], ["BLOCKED: Invalid wait deadline", "error"])
+})
+
+test("a waiting task without a deadline waits for its sources and shows no clock", () => {
+  const open = task({ state: "waiting", wait: { ...waiting.wait!, deadline_ms: null } })
+  const status = sessionAgentLedgerStatus(session({ agent_tasks: [open] }), "a1")
+  assert.ok(status?.tone === "idle" && !status.label.includes("UNTIL"), String(status?.label))
+  assert.ok(sessionAgentTaskStatus(session({ agent_tasks: [open] }), "a1")?.deadline_ms === undefined)
 })
 
 test("the pane badge shows the wait with a static clock and otherwise stays the ordinary badge", () => {

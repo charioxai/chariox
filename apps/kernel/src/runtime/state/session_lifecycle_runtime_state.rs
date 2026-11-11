@@ -932,6 +932,9 @@ impl KernelRuntimeState {
         end_agent_processes(destroyed.session_id(), agent_id).await?;
         self.append_agent_durable_event("agent.deleted", &destroyed, None)
             .await?;
+        // Its blocked tasks no longer need the owner: their Resume/Cancel cards go with it.
+        self.retract_stale_task_owner_interactions(destroyed.session_id())
+            .await;
         // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: a removed delegate is a
         // terminal source now; wake its waiting parent through the shared
         // reconciliation path rather than the next 30-second periodic sweep.

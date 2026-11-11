@@ -165,6 +165,7 @@ mod detached_jobs_teardown;
 mod detached_provider_run;
 mod diagnostics_timeouts;
 mod external_queue;
+mod finished_child_cleanup;
 mod focus_recovery_tests;
 mod history_projection;
 mod inbox_sender;

@@ -12,6 +12,8 @@ mod deadlines;
 mod delegation;
 mod delivery;
 mod leased_processes;
+#[cfg(test)]
+mod live_wait_tests;
 pub(crate) use leased_processes::LeasedProcessMutation;
 #[cfg(test)]
 mod inbox_lookup_tests;
@@ -889,8 +891,9 @@ fn decode_task(
     if t.state == ExecutionState::Waiting
         && t.wait.as_ref().is_none_or(|w| {
             w.registration_ids.is_empty()
-                || w.deadline_ms <= w.started_at_ms
-                || w.deadline_ms > i64::MAX as u64
+                || w.deadline_ms.is_some_and(|deadline| {
+                    deadline <= w.started_at_ms || deadline > i64::MAX as u64
+                })
         })
     {
         return Err(error("wait state corrupt; quarantine required"));

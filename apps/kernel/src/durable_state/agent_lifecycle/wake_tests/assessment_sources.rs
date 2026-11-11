@@ -15,7 +15,7 @@ fn a12_assessment_unique_live_prefix_preserves_the_original_timer() {
         prompt: "p".into(),
         registrations: vec!["completion-timer".into(), wake.registration_id.clone()],
         cursor: 0,
-        deadline: due + 300_000,
+        deadline: Some(due + 300_000),
         reason: "wait for timers".into(),
         now: 20,
     });
@@ -37,7 +37,7 @@ fn a12_assessment_unique_live_prefix_preserves_the_original_timer() {
         .contains(&wake.registration_id));
     assert_eq!(
         task.wait.unwrap().deadline_ms,
-        due,
+        Some(due),
         "resolve before source deadline lookup"
     );
     assert_eq!(
