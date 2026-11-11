@@ -132,14 +132,15 @@ test('a whole-file entry whose file is gone or no longer names anything is red',
 
 // A throwaway repository with the guard and the four lists, to drive the CLI against a real
 // merge base. `base` is the accepted state; `change` edits the tree and commits on top of it.
-function baselineRepo(baseFiles, baseList) {
+function baselineRepo(baseFiles, baseList, baseLeaks = []) {
   const root = mkdtempSync(join(tmpdir(), 'oss-boundary-baseline-'))
   const git = (...args) => { const r = spawnSync('git', ['-c', 'user.name=drill', '-c', 'user.email=drill@example.test', ...args], { cwd: root, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim() }
   const write = (path, text) => { mkdirSync(dirname(join(root, path)), { recursive: true }); writeFileSync(join(root, path), text) }
   git('init', '-q', '-b', 'main')
   mkdirSync(join(root, 'scripts'))
   copyFileSync(fileURLToPath(new URL('./oss-boundary-guard.mjs', import.meta.url)), join(root, 'scripts/oss-boundary-guard.mjs'))
-  for (const name of ['oss-boundary-leaks', 'control-plane-paths', 'control-plane-requests']) write(`scripts/${name}.allow.json`, '[]')
+  for (const name of ['control-plane-paths', 'control-plane-requests']) write(`scripts/${name}.allow.json`, '[]')
+  if (baseLeaks) write('scripts/oss-boundary-leaks.allow.json', JSON.stringify(baseLeaks))
   if (baseList) write('scripts/oss-boundary-files.allow.json', JSON.stringify(baseList))
   for (const [path, text] of Object.entries(baseFiles)) write(path, text)
   git('add', '-A'); git('commit', '-q', '-m', 'accepted baseline')
@@ -147,6 +148,8 @@ function baselineRepo(baseFiles, baseList) {
   return { root, git, write, guard, base: git('rev-parse', 'HEAD'), done: () => rmSync(root, { recursive: true, force: true }) }
 }
 const listed = (path, why = 'sample provider text') => ({ path, why })
+const leak = path => ({ path, removedBy: 'item 2', row: 'OSB-09', slice: 'B2' })
+const AUTO_STOP = 'export const preset = "agents_done" // auto-stop policy\n'
 
 test('swapping one whole-file entry for a new provider file is red and names the new entry', () => {
   const repo = baselineRepo({ 'deploy/old.sh': 'echo hetzner\n' }, [listed('deploy/old.sh')])
@@ -182,12 +185,59 @@ test('an unchanged list and a pure deletion are green against the merge base', (
   } finally { repo.done() }
 })
 
+test('swapping one leak entry for a new Cloud-vocabulary file is red and names the new entry', () => {
+  const repo = baselineRepo({ 'apps/cli/src/old.ts': AUTO_STOP }, null, [leak('apps/cli/src/old.ts')])
+  try {
+    repo.git('update-ref', 'refs/remotes/origin/main', repo.base)
+    repo.git('rm', '-q', 'apps/cli/src/old.ts')
+    repo.write('apps/cli/src/new.ts', AUTO_STOP)
+    repo.write('scripts/oss-boundary-leaks.allow.json', JSON.stringify([leak('apps/cli/src/new.ts')]))
+    repo.git('add', '-A'); repo.git('commit', '-q', '-m', 'same-count swap')
+    for (const env of [{ CHARIOX_BOUNDARY_BASE: repo.base }, {}]) {
+      const red = repo.guard(env)
+      assert.equal(red.status, 1, `swap passed with ${JSON.stringify(env)}:\n${red.stdout}${red.stderr}`)
+      assert.match(red.stderr, /^scripts\/oss-boundary-leaks\.allow\.json:0: new leak entry: apps\/cli\/src\/new\.ts .*move the logic to Cloud/m)
+      assert.match(red.stderr, /^apps\/cli\/src\/new\.ts:1: auto-stop word: Cloud-only vocabulary in OSS/m)
+    }
+    repo.git('rm', '-q', 'apps/cli/src/new.ts')
+    repo.write('scripts/oss-boundary-leaks.allow.json', '[]')
+    repo.git('add', '-A'); repo.git('commit', '-q', '-m', 'shrink')
+    const green = repo.guard({})
+    assert.equal(green.status, 0, green.stderr)
+  } finally { repo.done() }
+})
+
+test('an unchanged leak list and a pure leak deletion are green against the merge base', () => {
+  const repo = baselineRepo({ 'apps/cli/src/a.ts': AUTO_STOP, 'apps/cli/src/b.ts': AUTO_STOP }, null, [leak('apps/cli/src/a.ts'), leak('apps/cli/src/b.ts')])
+  try {
+    const same = repo.guard({ CHARIOX_BOUNDARY_BASE: repo.base })
+    assert.equal(same.status, 0, same.stderr)
+    assert.match(same.stdout, /oss-boundary-guard: ok/)
+    repo.git('rm', '-q', 'apps/cli/src/b.ts')
+    repo.write('scripts/oss-boundary-leaks.allow.json', JSON.stringify([leak('apps/cli/src/a.ts')]))
+    const shrunk = repo.guard({ CHARIOX_BOUNDARY_BASE: repo.base })
+    assert.equal(shrunk.status, 0, shrunk.stderr)
+  } finally { repo.done() }
+})
+
+test('a leak entry added on top of an unchanged list is red, not hidden by the count', () => {
+  const repo = baselineRepo({ 'apps/cli/src/a.ts': AUTO_STOP }, null, [leak('apps/cli/src/a.ts')])
+  try {
+    repo.write('apps/cli/src/extra.ts', AUTO_STOP)
+    repo.write('scripts/oss-boundary-leaks.allow.json', JSON.stringify([leak('apps/cli/src/a.ts'), leak('apps/cli/src/extra.ts')]))
+    const red = repo.guard({ CHARIOX_BOUNDARY_BASE: repo.base })
+    assert.equal(red.status, 1, red.stderr)
+    assert.match(red.stderr, /new leak entry: apps\/cli\/src\/extra\.ts/)
+  } finally { repo.done() }
+})
+
 test('without a base ref the guard says loudly that membership was not checked, and an unusable base is red', () => {
   const repo = baselineRepo({ 'deploy/a.sh': 'echo hetzner\n' }, [listed('deploy/a.sh')])
   try {
     const noRef = repo.guard({})
     assert.equal(noRef.status, 0, noRef.stderr)
     assert.match(noRef.stderr, /WARNING.*whole-file list.*no origin\/main.*membership NOT checked/)
+    assert.match(noRef.stderr, /WARNING.*leak list.*no origin\/main.*membership NOT checked/)
     const bad = repo.guard({ CHARIOX_BOUNDARY_BASE: 'no-such-ref' })
     assert.equal(bad.status, 1)
     assert.match(bad.stderr, /CHARIOX_BOUNDARY_BASE=no-such-ref is not a commit/)
@@ -195,12 +245,14 @@ test('without a base ref the guard says loudly that membership was not checked, 
 })
 
 test('a base that predates the whole-file list is reported as unchecked, not silently accepted', () => {
-  const repo = baselineRepo({ 'deploy/a.sh': 'echo hetzner\n' }, null)
+  const repo = baselineRepo({ 'deploy/a.sh': 'echo hetzner\n' }, null, null)
   try {
     repo.write('scripts/oss-boundary-files.allow.json', JSON.stringify([listed('deploy/a.sh')]))
+    repo.write('scripts/oss-boundary-leaks.allow.json', '[]')
     const run = repo.guard({ CHARIOX_BOUNDARY_BASE: repo.base })
     assert.equal(run.status, 0, run.stderr)
-    assert.match(run.stderr, /WARNING.*not in .*introduced by this change.*membership NOT checked/)
+    assert.match(run.stderr, /WARNING.*whole-file list.*not in .*introduced by this change.*membership NOT checked/)
+    assert.match(run.stderr, /WARNING.*leak list.*not in .*introduced by this change.*membership NOT checked/)
   } finally { repo.done() }
 })
 
