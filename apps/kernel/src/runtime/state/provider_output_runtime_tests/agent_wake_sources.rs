@@ -2547,3 +2547,88 @@ async fn stopping_a_waiting_task_closes_its_wait_row_in_place() {
         after[0].2
     );
 }
+
+// Live drill, 11-11: a sub-agent's end wakes the Room agent through an event that names no task, and the woken turn runs as a
+// task of its own, so the yielded task still reads waiting. The wait row ends with the wake all the same.
+#[tokio::test]
+async fn an_event_that_names_no_task_still_ends_the_wait_row_of_the_agent_it_wakes() {
+    let f = fixture("wait-row-unnamed-wake", true).await;
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    let prompt = f
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &f.agent)
+        .unwrap();
+    let task = f.begin(&f.prompt_id);
+    let wake = f.arm(&task, "wake-a").unwrap();
+    let now = crate::session::unix_epoch_ms();
+    f.store()
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec![wake.registration_id.clone()],
+            cursor: 0,
+            deadline: now + 60_000,
+            reason: "Wait for the test source".into(),
+            now,
+        })
+        .unwrap();
+    f.runtime
+        .owned
+        .complete_local_prompt_without_advance(&f.room, &f.agent, Some(&f.run))
+        .unwrap();
+    let settlement = f
+        .runtime
+        .owned
+        .settle_agent_task(&f.room, &f.agent, &prompt, &f.run, false)
+        .unwrap();
+    f.runtime
+        .finish_agent_task_settlement(settlement, &prompt)
+        .await
+        .unwrap();
+    assert_eq!(f.wait_rows()[0].2["status"], "running");
+
+    let Outcome::Event(event) = f
+        .store()
+        .agent_lifecycle(Operation::Occur(
+            crate::durable_state::agent_lifecycle::occurrence(
+                &f.room,
+                &f.agent,
+                "a-child",
+                "child-ended",
+                "child_finished",
+                serde_json::json!({"child": "a-child"}),
+            ),
+        ))
+        .unwrap()
+    else {
+        panic!("event")
+    };
+    f.runtime.sweep_agent_lifecycle_for_test().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let delivered = f
+                .store()
+                .agent_inbox(&f.room, &f.agent, 0)
+                .unwrap()
+                .into_iter()
+                .any(|e| e.sequence == event.sequence && e.state == "accepted");
+            if delivered {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the event is delivered as a turn");
+
+    let rows = f.wait_rows();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].2["status"], "completed", "{}", rows[0].2);
+    assert_eq!(
+        rows[0].2["woken_by"]["kind"], "child_finished",
+        "{}",
+        rows[0].2
+    );
+}

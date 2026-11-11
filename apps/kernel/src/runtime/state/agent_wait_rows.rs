@@ -30,54 +30,46 @@ impl KernelRuntimeOwnedState {
         );
     }
 
-    /// Closes the rows of the waits `before` held that `event` ended by waking their tasks.
+    /// An event that starts a turn for the agent ends the waits it was in: the rows of the waits `before` held
+    /// close, whatever the ledger still says of those tasks (the woken turn runs as a task of its own).
     pub(super) fn record_woken_waits(&self, before: &[AgentTaskExecution], event: &InboxEvent) {
         for task in before {
-            let still_waiting = self
-                .durable_state_store
-                .agent_task(&task.task_id)
-                .ok()
-                .flatten()
-                .is_some_and(|now| now.state == ExecutionState::Waiting);
-            if !still_waiting {
-                self.record_wait_ended(task, &event.kind, &event.source_id);
-            }
+            let Some(wait) = task.wait.as_ref() else {
+                continue;
+            };
+            self.close_wait_row(
+                task,
+                &wait_merge_key(&task.task_id, wait.started_at_ms),
+                &event.kind,
+                &event.source_id,
+            );
         }
-    }
-
-    /// Rewrites the row of the wait `task` held when it ended.
-    pub(super) fn record_wait_ended(&self, task: &AgentTaskExecution, kind: &str, source: &str) {
-        let Some(wait) = task.wait.as_ref() else {
-            return;
-        };
-        let key = wait_merge_key(&task.task_id, wait.started_at_ms);
-        let finished = crate::session::unix_epoch_ms();
-        self.write_task_wait_row(
-            task,
-            &key,
-            serde_json::json!({
-                "tool": WAIT_TOOL, "id": key, "status": "completed", "background": true,
-                "input": {"reason": task.reason, "deadline_ms": wait.deadline_ms},
-                "started_at_ms": wait.started_at_ms, "finished_at_ms": finished,
-                "woken_by": {"kind": kind, "source_id": source},
-            }),
-        );
     }
 
     /// A task that ended without a wake (the owner stopped it) closes the row of the wait it was in.
     pub(super) fn record_wait_cancelled(&self, task: &AgentTaskExecution) {
-        let prefix = format!("wait:{}:", task.task_id);
+        self.close_wait_row(
+            task,
+            &format!("wait:{}:", task.task_id),
+            "cancelled",
+            &task.task_id,
+        );
+    }
+
+    /// Rewrites the newest row whose key starts with `prefix` as completed, in place, unless it already is.
+    fn close_wait_row(&self, task: &AgentTaskExecution, prefix: &str, kind: &str, source: &str) {
         let Ok(Some(event)) = self
             .operational_history_store
-            .latest_transcript_by_merge_key_prefix(&task.room_id, &task.agent_id, &prefix)
+            .latest_transcript_by_merge_key_prefix(&task.room_id, &task.agent_id, prefix)
         else {
             return;
         };
         let Some(entry) = event.to_session_history_entry() else {
             return;
         };
-        let (Some(key), Ok(mut row)) = (
+        let (Some(key), Some(run), Ok(mut row)) = (
             entry.merge_key.clone(),
+            entry.provider_run_id.clone(),
             serde_json::from_str::<serde_json::Value>(&entry.text),
         ) else {
             return;
@@ -87,11 +79,8 @@ impl KernelRuntimeOwnedState {
         }
         row["status"] = "completed".into();
         row["finished_at_ms"] = crate::session::unix_epoch_ms().into();
-        row["woken_by"] = serde_json::json!({"kind": "cancelled", "source_id": task.task_id});
-        let Some(run) = entry.provider_run_id.as_deref() else {
-            return;
-        };
-        self.write_wait_row(task, run, &key, row);
+        row["woken_by"] = serde_json::json!({"kind": kind, "source_id": source});
+        self.write_wait_row(task, &run, &key, row);
     }
 
     /// The agent's tasks whose wait is committed: what a wake can end.
