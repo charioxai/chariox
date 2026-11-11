@@ -1,8 +1,8 @@
-// MP-08 / MP-09 / MP-10 / MP-11, peer 443: `chariox.file.copy` reads and writes a leased agent's
+// MP-08 / MP-09 / MP-10 / MP-11, peer 442: `chariox.file.copy` reads and writes a leased agent's
 // workspace one slice at a time over the execution-lease link.
 #[test]
-fn mp11_leased_agent_file_copy_443_is_pinned() {
-    const { assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 443) };
+fn mp11_leased_agent_file_copy_442_is_pinned() {
+    const { assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 442) };
     use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse, RemoteFileBytes};
     let requests = [
         RelayPeerRequest::ReadLeasedAgentFile {

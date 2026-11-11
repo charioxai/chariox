@@ -5,7 +5,7 @@ use super::result::{meta_command_error, meta_command_failure_result};
 use super::*;
 
 /// What a spawner is told about the peer it created in another room.
-pub(super) const PEER_LIFETIME: &str = "the new agent belongs to that room and its owner and stays until the owner deletes it; you cannot delete it, and `agent cancel <agent> --room <room>` stops its turn";
+pub(super) const PEER_LIFETIME: &str = "the new agent belongs to that room and its owner and stays until the owner deletes it or you end (it is deleted with you or your room); you cannot delete it, and `agent cancel <agent> --room <room>` stops its turn";
 
 /// The value of `--room` in a command's arguments.
 fn room_option(args: &[String]) -> Option<&str> {
@@ -74,7 +74,7 @@ impl CommandRouter {
                 let message = if own_room {
                     "an agent in your own room is deleted without --room: `agent delete <agent>`"
                 } else {
-                    "an agent in another room belongs to that room and its owner: only the owner deletes it; `agent cancel <agent> --room <room>` stops its turn"
+                    "an agent in another room belongs to that room and its owner: only the owner deletes it, or it ends with you; `agent cancel <agent> --room <room>` stops its turn"
                 };
                 Some(meta_command_failure_result(
                     command,

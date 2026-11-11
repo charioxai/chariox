@@ -48,6 +48,16 @@ fn client_protocol_conformance_gate_covers_required_surfaces_and_axes() {
         &["mp10_provider_tool_images_910_snapshot_and_hash"],
         &mut failures,
     );
+    assert_file_contains(
+        "apps/kernel/src/local/api/tests/protocol_shapes/landing8.rs",
+        &["landing8_1003_442_shapes_round_trip", "landing8-protocol.json"],
+        &mut failures,
+    );
+    assert_file_contains(
+        "packages/kernel-client/src/landing8-protocol.test.ts",
+        &["landing8-protocol.json", "hideAgentRequest", "source_available"],
+        &mut failures,
+    );
 
     let expected_surfaces = REQUIRED_SURFACES.iter().copied().collect::<BTreeSet<_>>();
     let actual_surfaces = evidence.keys().copied().collect::<BTreeSet<_>>();

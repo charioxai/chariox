@@ -494,7 +494,10 @@ pub use workspace::*;
 /// Temporary 1002 (landing 7): workflow entry gates (`WorkflowGate`, gated entry acceptance, typed event
 /// data), `exec_place` with `placeable_on` on held launches, and a sub-agent tree node's mode, permission
 /// level and effort.
-/// Temporary 1003 (landing 8): a notification agent trigger's summary carries `source_available`.
-/// It also says a gateway request and its answer may carry their bytes as bytes
-/// (`framed_plaintext_v1`), and the relay takes requests as `CXR3` frames (peer 442).
+/// 1003 (Landing 8): `HideAgent`/`AgentHidden` and the agents' `hidden` flag replace the agent archive;
+/// machines have no aliases (`RenameRemoteMachine` is gone); a notification trigger's summary carries
+/// `source_available`; an agent's activity carries `liveness` and health lists `silent_agents`; an App
+/// install that waits for its owner is a passkey prompt (`app_install`); App summaries carry
+/// `display_name` and `icon`; the Vault reports `awaiting_passphrase`; a gateway request and its answer
+/// may carry bytes as bytes (`framed_plaintext_v1`).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1003;

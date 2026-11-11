@@ -1108,9 +1108,8 @@ fn receipt_expiry_protocol_416_refuses_with_a_stable_error_shape() {
     );
 }
 
-/// Pinned without a protocol bump: the Landing 8 union stamps the number once
-/// and then renames this hash fixture to that number. Both fields are optional
-/// and absent on the wire when an App declares none.
+/// Pinned at local 1003. Both fields are optional and absent on the wire when an
+/// App declares none.
 #[test]
 fn app_summaries_pin_the_signed_display_name_and_icon_fields() {
     let release = AppReleaseSummary {

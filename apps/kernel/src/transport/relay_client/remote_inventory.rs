@@ -250,7 +250,6 @@ mod tests {
         let machine = |machine_id: &str, kernel_count| crate::local::RemoteMachineRecord {
             machine_id: machine_id.into(),
             machine_alias: None,
-            registry_alias: None,
             display_name: machine_id.into(),
             trust_status: crate::local::RemoteMachineTrustStatus::Approved,
             online: true,

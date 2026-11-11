@@ -680,7 +680,7 @@ pub(crate) fn start_managed_context_outbound_operation(
 // MP-08/MP-10: Cloud's ticket names the machine this home asked Cloud for and the transfer proved its kernel key,
 // so the owner's own managed machine needs no `/machine approve` on this home.
 fn approve_transfer_target_machine(machine_id: &str) {
-    if let Err(error) = crate::config::DaemonConfig::approve_remote_machine(machine_id, None) {
+    if let Err(error) = crate::config::DaemonConfig::approve_remote_machine(machine_id) {
         tracing::warn!(machine_id, %error, "managed machine stays pending: approval could not be saved; approve it with /machine approve");
     }
 }

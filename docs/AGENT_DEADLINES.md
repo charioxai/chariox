@@ -32,7 +32,7 @@ needed. After a kernel restart, an overdue stored deadline is enforced during
 the first scheduler tick; the original reached/stop receipts are retained.
 
 A leased agent runs on a worker, so the worker enforces its deadline. The home
-sends `SetLeasedAgentDeadline` (relay peer 442, Landing 8) to the worker first and records
+sends `SetLeasedAgentDeadline` (relay peer 442) to the worker first and records
 its own deadline only after the worker confirms; a worker that refuses or does not
 answer leaves no deadline on the home, and a spawn that cannot be armed removes
 the child it created. The worker arms the deadline on the agent that carries the

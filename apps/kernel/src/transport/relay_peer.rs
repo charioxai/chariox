@@ -204,9 +204,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// chunks-v2 frames (`x-chariox-upload`); toward a relay that does not answer the offer the
 /// kernel writes whole messages, and the relay keeps reading whole messages from 440 kernels.
 /// MP-08 / MP-09 / MP-10 / MP-11: peer 442 sends a request's ciphertext as a `CXR3` frame, to a relay that
-/// answers `x-chariox-relay-requests: binary-v1`, and sizes binary chunks to the link. It also carries
-/// `chariox.file.copy`: the leased agent file requests `read_leased_agent_file`,
-/// `write_leased_agent_file` and `discard_leased_agent_file`.
+/// answers `x-chariox-relay-requests: binary-v1`, and sizes binary chunks to the link. It adds
+/// `SetLeasedAgentDeadline`, `DeleteRoomPeer` and the `chariox.file.copy` requests
+/// `ReadLeasedAgentFile`, `WriteLeasedAgentFile` and `DiscardLeasedAgentFile`.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 442;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
@@ -2286,7 +2286,7 @@ mod leased_agent_deadline_shapes {
         );
     }
 
-    // The worker enforces a leased agent's deadline (peer 442, Landing 8): the home asks, then
+    // The worker enforces a leased agent's deadline (peer 442): the home asks, then
     // records the deadline only once the worker confirms it.
     #[test]
     fn the_worker_deadline_request_and_its_confirmation_keep_their_wire_shape() {

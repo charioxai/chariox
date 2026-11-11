@@ -734,7 +734,7 @@ parent as one urgent `child_finished` inbox event carrying `child_agent_id`,
 on a question when the kernel restarted ends as `interrupted_by_restart`. The
 relay peer protocol needs no change for it.
 
-Relay peer 442 (Landing 8) adds `SetLeasedAgentDeadline {leased_agent_id, deadline_ms}`, answered by
+Relay peer 442 adds `SetLeasedAgentDeadline {leased_agent_id, deadline_ms}`, answered by
 `LeasedAgentDeadlineSet {leased_agent_id}`. The home sends it before it records the
 deadline of an agent it leased to a worker (`agent spawn --kernel K --deadline`, `agent
 deadline set`, or a parent's deadline reaching a remote descendant). The worker arms the
@@ -786,7 +786,7 @@ it creates the peer (for another kernel, before the request goes out, named by t
 `request_id`; an offline retry of the same spawn never takes back a link an earlier attempt
 wrote). When the creator is deleted, or its room ends or is deleted, the kernel deletes
 each peer it created through the ordinary agent delete, audited as `agent.deleted`; on another
-kernel that is the same-owner `DeleteRoomPeer` request, which names only the spawn's
+kernel that is the same-owner `DeleteRoomPeer` request (relay peer 442), which names only the spawn's
 `request_id`: the receiving kernel finds the peer by the spawn key, whatever its room is called
 now. A delete that arrives before its spawn created the peer waits for a spawn that is acting
 and otherwise is remembered as the spawn's answer, so that spawn is refused and creates
@@ -5491,7 +5491,7 @@ notification and `completed` on the completed one. Clients draw `images` when
 present and need no minimum version: a kernel below 910 never sends the fields.
 Snapshot: `provider-tool-images-910.json`; drill: `scripts/drills/tool-result-images.mjs`.
 
-### MP-08 / MP-09 / MP-10 / MP-11 — hide an agent (Landing 8)
+### MP-08 / MP-09 / MP-10 / MP-11 — hide an agent — local 1003
 
 `HideAgent { session_id, agent_id, hidden }` keeps an agent out of the Room's panes
 without touching its work: the run, queued prompts, wakes and triggers all go on.
@@ -6423,7 +6423,7 @@ travels only inside the end-to-end-encrypted relay traffic, and both requests ne
 that has an explicit `CHARIOX_HOME` and no config keeps its default Vault at `$CHARIOX_HOME/vault/vault.json`; without
 one it stays `~/.chariox/vault/vault.json`. An agent or an App install that needs the Vault while the kernel has none
 gets the answer a locked Vault gets (`vault_locked`; the unlock card for an agent run), never an instruction to go to
-the machine. No protocol number changes with this: the status field is optional on the wire and `vault_missing`
+the machine. This is local 1003: the status field is optional on the wire and `vault_missing`
 became `vault_awaiting_passphrase`. Focused checks: `cargo test -p chariox-kernel --lib vault_creation` and
 `vault_path`.
 
@@ -6688,7 +6688,7 @@ is admitted only through the human terminal adapter. Responses contain only
 `inserted: true`. Browser display audience comes from the home kernel; model
 observations stay protected even when the owner's display is unmasked.
 
-### MP-08 / MP-09 / MP-10 / MP-11: leased agent file copy — relay peer 443
+### MP-08 / MP-09 / MP-10 / MP-11: leased agent file copy — local 1003 / relay peer 442
 
 The agent tool `chariox.file.copy { source, destination, overwrite?, expect_sha256? }` moves one
 file byte for byte between the calling agent's workspace and the workspace of a leased agent of
@@ -7093,9 +7093,23 @@ pair's peer number for chunked kernel uploads. Managed upgrades admit 1000 and 1
 `fixtures/room-exec-protocol.json`, `fixtures/agent-tree-finished.json`. Focused check:
 `cargo test -p chariox-kernel --lib -- workflow_gate exec_place placeable_on agent_tree protocol_shapes`.
 
+Landing 8 carries local daemon protocol 1003 and relay peer 442. Local 1003: `HideAgent` /
+`AgentHidden` and the agents' `hidden` flag replace the agent archive (`ArchiveAgent`,
+`ListArchivedAgents` and `AgentArchived` are gone); machines carry no aliases and
+`RenameRemoteMachine` is gone; a notification trigger's summary carries `source_available`; an agent's
+activity carries `liveness` and the health report `silent_agents`; an App install that waits for its
+owner is an `app_install` passkey prompt; App summaries carry `display_name` and `icon`; the Vault
+reports `awaiting_passphrase`; a kernel may advertise `framed_plaintext_v1`. Relay peer 442: `CXR3`
+request frames, `SetLeasedAgentDeadline`, `DeleteRoomPeer` and the leased agent file requests of
+`chariox.file.copy`. Managed upgrades admit 1001 and 1002. The client drill reads
+`fixtures/landing8-protocol.json` in the kernel (`protocol_shapes/landing8.rs`) and in the kernel
+client (`landing8-protocol.test.ts`). Focused checks:
+`cargo test -p chariox-kernel --lib -- landing8 protocol_shapes client_protocol_conformance` and
+`node --test packages/kernel-client/dist/landing8-protocol.test.js`.
+
 ### Source availability of a notification trigger — local 1003
 
-Landing 8 carries local daemon protocol 1003 (temporary number). The summary of an agent's notification
+The summary of an agent's notification
 trigger is `{kind:"notification", source, subscription_id, display_name, source_available}`.
 `source_available` is false while the source's kernel is not reachable or the source is gone; the kernel
 recomputes it from the notification inventory each time the inventory refreshes, and a trigger that is off
@@ -7176,7 +7190,7 @@ Client minimums do not change: no web or native client offers the header. Focuse
 and `cargo test -p chariox-kernel --lib -- framed_plaintext relay_upload kernel_gateway::link`;
 the measurement is `node scripts/relay-load-proof/file-share.mjs` (see its README).
 
-### App install approval: one prompt for the owner's terminals that waits — no protocol number
+### App install approval: one prompt for the owner's terminals that waits — local 1003
 
 An App install, update or reinstall that waits for its owner is now a prompt of the passkey feed
 (`passkey_prompts_changed`), so every terminal of the owner shows it wherever it looks, not only the one

@@ -1,6 +1,6 @@
 // MP-08 / MP-09 / MP-10 / MP-11 M2 P3: `agent spawn --room` makes an ordinary agent of another room
 // of the same owner. Rooms from `world`: `room` (a -> {b -> {d}, s}, peer) and `other_room` (q).
-use super::subtree::{error_text, launch, room_command, world, world_with_config, World};
+use super::subtree::{error_text, launch, room_command, world, World};
 use super::*;
 use crate::provider::AgentPermissionLevel;
 use crate::transport::runtime_tools::RuntimeToolResult;
@@ -302,13 +302,10 @@ fn a_spawn_naming_this_kernel_keeps_the_parent_folder() {
     );
 }
 
-/// `--kernel` naming this kernel by id or alias creates a local child, which works in its
-/// parent's checkout, not in the Room's folder.
+/// `--kernel` naming this kernel creates a local child, which works in its parent's checkout,
+/// not in the Room's folder.
 async fn own_kernel_keeps_the_parent_folder() {
-    let mut world = world_with_config("peer-spawn-own-kernel-folder", |config| {
-        config.daemon_alias = Some("home-kernel".to_string());
-    })
-    .await;
+    let mut world = world("peer-spawn-own-kernel-folder").await;
     let room_folder = world._env.root.join("workspace").display().to_string();
     let checkout = world._env.root.join("feature-checkout");
     std::fs::create_dir_all(&checkout).unwrap();
@@ -324,7 +321,7 @@ async fn own_kernel_keeps_the_parent_folder() {
     let token = launch(&world.app, &world.room, parent.id()).await;
     world.tokens.insert("feature", token);
     let own = world.app.lock().await.config().daemon_id.clone();
-    for (alias, kernel) in [("ki", own.as_str()), ("ka", "home-kernel")] {
+    for (alias, kernel) in [("ki", own.as_str())] {
         let spawned = room_command(
             &world,
             "feature",

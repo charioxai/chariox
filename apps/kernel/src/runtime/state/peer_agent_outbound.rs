@@ -203,7 +203,7 @@ impl KernelRuntimeState {
     }
 
     /// The kernel reference of a request to create something, settled before it is placed: this
-    /// kernel by id, alias or machine name keeps the work here (`None`); a machine that runs
+    /// kernel by id or machine name keeps the work here (`None`); a machine that runs
     /// several kernels is refused; any other reference stays for placement, which also refuses an
     /// unknown one.
     pub(crate) async fn settle_kernel_ref(
