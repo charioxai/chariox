@@ -304,8 +304,8 @@ pub(super) struct Ledger {
     /// The owner whose command started last for each reason: the next one in
     /// line is the following owner's.
     served: BTreeMap<u8, String>,
-    /// Since when memory has been short with commands paused for it, and the
-    /// room it had then.
+    /// Since when a command has been paused for memory, and the room the pool
+    /// had then.
     stall: Option<(Instant, u64)>,
     pub(super) stall_window: Duration,
     pub(super) peaks: Peaks,
@@ -599,11 +599,13 @@ impl Ledger {
         may_stop
     }
 
-    /// Whether memory has stayed short, with commands paused for it, for the
-    /// stall window without the pool gaining room: what the paused commands
-    /// hold is then never freed by waiting. Starts over once it ends.
+    /// Whether a command has stayed paused for memory for the stall window
+    /// without the pool gaining room: what the paused commands hold is then
+    /// never freed by waiting. A paused command continues only with room to
+    /// grow, so it can wait with memory above the pressure line too. Starts
+    /// over once it ends.
     pub(super) fn stalled(&mut self, members: &[Arc<Mutex<Observation>>], room: &Room) -> bool {
-        if !room.tight || youngest_paused(members).is_none() {
+        if youngest_paused(members).is_none() {
             self.stall = None;
             return false;
         }

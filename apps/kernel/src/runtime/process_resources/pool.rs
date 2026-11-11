@@ -431,7 +431,7 @@ impl Pool {
             Cause::Stalled(window) => admission::largest_paused(members).map(|waiting| {
                 let paused_for = crate::session::unix_epoch_ms().saturating_sub(waiting.since_ms);
                 let notice = format!(
-                    "chariox: stopped this command: it was paused for memory for {} and the {} MiB it holds is the largest of the paused commands. Memory stayed short for {} s while paused commands freed nothing, so waiting longer would not help. Run it again; it starts when there is room.\n",
+                    "chariox: stopped this command: it was paused for memory for {} and the {} MiB it holds is the largest of the paused commands. The pool gained no room for {} s while the paused commands freed nothing, so waiting longer would not help. Run it again; it starts when there is room.\n",
                     super::waits::duration(paused_for),
                     waiting.resident / MIB,
                     window.as_secs()
