@@ -1477,3 +1477,31 @@ async fn a_startup_snapshot_written_late_never_overwrites_a_newer_outcome() {
     assert!(jobs.attach(state).is_empty());
     assert_eq!(jobs.get(id).unwrap().state, FileTransferState::Done);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_keep_both_transfer_into_a_folder_another_transfer_is_creating_is_refused_without_searching_names(
+) {
+    let (source_side, here) = (scratch("inside-source"), scratch("inside-here"));
+    let tree = source_side.join("proj");
+    for n in 0..3 {
+        plant(&tree.join(format!("f{n}.bin")), 2 * SLICE + n);
+    }
+    let single = source_side.join("x.bin");
+    plant(&single, 100);
+    let slow = Link::with_cue(machine(), Duration::from_millis(300), |_, _| Fault::None);
+    let jobs = Arc::new(TransferJobs::default());
+    let a = jobs.start(request(&tree, &here), slow.source(), machine());
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    // Every name in that folder lies inside the folder the first transfer is writing.
+    let mut inside = request(&single, &here.join("proj"));
+    inside.conflict = FileTransferConflict::KeepBoth;
+    let b = jobs.start(inside, slow.source(), machine());
+    let b = tokio::time::timeout(Duration::from_secs(5), finished(&jobs, &b.job_id))
+        .await
+        .expect("the transfer ended instead of searching names for ever");
+    assert_eq!(b.state, FileTransferState::Failed, "{b:?}");
+    assert!(b.error.unwrap().contains("another transfer"));
+    let a = finished(&jobs, &a.job_id).await;
+    assert_eq!(a.state, FileTransferState::Done, "{a:?}");
+    assert!(!here.join("proj/x.bin").exists());
+}

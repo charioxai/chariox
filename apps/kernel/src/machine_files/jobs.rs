@@ -418,7 +418,10 @@ impl Run {
         let settled = if kept.is_empty() {
             self.settle_name(&folder, &name, request.conflict)?
         } else {
-            Some(self.reserve(Path::new(&kept))?)
+            Some(
+                self.reserve(Path::new(&kept))
+                    .map_err(Refusal::into_message)?,
+            )
         };
         let Some(destination) = settled else {
             self.update(|job| job.skipped += 1);
@@ -473,8 +476,8 @@ impl Run {
             match self.reserve(&wanted) {
                 Ok(held) => return Ok(Some(held)),
                 // Another transfer is bringing that name: keep_both moves to the next free one.
-                Err(error) if conflict != FileTransferConflict::KeepBoth => return Err(error),
-                Err(_) => {}
+                Err(Refusal::Name(_)) if conflict == FileTransferConflict::KeepBoth => {}
+                Err(refusal) => return Err(refusal.into_message()),
             }
         }
         match conflict {
@@ -483,7 +486,10 @@ impl Run {
                 wanted.display()
             )),
             FileTransferConflict::Skip => Ok(None),
-            FileTransferConflict::Replace => self.reserve(&wanted).map(Some),
+            FileTransferConflict::Replace => self
+                .reserve(&wanted)
+                .map(Some)
+                .map_err(Refusal::into_message),
             FileTransferConflict::KeepBoth => {
                 let path = Path::new(name);
                 let stem = path.file_stem().map_or_else(
@@ -493,17 +499,23 @@ impl Run {
                 let extension = path
                     .extension()
                     .map(|extension| format!(".{}", extension.to_string_lossy()));
-                (2..)
-                    .map(|n| {
-                        folder.join(format!(
-                            "{stem} ({n}){}",
-                            extension.as_deref().unwrap_or("")
-                        ))
-                    })
-                    .filter(|candidate| std::fs::symlink_metadata(candidate).is_err())
-                    .find_map(|candidate| self.reserve(&candidate).ok())
-                    .map(Some)
-                    .ok_or_else(|| "no free name".to_owned())
+                for n in 2.. {
+                    let candidate = folder.join(format!(
+                        "{stem} ({n}){}",
+                        extension.as_deref().unwrap_or("")
+                    ));
+                    if std::fs::symlink_metadata(&candidate).is_ok() {
+                        continue;
+                    }
+                    match self.reserve(&candidate) {
+                        Ok(held) => return Ok(Some(held)),
+                        // Another name may be free; a folder another transfer is writing holds
+                        // every name in it, so there is nothing to look for.
+                        Err(Refusal::Name(_)) => {}
+                        Err(refusal @ Refusal::Folder(_)) => return Err(refusal.into_message()),
+                    }
+                }
+                unreachable!("the names are not exhausted")
             }
         }
     }
@@ -511,20 +523,21 @@ impl Run {
     /// Holds the place `path` names for this transfer, or says another transfer is writing there
     /// or in a folder around it. The place is found through the links of its folders, so two
     /// spellings of one place are one place.
-    fn reserve(&self, path: &Path) -> Result<Settled, String> {
+    fn reserve(&self, path: &Path) -> Result<Settled, Refusal> {
         let path = match (path.parent(), path.file_name()) {
             (Some(parent), Some(name)) => resolved(parent).join(name),
             _ => path.to_owned(),
         };
         let mut reserved = self.reserved.lock().expect("reserved destinations");
-        if let Some(held) = reserved
-            .iter()
-            .find(|held| held.starts_with(&path) || path.starts_with(held))
-        {
-            return Err(format!(
-                "another transfer is already writing `{}`; wait for it to end, or choose keep_both",
-                held.display()
-            ));
+        if let Some(held) = reserved.iter().find(|held| path.starts_with(held)) {
+            return Err(if *held == path {
+                Refusal::Name(held.clone())
+            } else {
+                Refusal::Folder(held.clone())
+            });
+        }
+        if let Some(held) = reserved.iter().find(|held| held.starts_with(&path)) {
+            return Err(Refusal::Name(held.clone()));
         }
         reserved.insert(path.clone());
         Ok(Settled {
@@ -803,6 +816,23 @@ impl Run {
                 self.update(|job| job.skipped += 1);
             }
         }
+    }
+}
+
+/// Why a place is not free for a transfer: another transfer holds the name or something below
+/// it (another name may do), or holds a folder around it (no name in it will).
+enum Refusal {
+    Name(PathBuf),
+    Folder(PathBuf),
+}
+
+impl Refusal {
+    fn into_message(self) -> String {
+        let (Self::Name(held) | Self::Folder(held)) = &self;
+        format!(
+            "another transfer is already writing `{}`; wait for it to end, or choose keep_both",
+            held.display()
+        )
     }
 }
 
