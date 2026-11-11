@@ -16,7 +16,6 @@ import {
   listRemoteMachinesRequest,
   recordPairedClientRequest,
   relayStatusRequest,
-  renameRemoteMachineRequest,
   revokePairedClientRequest,
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult } from "./shell-core.js"
@@ -136,15 +135,6 @@ export async function executeMachineCommand(
       const payload = expectVariant<{ machine: RemoteMachineRecord }>(response, "RemoteMachineApproved")
       return { ok: true, message: `approved machine ${formatRemoteMachineLabel(payload.machine)}`, data: payload }
     }
-    case "rename": {
-      if (!kernelRef || rest.length === 0) {
-        return { ok: false, message: "usage: machine rename <machine-ref> <alias>" }
-      }
-      const alias = rest.join(" ")
-      const response = await deps.client.send(renameRemoteMachineRequest(kernelRef, alias))
-      const payload = expectVariant<{ machine: RemoteMachineRecord }>(response, "RemoteMachineRenamed")
-      return { ok: true, message: `renamed machine ${formatRemoteMachineLabel(payload.machine)}`, data: payload }
-    }
     case "forget":
     case "revoke": {
       if (!kernelRef) {
@@ -155,7 +145,7 @@ export async function executeMachineCommand(
       return { ok: true, message: `revoked machine ${formatRemoteMachineLabel(payload.machine)}`, data: payload }
     }
     default:
-      return { ok: false, message: "usage: machine invite create|join|list|kernels|approve|rename|revoke" }
+      return { ok: false, message: "usage: machine invite create|join|list|kernels|approve|revoke" }
   }
 }
 

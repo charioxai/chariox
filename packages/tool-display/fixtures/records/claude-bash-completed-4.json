@@ -1,0 +1,17 @@
+{
+ "provider": "claude",
+ "kind": "Bash",
+ "source": "live 2026-11-10: record from the kernel history of a real claude turn on the lane kernel",
+ "record": {
+  "id": "toolu_011khT2cjwHs2jfy6dAtjVjo",
+  "input": {
+   "command": "find . -maxdepth 1 -name \"*.md\" -type f | sort",
+   "description": "Find *.md files in the working directory (Glob substitute)"
+  },
+  "output": "(Bash completed with no output)",
+  "started_at_ms": 1794314914249,
+  "status": "completed",
+  "tool": "Bash"
+ },
+ "shows": "find\\ \\.\\ \\-maxdepth\\ 1\\ \\-name"
+}

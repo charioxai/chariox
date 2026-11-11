@@ -47,7 +47,6 @@ pub(super) struct ManagedCloudRelayProfile {
     pub(super) relay_url: String,
     pub(super) issuer_id: String,
     pub(super) machine_id: String,
-    pub(super) machine_alias: String,
     pub(super) machine_credential: String,
 }
 
@@ -216,6 +215,18 @@ mod tests {
         ConfirmRequest, ManagedKernelFreshnessEvidence, ManagedKernelRuntimeIdentityReport,
     };
     use crate::managed_bootstrap::freshness::ManagedKernelResidueChecks;
+
+    // The file is Cloud's own exchange answer; Cloud checks its real answer against the same file,
+    // and the answer type refuses fields it does not know.
+    #[test]
+    fn the_exchange_answer_cloud_sends_decodes() {
+        let answer: super::ExchangeResponse = serde_json::from_str(include_str!(
+            "../../tests/cloud-contract/managed-bootstrap-exchange-response.json"
+        ))
+        .unwrap();
+        assert_eq!(answer.cloud_relay.machine_id, "managed-machine-1");
+        assert_eq!(answer.kernel_id, "managed-kernel-1");
+    }
 
     #[test]
     fn confirm_and_pre_reimage_report_wires_match_cloud_contract() {

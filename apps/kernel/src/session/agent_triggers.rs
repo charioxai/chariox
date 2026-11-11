@@ -52,6 +52,10 @@ pub enum AgentTriggerSource {
         subscription_id: String,
         /// The source as the picker named it when the trigger was created.
         display_name: String,
+        /// False while the source's kernel is not reachable or the source is gone: the
+        /// trigger stays, but nothing can fire it. The kernel recomputes it from its
+        /// notification inventory; it is not a setting.
+        source_available: bool,
     },
 }
 
@@ -264,6 +268,7 @@ impl AgentTrigger {
                 source,
                 subscription_id,
                 display_name,
+                source_available: true,
             },
             busy_policy: AgentTriggerBusyPolicy::Queue,
             prompt,
@@ -453,6 +458,19 @@ impl AgentTrigger {
                 self.dispatch_generation = self.dispatch_generation.wrapping_add(1);
             }
             self.enabled = enabled;
+        }
+    }
+
+    /// Records whether a notification trigger's source can reach this kernel; true when it changed.
+    pub(crate) fn set_notification_source_available(&mut self, available: bool) -> bool {
+        match &mut self.source {
+            AgentTriggerSource::Notification {
+                source_available, ..
+            } if *source_available != available => {
+                *source_available = available;
+                true
+            }
+            _ => false,
         }
     }
 

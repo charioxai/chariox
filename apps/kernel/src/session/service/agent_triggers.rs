@@ -213,6 +213,22 @@ impl SessionService {
         Ok(trigger.clone())
     }
 
+    /// Sets the availability of each listed notification trigger; true when any changed.
+    pub(crate) fn set_notification_trigger_availability(
+        &mut self,
+        session_id: &str,
+        availability: &[(String, bool)],
+    ) -> Result<bool, DaemonError> {
+        let session = self.agent_trigger_session_mut(session_id)?;
+        let mut changed = false;
+        for trigger in session.agent_triggers_mut() {
+            if let Some((_, available)) = availability.iter().find(|(id, _)| id == trigger.id()) {
+                changed |= trigger.set_notification_source_available(*available);
+            }
+        }
+        Ok(changed)
+    }
+
     pub fn delete_agent_trigger(
         &mut self,
         session_id: &str,

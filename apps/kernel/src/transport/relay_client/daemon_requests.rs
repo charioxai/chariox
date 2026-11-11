@@ -6,6 +6,8 @@ mod app_tests;
 #[cfg(test)]
 mod collaborator_gate_tests;
 #[cfg(test)]
+mod framed_plaintext_tests;
+#[cfg(test)]
 mod placement_tests;
 mod prepare;
 pub(super) mod request_limits;
@@ -100,6 +102,7 @@ pub(super) async fn handle_prepared_daemon_request(
         caller_identity,
         encrypted_request,
         request_memory: _request_memory,
+        framed,
     } = prepared;
     let (request_kind, command_id, bind_import_response, result) = match message {
         ParsedRelayClientMessage::Request(request) => {
@@ -544,6 +547,7 @@ pub(super) async fn handle_prepared_daemon_request(
                     received_at_ms,
                     daemon_private_key: &daemon_private_key,
                     client_public_key: &client_public_key,
+                    framed,
                 },
             )
         }
@@ -591,6 +595,8 @@ struct SealContext<'a> {
     received_at_ms: u64,
     daemon_private_key: &'a str,
     client_public_key: &'a str,
+    /// The request was framed, so the answer's bytes travel as bytes.
+    framed: bool,
 }
 
 /// Measures, bounds and encrypts the serialized answer to a request.
@@ -605,6 +611,7 @@ fn seal_reply(
         received_at_ms,
         daemon_private_key,
         client_public_key,
+        framed,
     } = context;
     crate::runtime::perf_timing::record_relay_request(
         request_kind,
@@ -642,6 +649,11 @@ fn seal_reply(
             }),
         );
     }
+    let plaintext = if framed {
+        crate::transport::framed_plaintext::frame(&plaintext)
+    } else {
+        plaintext
+    };
     match relay_crypto::encrypt_payload_for_peer(daemon_private_key, client_public_key, &plaintext)
     {
         Ok(encrypted_response) => RelayRequestOutcome {
@@ -1469,7 +1481,6 @@ mod tests {
                 client_id: None,
                 client_alias: None,
                 machine_id: None,
-                machine_alias: None,
                 kernel_id: None,
                 kernel_enrolled: false,
                 token_expires_at_ms: None,
@@ -1521,6 +1532,7 @@ mod reply_ceiling_tests {
                 received_at_ms: crate::session::unix_epoch_ms(),
                 daemon_private_key: &daemon.relay_private_key,
                 client_public_key: &client.relay_public_key,
+                framed: false,
             },
         )
     }

@@ -38,8 +38,7 @@ impl KernelRuntimeState {
         });
         let config = self.owned.config_projection.snapshot();
         let home_name = config
-            .daemon_alias
-            .clone()
+            .machine_name()
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| config.daemon_id.clone());
         let route = match agent.remote_execution() {
@@ -69,7 +68,12 @@ impl KernelRuntimeState {
                                 kernel.kernel_id == remote.worker_kernel_id
                                     && kernel.machine_id == remote.worker_machine_id
                             })
-                            .and_then(|kernel| kernel.kernel_alias.clone())
+                            .and_then(|kernel| {
+                                kernel
+                                    .relay_alias
+                                    .clone()
+                                    .or_else(|| kernel.machine_alias.clone())
+                            })
                     })
                     .filter(|name| !name.trim().is_empty())
                     .unwrap_or_else(|| remote.worker_kernel_id.clone());

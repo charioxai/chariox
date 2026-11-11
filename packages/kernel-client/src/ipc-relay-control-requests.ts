@@ -24,7 +24,6 @@ export function startCloudRelayLoginRequest(apiUrl: string, input: {
   clientId?: string
   clientAlias?: string
   machineId?: string
-  machineAlias?: string
 }) {
   return {
     StartCloudRelayLogin: {
@@ -32,7 +31,6 @@ export function startCloudRelayLoginRequest(apiUrl: string, input: {
       client_id: input.clientId,
       client_alias: input.clientAlias,
       machine_id: input.machineId,
-      machine_alias: input.machineAlias,
     },
   }
 }

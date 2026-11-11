@@ -48,6 +48,8 @@ fn app_dev_register_snapshot_and_default_source() {
             dev_room_id: Some("room".into()),
             generation: "1".into(),
             active_release: None,
+            display_name: None,
+            icon: None,
             pending_generation: Some("2".into()),
             admission_paused: false,
             data_kept: true,
@@ -72,6 +74,6 @@ fn app_dev_register_snapshot_and_default_source() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "b45ee17643f04ec30f06c9e6525d0489c5ed12b86d96ef57b5731a5f73cd9369"
+        "e21b21e4b07bef503b26f95b7002ddeb495ab2b4ad8557a9e295f934b07155aa"
     );
 }

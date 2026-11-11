@@ -25,6 +25,10 @@ const taskMarkerPattern = /^\[([ xX])\][ \t]+/
 const externalHrefPattern = /^(?:https?:\/\/|mailto:)/i
 // Codex's visualize skill ends a reply with this line for the app to draw the HTML page it names.
 const visualizeLinePattern = /^visualize(\{.*\})[ \t]*$/
+// Codex wraps its visualize directive in private-use marks (U+E200 opens, U+E202 separates the name from its arguments, U+E201
+// closes), and a stream may show it only partly wrapped. Its app hides them; here they keep the line from being read. The marks
+// that hug a visualize directive are removed, in prose only: marks in code or in another directive are the reply's own characters.
+const wrappedVisualizePattern = /[\uE200-\uE2FF]*visualize[\uE200-\uE2FF]*(\{[^\uE200-\uE2FF\n]*\})[\uE200-\uE2FF]*/g
 const maxCachedRenders = 300
 
 const markdown = createMarkdown()
@@ -39,7 +43,7 @@ export function renderMarkdownHtml(text: string): string {
   }
   ensureMarkdownInteractions()
   const env: MathEnv = {}
-  const html = `<div class="freeform-markdown">${fillMathSlots(sanitizeMarkdownHtml(markdown.render(text, env)), env)}</div>`
+  const html = `<div class="freeform-markdown">${fillMathSlots(sanitizeMarkdownHtml(markdown.render(unwrapVisualizeDirectives(text), env)), env)}</div>`
   // Pending work may be dropped while its pane is detached. Re-rendering
   // must request it again instead of memoizing an unresolved placeholder.
   if (!/data-(?:code-highlight|math-state)="pending"/.test(html)) renderCache.set(text, html)
@@ -52,7 +56,68 @@ export function renderMarkdownHtml(text: string): string {
 
 export function renderMarkdownInlineHtml(text: string): string {
   const env: MathEnv = {}
-  return fillMathSlots(sanitizeMarkdownHtml(markdown.renderInline(text, env)), env)
+  return fillMathSlots(sanitizeMarkdownHtml(markdown.renderInline(unwrapVisualizeDirectives(text), env)), env)
+}
+
+function unwrapVisualizeDirectives(text: string): string {
+  if (!/[\uE200-\uE2FF]/.test(text)) return text
+  const code = new Set<number>()
+  for (const token of markdown.parse(text, {})) {
+    if ((token.type === "fence" || token.type === "code_block") && token.map) {
+      for (let line = token.map[0]; line < token.map[1]; line += 1) code.add(line)
+    }
+  }
+  // An inline code span may run over several lines of one paragraph, so each paragraph is transformed as a whole.
+  const lines = text.split("\n")
+  const output: string[] = []
+  for (let index = 0; index < lines.length;) {
+    if (code.has(index) || lines[index]!.trim() === "") { output.push(lines[index]!); index += 1; continue }
+    let end = index
+    while (end < lines.length && !code.has(end) && lines[end]!.trim() !== "") end += 1
+    output.push(outsideCodeSpans(lines.slice(index, end).join("\n"), plain => plain.replace(wrappedVisualizePattern, "visualize$1")))
+    index = end
+  }
+  return output.join("\n")
+}
+
+// Applies `transform` to the text between inline code spans. Openers and closers follow the renderer: a backtick the text escapes (\`)
+// is not an opener, a span that quotes an escaped backtick ends at the first unescaped one, and any other span ends at the next
+// backtick run of equal length.
+function outsideCodeSpans(text: string, transform: (text: string) => string): string {
+  let output = ""
+  let plainStart = 0
+  let index = 0
+  while (index < text.length) {
+    if (text[index] !== "`") { index += 1; continue }
+    if (isEscaped(text, index)) { index += 1; continue }
+    const quoting = escapedCodeSpanPattern.exec(text.slice(index))
+    if (quoting?.[1]!.includes("\\`")) {
+      output += transform(text.slice(plainStart, index)) + quoting[0]
+      index += quoting[0].length
+      plainStart = index
+      continue
+    }
+    let runEnd = index
+    while (text[runEnd] === "`") runEnd += 1
+    const run = text.slice(index, runEnd)
+    let close = runEnd
+    for (;;) {
+      close = text.indexOf(run, close)
+      if (close < 0 || (text[close - 1] !== "`" && text[close + run.length] !== "`")) break
+      close += 1
+    }
+    if (close < 0) { index = runEnd; continue }
+    output += transform(text.slice(plainStart, index)) + text.slice(index, close + run.length)
+    index = close + run.length
+    plainStart = index
+  }
+  return output + transform(text.slice(plainStart))
+}
+
+function isEscaped(text: string, index: number): boolean {
+  let slashes = 0
+  while (text[index - 1 - slashes] === "\\") slashes += 1
+  return slashes % 2 === 1
 }
 
 function createMarkdown(): MarkdownItInstance {

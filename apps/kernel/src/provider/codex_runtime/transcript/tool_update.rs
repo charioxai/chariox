@@ -217,13 +217,7 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
             title: None,
             description: None,
             text: None,
-            input: item
-                .get("query")
-                .or_else(|| item.pointer("/action/query"))
-                .or_else(|| item.pointer("/action/queries/0"))
-                .and_then(Value::as_str)
-                .and_then(non_empty)
-                .map(|query| json!({ "query": query })),
+            input: web_search_input(item),
             output: None,
             error: None,
             raw: None,
@@ -413,6 +407,39 @@ fn is_empty_json_value(value: &Value) -> bool {
     }
 }
 
+/// What a web search item asks for: its query (or queries), or the page it opened or looked inside.
+fn web_search_input(item: &Value) -> Option<Value> {
+    fn text(value: Option<&Value>) -> Option<&str> {
+        value.and_then(Value::as_str).and_then(non_empty)
+    }
+    let mut input = serde_json::Map::new();
+    let queries: Vec<&str> = item
+        .pointer("/action/queries")
+        .and_then(Value::as_array)
+        .map(|queries| {
+            queries
+                .iter()
+                .filter_map(|query| text(Some(query)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let query = text(item.get("query"))
+        .or_else(|| text(item.pointer("/action/query")))
+        .or_else(|| queries.first().copied());
+    if let Some(query) = query {
+        input.insert("query".to_string(), json!(query));
+    }
+    if queries.len() > 1 {
+        input.insert("queries".to_string(), json!(queries));
+    }
+    for key in ["url", "pattern"] {
+        if let Some(value) = text(item.pointer(&format!("/action/{key}"))) {
+            input.insert(key.to_string(), json!(value));
+        }
+    }
+    (!input.is_empty()).then_some(Value::Object(input))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,6 +474,24 @@ mod tests {
             json!({"type": "webSearch", "id": "ws-2", "action": {"type": "search", "query": "svg path"}}),
         );
         assert_eq!(action["input"], json!({"query": "svg path"}));
+        let page = rendered(
+            json!({"type": "webSearch", "id": "ws-3", "query": "", "action": {"type": "openPage", "url": "https://example.com/a"}}),
+        );
+        assert_eq!(page["input"], json!({"url": "https://example.com/a"}));
+        let find = rendered(
+            json!({"type": "webSearch", "id": "ws-4", "action": {"type": "findInPage", "url": "https://example.com/a", "pattern": "tickets"}}),
+        );
+        assert_eq!(
+            find["input"],
+            json!({"url": "https://example.com/a", "pattern": "tickets"})
+        );
+        let many = rendered(
+            json!({"type": "webSearch", "id": "ws-5", "query": "a b", "action": {"type": "search", "query": "a b", "queries": ["a b", "c d"]}}),
+        );
+        assert_eq!(
+            many["input"],
+            json!({"query": "a b", "queries": ["a b", "c d"]})
+        );
         let view = rendered(json!({"type": "imageView", "id": "iv-1", "path": "/work/chart.png"}));
         assert_eq!(view["tool"], "view_image");
         assert_eq!(view["input"], json!({"path": "/work/chart.png"}));

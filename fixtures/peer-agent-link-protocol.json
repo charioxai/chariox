@@ -1,5 +1,5 @@
 {
-  "peer": 441,
+  "peer": 442,
   "requests": [
     {
       "kind": "peer_agent_message",
@@ -90,6 +90,16 @@
       }
     },
     {
+      "kind": "delete_room_peer",
+      "protocol_version": 0,
+      "request_id": "request-4",
+      "sender": {
+        "kernel_id": "kernel-a",
+        "room_id": "room-a",
+        "agent_id": "agent-a"
+      }
+    },
+    {
       "kind": "deliver_peer_agent_outcome",
       "protocol_version": 0,
       "delivery_id": "delivery-1",
@@ -157,6 +167,11 @@
         "agent_id": "agent-b"
       },
       "alias": "reviewer"
+    },
+    {
+      "kind": "room_peer_deleted",
+      "protocol_version": 0,
+      "duplicate": true
     },
     {
       "kind": "peer_agent_outcome_ack",

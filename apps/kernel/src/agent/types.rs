@@ -279,6 +279,10 @@ pub struct AgentInstance {
     visible_in_freeform: bool,
     #[serde(default)]
     archived: bool,
+    /// Kept out of the Room's panes by the owner while its work goes on; the kernel clears it when the
+    /// agent's last active or queued prompt finishes, so every client sees the agent come back.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hidden: bool,
     state: AgentState,
     is_processing: bool,
     position: GridPosition,
@@ -331,6 +335,7 @@ impl AgentInstance {
             substitution_timeout_ms: None,
             visible_in_freeform: true,
             archived: false,
+            hidden: false,
             state: AgentState::Idle,
             is_processing: false,
             position,
@@ -565,6 +570,15 @@ impl AgentInstance {
         self.archived
     }
 
+    pub fn hidden(&self) -> bool {
+        self.hidden
+    }
+
+    pub(crate) fn set_hidden(&mut self, hidden: bool) {
+        self.hidden = hidden;
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_archived(&mut self, archived: bool) {
         self.archived = archived;
         if archived {

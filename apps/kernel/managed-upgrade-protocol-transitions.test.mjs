@@ -20,7 +20,7 @@ test("MP-08/MP-09/MP-10/MP-11 managed upgrades admit only the target and the cur
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
   assert.equal(policy.protocol, runtimeProtocol)
   assert.equal(policy.protocol, localProtocolVersion)
-  assert.deepEqual(admittedPredecessorProtocols, [1000, 1001])
+  assert.deepEqual(admittedPredecessorProtocols, [1001, 1002])
   const publication = await readFile(join(REPOSITORY_ROOT, "docker/publication/Dockerfile"), "utf8")
   const publicationPins = [...publication.matchAll(/^ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=(\d+)$/gm)].map(match => Number(match[1]))
   assert.deepEqual(publicationPins, [runtimeProtocol, runtimeProtocol], "builder and runtime publication pins must match the binary")
@@ -56,7 +56,7 @@ test("MP-08/MP-09/MP-10/MP-11 managed upgrades admit only the target and the cur
     }
     // Retired releases and branch protocols are refused in both directions.
     for (const version of [
-      911, 923, 933, 936,
+      911, 923, 933, 936, 1000,
       343, 367, 376, 377, 410, 411, 415, 416, 435, 472, 487, 490, 491, 493,
       506, 511, 513, 517, 519, 520, 528, 552, 556, 567, 589, 592, 594, 596, 599, 614,
       312, 325, 333, 339, 342, 372, 412, 413, 414, 488, 489, 492, 495, 496, 499,

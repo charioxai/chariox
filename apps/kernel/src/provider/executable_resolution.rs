@@ -3,6 +3,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Where a user-level install puts a provider CLI that is not on the PATH of a
+/// kernel started by a service manager.
+pub(super) fn standard_install_candidates(executable: &str) -> Vec<PathBuf> {
+    let name = format!("{executable}{}", std::env::consts::EXE_SUFFIX);
+    let mut candidates = Vec::new();
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        candidates.push(home.join(".local/bin").join(&name));
+        candidates.push(home.join(".npm-global/bin").join(&name));
+        candidates.push(home.join(".bun/bin").join(&name));
+        if executable == "claude" {
+            candidates.push(home.join(".claude/local").join(&name));
+        }
+    }
+    candidates.push(PathBuf::from("/opt/homebrew/bin").join(&name));
+    candidates
+}
+
 const TRANSIENT_RETRY_WINDOW: Duration = Duration::from_secs(5);
 const TRANSIENT_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 

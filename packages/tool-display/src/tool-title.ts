@@ -1,3 +1,4 @@
+import { compactToolName } from "./tool-names.js"
 import type { ApplyPatchFile, ToolDisplayIcon, ToolTranscriptUpdate } from "./types.js"
 
 // Verb + object titles for tool rows ("Ran ls -la", "Read README.md",
@@ -7,12 +8,14 @@ export function toolDisplayTitle(update: ToolTranscriptUpdate, patchFiles: reado
   const active = toolTitleIsActive(update.status)
   const verb = (done: string, running: string) => active ? running : done
   const input = toolTitleRecord(update.input)
-  const name = toolTitleCanonicalName(update.tool)
+  const name = compactToolName(update.tool)
 
   if (patchFiles.length > 0) {
     // A write shown as its diff still says it wrote the file: "Edited" read wrong for a file just created.
     const wrote = TOOL_TITLE_WRITE.has(name)
-    return `${wrote ? verb("Wrote", "Writing") : verb("Edited", "Editing")} ${toolTitlePatchObject(patchFiles)}`
+    const only = patchFiles.every((file) => file.kind === patchFiles[0]!.kind) ? patchFiles[0]!.kind : null
+    const word = only === "delete" ? verb("Deleted", "Deleting") : only === "move" ? verb("Moved", "Moving") : wrote ? verb("Wrote", "Writing") : verb("Edited", "Editing")
+    return `${word} ${toolTitlePatchObject(patchFiles, active)}`
   }
   const command = toolTitleCommand(input)
   if (command !== null || TOOL_TITLE_SHELL.has(name)) {
@@ -37,7 +40,6 @@ export function toolDisplayTitle(update: ToolTranscriptUpdate, patchFiles: reado
     case "charioxeditartifact":
     case "charioxapplypatch":
     case "charioxpatchartifact":
-    case "mcpcharioxpatchartifact":
     case "editartifact":
     case "patchartifact":
       return `${verb("Edited", "Editing")} ${toolTitleShort(path) ?? "files"}`
@@ -53,6 +55,18 @@ export function toolDisplayTitle(update: ToolTranscriptUpdate, patchFiles: reado
     case "charioxmoveartifact":
     case "moveartifact":
       return `${verb("Moved", "Moving")} ${toolTitleShort(path) ?? "a file"}`
+    case "charioxvisualshow":
+    case "visualshow":
+    case "charioxcharioxvisualshow":
+    case "mcpcharioxvisualshow":
+    case "mcpcharioxcharioxvisualshow":
+      return verb("Showed a page", "Showing a page")
+    case "charioxvisualpreview":
+    case "visualpreview":
+    case "charioxcharioxvisualpreview":
+    case "mcpcharioxvisualpreview":
+    case "mcpcharioxcharioxvisualpreview":
+      return verb("Previewed a page", "Previewing a page")
     case "grep":
     case "search":
     case "rg":
@@ -71,7 +85,7 @@ export function toolDisplayTitle(update: ToolTranscriptUpdate, patchFiles: reado
       return `${verb("Listed", "Listing")} ${toolTitleShort(path) ?? "files"}`
     case "websearch":
     case "webquery":
-      return pattern ? `${verb("Searched", "Searching")} the web for ${toolTitleShort(pattern)}` : verb("Searched the web", "Searching the web")
+      return webSearchTitle(input, pattern, verb)
     case "webfetch":
     case "fetch":
     case "fetchurl":
@@ -107,7 +121,7 @@ export const TOOL_DISPLAY_ICON_GLYPHS: Readonly<Record<ToolDisplayIcon, string>>
 // The icon shown left of a tool row's title; same classification as the title.
 export function toolDisplayIcon(update: ToolTranscriptUpdate, patchFiles: readonly ApplyPatchFile[] = []): ToolDisplayIcon {
   const input = toolTitleRecord(update.input)
-  const name = toolTitleCanonicalName(update.tool)
+  const name = compactToolName(update.tool)
   const raw = typeof update.tool === "string" ? update.tool : ""
   const browser = (value: string) => /browser|computer|playwright|chrome|screenshot|navigate|webview/i.test(value)
   if (patchFiles.length > 0) {
@@ -129,7 +143,7 @@ export function toolDisplayIcon(update: ToolTranscriptUpdate, patchFiles: readon
       return name === "todoread" ? "plan" : "read"
     case "edit": case "multiedit": case "strreplace": case "strreplacebasededittool": case "notebookedit":
     case "applypatch": case "patch": case "charioxeditartifact": case "charioxapplypatch": case "charioxpatchartifact":
-    case "mcpcharioxpatchartifact": case "editartifact": case "patchartifact": case "write": case "writefile":
+    case "editartifact": case "patchartifact": case "write": case "writefile":
     case "create": case "charioxwriteartifact": case "writeartifact": case "charioxdeleteartifact":
     case "deleteartifact": case "charioxmoveartifact": case "moveartifact":
       return "edit"
@@ -158,7 +172,7 @@ function toolTitleSimpleProgram(script: string) {
   return /^[^|;&<>`$()\n]+$/.test(line) ? line.split(/\s+/)[0]!.split("/").pop() ?? null : null
 }
 
-const TOOL_TITLE_WRITE = new Set(["write", "writefile", "create", "charioxwriteartifact", "writeartifact"])
+const TOOL_TITLE_WRITE = new Set(["write", "writefile", "create", "charioxwriteartifact", "writeartifact", "mcpcharioxwriteartifact", "mcpcharioxcharioxwriteartifact", "charioxcharioxwriteartifact"])
 
 const TOOL_TITLE_SHELL = new Set([
   "bash", "shell", "sh", "shellcommand", "execcommand", "runcommand", "runshellcommand",
@@ -169,10 +183,6 @@ const TOOL_TITLE_ACTIVE = new Set(["running", "pending", "in_progress", "inprogr
 
 function toolTitleIsActive(status: unknown) {
   return typeof status === "string" && TOOL_TITLE_ACTIVE.has(status.trim().toLowerCase())
-}
-
-function toolTitleCanonicalName(tool: unknown) {
-  return typeof tool === "string" ? tool.trim().replace(/[\s._-]/g, "").toLowerCase() : ""
 }
 
 function toolTitleRecord(value: unknown): Record<string, unknown> | null {
@@ -273,7 +283,7 @@ function toolTitleUnquote(value: string) {
   return value.replace(/^(['"])(.*)\1$/, "$2")
 }
 
-function toolTitlePatchObject(files: readonly ApplyPatchFile[]) {
+function toolTitlePatchObject(files: readonly ApplyPatchFile[], active = false) {
   let added = 0
   let removed = 0
   for (const file of files) {
@@ -282,8 +292,18 @@ function toolTitlePatchObject(files: readonly ApplyPatchFile[]) {
       else if (line.startsWith("-") && !line.startsWith("---")) removed += 1
     }
   }
-  const counts = added || removed ? ` (+${added} −${removed})` : ""
+  // A call still running has no settled count to give.
+  const counts = !active && (added || removed) ? ` (+${added} −${removed})` : ""
   return files.length === 1 ? `${toolTitleShort(files[0]!.filePath)}${counts}` : `${files.length} files${counts}`
+}
+
+// A web search is a query, or a page it opened, or a look inside that page for some text.
+function webSearchTitle(input: Record<string, unknown> | null, pattern: string | null, verb: (done: string, running: string) => string) {
+  const url = toolTitleString(input, "url")
+  if (url) {
+    return input?.pattern && typeof input.pattern === "string" ? `${verb("Looked", "Looking")} for ${toolTitleShort(input.pattern)} in ${toolTitleShort(url)}` : `${verb("Opened", "Opening")} ${toolTitleShort(url)}`
+  }
+  return pattern ? `${verb("Searched", "Searching")} the web for ${toolTitleShort(pattern)}` : verb("Searched the web", "Searching the web")
 }
 
 function toolTitleCalledName(update: ToolTranscriptUpdate) {

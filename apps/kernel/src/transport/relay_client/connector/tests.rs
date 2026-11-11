@@ -29,7 +29,6 @@ fn missing_relay_config_with_cloud_profile_is_cloud_unavailable() {
         client_id: None,
         client_alias: None,
         machine_id: None,
-        machine_alias: None,
         machine_credential: Some("machine-credential".to_string()),
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,
@@ -742,6 +741,7 @@ async fn relay_event_writer_delivers_ready_events_without_a_frame_wait() {
         receipt_rx,
         None,
         false,
+        false,
         Arc::new(std::sync::atomic::AtomicBool::new(false)),
         Arc::default(),
     ));
@@ -802,6 +802,7 @@ async fn relay_event_writer_preserves_controls_bounded_events_and_fifo() {
         receipt_rx,
         None,
         false,
+        false,
         Arc::new(std::sync::atomic::AtomicBool::new(false)),
         Arc::default(),
     ));
@@ -842,7 +843,6 @@ fn retained_cloud_private_relay_does_not_hydrate_cloud_transport() {
         client_id: None,
         client_alias: None,
         machine_id: None,
-        machine_alias: None,
         machine_credential: Some("machine-credential".to_string()),
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,

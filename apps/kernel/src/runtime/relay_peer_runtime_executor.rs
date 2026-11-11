@@ -172,6 +172,16 @@ pub(crate) async fn update_relay_leased_agent_remote_extension_manifest(
         .await
 }
 
+pub(crate) async fn set_relay_leased_agent_deadline(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    deadline_ms: u64,
+) -> Result<(), DaemonError> {
+    runtime_state
+        .set_relay_leased_agent_deadline(leased_agent_id, deadline_ms)
+        .await
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn launch_relay_leased_native_provider_run(
     runtime_state: &KernelRuntimeState,

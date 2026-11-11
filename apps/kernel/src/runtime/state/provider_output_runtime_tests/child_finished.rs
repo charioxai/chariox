@@ -74,9 +74,24 @@ pub(super) async fn family(
     settle_cancelled: Option<bool>,
     parent_running: bool,
 ) -> Family {
+    family_with_history_root(label, children, settle_cancelled, parent_running, None).await
+}
+
+/// `history_root` keeps the Room's history (and its public projection) on disk, so a test can
+/// read a turn back through the history tool.
+pub(super) async fn family_with_history_root(
+    label: &str,
+    children: usize,
+    settle_cancelled: Option<bool>,
+    parent_running: bool,
+    history_root: Option<std::path::PathBuf>,
+) -> Family {
     let worktree = crate::test_support::TestWorktree::new(label);
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
+    if let Some(root) = history_root {
+        config = config.with_session_history_root(root);
+    }
     let mut app = DaemonApp::bootstrap(config).unwrap();
     let (session, parent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -199,7 +214,9 @@ pub(super) async fn family(
     }
 }
 
-fn child_finished(team: &Team) -> Vec<crate::durable_state::agent_lifecycle::InboxEvent> {
+pub(super) fn child_finished(
+    team: &Team,
+) -> Vec<crate::durable_state::agent_lifecycle::InboxEvent> {
     team.runtime
         .owned
         .durable_state_store

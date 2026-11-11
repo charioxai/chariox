@@ -592,10 +592,13 @@ impl KernelRuntimeState {
         request.kernel_ref = self.settle_kernel_ref(request.kernel_ref.take()).await?;
         if request.kernel_ref.is_none() {
             self.keep_child_folder_inside_parent(&request)?;
-            request = self.prepare_local_agent_worktree_placement(request)?;
+            let (request, checkout) = self.prepare_local_agent_worktree_placement(request)?;
             #[cfg(test)]
             crate::agent::authority_limit::run_hook_before_spawn_commit(&request.session_id);
-            return self.owned.spawn_agent(request);
+            return self
+                .owned
+                .spawn_agent(request)
+                .map_err(|error| self.discard_unused_checkouts(checkout, error));
         }
         self.with_app_side_effect(|app| {
             self.authorize_current_external_command()?;
@@ -623,10 +626,34 @@ impl KernelRuntimeState {
         crate::agent::authority_limit::check_directory(&parent, &session, directory)
     }
 
+    /// The checkout made for a spawn that failed before any agent was registered leaves nothing
+    /// behind. A failure after the agent was registered (its event or dispatch receipt) keeps it.
+    /// What cannot be removed is named in the refusal that is returned.
+    pub(super) fn discard_unused_checkouts(
+        &self,
+        checkouts: impl IntoIterator<Item = crate::git_worktree_placement::PreparedWorktree>,
+        error: DaemonError,
+    ) -> DaemonError {
+        let agents = self.owned.agent_store.list_agents();
+        let leftover = checkouts
+            .into_iter()
+            .filter_map(|checkout| checkout.discard_unless_used(&agents, "agent.spawn"))
+            .collect();
+        crate::git_worktree_placement::with_leftover(error, leftover)
+    }
+
+    /// Makes the checkout a spawn asks for. The checkout is returned so the caller removes it if
+    /// the agent is then refused.
     pub(super) fn prepare_local_agent_worktree_placement(
         &self,
         mut request: crate::agent::CreateAgentRequest,
-    ) -> Result<crate::agent::CreateAgentRequest, DaemonError> {
+    ) -> Result<
+        (
+            crate::agent::CreateAgentRequest,
+            Option<crate::git_worktree_placement::PreparedWorktree>,
+        ),
+        DaemonError,
+    > {
         let session = self.owned.session_store.get_session(&request.session_id)?;
         let base_worktree = request
             .worktree_id
@@ -638,7 +665,7 @@ impl KernelRuntimeState {
             "agent.spawn",
         )?;
         let Some(placement) = request.worktree_placement.take() else {
-            return Ok(request);
+            return Ok((request, None));
         };
         let parent = request
             .parent_agent_id
@@ -656,12 +683,14 @@ impl KernelRuntimeState {
                 None => Ok(()),
             },
         )?;
-        self.copy_environment_files_into_worktree(
+        if let Err(error) = self.copy_environment_files_into_worktree(
             std::path::Path::new(base_worktree),
-            std::path::Path::new(&resolved),
-        )?;
-        request.worktree_id = Some(resolved);
-        Ok(request)
+            std::path::Path::new(&resolved.path),
+        ) {
+            return Err(self.discard_unused_checkouts([resolved], error));
+        }
+        request.worktree_id = Some(resolved.path.clone());
+        Ok((request, Some(resolved)))
     }
 
     pub(crate) async fn resolve_slice_worker_kernel_ref(
@@ -900,8 +929,7 @@ impl KernelRuntimeState {
             )?;
         }
         self.remove_destroyed_agent_provider_processes(local_provider_run_ids);
-        super::agent_archive_runtime_state::end_agent_processes(destroyed.session_id(), agent_id)
-            .await?;
+        end_agent_processes(destroyed.session_id(), agent_id).await?;
         self.append_agent_durable_event("agent.deleted", &destroyed, None)
             .await?;
         // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: a removed delegate is a
@@ -1415,8 +1443,7 @@ pub(super) fn kernel_ref_matches_local_config(
     kernel_ref: &str,
 ) -> bool {
     let kernel_ref = kernel_ref.trim();
-    !kernel_ref.is_empty()
-        && (config.daemon_id == kernel_ref || config.daemon_alias.as_deref() == Some(kernel_ref))
+    !kernel_ref.is_empty() && config.daemon_id == kernel_ref
 }
 
 fn slice_worker_ready(slice: &crate::slice::SliceRecord, provider: Option<&str>) -> bool {
@@ -1430,6 +1457,22 @@ fn slice_worker_ready(slice: &crate::slice::SliceRecord, provider: Option<&str>)
         .providers
         .iter()
         .any(|candidate| candidate == provider)
+}
+
+/// A deleted agent's jobs end, including those of a provider process removed later.
+async fn end_agent_processes(session_id: &str, agent_id: &str) -> Result<(), DaemonError> {
+    let (session_id, owner) = (
+        session_id.to_string(),
+        crate::runtime::process_resources::SessionProcessOwner::Agent(agent_id.to_string()),
+    );
+    tokio::task::spawn_blocking(move || {
+        crate::runtime::process_resources::end_owner(Some(&session_id), Some(&owner))
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "end agent processes",
+        message: error.to_string(),
+    })
 }
 
 #[cfg(test)]

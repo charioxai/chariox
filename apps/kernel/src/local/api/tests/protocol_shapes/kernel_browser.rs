@@ -586,7 +586,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "097cd87ebe059872b538f40f7cc3b11d6a24e176d784af6a5485af0b3a23a8c9"
+        "ed00042bdbfab1a06b865148fe5a18f7d6406250d5bb2bc5400214a238728aa0"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -689,7 +689,7 @@ fn browser_resize_protocol629_snapshot() {
     let bytes = include_bytes!("browser-resize-629.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "4c29483f4bf03fcedcb3d4a025988b639b831b5398ad16a7dbe2c6081d5cec43"
+        "bef46579007eba9a29e6cfadd909ef502cb3b09e8a54507651d1e071885b620f"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
@@ -730,7 +730,7 @@ fn mp08_mp10_browser_header_937_shape_and_hash() {
     let bytes = include_bytes!("browser-header-937.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "0bb76ac2f699640e406a5213f1be5635bc0674d78844aea77c9a134602928a10"
+        "1ebb777add8a927457ff6a2608922db686a8b6949a8a0c28c10405118eb18de2"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let response: LocalDaemonResponse =
@@ -753,7 +753,7 @@ fn mp08_mp11_vault_fill_941_shape_and_hash() {
     let bytes = include_bytes!("kernel-browser-vault-fill-941.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "b313e9de1a2b787a6a14a7faeabca6619781d2c7ecb4e2273648bdda8e359b83"
+        "68024d4e11ceb38ee6516694d420c52086e40027c02d515a6040d2a2346a42f7"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(fixture["request"].clone()).unwrap();
@@ -784,4 +784,13 @@ fn show_tab_is_a_person_command_with_its_tab_and_generation() {
         .is_err(),
         "no field names who asks"
     );
+}
+
+#[test]
+fn a_popup_tab_names_its_opener_tab_without_a_protocol_bump() {
+    let wire = serde_json::json!({"KernelBrowser":{"result":{"generation":2,"state":"ready","active_tab_id":"popup","tabs":[
+        {"tab_id":"source","document_id":"d0","url":"https://example.com/","title":"Example"},
+        {"tab_id":"popup","document_id":"d1","url":"https://login.example/","title":"Sign in","opener_tab_id":"source"}]}}});
+    let response: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(response).unwrap(), wire);
 }

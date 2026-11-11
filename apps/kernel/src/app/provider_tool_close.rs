@@ -69,6 +69,52 @@ fn is_running_background_record(record: &serde_json::Map<String, serde_json::Val
             .is_some_and(serde_json::Value::is_null)
 }
 
+/// What a run's background commands are doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackgroundCalls {
+    /// The run launched none.
+    None,
+    /// At least one has not reported its end.
+    Running,
+    /// Every one ended; `last_ended_at_ms` is when the last of them did.
+    Ended { last_ended_at_ms: u64 },
+}
+
+/// Whether output is the provider doing work, not the report that a background call ended.
+pub(crate) fn is_work_of_a_turn(kind: &TerminalOutputKind, bytes: &[u8]) -> bool {
+    if *kind != TerminalOutputKind::ProviderTool {
+        return true;
+    }
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .map_or(true, |tool| tool.get("background") != Some(&true.into()))
+}
+
+/// The state of every background command in `entries` (one run's tool rows, oldest first).
+pub(crate) fn background_calls(entries: Vec<SessionHistoryEntry>) -> BackgroundCalls {
+    let mut calls = BackgroundCalls::None;
+    for (_, record) in latest_provider_tool_records(entries).into_values() {
+        if record.get("background") != Some(&serde_json::Value::Bool(true)) {
+            continue;
+        }
+        if is_running_background_record(&record) {
+            return BackgroundCalls::Running;
+        }
+        let ended_at_ms = record
+            .get("finished_at_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        calls = match calls {
+            BackgroundCalls::Ended { last_ended_at_ms } => BackgroundCalls::Ended {
+                last_ended_at_ms: last_ended_at_ms.max(ended_at_ms),
+            },
+            _ => BackgroundCalls::Ended {
+                last_ended_at_ms: ended_at_ms,
+            },
+        };
+    }
+    calls
+}
+
 fn ended_row(
     merge_key: Option<String>,
     record: serde_json::Map<String, serde_json::Value>,
@@ -188,6 +234,43 @@ mod tests {
         rows.into_iter()
             .map(|(_, bytes)| serde_json::from_slice(&bytes).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn background_calls_tell_running_from_ended_by_the_latest_row_of_each() {
+        let launched = |id: &str, finished: serde_json::Value| serde_json::json!({"id":id,"tool":"Bash","status":"completed","started_at_ms":1,"background":true,"finished_at_ms":finished});
+        let foreground =
+            serde_json::json!({"id":"fg","tool":"Read","status":"completed","started_at_ms":1});
+        assert_eq!(
+            background_calls(tool_rows(std::slice::from_ref(&foreground))),
+            BackgroundCalls::None
+        );
+        assert_eq!(
+            background_calls(tool_rows(&[
+                foreground.clone(),
+                launched("a", serde_json::Value::Null)
+            ])),
+            BackgroundCalls::Running
+        );
+        // The end of the same call replaces its running row.
+        assert_eq!(
+            background_calls(tool_rows(&[
+                launched("a", serde_json::Value::Null),
+                launched("a", 9.into()),
+                launched("b", 7.into()),
+            ])),
+            BackgroundCalls::Ended {
+                last_ended_at_ms: 9
+            }
+        );
+        // One that still runs outweighs the ones that ended.
+        assert_eq!(
+            background_calls(tool_rows(&[
+                launched("a", 9.into()),
+                launched("b", serde_json::Value::Null)
+            ])),
+            BackgroundCalls::Running
+        );
     }
 
     #[test]

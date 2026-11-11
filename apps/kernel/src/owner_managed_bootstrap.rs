@@ -115,8 +115,8 @@ async fn enroll(
 fn ticket_enrollment_body(config: &DaemonConfig, ticket: &str) -> Value {
     let mut body = json!({"ticket":ticket,"kernelId":config.daemon_id,"machineId":config.host_machine_id,
         "publicKeyThumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key)});
-    if let Some(alias) = &config.daemon_alias {
-        body["kernelAlias"] = json!(alias);
+    if let Some(name) = config.machine_name() {
+        body["machineName"] = json!(name);
     }
     body
 }
@@ -205,14 +205,11 @@ pub async fn enroll_device_from_stdin() -> Result<(), DaemonError> {
         println!("{}", public_identity(&config)?);
         return Ok(());
     }
-    let request = serde_json::from_value(json!({"api_url":api_url})).map_err(|_| error())?;
     let started: CloudDeviceStartResponse = enrollment_exchange(
         api_url.clone(),
         "/auth/device/start",
         201,
-        crate::runtime::cloud_relay_login_executor::kernel_device_enrollment_body(
-            &config, &request,
-        ),
+        crate::runtime::cloud_relay_login_executor::kernel_device_enrollment_body(&config),
     )
     .await?;
     let code = Zeroizing::new(started.device_code);
@@ -559,23 +556,20 @@ mod self_setup_tests {
 #[cfg(test)]
 mod review_contract_tests {
     use super::*;
+    // The file is what Cloud's strict schema accepts; Cloud checks it against that schema.
     #[test]
-    fn byom_mp11_ticket_body_matches_cloud302_strict_schema() {
-        let config = DaemonConfig::for_tests();
-        let body = ticket_enrollment_body(&config, "synthetic-single-use-code");
-        let allowed = [
-            "ticket",
-            "machineId",
-            "kernelId",
-            "publicKeyThumbprint",
-            "kernelAlias",
-        ];
-        assert!(body
-            .as_object()
-            .unwrap()
-            .keys()
-            .all(|field| allowed.contains(&field.as_str())));
-        assert!(body.get("kernelAlias").is_none());
+    fn byom_mp11_ticket_body_is_what_cloud_accepts() {
+        let mut config = DaemonConfig::for_tests();
+        config.machine_name_for_tests = Some("fixture-machine".into());
+        let mut body = ticket_enrollment_body(&config, "synthetic-single-use-code");
+        let expected: Value = serde_json::from_str(include_str!(
+            "../tests/cloud-contract/ticket-redeem-request.json"
+        ))
+        .unwrap();
+        // The thumbprint is of a key made for the test; the file carries a stand-in of the same shape.
+        assert_eq!(body["publicKeyThumbprint"].as_str().unwrap().len(), 64);
+        body["publicKeyThumbprint"] = expected["publicKeyThumbprint"].clone();
+        assert_eq!(body, expected);
     }
     #[tokio::test]
     async fn byom_mp11_distinct_account_and_user_enroll_without_losing_consumed_credential() {

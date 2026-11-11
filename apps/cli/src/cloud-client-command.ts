@@ -62,7 +62,7 @@ export async function runCloudClientCommand(argv: string[]): Promise<boolean> {
   try {
     if (argv[1] === "kernels") {
       const targets = await client.directory()
-      for (const target of targets) process.stdout.write(`${target.machineAlias ?? target.machineId}\t${target.daemonAlias ?? target.daemonId}\t${target.daemonId}\t${target.status.toLowerCase()}\n`)
+      for (const target of targets) process.stdout.write(`${target.name ?? target.machineId}\t${target.daemonId}\t${target.status.toLowerCase()}\n`)
     } else {
       const handle = createCloudClientCommands({ offerSetup: offerLocalKernelSetup, setup: profile => startLocalKernelSetup(profile), client, isKernelConnected: () => false, apiUrl: () => apiUrl, notice: message => process.stdout.write(`${message}\n`), saveProfile: saveRelayCloudProfile, accountId: async () => relayCloudProfile(preferences)?.accountId, refresh: async () => {}, openUrl: openExternalUrl })
       await handle([argv[1]!])

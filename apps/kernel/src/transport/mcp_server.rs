@@ -13,6 +13,8 @@ use hyper_util::rt::TokioIo;
 use serde_json::Value;
 use tokio::net::TcpListener;
 
+#[cfg(not(unix))]
+use crate::config::ListenPort;
 use crate::error::DaemonError;
 use crate::runtime::router::CommandRouter;
 
@@ -41,19 +43,28 @@ pub(crate) async fn bind_mcp_http_server(
     };
     // Agents' tool calls during a hot reload wait for the new program.
     #[cfg(unix)]
-    {
-        let listener = crate::hot_reload::tcp_listener("runtime_mcp", &bind_host, bind_port)
-            .and_then(|listener| {
-                listener.set_nonblocking(true)?;
-                TcpListener::from_std(listener)
-            })
-            .map_err(failed)?;
-        Ok(listener)
-    }
+    let listener = crate::hot_reload::tcp_listener("runtime_mcp", &bind_host, bind_port)
+        .and_then(|listener| {
+            listener.set_nonblocking(true)?;
+            TcpListener::from_std(listener)
+        })
+        .map_err(failed)?;
     #[cfg(not(unix))]
-    TcpListener::bind((bind_host.as_str(), bind_port))
-        .await
-        .map_err(failed)
+    let listener = match bind_port {
+        ListenPort::Exact(port) => TcpListener::bind((bind_host.as_str(), port)).await,
+        ListenPort::PreferredElseAny(port) => {
+            match TcpListener::bind((bind_host.as_str(), port)).await {
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                    TcpListener::bind((bind_host.as_str(), 0)).await
+                }
+                bound => bound,
+            }
+        }
+    }
+    .map_err(failed)?;
+    let port = listener.local_addr().map_err(failed)?.port();
+    router.publish_runtime_mcp_port(port).await;
+    Ok(listener)
 }
 
 pub(crate) async fn run_mcp_http_server_on_listener(

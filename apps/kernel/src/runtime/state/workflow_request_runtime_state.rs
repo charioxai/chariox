@@ -72,7 +72,11 @@ impl KernelRuntimeState {
             }
         }
 
-        let outcome = match request {
+        let source_update = matches!(
+            request,
+            LocalDaemonRequest::RegisterWorkflowNotificationSource(_)
+        );
+        let mut outcome = match request {
             request @ (LocalDaemonRequest::RegisterWorkflowNotificationSource(_)
             | LocalDaemonRequest::AttachWorkflowNotification(_)
             | LocalDaemonRequest::DetachWorkflowNotification(_)
@@ -583,6 +587,31 @@ impl KernelRuntimeState {
             ),
         };
         if outcome.0.is_ok() {
+            // A source switched off, or a workflow or exit removed, leaves the triggers that
+            // listen to it unavailable.
+            if source_update || outcome.1.is_some() {
+                if let Err(error) = self.sync_agent_notification_trigger_availability() {
+                    return (Err(error), outcome.1);
+                }
+            }
+            // The snapshot the command produced predates the sync; publish and return the
+            // corrected one.
+            if let Some(stale) = outcome.1.as_ref() {
+                match self.owned.session_snapshot(stale.id()) {
+                    Ok(current) => {
+                        if let Some(embedded) = outcome
+                            .0
+                            .as_mut()
+                            .ok()
+                            .and_then(workflow_response_session_mut)
+                        {
+                            *embedded = current.clone();
+                        }
+                        outcome.1 = Some(current);
+                    }
+                    Err(error) => return (Err(error), outcome.1),
+                }
+            }
             if let Some(session) = outcome.1.as_ref() {
                 if let Err(error) = self
                     .append_session_durable_event("session.updated", session, "workflow")
@@ -596,58 +625,75 @@ impl KernelRuntimeState {
     }
 }
 
+/// The session a workflow response carries, for the shared and the mutable view alike.
+macro_rules! workflow_response_session_of {
+    ($response:expr) => {
+        match $response {
+            LocalDaemonResponse::WorkflowCreated { session, .. }
+            | LocalDaemonResponse::AgentWorkflowCreated { session, .. }
+            | LocalDaemonResponse::WorkflowCodeSourceBound { session, .. }
+            | LocalDaemonResponse::WorkflowCodeSourceRebuilt { session, .. }
+            | LocalDaemonResponse::WorkflowCodeSourceUpdated { session, .. }
+            | LocalDaemonResponse::WorkflowCodeApplied { session, .. }
+            | LocalDaemonResponse::WorkflowCodeRun { session, .. }
+            | LocalDaemonResponse::WorkflowRegistryEntryLoaded { session, .. }
+            | LocalDaemonResponse::WorkflowRegistryEntryRun { session, .. }
+            | LocalDaemonResponse::WorkflowDesignOpAccepted { session, .. }
+            | LocalDaemonResponse::WorkflowAliased { session, .. }
+            | LocalDaemonResponse::WorkflowPublicationCreated { session, .. }
+            | LocalDaemonResponse::WorkflowPublicationDisabled { session, .. }
+            | LocalDaemonResponse::WorkflowPublicationMaterialized { session, .. }
+            | LocalDaemonResponse::WorkflowEndpointCreated { session, .. }
+            | LocalDaemonResponse::WorkflowEndpointAliased { session, .. }
+            | LocalDaemonResponse::WorkflowEndpointBound { session, .. }
+            | LocalDaemonResponse::WorkflowNodeAdded { session, .. }
+            | LocalDaemonResponse::WorkflowNodeRemoved { session, .. }
+            | LocalDaemonResponse::WorkflowNodeInstructionsUpdated { session, .. }
+            | LocalDaemonResponse::WorkflowNodeCanCompleteRunUpdated { session, .. }
+            | LocalDaemonResponse::WorkflowNodeCanEmitIntermediateOutputUpdated {
+                session, ..
+            }
+            | LocalDaemonResponse::WorkflowNodeWaitForAllInputsUpdated { session, .. }
+            | LocalDaemonResponse::WorkflowNodeIntermediateOutputSchemaUpdated {
+                session, ..
+            }
+            | LocalDaemonResponse::WorkflowNodeMaxTurnsUpdated { session, .. }
+            | LocalDaemonResponse::WorkflowEdgeAdded { session, .. }
+            | LocalDaemonResponse::WorkflowEdgeRemoved { session, .. }
+            | LocalDaemonResponse::WorkflowCanvasLayoutUpdated { session, .. }
+            | LocalDaemonResponse::WorkflowRunInvoked { session, .. }
+            | LocalDaemonResponse::WorkflowPromptEnqueued { session, .. }
+            | LocalDaemonResponse::WorkflowRunCancelled { session, .. }
+            | LocalDaemonResponse::WorkflowRunPaused { session, .. }
+            | LocalDaemonResponse::WorkflowRunResumed { session, .. }
+            | LocalDaemonResponse::WorkflowWatchdogCreated { session, .. }
+            | LocalDaemonResponse::WorkflowWatchdogUpdated { session, .. }
+            | LocalDaemonResponse::WorkflowWatchdogRemoved { session, .. }
+            | LocalDaemonResponse::WorkflowScheduleCreated { session, .. }
+            | LocalDaemonResponse::WorkflowScheduleUpdated { session, .. }
+            | LocalDaemonResponse::WorkflowScheduleRemoved { session, .. }
+            | LocalDaemonResponse::WorkflowFlushContextUpdated { session, .. }
+            | LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { session, .. }
+            | LocalDaemonResponse::WorkflowPromptQueueCreated { session, .. }
+            | LocalDaemonResponse::WorkflowPromptQueueUpdated { session, .. }
+            | LocalDaemonResponse::WorkflowPromptQueueRemoved { session, .. }
+            | LocalDaemonResponse::QueuedWorkflowPromptUpdated { session, .. }
+            | LocalDaemonResponse::QueuedWorkflowPromptRemoved { session, .. }
+            | LocalDaemonResponse::WorkflowPromptQueueCleared { session, .. }
+            | LocalDaemonResponse::WorkflowTurnAcknowledged { session, .. } => Some(session),
+            _ => None,
+        }
+    };
+}
+
 pub(super) fn workflow_response_session(
     response: &LocalDaemonResponse,
 ) -> Option<crate::session::RuntimeSession> {
-    match response {
-        LocalDaemonResponse::WorkflowCreated { session, .. }
-        | LocalDaemonResponse::AgentWorkflowCreated { session, .. }
-        | LocalDaemonResponse::WorkflowCodeSourceBound { session, .. }
-        | LocalDaemonResponse::WorkflowCodeSourceRebuilt { session, .. }
-        | LocalDaemonResponse::WorkflowCodeSourceUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowCodeApplied { session, .. }
-        | LocalDaemonResponse::WorkflowCodeRun { session, .. }
-        | LocalDaemonResponse::WorkflowRegistryEntryLoaded { session, .. }
-        | LocalDaemonResponse::WorkflowRegistryEntryRun { session, .. }
-        | LocalDaemonResponse::WorkflowDesignOpAccepted { session, .. }
-        | LocalDaemonResponse::WorkflowAliased { session, .. }
-        | LocalDaemonResponse::WorkflowPublicationCreated { session, .. }
-        | LocalDaemonResponse::WorkflowPublicationDisabled { session, .. }
-        | LocalDaemonResponse::WorkflowPublicationMaterialized { session, .. }
-        | LocalDaemonResponse::WorkflowEndpointCreated { session, .. }
-        | LocalDaemonResponse::WorkflowEndpointAliased { session, .. }
-        | LocalDaemonResponse::WorkflowEndpointBound { session, .. }
-        | LocalDaemonResponse::WorkflowNodeAdded { session, .. }
-        | LocalDaemonResponse::WorkflowNodeRemoved { session, .. }
-        | LocalDaemonResponse::WorkflowNodeInstructionsUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowNodeCanCompleteRunUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowNodeCanEmitIntermediateOutputUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowNodeWaitForAllInputsUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowNodeIntermediateOutputSchemaUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowNodeMaxTurnsUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowEdgeAdded { session, .. }
-        | LocalDaemonResponse::WorkflowEdgeRemoved { session, .. }
-        | LocalDaemonResponse::WorkflowCanvasLayoutUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowRunInvoked { session, .. }
-        | LocalDaemonResponse::WorkflowPromptEnqueued { session, .. }
-        | LocalDaemonResponse::WorkflowRunCancelled { session, .. }
-        | LocalDaemonResponse::WorkflowRunPaused { session, .. }
-        | LocalDaemonResponse::WorkflowRunResumed { session, .. }
-        | LocalDaemonResponse::WorkflowWatchdogCreated { session, .. }
-        | LocalDaemonResponse::WorkflowWatchdogUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowWatchdogRemoved { session, .. }
-        | LocalDaemonResponse::WorkflowScheduleCreated { session, .. }
-        | LocalDaemonResponse::WorkflowScheduleUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowScheduleRemoved { session, .. }
-        | LocalDaemonResponse::WorkflowFlushContextUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowPromptQueueCreated { session, .. }
-        | LocalDaemonResponse::WorkflowPromptQueueUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowPromptQueueRemoved { session, .. }
-        | LocalDaemonResponse::QueuedWorkflowPromptUpdated { session, .. }
-        | LocalDaemonResponse::QueuedWorkflowPromptRemoved { session, .. }
-        | LocalDaemonResponse::WorkflowPromptQueueCleared { session, .. }
-        | LocalDaemonResponse::WorkflowTurnAcknowledged { session, .. } => Some(session.clone()),
-        _ => None,
-    }
+    workflow_response_session_of!(response).cloned()
+}
+
+fn workflow_response_session_mut(
+    response: &mut LocalDaemonResponse,
+) -> Option<&mut crate::session::RuntimeSession> {
+    workflow_response_session_of!(response)
 }

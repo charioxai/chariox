@@ -34,6 +34,19 @@ Legacy registries did not record whether `$HOME/.claude` was an ambient default 
 
 Use `/provider accounts import-native <provider>` to register the kernel host's current native scope explicitly. Import is idempotent for a scope already registered. When the native scope differs from an ambiguous legacy profile, it creates a separate stable profile and does not replace the old registration, change the default, start login, or copy provider files. Select or mark the imported profile as default only after its native status is refreshed. Do not edit a running kernel's registry file or remove/recreate profiles that existing agents depend on. Registration removal preserves provider files but does not preserve references to the removed profile ID.
 
+## Logins already on the machine
+
+Chariox does not ask for a login the machine already has, and it does not keep a second copy of one. When the kernel starts, and again when a client opens the waiting room (at most once a minute), it looks for the installed `codex`, `claude` and `opencode` CLIs (on `PATH` and in the usual user install directories such as `~/.local/bin` and `~/.opencode/bin`) and asks each CLI about the machine-level login of the default profile. A valid login marks the profile authenticated with its identity, the model catalog is rebuilt and warmed, and every client is told, so the first model picker already lists models.
+
+The default profile points at the provider-native location in place. A second kernel of the same OS user therefore finds the same logins at its first start with no step for the user. Two further kinds of provider-native location are registered the same way, once per kernel and only when the CLI reports a valid login for an account no profile has yet:
+
+- roots a kernel of this OS user linked with `LinkProviderAccountProfile` outside its own home (the paths, never credentials, are listed in `~/.config/chariox/provider-locations.json`);
+- other Claude Code configuration directories next to `~/.claude` that hold a login (`.credentials.json`, or on macOS the `Claude Code-credentials-<hash>` Keychain item, whose existence is checked without reading it).
+
+A location the kernel has considered is remembered, so removing a discovered profile is not undone by the next pass. An account that exists only inside another kernel's private home is not linked; it stays an explicit copy.
+
+Any change to who is signed in, however it happened, invalidates the catalog and raises a client catalog change, so clients refetch accounts and models without a reload.
+
 ## Workers and slices
 
 The home kernel owns the agent and selects the account profile used for its initial placement. When an agent is assigned to a trusted home-worker or home-managed slice, only that selected profile is installed through the existing encrypted kernel-to-worker channel. Separate profiles use separate roots. Claude uses its provider-native portable `.credentials.json` shape after refreshability validation. Cloud and the relay receive only opaque encrypted packets and safe installation status.

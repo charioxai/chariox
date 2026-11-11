@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, path::Path};
+use std::{
+    collections::VecDeque,
+    path::{Path, PathBuf},
+};
 
 use crate::agent::CreateAgentRequest;
 use crate::agent::GitWorktreePlacement;
@@ -11,6 +14,7 @@ use crate::session::CreateSessionRequest;
 
 mod agent_move_capabilities;
 mod caller_binding;
+mod file_copy;
 mod git_observation;
 mod leased_process;
 mod mcp_availability;
@@ -483,6 +487,90 @@ impl<'a> RemoteLeaseRuntime<'a> {
         self.destroy_execution_lease(lease_id)
     }
 
+    /// The folder of a leased agent spawned without one: its own, under the worker's home. The
+    /// worker's working directory is a service directory (`/` under a service manager), never a
+    /// place for an agent to work. Nothing is created here, so a refusal leaves the lease's
+    /// authorization for the retry; a folder that exists belongs to an earlier leased agent of the
+    /// same home agent and is never shared.
+    pub(crate) fn resolve_fresh_leased_agent_folder(
+        &self,
+        lease_id: &str,
+    ) -> Result<PathBuf, DaemonError> {
+        let lease = self.app.execution_leases.get(lease_id).ok_or_else(|| {
+            DaemonError::ExecutionLeaseNotFound {
+                lease_id: lease_id.to_string(),
+            }
+        })?;
+        let name = lease.home_agent_id.as_str();
+        let name_is_safe = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|home| home.is_absolute() && home != Path::new("/"));
+        let (true, Some(home)) = (name_is_safe, home) else {
+            return Err(DaemonError::LocalTransport {
+                operation: "resolve leased agent working directory",
+                message: "no folder was given and this worker has no home folder to create one in; pass --dir <folder on the worker>".to_string(),
+            });
+        };
+        let folder = home.join("chariox-workspaces").join(name);
+        if folder.exists() {
+            return Err(DaemonError::LocalTransport {
+                operation: "resolve leased agent working directory",
+                message: format!(
+                    "the agent folder `{}` already exists: an earlier leased agent of this home agent works there; pass --dir <folder on the worker>",
+                    folder.display()
+                ),
+            });
+        }
+        Ok(folder)
+    }
+
+    /// Makes the folder `resolve_fresh_leased_agent_folder` named; it must still not exist.
+    pub(crate) fn create_fresh_leased_agent_folder(
+        &self,
+        folder: &Path,
+    ) -> Result<(), DaemonError> {
+        let refused = |error: std::io::Error| DaemonError::LocalTransport {
+            operation: "resolve leased agent working directory",
+            message: format!(
+                "cannot create the agent folder `{}`: {error}; pass --dir <folder on the worker>",
+                folder.display()
+            ),
+        };
+        if let Some(parent) = folder.parent() {
+            std::fs::create_dir_all(parent).map_err(refused)?;
+        }
+        std::fs::create_dir(folder).map_err(refused)
+    }
+
+    /// A refused leased spawn removes the fresh folder it made, unless a backing agent was already
+    /// registered in it. A folder that stays is named in the refusal.
+    pub(crate) fn remove_unused_fresh_folder(
+        &self,
+        folder: &Path,
+        error: DaemonError,
+    ) -> DaemonError {
+        let used = self
+            .app
+            .agents
+            .list_agents()
+            .iter()
+            .any(|agent| agent.worktree_id() == Some(folder.to_string_lossy().as_ref()));
+        if used {
+            return error;
+        }
+        let leftover = std::fs::remove_dir(folder).err().map(|remove| {
+            format!(
+                "the failed spawn left its agent folder `{}` behind ({remove})",
+                folder.display()
+            )
+        });
+        crate::git_worktree_placement::with_leftover(error, leftover.into_iter().collect())
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "Preserve the existing create_leased_agent operation signature and explicit context arguments"
@@ -596,23 +684,28 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .app
             .sessions
             .environment_project_for_checkout(&lease.owner_user_id, &source_checkout)?;
-        let mut created_worktree_id = None;
+        let mut checkout = None;
         let worktree = if let Some(placement) = worktree_placement {
-            let worktree = crate::git_worktree_placement::prepare_git_worktree(
+            let prepared = crate::git_worktree_placement::prepare_git_worktree_checked(
                 &placement,
                 base_directory,
                 worktree_id.as_deref(),
                 "create remote git worktree",
+                |_| Ok(()),
             )?;
-            crate::project_environment::ProjectEnvironmentStore::new(
+            let worktree = prepared.path.clone();
+            checkout = Some(prepared);
+            let copied = crate::project_environment::ProjectEnvironmentStore::new(
                 &self.app.config().private_runtime_state_root(),
             )
             .copy_files_into_worktree(
                 &self.app.sessions,
                 base_directory,
                 Path::new(&worktree),
-            )?;
-            created_worktree_id = Some(worktree.clone());
+            );
+            if let Err(error) = copied {
+                return Err(self.discard_refused_checkout(checkout.as_ref(), error));
+            }
             worktree
         } else {
             match worktree_id {
@@ -620,7 +713,63 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 None => base_directory.display().to_string(),
             }
         };
-        let worktree_path = Path::new(&worktree);
+        let created_worktree_id = checkout.as_ref().map(|checkout| checkout.path.clone());
+        let created = self.register_leased_agent(
+            &lease,
+            lease_id,
+            &worktree,
+            created_worktree_id,
+            source_project.as_ref(),
+            provider,
+            account_profile,
+            model,
+            effort,
+            execution_mode,
+            permission_level,
+            workspace_live_sync_mode,
+        );
+        created.map_err(|error| self.discard_refused_checkout(checkout.as_ref(), error))
+    }
+
+    /// A refused leased spawn removes the checkout it made on this worker, unless a backing agent
+    /// was already registered in it. A checkout that stays is named in the refusal.
+    fn discard_refused_checkout(
+        &self,
+        checkout: Option<&crate::git_worktree_placement::PreparedWorktree>,
+        error: DaemonError,
+    ) -> DaemonError {
+        let leftover = checkout
+            .and_then(|checkout| {
+                checkout.discard_unless_used(
+                    &self.app.agents.list_agents(),
+                    "create remote git worktree",
+                )
+            })
+            .into_iter()
+            .collect();
+        crate::git_worktree_placement::with_leftover(error, leftover)
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The leased agent is built from the lease, its folder and the requested profile"
+    )]
+    fn register_leased_agent(
+        &mut self,
+        lease: &ExecutionLease,
+        lease_id: &str,
+        worktree: &str,
+        created_worktree_id: Option<String>,
+        source_project: Option<&crate::session::RuntimeProject>,
+        provider: &str,
+        account_profile: &str,
+        model: Option<String>,
+        effort: Option<String>,
+        execution_mode: Option<crate::provider::AgentExecutionMode>,
+        permission_level: Option<crate::provider::AgentPermissionLevel>,
+        workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
+    ) -> Result<LeasedAgent, DaemonError> {
+        let worktree_path = Path::new(worktree);
         if !worktree_path.exists() {
             return Err(DaemonError::LocalTransport {
                 operation: "resolve leased agent working directory",
@@ -658,7 +807,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     && session.owner_user_id() == lease.owner_user_id
                     && session.project_id()
                         == source_project
-                            .as_ref()
                             .map(|project| project.id())
                             .unwrap_or_default()
             });
@@ -678,10 +826,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 }
             }
             None => {
-                let mut request = CreateSessionRequest::new(workspace_id.clone(), worktree.clone())
+                let mut request = CreateSessionRequest::new(workspace_id.clone(), worktree)
                     .with_hidden(true)
                     .with_owner_user_id(lease.owner_user_id.clone());
-                if let Some(project) = &source_project {
+                if let Some(project) = source_project {
                     request = request.with_project_selection(
                         crate::session::SessionProjectSelection::Existing {
                             project_id: project.id().to_string(),

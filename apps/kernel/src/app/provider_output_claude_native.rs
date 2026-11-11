@@ -139,6 +139,9 @@ pub(crate) struct ClaudeNativeProcessOutcome {
     /// should drain its transcript once more after a short delay taken off the
     /// app lock, capturing the final assistant flush before settlement.
     pub(crate) needs_deferred_transcript_drain: bool,
+    /// A Stop/SessionEnd arrived with no active prompt: the end of a turn the provider started
+    /// itself, such as its notification about an ended background call.
+    pub(crate) stopped_without_active_prompt: bool,
     /// Provider-native failure, settled by the caller's normal failure/substitution path.
     pub(crate) terminal_failure: Option<String>,
     /// Matched hook rejections, settled without retiring a healthy provider.
@@ -173,6 +176,9 @@ pub(crate) trait NativePromptHandoffPolicy: Send + Sync {
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError>;
 
     fn accepted(&self, session_id: &str, agent_id: &str, run_id: &str) -> Result<(), DaemonError>;
+
+    /// The run's transcript produced `chunks`: a turn is working on it.
+    fn note_turn_work(&self, run_id: &str);
 }
 
 pub(crate) struct ProviderOutputClaudeNativeBridge<'a> {
@@ -860,6 +866,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     );
                     outcome.needs_deferred_transcript_drain = true;
                 } else {
+                    outcome.stopped_without_active_prompt = true;
                     let _ = fs::write(context_file, "");
                     write_claude_native_marker(context_file, "");
                 }
@@ -957,6 +964,20 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             provider_run.provider() == "claude-headless",
             true,
         )?;
+        Ok(())
+    }
+
+    /// The final transcript flush of a turn that ended with no active prompt.
+    pub(crate) fn drain_transcripts_after_stop(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        let Some(context_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
+            return Ok(());
+        };
+        self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
         Ok(())
     }
 
@@ -1177,6 +1198,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }
 
         let recipient_attachment_ids = self.app.attachments.list_session_attachment_ids(session_id);
+        if let Some(policy) = self.prompt_handoff {
+            if drain
+                .chunks
+                .iter()
+                .any(|chunk| crate::app::is_work_of_a_turn(&chunk.kind, chunk.text.as_bytes()))
+            {
+                policy.note_turn_work(provider_run_id);
+            }
+        }
         let fanout = ProviderOutputFanout::new(self.app);
         let mut saw_response_content = false;
         let mut saw_runtime_activity = false;

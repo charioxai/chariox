@@ -105,6 +105,7 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
         RelayPeerRequest::SubscribePeerAgent { .. } => "subscribe_peer_agent",
         RelayPeerRequest::UnsubscribePeerAgent { .. } => "unsubscribe_peer_agent",
         RelayPeerRequest::SpawnRoomPeer { .. } => "spawn_room_peer",
+        RelayPeerRequest::DeleteRoomPeer { .. } => "delete_room_peer",
         RelayPeerRequest::DeliverPeerAgentOutcome { .. } => "deliver_peer_agent_outcome",
         RelayPeerRequest::RoomBrowserController { .. } => "room_browser_controller",
         RelayPeerRequest::OpenRoomSharedDisplay { .. } => "open_room_shared_display_with_audience",
@@ -130,6 +131,10 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
         RelayPeerRequest::UpdateLeasedAgentConfig { .. } => "update_leased_agent_config",
         RelayPeerRequest::UpdateLeasedAgentProfile { .. } => "update_leased_agent_profile",
         RelayPeerRequest::UpdateLeasedAgentMetaMode { .. } => "update_leased_agent_meta_mode",
+        RelayPeerRequest::SetLeasedAgentDeadline { .. } => "set_leased_agent_deadline",
+        RelayPeerRequest::ReadLeasedAgentFile { .. } => "read_leased_agent_file",
+        RelayPeerRequest::WriteLeasedAgentFile { .. } => "write_leased_agent_file",
+        RelayPeerRequest::DiscardLeasedAgentFile { .. } => "discard_leased_agent_file",
         RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest { .. } => {
             "update_leased_agent_remote_extension_manifest"
         }

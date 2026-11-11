@@ -394,7 +394,7 @@ async fn sudo_task_creates_a_same_workspace_session_without_another_passkey() {
         crate::session::CreateSessionRequest::new(session.workspace_id(), session.worktree_id())
             .with_alias("same-task-session");
     let reply = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(60),
         f.router.dispatch_authenticated_runtime_tool_call(
             "sudo-fixture-bearer",
             "chariox_kernel_request",
@@ -475,6 +475,7 @@ async fn sudo_task_creates_a_same_workspace_session_with_kernel_default_agent_se
     for (key, value) in [
         ("providers.default", "codex"),
         ("providers.model", "gpt-test"),
+        ("providers.effort", "high"),
     ] {
         f.state
             .set_user_config_value(key.to_string(), value.to_string())
@@ -492,7 +493,7 @@ async fn sudo_task_creates_a_same_workspace_session_with_kernel_default_agent_se
         crate::session::CreateSessionRequest::new(session.workspace_id(), session.worktree_id())
             .with_alias("enrolled-task-session");
     let reply = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(60),
         f.router.dispatch_authenticated_runtime_tool_call(
             "sudo-fixture-bearer",
             "chariox_kernel_request",

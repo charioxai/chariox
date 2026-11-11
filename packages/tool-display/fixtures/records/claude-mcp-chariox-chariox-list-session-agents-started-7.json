@@ -1,0 +1,13 @@
+{
+ "provider": "claude",
+ "kind": "mcp__chariox__chariox_list_session_agents",
+ "source": "live 2026-11-10: record from the kernel history of a real claude turn on the lane kernel",
+ "record": {
+  "id": "toolu_01KKhmUgAp5zVzrZ8qR8A2z4",
+  "input": {},
+  "started_at_ms": 1794313821474,
+  "status": "started",
+  "tool": "mcp__chariox__chariox_list_session_agents"
+ },
+ "empty": true
+}

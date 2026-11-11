@@ -7,7 +7,7 @@ export async function environmentSourceKernels(client: Pick<CloudClient, "direct
     const [targets, own] = await Promise.all([client.directory(), ownKernelId()])
     return targets
       .filter((target) => target.status === "ONLINE" && target.daemonId && target.daemonId !== own)
-      .map((target) => ({ id: target.daemonId!, label: target.daemonAlias ?? target.machineAlias ?? target.daemonId! }))
+      .map((target) => ({ id: target.daemonId!, label: target.name ?? target.daemonId! }))
   } catch {
     return []
   }

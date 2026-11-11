@@ -212,6 +212,7 @@ fn a_captured_image_above_the_reply_ceiling_is_sent() {
             received_at_ms: crate::session::unix_epoch_ms(),
             daemon_private_key: &daemon.relay_private_key,
             client_public_key: &client.relay_public_key,
+            framed: false,
         },
     );
     assert!(
@@ -254,6 +255,51 @@ fn a_kernel_browser_screenshot_above_the_reply_ceiling_is_sent() {
             received_at_ms: crate::session::unix_epoch_ms(),
             daemon_private_key: &daemon.relay_private_key,
             client_public_key: &client.relay_public_key,
+            framed: false,
+        },
+    );
+    assert!(
+        outcome.error.is_none() && outcome.encrypted_response.is_some(),
+        "the screenshot was refused: {:?}",
+        outcome.error
+    );
+}
+
+// The owned desktop's screenshot is the same kind of answer as the kernel browser's: one image
+// the caller cannot page, so a valid answer between 1 and 24 MiB must not be refused either.
+#[test]
+fn a_kernel_computer_screenshot_above_the_reply_ceiling_is_sent() {
+    let request = LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+        command: crate::local::KernelBrowserCommand::Computer {
+            command: crate::local::KernelComputerCommand::Screenshot {
+                target: crate::local::KernelDesktopTarget {
+                    surface_id: "desktop-1".into(),
+                    generation: "2".into(),
+                },
+            },
+        },
+    });
+    let image = vec![0x89u8; 3 * 1024 * 1024];
+    let answer = serde_json::to_vec(&serde_json::json!({"KernelBrowser":{"result":{
+        "mime_type": "image/png",
+        "data_base64": base64::engine::general_purpose::STANDARD.encode(image),
+        "width": 2560,
+        "height": 1600,
+    }}}))
+    .unwrap();
+    assert!(answer.len() > 1024 * 1024);
+    let daemon = crate::config::DaemonConfig::for_tests();
+    let client = crate::config::DaemonConfig::for_tests();
+    let outcome = seal_reply(
+        answer,
+        None,
+        SealContext {
+            request_kind: relay_request_kind(&request),
+            command_id: Some("screenshot-2"),
+            received_at_ms: crate::session::unix_epoch_ms(),
+            daemon_private_key: &daemon.relay_private_key,
+            client_public_key: &client.relay_public_key,
+            framed: false,
         },
     );
     assert!(

@@ -261,11 +261,6 @@ impl LiveWorker {
         }
         home_state.config.daemon_id = "environment-home".to_string();
         worker_state.config.daemon_id = worker_kernel_id.clone();
-        worker_state.config.daemon_alias = Some(if managed_slice_worker {
-            "slice:desktop".to_string()
-        } else {
-            "desktop-worker".to_string()
-        });
         worker_state.config.host_machine_id = if managed_slice_worker {
             home_state.config.host_machine_id.clone()
         } else {
@@ -288,7 +283,6 @@ impl LiveWorker {
             let slice = slices.resolve("desktop").unwrap();
             worker_kernel_id = slice.worker_kernel_ref;
             worker_state.config.daemon_id = worker_kernel_id.clone();
-            worker_state.config.daemon_alias = Some("slice:desktop".to_string());
             worker_state.config.host_machine_id = slice.owner_machine_id;
             slices
                 .set_relay_endpoint(
@@ -445,6 +439,10 @@ impl LiveWorker {
         fixture
     }
 
+    fn worker_kernel_id(&self) -> String {
+        self._worker_state.config.daemon_id.clone()
+    }
+
     fn placement(&mut self) -> Value {
         let path = self
             .home_state
@@ -465,7 +463,7 @@ impl LiveWorker {
                 &self.home,
                 json!({"CreateSlice": {
                     "name":"desktop", "base":"clean", "display_mode":"headed",
-                    "worker_kernel_ref":"desktop-worker"
+                    "worker_kernel_ref":self.worker_kernel_id()
                 }}),
             )
             .await
@@ -763,7 +761,7 @@ async fn spawn_and_destroy_use_public_commands() {
         &fixture.home,
         json!({"SpawnAgent": {
             "session_id":fixture.rooms[0], "provider":"managed-dev-stub", "model":"default",
-            "kernel_ref":"desktop-worker", "worktree_placement":placement
+            "kernel_ref":fixture.worker_kernel_id(), "worktree_placement":placement
         }}),
     )
     .await
@@ -822,7 +820,7 @@ async fn worker_alias_attaches_agent_to_slice() {
         &fixture.home,
         json!({"SpawnAgent": {
             "session_id":fixture.rooms[0], "provider":"managed-dev-stub", "model":"default",
-            "kernel_ref":"desktop-worker", "worktree_placement":placement
+            "kernel_ref":fixture.worker_kernel_id(), "worktree_placement":placement
         }}),
     )
     .await
@@ -875,7 +873,7 @@ async fn batch_preserves_mixed_target_attachments() {
     let spawned = dispatch_json(&fixture.home, json!({"SpawnAgents":{
         "session_id":fixture.rooms[0], "agents":[
             {"provider":"managed-dev-stub", "model":"default"},
-            {"provider":"managed-dev-stub", "model":"default", "kernel_ref":"desktop-worker", "worktree_placement":alias_placement},
+            {"provider":"managed-dev-stub", "model":"default", "kernel_ref":fixture.worker_kernel_id(), "worktree_placement":alias_placement},
             {"provider":"managed-dev-stub", "model":"default", "slice_ref":"desktop", "worktree_placement":slice_placement}
         ]
     }})).await.expect("mixed local, worker-alias and slice batch");
@@ -928,7 +926,7 @@ async fn cleanup_failure_preserves_agent_and_slice() {
         &fixture.home,
         json!({"SpawnAgent":{
             "session_id":fixture.rooms[0], "provider":"managed-dev-stub", "model":"default",
-            "kernel_ref":"desktop-worker", "worktree_placement":placement
+            "kernel_ref":fixture.worker_kernel_id(), "worktree_placement":placement
         }}),
     )
     .await

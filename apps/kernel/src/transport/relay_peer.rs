@@ -203,7 +203,11 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08 / MP-09 / MP-10 / MP-11: peer 441 sends the kernel's large messages to the relay in
 /// chunks-v2 frames (`x-chariox-upload`); toward a relay that does not answer the offer the
 /// kernel writes whole messages, and the relay keeps reading whole messages from 440 kernels.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 441;
+/// MP-08 / MP-09 / MP-10 / MP-11: peer 442 sends a request's ciphertext as a `CXR3` frame, to a relay that
+/// answers `x-chariox-relay-requests: binary-v1`, and sizes binary chunks to the link. It adds
+/// `SetLeasedAgentDeadline`, `DeleteRoomPeer` and the `chariox.file.copy` requests
+/// `ReadLeasedAgentFile`, `WriteLeasedAgentFile` and `DiscardLeasedAgentFile`.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 442;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -555,12 +559,12 @@ impl std::fmt::Debug for RemoteCredentialSecretInput {
     }
 }
 
-/// A Project file's bytes (base64) inside an encrypted kernel-to-kernel response; it can hold secrets.
+/// A file's bytes (base64) inside an encrypted kernel-to-kernel message; it can hold secrets.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct RemoteEnvironmentFileBytes(String);
+pub struct RemoteFileBytes(String);
 
-impl RemoteEnvironmentFileBytes {
+impl RemoteFileBytes {
     pub fn encode(bytes: &[u8]) -> Self {
         use base64::Engine;
         Self(base64::engine::general_purpose::STANDARD.encode(bytes))
@@ -586,13 +590,13 @@ impl std::fmt::Debug for RemoteProjectRegistration {
     }
 }
 
-impl Drop for RemoteEnvironmentFileBytes {
+impl Drop for RemoteFileBytes {
     fn drop(&mut self) {
         zeroize::Zeroize::zeroize(&mut self.0);
     }
 }
 
-impl std::fmt::Debug for RemoteEnvironmentFileBytes {
+impl std::fmt::Debug for RemoteFileBytes {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("[redacted Project file bytes]")
     }
@@ -904,6 +908,13 @@ pub enum RelayPeerRequest {
         caller_authority: PeerCallerAuthority,
         follow: Option<PeerFollow>,
     },
+    /// The creator of a peer here has ended: delete the agent its spawn `request_id` created,
+    /// wherever it is now, or see to it that the spawn creates none.
+    DeleteRoomPeer {
+        protocol_version: u32,
+        request_id: String,
+        sender: PeerAgentStamp,
+    },
     /// A followed peer's event, or the reply to a message, back to the kernel that asked.
     DeliverPeerAgentOutcome {
         protocol_version: u32,
@@ -1028,6 +1039,34 @@ pub enum RelayPeerRequest {
     UpdateLeasedAgentRemoteExtensionManifest {
         leased_agent_id: String,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    },
+    /// The worker enforces the agent's deadline itself, so the run stops with the home offline.
+    SetLeasedAgentDeadline {
+        leased_agent_id: String,
+        deadline_ms: u64,
+    },
+    /// `chariox.file.copy` from the leased agent: one slice of a file in its workspace, starting
+    /// at `offset`.
+    ReadLeasedAgentFile {
+        leased_agent_id: String,
+        path: String,
+        offset: u64,
+    },
+    /// `chariox.file.copy` to the leased agent: one slice of a file arriving into its workspace.
+    /// The file appears under `path` only when its last slice lands with digest `sha256`.
+    WriteLeasedAgentFile {
+        leased_agent_id: String,
+        path: String,
+        offset: u64,
+        total_size: u64,
+        sha256: String,
+        overwrite: bool,
+        content: RemoteFileBytes,
+    },
+    /// Drops what an unfinished `WriteLeasedAgentFile` staged for `path`.
+    DiscardLeasedAgentFile {
+        leased_agent_id: String,
+        path: String,
     },
     LaunchLeasedNativeProviderRun {
         leased_agent_id: String,
@@ -1358,7 +1397,7 @@ pub enum RelayPeerResponse {
         /// the file is not there.
         sha256: Option<String>,
         /// The slice at the requested offset; absent when the file is not there.
-        content: Option<RemoteEnvironmentFileBytes>,
+        content: Option<RemoteFileBytes>,
     },
     AgentMove {
         response: crate::agent_move::peer::AgentMovePeerResponse,
@@ -1398,6 +1437,12 @@ pub enum RelayPeerResponse {
         duplicate: bool,
         agent: PeerAgentStamp,
         alias: String,
+    },
+    /// `duplicate` when there was no peer to delete: it was already gone, or its spawn had not
+    /// created it and now will not.
+    RoomPeerDeleted {
+        protocol_version: u32,
+        duplicate: bool,
     },
     PeerAgentOutcomeAck {
         protocol_version: u32,
@@ -1489,7 +1534,33 @@ pub enum RelayPeerResponse {
     LeasedAgentMetaModeUpdated {
         leased_agent: LeasedAgent,
     },
+    LeasedAgentFileRead {
+        /// The whole file's size, so the home knows when it has everything.
+        size_bytes: u64,
+        /// SHA-256 of the whole file; sent with the slice at offset 0.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+        /// Changes whenever the file is written or replaced; every slice of one copy carries the
+        /// same one.
+        revision: String,
+        content: RemoteFileBytes,
+    },
+    LeasedAgentFileWritten {
+        /// Bytes staged so far; the home continues from here.
+        received: u64,
+        /// The published file's digest, once the last slice landed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+    },
+    LeasedAgentFileDiscarded,
+    /// The worker will not read or write that file; repeating the request cannot change it.
+    LeasedAgentFileRefused {
+        reason: String,
+    },
     LeasedAgentRemoteExtensionManifestUpdated {
+        leased_agent_id: String,
+    },
+    LeasedAgentDeadlineSet {
         leased_agent_id: String,
     },
     LeasedNativeProviderRunLaunched {
@@ -2191,6 +2262,41 @@ mod native_approval_protocol_tests {
         assert_eq!(
             format!("{:x}", Sha256::digest(encoded)),
             "dee36b9bf4d4a4e4877a46ea81e1be63d696f78ebc07ebf90d964606c6d93084"
+        );
+    }
+}
+
+#[cfg(test)]
+mod leased_agent_deadline_shapes {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn pinned<T>(snapshot: serde_json::Value, hash: &str)
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned,
+    {
+        let decoded: T = serde_json::from_value(snapshot.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), snapshot);
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+            ),
+            hash
+        );
+    }
+
+    // The worker enforces a leased agent's deadline (peer 442): the home asks, then
+    // records the deadline only once the worker confirms it.
+    #[test]
+    fn the_worker_deadline_request_and_its_confirmation_keep_their_wire_shape() {
+        pinned::<RelayPeerRequest>(
+            serde_json::json!({"kind":"set_leased_agent_deadline","leased_agent_id":"lease","deadline_ms":1793700040000_u64}),
+            "93d5696247b76e96c9188e3f65be1642338f562a4223c8ba2c390ef378477684",
+        );
+        pinned::<RelayPeerResponse>(
+            serde_json::json!({"kind":"leased_agent_deadline_set","leased_agent_id":"lease"}),
+            "b64a7791b7687bf3b9396ec2375733cf1d2d364d2df873918921d2ede940be75",
         );
     }
 }

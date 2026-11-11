@@ -29,6 +29,6 @@ fn owner_vault_protocol_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&fixture).unwrap())
         ),
-        "b4f204ba90789f5d8e9a87d765f93df0a351c7bb3948a9d08efa3ec627dc6a44"
+        "eca7309792ce1646b834f156b73142b84135c063eb99673b4307f55fa7d7cc93"
     );
 }

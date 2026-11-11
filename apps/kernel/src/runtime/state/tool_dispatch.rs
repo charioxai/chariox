@@ -8,6 +8,7 @@ use super::*;
 mod agent_events;
 pub(super) mod agent_inbox_read;
 mod agent_messaging;
+pub(super) use agent_messaging::resolve_session_agent;
 mod agent_process_permission;
 pub(super) mod agent_wakes;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -204,6 +205,7 @@ impl KernelRuntimeState {
                 input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
             });
             specs.push(super::vault_generate::vault_generate_spec());
+            specs.extend(super::visual::visual_tool_specs());
             specs.extend(super::environment_tools::environment_tool_specs());
             specs.push(super::vault_command::capture_command_spec());
             specs.push(super::vault_command::use_env_spec());
@@ -212,6 +214,7 @@ impl KernelRuntimeState {
             specs.push(super::vault_command::remove_capture_spec());
             specs.extend(super::resource_register::specs());
             specs.push(super::agent_auth::spec());
+            specs.push(super::file_copy_tool::file_copy_spec());
         }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             let room_tools = self.room_agent_tools_enabled();
@@ -426,6 +429,12 @@ impl KernelRuntimeState {
         }
         if super::environment_tools::is_environment_tool(tool_name) {
             return Box::pin(self.environment_tool(auth_token, tool_name, arguments)).await;
+        }
+        if super::file_copy_tool::is_file_copy_tool(tool_name) {
+            return Box::pin(self.file_copy_tool(auth_token, arguments)).await;
+        }
+        if super::visual::is_visual_tool(tool_name) {
+            return Box::pin(self.visual_tool(auth_token, tool_name, arguments)).await;
         }
         if tool_name == super::vault_generate::VAULT_GENERATE {
             return Box::pin(self.vault_generate(auth_token, arguments)).await;

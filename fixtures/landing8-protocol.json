@@ -1,0 +1,87 @@
+{
+  "local": 1003,
+  "relayPeer": 442,
+  "hideAgent": {
+    "HideAgent": {
+      "session_id": "room-1",
+      "agent_id": "agent-1",
+      "hidden": true
+    }
+  },
+  "notificationTrigger": {
+    "id": "trigger-1",
+    "agent_id": "agent-1",
+    "source": {
+      "kind": "notification",
+      "source": {
+        "workflow": {
+          "source_id": "workflow-exit-1"
+        }
+      },
+      "subscription_id": "subscription-1",
+      "display_name": "Nightly build",
+      "source_available": false
+    },
+    "busy_policy": "queue",
+    "prompt": "Look at the build",
+    "enabled": true,
+    "created_at_ms": 1700000000000,
+    "fired": 0,
+    "coalesced": 0
+  },
+  "appInstallPrompt": {
+    "kind": "app_install",
+    "session_id": "session-1",
+    "interaction_id": "app_install_1",
+    "title": "Install App",
+    "message": "Install this App with the declared capabilities?",
+    "approve_choice_id": "approve",
+    "refuse_choice_id": "decline",
+    "requested_at_ms": 1000,
+    "expires_at_ms": 9007199254740991,
+    "app_install": {
+      "request_id": "install-1",
+      "operation": "update",
+      "review": {
+        "appId": "dev.acme.notes",
+        "version": "1.2.0"
+      }
+    }
+  },
+  "relayPeerRequests": [
+    {
+      "kind": "set_leased_agent_deadline",
+      "leased_agent_id": "leased-1",
+      "deadline_ms": 1700000600000
+    },
+    {
+      "kind": "delete_room_peer",
+      "protocol_version": 442,
+      "request_id": "spawn-1",
+      "sender": {
+        "kernel_id": "kernel-a",
+        "room_id": "room-a",
+        "agent_id": "agent-a"
+      }
+    },
+    {
+      "kind": "discard_leased_agent_file",
+      "leased_agent_id": "leased-1",
+      "path": "in/base.bundle"
+    }
+  ],
+  "retiredRequests": [
+    {
+      "ArchiveAgent": {
+        "session_id": "room-1",
+        "agent_id": "agent-1"
+      }
+    },
+    {
+      "RenameRemoteMachine": {
+        "machine_id": "machine-1",
+        "alias": "laptop"
+      }
+    }
+  ]
+}

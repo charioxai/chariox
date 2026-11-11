@@ -191,6 +191,12 @@ pub struct AppReleaseSummary {
     pub publisher_id: String,
     pub package_digest: String,
     pub schema_version: u32,
+    /// The signed manifest's `displayName`; clients fall back to `app_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// The signed manifest's icon as a PNG or SVG `data:` URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -202,6 +208,11 @@ pub struct AppInstallationSummary {
     /// Decimal strings preserve generations beyond JavaScript's safe integers.
     pub generation: String,
     pub active_release: Option<AppReleaseSummary>,
+    /// `display_name` and `icon` of the active release, for list rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     pub pending_generation: Option<String>,
     pub admission_paused: bool,
     /// Protocol 363: an uninstalled installation that still holds its data; an
@@ -262,6 +273,9 @@ pub enum AppRequestErrorCode {
     StorageUnavailable,
     /// Protocol 416: this command identity was evicted; it must never execute again.
     ReceiptExpired,
+    /// The publisher id belongs to the kernel (`local_dev`, the Apps pushed
+    /// from a developer Room); it cannot be enrolled as a publisher.
+    ReservedPublisher,
 }
 
 /// Protocol 345: owner-scoped App worker control. The kernel derives the

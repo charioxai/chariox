@@ -1,4 +1,4 @@
-import type { PasskeyPrompt, PasskeyPromptClosure } from "@chariox/kernel-client/kernel-types"
+import type { AppInstallPrompt, PasskeyPrompt, PasskeyPromptClosure } from "@chariox/kernel-client/kernel-types"
 import { VAULT_SECRET_MAX_LENGTH } from "@chariox/kernel-client/interaction-choice"
 import type { InteractionPasskeyProof } from "./ipc-requests.js"
 import { approvalExpiredMessage, type KernelClock } from "./kernel-clock.js"
@@ -82,13 +82,19 @@ export type PasskeyPopupView = {
 }
 
 const isText = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0
+const isAppInstall = (value: unknown): value is AppInstallPrompt => {
+  const install = value as Partial<AppInstallPrompt> | null | undefined
+  return !!install && isText(install.request_id) && ["install", "update", "reinstall"].includes(install.operation ?? "")
+    && typeof install.review === "object" && install.review !== null && !Array.isArray(install.review)
+}
 
 /** The well-formed prompts of a `passkey_prompts_changed` event. */
 export function passkeyPromptsFromEvent(prompts: unknown, userAppViews = false): PasskeyPrompt[] {
   if (!Array.isArray(prompts)) return []
   return prompts.filter((item): item is PasskeyPrompt => {
     const prompt = item as Partial<PasskeyPrompt> | null
-    return !!prompt && ["critical_approval", "access_grant", "access_extension", "sudo", "vault_secret"].includes(prompt.kind ?? "")
+    return !!prompt && ["critical_approval", "access_grant", "access_extension", "sudo", "vault_secret", "app_install"].includes(prompt.kind ?? "")
+      && (prompt.kind !== "app_install" || isAppInstall(prompt.app_install))
       && (isText(prompt.session_id) || (userAppViews && prompt.session_id === "" && prompt.kind === "critical_approval")) && isText(prompt.interaction_id)
       && typeof prompt.title === "string" && typeof prompt.message === "string"
       && isText(prompt.approve_choice_id) && isText(prompt.refuse_choice_id)
@@ -258,7 +264,7 @@ export function createPasskeyPopupController(deps: {
     }
     // Another terminal may have opened the owner's remember window. Ordinary
     // approvals always let the kernel check it; new authority needs fresh proof.
-    if (!typed && (prompt.kind !== "critical_approval" || isCardPayment(prompt))) {
+    if (!typed && prompt.kind !== "app_install" && (prompt.kind !== "critical_approval" || isCardPayment(prompt))) {
       error = PASSKEY_REFUSALS.PASSKEY_REQUIRED!
       render()
       return
@@ -363,7 +369,7 @@ export function createPasskeyPopupController(deps: {
       if (!open) return false
       event.preventDefault()
       event.stopPropagation()
-      if (pending) return true
+      if (pending || current()?.kind === "app_install") return true
       // Added exactly as sent, without a trailing line break, or refused
       // whole: OpenTUI strips ANSI codes from `text`, so the raw paste decides.
       const text = (event.rawText ?? event.text).replace(/(?:\r\n|\r|\n)+$/, "")
@@ -429,7 +435,7 @@ export function createPasskeyPopupController(deps: {
         render()
         return true
       }
-      const typed = passkeyKeyText(event)
+      const typed = current()?.kind === "app_install" ? "" : passkeyKeyText(event)
       if (typed && Array.from(value + typed).length <= inputLimit(current())) {
         value += typed
         render()

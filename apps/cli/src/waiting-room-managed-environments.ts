@@ -25,6 +25,14 @@ import {
   managedEnvironmentIdFromMachineRef,
 } from "@chariox/kernel-client/waiting-room-runtime-placement"
 
+/** The catalog without a Cloud sign-in: renting stays offered and says what to do first. */
+export const SIGNED_OUT_MANAGED_CATALOG: ManagedEnvironmentCatalog = {
+  computeClasses: [],
+  contextSources: [],
+  environments: [],
+  rentUnavailable: "Sign in with /cloud login to rent a machine.",
+}
+
 export function waitingRoomManagedCatalogRemoteState(
   catalog: ManagedEnvironmentCatalog | undefined,
 ): WaitingRoomRemoteState {
@@ -33,6 +41,7 @@ export function waitingRoomManagedCatalogRemoteState(
         managedComputeClasses: catalog.computeClasses,
         managedContextSources: catalog.contextSources,
         managedEnvironments: catalog.environments,
+        managedRentUnavailable: catalog.rentUnavailable,
       }
     : {}
 }
@@ -53,6 +62,16 @@ export function selectedManagedEnvironment(
   return environmentId
     ? remote.managedEnvironments?.find((environment) => environment.environmentId === environmentId) ?? null
     : null
+}
+
+/** After a rent Cloud deleted, the Machine row offers a new machine with the person's draft, so only the region needs changing. */
+export function waitingRoomStateAfterFailedRent(
+  state: WaitingRoomState,
+  remote: WaitingRoomRemoteState,
+): WaitingRoomState {
+  return selectedManagedEnvironment(state, remote)?.desiredState === "deleted"
+    ? { ...state, selectedMachineRef: NEW_MANAGED_MACHINE_REF, selectedKernelRef: "" }
+    : state
 }
 
 export function managedEnvironmentIsLaunchReady(environment: ManagedEnvironmentSummary): boolean {
@@ -339,6 +358,7 @@ export function managedEnvironmentDraftBlockReason(
   state: WaitingRoomState,
   remote: WaitingRoomRemoteState,
 ): string | null {
+  if (remote.managedRentUnavailable) return remote.managedRentUnavailable
   const computeClass = remote.managedComputeClasses
     ?.find((candidate) => candidate.computeClass === state.managedComputeClass)
   if (!computeClass) return "The selected managed compute class is unavailable."

@@ -400,7 +400,7 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::MoveAgentToLocal(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
-        LocalDaemonRequest::ArchiveAgent(request) => Some(SessionMembershipScope::SessionId(
+        LocalDaemonRequest::HideAgent(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::SetAgentParent(request) => Some(SessionMembershipScope::SessionId(
@@ -418,8 +418,7 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CycleAgentFocus(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
-        LocalDaemonRequest::ListArchivedAgents(request)
-        | LocalDaemonRequest::ListAgents(request) => Some(SessionMembershipScope::SessionId(
+        LocalDaemonRequest::ListAgents(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::RegisterWorkflowNotificationSource(r) => {
@@ -871,7 +870,6 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)
         | LocalDaemonRequest::ApproveRemoteMachine(_)
         | LocalDaemonRequest::ForgetRemoteMachine(_)
-        | LocalDaemonRequest::RenameRemoteMachine(_)
         | LocalDaemonRequest::CreatePairingInvite(_)
         | LocalDaemonRequest::JoinPairingInvite(_)
         | LocalDaemonRequest::CreateTerminalPairingLink(_)

@@ -1,8 +1,11 @@
 //! MP-08 / MP-10: provider controls share kernel-owned account selection.
 use super::*;
 
+#[path = "model_resolution.rs"]
+mod model_resolution;
+
 #[tokio::test]
-async fn provider_family_switch_uses_target_default_and_clears_implicit_model() {
+async fn provider_family_switch_stores_the_target_default_model_and_variant() {
     for source in ["codex", "claude-p", "opencode"] {
         for target in ["codex", "claude-p", "opencode"] {
             if source == target {
@@ -28,6 +31,8 @@ async fn provider_family_switch_uses_target_default_and_clears_implicit_model() 
                 )
                 .await
                 .unwrap();
+            model_resolution::seed_account_catalog(&app, owner, target, &target_profile.profile_id)
+                .await;
             let switched = runtime
                 .update_agent_profile(
                     &session,
@@ -45,8 +50,9 @@ async fn provider_family_switch_uses_target_default_and_clears_implicit_model() 
                 switched.provider_account_profile(),
                 target_profile.profile_id
             );
-            assert_eq!(switched.model(), None);
-            assert_eq!(switched.effort(), None);
+            let (model, effort) = model_resolution::default_selection(target);
+            assert_eq!(switched.model(), Some(model), "{source} -> {target}");
+            assert_eq!(switched.effort(), effort, "{source} -> {target}");
         }
     }
 }

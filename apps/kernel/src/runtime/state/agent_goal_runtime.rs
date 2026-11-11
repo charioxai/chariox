@@ -372,7 +372,7 @@ impl KernelRuntimeState {
         else {
             return Ok(());
         };
-        self.owned.begin_remote_prompt_cancellation_if_matches(
+        self.owned.continue_remote_prompt_cancellation_if_matches(
             &task.room_id,
             &task.agent_id,
             active.source_attachment_id(),

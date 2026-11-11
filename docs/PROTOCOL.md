@@ -734,6 +734,14 @@ parent as one urgent `child_finished` inbox event carrying `child_agent_id`,
 on a question when the kernel restarted ends as `interrupted_by_restart`. The
 relay peer protocol needs no change for it.
 
+Relay peer 442 adds `SetLeasedAgentDeadline {leased_agent_id, deadline_ms}`, answered by
+`LeasedAgentDeadlineSet {leased_agent_id}`. The home sends it before it records the
+deadline of an agent it leased to a worker (`agent spawn --kernel K --deadline`, `agent
+deadline set`, or a parent's deadline reaching a remote descendant). The worker arms the
+deadline on the backing agent of the leased agent, so its own scheduler stops the run with
+the home offline. A deadline only shortens: the worker refuses a later time with
+`agent_deadline_extension_refused`. No local shape changes.
+
 Local daemon protocol 1000 makes a
 sub-agent's decision one card with one holder. The kernel keeps the holder (the
 nearest parent that may answer, else the user) as state for routing and audit and
@@ -743,14 +751,21 @@ an external agent following the room hears the same interaction id as an
 `interaction` event with `value.shown_in` set; a decision a parent agent holds is
 not listed to the user until it reaches the user. A holder agent gets an urgent
 `child_decision` inbox event (`interaction_id`, `child_agent_id`, `child_alias`,
-`question`, `choices`, `text_allowed`, `needs_answer`) and answers with the room
+`question`, optional `detail` and `detail_truncated`, `choices`, `text_allowed`,
+`needs_answer`). `detail` is the card's own text beyond its title (the command a permission
+card allows), with secret-shaped values redacted (a secret with no recognizable prefix or
+shape can pass) and cut at 1000 characters with a closing `…`; it is absent when the card has
+no text beyond its title. `detail_truncated` is `true` only when the text was cut: the cut part
+can hold the command that matters, so a holder passes such a decision with `agent pass`
+instead of allowing it unless it can read the full card. The holder answers with the room
 command `agent answer <interaction> <choice-id|text>` or hands it on with `agent
 pass <interaction>`; both return `ChildDecision {status}` with `status` one of
 `answered`, `passed`, `not_holder`, `settled_by_user`, `unknown_interaction`,
 `invalid_answer`, and no text; `--room`, `--kernel` and `--machine` are refused
 with `peer_decision_refused`, because a peer never settles a decision. The decision moves up at once, with no model turn, when its holder's turn
 ends, errors, is cancelled or is blocked. A decision answered by a parent closes
-as `resolution.via = "parent_agent"`. The relay peer protocol needs no change for it.
+as `resolution.via = "parent_agent"` and writes an `interaction.answered` audit event whose
+`answered_by_agent` names the parent and `child_agent_id` the child that raised it. The relay peer protocol needs no change for it.
 
 Agents may spawn without room agent-count limits, message any current room
 agent, create workflows, and observe/run peers' workflows. Agent rename/delete
@@ -764,6 +779,21 @@ PR1 agent-authored workflow declarations cannot provision extension grants;
 owner-admitted capability paths remain separate until the capability-grants PR.
 Current room, run/lease and creator fences apply after waits before effects;
 a replaced provider run cannot receive an asynchronous room-tool result.
+
+A peer a room agent creates with `agent spawn --room` (in another room of this kernel, or
+on another kernel with `--kernel`) ends with its creator. The kernel records the link when
+it creates the peer (for another kernel, before the request goes out, named by the spawn
+`request_id`; an offline retry of the same spawn never takes back a link an earlier attempt
+wrote). When the creator is deleted, or its room ends or is deleted, the kernel deletes
+each peer it created through the ordinary agent delete, audited as `agent.deleted`; on another
+kernel that is the same-owner `DeleteRoomPeer` request (relay peer 442), which names only the spawn's
+`request_id`: the receiving kernel finds the peer by the spawn key, whatever its room is called
+now. A delete that arrives before its spawn created the peer waits for a spawn that is acting
+and otherwise is remembered as the spawn's answer, so that spawn is refused and creates
+nothing; `RoomPeerDeleted` answers both. A link stays until its delete is done, so an
+unreachable kernel or a restart only delays it; a pass every 30 s and at start finishes what is
+left, and a link older than seven days is dropped with an error log. Agents the creator only
+messaged or followed, and sub-agents (which follow their parent), are not touched.
 
 Before delegation, message submission or workflow invocation, the kernel
 persists `room.obligation.registered` with actor/room/run/prompt, kind and
@@ -4385,7 +4415,7 @@ local protocol/portability behavior, not live provider login, provisioning or
 fresh-machine MP-10 acceptance.
 ### Own machine enrollment (local 971 / relay peer 420)
 
-`IssueOwnMachineEnrollment { machine_label? }` replaces `AddSshMachine` and
+`IssueOwnMachineEnrollment {}` (the machine names itself; there is no label) replaces `AddSshMachine` and
 `RemoveSshMachine`; Chariox no longer installs a kernel over SSH. Only the
 kernel's owner (and an agent or external client acting under the owner's sudo
 window or access grant) may send it. A request that names another user, such as a
@@ -5151,7 +5181,7 @@ See [the real drill](drills/MP08_CONTROL_PLANE_MACHINES.md).
 Kernel gateway (same provisional 568/176). A grant holder names another kernel and the local kernel
 forwards the request over the relay, as a terminal-class client of the target kernel; the target stays the
 authority for its own sessions, agents, terminals and files.
-- Unix-socket frames: `request` frames take an optional `kernel` (the name `ListGatewayKernels` shows: the machine's name when the user has one kernel there, else `<machine>/<label>`; a kernel id, a kernel alias or a machine alias also works when it fits exactly one kernel, else `kernel_ambiguous` lists the candidates).
+- Unix-socket frames: `request` frames take an optional `kernel` (the name `ListGatewayKernels` shows: the computer's name, `<name>-2`, `<name>-3` for its later kernels; a kernel id or a machine name also works when it fits exactly one kernel, else `kernel_ambiguous` lists the candidates).
   The response frame echoes it (`kernel`, absent for local answers). A frame with `kernel` on a connection
   that is not a grant holder's is refused; a kernel request is never answered locally.
 - Subscriptions: a `subscribe` frame with `kernel` starts the same event stream on that kernel (a relay
@@ -5250,7 +5280,7 @@ session}`. 930 has one source, `{"kind": "schedule", "interval_seconds", "repeat
 queue, `steer` is queued and then steered into the running turn exactly like the queued-prompt
 steer. A refused steer leaves the firing queued, records `last_error` and raises a notice. A
 schedule whose previous firing is still queued or running coalesces (`coalesced` counts it).
-Triggers are deleted with their agent and when it is archived. Whoever may prompt the agent may manage its triggers. The
+Triggers are deleted with their agent. Whoever may prompt the agent may manage its triggers. The
 session lists them in `agent_triggers`. `/wait-in` and `/wait-every` are queue-policy schedule
 triggers. 931 removes the `/wait` schedule shape: `CreateAgentPromptSchedule`,
 `CancelAgentPromptSchedule` and the session's `agent_prompt_schedules` are gone, and stored
@@ -5461,31 +5491,19 @@ notification and `completed` on the completed one. Clients draw `images` when
 present and need no minimum version: a kernel below 910 never sends the fields.
 Snapshot: `provider-tool-images-910.json`; drill: `scripts/drills/tool-result-images.mjs`.
 
-### MP-08 / MP-09 / MP-10 / MP-11 — reversible agent archive (636 / peer 239)
+### MP-08 / MP-09 / MP-10 / MP-11 — hide an agent — local 1003
 
-`ArchiveAgent { session_id, agent_id, archived }` retains its protocol592 shape.
-It durably fences the owner's agent before stopping its provider process,
-queued prompts, wakes and terminals, withdrawing process-bound interactions and
-releasing its worker lease. Identity, configuration, history, provider thread and
-grants stay. Errors leave it archived and explain how to retry cleanup. Unarchive
-finishes cleanup, refreshes remote placement and returns the same agent idle;
-no prompt is launched. Children and unrelated Room agents continue. An active
-workflow node must be paused/rebound first. Agents cannot archive through sudo.
-`AgentArchived { session, agent }` returns the result and repaired focus.
-`ListArchivedAgents { session_id }` returns `AgentsListed` with archived agents;
-ordinary `ListAgents` omits them. Session snapshots retain the archived flag,
-including across restart. New archive UI requires local636. See AGENT_ARCHIVE.md
-for edge cases, resource ownership and the proposal approval requirement.
+`HideAgent { session_id, agent_id, hidden }` keeps an agent out of the Room's panes
+without touching its work: the run, queued prompts, wakes and triggers all go on.
+`AgentHidden { session, agent }` returns the result. The agent's `hidden` flag
+(absent when false) is part of every session snapshot, so every client of the Room
+sees it. The kernel clears the flag when the agent's last active or queued prompt
+finishes (a workflow prompt included) and when the agent raises a decision card, which is how a
+hidden agent comes back for every client; hiding an idle agent holds until
+`hidden: false`. Only the owner hides or unhides, and an agent cannot do it through sudo.
+There is no agent-level archive: `ArchiveAgent`, `ListArchivedAgents`, `AgentArchived` and the
+agent `archived` flag are removed (Rooms are still archived). Drill: `local::api::tests::agent_hide`.
 
-### Held notification delivery (670)
-
-A workflow notification whose injection into a running agent has no proven outcome is held by the
-kernel and never re-sent on its own. Protocol 670 projects that hold on the queued item as
-`WorkflowQueuedPrompt.delivery_uncertain_until_ms` and lets the user decide: retry with
-`UpdateQueuedWorkflowPrompt { retry_delivery: true }` (the item is re-admitted for a fresh injection
-and may arrive twice) or discard with the existing `RemoveQueuedWorkflowPrompt`, which now also accepts
-a held item. At the deadline the kernel retires a held item with a notice that names the reason.
-TUI: `/workflow queue retry|remove <item>`. Clients send `retry_delivery` only to kernels at 670 or newer.
 ### MP-08 / MP-10 / MP-11: parked-task Stop reply (643 / peer 239)
 
 `CancelActivePrompt` keeps its request shape. When the targeted agent has no active
@@ -6328,11 +6346,12 @@ needs no session or agent: it is about the kernel's Vault, like `GetCredentialVa
 owner's user id. A session member, an agent and a Metaagent get `vault_unlock_owner_only`;
 kernel-access grant holders and sudo agents are refused too, and no agent tool carries it. The passphrase
 is a redacted, zeroed value: command records show `[redacted]`, and it is never logged. The
-request unlocks an existing Vault only; a missing Vault file is refused and never created.
+request unlocks an existing Vault only; a kernel with no Vault file is refused with
+`vault_awaiting_passphrase` and nothing is created (`CreateCredentialVault` below takes the passphrase).
 How long the Vault stays open is the owner's choice on every unlock (local 984, below).
 
 Refusals carry a code and a plain sentence: `vault_passphrase_wrong`,
-`vault_unlock_rate_limited` (the sentence names the wait in seconds), `vault_missing`,
+`vault_unlock_rate_limited` (the sentence names the wait in seconds), `vault_awaiting_passphrase`,
 `vault_unlock_owner_only` and `vault_locked`. A session-less operation that needs the Vault
 while it is locked answers `vault_locked`, so a client unlocks and repeats the same operation;
 `ManageCredentialVault` on a locked Vault answers it too and raises no prompt. Wrong passphrases are
@@ -6391,6 +6410,23 @@ Vault is never replaced (`vault_exists`); a kernel that keeps its secrets outsid
 the seal to the kernel the Project is on and the create to the new kernel before the Project is sent, so the
 Environment's Secrets and secret-looking Files are written into the new Vault. Focused checks:
 `cargo test -p chariox-kernel --lib vault_creation` and `credential_vault_creation_973_shapes_are_pinned`.
+A kernel always gets a Vault, and its owner can give it one from any client, so no state is "missing":
+`GetCredentialVaultStatus` answers `awaiting_passphrase: true` (absent otherwise, only for a Chariox Vault) while
+the kernel has no Vault file. The owner's authenticated client on any surface (local socket, relay/web, remote
+TUI) then sends `CreateCredentialVault`; an agent, a Metaagent and a session member get
+`vault_unlock_owner_only`, and wrong passphrases stay in the shared rate limit. A client offers "Use the same
+passphrase as <kernel>" when the owner has another kernel whose Vault is open, in this order: (1) read the new
+kernel's `kernelId` and relay public key from the kernel list; (2) send `SealCredentialVaultKey { targetKernelId,
+targetPublicKey }` to the open kernel (`vault_locked` asks the owner to unlock that one first); (3) send
+`CreateCredentialVault { origin: { kind: "seed", seed } }` to the new kernel with the answered seed. The seed
+travels only inside the end-to-end-encrypted relay traffic, and both requests need the owner's id. A kernel
+that has an explicit `CHARIOX_HOME` and no config keeps its default Vault at `$CHARIOX_HOME/vault/vault.json`; without
+one it stays `~/.chariox/vault/vault.json`. An agent or an App install that needs the Vault while the kernel has none
+gets the answer a locked Vault gets (`vault_locked`; the unlock card for an agent run), never an instruction to go to
+the machine. This is local 1003: the status field is optional on the wire and `vault_missing`
+became `vault_awaiting_passphrase`. Focused checks: `cargo test -p chariox-kernel --lib vault_creation` and
+`vault_path`.
+
 ### Vault unlock duration — local 984 / relay peer 425
 
 Every Vault unlock names how long the Vault stays open. `UnlockCredentialVault { passphrase, duration }`
@@ -6541,7 +6577,7 @@ release's outgoing events (`name`, `label`). The envelope is `{source_id, displa
 output, ancestry, deadline_ms}`; there is no status, subject or fields. An agent subscribes itself with
 `CreateAgentTrigger` and source `{kind:"notification", source:{workflow:{source_id}}}`: `busy_policy` is
 now optional on the request, a notification trigger refuses a value, and the trigger summary is
-`{kind:"notification", source, subscription_id, display_name}`. Prompts of this kind carry
+`{kind:"notification", source, subscription_id, display_name}` (local 1003 adds `source_available`). Prompts of this kind carry
 origin `notification`. Peer 433 renames `SubscribeWorkflowNotifications.source_workflow_ref` to `source_id`,
 carries the exit fields in `ListWorkflowNotificationSources` and admits an agent `target_ref`. The
 `UpdateQueuedWorkflowPrompt.retry_delivery` field and the inject delivery path are gone. Clients carry no
@@ -6651,6 +6687,48 @@ Vault must be unlocked. Agents keep the observed-node MCP fill; this command
 is admitted only through the human terminal adapter. Responses contain only
 `inserted: true`. Browser display audience comes from the home kernel; model
 observations stay protected even when the owner's display is unmasked.
+
+### MP-08 / MP-09 / MP-10 / MP-11: leased agent file copy — local 1003 / relay peer 442
+
+The agent tool `chariox.file.copy { source, destination, overwrite?, expect_sha256? }` moves one
+file byte for byte between the calling agent's workspace and the workspace of a leased agent of
+its session. Each side is `{ agent?, path }`; exactly one side names the leased agent (alias,
+agent ref or id), and both paths are relative to their workspace. The result is
+`{ bytes, sha256, source, destination }`: the content never reaches the model, a tool result,
+history or a trace. A commit travels as a `git bundle`, a folder as a tar.
+
+The home kernel drives the copy over the execution-lease link; the worker never starts one. The
+lease admission (`lease_resource` → the leased agent's caller binding) admits three peer requests
+and nothing else is needed, so a private relay works:
+
+- `read_leased_agent_file { leased_agent_id, path, offset }` →
+  `leased_agent_file_read { size_bytes, sha256?, revision, content }`: one slice of at most
+  4 MiB (the Environment import's slice). The slice at offset 0 carries the whole file's SHA-256;
+  every slice carries the file's `revision` (device, inode, size, mtime, ctime), and the home
+  refuses a slice of another revision.
+- `write_leased_agent_file { leased_agent_id, path, offset, total_size, sha256, overwrite,
+  content }` → `leased_agent_file_written { received, sha256? }`: the worker stages the slice with
+  the Kernel Files engine (a private `O_NOFOLLOW` file `.chariox-copy-<id>` beside `path`, where
+  `<id>` is derived from the destination's name; no copy may name a `.chariox*` path, so the staging
+  file never collides with a workspace file) and publishes the file only when the last byte lands
+  with `sha256`. A slice that does not continue the staged bytes is not written; `received` names
+  where the worker stands, so a home that lost an answer resumes from there. An answer lost after
+  publishing returns the finished digest, also for a single-slice or empty file: a write without
+  `overwrite` whose destination already holds exactly `sha256` counts as done; any other existing
+  destination is refused.
+- `discard_leased_agent_file { leased_agent_id, path }` → `leased_agent_file_discarded`: removes
+  only the staging file of a copy to `path`, never a workspace file. When the link stays down, the
+  home retries it for 30 s more and the failure names the leftover; the next copy to that path
+  replaces it.
+
+Refusals are `leased_agent_file_refused { reason }`, final and phrased for the model. A receiving
+workspace refuses absolute paths, `..`, any link on the way, a final link or folder, any write
+under `.git` (any case, any depth) or `.chariox*`, a plan-mode receiver, an existing file without
+`overwrite`, more than 256 MiB, and more than the volume's free space. Reads refuse the same path
+escapes but may read `.git`. A source that changes during the copy, or an assembled file whose
+digest differs, ends the copy with nothing published. A dropped link is retried per slice for up
+to 180 s, then the copy fails and the home discards what was staged. Unit checks:
+`cargo test -p chariox-kernel --lib agent_file_copy file_copy_tool leased_agent_file`.
 
 ## MP-08 / MP-09 / MP-10 / MP-11 shared client protocol discovery (950/399)
 
@@ -7015,6 +7093,31 @@ pair's peer number for chunked kernel uploads. Managed upgrades admit 1000 and 1
 `fixtures/room-exec-protocol.json`, `fixtures/agent-tree-finished.json`. Focused check:
 `cargo test -p chariox-kernel --lib -- workflow_gate exec_place placeable_on agent_tree protocol_shapes`.
 
+Landing 8 carries local daemon protocol 1003 and relay peer 442. Local 1003: `HideAgent` /
+`AgentHidden` and the agents' `hidden` flag replace the agent archive (`ArchiveAgent`,
+`ListArchivedAgents` and `AgentArchived` are gone); machines carry no aliases and
+`RenameRemoteMachine` is gone; a notification trigger's summary carries `source_available`; an agent's
+activity carries `liveness` and the health report `silent_agents`; an App install that waits for its
+owner is an `app_install` passkey prompt; App summaries carry `display_name` and `icon`; the Vault
+reports `awaiting_passphrase`; a kernel may advertise `framed_plaintext_v1`. Relay peer 442: `CXR3`
+request frames, `SetLeasedAgentDeadline`, `DeleteRoomPeer` and the leased agent file requests of
+`chariox.file.copy`. Managed upgrades admit 1001 and 1002. The client drill reads
+`fixtures/landing8-protocol.json` in the kernel (`protocol_shapes/landing8.rs`) and in the kernel
+client (`landing8-protocol.test.ts`). Focused checks:
+`cargo test -p chariox-kernel --lib -- landing8 protocol_shapes client_protocol_conformance` and
+`node --test packages/kernel-client/dist/landing8-protocol.test.js`.
+
+### Source availability of a notification trigger — local 1003
+
+The summary of an agent's notification
+trigger is `{kind:"notification", source, subscription_id, display_name, source_available}`.
+`source_available` is false while the source's kernel is not reachable or the source is gone; the kernel
+recomputes it from the notification inventory each time the inventory refreshes, and a trigger that is off
+keeps it too. Clients show an enabled trigger with `source_available: false` as "offline", the word the
+workflow source picker and entry point list already use. The relay peer number is unchanged. Managed
+upgrades admit 1001 and 1002. Snapshot: `agent_notification_trigger_shape_carries_source_availability`.
+Focused check: `cargo test -p chariox-kernel --lib -- notification protocol_shapes`.
+
 ### Peers across kernels of one owner — relay peer 440
 
 MP-08 / MP-10 / MP-11: an agent messages, steers, cancels, follows or spawns an ordinary agent in a
@@ -7049,3 +7152,57 @@ the lowest round trip, between 32 KiB and 1 MiB (`apps/relay/src/drain_window.rs
 writer also keeps one transfer slot free for small frames. No client minimum changes. Focused
 checks: `cargo test -p chariox-relay -- upload slow_link_tests drain_window` and
 `cargo test -p chariox-kernel --lib -- connector::upload connector::writer`.
+
+
+### Requests as bytes, plaintext bytes as bytes and link-sized binary chunks — local 1003 / relay peer 442
+
+MP-08 / MP-09 / MP-10 / MP-11 (relay8): a file chunk crossed the relay as base64 in the sealed
+plaintext and as base64 again around its ciphertext, 1.78 times its size on a put and 1.33 times on
+a get. Three additions bring both directions to the size of the bytes plus a few hundred bytes.
+
+- **`CXR3` request frame.** A client or kernel that offers the request header
+  `x-chariox-relay-requests: binary-v1` next to the binary events (`x-chariox-relay-protocol: 98`)
+  is answered with the same header. Its `ClientRequest` may then be sent as `CXR3`, and a daemon that
+  offered it is sent every `DaemonRequest` that way, whoever sent the request: four magic bytes, a
+  big-endian u32 JSON header length, a strict header of at most 4 KiB, then raw ciphertext (at least
+  the 16-byte tag). The header is the request's own routing: `kind` `client_request`
+  (`request_id`, `target`) or `daemon_request` (`relay_request_id`, `caller_identity`), plus
+  `sender_public_key` and the 16-character nonce. The frame is bounded and chunked like `CXR2`.
+  A `CXR3` frame on a connection that did not negotiate it ends the connection. Web clients do not
+  offer it and keep the JSON envelope.
+- **`CXF1` plaintext.** A kernel that advertises the capability `framed_plaintext_v1` reads a sealed
+  plaintext that starts with `CXF1`, a big-endian u32 header length, the JSON with every
+  `data_base64` string (at most four levels deep) replaced by `"$bytes":[offset,length]`, then the
+  raw bytes, contiguous and covering the payload exactly. A key of the request's own that is `$`s
+  followed by `bytes` is written with one more `$` and read back with one fewer, so the segment key
+  is the only plain `$bytes` and the JSON comes back unchanged. The kernel gateway frames every request to
+  such a kernel; the kernel answers a framed request in a framed answer and a JSON request in JSON.
+  The reply size ceilings apply to the JSON before it is framed.
+- **Link-sized binary chunks.** To a peer that negotiated `CXR3`, binary `CXB1` chunks follow the
+  measured link like text frames do: `DrainWindow::chunk_bytes`, between 4 KiB and 16 KiB, and the
+  smallest until a rate is measured, so that the window's lowest round trip does not contain a
+  16 KiB frame's drain time. A receiver takes a non-final chunk of at least 4,080 payload bytes. A
+  peer that did not negotiate takes only full chunks, as before. A small frame therefore waits
+  about 25 ms of bulk at the link's rate and not a 16 KiB frame (131 ms at 1 Mbit/s).
+
+Client minimums do not change: no web or native client offers the header. Focused checks:
+`cargo test -p chariox-relay --lib -- binary_request control_during_bulk a_small_reply_waits frame_transport`
+and `cargo test -p chariox-kernel --lib -- framed_plaintext relay_upload kernel_gateway::link`;
+the measurement is `node scripts/relay-load-proof/file-share.mjs` (see its README).
+
+### App install approval: one prompt for the owner's terminals that waits — local 1003
+
+An App install, update or reinstall that waits for its owner is now a prompt of the passkey feed
+(`passkey_prompts_changed`), so every terminal of the owner shows it wherever it looks, not only the one
+with the Room it was started in. `kind` is `app_install`: the approve choice is `approve`, the refuse choice
+is `decline`, neither carries a passkey, and `expires_at_ms` is 9007199254740991 (`NEVER_EXPIRES_MS`): the
+prompt stays until it is answered or cancelled, and a kernel restart asks a new question. The prompt carries
+`app_install: { request_id, operation: install | update | reinstall, review }`; `review` is the kernel's
+account of the verified package (`appId`, `version`, `publisherId`, `publisherName`, `keyId`,
+`keyFingerprint`, `packageDigest`, `capabilitiesDigest`, `capabilities`, `authoritySet`, `actions`). A client
+reads the outcome after the owner approves with `GetAppInstallOperation { request_id }`: phase `failed`
+carries the `failure` code (for example `app_wasm_runtime`). The approval's interaction has no timeout either (`timeout_sec` absent; the kernel accepts that for an App install only). The decision itself keeps a 30 second limit that
+starts at the owner's answer (it used to be the first five minutes from the prompt, which ended an approval
+nobody had seen yet with `app_install_approval_expired`). The kernel-operation interaction is unchanged for
+clients that show it in the Room (`install:<installation>`, its message still lists the review).
+Focused checks: `cargo test -p chariox-kernel --lib app_install_control`, `app_install_prompt_shape_is_pinned`.

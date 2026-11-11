@@ -276,6 +276,13 @@ impl DaemonApp {
         let provider_usage_refresh_task = tokio::spawn(
             Arc::clone(runtime_state.provider_usage_refresher()).run(shutdown_rx.clone()),
         );
+        let provider_discovery_router = Arc::clone(&router);
+        let provider_discovery_shutdown = shutdown_rx.clone();
+        let provider_discovery_task = tokio::spawn(async move {
+            provider_discovery_router
+                .run_provider_discovery(provider_discovery_shutdown)
+                .await;
+        });
         let ready_event_connection_refresh_router = Arc::clone(&router);
         let ready_refresh_shutdown = shutdown_rx.clone();
         let ready_event_connection_refresh_task = tokio::spawn(async move {
@@ -327,6 +334,7 @@ impl DaemonApp {
         let _ = event_delivery_task.await;
         let _ = external_provider_session_discovery_task.await;
         let _ = provider_usage_refresh_task.await;
+        let _ = provider_discovery_task.await;
         let _ = event_connection_reconciliation_task.await;
         let _ = ready_event_connection_refresh_task.await;
         if let Some(task) = managed_activity_task {

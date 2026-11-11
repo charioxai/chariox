@@ -1,0 +1,17 @@
+{
+ "provider": "claude",
+ "kind": "Agent",
+ "source": "live 2026-11-10: record from the kernel history of a real claude turn on the lane kernel",
+ "record": {
+  "id": "toolu_01Ad25hUvVyFqxtkzMHhydhW",
+  "input": {
+   "description": "List files in fixture-project",
+   "prompt": "Working directory: /work/project. List all files inside the directory fixture-project (recursively, relative paths). This is read-only: do not modify anything. Report only the list of file paths, one per line, and the total count. If the directory is missing, say so.",
+   "subagent_type": "scout"
+  },
+  "started_at_ms": 1794314914249,
+  "status": "started",
+  "tool": "Agent"
+ },
+ "shows": "Working\\ directory:\\ /work"
+}

@@ -49,6 +49,16 @@ pub struct ProviderPromptSignalBatch {
     pub resolved_resume_state: Option<ProviderResumeState>,
 }
 
+impl ProviderPromptSignalBatch {
+    /// The provider wrote something: text, a finished message or a notice.
+    pub(crate) fn has_output(&self) -> bool {
+        !self.chunks.is_empty()
+            || !self.completions.is_empty()
+            || !self.notices.is_empty()
+            || self.prompt_completed
+    }
+}
+
 pub(crate) fn provider_retry_status(provider: &str, detail: Option<&str>) -> String {
     let detail = detail
         .map(str::trim)

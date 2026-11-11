@@ -376,9 +376,6 @@ pub use workspace::*;
 /// MP-08/MP-09/MP-10/MP-11: landing union 636 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
 /// health events), 632 (binary Room exec) and 636 (archived-agent discovery); every earlier contract is retained.
 /// Protocol 641 adds `CoverKernelAccessProcess`: a grant covers a named background process by identity.
-/// Allocated 670 lets a user retry (`UpdateQueuedWorkflowPrompt.retry_delivery`) or discard
-/// (`RemoveQueuedWorkflowPrompt`) a workflow notification whose delivery is uncertain, and projects that hold as
-/// `WorkflowQueuedPrompt.delivery_uncertain_until_ms`.
 /// Recipient account offers and kernel-owned copy consent.
 /// MP-08 / MP-09 / MP-10 / MP-11: 780 persists semantic session activity; public snapshot schema 14.
 /// MP-08/MP-10/MP-11: 720 adds the Tab display (display_subscribe tab_display, display_park; P1 of
@@ -497,4 +494,10 @@ pub use workspace::*;
 /// Temporary 1002 (landing 7): workflow entry gates (`WorkflowGate`, gated entry acceptance, typed event
 /// data), `exec_place` with `placeable_on` on held launches, and a sub-agent tree node's mode, permission
 /// level and effort.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1002;
+/// 1003 (Landing 8): `HideAgent`/`AgentHidden` and the agents' `hidden` flag replace the agent archive;
+/// machines have no aliases (`RenameRemoteMachine` is gone); a notification trigger's summary carries
+/// `source_available`; an agent's activity carries `liveness` and health lists `silent_agents`; an App
+/// install that waits for its owner is a passkey prompt (`app_install`); App summaries carry
+/// `display_name` and `icon`; the Vault reports `awaiting_passphrase`; a gateway request and its answer
+/// may carry bytes as bytes (`framed_plaintext_v1`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1003;

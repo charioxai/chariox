@@ -38,6 +38,11 @@ impl KernelRuntimeState {
         .await
     }
 
+    /// The computer's name now, read without the app lock: a heartbeat must not wait behind work that holds it.
+    pub(crate) fn machine_name(&self) -> Option<String> {
+        self.owned.config_projection.snapshot().machine_name()
+    }
+
     pub(crate) async fn relay_registration(&self) -> chariox_relay::protocol::DaemonRegistration {
         self.with_app_side_effect(|app| app.relay_registration())
             .await
@@ -215,8 +220,17 @@ impl KernelRuntimeState {
         let account_profile = account_profile.to_string();
         self.with_app_side_effect(move |app| {
             let mut runtime = RemoteLeaseRuntime::new(app);
+            // Resolve the folder first: a worker with nowhere to put it refuses before the
+            // lease's one authorization is used.
+            let fresh_folder = match (&worktree_id, &worktree_placement) {
+                (None, None) => Some(runtime.resolve_fresh_leased_agent_folder(&lease_id)?),
+                _ => None,
+            };
             runtime.consume_execution_lease_authorization(&lease_id)?;
-            runtime.create_leased_agent(
+            if let Some(folder) = &fresh_folder {
+                runtime.create_fresh_leased_agent_folder(folder)?;
+            }
+            let created = runtime.create_leased_agent(
                 &lease_id,
                 &provider,
                 &account_profile,
@@ -225,9 +239,18 @@ impl KernelRuntimeState {
                 execution_mode,
                 permission_level,
                 workspace_live_sync_mode,
-                worktree_id,
+                fresh_folder
+                    .as_ref()
+                    .map(|folder| folder.display().to_string())
+                    .or(worktree_id),
                 worktree_placement,
-            )
+            );
+            match fresh_folder {
+                Some(folder) => {
+                    created.map_err(|error| runtime.remove_unused_fresh_folder(&folder, error))
+                }
+                None => created,
+            }
         })
         .await
     }
@@ -308,6 +331,35 @@ impl KernelRuntimeState {
             runtime.update_leased_agent_meta_mode(&leased_agent_id, active)
         })
         .await
+    }
+
+    /// The worker owns the deadline of the agent it runs: its own tick stops the run even when
+    /// the home that asked for it is offline.
+    pub(crate) async fn set_relay_leased_agent_deadline(
+        &self,
+        leased_agent_id: &str,
+        deadline_ms: u64,
+    ) -> Result<(), DaemonError> {
+        let leased_agent_id = leased_agent_id.to_string();
+        let backing = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+                runtime.leased_agent_backing(&leased_agent_id).ok_or(
+                    DaemonError::LeasedAgentNotFound {
+                        leased_agent_id: leased_agent_id.clone(),
+                    },
+                )
+            })
+            .await?;
+        self.owned.durable_state_store.agent_lifecycle(
+            crate::durable_state::agent_lifecycle::Operation::SetDeadline {
+                room: backing.0,
+                agent: backing.1,
+                deadline: deadline_ms,
+            },
+        )?;
+        Ok(())
     }
 
     pub(crate) async fn update_relay_leased_agent_remote_extension_manifest(
@@ -514,6 +566,32 @@ impl KernelRuntimeState {
             )
         })
         .await
+    }
+
+    /// Refuses a leased prompt past the deadline of the agent that would run it. The refusal is
+    /// definite, so a prompt with a new receipt settles it as rejected.
+    async fn ensure_leased_prompt_before_deadline(
+        &self,
+        leased_agent_id: &str,
+        leased: &LeasedAgent,
+        new_receipt_prompt: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let Err(error) = self
+            .owned
+            .ensure_agent_before_deadline(&leased.backing_session_id, &leased.backing_agent_id)
+        else {
+            return Ok(());
+        };
+        if let Some(home_prompt_id) = new_receipt_prompt {
+            self.update_relay_leased_prompt_admission_receipt(
+                leased_agent_id,
+                home_prompt_id,
+                WorkerPromptReceiptPhase::Rejected,
+                None,
+            )
+            .await?;
+        }
+        Err(error)
     }
 
     // Keep the relay request fields explicit, like the adjacent lease adapters.
@@ -759,6 +837,13 @@ impl KernelRuntimeState {
             }
             return Err(error);
         }
+        // The worker owns the deadline: a request the home sent before it can arrive after it.
+        self.ensure_leased_prompt_before_deadline(
+            &leased_agent_id,
+            &prepared.leased_agent,
+            home_prompt_id.as_deref().filter(|_| new_receipt),
+        )
+        .await?;
         // Fence replay durably before any launch or prompt side effect. Permanent
         // preparation failures above also create their definitive rejection.
         if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt) {
@@ -800,6 +885,13 @@ impl KernelRuntimeState {
                 }
             }
         };
+        // The launch took time: the deadline may have passed since the check above.
+        self.ensure_leased_prompt_before_deadline(
+            &leased_agent_id,
+            &prepared.leased_agent,
+            home_prompt_id.as_deref().filter(|_| new_receipt),
+        )
+        .await?;
         if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt) {
             self.update_relay_leased_prompt_admission_receipt(
                 &leased_agent_id,

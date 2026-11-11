@@ -14,7 +14,6 @@ pub(crate) struct InstallApprovalChallenge {
     owner: String,
     request_id: String,
     interaction_id: String,
-    deadline: std::time::Instant,
     binding: StageTrustBinding,
     trust: TrustedPublisherSnapshot,
     capabilities_digest: String,
@@ -46,8 +45,9 @@ impl InstallApprovalChallenge {
     pub(crate) fn interaction_id(&self) -> &str {
         &self.interaction_id
     }
-    pub(crate) fn deadline(&self) -> std::time::Instant {
-        self.deadline
+    /// The operation a client reads for the outcome after the owner approves.
+    pub(crate) fn request_id(&self) -> &str {
+        &self.request_id
     }
     pub(crate) fn review(&self) -> &serde_json::Value {
         &self.review
@@ -156,8 +156,8 @@ impl DurableKernelStateStore {
             _ => Err(InstallOperationError::Storage),
         }
     }
-    /// Caller consumes the authenticated generic interaction result. The budget
-    /// retains its ORIGINAL interaction deadline and cancellation predicate.
+    /// Caller consumes the authenticated generic interaction result. The approval itself never expires; the
+    /// budget bounds only this decision, from the moment the owner answered, and carries its cancellation.
     pub(crate) fn decide_app_install(
         &self,
         challenge: Arc<InstallApprovalChallenge>,
@@ -261,6 +261,39 @@ fn require_updatable(
         return Err(InstallOperationError::Conflict);
     }
     Ok(())
+}
+/// A plain install of an App whose uninstalled installation kept its data is
+/// that installation's reinstall: one installation per App and owner. Returns
+/// whether the operation now targets the kept installation.
+fn reattach_kept_installation(
+    tx: &rusqlite::Transaction<'_>,
+    owner: &str,
+    request_id: &str,
+    release: &chariox_app_runtime::installation::ReleaseMetadata,
+) -> Result<bool> {
+    let kept: Option<(String, i64, String)> = sql(tx
+        .query_row(
+            "SELECT installation_id,generation,json_extract(retained_json,'$.release.publisher_id')
+             FROM app_installations
+             WHERE owner_id=?1 AND app_id=?2 AND channel='release'
+               AND active_json IS NULL AND retained_json IS NOT NULL
+               AND pending_generation IS NULL",
+            params![owner, release.app_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional())?;
+    let Some((installation, generation, publisher)) = kept else {
+        return Ok(false);
+    };
+    if publisher != release.publisher_id {
+        return Err(InstallOperationError::PublisherConflict);
+    }
+    sql(tx.execute(
+        "UPDATE app_installation_operations SET installation_id=?1,base_generation=?2,generation=0
+         WHERE owner_id=?3 AND request_id=?4",
+        params![installation, generation, owner, request_id],
+    ))?;
+    Ok(true)
 }
 fn commit(
     tx: rusqlite::Transaction<'_>,
@@ -378,13 +411,31 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                 return Err(InstallOperationError::Limit);
             }
             let tx = sql(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
-            let current = load(&tx, &owner, &request_id)?.ok_or(InstallOperationError::NotFound)?;
+            let mut current =
+                load(&tx, &owner, &request_id)?.ok_or(InstallOperationError::NotFound)?;
             let input = current
                 .input
                 .as_ref()
                 .ok_or(InstallOperationError::Storage)?;
             let dev = input.source
                 == chariox_app_runtime::installation::channel::AcquisitionSource::DevPush;
+            if current.phase == InstallPhase::Preparing
+                && !dev
+                && input.update.is_none()
+                && input.deployment.is_none()
+                && reattach_kept_installation(
+                    &tx,
+                    &owner,
+                    &request_id,
+                    candidate.release_metadata(),
+                )?
+            {
+                current = load(&tx, &owner, &request_id)?.ok_or(InstallOperationError::NotFound)?;
+            }
+            let input = current
+                .input
+                .as_ref()
+                .ok_or(InstallOperationError::Storage)?;
             use chariox_app_runtime::installation::{
                 activation::check_source,
                 channel::{AcquisitionSource, InstallationChannel},
@@ -417,28 +468,24 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
             }
             let time = now()?;
             let installation = &current.token.installation_id;
-            let staged = match current
-                .input
-                .as_ref()
-                .and_then(|input| input.update.as_ref())
-            {
-                None if dev => candidate.stage_dev_first_in(
+            let staged = match current.token.base_generation {
+                0 if dev => candidate.stage_dev_first_in(
                     &tx,
                     &owner,
                     installation,
                     &input.session_id,
                     time as u64,
                 ),
-                None => candidate.stage_first_in(&tx, &owner, installation, time as u64),
-                Some(target) => {
-                    // A reinstall inherits no grants, automations or routes.
+                0 => candidate.stage_first_in(&tx, &owner, installation, time as u64),
+                expected_generation => {
+                    // A reinstall inherits no automations or routes.
                     crate::durable_state::apps::forget_uninstalled(&tx, &owner, installation)
                         .map_err(|_| InstallOperationError::Storage)?;
                     candidate.stage_update_in(
                         &tx,
                         &owner,
                         installation,
-                        target.expected_generation,
+                        expected_generation,
                         time as u64,
                     )
                 }
@@ -608,7 +655,6 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                     owner,
                     request_id,
                     interaction_id,
-                    deadline: std::time::Instant::now() + std::time::Duration::from_secs(300),
                     binding,
                     trust,
                     capabilities_digest: update.release.capabilities_digest,
@@ -623,8 +669,6 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
             accepted,
             budget,
         } => {
-            let deadline = challenge.deadline;
-            let budget = budget.fork(move || std::time::Instant::now() >= deadline);
             limit(&budget)?;
             let tx = sql(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
             let current = load(&tx, &challenge.owner, &challenge.request_id)?

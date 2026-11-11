@@ -96,6 +96,11 @@ impl KernelRuntimeOwnedState {
                 .native_origin()
                 .and(interaction.related_agent_id())
         });
+        // The agent a card brings back is whichever one it concerns, with or without prompt-lifetime authority.
+        let concerned_agent = interaction
+            .agent_id()
+            .or(interaction.related_agent_id())
+            .map(str::to_owned);
         // Resolve agent identity before taking the session write guard; session
         // updates must not acquire the agent store in the opposite lock order.
         let mut remote_binding = None;
@@ -137,11 +142,12 @@ impl KernelRuntimeOwnedState {
                                         .kernel_operation_id()
                                         .is_some_and(|id| id.starts_with("access-")))
                         }
-                        None => {
-                            super::super::agent_task_owner_interactions::is_blocked_task_decision(
+                        // An App install waits for its owner for as long as it takes; so does a blocked task's decision.
+                        None => interaction.app_install().is_some()
+                            || super::super::agent_task_owner_interactions::is_blocked_task_decision(
                                 interaction.id(),
-                            ) && interaction.kernel_operation_id() == Some(interaction.id())
-                        }
+                            )
+                                && interaction.kernel_operation_id() == Some(interaction.id()),
                     }
                 {
                     return Err(interaction_error("Invalid kernel operation decision"));
@@ -456,6 +462,20 @@ impl KernelRuntimeOwnedState {
         sessions.restore_session(session);
         drop(sessions);
         activity_mutation.record();
+        // Nobody looks at a hidden agent's card, so the agent returns with it.
+        if let Some(agent_id) = concerned_agent.as_deref().filter(|id| {
+            self.agent_store
+                .get_agent(id)
+                .is_ok_and(|a| a.session_id() == session_id)
+        }) {
+            if let Err(error) = self.unhide_agent(agent_id) {
+                crate::logging::error_with_fields(
+                    "kernel.agents",
+                    "a hidden agent's decision could not bring it back",
+                    serde_json::json!({ "agent_id": agent_id, "error": error.to_string() }),
+                );
+            }
+        }
         if let Err(error) = self.session_snapshot(session_id) {
             let mut pending = self.pending_interactions.write();
             if pending

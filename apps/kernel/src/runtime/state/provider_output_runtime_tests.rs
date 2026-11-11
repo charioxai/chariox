@@ -151,6 +151,7 @@ mod agent_tree_state;
 mod agent_wake_sources;
 mod app_quiet_tool_guard;
 mod approval_lifetime;
+mod background_hold;
 mod background_tool_settlement;
 mod browser_import_execution_gate;
 mod child_finished;
@@ -167,7 +168,9 @@ mod focus_recovery_tests;
 mod history_projection;
 mod inbox_sender;
 mod large_codex_resume;
+mod leased_folder;
 mod leased_output;
+mod leased_refused_checkout;
 mod mcp_catalog_reload;
 mod peer_events;
 mod process_tool_settlement;
@@ -182,6 +185,8 @@ mod quiet_drain_workflow;
 mod structured_exit_diagnostic;
 mod structured_output;
 mod subtree_cascade;
+#[cfg(unix)]
+mod visual_tools;
 
 #[test]
 fn claude_native_runs_never_use_quiet_pty_settlement() {

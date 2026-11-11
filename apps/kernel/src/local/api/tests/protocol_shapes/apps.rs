@@ -12,6 +12,8 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
         publisher_id: "publisher".into(),
         package_digest: format!("sha256:{:064x}", 1),
         schema_version: 1,
+        display_name: None,
+        icon: None,
     };
     let requests = vec![
         LocalDaemonRequest::ListAppInstallations(ListAppInstallationsRequest {
@@ -40,6 +42,8 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
                 app_id: "com.chariox.todo".into(),
                 generation: "9223372036854775807".into(),
                 active_release: Some(release.clone()),
+                display_name: None,
+                icon: None,
                 pending_generation: Some("9223372036854775806".into()),
                 admission_paused: false,
                 data_kept: true,
@@ -723,6 +727,8 @@ fn an_app_set_is_versioned_and_carries_no_app_data() {
                 publisher_id: "com.chariox".into(),
                 package_digest: format!("sha256:{:064x}", 1),
                 schema_version: 1,
+                display_name: None,
+                icon: None,
             },
             capabilities: serde_json::json!({"network": []}),
             automations: Vec::new(),
@@ -1063,6 +1069,22 @@ fn saved_snapshot_restore_protocol_410_shape_and_hash() {
 }
 
 #[test]
+fn a_reserved_publisher_enrollment_refuses_with_its_own_error_code() {
+    let response = LocalDaemonResponse::AppRequestFailed {
+        code: AppRequestErrorCode::ReservedPublisher,
+    };
+    let value = serde_json::to_value(&response).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"AppRequestFailed": {"code": "reserved_publisher"}})
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonResponse>(value).unwrap(),
+        response
+    );
+}
+
+#[test]
 fn receipt_expiry_protocol_416_refuses_with_a_stable_error_shape() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
@@ -1084,4 +1106,52 @@ fn receipt_expiry_protocol_416_refuses_with_a_stable_error_shape() {
         format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap())),
         "e42f0d699c69420e3ae44790dd188ac2365d21078bc9013ec0049e6c543ae860"
     );
+}
+
+/// Pinned at local 1003. Both fields are optional and absent on the wire when an
+/// App declares none.
+#[test]
+fn app_summaries_pin_the_signed_display_name_and_icon_fields() {
+    let release = AppReleaseSummary {
+        version: "1.0.0".into(),
+        publisher_id: "publisher".into(),
+        package_digest: format!("sha256:{:064x}", 1),
+        schema_version: 1,
+        display_name: Some("Todo list".into()),
+        icon: Some("data:image/svg+xml;base64,PHN2Zy8+".into()),
+    };
+    let installation = AppInstallationSummary {
+        channel: chariox_app_runtime::installation::channel::InstallationChannel::Release,
+        dev_room_id: None,
+        installation_id: "todo".into(),
+        events: vec![],
+        app_id: "com.chariox.todo".into(),
+        generation: "1".into(),
+        active_release: Some(release.clone()),
+        display_name: release.display_name.clone(),
+        icon: release.icon.clone(),
+        pending_generation: None,
+        admission_paused: false,
+        data_kept: false,
+    };
+    let json = serde_json::to_value(&installation).unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&json).unwrap())),
+        "03af825fd22365bf8214beb4937258c05d0071179322aa5c6852bd020598f0a7"
+    );
+    assert_eq!(json["display_name"], "Todo list");
+    assert_eq!(json["icon"], "data:image/svg+xml;base64,PHN2Zy8+");
+    assert_eq!(json["active_release"]["display_name"], "Todo list");
+    assert_eq!(json["active_release"]["icon"], json["icon"]);
+    assert_eq!(
+        serde_json::from_value::<AppInstallationSummary>(json).unwrap(),
+        installation
+    );
+    let bare = serde_json::json!({
+        "version": "1.0.0", "publisher_id": "publisher",
+        "package_digest": format!("sha256:{:064x}", 1), "schema_version": 1
+    });
+    let release: AppReleaseSummary = serde_json::from_value(bare.clone()).unwrap();
+    assert!(release.display_name.is_none() && release.icon.is_none());
+    assert_eq!(serde_json::to_value(&release).unwrap(), bare);
 }

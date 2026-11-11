@@ -235,9 +235,9 @@ jobs:
 
       - name: Install official provider test harnesses
         run: |
-          npm install --global @anthropic-ai/claude-code@2.1.296 @openai/codex@0.144.0 opencode-ai@1.18.23
+          npm install --global @anthropic-ai/claude-code@2.1.296 @openai/codex@0.159.3 opencode-ai@1.18.23
           test "$(claude --version)" = "2.1.296 (Claude Code)"
-          test "$(codex --version)" = "codex-cli 0.144.0"
+          test "$(codex --version)" = "codex-cli 0.159.3"
           test "$(opencode --version)" = "1.18.23"
 
       - name: Test

@@ -124,20 +124,23 @@ fn preparing_ack_replay_and_cancel_survive_reopen_without_creating_a_stage() {
 }
 
 #[test]
-fn verified_review_nonce_and_original_deadline_fence_fresh_writer_budgets() {
+fn verified_review_nonce_and_decision_limit_fence_fresh_writer_budgets() {
     let f = Fixture::new();
     let operation = f.stage("review");
     let old = Arc::new(f.arm("review", "old-decision"));
-    let mut current = f.arm("review", "current-decision");
+    let current = f.arm("review", "current-decision");
     assert_eq!(current.review()["packageDigest"], operation.package_digest);
     assert!(matches!(
         f.store.decide_app_install(old, true, budget()),
         Err(InstallOperationError::Conflict)
     ));
-    current.deadline = std::time::Instant::now();
+    // The approval itself never expires; the limit of the decision starts at the owner's answer.
     assert!(matches!(
-        f.store
-            .decide_app_install(Arc::new(current), true, budget()),
+        f.store.decide_app_install(
+            Arc::new(current),
+            true,
+            AppOperationBudget::from_supervisor(|| true)
+        ),
         Err(InstallOperationError::Stopped)
     ));
     let pending = f
@@ -515,6 +518,44 @@ fn a_reinstall_updates_the_kept_installation_and_restores_no_configuration() {
     assert_eq!(approved.phase, InstallPhase::AwaitingApproval);
     assert!(approved.approved);
     assert_eq!(count("app_automations", "AND status='active'"), 0);
+}
+
+#[test]
+fn a_plain_install_reattaches_the_kept_installation_of_the_same_app() {
+    let f = Fixture::new();
+    f.store
+        .mutate_app_installation(
+            "alice",
+            crate::durable_state::apps::AppRegistryMutation::Uninstall {
+                installation_id: "installed".into(),
+                expected_generation: 1,
+                now_ms: 5,
+            },
+        )
+        .unwrap();
+    let next = release("1.1.0", 0, false, &f.store);
+    let digest = next.release_metadata().package_digest.clone();
+    let app_id = next.release_metadata().app_id.clone();
+    f.store
+        .reserve_app_install("alice", "again", input(), &digest, budget())
+        .unwrap();
+    let prepared = f
+        .store
+        .complete_app_install_preparation("alice", "again", next, budget())
+        .unwrap();
+    assert_eq!(prepared.token.installation_id, "installed");
+    assert_eq!(prepared.token.base_generation, 2);
+    let challenge = Arc::new(f.arm("again", "yes"));
+    assert!(challenge.is_reinstall());
+    let installations: i64 = Connection::open(f.store.path())
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM app_installations WHERE owner_id='alice' AND app_id=?1",
+            [app_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(installations, 1);
 }
 
 #[test]

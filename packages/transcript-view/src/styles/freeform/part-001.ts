@@ -602,6 +602,10 @@ export const freeformStylesPart001 = `
   cursor: pointer;
 }
 
+div.freeform-blob-header {
+  cursor: default;
+}
+
 .freeform-blob-header:hover .freeform-blob-title,
 .freeform-blob-header:focus-visible .freeform-blob-title {
   color: var(--text);

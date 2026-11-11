@@ -113,6 +113,7 @@ impl CommandRouter {
             LocalDaemonRequest::SetAgentDeadline(request) => boxed_handler(|| async move {
                 self.runtime_state
                     .set_agent_deadline(&command_caller_user_id(&command), request)
+                    .await
             }),
             LocalDaemonRequest::GetAgentDeadline(request) => boxed_handler(|| async move {
                 self.runtime_state
@@ -233,7 +234,6 @@ impl CommandRouter {
             | LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(_)
             | LocalDaemonRequest::GetRoomEnvironmentEvents(_)
             | LocalDaemonRequest::ListRoomEnvironmentActionHistory(_)
-            | LocalDaemonRequest::ListArchivedAgents(_)
             | LocalDaemonRequest::ListAgents(_)) => boxed_handler(|| async move {
                 execute_session_read_request(&self.runtime_state, request).await
             }),
@@ -591,8 +591,7 @@ impl CommandRouter {
                 })
             }
             request @ (LocalDaemonRequest::ApproveRemoteMachine(_)
-            | LocalDaemonRequest::ForgetRemoteMachine(_)
-            | LocalDaemonRequest::RenameRemoteMachine(_)) => boxed_handler(|| async move {
+            | LocalDaemonRequest::ForgetRemoteMachine(_)) => boxed_handler(|| async move {
                 execute_remote_machine_registry_request(
                     &self.runtime_state,
                     &self.app,

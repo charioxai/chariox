@@ -9,7 +9,6 @@ import {
   forgetRemoteMachineRequest,
   listRemoteMachineKernelsRequest,
   listRemoteMachinesRequest,
-  renameRemoteMachineRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 
@@ -37,15 +36,6 @@ export async function forgetRemoteMachine(
   return expectVariant<{ machine: WaitingRoomRemoteMachineView }>(response, "RemoteMachineForgotten").machine
 }
 
-export async function renameRemoteMachine(
-  client: LocalIpcClient,
-  machineRef: string,
-  alias: string,
-): Promise<WaitingRoomRemoteMachineView> {
-  const response = await client.send<Record<string, unknown>>(renameRemoteMachineRequest(machineRef, alias))
-  return expectVariant<{ machine: WaitingRoomRemoteMachineView }>(response, "RemoteMachineRenamed").machine
-}
-
 export async function listRemoteMachineKernels(
   client: LocalIpcClient,
   machineRef: string,
@@ -58,7 +48,7 @@ export async function listRemoteMachineKernels(
 }
 
 export type OwnMachineEnrollment = { command: string; expires_at: string }
-export async function issueOwnMachineEnrollment(client: LocalIpcClient, machineLabel?: string): Promise<OwnMachineEnrollment> {
-  const response = await client.send<Record<string, unknown>>(issueOwnMachineEnrollmentRequest(machineLabel))
+export async function issueOwnMachineEnrollment(client: LocalIpcClient): Promise<OwnMachineEnrollment> {
+  const response = await client.send<Record<string, unknown>>(issueOwnMachineEnrollmentRequest())
   return expectVariant<{ enrollment: OwnMachineEnrollment }>(response, "OwnMachineEnrollment").enrollment
 }

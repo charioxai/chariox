@@ -1235,6 +1235,34 @@ async fn a_settled_decision_event_beyond_the_first_inbox_page_is_still_closed() 
     );
 }
 
+#[tokio::test]
+async fn a_decision_the_holder_answered_can_be_acknowledged_by_sequence() {
+    let t = tree(
+        "decision-ack-after-answer",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    t.raise(permission("perm-ack", &t.c)).await;
+    let sequence = t.decision_events(&t.p)[0].sequence;
+    let done = t
+        .runtime
+        .answer_child_decision(&t.room, &t.p, "perm-ack", "allow")
+        .await
+        .unwrap();
+    assert_eq!(done, ChildDecisionStatus::Answered);
+    let acked = t
+        .runtime
+        .ack_agent_inbox(
+            &t.room,
+            &t.p,
+            &serde_json::json!({"sequence": sequence, "handled": true}),
+            1,
+        )
+        .expect("an answered decision no longer needs an answer");
+    assert_eq!(acked["acknowledged"], sequence);
+}
+
 /// The holder's turn is settling and its output pump holds the run's provider lane: the child's
 /// approval request must not wait for it, and must reach the holder once its turn has ended.
 #[tokio::test]
@@ -1362,7 +1390,9 @@ async fn a_holder_that_yields_before_reading_the_decision_keeps_it() {
     );
 }
 
+mod answer_audit;
 mod asked_without_waiting;
+mod detail;
 mod holder_inbox_reads;
 mod reparent;
 mod restored;

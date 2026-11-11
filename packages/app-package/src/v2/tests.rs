@@ -8,6 +8,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::{json, Value};
 
 pub(crate) mod components;
+mod display;
 
 use super::*;
 use crate::{archive, read_inventory, signing_bytes_for, ErrorCode, Limits, TrustedPublisher};

@@ -259,6 +259,48 @@ fn managed_structured_providers_use_structured_prompt_io() {
 }
 
 #[test]
+fn polling_a_quiet_structured_run_does_not_count_as_provider_output() {
+    let mut providers = ProviderProcessService::new();
+    providers.use_manual_output_polls_for_tests();
+    let request = LaunchProviderRequest::new(
+        "session-1",
+        "dev-stub",
+        "slow-structured",
+        "default",
+        "model",
+    );
+    let mut run = RuntimeProviderRun::new(
+        "provider-run-quiet",
+        &request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "slow-structured".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    providers.insert_run_for_test(run);
+    let before = providers.get_run("provider-run-quiet").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    providers
+        .enqueue_structured_output_poll("provider-run-quiet")
+        .unwrap();
+
+    let after = providers.get_run("provider-run-quiet").unwrap();
+    assert!(
+        after.last_output_at_ms() == before.last_output_at_ms(),
+        "a poll that found nothing moved the output clock"
+    );
+}
+
+#[test]
 fn provider_only_start_run_returns_outcome_without_session_mutation() {
     let worktree = crate::test_support::TestWorktree::new("provider-service-start");
     let mut sessions = sessions();

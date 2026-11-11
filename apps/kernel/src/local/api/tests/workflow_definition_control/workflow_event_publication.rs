@@ -133,7 +133,6 @@ fn dynamic_registry_config(server_url: String) -> crate::DaemonConfig {
         client_id: Some("client-external".to_string()),
         client_alias: Some("external-client".to_string()),
         machine_id: Some("machine-external".to_string()),
-        machine_alias: Some("external-machine".to_string()),
         machine_credential: None,
         cloud_session_token: Some("cloud-session-token".to_string()),
         cloud_session_expires_at_ms: None,

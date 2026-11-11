@@ -1,0 +1,13 @@
+{
+  "kernelCredential": "kcred_synthetic",
+  "accountId": "account-1",
+  "realmId": "realm-1",
+  "machineId": "machine-test",
+  "kernelId": "daemon-test",
+  "machineName": "fixture-machine",
+  "status": "ONLINE",
+  "metadata": {
+    "host": "127.0.0.1",
+    "port": 43119
+  }
+}

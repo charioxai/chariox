@@ -39,6 +39,7 @@ pub(crate) use managed_context_bridge::{
 };
 mod app_event_routes;
 mod app_pre_lane;
+mod created_peer_release;
 mod meta_runtime_command;
 mod peer_agent_spawn;
 mod pre_lane_dispatch;
@@ -54,6 +55,7 @@ pub(crate) use slice_relay_token_bridge::ManagedSliceRelayTokenInstallRequest;
 pub(in crate::runtime) use slice_relay_token_bridge::{
     managed_slice_relay_identity_from_environment, ManagedSliceRelayIdentity,
 };
+mod provider_discovery;
 mod status_projection_bridge;
 mod transport_bridge;
 
@@ -231,7 +233,6 @@ mod tests {
             .expect("focus should succeed");
     }
 
-    mod agent_archive;
     mod agent_messaging;
     mod agent_triggers;
     mod app_bindings;

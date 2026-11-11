@@ -322,10 +322,7 @@ fn invalid_request(
         return Some(error);
     }
     let config = direct.router.relay_config_snapshot();
-    let addressed_here = target.daemon_id.as_deref() == Some(config.daemon_id.as_str())
-        || (target.daemon_id.is_none()
-            && target.daemon_alias.is_some()
-            && target.daemon_alias == config.daemon_alias);
+    let addressed_here = target.daemon_id.as_deref() == Some(config.daemon_id.as_str());
     if !addressed_here {
         return Some(relay_error(
             "target_mismatch",

@@ -22,7 +22,6 @@ pub(crate) struct LocalKernelPresenceRecord {
     pub schema_version: u32,
     pub kernel_id: String,
     #[serde(default)]
-    pub kernel_alias: Option<String>,
     pub machine_id: String,
     #[serde(default)]
     pub machine_alias: Option<String>,
@@ -52,7 +51,6 @@ impl LocalKernelPresenceLease {
         let record = LocalKernelPresenceRecord {
             schema_version: ACTIVE_KERNEL_LEASE_SCHEMA_VERSION,
             kernel_id: relay_status.daemon_id,
-            kernel_alias: relay_status.daemon_alias,
             machine_id: relay_status.machine_id,
             machine_alias: relay_status.machine_alias,
             host: local_connect_host(local_addr),
@@ -93,7 +91,6 @@ impl LocalKernelPresenceLease {
                 }
                 let relay_status = heartbeat_router.transport_relay_status_snapshot().await;
                 record.heartbeat_at_ms = now_unix_ms();
-                record.kernel_alias = relay_status.daemon_alias;
                 record.machine_alias = relay_status.machine_alias;
                 record.relay_url = relay_status.relay_url;
                 record.relay_connected = relay_status.connected;
@@ -247,7 +244,6 @@ mod tests {
         let record = LocalKernelPresenceRecord {
             schema_version: 1,
             kernel_id: "kernel-1".to_string(),
-            kernel_alias: Some("work".to_string()),
             machine_id: "machine-1".to_string(),
             machine_alias: Some("laptop".to_string()),
             host: "127.0.0.1".to_string(),

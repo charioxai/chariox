@@ -322,12 +322,13 @@ function renderCollapsibleFreeformToolMessage(
       </section>
     `
   }
+  const expandable = display.blocks.length > 0
   return `
-    <section class="freeform-message freeform-agent-output freeform-tool-output freeform-collapsible-output" data-render-key="${context.escapeHtml(renderKey)}" data-tool="${context.escapeHtml(display.tool)}" data-entry-key="${context.escapeHtml(key)}" data-expanded="${expanded ? "true" : "false"}">
-      ${renderFreeformBlobHeader(display.title, [display.status?.toUpperCase(), display.summary].filter(Boolean).join(" "), expanded, options, { icon: display.icon, running: display.status === "running" })}
-      <div class="freeform-blob-body freeform-tool-body" ${expanded ? "" : "hidden"}>
+    <section class="freeform-message freeform-agent-output freeform-tool-output freeform-collapsible-output" data-render-key="${context.escapeHtml(renderKey)}" data-tool="${context.escapeHtml(display.tool)}" data-entry-key="${context.escapeHtml(key)}" data-expanded="${expanded && expandable ? "true" : "false"}">
+      ${renderFreeformBlobHeader(display.title, [display.status?.toUpperCase(), display.summary].filter(Boolean).join(" "), expanded && expandable, options, { icon: display.icon, running: display.status === "running", expandable })}
+      ${expandable ? `<div class="freeform-blob-body freeform-tool-body" ${expanded ? "" : "hidden"}>
         ${expanded ? renderCollapsibleToolDisplayBlocks(display.blocks, options) : ""}
-      </div>
+      </div>` : ""}
     </section>
   `
 }
@@ -337,15 +338,23 @@ export function renderFreeformBlobHeader(
   action: string,
   expanded: boolean,
   options: FreeformTranscriptRenderOptions = {},
-  row: { readonly icon?: unknown; readonly running?: boolean } = {},
+  row: { readonly icon?: unknown; readonly running?: boolean; readonly expandable?: boolean } = {},
 ): string {
   const context = freeformTranscriptRenderContext(options)
   const icon = isToolDisplayIcon(row.icon) ? row.icon : null
-  return `
-    <button class="freeform-blob-header" type="button" data-freeform-blob-toggle aria-expanded="${expanded ? "true" : "false"}"${icon ? ` data-tool-icon="${icon}"` : ""}>
+  const content = `
       ${icon ? `<span class="freeform-blob-icon" aria-hidden="true">${renderToolIcon(icon)}</span>` : ""}
       <span class="freeform-blob-title"${row.running ? ` data-running="true"` : ""}>${context.escapeHtml(title)}</span>
-      <span class="freeform-blob-action">${context.escapeHtml(action)}</span>
+      <span class="freeform-blob-action">${context.escapeHtml(action)}</span>`
+  // A row with nothing to open to is a title row: no toggle, no chevron.
+  if (row.expandable === false) {
+    return `
+    <div class="freeform-blob-header"${icon ? ` data-tool-icon="${icon}"` : ""}>${content}
+    </div>
+  `
+  }
+  return `
+    <button class="freeform-blob-header" type="button" data-freeform-blob-toggle aria-expanded="${expanded ? "true" : "false"}"${icon ? ` data-tool-icon="${icon}"` : ""}>${content}
       <span class="freeform-blob-chevron" aria-hidden="true">${renderFreeformChevronIcon()}</span>
     </button>
   `

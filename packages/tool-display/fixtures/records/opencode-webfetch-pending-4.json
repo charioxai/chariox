@@ -1,0 +1,11 @@
+{
+ "provider": "opencode",
+ "kind": "webfetch",
+ "source": "live 2026-11-10: record from the kernel history of a real opencode turn on the lane kernel",
+ "record": {
+  "id": "prt_1c57c3572001zpJE97gsXmrHq6",
+  "tool": "webfetch",
+  "status": "pending"
+ },
+ "empty": true
+}

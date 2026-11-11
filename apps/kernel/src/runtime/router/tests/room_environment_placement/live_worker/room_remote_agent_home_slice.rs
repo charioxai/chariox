@@ -451,13 +451,14 @@ async fn prepare_home_slice_room_display(
     (room, attachment_id, viewer_public_key, slice)
 }
 
-async fn start_remote_agent_worker(fixture: &mut LiveWorker) -> (TestState, Arc<CommandRouter>) {
+pub(super) async fn start_remote_agent_worker(
+    fixture: &mut LiveWorker,
+) -> (TestState, Arc<CommandRouter>) {
     let mut worker_state = TestState::new();
     worker_state.config.relay_url = fixture.home_state.config.relay_url.clone();
     worker_state.config.relay_token = fixture.home_state.config.relay_token.clone();
     worker_state.config.relay_heartbeat_ms = 50;
     worker_state.config.daemon_id = "agent-worker".to_string();
-    worker_state.config.daemon_alias = Some("agent-worker".to_string());
     worker_state.config.host_machine_id = "agent-worker-machine".to_string();
     let worker = Arc::new(CommandRouter::with_interactive_capacity(
         Arc::new(Mutex::new(
@@ -477,7 +478,7 @@ async fn start_remote_agent_worker(fixture: &mut LiveWorker) -> (TestState, Arc<
     (worker_state, worker)
 }
 
-async fn wait_for_remote_agent_worker(fixture: &LiveWorker) {
+pub(super) async fn wait_for_remote_agent_worker(fixture: &LiveWorker) {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if send_peer_request_via_temporary_connection(

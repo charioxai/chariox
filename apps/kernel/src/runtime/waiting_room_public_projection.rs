@@ -1006,6 +1006,7 @@ fn waiting_room_public_agent_summaries(
             WaitingRoomPublicAgentSummary {
                 id: agent.id().to_string(),
                 agent_ref: agent.agent_ref().to_string(),
+                hidden: agent.hidden(),
                 alias: agent.alias().map(ToOwned::to_owned),
                 created_at_ms: agent.created_at_ms(),
                 last_prompt_sent_at_ms: agent.last_prompt_sent_at_ms(),
@@ -1515,7 +1516,6 @@ mod tests {
             relay_url: None,
             relay_token_configured: false,
             daemon_id: "daemon".to_string(),
-            daemon_alias: None,
             machine_id: "machine".to_string(),
             machine_alias: None,
         }
@@ -2268,7 +2268,6 @@ mod tests {
             relay_url: None,
             relay_token_configured: false,
             daemon_id: "daemon".to_string(),
-            daemon_alias: None,
             machine_id: "machine".to_string(),
             machine_alias: None,
         };
@@ -2397,14 +2396,12 @@ mod tests {
                 relay_url: None,
                 relay_token_configured: false,
                 daemon_id: "daemon".to_string(),
-                daemon_alias: None,
                 machine_id: "machine".to_string(),
                 machine_alias: None,
             },
             vec![RemoteMachineRecord {
                 machine_id: "machine-peer".to_string(),
                 machine_alias: Some("peer".to_string()),
-                registry_alias: None,
                 display_name: "peer".to_string(),
                 trust_status: RemoteMachineTrustStatus::Approved,
                 online: true,

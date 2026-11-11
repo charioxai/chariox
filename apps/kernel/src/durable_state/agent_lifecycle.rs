@@ -23,6 +23,7 @@ pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
 pub(crate) use worker_stops::{UnstoppedWorkerRun, WorkerStopMutation};
 #[cfg(test)]
 mod blocked_intent_tests;
+pub(crate) mod created_peers;
 mod delivery_waits;
 #[cfg(test)]
 mod fault_tests;
@@ -56,6 +57,8 @@ mod wake_tests;
 mod wakeable;
 mod wakes;
 mod workflow_tasks;
+#[cfg(test)]
+mod yield_settled_tests;
 use super::{DurableKernelStateStore, DurableWriterRequest};
 use crate::error::DaemonError;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -69,7 +72,8 @@ pub use types::{
 };
 mod wake_receipts;
 pub(crate) use types::{
-    unresolved_source_outcome, InboxEvent, Operation, Outcome, Registration, WakeEnd,
+    unresolved_source_outcome, CancelInitiator, InboxEvent, Operation, Outcome, Registration,
+    WakeEnd,
 };
 pub(crate) const SWEEP_MS: u64 = 30_000;
 pub(crate) const DELIVERY_TIMEOUT_MS: u64 = 120_000;
@@ -127,6 +131,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     }
     index_task_lookups(db)?;
     outside::initialize(db)?;
+    created_peers::initialize(db)?;
     peer_follows::initialize(db)?;
     deadlines::initialize(db)?;
     wakes::initialize(db)?;
@@ -357,6 +362,15 @@ impl DurableKernelStateStore {
     pub(crate) fn agent_registrations(&self, task: &str) -> Result<Vec<Registration>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.subscriptions")?;
         registrations(&db, task)
+    }
+    /// The live follows of peers an agent made in any of its tasks.
+    pub(crate) fn agent_peer_follows(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> Result<Vec<Registration>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.subscriptions")?;
+        peer_follows::held_by(&db, room, agent)
     }
     pub(crate) fn agent_delivery_front(
         &self,
@@ -880,7 +894,8 @@ fn save(tx: &Transaction<'_>, task: &AgentTaskExecution) -> Result<(), DaemonErr
     tx.execute("INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(task_id) DO UPDATE SET prompt_id=excluded.prompt_id,payload=excluded.payload",params![task.task_id,task.room_id,task.agent_id,task.prompt_id,encode(task)?]).map_err(sql)?;
     outside::publish_task(tx, task, previous.as_ref())?;
     if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled) {
-        tx.execute("UPDATE agent_registrations SET payload=json_set(payload,'$.live',json('false')) WHERE task_id=?1 AND json_valid(payload)", [&task.task_id]).map_err(sql)?;
+        // A follow of a peer belongs to the agent that made it: the turn that made it may end.
+        tx.execute("UPDATE agent_registrations SET payload=json_set(payload,'$.live',json('false')) WHERE task_id=?1 AND json_valid(payload) AND COALESCE(json_extract(payload,'$.peer'),0)=0", [&task.task_id]).map_err(sql)?;
     }
     Ok(())
 }
@@ -1311,9 +1326,18 @@ pub(super) const WORK_CORRELATED: &str = "(json_extract(payload,'$.kind')<>'mess
 /// Rows one inbox read returns at most.
 pub(crate) const INBOX_PAGE: usize = 128;
 
-/// A decision an agent must answer or pass before its event can be acknowledged.
+/// Events whose outcome the agent already settled are not read again.
+pub(crate) fn is_open(event: &InboxEvent) -> bool {
+    !matches!(
+        event.state.as_str(),
+        "acknowledged" | "handled" | "expired" | "failed"
+    )
+}
+
+/// A decision an agent must answer or pass before its event can be acknowledged. Answering or
+/// passing it closes the event, so a closed one needs nothing more.
 pub(crate) fn needs_answer(event: &InboxEvent) -> bool {
-    event.kind == "child_decision" && event.payload["answered"].as_bool() != Some(true)
+    event.kind == "child_decision" && is_open(event)
 }
 
 pub(crate) fn work_correlated(event: &InboxEvent, work: &str) -> bool {

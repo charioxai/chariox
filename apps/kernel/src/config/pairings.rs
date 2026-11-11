@@ -19,14 +19,11 @@ impl DaemonConfig {
 
     pub fn approve_remote_machine(
         machine_id: impl Into<String>,
-        alias: Option<String>,
     ) -> Result<PersistedMachineRegistration, DaemonError> {
         let machine_id = machine_id.into();
-        let alias = normalized_optional(alias);
         validate_non_empty("machine_id", &machine_id)?;
         let mut persisted = load_persisted_daemon_config();
         let entry = upsert_machine_registration(&mut persisted.machines, &machine_id);
-        entry.alias = alias.or_else(|| entry.alias.clone());
         entry.approved = true;
         entry.forgotten = false;
         let saved = entry.clone();
@@ -113,24 +110,6 @@ impl DaemonConfig {
         Ok(saved)
     }
 
-    pub fn rename_remote_machine(
-        machine_id: impl Into<String>,
-        alias: impl Into<String>,
-    ) -> Result<PersistedMachineRegistration, DaemonError> {
-        let machine_id = machine_id.into();
-        let alias = alias.into().trim().to_string();
-        validate_non_empty("machine_id", &machine_id)?;
-        validate_non_empty("machine_alias", &alias)?;
-        let mut persisted = load_persisted_daemon_config();
-        let entry = upsert_machine_registration(&mut persisted.machines, &machine_id);
-        entry.alias = Some(alias);
-        entry.approved = true;
-        entry.forgotten = false;
-        let saved = entry.clone();
-        persist_daemon_config(&persisted, "persist machine rename")?;
-        Ok(saved)
-    }
-
     /// The owner removed this machine from the registry; its trust is revoked.
     pub fn machine_forgotten(machine_id: &str) -> bool {
         Self::machine_registry_entries()
@@ -146,9 +125,7 @@ impl DaemonConfig {
         Self::machine_registry_entries()
             .into_iter()
             .filter(|entry| !entry.forgotten)
-            .find(|entry| {
-                entry.machine_id == machine_ref || entry.alias.as_deref() == Some(machine_ref)
-            })
+            .find(|entry| entry.machine_id == machine_ref)
             .map(|entry| entry.machine_id)
     }
 }

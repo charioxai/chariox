@@ -194,6 +194,8 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
                 || spec.name == "chariox.vault.write_file"
                 || spec.name == "chariox.vault.remove_capture"
                 || spec.name == "chariox.agent_auth.register"
+                || spec.name == "chariox.file.copy"
+                || matches!(spec.name.as_str(), "chariox.visual.show" | "chariox.visual.preview")
                 || matches!(spec.name.as_str(), "chariox.mandate.record_resource" | "chariox.mandate.list_resources" | "chariox.mandate.revoke_resource" | "chariox.mandate.set_resource_revoke")
                 || spec.name == crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
                 || spec.name == crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
@@ -201,7 +203,7 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
                 || spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL
                 || spec.name == crate::transport::runtime_tools::SEARCH_RECALL_TOOL
                 || spec.name == crate::transport::runtime_tools::QUERY_RECALL_TOOL),
-        "metaagents should only see the cached sudo interface (kernel request and Vault generation, capture and use), meta, Environment, agent collaboration, read-only workspace, and recall tools: {meta_specs:?}"
+        "metaagents should only see the cached sudo interface (kernel request and Vault generation, capture and use), meta, Environment, agent collaboration, file copy to leased agents, read-only workspace, and recall tools: {meta_specs:?}"
     );
 
     // Discovery lets the official harness cache the interface before sudo.
@@ -304,6 +306,7 @@ mod decisions;
 mod hidden_subagents;
 mod kernel_ref_placement;
 mod peer_spawn;
+mod reach_lists;
 mod remote_spawn_deadline;
 mod room_admission;
 mod room_prompt_dispatch;

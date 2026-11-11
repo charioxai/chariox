@@ -475,9 +475,8 @@ async fn proxied_peer_requests_are_handled_through_relay() {
 
     let mut config_a = DaemonConfig::for_tests();
     config_a.daemon_id = "daemon-a".to_string();
-    config_a.daemon_alias = Some("alpha".to_string());
     config_a.host_machine_id = "machine-a".to_string();
-    config_a.host_machine_alias = Some("machine-alpha".to_string());
+    config_a.machine_name_for_tests = Some("machine-alpha".to_string());
     config_a.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_a.relay_token = Some("secret".to_string());
     config_a.relay_heartbeat_ms = 50;
@@ -494,9 +493,8 @@ async fn proxied_peer_requests_are_handled_through_relay() {
 
     let mut config_b = DaemonConfig::for_tests();
     config_b.daemon_id = "daemon-b".to_string();
-    config_b.daemon_alias = Some("beta".to_string());
     config_b.host_machine_id = "machine-b".to_string();
-    config_b.host_machine_alias = Some("machine-beta".to_string());
+    config_b.machine_name_for_tests = Some("machine-beta".to_string());
     config_b.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_b.relay_token = Some("secret".to_string());
     config_b.relay_heartbeat_ms = 50;
@@ -514,7 +512,7 @@ async fn proxied_peer_requests_are_handled_through_relay() {
     wait_for_daemon_registration(registry.clone(), &config_a.daemon_id).await;
     wait_for_daemon_registration(registry.clone(), &config_b.daemon_id).await;
 
-    let kernel = relay_discovery::get_live_kernel(&config_a, "beta")
+    let kernel = relay_discovery::get_live_kernel(&config_a, "machine-beta")
         .await
         .expect("live kernel lookup should succeed");
     assert_eq!(kernel.kernel_id, config_b.daemon_id);
@@ -524,8 +522,8 @@ async fn proxied_peer_requests_are_handled_through_relay() {
         &app_a,
         &state_a,
         ClientTarget {
-            daemon_id: None,
-            daemon_alias: Some("beta".to_string()),
+            daemon_id: Some(config_b.daemon_id.clone()),
+            daemon_alias: None,
         },
         RelayPeerRequest::Ping {
             value: "hello-remote-kernel".to_string(),
@@ -548,8 +546,8 @@ async fn proxied_peer_requests_are_handled_through_relay() {
         &app_a,
         &state_a,
         ClientTarget {
-            daemon_id: None,
-            daemon_alias: Some("beta".to_string()),
+            daemon_id: Some(config_b.daemon_id.clone()),
+            daemon_alias: None,
         },
         RelayPeerRequest::SubmitLeasedPrompt {
             leased_agent_id: "missing-leased-agent".to_string(),
@@ -1007,7 +1005,6 @@ async fn workspace_live_sync_changes_apply_to_linked_peer_worktree_through_relay
 
     let mut config_home = DaemonConfig::for_tests();
     config_home.daemon_id = "daemon-home".to_string();
-    config_home.daemon_alias = Some("home".to_string());
     config_home.host_machine_id = "machine-home".to_string();
     config_home.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_home.relay_token = Some("secret".to_string());
@@ -1025,7 +1022,6 @@ async fn workspace_live_sync_changes_apply_to_linked_peer_worktree_through_relay
 
     let mut config_worker = DaemonConfig::for_tests();
     config_worker.daemon_id = "daemon-worker".to_string();
-    config_worker.daemon_alias = Some("worker".to_string());
     config_worker.host_machine_id = "machine-worker".to_string();
     config_worker.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_worker.relay_token = Some("secret".to_string());
@@ -1203,7 +1199,6 @@ async fn execution_leases_are_managed_through_peer_transport() {
 
     let mut config_a = DaemonConfig::for_tests();
     config_a.daemon_id = "daemon-home".to_string();
-    config_a.daemon_alias = Some("home".to_string());
     config_a.host_machine_id = "machine-home".to_string();
     config_a.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_a.relay_token = Some("secret".to_string());
@@ -1221,9 +1216,8 @@ async fn execution_leases_are_managed_through_peer_transport() {
 
     let mut config_b = DaemonConfig::for_tests();
     config_b.daemon_id = "daemon-worker".to_string();
-    config_b.daemon_alias = Some("worker".to_string());
     config_b.host_machine_id = "machine-worker".to_string();
-    config_b.host_machine_alias = Some("remote-builder".to_string());
+    config_b.machine_name_for_tests = Some("remote-builder".to_string());
     config_b.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_b.relay_token = Some("secret".to_string());
     config_b.relay_heartbeat_ms = 50;
@@ -1246,8 +1240,8 @@ async fn execution_leases_are_managed_through_peer_transport() {
         &app_a,
         &state_a,
         ClientTarget {
-            daemon_id: None,
-            daemon_alias: Some("worker".to_string()),
+            daemon_id: Some(config_b.daemon_id.clone()),
+            daemon_alias: None,
         },
         RelayPeerRequest::CreateExecutionLease {
             home_kernel_id: config_a.daemon_id.clone(),
@@ -1345,7 +1339,6 @@ async fn leased_agents_are_spawned_and_destroyed_through_peer_transport() {
 
     let mut config_a = DaemonConfig::for_tests();
     config_a.daemon_id = "daemon-home".to_string();
-    config_a.daemon_alias = Some("home".to_string());
     config_a.host_machine_id = "machine-home".to_string();
     config_a.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_a.relay_token = Some("secret".to_string());
@@ -1370,7 +1363,6 @@ async fn leased_agents_are_spawned_and_destroyed_through_peer_transport() {
 
     let mut config_b = DaemonConfig::for_tests();
     config_b.daemon_id = "daemon-worker".to_string();
-    config_b.daemon_alias = Some("worker".to_string());
     config_b.host_machine_id = "machine-worker".to_string();
     config_b.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_b.relay_token = Some("secret".to_string());
@@ -1425,8 +1417,8 @@ async fn leased_agents_are_spawned_and_destroyed_through_peer_transport() {
         &app_a,
         &state_a,
         ClientTarget {
-            daemon_id: None,
-            daemon_alias: Some("worker".to_string()),
+            daemon_id: Some(config_b.daemon_id.clone()),
+            daemon_alias: None,
         },
         RelayPeerRequest::SpawnLeasedAgent {
             lease_id: lease.id.clone(),

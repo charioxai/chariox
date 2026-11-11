@@ -13,6 +13,7 @@ impl KernelRuntimeState {
                 .cmp(&right.created_at_ms())
                 .then_with(|| left.id().cmp(right.id()))
         });
+        let activity = self.agent_activity_for_session(session);
         crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({
@@ -21,7 +22,9 @@ impl KernelRuntimeState {
                 "agent_tasks": self.owned.durable_state_store.agent_tasks(Some(session.id()),None).unwrap_or_default(),
                 "agents": agents
                     .iter()
-                    .map(|agent| session_agent_description(session, requester, agent, &agents))
+                    .map(|agent| {
+                        session_agent_description(session, requester, agent, &agents, &activity)
+                    })
                     .collect::<Vec<_>>(),
             }),
         }
@@ -45,12 +48,13 @@ impl KernelRuntimeState {
             }
         };
         let agents = self.session_agents(session.id());
+        let activity = self.agent_activity_for_session(session);
         match resolve_session_agent(&agents, &args.agent) {
             Ok(agent) => crate::transport::runtime_tools::RuntimeToolResult {
                 ok: true,
                 payload: serde_json::json!({
                     "session_id": session.id(),
-                    "agent": session_agent_description(session, requester, agent, &agents),
+                    "agent": session_agent_description(session, requester, agent, &agents, &activity),
                 }),
             },
             Err(message) => agent_message_failure(message),
@@ -442,7 +446,7 @@ impl KernelRuntimeState {
     }
 }
 
-fn resolve_session_agent<'a>(
+pub(in crate::runtime::state) fn resolve_session_agent<'a>(
     agents: &'a [crate::agent::AgentInstance],
     reference: &str,
 ) -> Result<&'a crate::agent::AgentInstance, String> {
@@ -479,6 +483,7 @@ fn session_agent_description(
     requester: &crate::agent::AgentInstance,
     agent: &crate::agent::AgentInstance,
     agents: &[crate::agent::AgentInstance],
+    activity: &std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
 ) -> serde_json::Value {
     let effective =
         crate::session::effective_agent_execution_config_in_tree(session, agent, agents);
@@ -528,6 +533,9 @@ fn session_agent_description(
         "queued_prompt_count": session
             .queued_prompts_for_agent(agent.id())
             .map_or(0, std::collections::VecDeque::len),
+        // What it waits on and since when, and when it last wrote: a quiet
+        // agent is never an unexplained one.
+        "liveness": activity.get(agent.id()).map(|activity| &activity.liveness),
         "parent_agent_id": agent.parent_agent_id(),
         "visible_in_freeform": agent.visible_in_freeform(),
         "location": location,

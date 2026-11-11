@@ -16,8 +16,11 @@ import {
   managedEnvironmentDraftBlockReason,
   managedEnvironmentMachineRef,
   NEW_MANAGED_MACHINE_REF,
+  SIGNED_OUT_MANAGED_CATALOG,
   waitingRoomManagedCatalogRemoteState,
+  waitingRoomStateAfterFailedRent,
 } from "./waiting-room-managed-environments.js"
+import { waitingRoomLaunchMachineOptions } from "@chariox/kernel-client/waiting-room-runtime-placement"
 import { waitingRoomRows } from "./waiting-room-rows.js"
 import { waitingRoomManagedMachineDialogRows } from "./waiting-room-start-rows.js"
 import { createWaitingRoomState, normalizeWaitingRoomState } from "./waiting-room-state.js"
@@ -31,12 +34,14 @@ test("managed catalog projects the remote fields used by the deployment dialog",
     computeClasses: expected.managedComputeClasses ?? [],
     contextSources: expected.managedContextSources ?? [],
     environments: expected.managedEnvironments ?? [],
+    rentUnavailable: null,
   }
 
   assert.deepEqual(waitingRoomManagedCatalogRemoteState(catalog), {
     managedComputeClasses: catalog.computeClasses,
     managedContextSources: catalog.contextSources,
     managedEnvironments: catalog.environments,
+    managedRentUnavailable: null,
   })
   assert.deepEqual(waitingRoomManagedCatalogRemoteState(undefined), {})
 })
@@ -66,6 +71,19 @@ test("managed environments share the Machine selector without duplicating runtim
       .find((row) => row.id === "managed-environment-repository-root")?.value,
     "/srv/chariox/repos",
   )
+})
+
+// MP-08: a new managed machine works in its own folder, so a home without a loaded worktree still rents it.
+test("a new managed machine starts without a home worktree", () => {
+  __setWaitingRoomWorktreeInventoryForTest(null)
+  const state = normalizeWaitingRoomState({
+    ...baseState(), selectedMachineRef: NEW_MANAGED_MACHINE_REF, selectedKernelRef: "",
+    worktreeSelectionId: "", projectSelectionId: "default", sliceSelectionId: "none",
+  }, [], catalog(), undefined, remote())
+  const decision = deriveWaitingRoomActivationDecision({ state: { ...state, worktreeSelectionId: "" }, sessions: [], catalog: catalog(), currentProvider: "opencode", currentModel: "opencode/gpt-5.4", remote: remote() })
+  assert.equal(decision.action, "create", decision.action === "error" ? decision.message : "")
+  if (decision.action !== "create") throw new Error("expected creation")
+  assert.equal(decision.launch.managedEnvironment?.kind, "new")
 })
 
 test("MP-02/MP-08/MP-11 ready enrollment uses ordinary launch choices", () => {
@@ -101,6 +119,52 @@ test("new managed Machine selection keeps managed configuration out of the sessi
       .filter((target) => target.focus.startsWith("managed-")),
     [],
   )
+})
+
+// MP-08: renting is never hidden; when it is impossible the person reads why and Enter does not rent.
+test("a new managed Machine stays offered and disabled with the reason when renting is impossible", () => {
+  const reason = "Sign in with /cloud login to rent a machine."
+  const signedOut = waitingRoomManagedCatalogRemoteState(SIGNED_OUT_MANAGED_CATALOG)
+  assert.equal(signedOut.managedRentUnavailable, reason)
+  const unavailable = {...remote(), ...signedOut}
+  const state = normalizeWaitingRoomState({
+    ...baseState(),
+    selectedMachineRef: NEW_MANAGED_MACHINE_REF,
+    selectedKernelRef: "",
+  }, [], catalog(), undefined, unavailable)
+  const rows = waitingRoomRows(state, [], catalog(), unavailable)
+  assert.ok(waitingRoomLaunchMachineOptions(unavailable).some((option) => option.id === NEW_MANAGED_MACHINE_REF), "the new machine stays in the Machine list")
+  assert.equal(rows.find((row) => row.id === "new")?.title, "Create machine and start session")
+  assert.equal(rows.find((row) => row.id === "new")?.value, reason, "the action shows why it cannot run")
+  assert.equal(managedEnvironmentDraftBlockReason(state, unavailable), reason, "Enter refuses with the same reason")
+  const notSetUp = {...remote(), managedRentUnavailable: "Renting machines is not set up on this Chariox Cloud."}
+  assert.equal(managedEnvironmentDraftBlockReason(state, notSetUp), "Renting machines is not set up on this Chariox Cloud.")
+})
+
+// MP-08: after a refused rent the person picks another region and presses Enter again; the deleted machine is not the choice.
+test("a rent Cloud refused and deleted returns the Machine row to a new machine with the same draft", () => {
+  const refusedRemote: WaitingRoomRemoteState = {
+    ...remote(),
+    managedEnvironments: remote().managedEnvironments!.map((environment) => ({
+      ...environment, desiredState: "deleted", observedState: "deleted", runtimeMachineId: null, runtimeKernelId: null,
+      lastErrorCode: "resource_unavailable", lastErrorMessage: "hel1 has no free agent-small machines right now.",
+    })),
+  }
+  const state: WaitingRoomState = {
+    ...baseState(),
+    selectedMachineRef: managedEnvironmentMachineRef("environment-1"),
+    selectedKernelRef: "",
+    managedComputeClass: "agent-small",
+    managedRegion: "hel1",
+  }
+  const after = waitingRoomStateAfterFailedRent(state, refusedRemote)
+  assert.equal(after.selectedMachineRef, NEW_MANAGED_MACHINE_REF)
+  assert.equal(after.managedComputeClass, "agent-small", "the draft is kept")
+  assert.equal(after.managedRegion, "hel1", "the person changes only the region")
+  assert.equal(waitingRoomRows(normalizeWaitingRoomState(after, [], catalog(), undefined, refusedRemote), [], catalog(), refusedRemote)
+    .find((row) => row.id === "launch-machine")?.value, "+ New Chariox-managed machine...")
+  const ready = { ...state, selectedKernelRef: "kernel-managed" }
+  assert.equal(waitingRoomStateAfterFailedRent(ready, remote()), ready, "a machine that still exists stays selected")
 })
 
 test("new managed Machine dialog owns every conditional configuration row", () => {

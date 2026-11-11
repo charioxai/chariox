@@ -128,8 +128,7 @@ impl CommandRouter {
                 .await
             }),
             request @ (LocalDaemonRequest::ApproveRemoteMachine(_)
-            | LocalDaemonRequest::ForgetRemoteMachine(_)
-            | LocalDaemonRequest::RenameRemoteMachine(_)) => boxed_handler(|| async move {
+            | LocalDaemonRequest::ForgetRemoteMachine(_)) => boxed_handler(|| async move {
                 execute_remote_machine_registry_request(
                     &self.runtime_state,
                     &self.app,

@@ -254,7 +254,6 @@ mod tests {
             relay_url: "wss://relay.example.test".to_string(),
             issuer_id: "issuer-1".to_string(),
             machine_id: "worker-machine".to_string(),
-            machine_alias: "worker-1".to_string(),
             machine_credential: format!("mcred_{}", "c".repeat(40)),
         })
     }
@@ -334,13 +333,8 @@ mod tests {
         env::set_var("HOME", &task_root);
         env::set_var("CHARIOX_KERNEL_STARTED_MARKER", &worker_started_marker);
 
-        let mut worker_app_config = isolated_worker_test_config(
-            &worker_root,
-            "worker-kernel",
-            "worker-machine",
-            "disposable-worker",
-            43119,
-        );
+        let mut worker_app_config =
+            isolated_worker_test_config(&worker_root, "worker-kernel", "worker-machine", 43119);
         let worker_private_key = worker_app_config.relay_private_key.clone();
         let worker_public_key = worker_app_config.relay_public_key.clone();
         init_worker_test_identity_with_key(
@@ -353,13 +347,8 @@ mod tests {
 
         let home_machine_id = "source-machine-test";
         let home_kernel_id = "home-kernel";
-        let mut home_app_config = isolated_worker_test_config(
-            &home_root,
-            home_kernel_id,
-            home_machine_id,
-            "home-kernel",
-            43120,
-        );
+        let mut home_app_config =
+            isolated_worker_test_config(&home_root, home_kernel_id, home_machine_id, 43120);
         let home_public_key = home_app_config.relay_public_key.clone();
         let worker_receipt_path = fixture
             .config
@@ -910,14 +899,12 @@ mod tests {
         root: &std::path::Path,
         daemon_id: &str,
         machine_id: &str,
-        alias: &str,
         websocket_port: u16,
     ) -> DaemonConfig {
         let mut config = DaemonConfig::for_tests();
         config.user_config_path = root.join("config.toml");
         config.daemon_id = daemon_id.to_string();
         config.host_machine_id = machine_id.to_string();
-        config.daemon_alias = Some(alias.to_string());
         config.local_socket_path =
             DaemonConfig::default_local_socket_path(&format!("fixture:{}", root.display()));
         config = config.with_session_history_root(root.join("sessions"));
@@ -947,7 +934,6 @@ mod tests {
             &home.join("machine/identity.json"),
             &serde_json::to_vec(&serde_json::json!({
                 "machine_id": machine_id,
-                "machine_alias": "test-worker",
             }))
             .expect("encode machine identity"),
         )
@@ -957,8 +943,6 @@ mod tests {
             &serde_json::to_vec(&serde_json::json!({
                 "daemon_id": daemon_id,
                 "machine_id": machine_id,
-                "machine_alias": "test-worker",
-                "daemon_alias": "disposable-worker",
                 "relay_public_key": public_key,
                 "relay_private_key": private_key,
             }))
@@ -988,7 +972,6 @@ mod tests {
             client_id: None,
             client_alias: None,
             machine_id: Some(machine_id.to_string()),
-            machine_alias: Some(machine_id.to_string()),
             machine_credential: Some(machine_credential.to_string()),
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,

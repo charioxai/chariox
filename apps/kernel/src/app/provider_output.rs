@@ -488,6 +488,9 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 Ok(Some(poll_result)) => {
                     self.pending_structured_output_records
                         .mark_poll_succeeded(&provider_run_id);
+                    if poll_result.has_output() {
+                        let _ = self.provider_store.record_run_output(&provider_run_id);
+                    }
                     poll_result
                 }
                 Ok(None) => {
@@ -1197,6 +1200,19 @@ impl DaemonApp {
         provider_run: &RuntimeProviderRun,
     ) -> Result<(), DaemonError> {
         ProviderOutputClaudeNativeBridge::new(self).finish_deferred_stop(
+            session_id,
+            provider_run_id,
+            provider_run,
+        )
+    }
+
+    pub(crate) fn drain_claude_native_transcripts_after_stop_for_runtime(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        ProviderOutputClaudeNativeBridge::new(self).drain_transcripts_after_stop(
             session_id,
             provider_run_id,
             provider_run,

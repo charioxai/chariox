@@ -172,6 +172,7 @@ pub fn create_vault_from_key_seed(
             },
         );
     Ok(CharioxVaultUnlockStatus {
+        awaiting_passphrase: false,
         path,
         unlocked: true,
         expires_at_ms,

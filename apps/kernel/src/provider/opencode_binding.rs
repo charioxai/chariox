@@ -380,10 +380,17 @@ pub(super) fn sync_opencode_run_selection_for_session(
     session_id: &str,
     requested_model: &str,
     requested_variant: Option<&str>,
+    adopt_session_history: bool,
 ) -> Result<OpenCodeRunSelection, DaemonError> {
     let client = OpenCodeClient::new(provider_run_id, base_url)?;
     let defaults = client.configured_defaults()?;
-    let messages = client.recent_messages(session_id)?;
+    // A run that has sent no prompt yet has produced no message: the session's messages belong to the run
+    // before it, and its model must not replace the one this run was started with (a model switch).
+    let messages = if adopt_session_history {
+        client.recent_messages(session_id)?
+    } else {
+        Vec::new()
+    };
 
     Ok(resolve_sync_selection(
         &messages,
@@ -1158,6 +1165,58 @@ mod tests {
 
         assert_eq!(selection.model.as_deref(), Some("opencode/gpt-5.4"));
         assert_eq!(selection.variant.as_deref(), Some("low"));
+    }
+
+    const DEEPSEEK_HISTORY: &str = r#"[{"info":{"id":"msg-1","sessionID":"session-1","role":"assistant","providerID":"opencode","modelID":"deepseek-v4.1-flash-free"},"parts":[]}]"#;
+
+    #[test]
+    fn a_new_run_keeps_its_model_over_the_session_history_of_the_run_before_it() {
+        let server = crate::provider::FakeOpenCodeServer::start_with_messages(
+            crate::provider::PromptReply::Status {
+                code: 204,
+                body: "",
+            },
+            DEEPSEEK_HISTORY,
+        );
+        let selection = super::sync_opencode_run_selection_for_session(
+            "run-2",
+            &server.endpoint,
+            "session-1",
+            "opencode/big-pickle",
+            None,
+            false,
+        )
+        .expect("sync should read the fake server");
+
+        assert_eq!(
+            selection.model, None,
+            "a run that has sent no prompt must not adopt the model of the previous run's messages"
+        );
+    }
+
+    #[test]
+    fn a_run_that_has_sent_a_prompt_adopts_the_model_opencode_answered_with() {
+        let server = crate::provider::FakeOpenCodeServer::start_with_messages(
+            crate::provider::PromptReply::Status {
+                code: 204,
+                body: "",
+            },
+            DEEPSEEK_HISTORY,
+        );
+        let selection = super::sync_opencode_run_selection_for_session(
+            "run-2",
+            &server.endpoint,
+            "session-1",
+            "opencode/big-pickle",
+            None,
+            true,
+        )
+        .expect("sync should read the fake server");
+
+        assert_eq!(
+            selection.model.as_deref(),
+            Some("opencode/deepseek-v4.1-flash-free")
+        );
     }
 
     #[test]

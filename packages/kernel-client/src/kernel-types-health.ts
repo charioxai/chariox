@@ -21,6 +21,8 @@ export type AgentRuntimeProjectionHealthSnapshot = {
   projected_agents: number
   active_prompts: number
   queued_prompts: number
+  /** Running turns whose provider run has been silent for too long. */
+  silent_agents?: { session_id: string; agent_id: string; quiet_since_ms: number }[]
 }
 
 export type ProviderRunActorHealthSnapshot = {

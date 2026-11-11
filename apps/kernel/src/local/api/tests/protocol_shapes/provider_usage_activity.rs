@@ -1378,6 +1378,7 @@ fn local_daemon_protocol_agent_runtime_activity_counts_shape_is_versioned() {
         queued_prompt_controls: std::collections::BTreeMap::new(),
         active_turn: None,
         last_completed_turn: None,
+        liveness: Default::default(),
     };
 
     let snapshot = serde_json::to_value(activity).expect("agent runtime activity should serialize");

@@ -505,6 +505,7 @@ fn prompt_runtime_activity_changes_can_skip_session_snapshot() {
                 started_at_ms: None,
             }),
             last_completed_turn: None,
+            liveness: Default::default(),
         },
     );
 
@@ -706,6 +707,7 @@ fn session_snapshot_with_agent() -> SessionSnapshotProjection {
             queued_prompt_controls: BTreeMap::new(),
             active_turn: None,
             last_completed_turn: None,
+            liveness: Default::default(),
         },
     );
     SessionSnapshotProjection {
@@ -787,7 +789,6 @@ fn waiting_room_snapshot(
             relay_url: None,
             relay_token_configured: false,
             daemon_id: "daemon-1".to_string(),
-            daemon_alias: None,
             machine_id: "machine-1".to_string(),
             machine_alias: None,
         },

@@ -30,6 +30,19 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             Ok(Outcome::Saved)
         }
         Operation::ReleaseSpawn { room, source } => {
+            // An agent that is gone follows nobody.
+            for t in room_tasks(tx, &room, Some(&source))? {
+                for mut reg in registrations(tx, &t.task_id)? {
+                    if reg.peer && reg.live {
+                        reg.live = false;
+                        tx.execute(
+                            "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+                            params![reg.id, encode(&reg)?],
+                        )
+                        .map_err(sql)?;
+                    }
+                }
+            }
             for mut t in source_tasks(tx, &room, &source)? {
                 let mut released = Vec::new();
                 for o in &mut t.obligations {
@@ -115,11 +128,17 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .map(|v| decode::<serde_json::Value>(&v))
                 .transpose()?;
             for mut t in source_tasks(tx, &room, &source)? {
-                // Only a peer's follower lives in another room; its registration below decides.
-                if t.state == ExecutionState::Done {
+                let held = registrations(tx, &t.task_id);
+                // A finished task is done with its sources, unless it still follows this peer.
+                if t.state == ExecutionState::Done
+                    && !held.as_ref().is_ok_and(|held| {
+                        held.iter()
+                            .any(|reg| reg.peer && reg.live && reg.source_id == source)
+                    })
+                {
                     continue;
                 }
-                let registrations = match registrations(tx, &t.task_id) {
+                let registrations = match held {
                     Ok(regs) => regs,
                     Err(_) => {
                         quarantine::registrations(tx, &t.task_id)?;
@@ -170,12 +189,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         && !(success && super::delegation::unbound(&t, &reg))
                     {
                         peers_ended |= reg.peer;
-                        reg.live = false;
-                        tx.execute(
-                            "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
-                            params![reg.id, encode(&reg)?],
-                        )
-                        .map_err(sql)?;
+                        if !super::peer_follows::outlives(&reg, &id) {
+                            reg.live = false;
+                            tx.execute(
+                                "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+                                params![reg.id, encode(&reg)?],
+                            )
+                            .map_err(sql)?;
+                        }
                         changed = true;
                     }
                 }
@@ -472,52 +493,29 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             changed.extend(super::delivery_waits::block_undeliverable_waits(tx, now)?);
             Ok(Outcome::Swept(changed))
         }
-        Operation::ArchiveTask {
-            task,
-            owner,
-            revision,
-        } => {
-            let mut t = load(tx, &task)?;
-            if owner.is_empty()
-                || (!t.owner_user_id.is_empty() && t.owner_user_id != owner)
-                || t.revision != revision
-            {
-                return Err(error("stale or foreign archive cancellation"));
-            }
-            if t.owner_user_id.is_empty() {
-                t.owner_user_id = owner;
-            }
-            if !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
-                // Archive cancels this agent's participation, never the child
-                // agents or workflow runs that it was observing.
-                for obligation in &mut t.obligations {
-                    if (matches!(obligation.kind.as_str(), "delegate" | "hand_off")
-                        || obligation.tracks_workflow_run())
-                        && matches!(obligation.status.as_str(), "open" | "settling")
-                    {
-                        obligation.status = "cancelled".into();
-                        obligation.dispatch_state = "cancelled".into();
-                    }
-                }
-                cancel_intent(tx, &mut t)?;
-                t.reason = AGENT_ARCHIVED_REASON.into();
-                t.revision += 1;
-                save(tx, &t)?;
-            }
-            Ok(Outcome::Task(t))
-        }
         Operation::CancelTask {
             task,
             owner,
             revision,
-        } => {
+        } => cancel_task(tx, &task, &owner, revision, false),
+        Operation::CancelTaskByAgent {
+            task,
+            owner,
+            revision,
+        } => cancel_task(tx, &task, &owner, revision, true),
+        Operation::NoteTurnCancel { task, initiator } => {
             let mut t = load(tx, &task)?;
-            if t.owner_user_id.is_empty() || t.owner_user_id != owner || t.revision != revision {
-                return Err(error("stale or foreign owner cancellation; reload the task in its owning room and retry"));
-            }
-            if !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
-                cancel_intent(tx, &mut t)?;
-                t.revision += 1;
+            let noted = match initiator {
+                CancelInitiator::Owner => OWNER_CANCELLED_REASON,
+                CancelInitiator::Agent if t.reason == OWNER_CANCELLED_REASON => {
+                    OWNER_CANCELLED_REASON
+                }
+                CancelInitiator::Agent => AGENT_CANCELLED_REASON,
+            };
+            if !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
+                && t.reason != noted
+            {
+                t.reason = noted.into();
                 save(tx, &t)?;
             }
             Ok(Outcome::Task(t))
@@ -603,7 +601,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 ExecutionState::Cancelled
             };
             if !resume {
-                cancel_intent(tx, &mut t)?;
+                cancel_intent(tx, &mut t, false)?;
             }
             t.owner_action = None;
             t.no_progress_wakes = 0;
@@ -649,13 +647,35 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         _ => Err(error("invalid supervision operation")),
     }
 }
-pub(super) const AGENT_ARCHIVED_REASON: &str =
-    "Agent archived; its running and queued work was cancelled";
 /// Shown to the person on the Stopped stripe; the supervised cancellation state itself stays in the task's obligations.
 pub(super) const OWNER_CANCELLED_REASON: &str = "Stopped by you";
+/// An agent's cancel ends the turn; the agent stays reachable, so this is not `stopped_by_owner`.
+pub(super) const AGENT_CANCELLED_REASON: &str = "Stopped by an agent";
+fn cancel_task(
+    tx: &Transaction<'_>,
+    task: &str,
+    owner: &str,
+    revision: u64,
+    by_agent: bool,
+) -> Result<Outcome, DaemonError> {
+    let mut t = load(tx, task)?;
+    if t.owner_user_id.is_empty() || t.owner_user_id != owner || t.revision != revision {
+        return Err(error(
+            "stale or foreign owner cancellation; reload the task in its owning room and retry",
+        ));
+    }
+    if !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
+        cancel_intent(tx, &mut t, by_agent)?;
+        t.revision += 1;
+        save(tx, &t)?;
+    }
+    Ok(Outcome::Task(t))
+}
+/// `by_agent`: an agent, not the owner, cancels the task; it keeps the agent reachable.
 pub(super) fn cancel_intent(
     tx: &Transaction<'_>,
     task: &mut AgentTaskExecution,
+    by_agent: bool,
 ) -> Result<(), DaemonError> {
     super::goals::clock(task, crate::session::unix_epoch_ms());
     if let Some(g) = &mut task.goal {
@@ -663,7 +683,12 @@ pub(super) fn cancel_intent(
     }
     task.state = ExecutionState::Cancelled;
     task.wait = None;
-    task.reason = OWNER_CANCELLED_REASON.into();
+    task.reason = if by_agent {
+        AGENT_CANCELLED_REASON
+    } else {
+        OWNER_CANCELLED_REASON
+    }
+    .into();
     for obligation in &mut task.obligations {
         if matches!(obligation.status.as_str(), "failed" | "settling")
             || matches!(obligation.kind.as_str(), "reply" | "message")
@@ -688,6 +713,10 @@ pub(super) fn cancel_intent(
         }
     };
     for mut registration in regs {
+        // Cancelling the turn does not stop the agent following a peer.
+        if registration.peer {
+            continue;
+        }
         registration.live = false;
         tx.execute(
             "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
@@ -704,7 +733,11 @@ pub(super) fn cancel_intent(
         serde_json::json!({
             "cancelled_task_id": task.task_id,
             "reason": task.reason,
-            "message": "The owner cancelled this task and its retained work. Keep it cancelled unless the owner starts new work.",
+            "message": if by_agent {
+                "Another agent cancelled this task and its retained work. Keep it cancelled; a message from an agent is new work."
+            } else {
+                "The owner cancelled this task and its retained work. Keep it cancelled unless the owner starts new work."
+            },
         }),
     );
     // A cancellation is context for the next turn, never a new turn that

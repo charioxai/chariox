@@ -35,6 +35,8 @@ test("managed TUI launch creates Empty context and returns the target workspace"
   assert.equal(harness.createdInputs[0]?.clientRequestId, "key-1")
   assert.equal(harness.createdInputs[0]?.managedRepositoryRoot, "/home/chariox")
   assert.deepEqual(harness.connectedKernels, [{ machineId: "machine-managed", kernelId: "kernel-managed" }])
+  // MP-08: the owner's own managed machine needs no `/machine approve` on this home, also without a context transfer.
+  assert.deepEqual(harness.approvedMachines, ["machine-managed"])
   assert.equal(prepared.workspacePath, "/managed/empty/context-1")
   assert.equal(prepared.worktreePath, "/managed/empty/context-1")
   assert.deepEqual(prepared.projectSelection, { kind: "default" })
@@ -309,6 +311,62 @@ test("managed TUI launch rolls back the kernel pivot when cancellation follows c
   assert.equal(harness.connectionRollbacks, 1)
 })
 
+test("MP-08/MP-09 a region without capacity names the region and the other offered regions, without retrying", async () => {
+  const noCapacity = environment("deleted", {
+    region: "nbg1",
+    desiredState: "deleted",
+    lastErrorCode: "resource_unavailable",
+    lastErrorMessage: "Infrastructure provider operation did not complete",
+  })
+  const harness = createHarness({
+    createResults: [result(environment("provisioning", { region: "nbg1" }))],
+    getResults: [noCapacity],
+    offeredRegions: { "agent-small": ["nbg1", "fsn1", "hel1"] },
+  })
+
+  await assert.rejects(
+    harness.controller.prepare({ ...newSelection(emptyPlan()), region: "nbg1" }, harness.attempt),
+    { message: "nbg1 has no free agent-small machines right now. Choose another region: fsn1, hel1." },
+  )
+  assert.equal(harness.createdInputs.length, 1)
+  assert.equal(harness.lifecycleRequests.length, 0)
+  assert.equal(harness.connectAttempts, 0)
+})
+
+test("MP-08/MP-09 a region without capacity says plainly when no other region is offered", async () => {
+  const harness = createHarness({
+    createResults: [result(environment("deleting", {
+      region: "fsn1",
+      desiredState: "deleted",
+      lastErrorCode: "resource_unavailable",
+      lastErrorMessage: null,
+    }))],
+    offeredRegions: { "agent-small": ["fsn1"] },
+  })
+
+  await assert.rejects(
+    harness.controller.prepare({ ...newSelection(emptyPlan()), region: "fsn1" }, harness.attempt),
+    { message: "fsn1 has no free agent-small machines right now. No other region is offered." },
+  )
+  assert.equal(harness.createdInputs.length, 1)
+})
+
+test("MP-08/MP-09 a deleted machine reports its failure before its deletion", async () => {
+  const harness = createHarness({
+    createResults: [result(environment("provisioning"))],
+    getResults: [environment("deleted", {
+      desiredState: "deleted",
+      lastErrorCode: "bootstrap_failed",
+      lastErrorMessage: "The machine did not finish bootstrapping.",
+    })],
+  })
+
+  await assert.rejects(
+    harness.controller.prepare(newSelection(emptyPlan()), harness.attempt),
+    { message: "The machine did not finish bootstrapping." },
+  )
+})
+
 type HarnessOptions = {
   existing?: ManagedEnvironmentSummary
   createResults?: ManagedEnvironmentResult[]
@@ -323,6 +381,7 @@ type HarnessOptions = {
   launchTargetResults?: Array<ManagedContextLaunchTarget | Error>
   connectResults?: Array<boolean | Error>
   cancelOnDelay?: number
+  offeredRegions?: Record<string, readonly string[]>
 }
 
 function createHarness(options: HarnessOptions) {
@@ -337,6 +396,7 @@ function createHarness(options: HarnessOptions) {
     idempotencyKey: string
   }> = []
   const connectedKernels: Array<{ machineId: string; kernelId: string }> = []
+  const approvedMachines: string[] = []
   const transferStarts: string[] = []
   const transferLaunchKeys: (string | undefined)[] = []
   const transferStatusRequests: string[] = []
@@ -397,6 +457,10 @@ function createHarness(options: HarnessOptions) {
       if (!next) throw new Error("missing transfer status")
       return next
     },
+    approveMachine: async (machineId) => {
+      assert.equal(connectedKernels.length, 0, "the home approves the machine before this client connects to it")
+      approvedMachines.push(machineId)
+    },
     connectKernel: async (machineId, kernelId, isActive) => {
       connectAttempts += 1
       if (!isActive()) return null
@@ -420,7 +484,7 @@ function createHarness(options: HarnessOptions) {
       return next ?? options.launchTarget ?? emptyLaunchTarget()
     },
     createIdempotencyKey: () => `key-${++keySequence}`,
-    environmentName: () => "Managed agent",
+    offeredRegions: (computeClass) => options.offeredRegions?.[computeClass] ?? [],
     delay: async (ms) => {
       now += ms
       delayCount += 1
@@ -434,6 +498,7 @@ function createHarness(options: HarnessOptions) {
     createdInputs,
     lifecycleRequests,
     connectedKernels,
+    approvedMachines,
     transferStarts,
     transferLaunchKeys,
     transferStatusRequests,

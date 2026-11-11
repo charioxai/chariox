@@ -1,0 +1,16 @@
+{
+ "provider": "opencode",
+ "kind": "webfetch",
+ "source": "live 2026-11-10: record from the kernel history of a real opencode turn on the lane kernel",
+ "record": {
+  "id": "prt_1c57c3572001zpJE97gsXmrHq6",
+  "tool": "webfetch",
+  "status": "completed",
+  "title": "https://example.com (text/html; charset=utf-8)",
+  "input": {
+   "url": "https://example.com"
+  },
+  "output": "Example Domain\n\nThis domain is for use in documentation examples without needing permission. This is not a service; avoid relying on it for testing and monitoring purposes."
+ },
+ "shows": "https://example\\.com"
+}

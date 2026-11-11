@@ -533,6 +533,10 @@ impl ProviderProcessServiceStore {
         self.write().record_run_activity(run_id)
     }
 
+    pub fn record_run_output(&self, run_id: &str) -> Result<(), DaemonError> {
+        self.write().record_run_output(run_id)
+    }
+
     pub(crate) fn mark_run_running(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
         self.write().mark_run_running(run_id)
     }

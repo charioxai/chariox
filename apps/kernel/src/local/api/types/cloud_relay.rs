@@ -21,8 +21,6 @@ pub struct StartCloudRelayLoginRequest {
     pub client_alias: Option<String>,
     #[serde(default)]
     pub machine_id: Option<String>,
-    #[serde(default)]
-    pub machine_alias: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,8 +99,6 @@ pub struct CloudRelayProfile {
     #[serde(default)]
     pub machine_id: Option<String>,
     #[serde(default)]
-    pub machine_alias: Option<String>,
-    #[serde(default)]
     pub kernel_id: Option<String>,
     #[serde(default)]
     pub kernel_enrolled: bool,
@@ -163,7 +159,6 @@ pub struct RelayStatus {
     pub relay_url: Option<String>,
     pub relay_token_configured: bool,
     pub daemon_id: String,
-    pub daemon_alias: Option<String>,
     pub machine_id: String,
     pub machine_alias: Option<String>,
 }
@@ -186,6 +181,7 @@ pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
     "room_exec_v1",
     "agent_deadline_v1",
     "outside_steer_events_v1",
+    "framed_plaintext_v1",
     crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_CAPABILITY,
     crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY,
 ];

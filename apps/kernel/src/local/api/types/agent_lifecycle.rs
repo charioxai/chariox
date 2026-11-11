@@ -135,11 +135,13 @@ pub struct MoveAgentToLocalRequest {
     pub agent_ref: String,
 }
 
+/// Keeps an agent out of the Room's panes without touching its work. A run, queued prompts,
+/// wakes and triggers all go on; the kernel clears the flag when the agent's last prompt finishes or it raises a decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArchiveAgentRequest {
+pub struct HideAgentRequest {
     pub session_id: String,
     pub agent_id: String,
-    pub archived: bool,
+    pub hidden: bool,
 }
 
 /// Only the user moves an agent in the tree. `parent_agent_id: None` makes it a

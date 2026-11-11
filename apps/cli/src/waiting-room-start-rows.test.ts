@@ -4,7 +4,9 @@ import test from "node:test"
 import type { SliceRecord } from "./cli-types.js"
 import { catalogModelOptions, fallbackProviderCatalog } from "./provider-catalog.js"
 import { waitingRoomStartRows } from "./waiting-room-start-rows.js"
-import type { WaitingRoomState } from "./waiting-room-types.js"
+import { normalizeWaitingRoomState } from "./waiting-room-state.js"
+import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
+import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 
 test("waiting room start rows render configuration labels and join action", () => {
   const catalog = fallbackProviderCatalog()
@@ -54,6 +56,25 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "managed-repositories")?.value, "None")
   assert.equal(rows.find((row) => row.id === "join-header")?.value, "Press Enter")
   assert.equal(rows.find((row) => row.id === "join-header")?.focused, true)
+})
+
+test("a model without variants shows None, never a default entry", () => {
+  const catalog = fallbackProviderCatalog()
+  const modelOptions = catalogModelOptions(catalog, "opencode")
+  const rows = waitingRoomStartRows(
+    waitingRoomState({}),
+    { providerId: "opencode", model: modelOptions[0] ?? null, effort: "" },
+    {
+      modelOptions,
+      remote: { slices: [] },
+      targets: { workspacePath: "/workspace", worktreePath: "/workspace" },
+      inventoryLoading: false,
+      loadingText: "loading",
+      visibleSessionCount: 0,
+      titleWidth: 24,
+    },
+  )
+  assert.equal(rows.find((row) => row.id === "effort")?.value, "None")
 })
 
 test("waiting room start rows place project selection below Kernel", () => {
@@ -332,6 +353,79 @@ test("waiting room start rows do not conflate worker auth with the selected acco
 
   assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode")
   assert.equal(rows.find((row) => row.id === "account")?.value, "Default (not discovered)")
+})
+
+test("MP-08/MP-11 the Kernel row keeps the selected machine's kernel once the TUI is connected to it", () => {
+  // Choosing a rented machine connects the TUI to its kernel. That kernel then answers the inventory and,
+  // like every kernel, leaves itself out of its relay kernel list.
+  const catalog = fallbackProviderCatalog()
+  const modelOptions = catalogModelOptions(catalog, "opencode")
+  const managedEnvironment = {
+    environmentId: "managed_env_061cec4b",
+    name: "Managed agent",
+    managedRepositoryRoot: "/home/chariox",
+    desiredState: "running" as const,
+    observedState: "ready",
+    desiredRevision: 2,
+    observedRevision: 2,
+    runtimeMachineId: "machine-rented",
+    runtimeKernelId: "kernel-rented",
+  }
+  const remote = {
+    relay: {
+      configured: true,
+      connected: true,
+      daemon_id: "kernel-rented",
+      daemon_alias: "rented-kernel",
+      machine_id: "machine-rented",
+    },
+    machines: [
+      { machine_id: "machine-home", machine_alias: "home", kernel_count: 1, online: true, trust_status: "approved" },
+      { machine_id: "machine-rented", machine_alias: "chariox-managed-env-061cec4b-1546f94b", kernel_count: 0, online: true, trust_status: "approved" },
+      { machine_id: "machine-empty", machine_alias: "empty", kernel_count: 0, online: true, trust_status: "approved" },
+    ],
+    kernels: [{ kernel_id: "kernel-home", machine_id: "machine-home", kernel_alias: "home-kernel" }],
+    managedEnvironments: [managedEnvironment],
+  } as unknown as WaitingRoomRemoteState
+  const startRows = (selection: Partial<WaitingRoomState>) => {
+    const state = normalizeWaitingRoomState(
+      waitingRoomState(selection),
+      [],
+      catalog,
+      DEFAULT_THEME_REGISTRY,
+      remote,
+    )
+    const rows = waitingRoomStartRows(state, { providerId: "opencode", model: modelOptions[0] ?? null, effort: "high" }, {
+      modelOptions,
+      remote,
+      inventoryLoading: false,
+      loadingText: "loading",
+      visibleSessionCount: 0,
+      titleWidth: 24,
+    })
+    return {
+      selectedKernelRef: state.selectedKernelRef,
+      machine: rows.find((row) => row.id === "launch-machine")?.value,
+      kernel: rows.find((row) => row.id === "launch-kernel")?.value,
+    }
+  }
+
+  // The rented machine is offered once, as its environment, also when its machine id was selected.
+  assert.deepEqual(startRows({ selectedMachineRef: "machine-rented", selectedKernelRef: "kernel-rented" }), {
+    selectedKernelRef: "kernel-rented",
+    machine: "Managed agent · ready",
+    kernel: "rented-kernel",
+  })
+  assert.deepEqual(startRows({ selectedMachineRef: "managed:environment:managed_env_061cec4b", selectedKernelRef: "" }), {
+    selectedKernelRef: "kernel-rented",
+    machine: "Managed agent · ready",
+    kernel: "rented-kernel",
+  })
+  assert.deepEqual(startRows({ selectedMachineRef: "machine-empty", selectedKernelRef: "" }), {
+    selectedKernelRef: "",
+    machine: "empty",
+    kernel: "none available",
+  })
 })
 
 function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {

@@ -57,6 +57,7 @@ pub(crate) struct OpenCodeRuntimeState {
     pub(super) active_user_message_id: Option<String>,
     pub(in crate::provider) native_approval_origin: Option<crate::session::NativeInteractionOrigin>,
     active_prompt_submitted_at: Option<Instant>,
+    prompt_submitted_by_run: bool,
     pub(super) session_errors_require_prompt_match: bool,
     unmatched_session_error: Option<String>,
     unmatched_session_error_idle_since: Option<Instant>,
@@ -89,6 +90,7 @@ impl OpenCodeRuntimeState {
             active_terminal_assistant_message_id: None,
             active_user_message_id: None,
             active_prompt_submitted_at: None,
+            prompt_submitted_by_run: false,
             session_errors_require_prompt_match: false,
             unmatched_session_error: None,
             unmatched_session_error_idle_since: None,
@@ -120,8 +122,13 @@ impl OpenCodeRuntimeState {
         self.active_user_message_id = Some(user_message_id);
         self.active_terminal_assistant_message_id = None;
         self.active_prompt_submitted_at = Some(Instant::now());
+        self.prompt_submitted_by_run = true;
         self.unmatched_session_error = None;
         self.unmatched_session_error_idle_since = None;
+    }
+
+    pub(in crate::provider) fn has_submitted_prompt(&self) -> bool {
+        self.prompt_submitted_by_run
     }
 
     pub(super) fn note_unmatched_session_error(&mut self, message: String) {

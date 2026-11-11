@@ -16,7 +16,7 @@ async fn partial_batch_failure_rolls_back_created_agents() {
     bad_placement["from_ref"] = json!("refs/heads/chariox-test-nonexistent-batch-ref");
     let error = dispatch_json(&fixture.home, json!({"SpawnAgents":{
         "session_id":fixture.rooms[0], "agents":[
-            {"provider":"managed-dev-stub", "model":"default", "kernel_ref":"desktop-worker", "worktree_placement":good_placement},
+            {"provider":"managed-dev-stub", "model":"default", "kernel_ref":fixture.worker_kernel_id(), "worktree_placement":good_placement},
             {"provider":"managed-dev-stub", "model":"default", "slice_ref":"desktop", "worktree_placement":bad_placement}
         ]
     }})).await.expect_err("the second worker cannot create a worktree from a missing ref");

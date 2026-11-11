@@ -41,6 +41,7 @@ export function formatReadTranscriptUpdate(update: ToolTranscriptUpdate) {
   return `${header}\n\n${fence}${guessPathFenceLanguage(input.filePath)}\n${body}\n${fence}`
 }
 
+// The viewer folds a long read behind "Show more"; cutting its middle here would drop lines for good.
 export function readToolDisplayReadBlock(update: ToolTranscriptUpdate): ToolDisplayBlock | null {
   if (!isNativeReadTool(update.tool)) {
     return null
@@ -53,7 +54,7 @@ export function readToolDisplayReadBlock(update: ToolTranscriptUpdate): ToolDisp
   return {
     kind: "code",
     language: guessPathFenceLanguage(input.filePath),
-    text: truncateToolBlob(content),
+    text: trimTrailingNewlines(content),
   }
 }
 

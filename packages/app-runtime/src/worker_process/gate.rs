@@ -80,7 +80,7 @@ impl PreparedWorker {
         };
         let descriptors = prepare().map_err(worker_failure)?;
         Ok(Self {
-            program: CString::new(wasm::executable_path(8).as_os_str().as_encoded_bytes())
+            program: CString::new(runtime.program(8).as_os_str().as_encoded_bytes())
                 .map_err(|_| Failure::GateRuntimeUnavailable)?,
             arguments: vec![CString::new("gate-supervised").unwrap()],
             record,

@@ -339,7 +339,7 @@ export function createWaitingRoomInventoryRefreshController(
             if (inventory?.inventoryVersion !== baseline.inventoryVersion) {
               throw new LocalIpcError("list sessions", "Session activity changed during listing", "waiting_room_inventory_changed")
             }
-            for (const row of page.sessions) sessions.set(row.id, { ...row, kernel_id: inventory.kernelId, kernel_alias: inventory.kernelAlias ?? null, machine_id: inventory.machineId, machine_alias: inventory.machineAlias ?? null })
+            for (const row of page.sessions) sessions.set(row.id, { ...row, kernel_id: inventory.kernelId, machine_id: inventory.machineId, machine_alias: inventory.machineAlias ?? null })
             cursor = page.next_cursor
             if (cursor !== null && cursors.has(cursor)) throw new Error("The kernel repeated a session page. Reopen the session list.")
             if (cursor !== null) cursors.add(cursor)
@@ -408,7 +408,6 @@ export function createWaitingRoomInventoryRefreshController(
         patch.sessions.map((session) => ({
           ...session,
           kernel_id: activeInventory.kernelId,
-          kernel_alias: activeInventory.kernelAlias ?? null,
           machine_id: activeInventory.machineId,
           machine_alias: activeInventory.machineAlias ?? null,
         })),
@@ -453,10 +452,11 @@ export function createWaitingRoomInventoryRefreshController(
         return
       }
       refreshProjectionScope()
+      // Until a report names the connected kernel, its own presence cannot be told from a sibling's.
       const localPresence = mergeLocalKernelPresence(
         machines,
         [],
-        options.getLocalKernelPresences?.() ?? [],
+        activeKernelId ? options.getLocalKernelPresences?.() ?? [] : [],
         activeKernelId,
         inventoriesByKernel,
       )
@@ -542,7 +542,6 @@ function mergeLocalKernelPresence(
     }
     kernelsById.set(presence.kernelId, {
       kernel_id: presence.kernelId,
-      kernel_alias: presence.kernelAlias ?? null,
       machine_id: presence.machineId,
       machine_alias: presence.machineAlias ?? null,
       capabilities: ["kernel_ws", "local_presence"],

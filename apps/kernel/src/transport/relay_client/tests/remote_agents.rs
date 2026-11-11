@@ -50,7 +50,6 @@ async fn public_remote_completion_preserves_worker_termination_async(already_set
     let relay_url = format!("ws://{}:{}", addr.ip(), addr.port());
     let mut worker_config = DaemonConfig::for_tests();
     worker_config.daemon_id = "termination-worker".to_string();
-    worker_config.daemon_alias = Some("termination-worker".to_string());
     worker_config.host_machine_id = "termination-machine".to_string();
     let worker_private_key = worker_config.relay_private_key.clone();
     let worker_public_key = worker_config.relay_public_key.clone();
@@ -67,7 +66,7 @@ async fn public_remote_completion_preserves_worker_termination_async(already_set
                     machine_alias: Some("termination-machine".to_string()),
                     os_name: Some("Linux".to_string()),
                     kernel_started_at_ms: crate::session::unix_epoch_ms(),
-                    daemon_alias: worker_config.daemon_alias.clone(),
+                    daemon_alias: None,
                     kernel_alias: Some("termination-worker".to_string()),
                     public_key: worker_public_key.clone(),
                     capabilities: vec!["kernel_ws".to_string()],
@@ -552,7 +551,6 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up_async() {
 
     let mut config_home = DaemonConfig::for_tests();
     config_home.daemon_id = "daemon-home".to_string();
-    config_home.daemon_alias = Some("home".to_string());
     config_home.host_machine_id = "machine-home".to_string();
     config_home.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_home.relay_token = Some("secret".to_string());
@@ -572,9 +570,8 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up_async() {
     ));
     let mut config_worker = DaemonConfig::for_tests();
     config_worker.daemon_id = "daemon-worker".to_string();
-    config_worker.daemon_alias = Some("worker".to_string());
     config_worker.host_machine_id = "machine-worker".to_string();
-    config_worker.host_machine_alias = Some("builder-west".to_string());
+    config_worker.machine_name_for_tests = Some("builder-west".to_string());
     config_worker.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_worker.relay_token = Some("secret".to_string());
     config_worker.relay_heartbeat_ms = 50;
@@ -1569,7 +1566,6 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         "daemon-home"
     }
     .to_string();
-    config_home.daemon_alias = Some("home".to_string());
     config_home.host_machine_id = "machine-home".to_string();
     config_home.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_home.relay_token = Some("secret".to_string());
@@ -1581,9 +1577,8 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         "daemon-worker"
     }
     .to_string();
-    config_worker.daemon_alias = Some("worker".to_string());
     config_worker.host_machine_id = "machine-worker".to_string();
-    config_worker.host_machine_alias = Some("builder-west".to_string());
+    config_worker.machine_name_for_tests = Some("builder-west".to_string());
     config_worker.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_worker.relay_token = Some("secret".to_string());
     config_worker.relay_heartbeat_ms = 50;
@@ -2994,16 +2989,14 @@ async fn remote_machine_agents_materialize_file_attachments_on_the_worker_async(
 
     let mut config_home = DaemonConfig::for_tests();
     config_home.daemon_id = "daemon-home".to_string();
-    config_home.daemon_alias = Some("home".to_string());
     config_home.host_machine_id = "machine-home".to_string();
     config_home.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_home.relay_token = Some("secret".to_string());
     config_home.relay_heartbeat_ms = 50;
     let mut config_worker = DaemonConfig::for_tests();
     config_worker.daemon_id = "daemon-worker".to_string();
-    config_worker.daemon_alias = Some("worker".to_string());
     config_worker.host_machine_id = "machine-worker".to_string();
-    config_worker.host_machine_alias = Some("builder-west".to_string());
+    config_worker.machine_name_for_tests = Some("builder-west".to_string());
     config_worker.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_worker.relay_token = Some("secret".to_string());
     config_worker.relay_heartbeat_ms = 50;
@@ -3240,16 +3233,14 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session_async() {
 
     let mut config_home = DaemonConfig::for_tests();
     config_home.daemon_id = "daemon-home".to_string();
-    config_home.daemon_alias = Some("home".to_string());
     config_home.host_machine_id = "machine-home".to_string();
     config_home.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_home.relay_token = Some("secret".to_string());
     config_home.relay_heartbeat_ms = 50;
     let mut config_worker = DaemonConfig::for_tests();
     config_worker.daemon_id = "daemon-worker".to_string();
-    config_worker.daemon_alias = Some("worker".to_string());
     config_worker.host_machine_id = "machine-worker".to_string();
-    config_worker.host_machine_alias = Some("builder-west".to_string());
+    config_worker.machine_name_for_tests = Some("builder-west".to_string());
     config_worker.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_worker.relay_token = Some("secret".to_string());
     config_worker.relay_heartbeat_ms = 50;

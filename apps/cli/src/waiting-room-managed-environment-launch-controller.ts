@@ -42,7 +42,6 @@ export type ManagedEnvironmentLaunchAttempt = {
 export type WaitingRoomManagedEnvironmentLaunchControllerDeps = {
   createEnvironment(input: {
     clientRequestId: string
-    name: string
     region: string
     computeClass: string
     managedRepositoryRoot: string
@@ -59,6 +58,8 @@ export type WaitingRoomManagedEnvironmentLaunchControllerDeps = {
   /** `launchId` is the client request id of the create that made this machine, when this controller made it. */
   startContextTransfer(ticket: ManagedContextTransferTicket, launchId?: string): Promise<ManagedContextTransferStatus>
   getContextTransferStatus(contextId: string): Promise<ManagedContextTransferStatus>
+  /** Trusts the owner's managed machine on the home kernel, as `/machine approve` does. */
+  approveMachine(machineId: string): Promise<void>
   connectKernel(
     machineId: string,
     kernelId: string,
@@ -66,7 +67,8 @@ export type WaitingRoomManagedEnvironmentLaunchControllerDeps = {
   ): Promise<ManagedEnvironmentKernelConnection | null>
   getLaunchTarget(contextId: string, planDigest: string): Promise<ManagedContextLaunchTarget>
   createIdempotencyKey(): string
-  environmentName(): string
+  /** The regions the rent options offer for a compute class. */
+  offeredRegions(computeClass: string): readonly string[]
   delay(ms: number): Promise<void>
   nowMs(): number
   timeoutMs?: number
@@ -98,7 +100,6 @@ export class WaitingRoomManagedEnvironmentLaunchController {
     attempt: ManagedEnvironmentLaunchAttempt,
   ): Promise<ManagedEnvironmentSummary> {
     const requestWithoutId = {
-      name: this.deps.environmentName(),
       region: selection.region,
       computeClass: selection.computeClass,
       managedRepositoryRoot: selection.managedRepositoryRoot,
@@ -138,17 +139,13 @@ export class WaitingRoomManagedEnvironmentLaunchController {
       if (environmentReadyForSession(current)) {
         return await this.prepareReadyEnvironment(current, deadline, attempt, enrolled)
       }
-      if (current.desiredState === "deleted"
+      const ended = current.desiredState === "deleted"
         || current.observedState === "deleted"
-        || current.observedState === "deleting") {
-        throw new Error(`Managed machine ${current.name} is being deleted.`)
-      }
-      if (current.observedState === "failed") {
-        throw new Error(
-          current.lastErrorMessage
-          || current.lastErrorCode
-          || `Managed machine ${current.name} failed.`,
-        )
+        || current.observedState === "deleting"
+      if (ended || current.observedState === "failed") {
+        // MP-08/MP-09: Cloud deletes a machine whose create failed; the failure is the reason to report.
+        throw new Error(this.failureMessage(current)
+          ?? (ended ? `Managed machine ${current.name} is being deleted.` : `Managed machine ${current.name} failed.`))
       }
       if (current.desiredState === "stopped"
         && current.observedState === "stopped"
@@ -214,6 +211,9 @@ export class WaitingRoomManagedEnvironmentLaunchController {
     const kernelId = enrolled && attempt.selectedKernelRef
       ? attempt.selectedKernelRef
       : environment.runtimeKernelId as string
+    // MP-08/MP-10: Cloud names this machine as the owner's own, so the home trusts it before this client leaves the home.
+    await this.deps.approveMachine(machineId)
+    attempt.assertActive()
     let connection: ManagedEnvironmentKernelConnection
     while (true) {
       attempt.progress(`Connecting to ${environment.name}.`)
@@ -290,6 +290,17 @@ export class WaitingRoomManagedEnvironmentLaunchController {
       await connection.rollback()
       throw error
     }
+  }
+
+  private failureMessage(environment: ManagedEnvironmentSummary): string | null {
+    if (environment.lastErrorCode !== "resource_unavailable") {
+      return environment.lastErrorMessage || environment.lastErrorCode
+    }
+    const otherRegions = this.deps.offeredRegions(environment.computeClass)
+      .filter((region) => region !== environment.region)
+    return `${environment.region} has no free ${environment.computeClass} machines right now. ${
+      otherRegions.length > 0 ? `Choose another region: ${otherRegions.join(", ")}.` : "No other region is offered."
+    }`
   }
 
   private lifecycleKey(environment: ManagedEnvironmentSummary): string {

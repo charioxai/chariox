@@ -44,14 +44,41 @@ pub struct AgentTaskExecution {
     pub pending_prompt_id: Option<String>,
 }
 impl AgentTaskExecution {
+    /// Who began stopping this turn, as recorded when the cancellation began. A path that only
+    /// settles a cancellation consumes this; it never makes a new owner Stop.
+    pub(crate) fn recorded_cancel_initiator(&self) -> CancelInitiator {
+        if self.reason == super::supervision::AGENT_CANCELLED_REASON {
+            CancelInitiator::Agent
+        } else {
+            CancelInitiator::Owner
+        }
+    }
     /// The owner stopped this turn; the agent stays stopped until prompted again.
     pub(crate) fn stopped_by_owner(&self) -> bool {
         self.state == ExecutionState::Cancelled
-            && matches!(
-                self.reason.as_str(),
-                super::supervision::OWNER_CANCELLED_REASON
-                    | super::supervision::AGENT_ARCHIVED_REASON
-            )
+            && self.reason == super::supervision::OWNER_CANCELLED_REASON
+    }
+}
+/// Who stops a running turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CancelInitiator {
+    Owner,
+    Agent,
+}
+impl CancelInitiator {
+    pub(crate) fn cancel_task(self, task: String, owner: String, revision: u64) -> Operation {
+        match self {
+            Self::Owner => Operation::CancelTask {
+                task,
+                owner,
+                revision,
+            },
+            Self::Agent => Operation::CancelTaskByAgent {
+                task,
+                owner,
+                revision,
+            },
+        }
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +99,12 @@ impl AgentObligation {
             "failed" => self.dispatch_state != "rejected",
             _ => false,
         }
+    }
+
+    /// Work still running: a wait has to name a live source for it. Once an obligation has an
+    /// outcome (reply arrived, cancelled, child deleted) that outcome reaches the agent by itself.
+    pub(crate) fn needs_live_source(&self) -> bool {
+        self.status == "open"
     }
 
     pub(crate) fn tracks_workflow_run(&self) -> bool {
@@ -189,6 +222,13 @@ pub struct AgentWake {
     pub last_delivered_at_ms: Option<u64>,
     pub last_acknowledged_at_ms: Option<u64>,
     pub alerted_sequence: Option<u64>,
+}
+
+impl AgentWake {
+    /// The source can still fire: a fired, exited, lost or cancelled wake cannot.
+    pub(crate) fn is_armed(&self) -> bool {
+        super::wakes::ARMED.contains(&self.state.as_str())
+    }
 }
 /// How a driver reports the end of its source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,6 +449,14 @@ pub(crate) enum Operation {
     PeerOutboxDelivered {
         delivery: String,
     },
+    /// A room agent created a peer in another room.
+    RecordCreatedPeer {
+        peer: super::created_peers::CreatedPeer,
+    },
+    /// The peer of a creator that ended is deleted, or was already gone.
+    ReleaseCreatedPeer {
+        peer: super::created_peers::CreatedPeer,
+    },
     /// Another attempt later; outcomes past their age are dropped with it.
     PeerOutboxRetry {
         delivery: String,
@@ -514,15 +562,23 @@ pub(crate) enum Operation {
         /// events wait for the window to end like busy refusals.
         held_work: Vec<(String, String, String)>,
     },
-    ArchiveTask {
-        task: String,
-        owner: String,
-        revision: u64,
-    },
     CancelTask {
         task: String,
         owner: String,
         revision: u64,
+    },
+    /// [`Operation::CancelTask`] for a cancel an agent (a peer, or a parent) issues: it ends the
+    /// task, not the agent, so later messages still run.
+    CancelTaskByAgent {
+        task: String,
+        owner: String,
+        revision: u64,
+    },
+    /// Records who is stopping a running turn whose task settles as cancelled later. The owner's
+    /// Stop always wins; an agent's cancel never overwrites it.
+    NoteTurnCancel {
+        task: String,
+        initiator: CancelInitiator,
     },
     /// Rolls back an admission whose prompt submission was rejected.
     Withdraw {
@@ -650,6 +706,10 @@ pub(crate) enum Outcome {
     Swept(Vec<AgentTaskExecution>),
     Wakes(Vec<AgentWake>),
     PeerFollowed(super::peer_follows::PeerFollowed),
+    /// Whether the link was new, or an earlier attempt of the same spawn had written it.
+    CreatedPeerRecorded {
+        inserted: bool,
+    },
     Saved,
 }
 pub(crate) struct Request {

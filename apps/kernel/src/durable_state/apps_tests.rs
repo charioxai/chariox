@@ -38,6 +38,8 @@ fn release() -> chariox_app_runtime::installation::ReleaseMetadata {
         capabilities_digest: format!("sha256:{:064x}", 2),
         catalog_digest: format!("sha256:{:064x}", 3),
         view_digest: format!("sha256:{:064x}", 4),
+        display_name: None,
+        icon: None,
     }
 }
 

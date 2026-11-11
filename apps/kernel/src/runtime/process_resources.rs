@@ -7,11 +7,9 @@ use std::time::Duration;
 mod control;
 mod disk_use;
 use control::WatchCommand;
-pub(crate) use control::{
-    end_owner, outside_ended_for_key, start_now_for_key, stop_for_key, stop_released,
-};
+pub(crate) use control::{end_owner, outside_ended_for_key, start_now_for_key, stop_for_key};
 #[cfg(test)]
-pub(crate) use control::{hold_registry_for_test, pause_sampling_for_key};
+pub(crate) use control::{hold_registry_for_test, pause_sampling_for_key, stop_released};
 pub use control::{ProcessControlOutcome, ProcessControlResult, ProcessControlTarget};
 pub(crate) use handover::{adopt_released, hand_over_released, ReleasedJobs};
 
@@ -37,13 +35,11 @@ mod session_sweep;
 mod submissions;
 mod terminal_groups;
 mod waits;
-#[cfg(test)]
 pub(crate) use admission::WaitReason;
 pub(crate) use admission::{adopt_admission, volume_floor, HeldCommand};
 #[cfg(test)]
 pub(crate) use projection::released_keys_for_session;
 pub(crate) use projection::SessionProcessState;
-#[cfg(test)]
 pub(crate) use projection::Waiting;
 pub(crate) use projection::{for_session, keys_for_session};
 pub use projection::{SessionProcess, SessionProcessOwner};
@@ -257,7 +253,7 @@ impl PreparedDomain {
                 "resource domain requires an owned child PID",
             ));
         }
-        sampling::ensure_available()?;
+        sampling::ensure_available(pid)?;
         self.watch(sampling::ProcessTree::new(pid), None)
     }
 
@@ -269,7 +265,7 @@ impl PreparedDomain {
         tree: sampling::ProcessTree,
         listing: projection::Listing,
     ) -> std::io::Result<()> {
-        sampling::ensure_available()?;
+        sampling::ensure_available(tree.root())?;
         let domain = self.watch(tree, Some(listing))?;
         // The watch owns itself from here, as for any released workload.
         drop(domain);
@@ -627,6 +623,19 @@ fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
             waits::WaitChange::Resumed { waited_ms } => Some(waits::resumed_line(waited_ms)),
             waits::WaitChange::Stopped { .. } => None,
         };
+        crate::logging::info_with_fields(
+            "process_resources.admission_wait",
+            match change {
+                waits::WaitChange::Began => "a command began to wait",
+                waits::WaitChange::Resumed { .. } => "a waiting command continues",
+                waits::WaitChange::Stopped { .. } => "a waiting command was ended",
+            },
+            serde_json::json!({"pid": command, "state": format!("{state:?}"),
+            "waited_ms": match change {
+                waits::WaitChange::Resumed { waited_ms } => waited_ms,
+                _ => 0,
+            }}),
+        );
         if let Some(line) = line {
             announce(command, &line);
         }
@@ -993,5 +1002,7 @@ pub(crate) fn has_key(key: &str) -> bool {
 
 #[cfg(test)]
 pub(crate) fn snapshot_row_count_for_test() -> usize {
-    sampling::process_rows().map(|rows| rows.len()).unwrap_or(0)
+    sampling::process_rows(std::process::id())
+        .map(|rows| rows.len())
+        .unwrap_or(0)
 }

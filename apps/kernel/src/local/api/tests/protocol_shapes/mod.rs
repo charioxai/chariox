@@ -7,6 +7,7 @@ use crate::local::{
 
 mod agent_deadline;
 mod agent_lifecycle;
+mod agent_liveness;
 mod agent_workflow;
 mod aggregate_agent_model;
 mod app_dev_push;
@@ -39,6 +40,7 @@ mod kernel_browser;
 mod kernel_computer;
 mod kernel_gateway;
 mod kernel_operation_interactions;
+mod landing8;
 mod managed_activity;
 mod managed_context;
 mod managed_environment;
@@ -120,6 +122,7 @@ mod room_workflows;
 mod screenshot;
 mod waiting_room_workspace;
 
+mod leased_agent_file_copy;
 mod payment_card;
 mod provider_tool_background_lifecycle;
 mod provider_tool_images;

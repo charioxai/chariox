@@ -212,6 +212,11 @@ impl CommandRouter {
             )? {
                 return Ok(Some(response));
             }
+            self.runtime_state.ensure_provider_run_readable(
+                &request.provider_run_id,
+                view_user_id,
+                caller_user_id,
+            )?;
         }
         if matches!(request, LocalDaemonRequest::GetKernelResourceTelemetry(_)) {
             return execute_kernel_resource_telemetry_request(self.config_projection.snapshot())

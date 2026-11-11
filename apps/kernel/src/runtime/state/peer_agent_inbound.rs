@@ -18,6 +18,11 @@ fn refused(refusal: PeerAgentRefusal) -> RelayPeerResponse {
     }
 }
 
+/// The spawn key of the agent a peer spawn request of `kernel` creates.
+pub(crate) fn peer_spawn_key(kernel: &str, request_id: &str) -> String {
+    format!("peer-spawn-{kernel}-{request_id}")
+}
+
 /// The inbox source of a message from an agent on another kernel.
 fn peer_message_source(kernel: &str, agent: &str) -> String {
     format!("peer:{kernel}:{agent}")
@@ -202,6 +207,24 @@ impl KernelRuntimeState {
         })
     }
 
+    /// Waits for the attempt acting on this spawn request, if any, and takes its place. The claim
+    /// serializes a spawn with the delete of the peer it creates.
+    pub(crate) async fn claim_peer_spawn_when_free(
+        &self,
+        kernel: &str,
+        request_id: &str,
+    ) -> PeerSpawnInFlight {
+        loop {
+            match self.claim_peer_spawn(kernel, request_id) {
+                PeerSpawnClaim::Claimed(in_flight) => return in_flight,
+                // Closed when the first attempt ends; its answer, if any, is kept by then.
+                PeerSpawnClaim::Busy(mut first) => {
+                    let _ = first.changed().await;
+                }
+            }
+        }
+    }
+
     /// One attempt at a time acts on one spawn request of one sending kernel.
     pub(crate) fn claim_peer_spawn(&self, kernel: &str, request_id: &str) -> PeerSpawnClaim {
         let identity = format!("{kernel}:{request_id}");
@@ -233,7 +256,7 @@ impl KernelRuntimeState {
 
     /// A room of `owner` named by its id or alias on this kernel, through the visible, non-ended
     /// room resolver a spawn on this kernel uses.
-    fn peer_room(
+    pub(super) fn peer_room(
         &self,
         owner: &str,
         room: &str,

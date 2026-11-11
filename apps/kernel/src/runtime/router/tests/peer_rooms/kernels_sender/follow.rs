@@ -8,7 +8,7 @@ use crate::transport::relay_peer::{
 };
 use crate::transport::relay_peer_agents::PeerEventKind;
 
-mod offline;
+pub(super) mod offline;
 mod pre_enrollment;
 
 /// A's room agent gets a durable task for its running turn, as an admitted turn has.
@@ -44,6 +44,26 @@ impl Kernel {
         match self
             .router
             .dispatch_authenticated_runtime_tool_call(&self.token, "chariox.events.subscribe", args)
+            .await
+        {
+            Ok(result) if result.ok => Ok(result.payload),
+            Ok(result) => Err(result.payload.to_string()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    async fn tool(
+        &self,
+        name: &str,
+        task: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let mut args = args;
+        args["task_id"] = task.into();
+        args["origin_prompt_id"] = self.prompt.clone().into();
+        match self
+            .router
+            .dispatch_authenticated_runtime_tool_call(&self.token, name, args)
             .await
         {
             Ok(result) if result.ok => Ok(result.payload),
@@ -194,6 +214,36 @@ fn a_followed_peer_turn_end_on_another_kernel_reaches_the_follower_as_one_stampe
                 .contains(&format!("{}/{}", b.id, b.agent.id())),
             "{view}"
         );
+        unlink(&[&a, &b]);
+    });
+}
+
+#[test]
+fn a_follow_on_another_kernel_reports_every_turn_of_the_peer() {
+    run_peer_test("peer-follow-every-turn", || async {
+        let (a, mut b) = two_kernels(
+            "peer-follow-every-turn",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        let task = with_task(&a).await;
+        a.subscribe(
+            &task,
+            serde_json::json!({"source_id": "worker", "room": b.room, "kernel": b.name}),
+        )
+        .await
+        .expect("A follows a peer on another kernel");
+        b.end_turn(false).await;
+        assert_eq!(a.peer_events_after_delivery(1).await.len(), 1);
+        // The follower's own turn is over; the follow is not.
+        a.end_turn(false).await;
+
+        (b.token, b.prompt) = running_turn(&mut *b.app.lock().await, &b.room, b.agent.id());
+        b.end_turn(true).await;
+        let events = a.peer_events_after_delivery(2).await;
+        let kinds: Vec<_> = events.iter().map(|e| e.payload["event"].clone()).collect();
+        assert_eq!(kinds, ["turn_ended", "turn_failed"], "{events:?}");
+        assert!(b.outbox_drained().await);
         unlink(&[&a, &b]);
     });
 }
@@ -441,64 +491,6 @@ impl Kernel {
         );
         self.router.dispatch(command, request).await.unwrap();
     }
-
-    async fn archive(&self, archived: bool) {
-        let request = serde_json::from_value(serde_json::json!({"ArchiveAgent": {
-            "session_id": self.room, "agent_id": self.agent.id(), "archived": archived,
-        }}))
-        .unwrap();
-        self.as_owner(&format!("archive-{archived}"), request).await;
-    }
-}
-
-#[test]
-fn a_followed_peer_archived_on_its_kernel_is_a_lost_source_until_it_is_unarchived() {
-    run_peer_test("peer-follow-archived", || async {
-        let (a, b) = two_kernels(
-            "peer-follow-archived",
-            AgentPermissionLevel::Yolo,
-            AgentPermissionLevel::Yolo,
-        );
-        // B's worker is idle: archiving it ends no turn, and only the follow can tell A.
-        b.end_turn(false).await;
-        let task = with_task(&a).await;
-        let follow = serde_json::json!({"source_id": "worker", "room": b.room, "kernel": b.name});
-        a.subscribe(&task, follow.clone())
-            .await
-            .expect("A follows an idle peer on another kernel");
-        b.archive(true).await;
-        b.router
-            .runtime_state
-            .sweep_agent_lifecycle_for_test()
-            .await
-            .unwrap();
-        let events = a.peer_events_after_delivery(1).await;
-        assert_eq!(events.len(), 1, "{events:?}");
-        assert_eq!(events[0].payload["event"], "source_lost", "{:?}", events[0]);
-        assert_eq!(events[0].source_id, source_of(&b));
-        let late = a.subscribe(&task, follow.clone()).await.unwrap_err();
-        assert!(
-            late.contains("agent_unavailable"),
-            "an archived peer takes no new follow: {late}"
-        );
-
-        // Unarchived, it is a live source again.
-        b.archive(false).await;
-        a.subscribe(&task, follow)
-            .await
-            .expect("A follows the unarchived peer");
-        b.router
-            .runtime_state
-            .sweep_agent_lifecycle_for_test()
-            .await
-            .unwrap();
-        assert_eq!(
-            a.peer_events_after_delivery(2).await.len(),
-            1,
-            "an unarchived peer is not lost"
-        );
-        unlink(&[&a, &b]);
-    });
 }
 
 #[test]
@@ -553,8 +545,8 @@ fn a_peer_spawned_on_another_kernel_is_followed_by_its_creator_unless_no_follow(
             .unwrap()
             .unwrap();
         assert!(
-            !held.live,
-            "a follow ends with the turn it reports: {held:?}"
+            held.live,
+            "a follow goes on after the turn it reports: {held:?}"
         );
         unlink(&[&a, &b]);
     });
@@ -631,8 +623,8 @@ fn a_keyed_spawn_repeated_in_a_later_turn_gives_that_turn_its_own_follow() {
         assert!(
             later
                 .iter()
-                .any(|held| held.id == later_follow && !held.live),
-            "the later turn's follow took the outcome: {later:?}"
+                .any(|held| held.id == later_follow && held.live),
+            "the later turn's follow took the outcome and goes on: {later:?}"
         );
         registrations(first_task).await;
         unlink(&[&a, &b]);
@@ -671,7 +663,7 @@ fn link_ending_the_turn_before_answering(kernel: &Kernel) {
 #[test]
 fn a_turn_end_that_overtakes_the_follow_answer_still_reaches_the_follower_once() {
     run_peer_test("peer-follow-overtaken", || async {
-        let (a, b) = two_kernels(
+        let (a, mut b) = two_kernels(
             "peer-follow-overtaken",
             AgentPermissionLevel::Yolo,
             AgentPermissionLevel::Yolo,
@@ -690,6 +682,79 @@ fn a_turn_end_that_overtakes_the_follow_answer_still_reaches_the_follower_once()
         assert_eq!(events[0].payload["event"], "turn_ended");
         assert!(b.outbox_drained().await);
         assert_eq!(a.peer_events().await.len(), 1);
+
+        // The overtaking turn end did not close the follow: the next turn reaches it too.
+        (b.token, b.prompt) = running_turn(&mut *b.app.lock().await, &b.room, b.agent.id());
+        b.end_turn(false).await;
+        let events = a.peer_events_after_delivery(2).await;
+        assert_eq!(events.len(), 2, "{events:?}");
+        let held = a
+            .app
+            .lock()
+            .await
+            .durable_state_store()
+            .agent_registrations(&task)
+            .unwrap();
+        assert!(held.iter().any(|r| r.peer && r.live), "{held:?}");
+        unlink(&[&a, &b]);
+    });
+}
+
+#[test]
+fn a_follow_kept_past_its_turn_is_listed_and_unsubscribed_in_a_later_turn() {
+    run_peer_test("peer-follow-unsubscribe-later", || async {
+        let (mut a, mut b) = two_kernels(
+            "peer-follow-unsubscribe-later",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        let task = with_task(&a).await;
+        let follow = a
+            .subscribe(
+                &task,
+                serde_json::json!({"source_id": "worker", "room": b.room, "kernel": b.name}),
+            )
+            .await
+            .expect("A follows a peer on another kernel");
+        let id = follow["registration_id"].as_str().unwrap().to_owned();
+        b.end_turn(false).await;
+        assert_eq!(a.peer_events_after_delivery(1).await.len(), 1);
+        a.end_turn(false).await;
+
+        (a.token, a.prompt) = running_turn(&mut *a.app.lock().await, &a.room, a.agent.id());
+        let second = with_task(&a).await;
+        let listed = a
+            .tool(
+                "chariox.events.subscriptions",
+                &second,
+                serde_json::json!({}),
+            )
+            .await
+            .expect("the later turn lists subscriptions");
+        assert!(
+            listed["peer_follows"]
+                .as_array()
+                .is_some_and(|f| f.iter().any(|r| r["id"] == id.as_str())),
+            "the follow kept past its turn is listed: {listed}"
+        );
+        a.tool(
+            "chariox.events.unsubscribe",
+            &second,
+            serde_json::json!({"registration_id": id}),
+        )
+        .await
+        .expect("the later turn ends the follow");
+
+        (b.token, b.prompt) = running_turn(&mut *b.app.lock().await, &b.room, b.agent.id());
+        b.end_turn(false).await;
+        assert!(b.outbox_drained().await);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(
+            a.peer_events().await.len(),
+            1,
+            "no wake after the unsubscribe"
+        );
+        assert!(b.outbox().await.is_empty(), "B no longer owes the follower");
         unlink(&[&a, &b]);
     });
 }

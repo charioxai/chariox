@@ -1484,6 +1484,32 @@ async fn a12_native_approval_blocks_goal_and_answer_resumes_same_turn() {
     );
 }
 
+// MP-08/MP-09/MP-10/MP-11: nobody looks at a hidden agent, so its decision card brings it back in every client.
+#[tokio::test]
+async fn a_hidden_agent_that_raises_a_decision_comes_back() {
+    let fixture = Fixture::with_room_tools();
+    let state = &fixture.state;
+    let session = fixture.session.clone();
+    let agent = native_goal_agent(&fixture);
+    start_native_goal(&fixture, &agent);
+    let hidden = |agent: &str| state.owned.agent_store.get_agent(agent).unwrap().hidden();
+    state
+        .owned
+        .agent_store
+        .set_agent_hidden(&agent, true)
+        .unwrap();
+    assert!(hidden(&agent));
+    let id = format!("hidden-agent-decision-{session}");
+    let _receiver = state
+        .create_runtime_interaction(&session, native_goal_permission(&agent, &id))
+        .await
+        .unwrap();
+    assert!(
+        !hidden(&agent),
+        "the card is pending, so the agent must be visible again"
+    );
+}
+
 // MP-08/MP-09/MP-10/MP-11 A12-S04: an approval that expires hands the goal back with the turn.
 #[tokio::test]
 async fn a12_native_approval_timeout_restores_the_goal() {

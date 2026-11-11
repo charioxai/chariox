@@ -34,15 +34,6 @@ export function forgetRemoteMachineRequest(machineRef: string) {
   }
 }
 
-export function renameRemoteMachineRequest(machineRef: string, alias: string) {
-  return {
-    RenameRemoteMachine: {
-      machine_ref: machineRef,
-      alias,
-    },
-  }
-}
-
 export function listGatewayKernelsRequest() {
   return { ListGatewayKernels: {} }
 }

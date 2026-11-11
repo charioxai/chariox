@@ -159,8 +159,16 @@ fn default_credential_vault_service() -> String {
     "chariox".to_string()
 }
 
+/// A kernel with its own home keeps its Vault inside it; without one the Vault is the user's shared one.
 fn default_credential_vault_path() -> String {
-    "~/.chariox/vault/vault.json".to_string()
+    match super::paths::chariox_home_dir() {
+        Some(home) => std::path::absolute(&home)
+            .unwrap_or(home)
+            .join("vault/vault.json")
+            .display()
+            .to_string(),
+        None => "~/.chariox/vault/vault.json".to_string(),
+    }
 }
 
 fn default_credential_vault_default_ttl_minutes() -> u64 {

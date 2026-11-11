@@ -18,28 +18,10 @@
     "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
   },
   {
-    "path": "apps/cli/src/cli-automation-snapshot.ts",
-    "row": "OSB-09",
-    "slice": "B2",
-    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
-  },
-  {
     "path": "apps/cli/src/cli-command-action-composition.ts",
     "row": "OSB-09",
     "slice": "B2",
     "removedBy": "OSS-boundary item 11 (neutral default-host source)"
-  },
-  {
-    "path": "apps/cli/src/cli-input-routing-composition.ts",
-    "row": "OSB-09",
-    "slice": "B2",
-    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
-  },
-  {
-    "path": "apps/cli/src/cli-primary-transcript-composition.ts",
-    "row": "OSB-09",
-    "slice": "B2",
-    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
   },
   {
     "path": "apps/cli/src/cli-waiting-room-composition.ts",

@@ -703,7 +703,6 @@ mod tests {
             client_id: None,
             client_alias: None,
             machine_id: Some(machine_id.to_string()),
-            machine_alias: Some("Managed empty".to_string()),
             machine_credential: Some(format!("mcred_{}", "m".repeat(43))),
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,

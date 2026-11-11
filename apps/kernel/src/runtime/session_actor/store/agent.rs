@@ -313,16 +313,35 @@ impl SessionRuntimeStore {
             Ok(authority) => authority,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
         };
-        let create_request = CreateAgentRequest::new(
-            &request.session_id,
-            request
-                .provider
-                .unwrap_or_else(|| defaults.provider.clone()),
-        )
-        .with_owner_user_id(
-            self.state
-                .room_member_user_id(&request.session_id, &caller_user_id),
-        );
+        let spawn_provider = request
+            .provider
+            .clone()
+            .unwrap_or_else(|| defaults.provider.clone());
+        let owner_user_id = self
+            .state
+            .room_member_user_id(&request.session_id, &caller_user_id);
+        let (model, effort) = if request.kernel_ref.is_none()
+            && slice_admission.slice_ids.iter().all(Option::is_none)
+        {
+            match self
+                .state
+                .resolve_new_agent_selection(
+                    &owner_user_id,
+                    &spawn_provider,
+                    account_profile.as_deref(),
+                    model,
+                    effort,
+                )
+                .await
+            {
+                Ok(selection) => selection,
+                Err(error) => return self.with_session_projection_action_result(Err(error)).await,
+            }
+        } else {
+            (model, effort)
+        };
+        let create_request = CreateAgentRequest::new(&request.session_id, spawn_provider)
+            .with_owner_user_id(owner_user_id);
         let create_request = match caller_metaagent_id.as_deref() {
             Some(metaagent_id) if !request.metaagent && !is_peer => {
                 create_request.with_parent_agent_id(metaagent_id)
@@ -424,6 +443,12 @@ impl SessionRuntimeStore {
         let result = match self.state.spawn_agent(create_request).await {
             Ok(agent) => {
                 let session_id = agent.session_id().to_string();
+                // A peer lives and dies with the room agent that made it.
+                if let (true, Some(creator)) = (is_peer, caller_metaagent_id.as_deref()) {
+                    if let Err(error) = self.state.record_created_local_peer(creator, &agent) {
+                        return self.with_session_projection_action_result(Err(error)).await;
+                    }
+                }
                 if let Some(slice_ref) = slice_ref_for_agent {
                     let agent_id = agent.id().to_string();
                     if let Err(error) = self
@@ -617,11 +642,37 @@ impl SessionRuntimeStore {
                 None => None,
             };
 
-            let mut create_request = CreateAgentRequest::new(
-                &request.session_id,
-                item.provider.unwrap_or_else(|| default_provider.clone()),
-            )
-            .with_owner_user_id(member_user_id.clone());
+            let item_provider = item
+                .provider
+                .clone()
+                .unwrap_or_else(|| default_provider.clone());
+            let item_account_profile = item.account_profile.clone().or_else(|| {
+                same_provider
+                    .then(|| default_account_profile.clone())
+                    .flatten()
+            });
+            let (model, effort) = if slice_kernel_ref.is_none() && item.kernel_ref.is_none() {
+                match self
+                    .state
+                    .resolve_new_agent_selection(
+                        &member_user_id,
+                        &item_provider,
+                        item_account_profile.as_deref(),
+                        model,
+                        effort,
+                    )
+                    .await
+                {
+                    Ok(selection) => selection,
+                    Err(error) => {
+                        return self.with_session_projection_action_result(Err(error)).await
+                    }
+                }
+            } else {
+                (model, effort)
+            };
+            let mut create_request = CreateAgentRequest::new(&request.session_id, item_provider)
+                .with_owner_user_id(member_user_id.clone());
             if let Some(metaagent_id) = caller_metaagent_id.as_deref() {
                 create_request = create_request.with_parent_agent_id(metaagent_id);
             }
@@ -634,11 +685,7 @@ impl SessionRuntimeStore {
             if let Some(effort) = effort {
                 create_request = create_request.with_effort(effort);
             }
-            if let Some(account_profile) = item.account_profile.or_else(|| {
-                same_provider
-                    .then(|| default_account_profile.clone())
-                    .flatten()
-            }) {
+            if let Some(account_profile) = item_account_profile {
                 create_request = create_request.with_account_profile(account_profile);
             }
             if let Some(execution_mode) = execution_mode {
@@ -759,29 +806,20 @@ impl SessionRuntimeStore {
         self.with_session_projection_action_result(result).await
     }
 
-    pub(in crate::runtime::session_actor) async fn archive_agent(
+    pub(in crate::runtime::session_actor) async fn hide_agent(
         &self,
-        request: crate::local::ArchiveAgentRequest,
+        request: crate::local::HideAgentRequest,
         caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = match self
-            .state
-            .archive_agent_in_session(&request, &caller_user_id)
-            .await
-        {
-            Ok(agent) => {
-                match self.reconcile_room_environment_actors_if_started(&request.session_id) {
-                    Ok(()) => self
-                        .state
-                        .session_snapshot(&request.session_id)
-                        .await
-                        .map(|session| LocalDaemonResponse::AgentArchived { session, agent }),
-                    Err(error) => Err(error),
-                }
-            }
+        let result = match self.state.hide_agent_in_session(&request, &caller_user_id) {
+            Ok(agent) => self
+                .state
+                .session_snapshot(&request.session_id)
+                .await
+                .map(|session| LocalDaemonResponse::AgentHidden { session, agent }),
             Err(error) => Err(error),
         };
         self.with_session_projection_action_result(result).await

@@ -126,14 +126,17 @@ impl KernelRuntimeState {
         let active_turns = self.owned.active_turns.snapshot();
         let mut activity = crate::runtime::projection::agent_activity_for_session_projection(
             session,
+            // The provider store moves a run's output clock; the projection holds a
+            // copy as of its last publish, which is read only while a launch holds
+            // the store.
             |agent_id| {
                 self.owned
-                    .provider_run_projection
-                    .get_for_agent(session.id(), agent_id)
+                    .provider_store
+                    .try_get_agent_run_for_projection(session.id(), agent_id)
                     .or_else(|| {
                         self.owned
-                            .provider_store
-                            .get_run_for_agent(session.id(), agent_id)
+                            .provider_run_projection
+                            .get_for_agent(session.id(), agent_id)
                     })
             },
             &prompt_activity,
@@ -148,6 +151,14 @@ impl KernelRuntimeState {
         self.owned
             .session_projection
             .project_external_observed_activity(session.id(), &mut activity);
+        crate::runtime::projection::annotate_waits(
+            &mut activity,
+            &self.session_processes(session.id()),
+            &crate::runtime::projection::YieldedSources::of_room(
+                &self.owned.durable_state_store,
+                session.id(),
+            ),
+        );
         activity
     }
 

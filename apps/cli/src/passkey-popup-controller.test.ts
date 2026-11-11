@@ -529,3 +529,44 @@ test("MP-08/MP-09/MP-10/MP-11 a card payment needs the typed passkey and offers 
   h.popup.handleKey(key("return"))
   assert.deepEqual(h.requests.at(-1), [payment.interaction_id, "approve", { passkey: "typed", rememberMinutes: null }])
 })
+
+const installPrompt = {
+  kind: "app_install", session_id: "room-1", session_alias: "Projects", interaction_id: "app_install_op-1",
+  title: "Install App", message: "Install this App with the declared capabilities?",
+  approve_choice_id: "approve", refuse_choice_id: "decline", requested_at_ms: 1, expires_at_ms: Number.MAX_SAFE_INTEGER,
+  app_install: { request_id: "op-1", operation: "install", review: { appId: "com.excalidraw", version: "1.0.0", publisherName: "Excalidraw" } },
+}
+
+test("an App install decision from the feed needs no passkey, never expires and is answered on Enter", async () => {
+  let now = 1_000
+  const h = harness({now: () => now, synchronize: async () => {}, invalidate() {}})
+  try {
+    const feed = { event: "passkey_prompts_changed", kernel_now_ms: 1_000, prompts: [installPrompt] }
+    const prompts = passkeyPromptsFromEvent(feed.prompts, true)
+    assert.equal(prompts.length, 1)
+    h.popup.apply(prompts, feed)
+    assert.equal(h.popup.show(), true)
+    now = 400 * 24 * 3_600_000
+    h.popup.apply(prompts, { kernel_now_ms: now })
+    assert.equal(h.popup.view().count, 1)
+    assert.deepEqual(h.notices, [])
+    h.popup.handleKey(key("return"))
+    await settle()
+    assert.deepEqual(h.requests, [["app_install_op-1", "approve"]])
+    h.resolve()
+    await settle()
+    assert.equal(h.popup.view().count, 0)
+  } finally {h.popup.dispose()}
+})
+
+test("an App install decision is declined with Ctrl+R and a malformed review is not a prompt", async () => {
+  const h = harness()
+  try {
+    assert.equal(passkeyPromptsFromEvent([{ ...installPrompt, app_install: undefined }]).length, 0)
+    h.popup.apply(passkeyPromptsFromEvent([installPrompt]))
+    h.popup.show()
+    h.popup.handleKey(key("r", { ctrl: true }))
+    await settle()
+    assert.deepEqual(h.requests, [["app_install_op-1", "decline"]])
+  } finally {h.popup.dispose()}
+})

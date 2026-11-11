@@ -2,8 +2,22 @@ use super::super::{MetaCommandDoc, MetaCommandPolicy};
 
 pub(super) const COMMANDS: &[MetaCommandDoc] = &[
     MetaCommandDoc {
+        name: "slice list",
+        aliases: &["slice ls"],
+        usage: "slice list",
+        examples: &["slice list"],
+        tags: &["slice", "environment", "inspect"],
+        intents: &["see which slices I can place an agent on", "find a slice id or name for --slice"],
+        scope: "session",
+        mutates: false,
+        policy: MetaCommandPolicy::Allow,
+        authority: "read-only; the slices this room may use",
+        routed: true,
+        description: "List the slices this room may use: the id and name that `agent spawn --slice <slice-ref>` accepts, with state. A slice reserved for another room is not listed.",
+    },
+    MetaCommandDoc {
         name: "slice",
-        aliases: &["slice list", "slice show", "slice save", "slice save-state", "slice stop"],
+        aliases: &["slice show", "slice save", "slice save-state", "slice stop"],
         usage: "slice <list|show|start|stop|save-state|status|backup> ...",
         examples: &[
             "slice list",

@@ -148,6 +148,7 @@ impl AgentRuntimeProjectionStore {
                 .iter()
                 .map(|projection| projection.queued_prompt_count)
                 .sum(),
+            silent_agents: Vec::new(),
         }
     }
 }

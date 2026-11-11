@@ -67,7 +67,13 @@ fn resolve_claude_executable_unlocked() -> Result<PathBuf, DaemonError> {
     }
 
     CLAUDE_EXECUTABLE_RESOLUTION
-        .resolve(|| resolve_candidate(PathBuf::from("claude"), false))
+        .resolve(|| {
+            resolve_candidate(PathBuf::from("claude"), false).or_else(|| {
+                super::executable_resolution::standard_install_candidates("claude")
+                    .into_iter()
+                    .find_map(|candidate| resolve_candidate(candidate, true))
+            })
+        })
         .ok_or_else(|| DaemonError::ProviderExecutableNotFound {
             adapter_key: "claude".to_string(),
             executable: "claude".to_string(),

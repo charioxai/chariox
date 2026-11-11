@@ -516,8 +516,6 @@ pub(crate) fn run_blocking_provider_utility_prompt_with_admission(
         }),
     }
 }
-#[cfg(test)]
-pub(crate) use opencode_binding::permission_tests::assert_archived_opencode_resume_contract;
 pub(crate) use workspace_write_fence::{
     apply_workspace_write_fence, workspace_write_fence_active, workspace_write_fence_backend,
     workspace_write_fence_supported, workspace_write_fence_unavailable_reason,

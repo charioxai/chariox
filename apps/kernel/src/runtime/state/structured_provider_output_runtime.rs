@@ -69,6 +69,9 @@ impl KernelRuntimeState {
                     owned
                         .structured_output_records
                         .mark_poll_succeeded(&finished_run_id);
+                    if poll_result.has_output() {
+                        let _ = owned.provider_store.record_run_output(&finished_run_id);
+                    }
                     poll_result
                 }
                 Ok(None) => {
@@ -604,6 +607,7 @@ impl KernelRuntimeState {
         mut poll_result: crate::provider::ProviderPromptSignalBatch,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         let owned = &self.owned;
+        owned.note_output_of_held_run(provider_run_id, &poll_result.chunks);
         owned
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;

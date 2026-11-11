@@ -454,6 +454,43 @@ fn pressure_pauses_the_newest_growing_command_before_stopping_any_in_cgroups() {
     slow_growth_is_paused_before_anything_is_stopped(true);
 }
 
+/// The running command neither grows nor finishes, and the paused one holds
+/// its memory: nothing would ever free. After the stall window the paused
+/// command ends with its reason, and the running one is left alone.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pause_that_frees_nothing_ends_the_paused_command_after_the_stall_window() {
+    let pool = pool(1536);
+    pool.ledger.lock().unwrap().stall_window = Duration::from_secs(4);
+    let a = Workload::start(
+        domain(&pool, "a", false),
+        &[("big", 800, 0, 0), ("idle", 0, 0, 0)],
+    );
+    settle(1);
+    let mut b = Workload::start(
+        domain(&pool, "b", false),
+        &[("idle", 0, 0, 0), ("grow", 300, 48, 1000)],
+    );
+    // The window runs from the pause: wait for it, then check inside it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !b.waiting("grow") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(b.waiting("grow"), "the growing command was never paused");
+    settle(2);
+    assert!(b.alive("grow"), "the stall window passed too soon");
+    settle(10);
+    let mut a = a;
+    assert!(
+        a.alive("big") && a.root_alive(),
+        "the running command ended"
+    );
+    assert!(
+        !b.alive("grow"),
+        "the paused command held its memory for ever under a full pool"
+    );
+}
+
 fn runaway_is_paused_before_the_line(cgroup: bool) {
     // 512 MiB/s: the PC-06 runaway.
     let (mut a, mut b, mut c, pool) = pressure(cgroup, 0, 512, 4);

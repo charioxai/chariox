@@ -1148,6 +1148,7 @@ fn local_request_api_spawns_and_focuses_agents() {
 fn same_agent_profile_update_keeps_active_provider_run() {
     let worktree = crate::test_support::TestWorktree::new("session-control-active-provider");
     let harness = LocalRouterTestHarness::new();
+    seed_codex_catalog(&harness);
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             worktree.session_request().with_agent_defaults(
@@ -1161,6 +1162,7 @@ fn same_agent_profile_update_keeps_active_provider_run() {
     };
     assert_eq!(agent.provider(), "codex");
     let model = agent.model().expect("created agent model").to_string();
+    assert_eq!(agent.effort(), Some("high"));
     let active_run_id = harness.with_app_mut(|app| {
         let profile = crate::test_support::authenticate_provider_account(
             &app.provider_account_profile_registry(),
@@ -1177,7 +1179,8 @@ fn same_agent_profile_update_keeps_active_provider_run() {
                 &profile.profile_id,
                 &model,
             )
-            .with_agent_id(agent.id()),
+            .with_agent_id(agent.id())
+            .with_variant(Some("high".into())),
         )
         .expect("provider launch should succeed")
         .id()
@@ -1520,4 +1523,81 @@ fn retirement_keeps_default_project_after_last_room_ends_and_kernel_restarts() {
         }
         other => panic!("unexpected restore: {other:?}"),
     }
+}
+
+fn seed_codex_catalog(harness: &LocalRouterTestHarness) {
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    harness.with_app_mut(|app| {
+        let profile = app
+            .provider_account_profile_registry()
+            .get(owner, "codex", "default")
+            .unwrap()
+            .profile_id;
+        let request = crate::local::GetProviderCatalogRequest {
+            provider: Some("codex".to_string()),
+            account_profiles: std::collections::BTreeMap::from([("codex".to_string(), profile)]),
+            ..Default::default()
+        };
+        let key =
+            crate::runtime::provider_catalog_control::provider_catalog_cache_key(owner, &request);
+        let model = crate::provider::OpenCodeProviderModel {
+            id: "gpt-6.1-sol".to_string(),
+            name: "GPT-6.1 Sol".to_string(),
+            status: "active".to_string(),
+            limit: None,
+            variants: ["low", "high"]
+                .iter()
+                .map(|variant| (variant.to_string(), serde_json::json!({})))
+                .collect(),
+        };
+        app.provider_catalog_projection_store().update_scoped(
+            &key,
+            crate::provider::OpenCodeProviderCatalog {
+                all: vec![crate::provider::OpenCodeProviderInfo {
+                    id: "codex".to_string(),
+                    name: "codex".to_string(),
+                    remote_machine_aliases: Vec::new(),
+                    models: std::collections::BTreeMap::from([(model.id.clone(), model)]),
+                }],
+                default: std::collections::BTreeMap::from([(
+                    "codex".to_string(),
+                    "gpt-6.1-sol".to_string(),
+                )]),
+                connected: vec!["codex".to_string()],
+            },
+        );
+    });
+}
+
+// MP-08 / MP-10: a spawned agent and a new Room's first agent store a concrete model and variant.
+#[test]
+fn spawn_and_create_session_store_the_account_default_model_and_variant() {
+    let worktree = crate::test_support::TestWorktree::new("spawn-concrete-model");
+    let harness = LocalRouterTestHarness::new();
+    seed_codex_catalog(&harness);
+    let created = harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree
+                .session_request()
+                .with_agent_defaults(crate::session::SessionAgentDefaults {
+                    provider: "codex".to_string(),
+                    ..Default::default()
+                }),
+        ))
+        .unwrap();
+    let LocalDaemonResponse::SessionCreated { session, agent, .. } = created else {
+        panic!("unexpected response: {created:?}");
+    };
+    assert_eq!(agent.model(), Some("gpt-6.1-sol"));
+    assert_eq!(agent.effort(), Some("high"));
+
+    let request = serde_json::from_value(serde_json::json!({"SpawnAgent":{
+        "session_id": session.id(), "provider": "codex"
+    }}))
+    .unwrap();
+    let LocalDaemonResponse::AgentSpawned { agent, .. } = harness.dispatch(request).unwrap() else {
+        panic!("unexpected response");
+    };
+    assert_eq!(agent.model(), Some("gpt-6.1-sol"));
+    assert_eq!(agent.effort(), Some("high"));
 }

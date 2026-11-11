@@ -55,10 +55,6 @@ async fn check_alias_execution(fixture: &LiveWorker) {
     let record = slices.resolve("desktop").unwrap();
     assert_eq!(record.worker_kernel_ref.len(), 135);
     assert_eq!(
-        fixture._worker_state.config.daemon_alias.as_deref(),
-        Some("slice:desktop")
-    );
-    assert_eq!(
         fixture._worker_state.config.daemon_id,
         record.worker_kernel_ref
     );

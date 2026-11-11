@@ -30,6 +30,11 @@ test("tool titles use a verb and an object for each provider's tool shapes", () 
     [{ id: "c9", tool: "TodoWrite", status: "completed", input: { todos: [] } }, "Updated plan"],
     [{ id: "c10", tool: "mcp__github__create_pull_request", status: "completed", input: {} }, "Called github.create pull request"],
     [{ id: "c11", tool: "mcp__chariox__chariox_request_popup", status: "completed", input: {} }, "Called chariox.request popup"],
+    [{ id: "v1", tool: "chariox.visual.show", status: "completed", input: { html: "<p>x</p>" } }, "Showed a page"],
+    [{ id: "v2", tool: "mcp__chariox__chariox_visual_show", status: "running", input: { path: "/w/chart.html" } }, "Showing a page"],
+    [{ id: "v3", tool: "chariox.visual.preview", status: "completed", input: { html: "<p>x</p>" } }, "Previewed a page"],
+    [{ id: "v5", tool: "chariox_chariox_visual_show", status: "pending" }, "Showing a page"],
+    [{ id: "v4", tool: "chariox_visual_preview", status: "running", input: {} }, "Previewing a page"],
     [{ id: "c11", tool: "Task", status: "running", input: { description: "Audit the pane", prompt: "..." } }, "Delegating Audit the pane"],
     // OpenCode
     [{ id: "o1", tool: "read", status: "completed", input: { filePath: "/w/README.md" } }, "Read /w/README.md"],

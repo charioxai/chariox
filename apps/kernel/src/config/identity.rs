@@ -16,10 +16,6 @@ use super::{paths::default_config_dir, private_file::write_private_file, DaemonC
 pub(super) struct RuntimeIdentity {
     pub(super) daemon_id: String,
     pub(super) machine_id: String,
-    #[serde(default)]
-    pub(super) machine_alias: Option<String>,
-    #[serde(default)]
-    pub(super) daemon_alias: Option<String>,
     pub(super) relay_public_key: String,
     pub(super) relay_private_key: String,
 }
@@ -34,8 +30,6 @@ pub(crate) struct ManagedRuntimeIdentity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct MachineIdentity {
     machine_id: String,
-    #[serde(default)]
-    machine_alias: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,16 +39,12 @@ struct KernelRegistry {
     #[serde(default)]
     machine_id: String,
     #[serde(default)]
-    machine_alias: Option<String>,
-    #[serde(default)]
     kernels: BTreeMap<String, KernelIdentityRecord>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct KernelIdentityRecord {
     kernel_id: String,
-    #[serde(default)]
-    kernel_alias: Option<String>,
     #[serde(default)]
     host: String,
     #[serde(default)]
@@ -180,8 +170,6 @@ fn retained_slice_identity_from_documents(
     Ok(RuntimeIdentity {
         daemon_id: record.kernel_id,
         machine_id: machine.machine_id,
-        machine_alias: machine.machine_alias,
-        daemon_alias: record.kernel_alias,
         relay_public_key: record.relay_public_key,
         relay_private_key: record.relay_private_key,
     })
@@ -218,12 +206,10 @@ mod protected_retention_tests {
         };
         let machine = MachineIdentity {
             machine_id: pin.machine_id.clone(),
-            machine_alias: None,
         };
         let registry = KernelRegistry {
             version: 1,
             machine_id: pin.machine_id.clone(),
-            machine_alias: None,
             kernels: BTreeMap::from([(
                 kernel_identity_key(&record.host, record.port),
                 record.clone(),
@@ -272,58 +258,27 @@ mod protected_retention_tests {
 }
 
 pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeIdentity {
-    let machine_identity = load_or_create_machine_identity();
+    let machine_id = resolve_machine_id();
     let endpoint_key = kernel_identity_key(host, port);
     let registry_path = DaemonConfig::default_kernel_registry_path();
     let mut registry = fs::read_to_string(&registry_path)
         .ok()
         .and_then(|contents| serde_json::from_str::<KernelRegistry>(&contents).ok())
-        .unwrap_or_else(|| KernelRegistry {
-            version: kernel_registry_version(),
-            machine_id: machine_identity.machine_id.clone(),
-            machine_alias: machine_identity.machine_alias.clone(),
-            kernels: BTreeMap::new(),
-        });
-    if registry.version == 0 {
-        registry.version = kernel_registry_version();
-    }
-    if registry.machine_id.trim().is_empty() {
-        registry.machine_id = machine_identity.machine_id.clone();
-    }
-    if registry.machine_alias.is_none() {
-        registry.machine_alias = machine_identity.machine_alias.clone();
-    }
+        .unwrap_or_default();
+    registry.version = kernel_registry_version();
+    registry.machine_id = machine_id.clone();
 
     let now_ms = now_unix_ms();
     let record = registry
         .kernels
         .entry(endpoint_key.clone())
         .or_insert_with(|| {
-            let legacy_identity = load_legacy_runtime_identity().filter(|identity| {
-                is_default_kernel_endpoint(host, port)
-                    && identity.machine_id == machine_identity.machine_id
-                    && !identity_is_invalid(identity)
-            });
-            if let Some(identity) = legacy_identity {
-                return KernelIdentityRecord {
-                    kernel_id: identity.daemon_id,
-                    kernel_alias: identity.daemon_alias,
-                    host: host.trim().to_string(),
-                    port,
-                    relay_public_key: identity.relay_public_key,
-                    relay_private_key: identity.relay_private_key,
-                    created_at_ms: now_ms,
-                    last_seen_at_ms: now_ms,
-                };
-            }
-
             let relay_private_key = relay_crypto::generate_private_key_base64();
             let relay_public_key =
                 relay_crypto::public_key_from_private_key_base64(&relay_private_key)
                     .unwrap_or_default();
             KernelIdentityRecord {
                 kernel_id: format!("kernel-{}", generate_identity_suffix()),
-                kernel_alias: None,
                 host: host.trim().to_string(),
                 port,
                 relay_public_key,
@@ -342,9 +297,7 @@ pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeI
     let record_snapshot = record.clone();
     let identity = RuntimeIdentity {
         daemon_id: record_snapshot.kernel_id.clone(),
-        machine_id: machine_identity.machine_id.clone(),
-        machine_alias: machine_identity.machine_alias,
-        daemon_alias: record_snapshot.kernel_alias.clone(),
+        machine_id,
         relay_public_key: record_snapshot.relay_public_key.clone(),
         relay_private_key: record_snapshot.relay_private_key.clone(),
     };
@@ -353,6 +306,27 @@ pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeI
     persist_kernel_registry(&registry_path, &registry);
     persist_kernel_identity(&identity, &record_snapshot);
     identity
+}
+
+/// Every kernel on one computer shares that computer's machine ID. Slices are
+/// not computers: a protected slice keeps its pinned ID and an unprotected one
+/// is told its ID by the kernel that starts it.
+fn resolve_machine_id() -> String {
+    if protected_slice_identity_required() {
+        return load_or_create_slice_machine_identity().machine_id;
+    }
+    if let Some(machine_id) = std::env::var("CHARIOX_MACHINE_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return machine_id;
+    }
+    super::os_machine::machine_id().unwrap_or_else(|reason| {
+        panic!(
+            "Chariox cannot identify this computer: {reason}. Fix the OS machine ID, or set CHARIOX_MACHINE_ID when this is a container."
+        )
+    })
 }
 
 pub(crate) fn load_or_create_managed_runtime_identity(
@@ -429,7 +403,6 @@ pub fn prepare_protected_slice_identity(
         .is_some()
         || DaemonConfig::default_kernel_registry_path().exists()
         || DaemonConfig::default_machine_identity_path().exists()
-        || DaemonConfig::default_runtime_identity_path().exists()
     {
         return Err(refuse());
     }
@@ -463,34 +436,7 @@ fn is_pinned_local_kernel(record: &KernelIdentityRecord) -> bool {
         && PINNED_LOCAL_KERNEL_PORTS.contains(&record.port)
 }
 
-pub(super) fn persist_runtime_display_aliases(
-    host: &str,
-    port: u16,
-    machine_alias: Option<&str>,
-    kernel_alias: Option<&str>,
-) {
-    let registry_path = DaemonConfig::default_kernel_registry_path();
-    let Some(mut registry) = fs::read_to_string(&registry_path)
-        .ok()
-        .and_then(|contents| serde_json::from_str::<KernelRegistry>(&contents).ok())
-    else {
-        return;
-    };
-    registry.machine_alias = machine_alias
-        .map(str::trim)
-        .filter(|alias| !alias.is_empty())
-        .map(str::to_string);
-    let endpoint_key = kernel_identity_key(host, port);
-    if let Some(record) = registry.kernels.get_mut(&endpoint_key) {
-        record.kernel_alias = kernel_alias
-            .map(str::trim)
-            .filter(|alias| !alias.is_empty())
-            .map(str::to_string);
-    }
-    persist_kernel_registry(&registry_path, &registry);
-}
-
-fn load_or_create_machine_identity() -> MachineIdentity {
+fn load_or_create_slice_machine_identity() -> MachineIdentity {
     let path = DaemonConfig::default_machine_identity_path();
     if let Ok(contents) = fs::read_to_string(&path) {
         if let Ok(identity) = serde_json::from_str::<MachineIdentity>(&contents) {
@@ -499,17 +445,9 @@ fn load_or_create_machine_identity() -> MachineIdentity {
             }
         }
     }
-
-    let identity = load_legacy_runtime_identity()
-        .filter(|identity| !identity.machine_id.trim().is_empty())
-        .map(|identity| MachineIdentity {
-            machine_id: identity.machine_id,
-            machine_alias: identity.machine_alias,
-        })
-        .unwrap_or_else(|| MachineIdentity {
-            machine_id: format!("machine-{}", generate_identity_suffix()),
-            machine_alias: None,
-        });
+    let identity = MachineIdentity {
+        machine_id: format!("machine-{}", generate_identity_suffix()),
+    };
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -517,16 +455,6 @@ fn load_or_create_machine_identity() -> MachineIdentity {
         let _ = write_private_file(&path, contents.as_bytes());
     }
     identity
-}
-
-fn load_legacy_runtime_identity() -> Option<RuntimeIdentity> {
-    let path = DaemonConfig::default_runtime_identity_path();
-    let contents = fs::read_to_string(path).ok()?;
-    let identity = serde_json::from_str::<RuntimeIdentity>(&contents).ok()?;
-    if identity_is_invalid(&identity) {
-        return None;
-    }
-    Some(identity)
 }
 
 fn identity_is_invalid(identity: &RuntimeIdentity) -> bool {
@@ -574,10 +502,6 @@ fn persist_kernel_identity(identity: &RuntimeIdentity, record: &KernelIdentityRe
 
 fn kernel_identity_key(host: &str, port: u16) -> String {
     format!("{}:{port}", host.trim().to_ascii_lowercase())
-}
-
-fn is_default_kernel_endpoint(host: &str, port: u16) -> bool {
-    port == 43118 && matches!(host.trim(), "127.0.0.1" | "localhost")
 }
 
 fn now_unix_ms() -> u64 {

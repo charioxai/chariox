@@ -47,11 +47,10 @@ impl Directory {
         self.merge();
         let via = self.source.via();
         let seen = self.seen.lock().expect("directory poisoned");
-        let known: Vec<&RelayKernelPresence> = seen.values().map(|seen| &seen.kernel).collect();
         Ok(names::grouped(
             seen.values()
                 .map(|seen| GatewayKernel {
-                    name: names::display_name(&seen.kernel, &known),
+                    name: names::display_name(&seen.kernel),
                     label: names::label(&seen.kernel),
                     kernel_id: seen.kernel.kernel_id.clone(),
                     machine_id: seen.kernel.machine_id.clone(),
@@ -158,6 +157,12 @@ pub(super) fn is_gateway_ready(kernel: &RelayKernelPresence) -> bool {
     advertises(kernel, GATEWAY_CAPABILITY)
 }
 
+/// A kernel that reads a request's bytes as bytes (`framed_plaintext`) says so; an older one
+/// reads only JSON, so a request to it keeps its bytes in base64.
+pub(super) fn reads_framed_plaintext(kernel: &RelayKernelPresence) -> bool {
+    advertises(kernel, crate::transport::framed_plaintext::CAPABILITY)
+}
+
 /// A kernel that runs the Room terminal service says so; an older one would only answer
 /// that it cannot read the request.
 const ROOM_TERMINAL_CAPABILITY: &str = "room_terminal_v1";
@@ -225,7 +230,7 @@ mod tests {
 
     fn kernel(
         id: &str,
-        kernel_alias: Option<&str>,
+        relay_alias: Option<&str>,
         machine_alias: &str,
         ready: bool,
     ) -> RelayKernelPresence {
@@ -233,8 +238,8 @@ mod tests {
             kernel_id: id.into(),
             machine_id: format!("machine-{machine_alias}"),
             machine_alias: Some(machine_alias.into()),
-            relay_alias: None,
-            kernel_alias: kernel_alias.map(Into::into),
+            relay_alias: relay_alias.map(Into::into),
+            kernel_alias: None,
             available_providers: Vec::new(),
             provider_accounts: Vec::new(),
             capabilities: if ready {
@@ -436,34 +441,38 @@ mod tests {
 
     #[tokio::test]
     async fn a_name_means_one_live_kernel_and_every_other_case_is_a_typed_error() {
+        // Registrations name each kernel of a computer apart (`shared-host`, `shared-host-2`);
+        // a kernel that registered without a relay name is known by its computer's name.
         let (directory, source) = directory(vec![
             kernel("k-b3", Some("b3"), "ovh-b3", true),
-            kernel("k-old", Some("old"), "shared-host", false),
-            kernel("k-x", None, "shared-host", true),
+            kernel("k-old", Some("shared-host-2"), "shared-host", false),
+            kernel("k-x", Some("shared-host"), "shared-host", true),
+            kernel("k-y", None, "twin", true),
+            kernel("k-z", None, "twin", true),
         ]);
         assert_eq!(directory.resolve("b3").await.unwrap().kernel_id, "k-b3");
         assert_eq!(directory.resolve("ovh-b3").await.unwrap().kernel_id, "k-b3");
         assert_eq!(directory.resolve("k-b3").await.unwrap().kernel_id, "k-b3");
         assert_eq!(
+            directory.resolve("shared-host").await.unwrap().kernel_id,
+            "k-x"
+        );
+        assert_eq!(
+            directory.resolve("shared-host-2").await.unwrap().kernel_id,
+            "k-old"
+        );
+        assert_eq!(
             directory.resolve("nope").await.unwrap_err().code(),
             "kernel_unknown"
         );
-        // Two of the user's kernels on one machine: the machine's name fits both.
-        let ambiguous = directory.resolve("shared-host").await.unwrap_err();
+        let ambiguous = directory.resolve("twin").await.unwrap_err();
         assert_eq!(ambiguous.code(), "kernel_ambiguous");
         let message = ambiguous.message();
         assert!(
-            message.contains("shared-host/old") && message.contains("shared-host/k-x"),
+            message.contains("k-y") && message.contains("k-z"),
             "{message}"
         );
-        assert_eq!(
-            directory
-                .resolve("shared-host/k-x")
-                .await
-                .unwrap()
-                .kernel_id,
-            "k-x"
-        );
+        assert_eq!(directory.resolve("k-z").await.unwrap().kernel_id, "k-z");
         // The kernel disappears from the live list: it stays known, offline, with its last-seen time.
         source.0.lock().unwrap().remove(0);
         assert_eq!(
@@ -471,17 +480,17 @@ mod tests {
             "kernel_offline"
         );
         let listed = directory.kernels().await.unwrap();
-        let b3 = listed.iter().find(|m| m.name == "ovh-b3").unwrap();
+        let b3 = listed.iter().find(|m| m.name == "b3").unwrap();
         assert_eq!(b3.status, GatewayKernelStatus::Offline);
         assert!(b3.last_seen_ms > 0 && b3.gateway_ready);
         assert_eq!(b3.label, "b3");
-        let old = listed.iter().find(|m| m.name == "shared-host/old").unwrap();
+        let old = listed.iter().find(|m| m.name == "shared-host-2").unwrap();
         assert!(!old.gateway_ready && old.status == GatewayKernelStatus::Online);
         assert!(
             listed
                 .iter()
-                .any(|m| m.name == "shared-host/k-x" && m.kernel_id == "k-x"),
-            "a kernel without an alias is labelled by its id"
+                .any(|m| m.name == "twin" && m.kernel_id == "k-y"),
+            "a kernel without a relay name is shown by its computer's name"
         );
     }
 }

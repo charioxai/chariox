@@ -401,8 +401,12 @@ pub(crate) async fn execute_manage_credential_vault_request(
 fn credential_vault_status(
     config_projection: &DaemonConfigProjectionStore,
 ) -> Result<crate::secret::CharioxVaultUnlockStatus, DaemonError> {
-    let user_config = config_projection.snapshot().user_config;
-    crate::secret::chariox_encrypted_vault_status(&user_config.credential_vault.path)
+    let vault = config_projection.snapshot().user_config.credential_vault;
+    let mut status = crate::secret::chariox_encrypted_vault_status(&vault.path)?;
+    // Only a Chariox Vault waits for a passphrase.
+    status.awaiting_passphrase &=
+        vault.backend == crate::config::CredentialVaultBackend::CharioxEncrypted;
+    Ok(status)
 }
 
 #[cfg(test)]

@@ -216,6 +216,9 @@ pub struct WaitingRoomPublicItemActivitySummary {
 pub struct WaitingRoomPublicAgentSummary {
     pub id: String,
     pub agent_ref: String,
+    /// The owner hid the agent from the Room's panes; its work goes on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     pub created_at_ms: u64,

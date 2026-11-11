@@ -1,3 +1,4 @@
+use super::agent_tree::PEER_LIFETIME;
 use super::request::*;
 use super::result::*;
 use super::spawn_args::*;
@@ -643,24 +644,12 @@ impl CommandRouter {
             ));
         }
 
-        if spawn.deadline.is_some() {
-            if let Err(error) = self
-                .runtime_state
-                .ensure_spawn_deadline_runs_here(
-                    spawn.kernel_ref.as_deref(),
-                    spawn.slice_ref.is_some() || spawn.slice_create.is_some(),
-                )
-                .await
-            {
-                return Ok(meta_command_failure_result(command, error));
-            }
-        }
-
         if let Some(reference) = spawn.slice_ref.as_deref() {
-            match self
-                .runtime_state
-                .resolve_spawn_slice(reference, metaagent.id())
-            {
+            match self.runtime_state.resolve_spawn_slice(
+                reference,
+                metaagent.id(),
+                metaagent.owner_user_id(),
+            ) {
                 Ok(slice) => spawn.slice_ref = Some(slice.id),
                 Err(error) => return Ok(meta_command_failure_result(command, error)),
             }
@@ -745,6 +734,24 @@ impl CommandRouter {
             },
             None => None,
         };
+        // A spawn in the caller's own room is a sub-agent, so `--room` never names that room.
+        if target_room.as_deref() == Some(session.id()) {
+            return Ok(meta_command_failure_result(
+                command,
+                meta_command_error(
+                    "usage: agent spawn --room names another room of yours (see `room list`); to create an agent in this room omit --room, it becomes your sub-agent",
+                ),
+            ));
+        }
+        // A reference to this kernel creates a local child: only another kernel decides the folder.
+        let kernel_ref = if spawn.slice_ref.is_some() {
+            None
+        } else {
+            match self.runtime_state.settle_kernel_ref(spawn.kernel_ref).await {
+                Ok(kernel_ref) => kernel_ref,
+                Err(error) => return Ok(meta_command_failure_result(command, error)),
+            }
+        };
         let same_provider = spawns_same_provider(spawn.provider.as_deref(), metaagent);
         let follow = target_room.is_some() && !spawn.no_follow;
         let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
@@ -775,17 +782,14 @@ impl CommandRouter {
             // Omitted, the child takes the parent's effective limit where it is created.
             execution_mode: None,
             permission_level: spawn.permission_level,
+            // The parent's folder is a path on this machine: a child on another kernel that
+            // names no folder starts where that kernel starts its agents.
             worktree_id: spawn.worktree_id.or_else(|| {
-                target_room
-                    .is_none()
+                (target_room.is_none() && kernel_ref.is_none())
                     .then(|| metaagent.worktree_id().map(str::to_string))
                     .flatten()
             }),
-            kernel_ref: if spawn.slice_ref.is_some() {
-                None
-            } else {
-                spawn.kernel_ref
-            },
+            kernel_ref,
             slice_ref: spawn.slice_ref,
             worktree_placement: spawn.worktree_placement,
             metaagent: false,
@@ -839,6 +843,7 @@ impl CommandRouter {
         }
         if target_room.is_some() {
             if let Some(payload) = result.payload.as_object_mut() {
+                payload.insert("lifetime".to_string(), PEER_LIFETIME.into());
                 let (registration, refused) = match followed {
                     Some(Ok(registration)) => (Some(registration), None),
                     Some(Err(refused)) => (None, Some(refused)),
@@ -904,6 +909,7 @@ impl CommandRouter {
                     "command": command,
                     "response": {"spawned": {"kernel": spawned.agent.kernel_id, "room": spawned.agent.room_id, "agent": spawned.agent.agent_id, "alias": spawned.alias, "duplicate": spawned.duplicate}},
                     "follow_registration_id": spawned.follow_registration_id,
+                    "lifetime": PEER_LIFETIME,
                 }),
             },
             Err(error) => meta_command_failure_result(command, error),

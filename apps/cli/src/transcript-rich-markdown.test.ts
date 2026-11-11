@@ -65,3 +65,20 @@ test("MP-08 a visualize line names the page the web pane draws, and stays litera
   assert.equal(prepareTranscriptMarkdown('```\nvisualize{"path":"a.html"}\n```'), '```\nvisualize{"path":"a.html"}\n```')
   assert.equal(prepareTranscriptMarkdown('visualize{"path": 3}'), 'visualize{"path": 3}', "not a page: left as written")
 })
+
+test("MP-08 a visualize line in Codex's wrapper marks names the page, and no private-use mark reaches the terminal", () => {
+  const wrapped = 'visualize{"path":"/w/chart.html"}'
+  assert.equal(
+    prepareTranscriptMarkdown(`Here is the chart.\n\n${wrapped}`),
+    "Here is the chart.\n\n▣ visual: chart.html · /w/chart.html (open in the web app)",
+  )
+  assert.equal(prepareTranscriptMarkdown("A note stays."), "A note stays.")
+})
+
+test("MP-08 marks in code spans, fences and other directives are left as written", () => {
+  const mark = (name: string, args: string) => `\uE200${name}\uE202${args}\uE201`
+  const wrapped = mark("visualize", '{"path":"/w/chart.html"}')
+  assert.equal(prepareTranscriptMarkdown(`Codex writes \`${wrapped}\` for it.`), `Codex writes \`${wrapped}\` for it.`)
+  assert.equal(prepareTranscriptMarkdown(`\`\`\`text\n${wrapped}\n\`\`\``), `\`\`\`text\n${wrapped}\n\`\`\``)
+  assert.equal(prepareTranscriptMarkdown(`Sourced ${mark("cite", "turn0search0")}.`), `Sourced ${mark("cite", "turn0search0")}.`)
+})

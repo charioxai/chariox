@@ -35,24 +35,15 @@ impl Fixture {
     }
 
     async fn with_slice_identity(slice_identity: bool) -> Self {
-        Self::with_options(slice_identity, false).await
+        Self::with_worker_options(slice_identity, false).await
     }
 
-    async fn with_options(slice_identity: bool, hostile_alias: bool) -> Self {
-        Self::with_worker_options(slice_identity, hostile_alias, false).await
-    }
-
-    async fn with_worker_options(
-        slice_identity: bool,
-        hostile_alias: bool,
-        only_second_slice: bool,
-    ) -> Self {
-        Self::with_relay_fixture(slice_identity, hostile_alias, only_second_slice, true).await
+    async fn with_worker_options(slice_identity: bool, only_second_slice: bool) -> Self {
+        Self::with_relay_fixture(slice_identity, only_second_slice, true).await
     }
 
     async fn with_relay_fixture(
         slice_identity: bool,
-        hostile_alias: bool,
         only_second_slice: bool,
         with_slices: bool,
     ) -> Self {
@@ -108,7 +99,6 @@ impl Fixture {
         let mut shutdown = Vec::new();
         let mut presences = Vec::new();
         let mut slices = Vec::new();
-        let mut canonical_a = String::new();
         for (index, room) in [room_a.id(), room_b.id()].into_iter().enumerate() {
             let mut worker_config = DaemonConfig::for_tests();
             worker_config.daemon_id = if slice_identity && (!only_second_slice || index == 1) {
@@ -124,14 +114,6 @@ impl Fixture {
             } else {
                 format!("ordinary-worker-{fixture_id}-{index}")
             };
-            if index == 0 {
-                canonical_a = worker_config.daemon_id.clone();
-            }
-            worker_config.daemon_alias = Some(if hostile_alias && index == 1 {
-                canonical_a.clone()
-            } else {
-                format!("slice:room-{index}")
-            });
             worker_config.host_machine_id = if with_slices {
                 config.host_machine_id.clone()
             } else {
@@ -145,7 +127,7 @@ impl Fixture {
                 machine_id: worker_config.host_machine_id.clone(),
                 machine_alias: None,
                 relay_alias: None,
-                kernel_alias: worker_config.daemon_alias.clone(),
+                kernel_alias: None,
                 available_providers: vec![agent.provider().into(), "dev-stub".into()],
                 provider_accounts: Vec::new(),
                 capabilities: Vec::new(),
@@ -283,112 +265,6 @@ impl Fixture {
         );
         assert!(worker.leased_agents.is_empty());
     }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn archive_remote_agent_ends_projection_only_runs_before_unarchive() {
-    use crate::local::{
-        ArchiveAgentRequest, GetSessionStateRequest, LocalDaemonRequest, LocalDaemonResponse,
-    };
-    use crate::provider::{
-        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, ProviderRunState,
-        RuntimeProviderRun,
-    };
-    use crate::runtime::{command::KernelCommand, router::CommandRouter};
-
-    let fixture = Fixture::new().await;
-    let (session_id, projected, projection, activity) = {
-        let app = fixture.home.lock().await;
-        let agent = app.agents().get_agent(&fixture.agent_id).unwrap();
-        let session_id = agent.session_id().to_string();
-        let request =
-            LaunchProviderRequest::new(&session_id, "dev-stub", "dev-stub", "default", "default")
-                .with_agent_id(agent.id());
-        let mut run = RuntimeProviderRun::new(
-            crate::provider::projected_leased_provider_run_id(
-                &fixture.binding.leased_agent_id,
-                "old-worker-run",
-            ),
-            &request,
-            ProviderLaunchResult {
-                endpoint_mode: AgentEndpointMode::Managed,
-                process_label: "archive-projection".into(),
-                pty_target: None,
-                pty_program: None,
-                pty_args: Vec::new(),
-                pty_env: Default::default(),
-                pty_env_remove: Vec::new(),
-                working_directory: None,
-                structured_endpoint: None,
-            },
-        );
-        run.mark_running();
-        let projection = app.provider_run_projection_store();
-        projection.mark_leased_provider_run(run.id());
-        projection.update_remote_snapshot(run.clone());
-        assert!(
-            app.providers().get_run(run.id()).is_err(),
-            "worker runs have no home provider-store entry"
-        );
-        app.sessions_mut()
-            .set_active_provider_run(&session_id, Some(run.id().to_string()))
-            .unwrap();
-        let activity = app.prompt_activity_store();
-        activity.write().insert(
-            run.id().to_string(),
-            crate::app::ActivePromptState {
-                last_output_at: None,
-                saw_response_content: false,
-                completion_recorded: false,
-                settlement_requested: false,
-                active_tools: Default::default(),
-            },
-        );
-        (session_id, run, projection, activity)
-    };
-    let router = CommandRouter::with_interactive_capacity(fixture.home.clone(), 1);
-    for archived in [true, false] {
-        let request = LocalDaemonRequest::ArchiveAgent(ArchiveAgentRequest {
-            session_id: session_id.clone(),
-            agent_id: fixture.agent_id.clone(),
-            archived,
-        });
-        let command = KernelCommand::from_local_request("archive-projection", None, None, &request);
-        router.dispatch(command, request).await.unwrap();
-        assert_eq!(
-            projection.get(projected.id()).unwrap().state(),
-            ProviderRunState::Ended
-        );
-        assert!(
-            !activity.read().contains_key(projected.id()),
-            "archive must clear worker prompt activity"
-        );
-        projection.update_remote_snapshot(projected.clone());
-        assert_eq!(
-            projection.get(projected.id()).unwrap().state(),
-            ProviderRunState::Ended,
-            "delayed worker snapshots cannot revive an archived run"
-        );
-        assert!(projection
-            .get_for_agent(&session_id, &fixture.agent_id)
-            .is_none());
-        let request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
-            session_id: session_id.clone(),
-        });
-        let command =
-            KernelCommand::from_local_request("archive-projection-state", None, None, &request);
-        let LocalDaemonResponse::SessionState { session, .. } =
-            router.dispatch(command, request).await.unwrap()
-        else {
-            panic!("session state")
-        };
-        assert_ne!(
-            session.active_provider_run_id(),
-            Some(projected.id()),
-            "the destroyed worker run must stay unselected"
-        );
-    }
-    fixture.assert_foreign_worker_untouched().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -737,86 +613,12 @@ async fn slice_recovery_existing_start_guard_cannot_admit_foreign_room() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn slice_selector_projected_alias_cannot_shadow_canonical_worker() {
-    let fixture = Fixture::with_options(true, true).await;
-    let home = fixture.home.lock().await;
-    home.remote_relay_inventory_projection_store().update(
-        Vec::new(),
-        vec![fixture.presences[1].clone(), fixture.presences[0].clone()],
-    );
-    let selected = home
-        .select_remote_kernel_by_ref_with_config(
-            &fixture.presences[0].kernel_id,
-            &fixture.presences[0].available_providers[0],
-            home.config(),
-        )
-        .unwrap();
-    assert_eq!(
-        selected.kernel_id, fixture.presences[0].kernel_id,
-        "foreign worker alias must not override the persisted canonical slice ID"
-    );
-    drop(home);
-    fixture.assert_foreign_worker_untouched().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn slice_selector_live_alias_cannot_shadow_canonical_worker() {
-    let fixture = Fixture::with_options(true, true).await;
-    let home = fixture.home.lock().await;
-    home.remote_relay_inventory_projection_store()
-        .update(Vec::new(), Vec::new());
-    let actual_metadata = home
-        .block_on_relay_future(relay_discovery::get_live_kernel(
-            home.config(),
-            &fixture.presences[0].kernel_id,
-        ))
-        .unwrap();
-    assert_eq!(
-        actual_metadata.kernel_id, fixture.presences[1].kernel_id,
-        "fixture must reproduce relay metadata alias shadowing"
-    );
-    let result = home.select_remote_kernel_by_ref_with_config(
-        &fixture.presences[0].kernel_id,
-        "dev-stub",
-        home.config(),
-    );
-    assert!(
-        matches!(
-            result,
-            Err(DaemonError::LocalTransport {
-                operation: "select slice worker",
-                ..
-            })
-        ),
-        "canonical metadata mismatch must be rejected, got {result:?}"
-    );
-    drop(home);
-    fixture.assert_foreign_worker_untouched().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn slice_selector_ordinary_explicit_alias_remains_supported() {
-    let fixture = Fixture::with_slice_identity(false).await;
-    let home = fixture.home.lock().await;
-    home.slices().restore_records(Vec::new());
-    let selected = home
-        .select_remote_kernel_by_ref_with_config(
-            "slice:room-1",
-            &fixture.presences[1].available_providers[0],
-            home.config(),
-        )
-        .unwrap();
-    assert_eq!(selected.kernel_id, fixture.presences[1].kernel_id);
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn spawn_target_accepts_the_machine_alias_the_person_sees() {
     let fixture = Fixture::with_slice_identity(false).await;
     let home = fixture.home.lock().await;
     home.slices().restore_records(Vec::new());
     let mut presence = fixture.presences[1].clone();
     presence.machine_alias = Some("hkb-kernel".into());
-    presence.kernel_alias = Some("worker-1".into());
     home.remote_relay_inventory_projection_store()
         .update(Vec::new(), vec![presence.clone()]);
     let selected = home
@@ -831,7 +633,7 @@ async fn spawn_target_accepts_the_machine_alias_the_person_sees() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn spawn_target_asks_the_relay_when_the_inventory_has_not_synced() {
-    let fixture = Fixture::with_relay_fixture(false, false, false, false).await;
+    let fixture = Fixture::with_relay_fixture(false, false, false).await;
     let home = fixture.home.lock().await;
     home.remote_relay_inventory_projection_store()
         .update(Vec::new(), Vec::new());
@@ -854,7 +656,7 @@ async fn spawn_target_asks_the_relay_when_the_inventory_has_not_synced() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn spawn_target_refusal_names_what_the_relay_lists_when_the_inventory_is_empty() {
-    let fixture = Fixture::with_relay_fixture(false, false, false, false).await;
+    let fixture = Fixture::with_relay_fixture(false, false, false).await;
     let home = fixture.home.lock().await;
     home.remote_relay_inventory_projection_store()
         .update(Vec::new(), Vec::new());
@@ -1041,7 +843,7 @@ async fn slice_recovery_off_lock_ordinary_machine_failover_still_uses_lower_load
 
 #[tokio::test(flavor = "multi_thread")]
 async fn slice_machine_selection_cannot_move_ordinary_agent_into_room_slice() {
-    let fixture = Fixture::with_worker_options(true, false, true).await;
+    let fixture = Fixture::with_worker_options(true, true).await;
     let home = fixture.home.lock().await;
     home.slices()
         .restore_records(vec![home.slices().resolve(&fixture.slices[1].id).unwrap()]);
@@ -1062,7 +864,7 @@ async fn slice_machine_selection_cannot_move_ordinary_agent_into_room_slice() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn slice_machine_selection_off_lock_cannot_fail_over_into_room_slice() {
-    let fixture = Fixture::with_worker_options(true, false, true).await;
+    let fixture = Fixture::with_worker_options(true, true).await;
     let home = fixture.home.lock().await;
     home.slices()
         .restore_records(vec![home.slices().resolve(&fixture.slices[1].id).unwrap()]);
@@ -1150,7 +952,7 @@ async fn slice_recovery_recorded_machine_disagreement_is_rejected_before_contact
 
 #[tokio::test(flavor = "multi_thread")]
 async fn slice_machine_selection_reserved_worker_without_local_record_is_excluded() {
-    let fixture = Fixture::with_worker_options(true, false, true).await;
+    let fixture = Fixture::with_worker_options(true, true).await;
     let home = fixture.home.lock().await;
     home.slices().restore_records(Vec::new());
     let agent = home

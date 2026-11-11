@@ -17,6 +17,8 @@ pub(in crate::runtime) struct WorkerSpy {
     pub(in crate::runtime) id: String,
     pub(in crate::runtime) url: String,
     pub(in crate::runtime) requests: Arc<AtomicUsize>,
+    /// The `(leased agent, deadline)` pairs the worker was asked to enforce.
+    pub(in crate::runtime) deadlines: Arc<std::sync::Mutex<Vec<(String, u64)>>>,
     pub(in crate::runtime) discovery_started: Arc<Notify>,
     pub(in crate::runtime) release_discovery: Arc<Notify>,
     pub(in crate::runtime) native_recovery: Arc<std::sync::atomic::AtomicBool>,
@@ -38,6 +40,8 @@ impl WorkerSpy {
         let worker_id = id.clone();
         let requests = Arc::new(AtomicUsize::new(0));
         let counter = requests.clone();
+        let deadlines = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let worker_deadlines = deadlines.clone();
         let discovery_started = Arc::new(Notify::new());
         let release_discovery = Arc::new(Notify::new());
         let started = discovery_started.clone();
@@ -133,6 +137,10 @@ impl WorkerSpy {
                                     "model":null, "effort":null, "execution_mode":null, "permission_level":null,
                                     "backing_session_id":"worker-session", "backing_agent_id":"worker-agent", "backing_attachment_id":"worker-attachment", "created_at_ms":1
                                 })).unwrap() },
+                                RelayPeerRequest::SetLeasedAgentDeadline { leased_agent_id, deadline_ms } => {
+                                    worker_deadlines.lock().unwrap().push((leased_agent_id.clone(), deadline_ms));
+                                    RelayPeerResponse::LeasedAgentDeadlineSet { leased_agent_id }
+                                }
                                 RelayPeerRequest::CompleteLeasedPrompt { .. } => RelayPeerResponse::LeasedPromptCompleted {
                                     provider_run_id: Some("worker-run".into()), provider_diagnostic: None, provider_termination: None,
                                     git_observations: vec![], workspace_live_sync_change: None,
@@ -174,6 +182,7 @@ impl WorkerSpy {
             id,
             url,
             requests,
+            deadlines,
             discovery_started,
             release_discovery,
             native_recovery,

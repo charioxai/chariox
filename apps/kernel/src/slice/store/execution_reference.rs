@@ -1,3 +1,4 @@
+use super::environment::is_owned_through_rooms;
 use super::*;
 
 impl SliceStore {
@@ -50,13 +51,20 @@ impl SliceStore {
         &self,
         reference: &str,
         caller_agent_id: &str,
+        owns_room: &dyn Fn(&str) -> bool,
     ) -> Result<SliceRecord, DaemonError> {
-        match self.resolve(reference) {
+        // A slice of another owner reads as unknown, the way a Room of another owner does.
+        let resolved = match self.resolve(reference) {
             Err(DaemonError::LocalTransport { message, .. })
-                if message.starts_with("unknown slice") => {}
-            resolved => return resolved,
+                if message.starts_with("unknown slice") =>
+            {
+                None
+            }
+            Ok(slice) => Some(slice),
+            Err(error) => return Err(error),
         }
-        if let Some(slice) = self.resolve_by_worker_kernel_ref(reference) {
+        .or_else(|| self.resolve_by_worker_kernel_ref(reference));
+        if let Some(slice) = resolved.filter(|slice| is_owned_through_rooms(slice, owns_room)) {
             return Ok(slice);
         }
         let caller_slice = self

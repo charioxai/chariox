@@ -1,0 +1,16 @@
+{
+ "provider": "claude",
+ "kind": "Bash",
+ "source": "live 2026-11-10: record from the kernel history of a real claude turn on the lane kernel",
+ "record": {
+  "id": "toolu_01CUVk3c4WCCpc7WyWyMsxZs",
+  "input": {
+   "command": "grep -rIl -i \"fixture\" . 2>/dev/null | sort",
+   "description": "Search directory for files containing \"fixture\" (Grep substitute)"
+  },
+  "started_at_ms": 1794314914249,
+  "status": "started",
+  "tool": "Bash"
+ },
+ "shows": "grep\\ \\-rIl\\ \\-i\\ \"fixture\"\\ \\."
+}

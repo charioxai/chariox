@@ -56,6 +56,34 @@ async fn serve_fake_worker(
                             decode_peer_request(envelope, &worker_private_key);
                         let RelayPeerRequest::CancelLeasedPrompt { home_prompt_id, .. } = &request
                         else {
+                            if let RelayPeerRequest::SetLeasedAgentDeadline {
+                                leased_agent_id,
+                                ..
+                            } = request
+                            {
+                                let encrypted_response =
+                                    crate::transport::relay_crypto::encrypt_payload_for_peer(
+                                        &worker_private_key,
+                                        &home_public_key,
+                                        &serde_json::to_vec(
+                                            &RelayPeerResponse::LeasedAgentDeadlineSet {
+                                                leased_agent_id,
+                                            },
+                                        )
+                                        .unwrap(),
+                                    )
+                                    .unwrap();
+                                send_temporary_relay_envelope(
+                                    &mut socket,
+                                    RelayEnvelope::DaemonPeerResponse {
+                                        request_id,
+                                        from_daemon_id: WORKER_ID.to_string(),
+                                        encrypted_response: Some(encrypted_response),
+                                        error: None,
+                                    },
+                                )
+                                .await;
+                            }
                             continue;
                         };
                         let prompt = crate::session::PromptQueueItem::new(
@@ -213,6 +241,7 @@ async fn parent_deadline_cancels_running_leased_child_on_its_worker() {
                 deadline_ms,
             },
         )
+        .await
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     let first = runtime.tick_agent_deadlines(deadline_ms + 1).await;

@@ -217,7 +217,6 @@ mod tests {
             vec![RemoteMachineRecord {
                 machine_id: "machine-1".to_string(),
                 machine_alias: Some("builder".to_string()),
-                registry_alias: None,
                 display_name: "builder".to_string(),
                 trust_status: RemoteMachineTrustStatus::Pending,
                 online: true,
@@ -246,7 +245,6 @@ mod tests {
         projection.update_machine(RemoteMachineRecord {
             machine_id: "machine-1".to_string(),
             machine_alias: Some("builder".to_string()),
-            registry_alias: Some("build box".to_string()),
             display_name: "build box".to_string(),
             trust_status: RemoteMachineTrustStatus::Approved,
             online: true,
@@ -262,7 +260,6 @@ mod tests {
         assert_eq!(machines.len(), 1);
         assert_eq!(machines[0].trust_status, RemoteMachineTrustStatus::Approved);
         assert!(!machines[0].pending);
-        assert_eq!(machines[0].registry_alias.as_deref(), Some("build box"));
         assert!(machines[0].available_providers.is_empty());
         assert_eq!(kernels.len(), 1);
         assert!(kernels[0].available_providers.is_empty());
@@ -277,7 +274,6 @@ mod tests {
             vec![RemoteMachineRecord {
                 machine_id: "machine-1".to_string(),
                 machine_alias: Some("builder".to_string()),
-                registry_alias: None,
                 display_name: "builder".to_string(),
                 trust_status: RemoteMachineTrustStatus::Approved,
                 online: true,

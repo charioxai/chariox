@@ -381,7 +381,7 @@ impl KernelRuntimeState {
     }
 
     /// The active agent-target subscriptions of this kernel.
-    fn agent_notification_subscriptions(&self) -> Vec<WorkflowNotificationSubscription> {
+    pub(super) fn agent_notification_subscriptions(&self) -> Vec<WorkflowNotificationSubscription> {
         let home = self.owned.config_projection.snapshot().daemon_id;
         let owners: BTreeSet<String> = self
             .owned

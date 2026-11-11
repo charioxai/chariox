@@ -459,7 +459,6 @@ mod tests {
         let canonical = fixture["cases"][0]["workerKernelRef"].as_str().unwrap();
         let mut config = DaemonConfig::for_tests();
         config.daemon_id = canonical.into();
-        config.daemon_alias = Some("slice:drill".into());
         config.host_machine_id = "machine-a".into();
         let identity = managed_slice_relay_identity_for_config(
             &config,
@@ -470,7 +469,6 @@ mod tests {
         .unwrap();
         assert_eq!(identity.relay_subject, canonical);
         config.daemon_id = "slice:drill".into();
-        config.daemon_alias = Some(canonical.into());
         assert!(managed_slice_relay_identity_for_config(
             &config,
             "slice-1".into(),

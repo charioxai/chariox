@@ -58,6 +58,8 @@ fn release(version: u32) -> ReleaseMetadata {
         capabilities_digest: format!("sha256:{:064x}", 10),
         catalog_digest: format!("sha256:{:064x}", 11),
         view_digest: format!("sha256:{:064x}", 12),
+        display_name: None,
+        icon: None,
     }
 }
 fn approval() -> CapabilityDecision {

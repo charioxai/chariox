@@ -376,8 +376,7 @@ fn environment_views_carry_names_and_presence_never_a_value() {
 #[test]
 fn project_environment_peer_wire_and_redaction() {
     use crate::transport::relay_peer::{
-        RelayPeerRequest, RelayPeerResponse, RemoteCredentialSecretInput,
-        RemoteEnvironmentFileBytes,
+        RelayPeerRequest, RelayPeerResponse, RemoteCredentialSecretInput, RemoteFileBytes,
     };
     for (request, wire) in [
         (
@@ -442,7 +441,7 @@ fn project_environment_peer_wire_and_redaction() {
     let file = RelayPeerResponse::ProjectEnvironmentFilePulled {
         size_bytes: 14,
         sha256: Some("0f".into()),
-        content: Some(RemoteEnvironmentFileBytes::encode(b"synthetic-file")),
+        content: Some(RemoteFileBytes::encode(b"synthetic-file")),
     };
     assert_eq!(
         serde_json::to_value(&secret).unwrap(),

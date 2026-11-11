@@ -106,6 +106,8 @@ mod outside_events;
 use outside_events::InteractionPhase;
 pub(crate) use outside_events::{is_outside_event_request, source_not_available};
 mod environment_tools;
+mod file_copy_tool;
+mod leased_agent_file_serve;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_browser;
@@ -116,6 +118,8 @@ mod user_app_view_runtime;
 mod vault_command;
 mod vault_generate;
 mod vault_use;
+mod visual;
+mod visual_preview;
 pub(crate) use card_action_state::APPROVE_CHOICE_ID;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
@@ -234,6 +238,8 @@ pub(crate) struct KernelRuntimeState {
     unknown_peer_follows: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
     /// Peer spawns this kernel life is creating, by sending kernel and request id.
     peer_spawns_in_flight: peer_agent_inbound::PeerSpawnsInFlight,
+    /// One pass at a time deletes the peers whose creator ended.
+    created_peer_release: Arc<tokio::sync::Mutex<()>>,
     /// When Cloud's kernel directory was last read, and the kernels it listed as unlinked.
     unlinked_kernels: Arc<std::sync::Mutex<Option<UnlinkedKernels>>>,
     lifecycle_sweeps: lifecycle_sweep_flight::SweepFlight,
@@ -281,6 +287,8 @@ struct KernelRuntimeOwnedState {
     sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
     sudo_timer_changes: Arc<RuntimeChangeSignal>,
     sudo_end_wakes: Arc<std::sync::Mutex<BTreeMap<String, (crate::local::KernelSudoTurn, String)>>>,
+    /// What agents are told in their inbox about their commands that wait for room.
+    process_wait_notices: Arc<std::sync::Mutex<process_wait_notices::WaitNotices>>,
     sudo_verified_at: Arc<std::sync::Mutex<BTreeMap<String, (std::time::Instant, u64)>>>,
     /// Worker side of A10 leased sudo windows, keyed by backing agent.
     leased_sudo_grants: Arc<std::sync::Mutex<BTreeMap<String, sudo::leased::WorkerSudoGrant>>>,
@@ -393,6 +401,7 @@ struct KernelRuntimeOwnedState {
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor,
     pending_agent_context_handoffs: PendingAgentContextHandoffStore,
     pending_mcp_continuations: PendingMcpContinuationStore,
+    background_holds: background_hold::BackgroundHolds,
     private_assessment_results: agent_assessment_result::AssessmentResults,
     private_work_results: agent_assessment_result::AssessmentResults,
     /// The turn each native provider TUI run was last seen on, to settle it once it ends.
@@ -427,6 +436,7 @@ struct KernelRuntimeOwnedState {
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     slice_private_relay_connectors: crate::transport::relay_client::SlicePrivateRelayConnectors,
     notification_inventory_projection: crate::runtime::projection::RemoteRelayInventoryProjectionStore,
+    notification_source_probes: workflow_notification_source_probe::NotificationSourceProbes,
     remote_prompt_projection_drains:
         remote_prompt_claim_runtime::RemotePromptProjectionDrainClaimStore,
     remote_prompt_projection_serial: Arc<remote_prompt_claim_runtime::RemotePromptProjectionSerialStore>,
@@ -505,10 +515,12 @@ type RemoteWorkspaceLiveSyncInvocationResult = (
     Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
 );
 
-mod agent_archive_runtime_state;
 mod agent_config_owned_state;
 mod agent_config_runtime_state;
+mod agent_hidden_runtime_state;
 mod agent_lifecycle_owned_state;
+mod agent_model_choice;
+mod agent_model_resolution;
 mod agent_notification_ancestry;
 mod agent_notification_app;
 mod agent_notification_expiry;
@@ -517,6 +529,7 @@ mod agent_profile_owned_state;
 mod agent_trigger_gateway;
 mod agent_trigger_http;
 mod agent_trigger_notification;
+mod agent_trigger_notification_availability;
 mod agent_trigger_runtime_state;
 mod agent_turn_actions_runtime_state;
 mod agent_utility_runtime_state;
@@ -528,6 +541,7 @@ mod browser_controller_compatibility_runtime_state;
 mod owner_action_notifications;
 mod run_finished_notifications;
 mod wake_driver;
+mod workflow_notification_source_probe;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
 mod browser_configuration_runtime_state;
 mod browser_controller_runtime_state;
@@ -549,6 +563,7 @@ use pending_runtime_state::*;
 mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
 mod managed_activity_persistence;
+mod stored_agent_model_resolution;
 mod structured_prompt_dispatch;
 pub(crate) use managed_activity_persistence::ManagedActivityObservation;
 mod metaagent_event_owned_state;
@@ -577,7 +592,7 @@ mod provider_account_copy;
 mod provider_account_copy_offer;
 mod provider_focus_owned_state;
 mod provider_launch_failure_runtime;
-mod provider_launch_owned_state;
+pub(crate) mod provider_launch_owned_state;
 mod provider_launch_runtime;
 pub(crate) use provider_launch_runtime::ProviderLaunchStartOutcome;
 mod claude_setup_token_capture;
@@ -636,6 +651,7 @@ mod browser_region_card;
 mod disk_pressure;
 mod disk_usage;
 mod owner_vault;
+mod process_wait_notices;
 mod process_waits;
 mod runtime_interaction_state;
 mod runtime_notice_owned_state;
@@ -673,7 +689,11 @@ mod owner_handoff_runtime;
 pub(crate) use owner_handoff_runtime::{is_handoff_interaction_id, HANDOFF_OBLIGATION_KIND};
 mod declined_workspace_trust_runtime;
 mod dictation_runtime;
+#[cfg(test)]
+mod file_copy_tool_tests;
 mod kernel_computer_runtime;
+#[cfg(test)]
+mod leased_agent_deadline_tests;
 mod leased_computer_runtime;
 #[cfg(test)]
 mod leased_computer_runtime_tests;
@@ -1107,6 +1127,7 @@ impl KernelRuntimeState {
             restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             unknown_peer_follows: Default::default(),
             peer_spawns_in_flight: Default::default(),
+            created_peer_release: Default::default(),
             unlinked_kernels: Default::default(),
             lifecycle_sweeps: Default::default(),
             peer_outcome_deliveries: Default::default(),
@@ -1148,6 +1169,7 @@ impl KernelRuntimeState {
                 sudo_timer_changes: Default::default(),
                 sudo_verified_at: Default::default(),
                 sudo_end_wakes: Default::default(),
+                process_wait_notices: Default::default(),
                 leased_sudo_grants: Default::default(),
                 leased_sudo_fenced: Default::default(),
                 config_projection,
@@ -1249,6 +1271,7 @@ impl KernelRuntimeState {
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
                 pending_agent_context_handoffs,
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
+                background_holds: Default::default(),
                 private_assessment_results: Default::default(),
                 private_work_results: private_assessment_dispatch.work_results.clone(),
                 private_assessment_dispatch,
@@ -1282,6 +1305,7 @@ impl KernelRuntimeState {
                 vault_capture_claims: Default::default(),
                 relay_state,
                 notification_inventory_projection,
+                notification_source_probes: Default::default(),
                 remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 remote_prompt_projection_serial: Arc::default(),
                 remote_prompt_recoveries: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
@@ -1602,6 +1626,7 @@ impl KernelRuntimeState {
     }
 }
 
+mod created_peers;
 mod peer_agent_follow;
 pub(crate) use peer_agent_follow::peer_source_stamp;
 pub(crate) mod peer_agent_inbound;
@@ -1633,9 +1658,11 @@ mod agent_membership_read_tests;
 mod agent_parent_runtime;
 mod agent_subtree_cascade;
 mod agent_tree_runtime;
+mod background_hold;
 mod child_finished_event;
 
 mod agent_gone_announcement;
+mod agent_issued_cancel;
 mod agent_owner_cancellation;
 mod agent_process_group;
 mod agent_process_output;

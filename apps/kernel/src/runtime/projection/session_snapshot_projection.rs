@@ -70,6 +70,9 @@ pub struct AgentRuntimeActivity {
     pub active_turn: Option<AgentActiveTurnProjection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_completed_turn: Option<crate::git_observer::CompletedGitTurnActionProjection>,
+    /// What the agent waits on and how long it has been quiet.
+    #[serde(default, skip_serializing_if = "super::AgentLiveness::is_quiet")]
+    pub liveness: super::AgentLiveness,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,13 +193,19 @@ impl SessionSnapshotProjection {
         );
         app.session_state_projection_store()
             .project_external_observed_activity(session.id(), &mut agent_activity);
+        let processes = crate::runtime::process_resources::for_session(
+            session_id,
+            app.providers(),
+            &app.room_terminals(),
+        );
+        super::annotate_waits(
+            &mut agent_activity,
+            &processes,
+            &super::YieldedSources::of_room(&app.durable_state_store(), session_id),
+        );
         Ok(Self {
             disk_usage: Vec::new(),
-            processes: crate::runtime::process_resources::for_session(
-                session_id,
-                app.providers(),
-                &app.room_terminals(),
-            ),
+            processes,
             room_workflows: super::RoomWorkflowInventory::project(
                 &session,
                 unread_for_user_id.unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID),
@@ -321,6 +330,14 @@ pub(crate) fn agent_activity_for_session_projection(
         let active_prompt_count = usize::from(
             agent_prompt_runtime_status_is_active_prompt(&prompt_status) || active_turn.is_some(),
         );
+        let liveness = super::AgentLiveness::of_provider(
+            &status,
+            provider_run
+                .as_ref()
+                .map(RuntimeProviderRun::last_output_at_ms),
+            active_turn.as_ref().and_then(|turn| turn.started_at_ms),
+            crate::session::unix_epoch_ms(),
+        );
         activity.insert(
             agent.id().to_string(),
             AgentRuntimeActivity {
@@ -339,6 +356,7 @@ pub(crate) fn agent_activity_for_session_projection(
                 prompt_status,
                 active_turn,
                 last_completed_turn: completed_turn_for_agent(agent.id()),
+                liveness,
             },
         );
     }
@@ -346,7 +364,7 @@ pub(crate) fn agent_activity_for_session_projection(
     activity
 }
 
-fn active_turn_for_session_agent<'a>(
+pub(super) fn active_turn_for_session_agent<'a>(
     active_turns: &'a BTreeMap<String, ActiveTurnState>,
     session_id: &str,
     agent_id: &str,

@@ -45,10 +45,16 @@ export function buildCollapsedTranscriptBlob(
   onToggleBlob: (entryId: number, collapsed: boolean) => void,
 ) {
   const presentation = collapsedTranscriptBlobPresentation(entry)
-  const headline = buildBlobToggleLabel(renderer, presentation.headline, () => onToggleBlob(entry.id, false))
+  // A call with nothing to open to is a title: it is not a toggle.
+  const headline = presentation.expandable
+    ? buildBlobToggleLabel(renderer, presentation.headline, () => onToggleBlob(entry.id, false))
+    : new TextRenderable(renderer, { content: presentation.headline, wrapMode: "word" })
   headline.fg = transcriptTextColor(entry)
   headline.attributes = TextAttributes.BOLD
   body.add(headline)
+  if (!presentation.expandable) {
+    return
+  }
   body.add(
     new TextRenderable(renderer, {
       content: presentation.detail,

@@ -328,7 +328,7 @@ export function deriveWaitingRoomActivationDecision(options: {
       options.remote?.providerAccounts, launch.provider, launch.accountProfile, null, launch.model,
     )
     if (accountBlock) return { action: "error", message: accountBlock }
-    const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
+    const worktreeSelection = stageLaunchWorktree(options.state.worktreeSelectionId, managedEnvironment)
     if (!worktreeSelection.ok) {
       return { action: "error", message: worktreeSelection.message }
     }
@@ -374,7 +374,7 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
     options.remote?.providerAccounts, choice.providerId, options.state.accountProfileId, null, choice.model?.id,
   )
   if (accountBlock) return { action: "error", message: accountBlock }
-  const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
+  const worktreeSelection = stageLaunchWorktree(options.state.worktreeSelectionId, managedEnvironment)
   if (!worktreeSelection.ok) {
     return { action: "error", message: worktreeSelection.message }
   }
@@ -400,6 +400,16 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
     action: "create",
     launch,
   }
+}
+
+// A managed launch works in the folder its machine prepares, so the home's worktree is neither needed nor staged.
+function stageLaunchWorktree(
+  worktreeSelectionId: string | undefined,
+  managedEnvironment: WaitingRoomLaunchConfig["managedEnvironment"],
+): ReturnType<typeof stageWaitingRoomWorktreeSelection> {
+  if (!managedEnvironment) return stageWaitingRoomWorktreeSelection(worktreeSelectionId)
+  clearStagedWaitingRoomWorktreeSelection()
+  return { ok: true }
 }
 
 function waitingRoomManagedLaunchSelection(
@@ -552,14 +562,14 @@ export function deriveWaitingRoomControlActivationDecision(options: {
       if (!machine) {
         return { action: "error", message: "no machine selected" }
       }
-      const label = machine.registry_alias ?? machine.machine_alias ?? machine.display_name ?? machine.machine_id
+      const label = machine.machine_alias ?? machine.display_name ?? machine.machine_id
       if (machine.online === false || machine.pending || machine.kernel_count === 0) {
         return { action: "info", message: `press D twice to delete machine ${label}` }
       }
-      const target = machine.registry_alias ?? machine.machine_alias ?? machine.machine_id
+      // The id has no spaces; a computer's name can (`Miguel's Mac Studio`) and would split into arguments.
       return {
         action: "stage-command",
-        command: `/machine kernels ${target}`,
+        command: `/machine kernels ${machine.machine_id}`,
         message: `press Enter to list kernels for ${label}`,
       }
     }
@@ -683,8 +693,7 @@ export function deriveWaitingRoomDeleteDecision(options: {
   }
 
   if (options.state.focus === "machine" && choice.remoteMachine) {
-    const label = choice.remoteMachine.registry_alias
-      ?? choice.remoteMachine.machine_alias
+    const label = choice.remoteMachine.machine_alias
       ?? choice.remoteMachine.display_name
       ?? choice.remoteMachine.machine_id
     if (!waitingRoomRemoteMachineCanDelete(choice.remoteMachine)) {

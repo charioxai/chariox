@@ -760,6 +760,9 @@ where
     let wake_state = router.runtime_state();
     let wake_scheduler_task =
         tokio::spawn(async move { wake_state.run_agent_wake_scheduler().await });
+    let created_peer_router = Arc::clone(&router);
+    let created_peer_release_task =
+        tokio::spawn(async move { created_peer_router.run_created_peer_release().await });
 
     loop {
         tokio::select! {
@@ -773,6 +776,7 @@ where
                 }
                 drop(_restart_recovery_task);
                 wake_scheduler_task.abort();
+                created_peer_release_task.abort();
                 pump_task.abort();
                 // Output already taken from a provider must reach history:
                 // a hot-reloaded turn continues after it in the new program.
@@ -1983,7 +1987,8 @@ pub struct KernelBootListener {
 impl KernelBootListener {
     pub fn bind(host: &str, port: u16) -> Result<Self, DaemonError> {
         #[cfg(unix)]
-        let listener = crate::hot_reload::tcp_listener("kernel", host, port);
+        let listener =
+            crate::hot_reload::tcp_listener("kernel", host, crate::config::ListenPort::Exact(port));
         #[cfg(not(unix))]
         let listener = StdTcpListener::bind((host, port));
         let listener = listener.map_err(|error| DaemonError::LocalTransport {

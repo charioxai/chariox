@@ -3,6 +3,7 @@ import type { ShellCommandResult, ShellContext } from "./shell-core.js"
 import type { WorkflowNotificationsResponse, WorkflowNotificationAttachedResponse, WorkflowNotificationSourceRegisteredResponse, WorkflowNotificationSourceSummary, WorkflowPublicationDefinition } from "./kernel-types.js"
 import { attachWorkflowNotificationRequest, detachWorkflowNotificationRequest, listWorkflowNotificationsRequest, registerWorkflowNotificationSourceRequest } from "./ipc-workflow-notification-requests.js"
 import { listWorkflowPublicationsRequest } from "./ipc-requests.js"
+import { notificationKernelLabels } from "./notification-kernel-labels.js"
 type Deps = { client: { send(request: Record<string, unknown>): Promise<Record<string, unknown>> } }
 
 /** `/workflow notifications on|off <workflow> <exit>`: one exit of a workflow is one source. */
@@ -37,13 +38,16 @@ export async function executeWorkflowNotificationTrigger(args: string[], context
   const response = await deps.client.send(listWorkflowNotificationsRequest(context.sessionId)) as WorkflowNotificationsResponse
   const inventory = response.WorkflowNotifications
   if (!inventory) throw new Error("unexpected notification inventory response")
-  if (action === "list") return { ok: true, message: [
-    "Notification sources:",
-    ...inventory.sources.map(s => `${s.source_id} ${s.display_name} (${s.kernel_id})${s.available ? "" : " — kernel offline/source not available"}`),
-    "Subscribed to (detach <subscription-id>):",
-    ...inventory.subscriptions.map(s => `${s.subscription_id}: ${s.source_id} → ${s.target_kind === "agent" ? `agent ${s.agent_id ?? s.endpoint_id}` : s.publication_id}${s.source_available ? "" : " — source not available"}`),
-    ...inventory.diagnostics.map(d => `diagnostic ${d.source_id} ${d.occurrence_id}: ${d.code}`),
-  ].join("\n"), data: inventory }
+  if (action === "list") {
+    const labels = await notificationKernelLabels(deps.client, new Set(inventory.sources.map(s => s.kernel_id)))
+    return { ok: true, message: [
+      "Notification sources:",
+      ...inventory.sources.map(s => `${s.source_id} ${s.display_name} (${labels.get(s.kernel_id) ?? s.kernel_id})${s.available ? "" : " — kernel offline/source not available"}`),
+      "Subscribed to (detach <subscription-id>):",
+      ...inventory.subscriptions.map(s => `${s.subscription_id}: ${s.source_id} → ${s.target_kind === "agent" ? `agent ${s.agent_id ?? s.endpoint_id}` : s.publication_id}${s.source_available ? "" : " — source not available"}`),
+      ...inventory.diagnostics.map(d => `diagnostic ${d.source_id} ${d.occurrence_id}: ${d.code}`),
+    ].join("\n"), data: inventory }
+  }
   if (!sourceRef) return { ok: false, message: usage }
   const sources = matchNotificationSource(inventory.sources, sourceRef)
   if (sources.length !== 1) return { ok: false, message: "source missing or ambiguous; use an id from notification list" }

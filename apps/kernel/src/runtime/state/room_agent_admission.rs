@@ -72,11 +72,16 @@ impl KernelRuntimeState {
         actor_id: &str,
         request: &LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
-        if matches!(request, LocalDaemonRequest::ArchiveAgent(_)) {
-            return Err(denied("only the owner can archive or unarchive agents"));
+        if matches!(request, LocalDaemonRequest::HideAgent(_)) {
+            return Err(denied("only the owner can hide or unhide agents"));
         }
         if matches!(request, LocalDaemonRequest::SetAgentParent(_)) {
             return Err(denied("only the user can change an agent's parent"));
+        }
+        if super::sudo::teardown_request(request) {
+            return Err(denied(
+                "room agents cannot tear down sessions, projects or kernels",
+            ));
         }
         if !self.room_agent_tools_enabled() {
             return Ok(());
@@ -116,34 +121,19 @@ impl KernelRuntimeState {
                 None => Err(denied("cancel names the agent whose turn it stops")),
             };
         }
-        if let Some(crate::runtime::session_membership::scope::SessionMembershipScope::SessionId(
-            room,
-        )) = crate::runtime::session_membership::scope::request_session_scope(request)
+        if rooms_named(request)
+            .iter()
+            .any(|room| room != actor.session_id())
         {
-            if room != actor.session_id() {
-                return Err(denied("request is outside the caller room"));
-            }
-        }
-        let registry_room = match request {
-            LocalDaemonRequest::ListWorkflowRegistry(r) => Some(&r.session_id),
-            LocalDaemonRequest::GetWorkflowRegistryEntry(r) => Some(&r.session_id),
-            LocalDaemonRequest::AddWorkflowRegistryEntry(r) => Some(&r.session_id),
-            LocalDaemonRequest::AddWorkflowRegistryEntryFromWorkflow(r) => Some(&r.session_id),
-            LocalDaemonRequest::DeleteWorkflowRegistryEntry(r) => Some(&r.session_id),
-            LocalDaemonRequest::LoadWorkflowRegistryEntry(r) => Some(&r.session_id),
-            LocalDaemonRequest::RunWorkflowRegistryEntry(r) => Some(&r.session_id),
-            _ => None,
-        };
-        if registry_room.is_some_and(|room| room != actor.session_id()) {
-            return Err(denied("registry request is outside the caller room"));
+            return Err(denied("request is outside the caller room"));
         }
         let (room, target_id, deleting) = match request {
             LocalDaemonRequest::SetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::GetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::ListDescendants(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::AliasAgent(r) => (&r.session_id, &r.agent_id, false),
-            LocalDaemonRequest::ArchiveAgent(_) => {
-                return Err(denied("only the owner can archive or unarchive agents"))
+            LocalDaemonRequest::HideAgent(_) => {
+                return Err(denied("only the owner can hide or unhide agents"))
             }
             LocalDaemonRequest::DestroyAgent(r) => (&r.session_id, &r.agent_id, true),
             LocalDaemonRequest::UpdateAgentConfig(r) => (&r.session_id, &r.agent_id, false),
@@ -151,8 +141,12 @@ impl KernelRuntimeState {
             LocalDaemonRequest::UpdateAgentSubstitutes(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::EndSession(_)
             | LocalDaemonRequest::DeleteSession(_)
+            | LocalDaemonRequest::ArchiveProject(_)
+            | LocalDaemonRequest::DeleteProject(_)
             | LocalDaemonRequest::DeleteKernel(_) => {
-                return Err(denied("room agents cannot tear down sessions or kernels"));
+                return Err(denied(
+                    "room agents cannot tear down sessions, projects or kernels",
+                ));
             }
             LocalDaemonRequest::ForkAgent(_) => {
                 return Err(denied(
@@ -233,6 +227,49 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
+}
+
+/// Every room a request acts on. Membership scope leaves out the requests whose handler checks the
+/// agent's owner itself, or that act on a Room's workflows and Apps, so they are named here.
+fn rooms_named(request: &LocalDaemonRequest) -> Vec<String> {
+    use crate::runtime::session_membership::scope::{
+        request_session_scope, SessionMembershipScope,
+    };
+    match request_session_scope(request) {
+        Some(SessionMembershipScope::SessionId(room)) => return vec![room],
+        Some(SessionMembershipScope::SessionIds(rooms)) => return rooms,
+        // References and attachment ids resolve to a room inside their handler.
+        Some(_) => return Vec::new(),
+        None => {}
+    }
+    let room = match request {
+        LocalDaemonRequest::UndoTurn(r) => &r.session_id,
+        LocalDaemonRequest::SetWorkspaceLiveSyncMode(r) => &r.session_id,
+        LocalDaemonRequest::GenerateWorkspaceCommitMessage(r) => &r.session_id,
+        LocalDaemonRequest::RunAgentUtility(r) => &r.session_id,
+        LocalDaemonRequest::AcceptAppHostAction(r) => &r.session_id,
+        LocalDaemonRequest::GrantAppFile(r) => &r.session_id,
+        LocalDaemonRequest::SaveAppFileExport(r) => &r.session_id,
+        LocalDaemonRequest::BeginAppPublisherEnrollment(r) => &r.session_id,
+        LocalDaemonRequest::BeginAppInstall(r) => &r.session_id,
+        LocalDaemonRequest::BeginAppDevPush(r) => &r.session_id,
+        LocalDaemonRequest::BeginAppUpdate(r) => &r.session_id,
+        LocalDaemonRequest::PrepareDeploymentApps(r) => &r.session_id,
+        LocalDaemonRequest::ApplyWorkflowCodeArtifact(r) => &r.session_id,
+        LocalDaemonRequest::RunWorkflowCodeArtifact(r) => &r.session_id,
+        LocalDaemonRequest::BindWorkflowCodeSource(r) => &r.session_id,
+        LocalDaemonRequest::RebuildWorkflowCodeSource(r) => &r.session_id,
+        LocalDaemonRequest::UpdateWorkflowCodeSourceFromWorkflow(r) => &r.session_id,
+        LocalDaemonRequest::ListWorkflowRegistry(r) => &r.session_id,
+        LocalDaemonRequest::GetWorkflowRegistryEntry(r) => &r.session_id,
+        LocalDaemonRequest::AddWorkflowRegistryEntry(r) => &r.session_id,
+        LocalDaemonRequest::AddWorkflowRegistryEntryFromWorkflow(r) => &r.session_id,
+        LocalDaemonRequest::DeleteWorkflowRegistryEntry(r) => &r.session_id,
+        LocalDaemonRequest::LoadWorkflowRegistryEntry(r) => &r.session_id,
+        LocalDaemonRequest::RunWorkflowRegistryEntry(r) => &r.session_id,
+        _ => return Vec::new(),
+    };
+    vec![room.clone()]
 }
 
 impl KernelRuntimeState {

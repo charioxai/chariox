@@ -217,21 +217,12 @@ impl KernelRuntimeState {
                         sources,
                     }) = response
                     {
-                        if sources.len() > 1024
-                            || sources.iter().any(|s| {
-                                s.kernel_id != kernel
-                                    || s.name.len() > 512
-                                    || s.display_name.len() > 520
-                            })
-                        {
+                        let Some(sources) = accepted_source_list(&kernel, sources) else {
                             continue;
-                        }
+                        };
                         touched.insert(kernel.clone());
                         cache.retain(|s| s.kernel_id != kernel);
-                        cache.extend(sources.into_iter().map(|mut s| {
-                            s.available = true;
-                            s
-                        }));
+                        cache.extend(sources);
                     }
                 }
             }
@@ -256,7 +247,7 @@ impl KernelRuntimeState {
                     sources,
                 })?;
         }
-        Ok(())
+        self.sync_agent_notification_trigger_availability()
     }
 
     pub(super) async fn execute_workflow_notification_command(
@@ -529,6 +520,7 @@ impl KernelRuntimeState {
         }
         let now = crate::session::unix_epoch_ms();
         self.reconcile_remote_notification_installs(now).await;
+        self.schedule_notification_source_probes(now);
         let home = self.owned.config_projection.snapshot().daemon_id;
         let Ok(candidates) = self
             .owned
@@ -598,8 +590,33 @@ impl KernelRuntimeState {
     }
 }
 
+/// The sources a kernel answered with, marked available, unless the list is oversized or
+/// names another kernel.
+pub(super) fn accepted_source_list(
+    kernel: &str,
+    sources: Vec<WorkflowNotificationSourceSummary>,
+) -> Option<Vec<WorkflowNotificationSourceSummary>> {
+    if sources.len() > 1024
+        || sources
+            .iter()
+            .any(|s| s.kernel_id != kernel || s.name.len() > 512 || s.display_name.len() > 520)
+    {
+        return None;
+    }
+    Some(
+        sources
+            .into_iter()
+            .map(|mut s| {
+                s.available = true;
+                s
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    mod availability;
     mod enrolled_owner;
     mod generation;
     mod local_access;

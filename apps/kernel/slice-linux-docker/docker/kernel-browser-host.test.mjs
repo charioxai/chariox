@@ -1200,6 +1200,9 @@ test("MP-08 popup origins stay internal and distinguish unrelated native tabs", 
   assert.equal(state._tab_creation_actions[popup.tab_id], undefined)
   assert.equal(state._tab_creation_actions[native.tab_id], undefined)
   assert(!JSON.stringify(state.tabs).includes("opener_target_id"))
+  assert.equal(popup.opener_tab_id, opened.tab_id, "a popup names the Tab whose page opened it")
+  assert(!Object.hasOwn(native, "opener_tab_id"), "a native tab no page opened has no opener")
+  assert(!Object.hasOwn(state.tabs.find(tab => tab.tab_id === opened.tab_id), "opener_tab_id"))
 }))
 
 test("MP-08 completed agent input cannot attribute a later native popup on the same document", () => using(async ({host, pages, connection, handlers}) => {

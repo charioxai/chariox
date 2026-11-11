@@ -12,14 +12,6 @@ pub(super) const PAYLOAD_LIMIT: usize = 16 * 1024;
 const SUMMARY_LIMIT: usize = 160;
 const READING_NOTICE: &str = "Each event says who sent it (source.relation) and what that means for you (guidance). Follow the guidance of each event.";
 
-/// Events whose outcome the agent already settled are not read again.
-fn is_open(event: &InboxEvent) -> bool {
-    !matches!(
-        event.state.as_str(),
-        "acknowledged" | "handled" | "expired" | "failed"
-    )
-}
-
 /// The payload of one event within the read bound, and whether it was cut.
 pub(in crate::runtime::state) fn bounded_payload(
     payload: &serde_json::Value,
@@ -52,7 +44,7 @@ impl KernelRuntimeState {
         let mut open = store.agent_unread_inbox(room, actor, 0, after, work.as_deref())?;
         let unread_full = open.len() >= ledger::INBOX_PAGE;
         store.scan_agent_inbox(room, actor, after, work.as_deref(), |event| {
-            if is_open(&event) {
+            if ledger::is_open(&event) {
                 open.push(event);
             }
             if open.len() > limit {
@@ -220,7 +212,7 @@ impl KernelRuntimeState {
                     .collect();
                 for event in page
                     .iter()
-                    .filter(|event| event.sequence <= through && is_open(event))
+                    .filter(|event| event.sequence <= through && ledger::is_open(event))
                 {
                     if unread.contains(&event.sequence) {
                         skipped.push(

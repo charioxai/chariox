@@ -1,0 +1,11 @@
+{
+ "provider": "opencode",
+ "kind": "chariox_chariox_list_session_agents",
+ "source": "live 2026-11-10: record from the kernel history of a real opencode turn on the lane kernel",
+ "record": {
+  "id": "prt_1c57c3c820018K08Wp9xIQqnyC",
+  "tool": "chariox_chariox_list_session_agents",
+  "status": "running"
+ },
+ "empty": true
+}

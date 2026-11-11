@@ -113,7 +113,6 @@ export type WaitingRoomRemoteMachine = {
   displayFreshness?: "cached/refreshing" | "reconnecting"
   machine_id: string
   machine_alias?: string | null
-  registry_alias?: string | null
   display_name?: string
   trust_status?: "approved" | "pending" | "forgotten"
   online?: boolean
@@ -149,8 +148,8 @@ export type WaitingRoomRemoteState = {
     connected: boolean
     relay_url?: string | null
     daemon_id?: string | null
-    daemon_alias?: string | null
     machine_id?: string | null
+    machine_alias?: string | null
   } | null
   machines?: WaitingRoomRemoteMachine[]
   kernels?: WaitingRoomRemoteKernel[]
@@ -165,6 +164,8 @@ export type WaitingRoomRemoteState = {
   managedComputeClasses?: readonly ManagedEnvironmentComputeClassOption[]
   managedContextSources?: readonly ManagedEnvironmentContextSourceOption[]
   managedEnvironments?: readonly ManagedEnvironmentSummary[]
+  /** Why no machine can be rented now; null when renting is possible. */
+  managedRentUnavailable?: string | null
 }
 
 export type WaitingRoomTerminalType = "cli" | "web" | "ios" | "android"

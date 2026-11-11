@@ -1,0 +1,19 @@
+{
+ "provider": "codex",
+ "kind": "bash",
+ "source": "live 2026-11-10: record from the kernel history of a real codex turn on the lane kernel",
+ "record": {
+  "id": "exec-1191d0c1-e670-438e-aa74-7e83006b1213",
+  "tool": "bash",
+  "status": "completed",
+  "description": "cwd /work/project",
+  "input": {
+   "command": "/bin/bash -lc 'echo hello-allrows && ls'",
+   "cwd": "/work/project"
+  },
+  "output": "hello-allrows\nfixture-project\nhome\nk.sock\nkernel-info.json\nkernel.log\nkh\ntmp",
+  "raw": "exit_code: 0\nduration_ms: 0\nprocess_id: 75418",
+  "started_at_ms": 1794313676743
+ },
+ "shows": "/bin/bash\\ \\-lc\\ 'echo\\ hell"
+}

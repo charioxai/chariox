@@ -46,6 +46,11 @@ impl CommandRouter {
         {
             return self.spawn_room_peer(kernel, owner, request).await;
         }
+        if let request @ crate::transport::relay_peer::RelayPeerRequest::DeleteRoomPeer { .. } =
+            request
+        {
+            return self.delete_room_peer(kernel, owner, request).await;
+        }
         self.runtime_state
             .receive_peer_agent_request(kernel, owner, request)
             .await
@@ -128,6 +133,13 @@ impl CommandRouter {
         self.runtime_state
             .authorize_relay_leased_agent_caller(leased_agent_id, caller)
             .await
+    }
+
+    pub(crate) async fn relay_leased_agent_file(
+        &self,
+        request: crate::transport::relay_peer::RelayPeerRequest,
+    ) -> Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError> {
+        self.runtime_state.serve_leased_agent_file(request).await
     }
 
     pub(crate) async fn relay_room_browser_controller(
@@ -259,6 +271,10 @@ impl CommandRouter {
         self.runtime_state
             .provider_account_profile_registry()
             .generation()
+    }
+
+    pub(crate) fn machine_name(&self) -> Option<String> {
+        self.runtime_state.machine_name()
     }
 
     pub(crate) async fn relay_registration(&self) -> chariox_relay::protocol::DaemonRegistration {
@@ -463,6 +479,19 @@ impl CommandRouter {
             &self.runtime_state,
             leased_agent_id,
             remote_extension_manifest,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_set_leased_agent_deadline(
+        &self,
+        leased_agent_id: &str,
+        deadline_ms: u64,
+    ) -> Result<(), DaemonError> {
+        relay_peer_runtime::set_relay_leased_agent_deadline(
+            &self.runtime_state,
+            leased_agent_id,
+            deadline_ms,
         )
         .await
     }

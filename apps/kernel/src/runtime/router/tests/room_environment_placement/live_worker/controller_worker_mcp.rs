@@ -1528,7 +1528,6 @@ async fn start_agent_worker(fixture: &mut LiveWorker) -> (TestState, Arc<Command
     agent_worker_state.config.relay_token = fixture.home_state.config.relay_token.clone();
     agent_worker_state.config.relay_heartbeat_ms = 50;
     agent_worker_state.config.daemon_id = "agent-worker".to_string();
-    agent_worker_state.config.daemon_alias = Some("agent-worker".to_string());
     agent_worker_state.config.host_machine_id = "agent-worker-machine".to_string();
     let agent_worker = Arc::new(CommandRouter::with_interactive_capacity(
         Arc::new(Mutex::new(

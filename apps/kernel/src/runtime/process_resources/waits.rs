@@ -88,7 +88,7 @@ pub(crate) fn size(bytes: u64) -> String {
     }
 }
 
-fn duration(ms: u64) -> String {
+pub(super) fn duration(ms: u64) -> String {
     match ms / 1000 {
         seconds @ 0..=59 => format!("{seconds} s"),
         seconds => format!("{} min {} s", seconds / 60, seconds % 60),
