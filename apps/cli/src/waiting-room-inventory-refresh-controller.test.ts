@@ -528,6 +528,22 @@ test("waiting room inventory row patch ignores duplicate versions and disconnect
   assert.equal(disconnected.reconcileCount(), 0)
 })
 
+// MP-08: before the first report names the connected kernel, its own local presence is not a sibling, so the
+// home's machine is not listed as a remote machine (that row later showed as "reconnecting").
+test("a machine list that arrives before the first report does not list the connected kernel's own machine", () => {
+  const harness = createHarness({
+    connected: true,
+    localKernelPresences: [
+      { kernelId: "kernel-home", machineId: "machine-home", machineAlias: "home", host: "127.0.0.1", port: 43_121, heartbeatAtMs: 1 },
+    ],
+  })
+
+  harness.controller.applyRemoteMachinesChanged([])
+
+  assert.deepEqual(harness.remoteMachines().map((machine) => machine.machine_id), [])
+  assert.deepEqual(harness.remoteKernels().map((kernel) => kernel.kernel_id), [])
+})
+
 test("waiting room inventory relay and machine patches apply without fetching", () => {
   const harness = createHarness({ connected: true })
 
