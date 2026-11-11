@@ -14,6 +14,9 @@ use super::{error, CancelReason, ExecOutcome, ExecStream, Record, RoomExecServic
 use crate::error::DaemonError;
 use crate::runtime::owned_process_signals::OwnedProcessSignals;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) struct Process {
     child: Child,
     signals: OwnedProcessSignals,
