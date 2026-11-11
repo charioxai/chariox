@@ -75,6 +75,33 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
     );
 }
 
+/// A yield without a deadline waits for its registrations only: `deadline_ms` is `null`, not absent.
+#[test]
+fn agent_wait_without_a_deadline_reports_a_null_deadline() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let wait = AgentWait {
+        registration_ids: vec!["reg".into()],
+        deadline_ms: None,
+        started_at_ms: 1,
+        inbox_cursor: 3,
+        long_wait_notified: false,
+        last_checked_at_ms: 1,
+    };
+    let value = serde_json::to_value(wait).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"registration_ids": ["reg"], "deadline_ms": null, "started_at_ms": 1,
+            "inbox_cursor": 3, "long_wait_notified": false, "last_checked_at_ms": 1})
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
+        "40729d74583fd594c73484f308a96a58c80aa1c991016f7728a3bb41a11c59ae"
+    );
+}
+
 #[test]
 fn agent_wake_projection_shape_is_bound_to_protocol459() {
     assert_eq!(

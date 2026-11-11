@@ -7190,6 +7190,13 @@ client (`landing8-protocol.test.ts`). Focused checks:
 `cargo test -p chariox-kernel --lib -- landing8 protocol_shapes client_protocol_conformance` and
 `node --test packages/kernel-client/dist/landing8-protocol.test.js`.
 
+Landing 9 carries local daemon protocol 1004 and relay peer 443. Local 1004: Files on the owner's
+machines (listings with `revision` and `mode`, `ListKernelDirectory.offset`, the file transfer jobs),
+Room setup (`CreateSession.setup`, `RuntimeSession.room_setup`, `RetryRoomSetup`, `DismissRoomSetup`),
+`SuggestSessionAlias` and `git_available` on the launch target, and an agent's `wait.deadline_ms` that
+is `null` for a yield without a deadline (`protocol_shapes/agent_lifecycle.rs`). Relay peer 443 renames
+the leased agent file answers. Managed upgrades admit 1002 and 1003.
+
 ### MP-08 / MP-09 / MP-10 / MP-11: Files on the owner's machines — local 1004 / relay peer 443
 
 The Kernel files requests above are the owner's Files service on a machine. Local 1004 adds a
