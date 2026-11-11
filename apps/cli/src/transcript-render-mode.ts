@@ -1,3 +1,4 @@
+import { transcriptBlobExpandable } from "@chariox/kernel-client/transcript-collapsed-blob"
 import type { TranscriptEntry } from "./cli-types.js"
 import {
   parseToolTranscriptUpdate,
@@ -31,7 +32,7 @@ export function transcriptRenderMode(entry: TranscriptEntry): TranscriptRenderMo
 }
 
 export function shouldRenderCollapsedTranscriptBlob(entry: TranscriptEntry) {
-  return entry.blobCollapsible === true && entry.blobCollapsed !== false
+  return entry.blobCollapsible === true && (entry.blobCollapsed !== false || !transcriptBlobExpandable(entry))
 }
 
 export function readTranscriptApplyPatch(entry: TranscriptEntry): TranscriptApplyPatchFiles | null {

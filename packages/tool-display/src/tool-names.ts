@@ -12,25 +12,26 @@ export function isWorkspaceLiveSyncTool(tool: unknown) {
     || canonical === "chariox.write_artifact"
 }
 
+/** A tool's name without separators or case. The Chariox bridge's tools arrive as "chariox.x", "chariox_x" or, through a provider's MCP client,
+ *  "mcp__chariox__chariox_x" or "mcp__chariox__x": one name each ("charioxx"). */
+export function compactToolName(tool: unknown): string {
+  return typeof tool === "string" ? tool.trim().replace(/[\s._-]/g, "").toLowerCase().replace(/^mcp(?=chariox)/, "").replace(/^(?:chariox)+(?=chariox)/, "") : ""
+}
+
 export function canonicalToolName(tool: unknown) {
   if (typeof tool !== "string") {
     return ""
   }
   const normalized = tool.trim()
-  // The MCP bridge namespaces a tool ("mcp__chariox__chariox_write_artifact"): the server's name and its own prefix are one "chariox".
-  const compact = normalized.replace(/[._-]/g, "").toLowerCase().replace(/^mcp(?=chariox)/, "").replace(/^(?:chariox)+(?=[a-z])/, "chariox")
-  if (compact === "charioxwriteartifact" || compact === "writeartifact") return "chariox.write_artifact"
-  if (compact === "charioxeditartifact" || compact === "editartifact") return "chariox.edit_artifact"
-  if (
-    compact === "charioxapplypatch"
-    || compact === "charioxpatchartifact"
-    || compact === "mcpcharioxpatchartifact"
-    || compact === "mcpcharioxcharioxpatchartifact"
-  ) return "chariox.apply_patch"
-  if (compact === "patchartifact") return "chariox.apply_patch"
-  if (compact === "applypatch") return "apply_patch"
-  if (compact === "charioxdeleteartifact" || compact === "deleteartifact") return "chariox.delete_artifact"
-  if (compact === "charioxmoveartifact" || compact === "moveartifact") return "chariox.move_artifact"
-  if (compact === "charioxreadartifact" || compact === "readartifact") return "chariox.read_artifact"
+  const compact = compactToolName(normalized)
+  const chariox = compact.startsWith("chariox")
+  const verb = compact.replace(/^(?:chariox)+/, "")
+  if (verb === "writeartifact") return "chariox.write_artifact"
+  if (verb === "editartifact") return "chariox.edit_artifact"
+  if (verb === "patchartifact" || (chariox && verb === "applypatch")) return "chariox.apply_patch"
+  if (verb === "applypatch") return "apply_patch"
+  if (verb === "deleteartifact") return "chariox.delete_artifact"
+  if (verb === "moveartifact") return "chariox.move_artifact"
+  if (verb === "readartifact") return "chariox.read_artifact"
   return normalized
 }

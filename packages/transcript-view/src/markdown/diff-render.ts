@@ -1,3 +1,4 @@
+import { patchFileView } from "@chariox/tool-display"
 import { diffStat, diffView, parseUnifiedDiff, type DiffFileView, type DiffRow } from "./diff-view.js"
 
 // MP-08 / MP-10 (PANE-09, R16): Codex-style diff HTML for ```diff fences and
@@ -18,21 +19,7 @@ export function renderUnifiedDiffHtml(text: string): string {
 }
 
 export function renderPatchFilesDiffHtml(files: readonly PatchFileInput[]): string {
-  return renderDiffHtml(files.map((file) => {
-    const parsed = file.diff === null ? [] : parseUnifiedDiff(file.diff)
-    const rows: DiffRow[] = parsed.flatMap((part) => part.rows)
-    const commonTitles = ["Patched", "Created", "Deleted", "Edited", "Wrote"].map(verb => `${verb} ${file.filePath}`)
-    if (file.title && !commonTitles.includes(file.title)) rows.unshift({ kind: "meta", text: file.title })
-    if (file.note && rows.length === 0) rows.push({ kind: "meta", text: file.note })
-    return {
-      path: file.filePath,
-      previousPath: parsed[0]?.previousPath ?? null,
-      change: file.kind,
-      additions: parsed.reduce((sum, part) => sum + part.additions, 0),
-      deletions: parsed.reduce((sum, part) => sum + part.deletions, 0),
-      rows,
-    }
-  }))
+  return renderDiffHtml(files.map(patchFileView))
 }
 
 export function renderDiffHtml(files: readonly DiffFileView[]): string {

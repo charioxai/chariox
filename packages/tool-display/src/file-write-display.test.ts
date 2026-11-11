@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { formatToolDisplay, type ToolDisplay, type ToolTranscriptUpdate } from "./index.js"
+import { formatToolDisplay, readApplyPatchFiles, type ToolDisplay, type ToolTranscriptUpdate } from "./index.js"
 
 // A "Wrote a file" row that opens to nothing must never happen (owner, Landing 7): whatever event shape a provider gives a
 // file write or edit, the opened row shows the file's path and its change (a diff, a preview of a new file, or the size of a
@@ -85,3 +85,31 @@ test("a write whose content is unknown still opens to the file it names", () => 
     assert.ok(patch.files[0]!.previewLines.length > 0)
   }
 })
+
+// Review of c#616: the Chariox MCP bridge names a tool "chariox.write_artifact", "chariox_write_artifact" or, through a provider's MCP client,
+// "mcp__chariox__chariox_write_artifact". Every spelling reads the change the call's own output reports, not the input.
+for (const verb of ["write", "edit", "delete", "move"]) {
+  for (const name of [`chariox.${verb}_artifact`, `chariox_${verb}_artifact`, `mcp__chariox__chariox_${verb}_artifact`, `mcp__chariox__${verb}_artifact`]) {
+    test(`${name} reads the change in its output`, () => {
+      const output = JSON.stringify({ applied: true, change: { path: "src/app.ts", kind: "update", diff: "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-before\n+FROM_OUTPUT" } })
+      const files = readApplyPatchFiles({ id: "c", tool: name, status: "completed", input: { path: "src/app.ts", content_text: "FROM_INPUT", from_path: "src/app.ts", to_path: "src/b.ts" }, output })
+      assert.equal(files.length, 1)
+      assert.match(files[0]!.diff ?? "", /FROM_OUTPUT/)
+    })
+  }
+}
+
+// The same calls, titled and iconed: the live row of a binary write through Claude's MCP client read "Edited out/logo.png".
+for (const [name, title, icon] of [
+  ["chariox.write_artifact", "Wrote out/logo.png", "edit"],
+  ["mcp__chariox__write_artifact", "Wrote out/logo.png", "edit"],
+  ["mcp__chariox__chariox_write_artifact", "Wrote out/logo.png", "edit"],
+  ["mcp__chariox__chariox_delete_artifact", "Deleted out/logo.png", "edit"],
+  ["mcp__chariox__chariox_move_artifact", "Moved out/logo.png", "edit"],
+] as const) {
+  test(`${name} is titled by what it did`, () => {
+    const display = formatToolDisplay({ id: "c", tool: name, status: "completed", input: { path: "out/logo.png", content_base64: "iVBORw0KGgo=", from_path: "out/logo.png", to_path: "out/b.png" } })
+    assert.match(display.title, new RegExp(`^${title.replace(/[./]/g, "\\$&")}`))
+    assert.equal(display.icon, icon)
+  })
+}

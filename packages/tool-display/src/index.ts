@@ -24,6 +24,7 @@ import {
   trimTrailingNewlines,
 } from "./strings.js"
 import { isNativeReadTool } from "./tool-names.js"
+import { searchResultBlocks, toolInputBlocks, toolOutputLabel } from "./tool-content.js"
 import { toolDisplayIcon, toolDisplayTitle } from "./tool-title.js"
 import type {
   ApplyPatchFile,
@@ -47,6 +48,7 @@ export {
   type DiffRow,
   type DiffView,
 } from "./diff-view.js"
+export { patchFileView } from "./patch-file-view.js"
 export {
   ACTIVE_STATUS_FALLBACK,
   getProviderActivityLabel,
@@ -150,31 +152,39 @@ export function formatToolDisplay(update: ToolTranscriptUpdate): ToolDisplay {
     blocks.push(readBlock)
   } else {
     const command = readCommand(update.input)
-    if (command) {
-      blocks.push({ kind: "code", language: "bash", text: `$ ${command}` })
-    }
     const output = nonEmpty(trimTrailingNewlines(renderDetail(update.output)))
     const text = nonEmpty(update.text)
     const error = nonEmpty(update.error)
+    const named = readNamedEditFile(update)
+    if (command) {
+      blocks.push({ kind: "code", language: "bash", text: `$ ${command}` })
+    }
+    // What the call was asked, then what came back; a file write the call says nothing more of opens to the file it names.
+    const input = command || (named && !output && !text && !error) ? { blocks: [], labelled: false } : toolInputBlocks(update, Boolean(output || text || error))
+    blocks.push(...input.blocks)
     if (text) {
       blocks.push({ kind: "text", text })
     }
     if (output) {
-      blocks.push({
+      if (input.labelled) {
+        blocks.push(toolOutputLabel())
+      }
+      blocks.push(...searchResultBlocks(update, output) ?? [{
         kind: "code",
         language: guessToolBlockLanguage(update, "Output", output),
         text: output,
-      })
+      }])
     }
     if (error) {
       blocks.push({ kind: "code", language: "text", text: error })
     }
-    const named = blocks.length === 0 ? readNamedEditFile(update) : null
-    if (named) {
+    if (blocks.length === 0 && named) {
       blocks.push({ kind: "patch", files: [{ ...named, previewLines: buildApplyPatchNewPreview(named) }] })
     }
-    if (blocks.length === 0 && markdown) {
-      blocks.push({ kind: "text", text: markdown })
+    // A call that says nothing else still shows what it holds; one with nothing to show has no content and no chevron.
+    const raw = nonEmpty(renderDetail(update.raw))
+    if (blocks.length === 0 && raw) {
+      blocks.push({ kind: "code", language: guessCodeFenceLanguage(raw), text: raw })
     }
   }
 

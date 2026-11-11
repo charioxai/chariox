@@ -1,3 +1,4 @@
+import { compactToolName } from "./tool-names.js"
 import { isObjectValue, readString } from "./strings.js"
 import type { ApplyPatchFile, ToolTranscriptUpdate } from "./types.js"
 
@@ -11,7 +12,7 @@ type Replacement = { readonly before: string; readonly after: string }
 
 // The Chariox MCP bridge names its tools "chariox.write_artifact", "mcp__chariox__chariox_write_artifact" and the like.
 function editToolName(tool: string | undefined): string {
-  const compact = (tool ?? "").replace(/[._-]/g, "").toLowerCase()
+  const compact = compactToolName(tool)
   if (compact.endsWith("writeartifact")) return "write"
   if (compact.endsWith("editartifact")) return "edit"
   if (compact.endsWith("deleteartifact")) return "delete"

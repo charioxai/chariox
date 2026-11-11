@@ -4,6 +4,7 @@ import { BoxRenderable, ScrollBoxRenderable, TextRenderable } from "@opentui/cor
 import { createTestRenderer } from "@opentui/core/testing"
 import type { TranscriptEntry } from "./cli-types.js"
 import { buildCollapsedTranscriptBlob } from "./transcript-interaction-render.js"
+import { shouldRenderCollapsedTranscriptBlob } from "./transcript-render-mode.js"
 
 test("MP-08 / MP-10 native collapsed tool headline and action each toggle exactly one row", async () => {
   const h = await createTestRenderer({ width: 80, height: 10, useThread: false })
@@ -50,4 +51,24 @@ test("MP-08 / MP-10 a scrolled native tool headline remains clickable", async ()
     await new Promise(resolve=>setTimeout(resolve,20))
     assert.deepEqual(toggled,[7])
   } finally {h.renderer.destroy()}
+})
+
+test("a native tool row whose call has no content is a title row without a toggle", async () => {
+  const h = await createTestRenderer({ width: 80, height: 10, useThread: false })
+  const body = new BoxRenderable(h.renderer, { width: "100%", flexDirection: "column" })
+  const toggled: unknown[] = []
+  h.renderer.root.add(body)
+  const entry = { id: 9, role: "tool", text: JSON.stringify({ id: "w1", tool: "web_search", status: "running" }), blobTitle: "Searching the web", blobCollapsible: true, blobCollapsed: true } as TranscriptEntry
+  buildCollapsedTranscriptBlob(h.renderer, body, entry, (id, collapsed) => toggled.push([id, collapsed]))
+  try {
+    await h.renderOnce()
+    const lines = h.captureCharFrame().split("\n")
+    const headline = lines.findIndex(line => line.includes("Searching the web"))
+    assert.ok(headline >= 0)
+    assert.ok(!lines.some(line => line.includes("click to") || line.includes("Collapsed blob content")), h.captureCharFrame())
+    await h.mockMouse.click(3, headline, 0)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.deepEqual(toggled, [])
+    assert.equal(shouldRenderCollapsedTranscriptBlob({ ...entry, blobCollapsed: false }), true, "an expand-all does not open an empty row")
+  } finally { h.renderer.destroy() }
 })
