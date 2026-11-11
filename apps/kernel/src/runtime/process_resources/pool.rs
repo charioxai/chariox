@@ -429,9 +429,15 @@ impl Pool {
         let Some(waiting) = admission::youngest_paused(members, PAUSE_LIMIT_MS, Some(room)) else {
             return;
         };
+        let in_use: u64 = members
+            .iter()
+            .map(|member| member.lock().unwrap_or_else(|e| e.into_inner()).resident())
+            .sum();
         let notice = format!(
-            "chariox: stopped this waiting command: the pool stayed full for {} s and it could not continue ({} MiB resident). Run it again; it starts when there is room.\n",
+            "chariox: stopped this waiting command: the pool stayed full for {} s ({} MiB in use of the {} MiB shared ceiling) and it could not continue ({} MiB resident). Run it again; it starts when there is room.\n",
             PAUSE_LIMIT_MS / 1000,
+            in_use / MIB,
+            self.ceiling / MIB,
             waiting.resident / MIB
         );
         if self.end_waiting(waiting, notice, false) {

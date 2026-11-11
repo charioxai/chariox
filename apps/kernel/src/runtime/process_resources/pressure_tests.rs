@@ -601,6 +601,9 @@ fn a_command_paused_on_a_full_pool_that_never_stalls_ends_after_the_bounded_wait
         "the paused command stayed stopped with no outcome"
     );
     b.assert_told("grow", "stopped this waiting command");
+    // The failure names the pool, its limit and what is in use.
+    b.assert_told("grow", "of the 1536 MiB shared ceiling");
+    b.assert_told("grow", "MiB in use");
     assert!(a.alive("big") && a.alive("idle") && a.root_alive() && b.root_alive());
 }
 
