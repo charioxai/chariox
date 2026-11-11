@@ -14,8 +14,8 @@ mod tests;
 
 pub(crate) use place::Place;
 pub(crate) use transfer::{
-    pull, push, CancelToken, Control, Copied, CopyOptions, LinkError, RemoteSource,
-    RemoteWorkspace, CANCELED,
+    patiently, pull, push, CancelToken, Control, Copied, CopyOptions, LinkError, RemoteSource,
+    RemoteWorkspace, CANCELED, UNREACHABLE_ADVICE,
 };
 pub(crate) use workspace_path::Access;
 #[cfg(test)]

@@ -116,6 +116,8 @@ impl CancelToken {
     }
 }
 
+/// What a copy that gave up on a dropped link tells the caller to do.
+pub(crate) const UNREACHABLE_ADVICE: &str = "; nothing was written. Copy again once it is back";
 pub(crate) const CANCELED: &str = "The copy was canceled; nothing was published";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -405,7 +407,11 @@ async fn land<P: Place>(
 }
 
 /// Repeats `request` while the link is down, for at most the resume window.
-async fn patiently<T, F, Fut>(peer: &str, control: &Control, request: F) -> Result<T, String>
+pub(crate) async fn patiently<T, F, Fut>(
+    peer: &str,
+    control: &Control,
+    request: F,
+) -> Result<T, String>
 where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, LinkError>>,
@@ -443,7 +449,7 @@ where
                 let delay = RETRY_DELAYS[attempt.min(RETRY_DELAYS.len() - 1)];
                 if tokio::time::Instant::now() + delay > deadline {
                     return Err(format!(
-                        "{peer} stayed unreachable for {} s ({why}); nothing was written. Copy again once it is back",
+                        "{peer} stayed unreachable for {} s ({why}){UNREACHABLE_ADVICE}",
                         window.as_secs()
                     ));
                 }

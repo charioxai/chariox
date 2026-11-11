@@ -13,7 +13,8 @@ use sha2::{Digest, Sha256};
 
 use super::{FileSource, Machine};
 use crate::agent_file_copy::{
-    pull, CancelToken, Control, Copied, CopyOptions, LinkError, CANCELED,
+    patiently, pull, CancelToken, Control, Copied, CopyOptions, LinkError, RemoteSource, CANCELED,
+    UNREACHABLE_ADVICE,
 };
 use crate::local::{
     FileTransferConflict, FileTransferJob, FileTransferState, KernelDirectoryEntry, KernelFileKind,
@@ -161,13 +162,27 @@ struct Item {
 }
 
 impl Run {
+    /// `request` on the source, repeated while the link is down, for as long as a copy would wait.
+    async fn linked<T, F, Fut>(&self, request: F) -> Result<T, String>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, LinkError>>,
+    {
+        let control = Control {
+            cancel: self.token.clone(),
+            link_window: Some(LINK_WINDOW),
+            ..Default::default()
+        };
+        patiently(&self.source.peer(), &control, request).await
+    }
+
     fn update(&self, change: impl FnOnce(&mut FileTransferJob)) {
         change(&mut self.job.lock().expect("job state"));
     }
 
     async fn transfer(&self, request: &StartFileTransferRequest) -> Result<(), String> {
         let source_path = request.source.path.clone();
-        let stat = self.source.stat(&source_path).await.map_err(link_reason)?;
+        let stat = self.linked(|| self.source.stat(&source_path)).await?;
         if !stat.exists {
             return Err(format!(
                 "`{source_path}` does not exist on the source machine"
@@ -309,10 +324,9 @@ impl Run {
         });
         if request.delete_source {
             self.update(|job| job.state = FileTransferState::Finishing);
-            self.source
-                .delete(source_path, Some(&copied.revision))
+            self.linked(|| self.source.delete(source_path, Some(&copied.revision)))
                 .await
-                .map_err(|error| delete_failed(source_path, &link_reason(error)))?;
+                .map_err(|reason| delete_failed(source_path, &reason))?;
         }
         Ok(())
     }
@@ -404,10 +418,9 @@ impl Run {
             });
             for (relative, copied) in &copied {
                 let path = format!("{source_path}/{relative}");
-                self.source
-                    .delete(&path, Some(&copied.revision))
+                self.linked(|| self.source.delete(&path, Some(&copied.revision)))
                     .await
-                    .map_err(|error| delete_failed(&path, &link_reason(error)))?;
+                    .map_err(|reason| delete_failed(&path, &reason))?;
             }
             // Deepest folders first, so each is empty by the time it is removed. A folder that
             // still holds what was not copied (a link) stays with it.
@@ -419,10 +432,8 @@ impl Run {
                 .map(|item| format!("{source_path}/{}", item.relative))
                 .chain(std::iter::once(source_path.to_owned()));
             for path in paths {
-                match self.source.delete(&path, None).await {
-                    Err(error) if !kept_some => {
-                        return Err(delete_failed(&path, &link_reason(error)));
-                    }
+                match self.linked(|| self.source.delete(&path, None)).await {
+                    Err(reason) if !kept_some => return Err(delete_failed(&path, &reason)),
                     _ => {}
                 }
             }
@@ -486,10 +497,7 @@ impl Run {
             };
             let mut offset = 0;
             loop {
-                let (entries, more) = tokio::select! {
-                    listed = self.source.list(&path, offset) => listed.map_err(link_reason)?,
-                    () = self.token_raised() => return Err(CANCELED.to_owned()),
-                };
+                let (entries, more) = self.linked(|| self.source.list(&path, offset)).await?;
                 offset += entries.len() as u64;
                 for entry in entries {
                     self.sort_entry(&relative, entry, &mut folders, &mut files, &mut waiting);
@@ -504,10 +512,6 @@ impl Run {
             job.bytes_total = files.iter().map(|file| file.size).sum();
         });
         Ok((folders, files))
-    }
-
-    async fn token_raised(&self) {
-        self.token.raised().await;
     }
 
     fn sort_entry(
@@ -601,13 +605,7 @@ fn digest16(text: &str) -> String {
         .collect()
 }
 
-fn link_reason(error: LinkError) -> String {
-    match error {
-        LinkError::Offline(why) => format!("The source machine stayed unreachable ({why})"),
-        LinkError::Refused(reason) => reason,
-    }
-}
-
 fn delete_failed(path: &str, reason: &str) -> String {
+    let reason = reason.replace(UNREACHABLE_ADVICE, "");
     format!("The copy is complete and verified, but `{path}` could not be deleted from the source: {reason}. Nothing else was removed")
 }
