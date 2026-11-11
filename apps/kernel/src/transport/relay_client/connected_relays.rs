@@ -108,6 +108,8 @@ pub(crate) struct ConnectedWorkerRig {
     home_public_key: String,
     state: SharedRelayClientState,
     wire: tokio::sync::mpsc::Receiver<chariox_relay::protocol::RelayEnvelope>,
+    /// Requests above the priority lane's size (file slices) travel on the bulk lane.
+    bulk: tokio::sync::mpsc::Receiver<chariox_relay::protocol::RelayEnvelope>,
 }
 
 #[cfg(test)]
@@ -118,7 +120,7 @@ impl ConnectedWorkerRig {
         relay_url: &str,
     ) -> Self {
         let worker = crate::config::DaemonConfig::for_tests();
-        let (sender, wire, _events) = super::RelayOutgoingSender::channel(4);
+        let (sender, wire, bulk) = super::RelayOutgoingSender::channel(4);
         {
             let mut relay = state.write().await;
             relay.test_set_connected_sender(sender, relay_url);
@@ -129,6 +131,7 @@ impl ConnectedWorkerRig {
             state: Arc::clone(state),
             worker,
             wire,
+            bulk,
         }
     }
 
@@ -143,7 +146,13 @@ impl ConnectedWorkerRig {
         respond: impl FnOnce(&RelayPeerRequest) -> crate::transport::relay_peer::RelayPeerResponse,
     ) -> RelayPeerRequest {
         use crate::transport::relay_crypto;
-        let envelope = tokio::time::timeout(Duration::from_secs(5), self.wire.recv())
+        let next = async {
+            tokio::select! {
+                envelope = self.wire.recv() => envelope,
+                envelope = self.bulk.recv() => envelope,
+            }
+        };
+        let envelope = tokio::time::timeout(Duration::from_secs(5), next)
             .await
             .expect("the request must use the connected encrypted peer transport")
             .expect("the connected wire stays open");

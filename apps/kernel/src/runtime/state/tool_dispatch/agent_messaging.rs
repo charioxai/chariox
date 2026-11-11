@@ -442,7 +442,7 @@ impl KernelRuntimeState {
     }
 }
 
-fn resolve_session_agent<'a>(
+pub(in crate::runtime::state) fn resolve_session_agent<'a>(
     agents: &'a [crate::agent::AgentInstance],
     reference: &str,
 ) -> Result<&'a crate::agent::AgentInstance, String> {

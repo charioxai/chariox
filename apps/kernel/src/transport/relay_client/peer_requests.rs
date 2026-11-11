@@ -1148,6 +1148,20 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        request @ (RelayPeerRequest::ReadLeasedAgentFile { .. }
+        | RelayPeerRequest::WriteLeasedAgentFile { .. }
+        | RelayPeerRequest::DiscardLeasedAgentFile { .. }) => {
+            match router.relay_leased_agent_file(request).await {
+                Ok(response) => response,
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id,
             remote_extension_manifest,
@@ -2498,6 +2512,15 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         | RelayPeerRequest::UpdateLeasedAgentMetaMode {
             leased_agent_id, ..
         }
+        | RelayPeerRequest::ReadLeasedAgentFile {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::WriteLeasedAgentFile {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::DiscardLeasedAgentFile {
+            leased_agent_id, ..
+        }
         | RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id, ..
         }
@@ -2992,6 +3015,163 @@ mod tests {
             relay_crypto::decrypt_payload_for_private_key(source_private_key, &encrypted_response)
                 .expect("response should decrypt");
         serde_json::from_slice(&decrypted.plaintext).expect("response should decode")
+    }
+
+    /// MP-08 / MP-09 / MP-10 / MP-11: `chariox.file.copy` slices reach a leased agent's workspace
+    /// only from the home that holds its lease, through the real encrypted peer handler.
+    #[test]
+    fn leased_agent_file_slices_serve_only_the_home_that_holds_the_lease() {
+        std::thread::Builder::new()
+            .name("leased-agent-file".to_string())
+            .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("leased agent file test runtime")
+                    .block_on(
+                        leased_agent_file_slices_serve_only_the_home_that_holds_the_lease_inner(),
+                    );
+            })
+            .expect("leased agent file test thread")
+            .join()
+            .unwrap_or_else(|error| std::panic::resume_unwind(error));
+    }
+
+    async fn leased_agent_file_slices_serve_only_the_home_that_holds_the_lease_inner() {
+        let source_private_key = relay_crypto::generate_private_key_base64();
+        let source_public_key =
+            relay_crypto::public_key_from_private_key_base64(&source_private_key)
+                .expect("home public key");
+        let source_thumbprint = public_key_thumbprint(&source_public_key);
+        let mut config = lease_worker_config();
+        config.accept_remote_leases = true;
+        let mut worker_app = DaemonApp::bootstrap(config).expect("worker should boot");
+        let target_public_key = worker_app.config().relay_public_key.clone();
+        let lease = RemoteLeaseRuntime::new(&mut worker_app)
+            .create_bound_execution_lease(
+                "source-kernel-1",
+                "home-session-file",
+                "home-agent-file",
+                false,
+                "user-1",
+                crate::app::LeaseCallerBinding {
+                    home_kernel_id: "source-kernel-1".to_string(),
+                    authenticated_machine_id: "machine-home-1".to_string(),
+                    owner_user_id: "user-1".to_string(),
+                    realm_id: "realm-1".to_string(),
+                    public_key_thumbprint: source_thumbprint.clone(),
+                },
+            )
+            .expect("bound execution lease should be created");
+        let folder = crate::test_support::TestWorktree::new("leased-agent-file");
+        let leased_agent = RemoteLeaseRuntime::new(&mut worker_app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                "default",
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(folder.path().display().to_string()),
+                None,
+            )
+            .expect("leased agent should be created");
+        let workspace = RemoteLeaseRuntime::new(&mut worker_app)
+            .leased_agent_workspace(&leased_agent.id)
+            .expect("the leased agent has a workspace");
+        let worker_app = Arc::new(Mutex::new(worker_app));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::clone(&worker_app),
+            1,
+        ));
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let identity = scoped_machine_identity("machine-home-1", Some(source_thumbprint));
+        let bytes = b"a git bundle, byte for byte\n\n".to_vec();
+        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let write = |path: &str| RelayPeerRequest::WriteLeasedAgentFile {
+            leased_agent_id: leased_agent.id.clone(),
+            path: path.to_string(),
+            offset: 0,
+            total_size: bytes.len() as u64,
+            sha256: sha256.clone(),
+            overwrite: false,
+            content: crate::transport::relay_peer::RemoteFileBytes::encode(&bytes),
+        };
+        let send = |request| {
+            send_lease_worker_request(
+                &router,
+                &state,
+                "source-kernel-1",
+                identity.clone(),
+                &source_private_key,
+                &target_public_key,
+                request,
+            )
+        };
+
+        let written = send(write("inbox/x.bundle")).await;
+        assert_eq!(
+            decode_lease_worker_response(&source_private_key, written),
+            RelayPeerResponse::LeasedAgentFileWritten {
+                received: bytes.len() as u64,
+                sha256: Some(sha256.clone()),
+            }
+        );
+        assert_eq!(
+            fs::read(workspace.root.join("inbox/x.bundle")).unwrap(),
+            bytes
+        );
+        let read = send(RelayPeerRequest::ReadLeasedAgentFile {
+            leased_agent_id: leased_agent.id.clone(),
+            path: "inbox/x.bundle".to_string(),
+            offset: 0,
+        })
+        .await;
+        let RelayPeerResponse::LeasedAgentFileRead {
+            size_bytes,
+            sha256: read_sha256,
+            content,
+            ..
+        } = decode_lease_worker_response(&source_private_key, read)
+        else {
+            panic!("the worker should answer with a slice");
+        };
+        assert_eq!(
+            (size_bytes, read_sha256, content.decode().unwrap().to_vec()),
+            (bytes.len() as u64, Some(sha256.clone()), bytes.clone())
+        );
+        let hook = send(write(".git/hooks/pre-commit")).await;
+        assert!(matches!(
+            decode_lease_worker_response(&source_private_key, hook),
+            RelayPeerResponse::LeasedAgentFileRefused { reason } if reason.contains(".git")
+        ));
+        assert!(!workspace.root.join(".git/hooks/pre-commit").exists());
+
+        let stranger_private_key = relay_crypto::generate_private_key_base64();
+        let stranger_public_key =
+            relay_crypto::public_key_from_private_key_base64(&stranger_private_key)
+                .expect("stranger public key");
+        let stranger = send_lease_worker_request(
+            &router,
+            &state,
+            "source-kernel-1",
+            scoped_machine_identity(
+                "machine-home-1",
+                Some(public_key_thumbprint(&stranger_public_key)),
+            ),
+            &stranger_private_key,
+            &target_public_key,
+            write("planted"),
+        )
+        .await;
+        assert_eq!(
+            stranger.error.expect("a stranger must be refused").code,
+            "unauthorized"
+        );
+        assert!(!workspace.root.join("planted").exists());
     }
 
     #[test]

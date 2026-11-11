@@ -2,6 +2,7 @@
 
 pub mod account_profile;
 pub mod agent;
+pub(crate) mod agent_file_copy;
 pub mod agent_move;
 pub(crate) mod agent_temp;
 pub mod app;

@@ -14,6 +14,7 @@ use crate::session::CreateSessionRequest;
 
 mod agent_move_capabilities;
 mod caller_binding;
+mod file_copy;
 mod git_observation;
 mod leased_process;
 mod mcp_availability;

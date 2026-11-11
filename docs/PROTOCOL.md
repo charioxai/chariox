@@ -6658,6 +6658,48 @@ is admitted only through the human terminal adapter. Responses contain only
 `inserted: true`. Browser display audience comes from the home kernel; model
 observations stay protected even when the owner's display is unmasked.
 
+### MP-08 / MP-09 / MP-10 / MP-11: leased agent file copy — relay peer 443
+
+The agent tool `chariox.file.copy { source, destination, overwrite?, expect_sha256? }` moves one
+file byte for byte between the calling agent's workspace and the workspace of a leased agent of
+its session. Each side is `{ agent?, path }`; exactly one side names the leased agent (alias,
+agent ref or id), and both paths are relative to their workspace. The result is
+`{ bytes, sha256, source, destination }`: the content never reaches the model, a tool result,
+history or a trace. A commit travels as a `git bundle`, a folder as a tar.
+
+The home kernel drives the copy over the execution-lease link; the worker never starts one. The
+lease admission (`lease_resource` → the leased agent's caller binding) admits three peer requests
+and nothing else is needed, so a private relay works:
+
+- `read_leased_agent_file { leased_agent_id, path, offset }` →
+  `leased_agent_file_read { size_bytes, sha256?, revision, content }`: one slice of at most
+  4 MiB (the Environment import's slice). The slice at offset 0 carries the whole file's SHA-256;
+  every slice carries the file's `revision` (device, inode, size, mtime, ctime), and the home
+  refuses a slice of another revision.
+- `write_leased_agent_file { leased_agent_id, path, offset, total_size, sha256, overwrite,
+  content }` → `leased_agent_file_written { received, sha256? }`: the worker stages the slice with
+  the Kernel Files engine (a private `O_NOFOLLOW` file `.chariox-copy-<id>` beside `path`, where
+  `<id>` is derived from the destination's name; no copy may name a `.chariox*` path, so the staging
+  file never collides with a workspace file) and publishes the file only when the last byte lands
+  with `sha256`. A slice that does not continue the staged bytes is not written; `received` names
+  where the worker stands, so a home that lost an answer resumes from there. An answer lost after
+  publishing returns the finished digest, also for a single-slice or empty file: a write without
+  `overwrite` whose destination already holds exactly `sha256` counts as done; any other existing
+  destination is refused.
+- `discard_leased_agent_file { leased_agent_id, path }` → `leased_agent_file_discarded`: removes
+  only the staging file of a copy to `path`, never a workspace file. When the link stays down, the
+  home retries it for 30 s more and the failure names the leftover; the next copy to that path
+  replaces it.
+
+Refusals are `leased_agent_file_refused { reason }`, final and phrased for the model. A receiving
+workspace refuses absolute paths, `..`, any link on the way, a final link or folder, any write
+under `.git` (any case, any depth) or `.chariox*`, a plan-mode receiver, an existing file without
+`overwrite`, more than 256 MiB, and more than the volume's free space. Reads refuse the same path
+escapes but may read `.git`. A source that changes during the copy, or an assembled file whose
+digest differs, ends the copy with nothing published. A dropped link is retried per slice for up
+to 180 s, then the copy fails and the home discards what was staged. Unit checks:
+`cargo test -p chariox-kernel --lib agent_file_copy file_copy_tool leased_agent_file`.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 shared client protocol discovery (950/399)
 
 `RelayStatus.status.local_daemon_protocol_version` is the answering kernel's

@@ -106,6 +106,8 @@ mod outside_events;
 use outside_events::InteractionPhase;
 pub(crate) use outside_events::{is_outside_event_request, source_not_available};
 mod environment_tools;
+mod file_copy_tool;
+mod leased_agent_file_serve;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_browser;
@@ -677,6 +679,8 @@ mod owner_handoff_runtime;
 pub(crate) use owner_handoff_runtime::{is_handoff_interaction_id, HANDOFF_OBLIGATION_KIND};
 mod declined_workspace_trust_runtime;
 mod dictation_runtime;
+#[cfg(test)]
+mod file_copy_tool_tests;
 mod kernel_computer_runtime;
 #[cfg(test)]
 mod leased_agent_deadline_tests;
