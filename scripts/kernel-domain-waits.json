@@ -122,7 +122,7 @@
   {
     "path": "apps/kernel/src/durable_state/agent_lifecycle.rs",
     "method": "wait",
-    "context": ").map_err(sql)?; let columns: Vec<String> = db .prepare( ) .map_err(sql)? .query_map([], |r| r.get(1)) .map_err(sql)? .collect::<Result<_, _>>() .map_err(sql)?; if !columns.iter().any(|c| c == ) { db.execute_batch( ) .map_err(sql)?; } index_task_lookups(db)?; outside::initialize(db)?; peer_follows::initialize(db)?; deadlines::initialize(db)?; wakes::initialize(db)?; leased_processes::initialize(db)?; worker_stops::initialize(db)?; workflow_tasks::initialize(db)?; migration::migrate(db) } impl DurableKernelStateStore { pub(crate) fn agent_lifecycle(&self, operation: Operation) -> Result<Outcome, DaemonError> { self.enqueue_agent_lifecycle(operation)?"
+    "context": ").map_err(sql)?; let columns: Vec<String> = db .prepare( ) .map_err(sql)? .query_map([], |r| r.get(1)) .map_err(sql)? .collect::<Result<_, _>>() .map_err(sql)?; if !columns.iter().any(|c| c == ) { db.execute_batch( ) .map_err(sql)?; } index_task_lookups(db)?; outside::initialize(db)?; created_peers::initialize(db)?; peer_follows::initialize(db)?; deadlines::initialize(db)?; wakes::initialize(db)?; leased_processes::initialize(db)?; worker_stops::initialize(db)?; workflow_tasks::initialize(db)?; migration::migrate(db) } impl DurableKernelStateStore { pub(crate) fn agent_lifecycle(&self, operation: Operation) -> Result<Outcome, DaemonError> { self.enqueue_agent_lifecycle(operation)?"
   },
   {
     "path": "apps/kernel/src/runtime/browser_controller_process/cancellation.rs",
@@ -213,5 +213,15 @@
     "path": "apps/kernel/src/runtime/state/sudo/leased.rs",
     "method": "wait",
     "context": "= self .owned .agent_store .get_agent(agent_id)? .remote_execution() .cloned() else { return Ok(()); }; let mut config = self.config_snapshot().await; if let (Some(url), Some(token)) = (remote.relay_url.clone(), remote.relay_token.clone()) { config.apply_remote_relay_override(url, token); } let response_timeout = Duration::from_millis(config.relay_request_timeout_ms); let request = RelayPeerRequest::UpdateLeasedSudo { leased_agent_id: remote.leased_agent_id, home_prompt_id: home_prompt_id.into(), grant, }; let target = chariox_relay::protocol::ClientTarget { daemon_id: Some(remote.worker_kernel_id.clone()), daemon_alias: None, }; match self .enqueue_leased_worker_request(&config, target, request, response_timeout) .await?"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/agent_deadline_runtime.rs",
+    "method": "wait",
+    "context": ".owned .durable_state_store .agent_deadline(agent.session_id(), agent.id())? .is_some_and(|own| deadline_ms > own.deadline_ms) { return Err(refusal( , , )); } self.authorize_current_external_command()?; let mut config = self.config_snapshot().await; if let (Some(relay_url), Some(relay_token)) = ( remote_execution.relay_url.clone(), remote_execution.relay_token.clone(), ) { config.apply_remote_relay_override(relay_url, relay_token); } let response = tokio::time::timeout(Duration::from_secs(5), async { self.enqueue_leased_worker_request_authorized( &config, chariox_relay::protocol::ClientTarget { daemon_id: Some(remote_execution.worker_kernel_id.clone()), daemon_alias: None, }, crate::transport::relay_peer::RelayPeerRequest::SetLeasedAgentDeadline { leased_agent_id: remote_execution.leased_agent_id.clone(), deadline_ms, }, Duration::from_secs(5), || self.authorize_current_external_command(), ) .await?"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/file_copy_tool.rs",
+    "method": "wait",
+    "context": "} else { push( &local, &args.source.path, &remote, &args.destination.path, &options, ) .await } } } struct LeasedWorkspace<'a> { runtime: &'a KernelRuntimeState, config: crate::config::DaemonConfig, binding: crate::agent::RemoteAgentBinding, } impl LeasedWorkspace<'_> { async fn ask(&self, request: RelayPeerRequest) -> Result<RelayPeerResponse, LinkError> { let response = match self .runtime .enqueue_leased_worker_request( &self.config, chariox_relay::protocol::ClientTarget { daemon_id: Some(self.binding.worker_kernel_id.clone()), daemon_alias: None, }, request, SLICE_TIMEOUT, ) .await { Ok(waiter) => waiter"
   }
 ]
