@@ -4,6 +4,7 @@
 //! of it.
 mod jobs;
 mod place;
+mod records;
 mod source;
 mod state_guard;
 

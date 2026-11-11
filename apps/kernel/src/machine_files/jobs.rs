@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::records::{read_records, Pending, Record, Recorder};
 use super::{FileSource, Machine};
 use crate::agent_file_copy::{
     patiently, pull, CancelToken, Control, Copied, CopyOptions, LinkError, RemoteSource, CANCELED,
@@ -48,13 +48,6 @@ struct Entry {
     token: CancelToken,
 }
 
-/// What a job keeps on disk: how it stands and what it was asked to do.
-#[derive(Serialize, Deserialize)]
-struct Record {
-    job: FileTransferJob,
-    request: StartFileTransferRequest,
-}
-
 /// A job a kernel stopped under, which the next life of the kernel continues.
 pub(crate) struct Interrupted {
     pub(crate) job_id: String,
@@ -64,8 +57,8 @@ pub(crate) struct Interrupted {
 #[derive(Default)]
 pub(crate) struct TransferJobs {
     entries: Mutex<VecDeque<Entry>>,
-    /// The folder the records live in, once the kernel has opened it.
-    store: Arc<OnceLock<PathBuf>>,
+    /// The writer of the records, once the kernel has opened their folder.
+    store: Arc<OnceLock<Recorder>>,
     /// The destinations transfers are writing to, so no two write to one.
     reserved: Arc<Mutex<BTreeSet<PathBuf>>>,
     /// The running transfers, which a test stops the way a dying process does.
@@ -78,7 +71,10 @@ impl TransferJobs {
     /// again, and those it stopped under are returned to be resumed. A job whose source was being
     /// deleted ends as failed, since repeating its deletes blindly could remove what was not copied.
     pub(crate) fn attach(self: &Arc<Self>, dir: PathBuf) -> Vec<Interrupted> {
-        let _ = self.store.set(dir.clone());
+        let recorder = self
+            .store
+            .get_or_init(|| Recorder::open(dir.clone()))
+            .clone();
         let mut records = read_records(&dir);
         records.sort_by_key(|record| record.job.started_ms);
         let mut interrupted = Vec::new();
@@ -116,9 +112,10 @@ impl TransferJobs {
         }
         // What ran before the folder was opened is written down too.
         let removed = trim(&mut entries);
-        let records: Vec<Record> = entries.iter().map(Entry::record).collect();
-        drop(entries);
-        persist_in_background(dir, records, removed);
+        for entry in entries.iter() {
+            drop(entry.save(&recorder));
+        }
+        recorder.forget(removed);
         interrupted
     }
 
@@ -160,18 +157,19 @@ impl TransferJobs {
         else {
             return;
         };
-        {
-            let mut job = entry.job.lock().expect("job state");
-            if job.state.is_finished() {
-                return;
-            }
-            job.state = FileTransferState::Failed;
-            job.current = None;
-            job.finished_ms = Some(crate::session::unix_epoch_ms());
-            job.error = Some(reason);
+        let mut job = entry.job.lock().expect("job state");
+        if job.state.is_finished() {
+            return;
         }
-        if let Some(dir) = self.store.get() {
-            persist_in_background(dir.clone(), vec![entry.record()], Vec::new());
+        job.state = FileTransferState::Failed;
+        job.current = None;
+        job.finished_ms = Some(crate::session::unix_epoch_ms());
+        job.error = Some(reason);
+        if let Some(recorder) = self.store.get() {
+            drop(recorder.save(Record {
+                job: job.clone(),
+                request: entry.request.clone(),
+            }));
         }
     }
 
@@ -209,10 +207,11 @@ impl TransferJobs {
             token,
         });
         let removed = trim(&mut entries);
-        if let Some(dir) = self.store.get().filter(|_| !removed.is_empty()) {
-            persist_in_background(dir.clone(), Vec::new(), removed);
-        }
         let entry = entries.back().expect("the job just added");
+        if let Some(recorder) = self.store.get() {
+            recorder.forget(removed);
+            drop(entry.save(recorder));
+        }
         self.spawn_run(entry, source, machine);
         first
     }
@@ -227,10 +226,12 @@ impl TransferJobs {
         let run = tokio::spawn(async move {
             let run = Run {
                 job: job.clone(),
+                request: request.clone(),
                 token,
                 source,
                 machine,
                 reserved,
+                store: store.clone(),
             };
             let outcome = {
                 let work = run.transfer(&request);
@@ -241,19 +242,18 @@ impl TransferJobs {
                     tokio::select! {
                         outcome = &mut work => break outcome,
                         _ = tick.tick() => {
-                            let now = job.lock().expect("job state").clone();
-                            if saved.as_ref() != Some(&now) {
-                                if let Some(dir) = store.get() {
-                                    let record = Record { job: now.clone(), request: request.clone() };
-                                    persist(dir, &[record], &[]).await;
+                            let now = job.lock().expect("job state");
+                            if saved.as_ref() != Some(&*now) {
+                                if let Some(recorder) = store.get() {
+                                    drop(recorder.save(Record { job: now.clone(), request: request.clone() }));
                                 }
-                                saved = Some(now);
+                                saved = Some(now.clone());
                             }
                         }
                     }
                 }
             };
-            let record = {
+            let recorded = {
                 let mut job = job.lock().expect("job state");
                 job.current = None;
                 job.finished_ms = Some(crate::session::unix_epoch_ms());
@@ -268,13 +268,15 @@ impl TransferJobs {
                         job.error = Some(reason);
                     }
                 }
-                Record {
-                    job: job.clone(),
-                    request: request.clone(),
-                }
+                store.get().map(|recorder| {
+                    recorder.save(Record {
+                        job: job.clone(),
+                        request: request.clone(),
+                    })
+                })
             };
-            if let Some(dir) = store.get() {
-                persist(dir, &[record], &[]).await;
+            if let Some(recorded) = recorded {
+                let _ = recorded.recorded().await;
             }
         });
         #[cfg(test)]
@@ -329,10 +331,12 @@ impl TransferJobs {
 /// One transfer being carried out.
 struct Run {
     job: Arc<Mutex<FileTransferJob>>,
+    request: StartFileTransferRequest,
     token: CancelToken,
     source: FileSource,
     machine: Machine,
     reserved: Arc<Mutex<BTreeSet<PathBuf>>>,
+    store: Arc<OnceLock<Recorder>>,
 }
 
 /// A file or folder of the source tree, by path below the transferred item.
@@ -356,6 +360,28 @@ impl Run {
             ..Default::default()
         };
         patiently(&self.source.peer(), &control, request).await
+    }
+
+    /// Puts the deleting phase on record, and waits until it is on disk, before the first source
+    /// file is deleted: a restart then knows a move that began deleting is not to be repeated.
+    async fn begin_deleting(&self) -> Result<(), String> {
+        let recorded = {
+            let mut job = self.job.lock().expect("job state");
+            job.state = FileTransferState::Finishing;
+            job.current = None;
+            self.store.get().map(|recorder| {
+                recorder.save(Record {
+                    job: job.clone(),
+                    request: self.request.clone(),
+                })
+            })
+        };
+        match recorded {
+            Some(recorded) => recorded.recorded().await.map_err(|reason| {
+                format!("The copy is complete and verified, but the move could not be recorded ({reason}), so the source was not deleted. Delete it yourself")
+            }),
+            None => Ok(()),
+        }
     }
 
     fn update(&self, change: impl FnOnce(&mut FileTransferJob)) {
@@ -441,6 +467,7 @@ impl Run {
         name: &str,
         conflict: FileTransferConflict,
     ) -> Result<Option<Settled>, String> {
+        let folder = resolved(folder);
         let wanted = folder.join(name);
         if std::fs::symlink_metadata(&wanted).is_err() {
             match self.reserve(&wanted) {
@@ -481,21 +508,27 @@ impl Run {
         }
     }
 
-    /// Holds `path` for this transfer, or says another transfer is writing there.
+    /// Holds the place `path` names for this transfer, or says another transfer is writing there
+    /// or in a folder around it. The place is found through the links of its folders, so two
+    /// spellings of one place are one place.
     fn reserve(&self, path: &Path) -> Result<Settled, String> {
-        if !self
-            .reserved
-            .lock()
-            .expect("reserved destinations")
-            .insert(path.to_owned())
+        let path = match (path.parent(), path.file_name()) {
+            (Some(parent), Some(name)) => resolved(parent).join(name),
+            _ => path.to_owned(),
+        };
+        let mut reserved = self.reserved.lock().expect("reserved destinations");
+        if let Some(held) = reserved
+            .iter()
+            .find(|held| held.starts_with(&path) || path.starts_with(held))
         {
             return Err(format!(
                 "another transfer is already writing `{}`; wait for it to end, or choose keep_both",
-                path.display()
+                held.display()
             ));
         }
+        reserved.insert(path.clone());
         Ok(Settled {
-            path: path.to_owned(),
+            path,
             reserved: self.reserved.clone(),
         })
     }
@@ -549,7 +582,7 @@ impl Run {
             job.sha256 = Some(copied.sha256.clone());
         });
         if request.delete_source {
-            self.update(|job| job.state = FileTransferState::Finishing);
+            self.begin_deleting().await?;
             self.linked(|| self.source.delete(source_path, Some(&copied.revision)))
                 .await
                 .map_err(|reason| delete_failed(source_path, &reason))?;
@@ -640,10 +673,7 @@ impl Run {
         .await
         .map_err(|_| "The transfer stopped unexpectedly; nothing was published".to_owned())??;
         if request.delete_source {
-            self.update(|job| {
-                job.state = FileTransferState::Finishing;
-                job.current = None;
-            });
+            self.begin_deleting().await?;
             for (relative, copied) in &copied {
                 let path = format!("{source_path}/{relative}");
                 self.linked(|| self.source.delete(&path, Some(&copied.revision)))
@@ -942,11 +972,13 @@ fn delete_failed(path: &str, reason: &str) -> String {
 }
 
 impl Entry {
-    fn record(&self) -> Record {
-        Record {
-            job: self.job.lock().expect("job state").clone(),
+    /// Queues the job's record as it stands now.
+    fn save(&self, recorder: &Recorder) -> Pending {
+        let job = self.job.lock().expect("job state");
+        recorder.save(Record {
+            job: job.clone(),
             request: self.request.clone(),
-        }
+        })
     }
 }
 
@@ -967,88 +999,20 @@ fn trim(entries: &mut VecDeque<Entry>) -> Vec<String> {
     removed
 }
 
-fn record_path(dir: &Path, job_id: &str) -> PathBuf {
-    dir.join(format!("{job_id}.json"))
-}
-
-fn read_records(dir: &Path) -> Vec<Record> {
-    let Ok(listing) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    listing
-        .flatten()
-        .filter(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            name.starts_with("transfer-") && name.ends_with(".json")
-        })
-        .filter_map(|entry| {
-            let parsed = std::fs::read(entry.path())
-                .map_err(|error| error.to_string())
-                .and_then(|bytes| {
-                    serde_json::from_slice::<Record>(&bytes).map_err(|error| error.to_string())
-                });
-            parsed
-                .map_err(|error| {
-                    crate::logging::warn_with_fields(
-                        "file_transfer.store",
-                        "a transfer record could not be read and is left out",
-                        serde_json::json!({"path": entry.path().display().to_string(), "error": error}),
-                    );
-                })
-                .ok()
-        })
-        .collect()
-}
-
-/// Writes the records (a temporary file renamed into place, so a record is whole or absent) and
-/// removes those of the jobs forgotten, off the async workers.
-async fn persist(dir: &Path, records: &[Record], removed: &[String]) {
-    let (dir, removed) = (dir.to_owned(), removed.to_owned());
-    let bytes: Vec<(String, Vec<u8>)> = records
-        .iter()
-        .filter_map(|record| {
-            serde_json::to_vec(record)
-                .ok()
-                .map(|bytes| (record.job.job_id.clone(), bytes))
-        })
-        .collect();
-    let written = tokio::task::spawn_blocking(move || write_records(&dir, &bytes, &removed)).await;
-    if let Ok(Err(error)) = written {
-        crate::logging::warn_with_fields(
-            "file_transfer.store",
-            "transfer records could not be written",
-            serde_json::json!({"error": error.to_string()}),
-        );
+/// `path` with the links of its existing folders resolved; what does not exist yet stays as it is.
+fn resolved(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut base = path;
+    loop {
+        if let Ok(real) = base.canonicalize() {
+            return rest.iter().rev().fold(real, |at, part| at.join(part));
+        }
+        match (base.parent(), base.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                base = parent;
+            }
+            _ => return path.to_owned(),
+        }
     }
-}
-
-fn persist_in_background(dir: PathBuf, records: Vec<Record>, removed: Vec<String>) {
-    tokio::spawn(async move { persist(&dir, &records, &removed).await });
-}
-
-fn write_records(
-    dir: &Path,
-    records: &[(String, Vec<u8>)],
-    removed: &[String],
-) -> std::io::Result<()> {
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)?;
-    for (job_id, bytes) in records {
-        let temporary = dir.join(format!(".{job_id}.tmp"));
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&temporary)?;
-        std::io::Write::write_all(&mut file, bytes)?;
-        std::fs::rename(&temporary, record_path(dir, job_id))?;
-    }
-    for job_id in removed {
-        let _ = std::fs::remove_file(record_path(dir, job_id));
-    }
-    Ok(())
 }
