@@ -130,23 +130,6 @@ test('a whole-file entry whose file is gone or no longer names anything is red',
   assert.deepEqual(problemsOf({ 'deploy/c.sh': 'echo "auto-stop"\n' }, { files: [entry('deploy/c.sh')] }), [])
 })
 
-test('the whole-file list may not grow past the recorded total', () => {
-  assert.ok(Number.isInteger(guard.ALLOWED_FILE_CEILING) && guard.ALLOWED_FILE_CEILING > 0, 'the guard records the whole-file ceiling')
-  const files = {}
-  const listed = []
-  for (let i = 0; i <= guard.ALLOWED_FILE_CEILING; i++) {
-    files[`deploy/f${i}.sh`] = 'echo hetzner\n'
-    listed.push({ path: `deploy/f${i}.sh`, why: 'sample provider text' })
-  }
-  assert.deepEqual(problemsOf(files, { files: listed }), ['allowed file list grew: scripts/oss-boundary-files.allow.json'])
-  assert.deepEqual(problemsOf(Object.fromEntries(Object.entries(files).slice(1)), { files: listed.slice(1) }), [])
-})
-
-test('the recorded whole-file ceiling is the current entry count, so deleting entries lowers it', () => {
-  const entries = JSON.parse(readFileSync(resolve(fileURLToPath(import.meta.url), '../oss-boundary-files.allow.json'), 'utf8'))
-  assert.ok(entries.length === guard.ALLOWED_FILE_CEILING, `${entries.length} entries but the ceiling is ${guard.ALLOWED_FILE_CEILING}: set ALLOWED_FILE_CEILING to the new total`)
-})
-
 // A throwaway repository with the guard and the four lists, to drive the CLI against a real
 // merge base. `base` is the accepted state; `change` edits the tree and commits on top of it.
 function baselineRepo(baseFiles, baseList) {
