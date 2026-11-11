@@ -500,4 +500,6 @@ pub use workspace::*;
 /// install that waits for its owner is a passkey prompt (`app_install`); App summaries carry
 /// `display_name` and `icon`; the Vault reports `awaiting_passphrase`; a gateway request and its answer
 /// may carry bytes as bytes (`framed_plaintext_v1`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1003;
+/// 1005 (Landing 9 sub-panes, provisional): a sub-agent tree node's `account_profile`, `workspace_id`,
+/// `worktree_id` and `worker_kernel_id`, and an agent's wait as a `provider_tool` row of its transcript.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1005;

@@ -309,10 +309,10 @@ fn the_agent_tree_read_and_change_event_have_their_shapes() {
             execution_mode: Some(crate::provider::AgentExecutionMode::Plan),
             permission_level: Some(crate::provider::AgentPermissionLevel::Required),
             effort: Some("high".into()),
-            account_profile: None,
-            workspace_id: None,
-            worktree_id: None,
-            worker_kernel_id: None,
+            account_profile: Some("work".into()),
+            workspace_id: Some("app".into()),
+            worktree_id: Some("app-2".into()),
+            worker_kernel_id: Some("worker".into()),
             depth: 1,
             state: crate::local::AgentTreeState::Waiting,
             outcome: None,
@@ -327,7 +327,8 @@ fn the_agent_tree_read_and_change_event_have_their_shapes() {
             "totals":{"live":1,"running":0,"needs_user":1},
             "nodes":[{"agent_id":"child","parent_agent_id":"root","kernel_id":null,
                 "alias":"worker","provider":"codex","model":null,"execution_mode":"plan",
-                "permission_level":"required","effort":"high","depth":1,
+                "permission_level":"required","effort":"high","account_profile":"work",
+                "workspace_id":"app","worktree_id":"app-2","worker_kernel_id":"worker","depth":1,
                 "state":"waiting","outcome":null,"needs_user":true,"deadline_ms":null,"created_at_ms":5}]}}})
     );
     assert_eq!(
