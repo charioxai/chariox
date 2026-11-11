@@ -23,6 +23,7 @@ import {
 } from "./workspace-renderables.js"
 
 import { relayCloudProfile } from "./preferences.js"
+import { waitingRoomManagedCatalogRemoteState } from "./waiting-room-managed-environments.js"
 
 type AnyFn = (...args: any[]) => any
 
@@ -142,13 +143,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     return {
       ...(targets.workspaceId ? { workspaceId: targets.workspaceId } : {}),
       ...(targets.worktreeId ? { worktreeId: targets.worktreeId } : {}),
-      ...(managedEnvironmentCatalog
-        ? {
-            managedComputeClasses: managedEnvironmentCatalog.computeClasses,
-            managedContextSources: managedEnvironmentCatalog.contextSources,
-            managedEnvironments: managedEnvironmentCatalog.environments,
-          }
-        : {}),
+      ...waitingRoomManagedCatalogRemoteState(managedEnvironmentCatalog),
     }
   }
   const primaryTranscriptRenderController = createPrimaryTranscriptRenderController({

@@ -121,7 +121,7 @@ export function waitingRoomStartRows(
             ? `${choice.accountProfile.auth_state === "unknown" ? "Check sign-in" : "Sign in"} ${choice.accountProfile.label}`
             : choice.accountProfile && providerAccountAdmissionBlocked(choice.accountProfile, Date.now(), choice.model?.id)
               ? "Choose account with quota" : "Start New Session",
-      value: "Press Enter",
+      value: configuresManaged && remote.managedRentUnavailable ? remote.managedRentUnavailable : "Press Enter",
       titleWidth: options.titleWidth,
       indent: 0,
       focused: state.focus === "new",

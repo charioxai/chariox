@@ -1,6 +1,6 @@
 // MP-08 / MP-09 / MP-10 / MP-11 M2 P3: `agent spawn --room` makes an ordinary agent of another room
 // of the same owner. Rooms from `world`: `room` (a -> {b -> {d}, s}, peer) and `other_room` (q).
-use super::subtree::{error_text, room_command, world, World};
+use super::subtree::{error_text, launch, room_command, world, world_with_config, World};
 use super::*;
 use crate::provider::AgentPermissionLevel;
 use crate::transport::runtime_tools::RuntimeToolResult;
@@ -292,6 +292,58 @@ async fn own_machine_runs_here() {
         }
     }
     peer_agent_link_for_tests::unregister(&own);
+}
+
+#[test]
+fn a_spawn_naming_this_kernel_keeps_the_parent_folder() {
+    run_large_stack_async_test(
+        "peer-spawn-own-kernel-folder",
+        own_kernel_keeps_the_parent_folder,
+    );
+}
+
+/// `--kernel` naming this kernel by id or alias creates a local child, which works in its
+/// parent's checkout, not in the Room's folder.
+async fn own_kernel_keeps_the_parent_folder() {
+    let mut world = world_with_config("peer-spawn-own-kernel-folder", |config| {
+        config.daemon_alias = Some("home-kernel".to_string());
+    })
+    .await;
+    let room_folder = world._env.root.join("workspace").display().to_string();
+    let checkout = world._env.root.join("feature-checkout");
+    std::fs::create_dir_all(&checkout).unwrap();
+    let checkout = checkout.display().to_string();
+    assert_ne!(room_folder, checkout);
+    let parent = crate::app::KernelSessionService::new(&mut *world.app.lock().await)
+        .spawn_agent(
+            CreateAgentRequest::new(&world.room, "dev-stub")
+                .with_alias("feature")
+                .with_worktree(&checkout),
+        )
+        .unwrap();
+    let token = launch(&world.app, &world.room, parent.id()).await;
+    world.tokens.insert("feature", token);
+    let own = world.app.lock().await.config().daemon_id.clone();
+    for (alias, kernel) in [("ki", own.as_str()), ("ka", "home-kernel")] {
+        let spawned = room_command(
+            &world,
+            "feature",
+            &format!("agent spawn {alias} --provider dev-stub --kernel {kernel}"),
+        )
+        .await;
+        assert!(spawned.ok, "--kernel {kernel}: {spawned:?}");
+        let child = agents_of(&world, &world.room)
+            .await
+            .into_iter()
+            .find(|agent| agent.alias() == Some(alias))
+            .unwrap_or_else(|| panic!("--kernel {kernel}: no child in this room"));
+        assert!(child.remote_execution().is_none(), "--kernel {kernel}");
+        assert_eq!(
+            child.worktree_id(),
+            Some(checkout.as_str()),
+            "--kernel {kernel}: the child works in its parent's checkout"
+        );
+    }
 }
 
 #[test]

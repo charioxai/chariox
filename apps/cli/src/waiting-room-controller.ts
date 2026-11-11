@@ -328,7 +328,7 @@ export function deriveWaitingRoomActivationDecision(options: {
       options.remote?.providerAccounts, launch.provider, launch.accountProfile, null, launch.model,
     )
     if (accountBlock) return { action: "error", message: accountBlock }
-    const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
+    const worktreeSelection = stageLaunchWorktree(options.state.worktreeSelectionId, managedEnvironment)
     if (!worktreeSelection.ok) {
       return { action: "error", message: worktreeSelection.message }
     }
@@ -374,7 +374,7 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
     options.remote?.providerAccounts, choice.providerId, options.state.accountProfileId, null, choice.model?.id,
   )
   if (accountBlock) return { action: "error", message: accountBlock }
-  const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
+  const worktreeSelection = stageLaunchWorktree(options.state.worktreeSelectionId, managedEnvironment)
   if (!worktreeSelection.ok) {
     return { action: "error", message: worktreeSelection.message }
   }
@@ -400,6 +400,16 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
     action: "create",
     launch,
   }
+}
+
+// A managed launch works in the folder its machine prepares, so the home's worktree is neither needed nor staged.
+function stageLaunchWorktree(
+  worktreeSelectionId: string | undefined,
+  managedEnvironment: WaitingRoomLaunchConfig["managedEnvironment"],
+): ReturnType<typeof stageWaitingRoomWorktreeSelection> {
+  if (!managedEnvironment) return stageWaitingRoomWorktreeSelection(worktreeSelectionId)
+  clearStagedWaitingRoomWorktreeSelection()
+  return { ok: true }
 }
 
 function waitingRoomManagedLaunchSelection(

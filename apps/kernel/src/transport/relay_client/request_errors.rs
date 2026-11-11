@@ -93,6 +93,15 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
                 false,
             )
         }
+        // The worker answered: the folder is not there, so a retry gets the same answer.
+        DaemonError::LocalTransport {
+            operation: "resolve leased agent working directory",
+            ..
+        } => relay_error(
+            "remote_working_directory_unavailable",
+            &error.to_string(),
+            false,
+        ),
         DaemonError::LocalTransport { .. } => {
             relay_error("transport_error", &error.to_string(), true)
         }
@@ -596,6 +605,17 @@ mod tests {
             message: "user_domain_not_granted: untrusted text".into(),
         });
         assert_eq!(untrusted.code, "transport_error");
+    }
+
+    #[test]
+    fn a_missing_remote_working_directory_is_a_definite_refusal() {
+        let mapped = map_relay_error(&DaemonError::LocalTransport {
+            operation: "resolve leased agent working directory",
+            message: "remote working directory `/missing/w1` does not exist".into(),
+        });
+        assert_eq!(mapped.code, "remote_working_directory_unavailable");
+        assert!(mapped.message.contains("/missing/w1"), "{}", mapped.message);
+        assert!(!mapped.retryable);
     }
 
     #[test]
