@@ -757,6 +757,7 @@ where
         .runtime_state()
         .spawn_managed_kernel_quiescence(quiescence_shutdown_rx);
     let _restart_recovery_task = router.runtime_state().spawn_durable_restart_recovery();
+    router.runtime_state().resume_file_transfers();
     let wake_state = router.runtime_state();
     let wake_scheduler_task =
         tokio::spawn(async move { wake_state.run_agent_wake_scheduler().await });

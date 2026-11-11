@@ -32,6 +32,20 @@ impl StateGuard {
         }
         Ok(())
     }
+
+    /// Why `path` may not be replaced: besides what `check` refuses, a folder that holds the
+    /// kernel's state or Vault would take them along when it is set aside and removed.
+    pub(crate) fn check_replace(&self, path: &Path) -> Result<(), String> {
+        self.check(path)?;
+        let settled = settle(path);
+        if self.protected.iter().any(|root| root.starts_with(&settled)) {
+            return Err(format!(
+                "`{}` holds this kernel's own state or Vault, which Files never replaces or deletes",
+                path.display()
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn expand_home(path: &str) -> PathBuf {

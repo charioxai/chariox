@@ -1,14 +1,17 @@
 //! File transfers between machines as kernel-owned jobs. The kernel that is to hold the copy runs
 //! the job: it reads the source slice by slice (from this machine or over the relay), stages the
 //! copy beside its destination and publishes it only when it is whole and its digest matches.
-//! The job outlives whoever asked for it; its state stays readable after it ends.
-use std::collections::VecDeque;
+//! The job outlives whoever asked for it, and a restart of the kernel: its record is kept on disk,
+//! its state stays readable after it ends, and a job the kernel stopped under continues from the
+//! bytes it had staged.
+use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{FileSource, Machine};
@@ -17,8 +20,8 @@ use crate::agent_file_copy::{
     UNREACHABLE_ADVICE,
 };
 use crate::local::{
-    FileTransferConflict, FileTransferJob, FileTransferState, KernelDirectoryEntry, KernelFileKind,
-    StartFileTransferRequest,
+    FileTransferConflict, FileTransferEndpoint, FileTransferJob, FileTransferState,
+    KernelDirectoryEntry, KernelFileKind, StartFileTransferRequest,
 };
 
 /// Files of a folder copied at once.
@@ -30,20 +33,148 @@ const FINISHED_KEPT: usize = 64;
 const LINK_WINDOW: Duration = Duration::from_secs(15 * 60);
 #[cfg(test)]
 const LINK_WINDOW: Duration = Duration::from_secs(3);
+/// How often the record of a running job is written.
+#[cfg(not(test))]
+const SAVE_EVERY: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const SAVE_EVERY: Duration = Duration::from_millis(100);
 /// The hidden names a transfer stages under, beside its destination.
 const STAGING_PREFIX: &str = ".chariox-copy-";
 
 struct Entry {
     job: Arc<Mutex<FileTransferJob>>,
+    request: StartFileTransferRequest,
     cancel: tokio::sync::watch::Sender<bool>,
+    token: CancelToken,
+}
+
+/// What a job keeps on disk: how it stands and what it was asked to do.
+#[derive(Serialize, Deserialize)]
+struct Record {
+    job: FileTransferJob,
+    request: StartFileTransferRequest,
+}
+
+/// A job a kernel stopped under, which the next life of the kernel continues.
+pub(crate) struct Interrupted {
+    pub(crate) job_id: String,
+    pub(crate) request: StartFileTransferRequest,
 }
 
 #[derive(Default)]
 pub(crate) struct TransferJobs {
     entries: Mutex<VecDeque<Entry>>,
+    /// The folder the records live in, once the kernel has opened it.
+    store: Arc<OnceLock<PathBuf>>,
+    /// The destinations transfers are writing to, so no two write to one.
+    reserved: Arc<Mutex<BTreeSet<PathBuf>>>,
+    /// The running transfers, which a test stops the way a dying process does.
+    #[cfg(test)]
+    runs: Mutex<Vec<tokio::task::AbortHandle>>,
 }
 
 impl TransferJobs {
+    /// Opens the folder the jobs are kept in: the jobs of an earlier life of the kernel are listed
+    /// again, and those it stopped under are returned to be resumed. A job whose source was being
+    /// deleted ends as failed, since repeating its deletes blindly could remove what was not copied.
+    pub(crate) fn attach(self: &Arc<Self>, dir: PathBuf) -> Vec<Interrupted> {
+        let _ = self.store.set(dir.clone());
+        let mut records = read_records(&dir);
+        records.sort_by_key(|record| record.job.started_ms);
+        let mut interrupted = Vec::new();
+        let mut entries = self.entries.lock().expect("transfer jobs");
+        for mut record in records {
+            let known = |entries: &VecDeque<Entry>| {
+                entries
+                    .iter()
+                    .any(|entry| entry.job.lock().expect("job state").job_id == record.job.job_id)
+            };
+            if known(&entries) {
+                continue;
+            }
+            if record.job.state == FileTransferState::Finishing {
+                record.job.state = FileTransferState::Failed;
+                record.job.current = None;
+                record.job.finished_ms = Some(crate::session::unix_epoch_ms());
+                record.job.error = Some(format!(
+                    "The copy is complete and verified, but the kernel restarted while `{}` was being deleted from the source, so it may be partly deleted. Check it and delete what is left yourself",
+                    record.job.source.path
+                ));
+            } else if !record.job.state.is_finished() {
+                interrupted.push(Interrupted {
+                    job_id: record.job.job_id.clone(),
+                    request: record.request.clone(),
+                });
+            }
+            let (cancel, token) = CancelToken::new();
+            entries.push_back(Entry {
+                job: Arc::new(Mutex::new(record.job)),
+                request: record.request,
+                cancel,
+                token,
+            });
+        }
+        // What ran before the folder was opened is written down too.
+        let removed = trim(&mut entries);
+        let records: Vec<Record> = entries.iter().map(Entry::record).collect();
+        drop(entries);
+        persist_in_background(dir, records, removed);
+        interrupted
+    }
+
+    /// Continues a job the kernel stopped under, from what it had staged.
+    pub(crate) fn resume(
+        self: &Arc<Self>,
+        interrupted: &Interrupted,
+        source: FileSource,
+        machine: Machine,
+    ) {
+        let entries = self.entries.lock().expect("transfer jobs");
+        let Some(entry) = entries
+            .iter()
+            .find(|entry| entry.job.lock().expect("job state").job_id == interrupted.job_id)
+        else {
+            return;
+        };
+        {
+            let mut job = entry.job.lock().expect("job state");
+            if job.state.is_finished() {
+                return;
+            }
+            // The run counts everything again, the staged bytes included.
+            job.state = FileTransferState::Scanning;
+            job.bytes_done = 0;
+            job.files_done = 0;
+            job.skipped = 0;
+            job.current = None;
+        }
+        self.spawn_run(entry, source, machine);
+    }
+
+    /// Ends a job the kernel could not continue, with the reason.
+    pub(crate) fn fail(&self, job_id: &str, reason: String) {
+        let entries = self.entries.lock().expect("transfer jobs");
+        let Some(entry) = entries
+            .iter()
+            .find(|entry| entry.job.lock().expect("job state").job_id == job_id)
+        else {
+            return;
+        };
+        {
+            let mut job = entry.job.lock().expect("job state");
+            if job.state.is_finished() {
+                return;
+            }
+            job.state = FileTransferState::Failed;
+            job.current = None;
+            job.finished_ms = Some(crate::session::unix_epoch_ms());
+            job.error = Some(reason);
+        }
+        if let Some(dir) = self.store.get() {
+            persist_in_background(dir.clone(), vec![entry.record()], Vec::new());
+        }
+    }
+
     /// Starts the transfer and answers how it stands; the work goes on after the caller is gone.
     pub(crate) fn start(
         self: &Arc<Self>,
@@ -70,47 +201,97 @@ impl TransferJobs {
             finished_ms: None,
         }));
         let first = job.lock().expect("job state").clone();
-        {
-            let mut entries = self.entries.lock().expect("transfer jobs");
-            entries.push_back(Entry {
-                job: job.clone(),
-                cancel,
-            });
-            // Only finished jobs are forgotten, oldest first.
-            while entries.len() > FINISHED_KEPT {
-                let Some(position) = entries
-                    .iter()
-                    .position(|entry| entry.job.lock().expect("job state").state.is_finished())
-                else {
-                    break;
-                };
-                entries.remove(position);
-            }
+        let mut entries = self.entries.lock().expect("transfer jobs");
+        entries.push_back(Entry {
+            job,
+            request,
+            cancel,
+            token,
+        });
+        let removed = trim(&mut entries);
+        if let Some(dir) = self.store.get().filter(|_| !removed.is_empty()) {
+            persist_in_background(dir.clone(), Vec::new(), removed);
         }
-        tokio::spawn(async move {
+        let entry = entries.back().expect("the job just added");
+        self.spawn_run(entry, source, machine);
+        first
+    }
+
+    fn spawn_run(&self, entry: &Entry, source: FileSource, machine: Machine) {
+        let (job, request, token) = (
+            entry.job.clone(),
+            entry.request.clone(),
+            entry.token.clone(),
+        );
+        let (store, reserved) = (self.store.clone(), self.reserved.clone());
+        let run = tokio::spawn(async move {
             let run = Run {
                 job: job.clone(),
                 token,
                 source,
                 machine,
+                reserved,
             };
-            let outcome = run.transfer(&request).await;
-            let mut job = job.lock().expect("job state");
-            job.current = None;
-            job.finished_ms = Some(crate::session::unix_epoch_ms());
-            match outcome {
-                Ok(()) => job.state = FileTransferState::Done,
-                Err(reason) if reason == CANCELED => {
-                    job.state = FileTransferState::Canceled;
-                    job.error = Some(reason);
+            let outcome = {
+                let work = run.transfer(&request);
+                tokio::pin!(work);
+                let mut tick = tokio::time::interval(SAVE_EVERY);
+                let mut saved: Option<FileTransferJob> = None;
+                loop {
+                    tokio::select! {
+                        outcome = &mut work => break outcome,
+                        _ = tick.tick() => {
+                            let now = job.lock().expect("job state").clone();
+                            if saved.as_ref() != Some(&now) {
+                                if let Some(dir) = store.get() {
+                                    let record = Record { job: now.clone(), request: request.clone() };
+                                    persist(dir, &[record], &[]).await;
+                                }
+                                saved = Some(now);
+                            }
+                        }
+                    }
                 }
-                Err(reason) => {
-                    job.state = FileTransferState::Failed;
-                    job.error = Some(reason);
+            };
+            let record = {
+                let mut job = job.lock().expect("job state");
+                job.current = None;
+                job.finished_ms = Some(crate::session::unix_epoch_ms());
+                match outcome {
+                    Ok(()) => job.state = FileTransferState::Done,
+                    Err(reason) if reason == CANCELED => {
+                        job.state = FileTransferState::Canceled;
+                        job.error = Some(reason);
+                    }
+                    Err(reason) => {
+                        job.state = FileTransferState::Failed;
+                        job.error = Some(reason);
+                    }
                 }
+                Record {
+                    job: job.clone(),
+                    request: request.clone(),
+                }
+            };
+            if let Some(dir) = store.get() {
+                persist(dir, &[record], &[]).await;
             }
         });
-        first
+        #[cfg(test)]
+        self.runs
+            .lock()
+            .expect("running transfers")
+            .push(run.abort_handle());
+        #[cfg(not(test))]
+        drop(run);
+    }
+
+    /// Stops every running transfer where it is, without any of its cleanup: a process that dies.
+    #[cfg(test)]
+    pub(crate) fn kill_runs(&self) {
+        for run in self.runs.lock().expect("running transfers").drain(..) {
+            run.abort();
+        }
     }
 
     pub(crate) fn get(&self, job_id: &str) -> Option<FileTransferJob> {
@@ -151,6 +332,7 @@ struct Run {
     token: CancelToken,
     source: FileSource,
     machine: Machine,
+    reserved: Arc<Mutex<BTreeSet<PathBuf>>>,
 }
 
 /// A file or folder of the source tree, by path below the transferred item.
@@ -205,11 +387,23 @@ impl Run {
         }
         let folder = Machine::absolute(&request.destination_folder)?;
         self.machine.guard().check(&folder.join(&name))?;
-        let Some(destination) = self.settle_name(&folder, &name, request.conflict)? else {
+        // A job continued after a restart lands where it had settled to land.
+        let kept = self.job.lock().expect("job state").destination.clone();
+        let settled = if kept.is_empty() {
+            self.settle_name(&folder, &name, request.conflict)?
+        } else {
+            Some(self.reserve(Path::new(&kept))?)
+        };
+        let Some(destination) = settled else {
             self.update(|job| job.skipped += 1);
             return Ok(());
         };
-        let replacing = std::fs::symlink_metadata(&destination.path).is_ok();
+        // Only the replace choice puts a copy over what is there.
+        let replacing = request.conflict == FileTransferConflict::Replace
+            && std::fs::symlink_metadata(&destination.path).is_ok();
+        if replacing {
+            self.machine.guard().check_replace(&destination.path)?;
+        }
         self.update(|job| job.destination = destination.path.display().to_string());
         match stat.kind {
             Some(KernelFileKind::File) => {
@@ -224,8 +418,14 @@ impl Run {
                 .await
             }
             Some(KernelFileKind::Directory) => {
-                self.transfer_folder(request, &source_path, &destination.path, replacing)
-                    .await
+                self.transfer_folder(
+                    request,
+                    &source_path,
+                    &destination.path,
+                    stat.mode,
+                    replacing,
+                )
+                .await
             }
             _ => Err(format!(
                 "`{source_path}` is not a file or a folder; links and special files are not copied"
@@ -234,6 +434,7 @@ impl Run {
     }
 
     /// Where the item lands under `conflict`, or `None` when the name is taken and is to be left.
+    /// The name is held until the transfer ends, so no other transfer writes to it meanwhile.
     fn settle_name(
         &self,
         folder: &Path,
@@ -242,7 +443,12 @@ impl Run {
     ) -> Result<Option<Settled>, String> {
         let wanted = folder.join(name);
         if std::fs::symlink_metadata(&wanted).is_err() {
-            return Ok(Some(Settled { path: wanted }));
+            match self.reserve(&wanted) {
+                Ok(held) => return Ok(Some(held)),
+                // Another transfer is bringing that name: keep_both moves to the next free one.
+                Err(error) if conflict != FileTransferConflict::KeepBoth => return Err(error),
+                Err(_) => {}
+            }
         }
         match conflict {
             FileTransferConflict::Fail => Err(format!(
@@ -250,7 +456,7 @@ impl Run {
                 wanted.display()
             )),
             FileTransferConflict::Skip => Ok(None),
-            FileTransferConflict::Replace => Ok(Some(Settled { path: wanted })),
+            FileTransferConflict::Replace => self.reserve(&wanted).map(Some),
             FileTransferConflict::KeepBoth => {
                 let path = Path::new(name);
                 let stem = path.file_stem().map_or_else(
@@ -267,11 +473,31 @@ impl Run {
                             extension.as_deref().unwrap_or("")
                         ))
                     })
-                    .find(|candidate| std::fs::symlink_metadata(candidate).is_err())
-                    .map(|path| Some(Settled { path }))
+                    .filter(|candidate| std::fs::symlink_metadata(candidate).is_err())
+                    .find_map(|candidate| self.reserve(&candidate).ok())
+                    .map(Some)
                     .ok_or_else(|| "no free name".to_owned())
             }
         }
+    }
+
+    /// Holds `path` for this transfer, or says another transfer is writing there.
+    fn reserve(&self, path: &Path) -> Result<Settled, String> {
+        if !self
+            .reserved
+            .lock()
+            .expect("reserved destinations")
+            .insert(path.to_owned())
+        {
+            return Err(format!(
+                "another transfer is already writing `{}`; wait for it to end, or choose keep_both",
+                path.display()
+            ));
+        }
+        Ok(Settled {
+            path: path.to_owned(),
+            reserved: self.reserved.clone(),
+        })
     }
 
     fn control(&self, progress: Arc<dyn Fn(u64) + Send + Sync>) -> Control {
@@ -316,7 +542,7 @@ impl Run {
             &options,
         )
         .await?;
-        restore_mode(Path::new(&destination), mode);
+        restore_mode(Path::new(&destination), mode)?;
         self.update(|job| {
             job.files_done = 1;
             job.bytes_done = copied.bytes;
@@ -336,20 +562,17 @@ impl Run {
         request: &StartFileTransferRequest,
         source_path: &str,
         destination: &Path,
+        root_mode: Option<u32>,
         replacing: bool,
     ) -> Result<(), String> {
         let (folders, files) = self.scan(source_path).await?;
-        let parent = destination.parent().unwrap_or(Path::new("/"));
-        let stage = parent.join(format!(
-            "{STAGING_PREFIX}d-{}",
-            digest16(&format!("{source_path}\0{}", destination.display()))
-        ));
+        let stage = folder_stage(&request.source, destination);
         let outcome = self
             .copy_folder(
                 request,
-                source_path,
                 &stage,
                 destination,
+                root_mode,
                 replacing,
                 &folders,
                 &files,
@@ -371,20 +594,19 @@ impl Run {
     async fn copy_folder(
         &self,
         request: &StartFileTransferRequest,
-        source_path: &str,
         stage: &Path,
         destination: &Path,
+        root_mode: Option<u32>,
         replacing: bool,
         folders: &[Item],
         files: &[Item],
     ) -> Result<(), String> {
-        std::fs::create_dir_all(stage)
-            .map_err(|error| format!("`{}` could not be created: {error}", stage.display()))?;
-        for folder in folders {
-            let path = stage.join(&folder.relative);
-            std::fs::create_dir_all(&path)
-                .map_err(|error| format!("`{}` could not be created: {error}", path.display()))?;
-        }
+        let source_path = request.source.path.as_str();
+        let (staged, wanted_folders, wanted_files) =
+            (stage.to_owned(), folders.to_vec(), files.to_vec());
+        tokio::task::spawn_blocking(move || prepare_stage(&staged, &wanted_folders, &wanted_files))
+            .await
+            .map_err(|_| "The transfer stopped unexpectedly; nothing was published".to_owned())??;
         self.update(|job| job.state = FileTransferState::Copying);
         let done = Arc::new(AtomicU64::new(0));
         let copied: Vec<(String, Copied)> = {
@@ -404,13 +626,19 @@ impl Run {
         if self.token.is_raised() {
             return Err(CANCELED.to_owned());
         }
-        for item in folders {
-            restore_mode(&stage.join(&item.relative), Some(item.mode));
-        }
+        // Deepest first, so a folder that is closed to its owner is closed after its content is set.
+        let mut by_depth = folders.to_vec();
+        by_depth.sort_by_key(|item| std::cmp::Reverse(item.relative.matches('/').count()));
         let (staged, target) = (stage.to_owned(), destination.to_owned());
-        tokio::task::spawn_blocking(move || publish_folder(&staged, &target, replacing))
-            .await
-            .map_err(|_| "The transfer stopped unexpectedly; nothing was published".to_owned())??;
+        tokio::task::spawn_blocking(move || {
+            for item in &by_depth {
+                restore_mode(&staged.join(&item.relative), Some(item.mode))?;
+            }
+            restore_mode(&staged, root_mode)?;
+            publish_folder(&staged, &target, replacing)
+        })
+        .await
+        .map_err(|_| "The transfer stopped unexpectedly; nothing was published".to_owned())??;
         if request.delete_source {
             self.update(|job| {
                 job.state = FileTransferState::Finishing;
@@ -472,7 +700,7 @@ impl Run {
             }
             other => other?,
         };
-        restore_mode(Path::new(&target), Some(item.mode));
+        restore_mode(Path::new(&target), Some(item.mode))?;
         let leftover = item
             .size
             .saturating_sub(landed_before.load(Ordering::SeqCst));
@@ -548,8 +776,92 @@ impl Run {
     }
 }
 
+/// A destination held by a transfer; it is released when the transfer lets go of it.
 struct Settled {
     path: PathBuf,
+    reserved: Arc<Mutex<BTreeSet<PathBuf>>>,
+}
+
+impl Drop for Settled {
+    fn drop(&mut self) {
+        self.reserved
+            .lock()
+            .expect("reserved destinations")
+            .remove(&self.path);
+    }
+}
+
+/// The hidden folder a transfer of a folder stages in, beside its destination. It is named by
+/// the source (its machine too) and the destination, so only a transfer of the same item to the
+/// same place continues what an earlier try staged.
+pub(super) fn folder_stage(source: &FileTransferEndpoint, destination: &Path) -> PathBuf {
+    let parent = destination.parent().unwrap_or(Path::new("/"));
+    parent.join(format!(
+        "{STAGING_PREFIX}d-{}",
+        digest16(&format!(
+            "{}\0{}\0{}",
+            source.kernel.as_deref().unwrap_or(""),
+            source.path,
+            destination.display()
+        ))
+    ))
+}
+
+/// Makes the staging folder hold the source's tree of folders, private to the kernel's user, and
+/// nothing the source no longer has: a retried transfer finds what an earlier try staged, and a
+/// file or folder removed from the source meanwhile (or turned into the other kind) is dropped.
+fn prepare_stage(stage: &Path, folders: &[Item], files: &[Item]) -> Result<(), String> {
+    create_private_dirs(stage)?;
+    let wanted_folders: HashSet<&str> = folders.iter().map(|item| item.relative.as_str()).collect();
+    let wanted_files: HashSet<&str> = files.iter().map(|item| item.relative.as_str()).collect();
+    let sidecars: HashSet<PathBuf> = files
+        .iter()
+        .map(|item| crate::agent_file_copy::staging_of(&stage.join(&item.relative)))
+        .collect();
+    drop_unwanted(stage, "", &wanted_folders, &wanted_files, &sidecars).map_err(|error| {
+        format!(
+            "The staged copy in `{}` could not be checked: {error}",
+            stage.display()
+        )
+    })?;
+    for folder in folders {
+        create_private_dirs(&stage.join(&folder.relative))?;
+    }
+    Ok(())
+}
+
+fn drop_unwanted(
+    directory: &Path,
+    relative: &str,
+    folders: &HashSet<&str>,
+    files: &HashSet<&str>,
+    sidecars: &HashSet<PathBuf>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let below = if relative.is_empty() {
+            name.clone()
+        } else {
+            format!("{relative}/{name}")
+        };
+        let kind = std::fs::symlink_metadata(&path)?;
+        let wanted = if name.starts_with(STAGING_PREFIX) {
+            // The bytes of a file still being copied wait beside it for the next try.
+            sidecars.contains(&path)
+        } else if kind.is_dir() {
+            folders.contains(below.as_str())
+        } else {
+            kind.is_file() && files.contains(below.as_str())
+        };
+        if !wanted {
+            remove_any(&path)?;
+        } else if kind.is_dir() && !name.starts_with(STAGING_PREFIX) {
+            drop_unwanted(&path, &below, folders, files, sidecars)?;
+        }
+    }
+    Ok(())
 }
 
 /// Puts the finished staging folder where the item belongs; an item it replaces is set aside
@@ -590,12 +902,31 @@ fn remove_any(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// A copy keeps the permissions of what it copies (its staging file is private until then).
-fn restore_mode(path: &Path, mode: Option<u32>) {
+/// A copy keeps the permissions of what it copies (its staging files and folders are private
+/// until then); a copy whose permissions cannot be restored is not published.
+fn restore_mode(path: &Path, mode: Option<u32>) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
-    if let Some(mode) = mode {
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o7777));
-    }
+    let Some(mode) = mode else {
+        return Ok(());
+    };
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o7777)).map_err(
+        |error| {
+            format!(
+                "The permissions of `{}` could not be restored: {error}",
+                path.display()
+            )
+        },
+    )
+}
+
+/// `path` and its missing parents, private to the kernel's user until the copy is whole.
+fn create_private_dirs(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)
+        .map_err(|error| format!("`{}` could not be created: {error}", path.display()))
 }
 
 fn digest16(text: &str) -> String {
@@ -608,4 +939,116 @@ fn digest16(text: &str) -> String {
 fn delete_failed(path: &str, reason: &str) -> String {
     let reason = reason.replace(UNREACHABLE_ADVICE, "");
     format!("The copy is complete and verified, but `{path}` could not be deleted from the source: {reason}. Nothing else was removed")
+}
+
+impl Entry {
+    fn record(&self) -> Record {
+        Record {
+            job: self.job.lock().expect("job state").clone(),
+            request: self.request.clone(),
+        }
+    }
+}
+
+/// Forgets the oldest finished jobs beyond what is kept; the ids of those forgotten.
+fn trim(entries: &mut VecDeque<Entry>) -> Vec<String> {
+    let mut removed = Vec::new();
+    while entries.len() > FINISHED_KEPT {
+        let Some(position) = entries
+            .iter()
+            .position(|entry| entry.job.lock().expect("job state").state.is_finished())
+        else {
+            break;
+        };
+        if let Some(entry) = entries.remove(position) {
+            removed.push(entry.job.lock().expect("job state").job_id.clone());
+        }
+    }
+    removed
+}
+
+fn record_path(dir: &Path, job_id: &str) -> PathBuf {
+    dir.join(format!("{job_id}.json"))
+}
+
+fn read_records(dir: &Path) -> Vec<Record> {
+    let Ok(listing) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    listing
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with("transfer-") && name.ends_with(".json")
+        })
+        .filter_map(|entry| {
+            let parsed = std::fs::read(entry.path())
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| {
+                    serde_json::from_slice::<Record>(&bytes).map_err(|error| error.to_string())
+                });
+            parsed
+                .map_err(|error| {
+                    crate::logging::warn_with_fields(
+                        "file_transfer.store",
+                        "a transfer record could not be read and is left out",
+                        serde_json::json!({"path": entry.path().display().to_string(), "error": error}),
+                    );
+                })
+                .ok()
+        })
+        .collect()
+}
+
+/// Writes the records (a temporary file renamed into place, so a record is whole or absent) and
+/// removes those of the jobs forgotten, off the async workers.
+async fn persist(dir: &Path, records: &[Record], removed: &[String]) {
+    let (dir, removed) = (dir.to_owned(), removed.to_owned());
+    let bytes: Vec<(String, Vec<u8>)> = records
+        .iter()
+        .filter_map(|record| {
+            serde_json::to_vec(record)
+                .ok()
+                .map(|bytes| (record.job.job_id.clone(), bytes))
+        })
+        .collect();
+    let written = tokio::task::spawn_blocking(move || write_records(&dir, &bytes, &removed)).await;
+    if let Ok(Err(error)) = written {
+        crate::logging::warn_with_fields(
+            "file_transfer.store",
+            "transfer records could not be written",
+            serde_json::json!({"error": error.to_string()}),
+        );
+    }
+}
+
+fn persist_in_background(dir: PathBuf, records: Vec<Record>, removed: Vec<String>) {
+    tokio::spawn(async move { persist(&dir, &records, &removed).await });
+}
+
+fn write_records(
+    dir: &Path,
+    records: &[(String, Vec<u8>)],
+    removed: &[String],
+) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    for (job_id, bytes) in records {
+        let temporary = dir.join(format!(".{job_id}.tmp"));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary)?;
+        std::io::Write::write_all(&mut file, bytes)?;
+        std::fs::rename(&temporary, record_path(dir, job_id))?;
+    }
+    for job_id in removed {
+        let _ = std::fs::remove_file(record_path(dir, job_id));
+    }
+    Ok(())
 }

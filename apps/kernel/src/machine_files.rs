@@ -10,7 +10,7 @@ mod state_guard;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use jobs::TransferJobs;
+pub(crate) use jobs::{Interrupted, TransferJobs};
 pub(crate) use place::Machine;
 pub(crate) use source::{list_path, serve, FileSource, PeerFiles, PeerLink};
 pub(crate) use state_guard::StateGuard;

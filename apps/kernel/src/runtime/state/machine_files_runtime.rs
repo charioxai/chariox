@@ -2,11 +2,16 @@
 //! kernel, and the file requests another kernel of the owner sends.
 use super::*;
 use crate::local::{FileTransferJob, FileTransferRef, StartFileTransferRequest};
-use crate::machine_files::{serve, FileSource, Machine, PeerFiles, PeerLink, StateGuard};
+use crate::machine_files::{
+    serve, FileSource, Interrupted, Machine, PeerFiles, PeerLink, StateGuard,
+};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
 /// One slice is at most 4 MiB, so the wait covers it over a slow uplink.
 const SLICE_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long a restarted kernel waits for the machine a transfer reads from to be reachable again.
+const RESUME_WINDOW: Duration = Duration::from_secs(15 * 60);
+const RESUME_RETRY: Duration = Duration::from_secs(5);
 
 fn refusal(message: impl Into<String>) -> DaemonError {
     DaemonError::MachineRequest {
@@ -39,6 +44,14 @@ impl KernelRuntimeState {
         &self,
         request: StartFileTransferRequest,
     ) -> Result<FileTransferJob, DaemonError> {
+        let (source, machine) = self.file_transfer_source(&request).await?;
+        Ok(self.file_transfers.start(request, source, machine))
+    }
+
+    async fn file_transfer_source(
+        &self,
+        request: &StartFileTransferRequest,
+    ) -> Result<(FileSource, Machine), DaemonError> {
         let machine = self.this_machine();
         let source = match request.source.kernel.as_deref() {
             None => FileSource::Local(machine.clone()),
@@ -47,7 +60,42 @@ impl KernelRuntimeState {
                 Some(kernel) => FileSource::Peer(self.peer_files(&kernel, reference)?),
             },
         };
-        Ok(self.file_transfers.start(request, source, machine))
+        Ok((source, machine))
+    }
+
+    /// Opens the jobs this kernel kept on disk: they are listed again, and those it stopped under
+    /// continue from their staged bytes as soon as the machine they read from can be reached.
+    pub(crate) fn resume_file_transfers(&self) {
+        let dir = crate::config::default_state_dir().join("file-transfers");
+        for interrupted in self.file_transfers.attach(dir) {
+            let runtime = self.clone();
+            tokio::spawn(async move { runtime.resume_file_transfer(interrupted).await });
+        }
+    }
+
+    async fn resume_file_transfer(&self, interrupted: Interrupted) {
+        let deadline = tokio::time::Instant::now() + RESUME_WINDOW;
+        loop {
+            match self.file_transfer_source(&interrupted.request).await {
+                Ok((source, machine)) => {
+                    self.file_transfers.resume(&interrupted, source, machine);
+                    return;
+                }
+                Err(_) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(RESUME_RETRY).await;
+                }
+                Err(error) => {
+                    self.file_transfers.fail(
+                        &interrupted.job_id,
+                        format!(
+                            "The kernel restarted and could not reach the source again: {}. What was copied is kept; start the transfer again to continue it",
+                            error_text(error)
+                        ),
+                    );
+                    return;
+                }
+            }
+        }
     }
 
     pub(crate) fn get_file_transfer(

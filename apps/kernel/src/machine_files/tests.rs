@@ -942,3 +942,380 @@ fn a_listing_names_each_entrys_kind_size_time_and_revision_and_pages_by_offset()
     std::fs::write(root.join("f0.txt"), b"changed content").unwrap();
     assert_ne!(page(0).0[0].revision, before);
 }
+
+// ---- a kernel that stops and starts again -------------------------------------------------
+
+/// One life of a kernel: the transfers it runs die with its runtime, as they do with the process.
+fn kernel_life() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+/// The record a job has on disk, once it holds `needle`.
+async fn recorded(state: &Path, id: &str, needle: &str) {
+    let path = state.join(format!("{id}.json"));
+    for _ in 0..500 {
+        if std::fs::read_to_string(&path).is_ok_and(|text| text.contains(needle)) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("no record of {id} holding {needle}");
+}
+
+async fn first_life(
+    state: &Path,
+    source: FileSource,
+    request: StartFileTransferRequest,
+) -> (tokio::runtime::Runtime, Arc<TransferJobs>, FileTransferJob) {
+    let life = kernel_life();
+    let jobs = Arc::new(TransferJobs::default());
+    assert!(jobs.attach(state.to_owned()).is_empty());
+    let (started, jobs_in) = (jobs.clone(), jobs.clone());
+    let job = life
+        .spawn(async move { started.start(request, source, machine()) })
+        .await
+        .unwrap();
+    drop(jobs_in);
+    (life, jobs, job)
+}
+
+#[tokio::test]
+async fn a_file_transfer_stopped_by_a_kernel_restart_is_listed_again_and_finishes_from_the_staged_bytes(
+) {
+    let (source_side, here, state) = (
+        scratch("restart-source"),
+        scratch("restart-here"),
+        scratch("restart-state"),
+    );
+    let size = 12 * SLICE + 5;
+    let sha256 = plant(&source_side.join("big.bin"), size);
+    let slow = Link::with_cue(machine(), Duration::from_millis(60), |_, _| Fault::None);
+    let (life, jobs, started) = first_life(
+        &state,
+        slow.source(),
+        request(&source_side.join("big.bin"), &here),
+    )
+    .await;
+    for _ in 0..500 {
+        if jobs.get(&started.job_id).unwrap().bytes_done >= 3 * SLICE as u64 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    recorded(&state, &started.job_id, "\"copying\"").await;
+    // The process dies: nothing of the transfer runs again, no cleanup either. A write already
+    // handed to the blocking pool still ends.
+    jobs.kill_runs();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    life.shutdown_background();
+    drop(jobs);
+    assert!(!here.join("big.bin").exists());
+    assert!(
+        staging_left(&here),
+        "the staged bytes wait for the next life"
+    );
+
+    // The kernel starts again.
+    let jobs = Arc::new(TransferJobs::default());
+    let interrupted = jobs.attach(state.clone());
+    assert_eq!(interrupted.len(), 1);
+    assert_eq!(interrupted[0].job_id, started.job_id);
+    let listed = jobs.list();
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].job_id, started.job_id);
+    assert!(!listed[0].state.is_finished(), "{:?}", listed[0]);
+
+    let back = Link::new(machine());
+    jobs.resume(&interrupted[0], back.source(), machine());
+    let done = finished(&jobs, &started.job_id).await;
+    assert_eq!(done.state, FileTransferState::Done, "{done:?}");
+    assert_eq!(done.sha256.as_deref(), Some(sha256.as_str()));
+    assert_eq!(digest_of(&here.join("big.bin")), sha256);
+    let reads = back.reads();
+    assert_eq!(reads[0], 0, "the digest comes with the first slice");
+    assert!(
+        reads[1..].iter().all(|offset| *offset >= 3 * SLICE as u64),
+        "only what was missing travelled: {reads:?}"
+    );
+    assert!(!staging_left(&here));
+
+    // Another restart: the outcome is still there and nothing runs again.
+    let jobs = Arc::new(TransferJobs::default());
+    assert!(jobs.attach(state).is_empty());
+    let kept = jobs.get(&started.job_id).unwrap();
+    assert_eq!(kept.state, FileTransferState::Done);
+    assert_eq!(kept.sha256.as_deref(), Some(sha256.as_str()));
+}
+
+#[tokio::test]
+async fn a_folder_transfer_stopped_by_a_kernel_restart_finishes_as_the_same_tree() {
+    let (source_side, here, state) = (
+        scratch("restart-tree-source"),
+        scratch("restart-tree-here"),
+        scratch("restart-tree-state"),
+    );
+    let tree = source_side.join("project");
+    let planted: Vec<(String, String)> = (0..6)
+        .map(|n| {
+            let relative = format!("part-{n}/data.bin");
+            let sha256 = plant(&tree.join(&relative), 3 * SLICE + n);
+            (relative, sha256)
+        })
+        .collect();
+    let slow = Link::with_cue(machine(), Duration::from_millis(60), |_, _| Fault::None);
+    let (life, jobs, started) = first_life(&state, slow.source(), request(&tree, &here)).await;
+    for _ in 0..500 {
+        if jobs.get(&started.job_id).unwrap().bytes_done >= 4 * SLICE as u64 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    recorded(&state, &started.job_id, "\"copying\"").await;
+    // The process dies: nothing of the transfer runs again, no cleanup either. A write already
+    // handed to the blocking pool still ends.
+    jobs.kill_runs();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    life.shutdown_background();
+    drop(jobs);
+    assert!(!here.join("project").exists());
+
+    let jobs = Arc::new(TransferJobs::default());
+    let interrupted = jobs.attach(state);
+    assert_eq!(interrupted.len(), 1);
+    jobs.resume(&interrupted[0], Link::new(machine()).source(), machine());
+    let done = finished(&jobs, &started.job_id).await;
+    assert_eq!(done.state, FileTransferState::Done, "{done:?}");
+    assert_eq!(done.files_done, 6);
+    for (relative, sha256) in &planted {
+        assert_eq!(&digest_of(&here.join("project").join(relative)), sha256);
+    }
+    assert!(!staging_left(&here));
+}
+
+#[tokio::test]
+async fn a_move_stopped_while_it_deleted_the_source_ends_with_a_clear_outcome_and_the_source_kept()
+{
+    let (source_side, here, state) = (
+        scratch("restart-move-source"),
+        scratch("restart-move-here"),
+        scratch("restart-move-state"),
+    );
+    plant(&source_side.join("f.bin"), SLICE);
+    plant(&here.join("f.bin"), SLICE);
+    let mut moving = request(&source_side.join("f.bin"), &here);
+    moving.delete_source = true;
+    let job_id = "transfer-00000000000000aa";
+    std::fs::write(
+        state.join(format!("{job_id}.json")),
+        serde_json::json!({
+            "job": {
+                "job_id": job_id, "state": "finishing",
+                "source": moving.source, "destination": here.join("f.bin"),
+                "delete_source": true, "bytes_done": SLICE, "bytes_total": SLICE,
+                "files_done": 1, "files_total": 1, "skipped": 0, "started_ms": 1
+            },
+            "request": moving,
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let jobs = Arc::new(TransferJobs::default());
+    assert!(jobs.attach(state).is_empty(), "nothing is repeated blindly");
+    let job = jobs.get(job_id).unwrap();
+    assert_eq!(job.state, FileTransferState::Failed, "{job:?}");
+    let error = job.error.unwrap();
+    assert!(error.contains("copy is complete and verified"), "{error}");
+    assert!(error.contains("restart"), "{error}");
+    assert!(source_side.join("f.bin").exists());
+}
+
+// ---- review of #1346: what a replace may touch, modes, overlapping jobs, retried staging -----
+
+#[tokio::test]
+async fn replacing_a_folder_that_holds_the_kernels_state_is_refused_before_anything_moves() {
+    let _env = crate::env_lock::lock();
+    let root = scratch("holds-state");
+    let kernel_home = root.join("data/kernel-home");
+    std::fs::create_dir_all(kernel_home.join("vault")).unwrap();
+    std::fs::write(kernel_home.join("vault/vault.json"), b"secret").unwrap();
+    plant(&root.join("data/notes.txt"), 10);
+    let source_side = scratch("holds-state-source");
+    plant(&source_side.join("data/new.txt"), 10);
+    let _restore = EnvRestore::set(&[("CHARIOX_HOME", &kernel_home)]);
+    let guarded = Machine::new(StateGuard::new(None));
+    let jobs = Arc::new(TransferJobs::default());
+    let mut replace = request(&source_side.join("data"), &root);
+    replace.conflict = FileTransferConflict::Replace;
+    let job = jobs.start(
+        replace,
+        Link::new(Machine::new(StateGuard::default())).source(),
+        guarded,
+    );
+    let job = finished(&jobs, &job.job_id).await;
+    assert_eq!(job.state, FileTransferState::Failed, "{job:?}");
+    assert!(job.error.unwrap().contains("holds"));
+    assert_eq!(
+        std::fs::read(kernel_home.join("vault/vault.json")).unwrap(),
+        b"secret"
+    );
+    assert!(root.join("data/notes.txt").exists());
+    assert!(!root.join("data/new.txt").exists());
+    assert!(!staging_left(&root));
+}
+
+#[tokio::test]
+async fn a_private_folder_keeps_its_mode_and_its_children_stay_private_while_they_are_copied() {
+    use std::os::unix::fs::PermissionsExt;
+    let (source_side, here) = (scratch("private-source"), scratch("private-here"));
+    let tree = source_side.join("private");
+    plant(&tree.join("readable.txt"), 100);
+    plant(&tree.join("inner/deep.txt"), 100);
+    let mode_of = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o7777;
+    std::fs::set_permissions(&tree, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(tree.join("inner"), std::fs::Permissions::from_mode(0o750)).unwrap();
+    // SAFETY: umask only changes this process's creation mask; the test restores it.
+    let previous = unsafe { libc::umask(0o022) };
+    let jobs = Arc::new(TransferJobs::default());
+    let job = run(&jobs, Link::new(machine()).source(), request(&tree, &here)).await;
+    unsafe { libc::umask(previous) };
+    assert_eq!(job.state, FileTransferState::Done, "{job:?}");
+    assert_eq!(mode_of(&here.join("private")), 0o700);
+    assert_eq!(mode_of(&here.join("private/inner")), 0o750);
+    assert_eq!(mode_of(&here.join("private/readable.txt")), 0o644);
+}
+
+#[tokio::test]
+async fn two_transfers_to_one_destination_never_share_a_staging_tree() {
+    let (source_side, here) = (scratch("overlap-source"), scratch("overlap-here"));
+    let (first, second) = (source_side.join("a/project"), source_side.join("b/project"));
+    let planted_first: Vec<(String, String)> = (0..3)
+        .map(|n| {
+            let relative = format!("f{n}.bin");
+            (
+                relative.clone(),
+                plant(&first.join(&relative), 2 * SLICE + n),
+            )
+        })
+        .collect();
+    for n in 0..3 {
+        plant(&second.join(format!("f{n}.bin")), 2 * SLICE + 7 + n);
+    }
+    let slow = Link::with_cue(machine(), Duration::from_millis(40), |_, _| Fault::None);
+    let jobs = Arc::new(TransferJobs::default());
+    let a = jobs.start(request(&first, &here), slow.source(), machine());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // A move from the other machine to the same destination, while the first is under way.
+    let mut moving = request(&second, &here);
+    moving.source.kernel = Some("other".into());
+    moving.delete_source = true;
+    let b = jobs.start(moving, slow.source(), machine());
+    let (a, b) = (
+        finished(&jobs, &a.job_id).await,
+        finished(&jobs, &b.job_id).await,
+    );
+    assert_eq!(a.state, FileTransferState::Done, "{a:?}");
+    assert_eq!(b.state, FileTransferState::Failed, "{b:?}");
+    assert!(b.error.unwrap().contains("another transfer"));
+    for (relative, sha256) in &planted_first {
+        assert_eq!(&digest_of(&here.join("project").join(relative)), sha256);
+    }
+    assert!(
+        second.join("f0.bin").exists(),
+        "a refused move keeps its source"
+    );
+    assert!(!staging_left(&here));
+
+    // Under keep_both each lands under its own name.
+    let (third, fourth) = (source_side.join("c/work"), source_side.join("d/work"));
+    let sha_third = plant(&third.join("x.bin"), 2 * SLICE);
+    let sha_fourth = plant(&fourth.join("x.bin"), 2 * SLICE + 1);
+    let (mut c, mut d) = (request(&third, &here), request(&fourth, &here));
+    c.conflict = FileTransferConflict::KeepBoth;
+    d.conflict = FileTransferConflict::KeepBoth;
+    let c = jobs.start(c, slow.source(), machine());
+    let d = jobs.start(d, slow.source(), machine());
+    let (c, d) = (
+        finished(&jobs, &c.job_id).await,
+        finished(&jobs, &d.job_id).await,
+    );
+    assert_eq!(c.state, FileTransferState::Done, "{c:?}");
+    assert_eq!(d.state, FileTransferState::Done, "{d:?}");
+    assert_ne!(c.destination, d.destination);
+    for (job, sha256) in [(&c, &sha_third), (&d, &sha_fourth)] {
+        assert_eq!(
+            &digest_of(&Path::new(&job.destination).join("x.bin")),
+            sha256
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_retried_folder_drops_staged_entries_the_source_no_longer_has() {
+    let (source_side, here) = (scratch("retry-source"), scratch("retry-here"));
+    let tree = source_side.join("project");
+    plant(&tree.join("a.txt"), 100);
+    plant(&tree.join("b.txt"), 100);
+    plant(&tree.join("sub/c.txt"), 100);
+    plant(&tree.join("keep.txt"), 100);
+    plant(&tree.join("zzz.bin"), 5 * SLICE);
+    // The big file's link stays down, so the small files are staged and the first try gives up.
+    let cut = Link::with_cue(machine(), Duration::ZERO, |_, request| {
+        if matches!(request, RelayPeerRequest::ReadMachineFile { path, offset } if path.ends_with("zzz.bin") && *offset > 0)
+        {
+            return Fault::Dropped;
+        }
+        Fault::None
+    });
+    let jobs = Arc::new(TransferJobs::default());
+    let first = run(&jobs, cut.source(), request(&tree, &here)).await;
+    assert_eq!(first.state, FileTransferState::Failed, "{first:?}");
+    assert!(first.error.unwrap().contains("stayed unreachable"));
+    assert!(staging_left(&here));
+
+    // Between the tries: a file goes, a folder becomes a file, a file becomes a folder.
+    std::fs::remove_file(tree.join("a.txt")).unwrap();
+    std::fs::remove_dir_all(tree.join("sub")).unwrap();
+    plant(&tree.join("sub"), 50);
+    std::fs::remove_file(tree.join("b.txt")).unwrap();
+    plant(&tree.join("b.txt/inner.txt"), 50);
+
+    let second = run(&jobs, Link::new(machine()).source(), request(&tree, &here)).await;
+    assert_eq!(second.state, FileTransferState::Done, "{second:?}");
+    let listing = |root: &Path| {
+        let mut found: Vec<String> = walk(root)
+            .iter()
+            .map(|path| path.strip_prefix(root).unwrap().display().to_string())
+            .collect();
+        found.sort();
+        found
+    };
+    assert_eq!(listing(&here.join("project")), listing(&tree));
+    for relative in ["sub", "b.txt/inner.txt", "keep.txt", "zzz.bin"] {
+        assert_eq!(
+            digest_of(&here.join("project").join(relative)),
+            digest_of(&tree.join(relative)),
+            "{relative}"
+        );
+    }
+    assert!(!staging_left(&here));
+}
+
+#[test]
+fn a_folders_staging_is_named_by_the_machine_it_comes_from_as_well() {
+    let endpoint = |kernel: &str| FileTransferEndpoint {
+        kernel: Some(kernel.into()),
+        path: "/srv/project".into(),
+    };
+    let destination = Path::new("/data/project");
+    let (a, b) = (
+        super::jobs::folder_stage(&endpoint("a"), destination),
+        super::jobs::folder_stage(&endpoint("b"), destination),
+    );
+    assert_ne!(a, b);
+    assert_eq!(a, super::jobs::folder_stage(&endpoint("a"), destination));
+}

@@ -21,7 +21,7 @@ pub(crate) use workspace_path::Access;
 #[cfg(test)]
 pub(crate) use workspace_slices::SLICE_BYTES;
 pub(crate) use workspace_slices::{
-    discard, read_slice, revision, write_slice, SourceSlice, WriteSlice,
+    discard, read_slice, revision, staging_of, write_slice, SourceSlice, WriteSlice,
 };
 
 use std::path::PathBuf;

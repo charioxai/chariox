@@ -162,7 +162,7 @@ pub(crate) fn discard(place: &impl Place, relative: &str) {
 /// Where the copy to `path` stages its bytes: beside the destination, under a `.chariox` name that
 /// no copy may name as source or destination, so it never collides with a workspace file and is
 /// removed only by the copy that made it.
-fn staging_of(path: &Path) -> PathBuf {
+pub(crate) fn staging_of(path: &Path) -> PathBuf {
     let name = path.file_name().unwrap_or_default().as_encoded_bytes();
     let digest = Sha256::digest(name);
     let id: String = digest[..16]
