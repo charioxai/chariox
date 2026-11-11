@@ -1488,7 +1488,7 @@ fn yield_on_helper(
             prompt: prompt_id.into(),
             registrations: vec!["helper-wait".into()],
             cursor: 0,
-            deadline: now + 60_000,
+            deadline: Some(now + 60_000),
             reason: "Wait for helper result".into(),
             now,
         })

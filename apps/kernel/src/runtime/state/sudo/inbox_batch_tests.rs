@@ -114,6 +114,7 @@ async fn three_pending_events_are_one_turn_read_and_acknowledged_from_the_inbox(
             &serde_json::json!({"through": last, "handled": true}),
             1,
         )
+        .await
         .unwrap();
     assert_eq!(acked["acknowledged"].as_array().unwrap().len(), 3);
     assert!(rows(&f).iter().all(|e| e.state == "handled"));
@@ -131,6 +132,7 @@ async fn an_ack_before_delivery_retires_the_wake_without_a_prompt() {
             &serde_json::json!({"sequence": event.sequence}),
             1,
         )
+        .await
         .unwrap();
     f.state.deliver_agent_inbox(&room, &agent).await.unwrap();
     assert!(
@@ -165,6 +167,7 @@ async fn ack_through_skips_an_event_that_needs_an_answer() {
             &serde_json::json!({"through": last.sequence}),
             1,
         )
+        .await
         .unwrap();
     assert_eq!(
         acked["acknowledged"],
@@ -180,6 +183,7 @@ async fn ack_through_skips_an_event_that_needs_an_answer() {
             &serde_json::json!({"sequence": decision.sequence}),
             1
         )
+        .await
         .is_err());
     assert_eq!(rows(&f)[1].state, "pending");
 }
@@ -236,6 +240,7 @@ async fn ack_through_does_not_settle_rows_that_were_never_returned() {
             &serde_json::json!({"sequence": c.sequence}),
             1,
         )
+        .await
         .unwrap();
     assert_eq!(ack_c["acknowledged"], c.sequence);
     let acked = f
@@ -246,6 +251,7 @@ async fn ack_through_does_not_settle_rows_that_were_never_returned() {
             &serde_json::json!({"through": c.sequence + 5}),
             1,
         )
+        .await
         .unwrap();
     assert_eq!(acked["acknowledged"], serde_json::json!([]), "{acked}");
     assert_eq!(
@@ -280,6 +286,7 @@ async fn read_then_ack_through_settles_a_pending_row() {
             &serde_json::json!({"through": b.sequence}),
             1,
         )
+        .await
         .unwrap();
     assert_eq!(acked["acknowledged"], serde_json::json!([a.sequence]));
     assert_eq!(
@@ -459,6 +466,7 @@ async fn an_open_event_beyond_the_first_page_of_closed_rows_is_still_read() {
             &serde_json::json!({"through": pages, "handled": true}),
             1,
         )
+        .await
         .unwrap();
     let read = f
         .state
@@ -496,6 +504,7 @@ async fn the_wake_cursor_starts_before_a_held_message_beyond_the_first_page() {
             &serde_json::json!({"through": pages, "handled": true}),
             1,
         )
+        .await
         .unwrap();
     let held = occur(
         &f,

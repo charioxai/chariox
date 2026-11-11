@@ -177,7 +177,9 @@ impl KernelRuntimeState {
         (relation, view)
     }
 
-    pub(crate) fn ack_agent_inbox(
+    /// A handled `child_finished` receipt also ends the sub-agent it reports, so the
+    /// parent has no separate delete step to forget.
+    pub(crate) async fn ack_agent_inbox(
         &self,
         room: &str,
         actor: &str,
@@ -186,7 +188,8 @@ impl KernelRuntimeState {
     ) -> Result<serde_json::Value, DaemonError> {
         let handled = args["handled"].as_bool().unwrap_or(false);
         let work = self.owned.sudo_work_task(room, actor);
-        let ack = |event: &InboxEvent| {
+        let mut finished_children = Vec::new();
+        let mut ack = |event: &InboxEvent| {
             self.owned
                 .durable_state_store
                 .agent_lifecycle(Operation::Ack {
@@ -195,7 +198,11 @@ impl KernelRuntimeState {
                     sequence: event.sequence,
                     handled,
                     now,
-                })
+                })?;
+            if handled && event.kind == "child_finished" {
+                finished_children.push(event.payload.clone());
+            }
+            Ok::<_, DaemonError>(())
         };
         if let Some(through) = args["through"].as_u64() {
             let (mut acknowledged, mut skipped) = (Vec::new(), Vec::new());
@@ -241,6 +248,8 @@ impl KernelRuntimeState {
                 }
                 cursor = last;
             }
+            self.end_handled_children(room, actor, &finished_children)
+                .await?;
             return Ok(serde_json::json!({"acknowledged": acknowledged, "skipped": skipped}));
         }
         let seq = args["sequence"]
@@ -265,6 +274,8 @@ impl KernelRuntimeState {
             ));
         }
         ack(&event)?;
+        self.end_handled_children(room, actor, &finished_children)
+            .await?;
         Ok(serde_json::json!({"acknowledged": seq}))
     }
 }

@@ -57,7 +57,7 @@ pub(super) fn park_task(f: &Fixture, prompt: &str) -> AgentTaskExecution {
             prompt: prompt.into(),
             registrations: vec![registration_id],
             cursor: 0,
-            deadline: now + 3_600_000,
+            deadline: Some(now + 3_600_000),
             reason: "Waiting for review".into(),
             now,
         })

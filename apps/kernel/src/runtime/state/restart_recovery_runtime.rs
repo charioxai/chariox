@@ -2661,7 +2661,7 @@ mod tests {
                     prompt: prompt_id.clone(),
                     registrations: vec!["completion-g13-timer".into()],
                     cursor: 0,
-                    deadline: now + 120_000,
+                    deadline: Some(now + 120_000),
                     reason: "Wait for the one-minute timer".into(),
                     now,
                 })

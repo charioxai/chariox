@@ -90,7 +90,7 @@ impl Fixture {
             prompt: "p".into(),
             registrations: ids.iter().map(|id| format!("completion-{id}")).collect(),
             cursor: 0,
-            deadline: 10_000_000,
+            deadline: Some(10_000_000),
             reason: "wake".into(),
             now: 20,
         });
@@ -268,7 +268,7 @@ fn a03_owner_resume_delivery_cannot_create_a_second_task_before_continuation() {
         prompt: continuation.clone(),
         registrations: vec!["completion-timer".into()],
         cursor: 0,
-        deadline: 100_000,
+        deadline: Some(100_000),
         reason: "resume waiting".into(),
         now: 1_004,
     });
@@ -878,7 +878,7 @@ fn a03_recurring_timer_check_ins_require_owner_after_three_without_progress() {
             prompt: prompt.clone(),
             registrations: vec!["completion-t1".into()],
             cursor: e.sequence,
-            deadline: 10_000_000,
+            deadline: Some(10_000_000),
             reason: "next check-in".into(),
             now: now + 4,
         });
@@ -1464,7 +1464,7 @@ fn leased_wait_confirms_its_original_launch_without_granting_local_start_authori
         prompt: "p".into(),
         registrations: vec![local.registration_id, leased.registration_id],
         cursor: 0,
-        deadline: 1000,
+        deadline: Some(1000),
         reason: "both original sources".into(),
         now: 20,
     });
@@ -1732,7 +1732,7 @@ mod driver_sources {
                 prompt: "p".into(),
                 registrations: ids.iter().map(|id| format!("completion-{id}")).collect(),
                 cursor: 0,
-                deadline: 10_000_000,
+                deadline: Some(10_000_000),
                 reason: "wake".into(),
                 now: 20,
             });
@@ -1904,7 +1904,7 @@ mod driver_sources {
             prompt: continuation.clone(),
             registrations: vec!["completion-timer".into()],
             cursor: 0,
-            deadline: 100_000,
+            deadline: Some(100_000),
             reason: "resume waiting".into(),
             now: 1_004,
         });
@@ -2480,7 +2480,7 @@ mod driver_sources {
                 prompt: prompt.clone(),
                 registrations: vec!["completion-t1".into()],
                 cursor: e.sequence,
-                deadline: 10_000_000,
+                deadline: Some(10_000_000),
                 reason: "next check-in".into(),
                 now: now + 4,
             });
@@ -3014,7 +3014,7 @@ mod driver_sources {
             prompt: "p".into(),
             registrations: vec!["completion-tomorrow".into()],
             cursor: 0,
-            deadline,
+            deadline: Some(deadline),
             reason: "remind me next week".into(),
             now: 20,
         });
@@ -3039,7 +3039,7 @@ mod driver_sources {
             assert!(f.inbox().is_empty(), "unexpected early wake at hour {hour}");
             assert_eq!(f.task().state, ExecutionState::Waiting);
             assert_eq!(f.task().no_progress_wakes, 0);
-            assert_eq!(f.task().wait.unwrap().deadline_ms, deadline);
+            assert_eq!(f.task().wait.unwrap().deadline_ms, Some(deadline));
         }
         f.apply(Operation::FireWakes { now: due });
         let event = f.inbox().remove(0);

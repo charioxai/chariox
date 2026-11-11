@@ -57,6 +57,47 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeState {
+    /// Ends the sub-agents whose `child_finished` receipts the parent just handled.
+    /// Only a child the parent spawned (it carries the spawn key) and whose latest
+    /// task is the one reported goes: an agent a person moved under the parent, or
+    /// one given new work since, stays.
+    pub(super) async fn end_handled_children(
+        &self,
+        room: &str,
+        parent: &str,
+        receipts: &[serde_json::Value],
+    ) -> Result<(), DaemonError> {
+        for receipt in receipts {
+            let (Some(child_id), Some(task_id)) = (
+                receipt["child_agent_id"].as_str(),
+                receipt["child_task_id"].as_str(),
+            ) else {
+                continue;
+            };
+            let Ok(child) = self.owned.agent_store.get_agent(child_id) else {
+                continue;
+            };
+            if child.session_id() != room
+                || child.parent_agent_id() != Some(parent)
+                || child.spawn_key().is_none()
+            {
+                continue;
+            }
+            let reported_is_latest = self
+                .owned
+                .durable_state_store
+                .agent_tasks(Some(room), Some(child_id))?
+                .last()
+                .is_some_and(|latest| latest.task_id == task_id);
+            if reported_is_latest {
+                self.destroy_one_agent(child_id, child.owner_user_id(), true)
+                    .await?;
+                self.destroy_sub_agents_of(child_id).await;
+            }
+        }
+        Ok(())
+    }
+
     /// A restart ended the child's turn; its parent reads that as an interruption it can retry.
     pub(super) async fn announce_child_interrupted(
         &self,

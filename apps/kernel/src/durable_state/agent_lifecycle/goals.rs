@@ -22,10 +22,8 @@ pub(super) fn is_check_in_event(task: &AgentTaskExecution, event: &InboxEvent) -
 
 fn schedule_wait_check_in(task: &mut AgentTaskExecution, now: u64) {
     if let (Some(goal), Some(wait)) = (&mut task.goal, &task.wait) {
-        goal.next_check_in_ms = Some(
-            wait.deadline_ms
-                .min(now.saturating_add(u64::from(goal.check_in_minutes) * 60_000)),
-        );
+        let check_in = now.saturating_add(u64::from(goal.check_in_minutes) * 60_000);
+        goal.next_check_in_ms = Some(wait.deadline_ms.map_or(check_in, |d| d.min(check_in)));
     }
 }
 
@@ -401,7 +399,7 @@ pub(super) fn evaluate(
             let regs = registrations(tx, &t.task_id)?;
             let registration_ids = resolve_live_registration_ids(&registration_ids, &regs).unwrap_or(registration_ids);
             let deadline = deadline_ms
-                .min(t.wait.as_ref().map_or(u64::MAX, |w| w.deadline_ms))
+                .min(t.wait.as_ref().and_then(|w| w.deadline_ms).unwrap_or(u64::MAX))
                 .min(wakes::source_deadline(tx, &t, &registration_ids)?.unwrap_or(u64::MAX));
             let valid_sources = !registration_ids.is_empty() && deadline > now
                 && registration_ids.iter().all(|id| regs.iter().any(|r| &r.id == id && r.live))
@@ -421,7 +419,7 @@ pub(super) fn evaluate(
             } else {
                 let prior = t.wait.take();
                 t.wait = Some(AgentWait {
-                    registration_ids, deadline_ms: deadline, started_at_ms: prior.as_ref().map_or(now, |w| w.started_at_ms),
+                    registration_ids, deadline_ms: Some(deadline), started_at_ms: prior.as_ref().map_or(now, |w| w.started_at_ms),
                     inbox_cursor: prior.as_ref().map_or(0, |w| w.inbox_cursor),
                     long_wait_notified: prior.as_ref().is_some_and(|w| w.long_wait_notified), last_checked_at_ms: now,
                 });
@@ -463,7 +461,7 @@ fn covered_wait(
     };
     let regs = registrations(tx, &t.task_id)?;
     let live = |id: &String| regs.iter().any(|r| &r.id == id && r.live);
-    Ok(w.deadline_ms > now
+    Ok(w.deadline_ms.is_none_or(|deadline| deadline > now)
         && !w.registration_ids.is_empty()
         && w.registration_ids.iter().all(live)
         && t.obligations

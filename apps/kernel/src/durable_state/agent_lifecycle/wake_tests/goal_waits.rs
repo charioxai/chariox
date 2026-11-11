@@ -18,7 +18,7 @@ pub(super) fn yield_on(f: &Fixture, prompt: &str, now: u64, deadline: u64) {
         prompt: prompt.into(),
         registrations: vec!["completion-timer".into()],
         cursor: 0,
-        deadline,
+        deadline: Some(deadline),
         reason: "Requested timer remains armed".into(),
         now,
     });
@@ -69,7 +69,7 @@ fn a12_long_timer_survives_two_checkins_without_spending_progress_guard() {
     assert_eq!(f.task().state, ExecutionState::Waiting);
     assert_eq!(
         f.task().wait.as_ref().unwrap().deadline_ms,
-        first_recheck,
+        Some(first_recheck),
         "honour the completion check's earlier finite recheck"
     );
     for index in 0..2 {
