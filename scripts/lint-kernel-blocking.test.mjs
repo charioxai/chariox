@@ -163,3 +163,70 @@ test('a registry lock entry point that was renamed or no longer takes the lock f
   assert.equal(unlocked.filter(v => /unbind_key.*no longer takes `registry\(\)`/.test(v.rule)).length, 1)
   assert.deepEqual(blockingViolations('pub(crate) fn unbind_key(&self, key: &str) { registry().lock(); }', definition).filter(v => /unbind_key/.test(v.rule)), [])
 })
+
+// Entry points the healthguard review found missing from the table: `end_owner` takes the registry mutex itself,
+// `keys_for_session` / `for_session` reach it through listed_keys / observed_keys_for_session, and the sweep of
+// process_resources/ adds every other pub / pub(crate) function that locks it directly or through a private helper.
+const processResources = 'apps/kernel/src/runtime/process_resources.rs'
+const processControl = 'apps/kernel/src/runtime/process_resources/control.rs'
+const handover = 'apps/kernel/src/runtime/process_resources/handover.rs'
+const projection = 'apps/kernel/src/runtime/process_resources/projection.rs'
+const launch = 'apps/kernel/src/runtime/process_resources/launch.rs'
+const ptyManager = 'apps/kernel/src/pty/manager.rs'
+const viaPath = (call, args) => `crate::runtime::process_resources::${call}(${args})`
+const sweptEntryPoints = [
+  { call: 'end_owner', defined: processControl, via: 'registry()', plant: viaPath('end_owner', 'None, None') },
+  { call: 'keys_for_session', defined: projection, via: 'listed_keys(', plant: viaPath('keys_for_session', 'id, &providers, &terminals') },
+  { call: 'for_session', defined: projection, via: 'observed_keys_for_session(', plant: viaPath('for_session', 'id, &providers, &terminals') },
+  { call: 'stop_released', defined: processControl, via: 'released_keys(', plant: viaPath('stop_released', 'Some(id), None') },
+  { call: 'hand_over_released', defined: handover, via: 'registry()', plant: viaPath('hand_over_released', '') },
+  { call: 'adopt_released', defined: handover, via: 'start_released(', plant: viaPath('adopt_released', 'jobs') },
+  { call: 'bind_terminal_for_key', defined: processResources, via: 'with_submissions_for_key(', plant: viaPath('bind_terminal_for_key', 'key, true') },
+  { call: 'line_started_for_key', defined: processResources, via: 'with_submissions_for_key(', plant: viaPath('line_started_for_key', 'key') },
+  { call: 'line_finished_for_key', defined: processResources, via: 'with_submissions_for_key(', plant: viaPath('line_finished_for_key', 'key, &jobs') },
+  { call: 'release', defined: processResources, via: 'registry()', plant: 'self.resources.release(id, owner, None)' },
+  { call: 'observe', defined: launch, via: 'samples_for_key(', plant: 'permit.observe()' },
+  { call: 'release_exited_process_jobs', defined: ptyManager, via: 'release(', plant: 'pty.release_exited_process_jobs(&run_id, id, owner, None)' },
+]
+test('a planted async call to each swept registry lock entry point fails the gate', () => {
+  for (const { call, plant } of sweptEntryPoints) {
+    const hits = registryHits(`async fn f(&self) { ${plant}; }`)
+    assert.equal(hits.length, 1, `${call} planted in an async fn`)
+    assert.match(hits[0].rule, new RegExp(`\`${call}\\(\\.\\.\\)\``))
+    assert.equal(registryHits(`async fn f(&self) { self.with_app_side_effect(|app| ${plant}).await; }`).length, 1, `${call} planted in an inline app side effect`)
+  }
+})
+test('a swept entry point on a blocking thread or in a plain sync fn passes the gate', () => {
+  for (const { call, plant } of sweptEntryPoints) {
+    assert.deepEqual(registryHits(`fn f(&self) { ${plant}; }`), [], `${call} in a sync fn`)
+    assert.deepEqual(registryHits(`async fn f(&self) { tokio::task::spawn_blocking(move || ${plant}).await; }`), [], `${call} in spawn_blocking`)
+  }
+})
+test('a reviewed site admits a swept entry point only with its path, enclosing fn and call', () => {
+  const { call, plant } = sweptEntryPoints[0]
+  const source = `async fn settle(&self) { ${plant}; }\n`
+  const site = { path: runtimePath, fn: 'settle', call, reason: 'known, tracked' }
+  assert.equal(registryHits(source).length, 1)
+  const roots = [site, { ...site, fn: 'other' }, { ...site, call: 'stop_released' }].map(entry => fixtureRoot({ [runtimePath]: source }, [entry]))
+  try {
+    assert.ok(runGate(roots[0]).status === 0, 'the matching entry admits the site')
+    assert.ok(runGate(roots[1]).status === 1, 'another fn is not admitted')
+    assert.ok(runGate(roots[2]).status === 1, 'another call is not admitted')
+  } finally {
+    for (const root of roots) rmSync(root, { recursive: true, force: true })
+  }
+})
+test('names shared with unrelated types are flagged only on the registry-locking receiver', () => {
+  assert.deepEqual(registryHits('async fn f(&self) { pump.release(); gate.release(); engine.release(); modal.observe(); }'), [])
+  assert.deepEqual(registryHits('async fn f(&self) { let id = for_session_label(&key); other_end_owner(&key); }'), [])
+})
+test('a swept entry point that was renamed or no longer takes the lock fails the gate', () => {
+  for (const { call, defined, via } of sweptEntryPoints) {
+    const renamed = blockingViolations(`pub(crate) fn ${call}_v2(&self) { ${via}; }`, defined)
+    assert.equal(renamed.filter(v => v.rule.includes(`\`${call}\``) && /no longer exists/.test(v.rule)).length, 1, `${call} renamed`)
+    const unlocked = blockingViolations(`pub(crate) fn ${call}(&self) { forget(); }`, defined)
+    assert.equal(unlocked.filter(v => v.rule.includes(`\`${call}\``) && /no longer takes/.test(v.rule)).length, 1, `${call} unlocked`)
+    const intact = blockingViolations(`pub(crate) fn ${call}(&self) { ${via}; }`, defined)
+    assert.deepEqual(intact.filter(v => v.rule.includes(`\`${call}\``)), [], `${call} intact`)
+  }
+})
