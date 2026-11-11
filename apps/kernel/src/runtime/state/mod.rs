@@ -427,6 +427,7 @@ struct KernelRuntimeOwnedState {
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     slice_private_relay_connectors: crate::transport::relay_client::SlicePrivateRelayConnectors,
     notification_inventory_projection: crate::runtime::projection::RemoteRelayInventoryProjectionStore,
+    notification_source_probes: workflow_notification_source_probe::NotificationSourceProbes,
     remote_prompt_projection_drains:
         remote_prompt_claim_runtime::RemotePromptProjectionDrainClaimStore,
     remote_prompt_projection_serial: Arc<remote_prompt_claim_runtime::RemotePromptProjectionSerialStore>,
@@ -517,6 +518,7 @@ mod agent_profile_owned_state;
 mod agent_trigger_gateway;
 mod agent_trigger_http;
 mod agent_trigger_notification;
+mod agent_trigger_notification_availability;
 mod agent_trigger_runtime_state;
 mod agent_turn_actions_runtime_state;
 mod agent_utility_runtime_state;
@@ -528,6 +530,7 @@ mod browser_controller_compatibility_runtime_state;
 mod owner_action_notifications;
 mod run_finished_notifications;
 mod wake_driver;
+mod workflow_notification_source_probe;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
 mod browser_configuration_runtime_state;
 mod browser_controller_runtime_state;
@@ -1282,6 +1285,7 @@ impl KernelRuntimeState {
                 vault_capture_claims: Default::default(),
                 relay_state,
                 notification_inventory_projection,
+                notification_source_probes: Default::default(),
                 remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 remote_prompt_projection_serial: Arc::default(),
                 remote_prompt_recoveries: Arc::new(std::sync::Mutex::new(BTreeMap::new())),

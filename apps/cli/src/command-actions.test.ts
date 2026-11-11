@@ -75,7 +75,7 @@ test("/trigger notification subscribes the focused agent to a named source and l
   const trigger = {
     id: "trigger-9",
     agent_id: "agent-1",
-    source: { kind: "notification" as const, source: { workflow: { source_id: "wf_b" } }, subscription_id: "sub", display_name: "Release pipeline-2" },
+    source: { kind: "notification" as const, source: { workflow: { source_id: "wf_b" } }, subscription_id: "sub", display_name: "Release pipeline-2", source_available: true },
     busy_policy: "queue" as const,
     prompt: "Summarize failures",
     enabled: true,
@@ -107,6 +107,28 @@ test("/trigger notification subscribes the focused agent to a named source and l
     "error:Deploy is not available: its kernel is offline",
   ])
   assert.match(calls[4] ?? "", /^notice:Triggers\ntrigger-9  Notification · Release pipeline-2 · queue · listening · 1 fired$/)
+})
+
+test("/trigger list reads offline for a notification whose source kernel is down", async () => {
+  const notices: string[] = []
+  const trigger = {
+    id: "trigger-9",
+    agent_id: "agent-1",
+    source: { kind: "notification" as const, source: { workflow: { source_id: "wf_b" } }, subscription_id: "sub", display_name: "srcwf", source_available: false },
+    busy_policy: "queue" as const,
+    prompt: "Summarize failures",
+    enabled: true,
+    created_at_ms: 0,
+    fired: 0,
+    coalesced: 0,
+  }
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    sessionState: () => makeSession({ agent_triggers: [trigger] }),
+    appendNotice: (message: string) => notices.push(message),
+  }))
+  const command = parseSlashCommand("/trigger list")
+  await handlers.handleTriggerCommand(command as Extract<typeof command, { kind: "trigger" }>)
+  assert.equal(notices.at(-1), "Triggers\ntrigger-9  Notification · srcwf · queue · offline · 0 fired")
 })
 
 test("/trigger list retains unconfirmed firings after their once trigger retired", async () => {

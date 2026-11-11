@@ -1,5 +1,5 @@
 {
-  "local_protocol": 1002,
+  "local_protocol": 1003,
   "peer_protocol": 441,
   "abort": {
     "MoveAgentToLocal": {

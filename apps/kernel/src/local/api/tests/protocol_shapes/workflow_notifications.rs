@@ -162,3 +162,32 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
         LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest { .. })
     ));
 }
+
+/// MP-08 / MP-10: a notification trigger tells the client whether its source can fire it.
+#[test]
+fn agent_notification_trigger_shape_carries_source_availability() {
+    let mut trigger = crate::session::AgentTrigger::notification(
+        "trigger-1".into(),
+        "agent-1",
+        "user-1",
+        crate::session::AgentTriggerNotificationSource::Workflow {
+            source_id: "wf_source".into(),
+        },
+        "wf_subscription".into(),
+        "Release pipeline-2".into(),
+        "Triage".into(),
+        1_000,
+    );
+    assert!(trigger.set_notification_source_available(false));
+    assert_eq!(
+        serde_json::to_value(&trigger).unwrap().pointer("/source"),
+        Some(&serde_json::json!({
+            "kind": "notification",
+            "source": { "workflow": { "source_id": "wf_source" } },
+            "subscription_id": "wf_subscription",
+            "display_name": "Release pipeline-2",
+            "source_available": false,
+        }))
+    );
+    assert!(!trigger.set_notification_source_available(false));
+}
