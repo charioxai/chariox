@@ -2600,7 +2600,9 @@ Resources (v1): `vault_status`, `vault_entries`, `provider_accounts`,
 `provider_catalog`, `provider_commands`, `terminal_commands`, `app_installations`,
 `user_app_views`, `extensions`, `notification_sources`, `session_processes`,
 `room_terminals`, `slices`, `user_config`, `dictation_status`,
-`project_environment`; later `room_list`, which replaces the
+`project_environment`. `provider_catalog` and `provider_commands` take the
+scope params `{ provider?, account_profiles?, execution_location? }` of
+`GetProviderCatalog`; the params are part of the watch key and of the revision; later `room_list`, which replaces the
 `waiting_room_inventory` scope and its `waiting_room_inventory_changed` /
 `waiting_room_rows_changed` events. The feed also replaces `client_catalog_changed`
 with the conditional `GetClientCatalogSnapshot.known`, `provider_catalog_changed`,
