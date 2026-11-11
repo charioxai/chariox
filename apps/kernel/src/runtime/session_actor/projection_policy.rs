@@ -60,6 +60,7 @@ pub(super) fn session_response_projection_action(
         | LocalDaemonResponse::AgentTriggerDeleted { session, .. }
         | LocalDaemonResponse::TriggerDeliveryResent { session }
         | LocalDaemonResponse::SessionEnded { session }
+        | LocalDaemonResponse::RoomSetupUpdated { session }
         | LocalDaemonResponse::SessionAliased { session } => {
             Some(SessionProjectionAction::Update(session.clone()))
         }
@@ -196,6 +197,8 @@ pub(super) fn projected_session_absence_response(
         LocalDaemonRequest::AcknowledgeAgentOutputSeen(request) => &request.session_id,
         LocalDaemonRequest::CycleAgentFocus(request) => &request.session_id,
         LocalDaemonRequest::AliasSession(request) => &request.session_id,
+        LocalDaemonRequest::RetryRoomSetup(request) => &request.session_id,
+        LocalDaemonRequest::DismissRoomSetup(request) => &request.session_id,
         LocalDaemonRequest::AliasAgent(request) => &request.session_id,
         LocalDaemonRequest::SpawnAgents(request) => &request.session_id,
         LocalDaemonRequest::UndoTurn(request) => &request.session_id,
@@ -270,7 +273,8 @@ pub(super) fn session_id_for_projection_refresh(
         Ok(LocalDaemonResponse::SessionConfigUpdated { session, .. }) => {
             Some(session.id().to_string())
         }
-        Ok(LocalDaemonResponse::SessionAliased { session }) => Some(session.id().to_string()),
+        Ok(LocalDaemonResponse::SessionAliased { session })
+        | Ok(LocalDaemonResponse::RoomSetupUpdated { session }) => Some(session.id().to_string()),
         _ => None,
     }
 }

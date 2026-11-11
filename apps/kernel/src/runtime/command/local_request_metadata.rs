@@ -439,6 +439,14 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::AliasSession(request) => {
             LocalRequestMetadata::new("session.alias", Interactive).session(&request.session_id)
         }
+        LocalDaemonRequest::RetryRoomSetup(request) => {
+            LocalRequestMetadata::new("session.setup.retry", Interactive)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::DismissRoomSetup(request) => {
+            LocalRequestMetadata::new("session.setup.dismiss", Interactive)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::FocusAgent(request) => {
             LocalRequestMetadata::new("agent.focus", Interactive)
                 .session(&request.session_id)
@@ -992,6 +1000,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CaptureScreenshot(_) => "capability.screenshot.capture",
         LocalDaemonRequest::StoreTransferredFile(_) => "capability.file.store_transferred",
         LocalDaemonRequest::AliasSession(_) => "session.alias",
+        LocalDaemonRequest::SuggestSessionAlias(_) => "session.alias.suggest",
+        LocalDaemonRequest::RetryRoomSetup(_) => "session.setup.retry",
+        LocalDaemonRequest::DismissRoomSetup(_) => "session.setup.dismiss",
         LocalDaemonRequest::SetAgentDeadline(_) => "agent.deadline.set",
         LocalDaemonRequest::GetAgentDeadline(_) => "agent.deadline.get",
         LocalDaemonRequest::ListDescendants(_) => "agent.descendants.list",

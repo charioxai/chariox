@@ -387,6 +387,8 @@ export type WaitingRoomInventorySnapshot = {
   terminals?: TerminalRecord[]
   launch_target?: {
     repository_state?: "ready" | "not-repository" | "unborn" | null
+    // Whether a `git` executable runs on the kernel's machine.
+    git_available?: boolean
     workspace_id: string
     worktree_id: string
     workspace_label?: string | null

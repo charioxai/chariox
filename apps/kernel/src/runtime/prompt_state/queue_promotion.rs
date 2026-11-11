@@ -88,6 +88,49 @@ mod tests {
     }
 
     #[test]
+    fn a_rooms_setup_queues_prompts_until_it_lifts() {
+        use crate::session::{RoomSetupRequest, RoomSetupStepId};
+        let owner = PromptStateOwner::default();
+        let setup = crate::session::RoomSetupStore::default();
+        owner.set_room_setup(setup.clone());
+        let session =
+            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        setup.begin(
+            "room",
+            "agent",
+            &RoomSetupRequest {
+                git_init: true,
+                new_worktree: true,
+                publish: None,
+            },
+        );
+        let outcome = owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new("first", "client", "agent", "go", PromptStatus::Queued),
+                false,
+            )
+            .unwrap();
+        assert!(matches!(outcome, PromptSubmissionOutcome::Queued { .. }));
+        assert!(owner
+            .try_claim_idle_queue_promotion(&session, "agent")
+            .is_none());
+
+        setup.finish("room", RoomSetupStepId::GitInit, Ok(()));
+        setup.finish("room", RoomSetupStepId::Worktree, Err("no commits".into()));
+        assert!(
+            owner
+                .try_claim_idle_queue_promotion(&session, "agent")
+                .is_none(),
+            "a failed worktree holds prompts until it is dismissed"
+        );
+        assert!(setup.dismiss("room"));
+        assert!(owner
+            .try_claim_idle_queue_promotion(&session, "agent")
+            .is_some());
+    }
+
+    #[test]
     fn idle_promotion_claim_deduplicates_preparation_and_releases_for_retry() {
         let owner = PromptStateOwner::default();
         let session =

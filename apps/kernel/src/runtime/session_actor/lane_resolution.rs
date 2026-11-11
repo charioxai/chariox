@@ -13,6 +13,7 @@ pub(super) async fn resolve_session_lane_key(
     match request {
         LocalDaemonRequest::CreateSession(_)
         | LocalDaemonRequest::ListProjects(_)
+        | LocalDaemonRequest::SuggestSessionAlias(_)
         | LocalDaemonRequest::SetProjectPinned(_)
         | LocalDaemonRequest::RenameProject(_)
         | LocalDaemonRequest::UpdateProjectWorkspaces(_)
@@ -131,6 +132,12 @@ pub(super) async fn resolve_session_lane_key(
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
         LocalDaemonRequest::AliasSession(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::RetryRoomSetup(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::DismissRoomSetup(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
         LocalDaemonRequest::SpawnAgent(request) => {

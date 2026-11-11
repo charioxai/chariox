@@ -1,4 +1,4 @@
-import type { SessionAgentDefaults, SessionProjectSelection } from "./kernel-types.js"
+import type { RoomSetupRequest, SessionAgentDefaults, SessionProjectSelection } from "./kernel-types.js"
 import {
   type WorkspaceLiveSyncModeInput,
   workspaceLiveSyncModeProtocolValue,
@@ -14,6 +14,7 @@ export function createSessionRequest(
   kernelRef?: string | null,
   worktreePlacement?: Record<string, unknown> | null,
   projectSelection?: SessionProjectSelection | null,
+  setup?: RoomSetupRequest | null,
 ) {
   return {
     CreateSession: {
@@ -26,6 +27,7 @@ export function createSessionRequest(
       ...(worktreePlacement ? { worktree_placement: worktreePlacement } : {}),
       ...(workspaceLiveSyncMode ? { workspace_live_sync_mode: workspaceLiveSyncModeProtocolValue(workspaceLiveSyncMode) } : {}),
       ...(projectSelection ? { project_selection: projectSelection } : {}),
+      ...(setup ? { setup } : {}),
     },
   }
 }
@@ -232,6 +234,19 @@ export function aliasSessionRequest(sessionId: string, alias: string) {
       alias,
     },
   }
+}
+
+// What a new Room created now in the workspace would be called; changes nothing.
+export function suggestSessionAliasRequest(workspaceId: string) {
+  return { SuggestSessionAlias: { workspace_id: workspaceId } }
+}
+
+export function retryRoomSetupRequest(sessionId: string) {
+  return { RetryRoomSetup: { session_id: sessionId } }
+}
+
+export function dismissRoomSetupRequest(sessionId: string) {
+  return { DismissRoomSetup: { session_id: sessionId } }
 }
 
 export function getSessionStateRequest(sessionId: string) {

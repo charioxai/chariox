@@ -8,6 +8,7 @@ fn mp02_mp08_owner13_workspace_git_protocol_542() {
     );
     let target = crate::local::WaitingRoomLaunchTarget {
         repository_state: Some("not-repository".into()),
+        git_available: true,
         workspace_id: "/ordinary".into(),
         worktree_id: "/ordinary".into(),
         workspace_label: None,
@@ -15,7 +16,7 @@ fn mp02_mp08_owner13_workspace_git_protocol_542() {
         worktree_label: None,
     };
     let actual = serde_json::to_value(target).unwrap();
-    let expected = serde_json::json!({"repository_state":"not-repository","workspace_id":"/ordinary","worktree_id":"/ordinary","directory":"/ordinary"});
+    let expected = serde_json::json!({"repository_state":"not-repository","git_available":true,"workspace_id":"/ordinary","worktree_id":"/ordinary","directory":"/ordinary"});
     assert_eq!(actual, expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&actual).unwrap())),

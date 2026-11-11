@@ -263,6 +263,7 @@ pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSe
         | LocalDaemonResponse::AgentProfileUpdated { session, .. }
         | LocalDaemonResponse::SessionEnded { session }
         | LocalDaemonResponse::SessionAliased { session }
+        | LocalDaemonResponse::RoomSetupUpdated { session }
         | LocalDaemonResponse::WorkspaceLinkCreated { session, .. }
         | LocalDaemonResponse::WorkspaceLinkAttached { session, .. }
         | LocalDaemonResponse::WorkspaceLinkDetached { session, .. }

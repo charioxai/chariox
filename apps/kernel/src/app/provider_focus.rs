@@ -13,6 +13,7 @@ impl DaemonApp {
             self.sudo_window_projection
                 .windows_for_session(session.id()),
         );
+        session.set_room_setup(self.room_setup.state(session.id()));
         let prompt_session = session.clone();
         let active_prompt_agent_id = self.prompt_state_owner.active_prompt_agent_id(session);
         let projected_run_id = projected_active_provider_run_id(

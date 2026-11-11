@@ -95,6 +95,20 @@ export type RuntimeSession = {
   workspace_links?: WorkspaceLinkDefinition[]
   workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
   external_provider_imports?: ExternalProviderImportMetadata[]
+  // Setup steps of a new Room while any is unfinished or failed; absent once all are done.
+  room_setup?: RoomSetupState
+}
+
+export type RoomSetupRequest = {
+  git_init?: boolean
+  new_worktree?: boolean
+  publish?: { private?: boolean; name?: string | null } | null
+}
+
+export type RoomSetupStepId = "git_init" | "worktree" | "publish"
+export type RoomSetupStepState = "pending" | "running" | "done" | "failed"
+export type RoomSetupState = {
+  steps: { id: RoomSetupStepId; state: RoomSetupStepState; message?: string }[]
 }
 
 export type RuntimeProjectKind = "default" | "named"
