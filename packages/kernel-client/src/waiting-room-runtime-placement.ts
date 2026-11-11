@@ -66,9 +66,13 @@ export function waitingRoomLaunchMachineOptions<TMachine extends WaitingRoomLaun
     managedEnvironments?: readonly WaitingRoomLaunchManagedEnvironmentInput[]
   } = {},
 ): WaitingRoomLaunchMachineOption<TMachine>[] {
+  // A managed machine is offered once, as its environment, whose kernels are the same machine's.
+  const managedMachineIds = new Set((remote.managedEnvironments ?? [])
+    .filter((environment) => environment.desiredState !== "deleted")
+    .flatMap((environment) => environment.runtimeMachineId ? [environment.runtimeMachineId] : []))
   return [
     { id: "local", label: "local", machine: null, managedEnvironment: null },
-    ...(remote.machines ?? []).map((machine) => ({
+    ...(remote.machines ?? []).filter((machine) => !managedMachineIds.has(machine.machine_id)).map((machine) => ({
       id: machine.machine_id,
       label: machine.registry_alias ?? machine.machine_alias ?? machine.display_name ?? machine.machine_id,
       machine,
@@ -102,6 +106,10 @@ export function waitingRoomSelectedLaunchMachineRef(
   if (selected === NEW_MANAGED_MACHINE_REF || managedEnvironmentIdFromMachineRef(selected)) {
     return selected
   }
+  const managed = remote.managedEnvironments?.find((environment) => (
+    environment.desiredState !== "deleted" && environment.runtimeMachineId === selected
+  ))
+  if (managed) return managedEnvironmentMachineRef(managed.environmentId)
   return options.some((option) => option.id === selected) ? selected : options[0]?.id ?? "local"
 }
 

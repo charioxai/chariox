@@ -391,9 +391,10 @@ test("MP-08/MP-11 the Kernel row keeps the selected machine's kernel once the TU
     }
   }
 
+  // The rented machine is offered once, as its environment, also when its machine id was selected.
   assert.deepEqual(startRows({ selectedMachineRef: "machine-rented", selectedKernelRef: "kernel-rented" }), {
     selectedKernelRef: "kernel-rented",
-    machine: "chariox-managed-env-061cec4b-1546f94b",
+    machine: "Managed agent · ready",
     kernel: "rented-kernel",
   })
   assert.deepEqual(startRows({ selectedMachineRef: "managed:environment:managed_env_061cec4b", selectedKernelRef: "" }), {

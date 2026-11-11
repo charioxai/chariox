@@ -88,9 +88,9 @@ test("waiting room MP-08/MP-11 ready managed machines expose the common discover
       runtimeKernelId: "kernel-1b",
     }],
   }
+  // MP-08: the managed machine is offered once, as its environment; its relay machine row is not a second choice.
   assert.deepEqual(waitingRoomLaunchMachineOptions(managedRemote).map((option) => option.id), [
     "local",
-    "machine-1",
     "machine-2",
     "machine-without-kernel",
     managedEnvironmentMachineRef("environment-1"),
