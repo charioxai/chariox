@@ -91,8 +91,7 @@ pub(crate) fn serve() -> wasmtime::Result<()> {
     // from the reverified component. The inherited descriptor is checked again
     // for the exact build/engine/CPU key and byte integrity above. No uploaded
     // native code or caller path is accepted here.
-    let component =
-        unsafe { wasmtime::component::Component::deserialize(engine.engine(), artifact.bytes())? };
+    let component = unsafe { engine.deserialize_component(artifact.bytes())? };
     let mut worker = AppWorker::new(
         engine,
         component,
