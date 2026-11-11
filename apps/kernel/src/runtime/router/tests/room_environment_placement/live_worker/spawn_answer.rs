@@ -192,12 +192,9 @@ async fn check_spawn_answer(fixture: &LiveWorker) {
 }
 
 /// The parent's folder is a path on the home machine: a child on another kernel that names no
-/// folder starts where that kernel starts its agents, as `/agent spawn --kernel` does.
+/// folder starts in a folder that kernel makes for it, as `/agent spawn --kernel` does.
 async fn check_kernel_spawn_folder(fixture: &LiveWorker, agent_worker: &CommandRouter) {
-    // The worker kernel runs in the fixture's worker folder, its own default for new agents.
-    let worker_folder = fixture._worker_state.worktree.path().display().to_string();
     let home_folder = fixture.home_state.worktree.path().display().to_string();
-    assert_ne!(worker_folder, home_folder);
 
     let (_, stored) = spawn_from_room(
         fixture,
@@ -213,11 +210,11 @@ async fn check_kernel_spawn_folder(fixture: &LiveWorker, agent_worker: &CommandR
         Some(home_folder.as_str()),
         "the worker is not sent the parent's home folder"
     );
-    assert_eq!(
-        crate::app::RemoteLeaseRuntime::new(&mut *agent_worker.app.lock().await)
-            .leased_agent_working_directories(),
-        vec![worker_folder],
-        "the child runs in the worker's own folder"
+    let folders = crate::app::RemoteLeaseRuntime::new(&mut *agent_worker.app.lock().await)
+        .leased_agent_working_directories();
+    assert!(
+        matches!(folders.as_slice(), [folder] if folder != &home_folder && folder.contains("/chariox-workspaces/agent-")),
+        "the child runs in its own folder on the worker: {folders:?}"
     );
 }
 
