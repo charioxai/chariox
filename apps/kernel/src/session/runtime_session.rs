@@ -13,6 +13,7 @@ use super::prompt_queue::PromptSubmissionOutcome;
 use super::prompt_queue::{AgentPromptState, DurablePromptPrivateState, PromptQueueItem};
 use super::prompt_runtime::PromptRuntimeState;
 use super::queued_metaagent_task::QueuedMetaagentTask;
+use super::room_setup::RoomSetupState;
 use super::runtime_interactions::RuntimeInteraction;
 use super::runtime_worktrees::{RuntimeWorktreeAssignment, WorktreeIsolationMode};
 use super::session_config::SessionConfigState;
@@ -176,6 +177,9 @@ pub struct RuntimeSession {
     external_provider_imports: Vec<ExternalProviderImportMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
+    /// Setup steps of a new Room, projected from the kernel's live setup store; never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    room_setup: Option<RoomSetupState>,
 }
 
 impl RuntimeSession {
@@ -201,6 +205,12 @@ impl RuntimeSession {
     }
     pub fn sudo_windows(&self) -> &[crate::local::KernelSudoTurn] {
         &self.sudo_windows
+    }
+    pub(crate) fn set_room_setup(&mut self, room_setup: Option<RoomSetupState>) {
+        self.room_setup = room_setup;
+    }
+    pub fn room_setup(&self) -> Option<&RoomSetupState> {
+        self.room_setup.as_ref()
     }
     pub(crate) fn agent_wakes(&self) -> &[crate::durable_state::agent_lifecycle::AgentWake] {
         &self.agent_wakes
@@ -324,6 +334,7 @@ impl RuntimeSession {
             workspace_links: Vec::new(),
             external_provider_imports: Vec::new(),
             workspace_live_sync_mode: None,
+            room_setup: None,
         }
     }
 

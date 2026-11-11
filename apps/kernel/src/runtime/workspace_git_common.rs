@@ -16,6 +16,22 @@ pub(crate) fn git_command_output(path: &str, args: &[&str]) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+/// Whether a `git` executable runs here. Only a positive answer is remembered, so installing
+/// Git while the kernel runs is noticed.
+pub(crate) fn git_available() -> bool {
+    static AVAILABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    use std::sync::atomic::Ordering::Relaxed;
+    if AVAILABLE.load(Relaxed) {
+        return true;
+    }
+    let runs = crate::process_spawn::command("git")
+        .arg("--version")
+        .bounded_output()
+        .is_ok_and(|output| output.status.success());
+    AVAILABLE.store(runs, Relaxed);
+    runs
+}
+
 pub(crate) fn run_workspace_git_command(
     worktree_path: &str,
     args: &[&str],

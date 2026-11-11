@@ -28,6 +28,13 @@ impl KernelRuntimeState {
         request.kernel_ref = self.settle_kernel_ref(request.kernel_ref.take()).await?;
         let slice_ref = request.slice_ref.clone();
         let kernel_ref = request.kernel_ref.clone();
+        let setup = request.setup.clone();
+        if setup.is_some() && (slice_ref.is_some() || kernel_ref.is_some()) {
+            return Err(DaemonError::LocalTransport {
+                operation: "session.create",
+                message: "room setup runs on this kernel's own folder; create the Room on the kernel that holds the folder".to_string(),
+            });
+        }
         if request.metaagent {
             return Err(DaemonError::LocalTransport {
                 operation: "session.create",
@@ -98,13 +105,24 @@ impl KernelRuntimeState {
         } else {
             (self.owned.create_session_response(request)?, None)
         };
-        self.publish_created_session_response(
-            &response,
-            slice_ref,
-            &existing_project_ids,
-            unpublished_session.as_mut(),
-        )
-        .await?;
+        let published = self
+            .publish_created_session_response(
+                &response,
+                slice_ref,
+                &existing_project_ids,
+                unpublished_session.as_mut(),
+            )
+            .await;
+        if let (LocalDaemonResponse::SessionCreated { session, agent, .. }, Some(setup)) =
+            (&response, setup)
+        {
+            if published.is_ok() {
+                self.spawn_room_setup(session.id(), agent.id(), setup);
+            } else {
+                self.owned.room_setup.clear(session.id());
+            }
+        }
+        published?;
         if let Some(guard) = unpublished_session.as_mut() {
             guard.publish();
         }

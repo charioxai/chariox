@@ -273,6 +273,22 @@ pub struct AliasSessionRequest {
     pub alias: String,
 }
 
+/// What a new Room created now in `workspace_id` would be called. Changes nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SuggestSessionAliasRequest {
+    pub workspace_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetryRoomSetupRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DismissRoomSetupRequest {
+    pub session_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndSessionRequest {
     pub session_id: String,

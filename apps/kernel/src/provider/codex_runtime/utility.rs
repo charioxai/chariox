@@ -18,6 +18,7 @@ use super::{drain_codex_events, CodexRuntimeState};
 
 const CODEX_UTILITY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_codex_utility_prompt_with_admission(
     run: &RuntimeProviderRun,
     prompt: &str,
@@ -26,6 +27,9 @@ pub(crate) fn run_codex_utility_prompt_with_admission(
     policy: ProviderUtilityExecutionPolicy,
     admission: Option<crate::provider::ProviderUtilityAdmission>,
     stop: Option<&crate::provider::UtilityStop>,
+    native_interaction_bridge: Option<
+        std::sync::Arc<dyn crate::provider::ProviderNativeInteractionBridge>,
+    >,
 ) -> Result<String, DaemonError> {
     let endpoint = run
         .structured_endpoint()
@@ -35,7 +39,7 @@ pub(crate) fn run_codex_utility_prompt_with_admission(
             message: "codex utility requires a structured provider endpoint".to_string(),
         })?
         .to_string();
-    let client = codex_client_for_run(run, &endpoint, None)?;
+    let client = codex_client_for_run(run, &endpoint, native_interaction_bridge.clone())?;
     let client = if policy.is_read_only_discovery() {
         client
             .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncTracked)
@@ -117,9 +121,15 @@ pub(crate) fn run_codex_utility_prompt_with_admission(
     if let Some(turn_id) = codex_turn_id_from_start_response(&response) {
         state.active_turn_id = Some(turn_id);
     }
+    // The person's approvals of this turn belong to the run, like the kernel's own questions:
+    // the turn is not a queued prompt, so nothing else names what the card is about.
+    state.native_approval_origin = native_interaction_bridge
+        .as_deref()
+        .map(|bridge| crate::provider::setup_turn_origin(bridge, run));
 
     let deadline = Instant::now() + timeout;
     let mut output = String::new();
+    let mut last_message: Option<String> = None;
     let mut completed = false;
     while Instant::now() < deadline {
         // Interrupts only this utility's own thread; the agent's conversation is untouched.
@@ -127,9 +137,18 @@ pub(crate) fn run_codex_utility_prompt_with_admission(
             let _ = abort_codex_turn(run.id(), &mut state);
             return Err(stopped_utility(run, "codex_utility_stopped"));
         }
-        let poll = drain_codex_events(run, &mut state, None)?;
+        let poll = drain_codex_events(run, &mut state, native_interaction_bridge.clone())?;
         for chunk in poll.chunks {
             if chunk.kind == TerminalOutputKind::ProviderOutput {
+                // Messages are separate lines: a progress message must not swallow the one that follows.
+                if policy.returns_whole_answer()
+                    && chunk.merge_key != last_message
+                    && !output.is_empty()
+                    && !output.ends_with('\n')
+                {
+                    output.push('\n');
+                }
+                last_message = chunk.merge_key.clone();
                 output.push_str(&String::from_utf8_lossy(&chunk.bytes));
             }
         }
@@ -194,7 +213,7 @@ fn clean_codex_utility_output(output: &str) -> String {
 }
 
 fn codex_utility_output(output: &str, policy: ProviderUtilityExecutionPolicy) -> String {
-    if policy.is_read_only_discovery() {
+    if policy.is_read_only_discovery() || policy.returns_whole_answer() {
         output.trim().to_string()
     } else {
         clean_codex_utility_output(output)
@@ -316,10 +335,173 @@ mod tests {
             ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
             None,
             None,
+            None,
         );
         let methods = server.join().unwrap();
         assert_eq!(methods, ["initialize", "thread/start", "turn/start"]);
         assert_eq!(output.unwrap(), expected);
+    }
+
+    /// What the fixture server saw: the approval answer the client sent, and the turn's notifications it replayed.
+    struct RoomCommandsFixture {
+        decision: Option<Value>,
+    }
+
+    struct AllowingBridge(std::sync::Mutex<Vec<String>>);
+
+    impl crate::provider::ProviderNativeInteractionBridge for AllowingBridge {
+        fn request_blocking(
+            &self,
+            _session_id: &str,
+            interaction: crate::session::RuntimeInteraction,
+        ) -> Result<crate::provider::ProviderNativeInteractionResolution, DaemonError> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(interaction.message().to_string());
+            // The kernel's bridge cannot show a card that names no origin; it answers as if nobody did.
+            if interaction.native_origin().is_none() {
+                return Ok(crate::provider::ProviderNativeInteractionResolution {
+                    status: "timed_out".into(),
+                    choice_id: None,
+                    reply: None,
+                });
+            }
+            Ok(crate::provider::ProviderNativeInteractionResolution {
+                status: "answered".into(),
+                choice_id: Some("allow_once".into()),
+                reply: Some("allow".into()),
+            })
+        }
+    }
+
+    /// Runs a Room-commands utility turn against a fixture Codex that first asks to run `gh repo create`,
+    /// then says "working" and ends with the verdict in a second message.
+    fn run_room_commands_turn(
+        bridge: Option<std::sync::Arc<dyn crate::provider::ProviderNativeInteractionBridge>>,
+    ) -> (Result<String, DaemonError>, RoomCommandsFixture) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut socket = accept(stream).unwrap();
+            let mut fixture = RoomCommandsFixture { decision: None };
+            while let Ok(message) = socket.read() {
+                let Message::Text(text) = message else {
+                    continue;
+                };
+                let message: Value = serde_json::from_str(&text).unwrap();
+                if message.get("method").is_none() {
+                    if message["id"] == 77 {
+                        fixture.decision = Some(message["result"].clone());
+                        for notification in [
+                            json!({"method":"item/completed","params":{"threadId":"utility-thread","turnId":"utility-turn","item":{"id":"progress","type":"agentMessage","text":"Working on it."}}}),
+                            json!({"method":"item/completed","params":{"threadId":"utility-thread","turnId":"utility-turn","item":{"id":"verdict","type":"agentMessage","text":"PUBLISHED https://github.com/me/x"}}}),
+                            json!({"method":"turn/completed","params":{"threadId":"utility-thread","turn":{"id":"utility-turn","status":"completed","items":[]}}}),
+                        ] {
+                            socket
+                                .send(Message::Text(notification.to_string().into()))
+                                .unwrap();
+                        }
+                        break;
+                    }
+                    continue;
+                }
+                let method = message["method"].as_str().unwrap_or("").to_string();
+                if method == "initialized" {
+                    continue;
+                }
+                let result = match method.as_str() {
+                    "initialize" => json!({"userAgent":"fixture"}),
+                    "thread/start" => json!({"thread":{"id":"utility-thread"},"model":"fixture"}),
+                    "turn/start" => json!({"turn":{"id":"utility-turn"}}),
+                    other => panic!("unexpected utility method {other}"),
+                };
+                socket
+                    .send(Message::Text(
+                        json!({"id":message["id"],"result":result})
+                            .to_string()
+                            .into(),
+                    ))
+                    .unwrap();
+                if method == "turn/start" {
+                    socket
+                        .send(Message::Text(
+                            json!({"id":77,"method":"item/commandExecution/requestApproval","params":{"threadId":"utility-thread","turnId":"utility-turn","itemId":"command","command":"gh repo create my-folder --private"}})
+                                .to_string()
+                                .into(),
+                        ))
+                        .unwrap();
+                }
+            }
+            fixture
+        });
+        let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "fixture")
+            .with_agent_id("agent-1");
+        let run = RuntimeProviderRun::new(
+            "utility-run",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: BTreeMap::new(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: Some(endpoint),
+            },
+        );
+        let output = run_codex_utility_prompt_with_admission(
+            &run,
+            "Publish this folder",
+            "",
+            Duration::from_secs(5),
+            ProviderUtilityExecutionPolicy::RoomCommands,
+            None,
+            None,
+            bridge,
+        );
+        (output, server.join().unwrap())
+    }
+
+    #[test]
+    fn a_room_commands_turn_asks_the_person_through_the_kernel_bridge() {
+        let bridge = std::sync::Arc::new(AllowingBridge(Default::default()));
+        let (output, fixture) = run_room_commands_turn(Some(bridge.clone()));
+        output.unwrap();
+        let asked = bridge.0.lock().unwrap().clone();
+        assert_eq!(
+            asked.len(),
+            1,
+            "one interaction reaches the person: {asked:?}"
+        );
+        assert!(asked[0].contains("gh repo create my-folder --private"));
+        assert_eq!(fixture.decision.unwrap()["decision"], "accept");
+    }
+
+    #[test]
+    fn a_room_commands_turn_without_the_bridge_still_declines() {
+        let (_, fixture) = run_room_commands_turn(None);
+        assert_eq!(fixture.decision.unwrap()["decision"], "decline");
+    }
+
+    #[test]
+    fn a_room_commands_answer_keeps_the_progress_line_and_the_verdict() {
+        let (output, _) = run_room_commands_turn(Some(std::sync::Arc::new(AllowingBridge(
+            Default::default(),
+        ))));
+        let output = output.unwrap();
+        assert!(output.contains("Working on it."), "{output:?}");
+        assert_eq!(
+            output.lines().last(),
+            Some("PUBLISHED https://github.com/me/x"),
+            "{output:?}"
+        );
     }
 
     #[test]
@@ -406,6 +588,7 @@ mod tests {
             ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
             None,
             Some(&stop),
+            None,
         );
         stopper.join().unwrap();
         let methods = server.join().unwrap();

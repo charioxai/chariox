@@ -614,6 +614,7 @@ fn last_used_workspace_target(
     })?;
     Some(WaitingRoomLaunchTarget {
         repository_state: session.repository_state.clone(),
+        git_available: crate::runtime::workspace_git_common::git_available(),
         workspace_id: session.workspace_id.clone(),
         worktree_id: session.worktree_id.clone(),
         workspace_label: session.workspace_label.clone(),
@@ -679,6 +680,7 @@ fn compute_waiting_room_launch_target(
     let branch = cached_git_branch(&worktree, now_ms);
     Some(WaitingRoomLaunchTarget {
         repository_state: Some(workspace_repository_state(&workspace)),
+        git_available: crate::runtime::workspace_git_common::git_available(),
         workspace_label: cached_workspace_label(&workspace),
         directory: Some(workspace.clone()),
         worktree_label: worktree_display_label(&worktree, &workspace, branch.as_deref()),

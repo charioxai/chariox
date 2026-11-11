@@ -30,7 +30,7 @@ pub(crate) use finished_jobs::{
 };
 use in_flight::ProviderRunInFlightState;
 pub(crate) use native_interaction::{
-    ProviderNativeInteractionBridge, ProviderNativeInteractionBridgeStore,
+    setup_turn_origin, ProviderNativeInteractionBridge, ProviderNativeInteractionBridgeStore,
     ProviderNativeInteractionResolution,
 };
 pub(crate) use operation_lanes::{ProviderRunOperationLanes, ProviderRunOperationPermit};

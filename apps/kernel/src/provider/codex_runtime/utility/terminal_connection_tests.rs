@@ -111,6 +111,7 @@ fn reset_after_utility_output(
         ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
         None,
         None,
+        None,
     );
     server.join().unwrap();
     result

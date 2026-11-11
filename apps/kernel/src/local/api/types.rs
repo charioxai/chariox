@@ -500,4 +500,6 @@ pub use workspace::*;
 /// install that waits for its owner is a passkey prompt (`app_install`); App summaries carry
 /// `display_name` and `icon`; the Vault reports `awaiting_passphrase`; a gateway request and its answer
 /// may carry bytes as bytes (`framed_plaintext_v1`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1003;
+/// 1004: Room setup (`CreateSession.setup`, `RuntimeSession.room_setup`, `RetryRoomSetup`,
+/// `DismissRoomSetup`), `SuggestSessionAlias`, and `git_available` on the launch target.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1004;

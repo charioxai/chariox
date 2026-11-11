@@ -2,13 +2,14 @@ use crate::error::DaemonError;
 use crate::local::{
     AcknowledgeAgentOutputSeenRequest, AliasSessionRequest, ArchiveProjectRequest,
     AttachToSessionRequest, CancelRoomEnvironmentActionRequest, CycleAgentFocusRequest,
-    DeleteProjectRequest, DeleteSessionRequest, DetachFromSessionRequest, EndSessionRequest,
-    FocusAgentRequest, ListProjectsRequest, LocalDaemonRequest, LocalDaemonResponse,
-    ReadRoomEnvironmentClipboardRequest, ReleaseRoomEnvironmentInputRequest, RenameProjectRequest,
-    RequestRoomEnvironmentInputTakeoverRequest, RespondToInteractionRequest, RestoreProjectRequest,
-    RetryRoomEnvironmentRequest, SetRoomBrowserBarRequest, StartRoomEnvironmentRequest,
-    StopRoomEnvironmentRequest, SubmitRoomEnvironmentActionRequest,
-    SubmitRoomEnvironmentBrowserActionRequest, UpdateProjectWorkspacesRequest,
+    DeleteProjectRequest, DeleteSessionRequest, DetachFromSessionRequest, DismissRoomSetupRequest,
+    EndSessionRequest, FocusAgentRequest, ListProjectsRequest, LocalDaemonRequest,
+    LocalDaemonResponse, ReadRoomEnvironmentClipboardRequest, ReleaseRoomEnvironmentInputRequest,
+    RenameProjectRequest, RequestRoomEnvironmentInputTakeoverRequest, RespondToInteractionRequest,
+    RestoreProjectRequest, RetryRoomEnvironmentRequest, RetryRoomSetupRequest,
+    SetRoomBrowserBarRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
+    SubmitRoomEnvironmentActionRequest, SubmitRoomEnvironmentBrowserActionRequest,
+    SuggestSessionAliasRequest, UpdateProjectWorkspacesRequest,
     UpdateRoomEnvironmentPointerRequest, UpdateRoomEnvironmentViewportRequest,
     UpdateSessionConfigRequest,
 };
@@ -1117,6 +1118,54 @@ impl SessionRuntimeStore {
         }
         .await
         .map(|session| LocalDaemonResponse::SessionAliased { session });
+        self.with_session_projection_action_result(result).await
+    }
+
+    pub(super) async fn suggest_session_alias(
+        &self,
+        request: SuggestSessionAliasRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let alias = self.state.suggest_session_alias(&request.workspace_id);
+        (
+            Ok(LocalDaemonResponse::SessionAliasSuggested {
+                workspace_id: request.workspace_id,
+                alias,
+            }),
+            None,
+        )
+    }
+
+    pub(super) async fn retry_room_setup(
+        &self,
+        request: RetryRoomSetupRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .retry_room_setup(&request.session_id, &caller_user_id)
+            .await
+            .map(|session| LocalDaemonResponse::RoomSetupUpdated { session });
+        self.with_session_projection_action_result(result).await
+    }
+
+    pub(super) async fn dismiss_room_setup(
+        &self,
+        request: DismissRoomSetupRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .dismiss_room_setup(&request.session_id, &caller_user_id)
+            .map(|session| LocalDaemonResponse::RoomSetupUpdated { session });
         self.with_session_projection_action_result(result).await
     }
 

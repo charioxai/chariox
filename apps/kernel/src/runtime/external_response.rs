@@ -448,6 +448,8 @@ response_policies! {
         SessionDeleted,
         KernelDeleted,
         SessionAliased,
+        SessionAliasSuggested,
+        RoomSetupUpdated,
         AgentAliased,
         AgentProfileUpdated,
         AgentDeadline,
