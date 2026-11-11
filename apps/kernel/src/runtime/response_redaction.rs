@@ -247,6 +247,11 @@ pub(crate) fn redact_response_for_user(
         LocalDaemonResponse::SessionAliased { session } => LocalDaemonResponse::SessionAliased {
             session: redact_session(session)?,
         },
+        LocalDaemonResponse::RoomSetupUpdated { session } => {
+            LocalDaemonResponse::RoomSetupUpdated {
+                session: redact_session(session)?,
+            }
+        }
         LocalDaemonResponse::AgentsListed { agents } => LocalDaemonResponse::AgentsListed {
             agents: agents
                 .into_iter()

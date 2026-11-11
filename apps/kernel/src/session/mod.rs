@@ -11,6 +11,8 @@ mod prompt_queue;
 mod prompt_runtime;
 mod queued_metaagent_task;
 mod room_environment;
+mod room_setup;
+mod room_setup_store;
 mod runtime_interactions;
 pub(crate) use runtime_interactions::bounded_display_text;
 pub use runtime_interactions::NativeInteractionOrigin;
@@ -66,6 +68,10 @@ pub(crate) use room_environment::{
     EnvironmentActionLedger, EnvironmentElementTarget, EnvironmentTabObservation,
     EnvironmentTabRuntimeBinding, RoomEnvironmentRegistry, TabRegistry,
 };
+pub use room_setup::{
+    RoomSetupRequest, RoomSetupState, RoomSetupStep, RoomSetupStepId, RoomSetupStepState,
+};
+pub(crate) use room_setup_store::RoomSetupStore;
 pub use runtime_project::{
     RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,
 };

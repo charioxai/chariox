@@ -56,7 +56,7 @@ test("MP-08/MP-09/MP-10/MP-11 managed upgrades admit only the target and the cur
     }
     // Retired releases and branch protocols are refused in both directions.
     for (const version of [
-      911, 923, 933, 936, 1000,
+      911, 923, 933, 936, 1000, 1001,
       343, 367, 376, 377, 410, 411, 415, 416, 435, 472, 487, 490, 491, 493,
       506, 511, 513, 517, 519, 520, 528, 552, 556, 567, 589, 592, 594, 596, 599, 614,
       312, 325, 333, 339, 342, 372, 412, 413, 414, 488, 489, 492, 495, 496, 499,

@@ -416,6 +416,17 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::AliasSession(request) => {
                 Box::pin(async move { self.store.alias_session(request, caller_user_id).await })
             }
+            LocalDaemonRequest::SuggestSessionAlias(request) => {
+                Box::pin(async move { self.store.suggest_session_alias(request).await })
+            }
+            LocalDaemonRequest::RetryRoomSetup(request) => {
+                Box::pin(async move { self.store.retry_room_setup(request, caller_user_id).await })
+            }
+            LocalDaemonRequest::DismissRoomSetup(request) => {
+                Box::pin(
+                    async move { self.store.dismiss_room_setup(request, caller_user_id).await },
+                )
+            }
             LocalDaemonRequest::SpawnAgent(request) => Box::pin(async move {
                 self.store
                     .spawn_agent(

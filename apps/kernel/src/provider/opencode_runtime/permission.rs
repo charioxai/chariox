@@ -438,6 +438,129 @@ mod tests {
         AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
     };
 
+    struct AnsweringBridge(std::sync::Mutex<Vec<crate::session::RuntimeInteraction>>);
+
+    impl crate::provider::ProviderNativeInteractionBridge for AnsweringBridge {
+        fn request_blocking(
+            &self,
+            _session_id: &str,
+            interaction: crate::session::RuntimeInteraction,
+        ) -> Result<crate::provider::ProviderNativeInteractionResolution, crate::error::DaemonError>
+        {
+            self.0.lock().unwrap().push(interaction);
+            Ok(crate::provider::ProviderNativeInteractionResolution {
+                status: "answered".into(),
+                choice_id: Some("allow_once".into()),
+                reply: Some("allow".into()),
+            })
+        }
+    }
+
+    /// An OpenCode setup turn (a queued prompt it is not) asks to run `gh repo create`; this is what the
+    /// provider is told, given the bridge the turn was started with.
+    fn permission_reply_of_a_setup_turn(
+        bridge: Option<std::sync::Arc<dyn crate::provider::ProviderNativeInteractionBridge>>,
+    ) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let server = {
+            let (finished, captured) = (finished.clone(), captured.clone());
+            std::thread::spawn(move || {
+                // The drain also reads the session's state; only the reply to the permission is captured.
+                while !finished.load(std::sync::atomic::Ordering::Relaxed) {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        continue;
+                    };
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                        .unwrap();
+                    let mut text = String::new();
+                    let reply = loop {
+                        let mut buffer = [0; 1024];
+                        let size = stream.read(&mut buffer).unwrap();
+                        assert!(size > 0, "the provider sent a partial request: {text}");
+                        text.push_str(std::str::from_utf8(&buffer[..size]).unwrap());
+                        if text.starts_with("POST /session/opencode-session-1/permissions/") {
+                            if text.contains("\"response\"") {
+                                *captured.lock().unwrap() = text.clone();
+                                break "true";
+                            }
+                        } else if text.contains("\r\n\r\n") {
+                            break if text.starts_with("GET /session/status ") {
+                                "{\"opencode-session-1\":{\"type\":\"busy\"}}"
+                            } else {
+                                "[]"
+                            };
+                        }
+                    };
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();
+                }
+            })
+        };
+        let run =
+            run("/tmp/chariox-workspace", false).projected_for_home_agent("session-1", "agent-1");
+        let (events, receiver) = std::sync::mpsc::channel();
+        let mut state = super::super::OpenCodeRuntimeState::new(
+            endpoint,
+            "opencode-session-1".into(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(receiver),
+        );
+        state.note_prompt_submitted("user-setup".into());
+        state.native_approval_origin = bridge
+            .as_deref()
+            .map(|bridge| crate::provider::setup_turn_origin(bridge, &run));
+        state
+            .message_parent_ids
+            .insert("assistant-message".into(), Some("user-setup".into()));
+        events
+            .send(crate::provider::OpenCodeEvent::PermissionAsked {
+                request: request(
+                    "bash",
+                    Some("gh repo create folder --private --source=. --push"),
+                    Some("/tmp/folder"),
+                    &["gh repo create *"],
+                ),
+            })
+            .unwrap();
+        crate::provider::opencode_runtime::drain_opencode_events(&run, &mut state, bridge).unwrap();
+        finished.store(true, std::sync::atomic::Ordering::Relaxed);
+        server.join().unwrap();
+        let reply = captured.lock().unwrap().clone();
+        reply
+    }
+
+    #[test]
+    fn a_setup_turn_asks_the_person_and_runs_the_command_they_allow() {
+        let bridge = std::sync::Arc::new(AnsweringBridge(Default::default()));
+        let reply = permission_reply_of_a_setup_turn(Some(bridge.clone()));
+        assert!(reply.contains("\"response\":\"once\""), "{reply}");
+        let asked = bridge.0.lock().unwrap();
+        assert_eq!(asked.len(), 1);
+        assert!(asked[0]
+            .message()
+            .contains("gh repo create folder --private"));
+        assert!(
+            matches!(
+                asked[0].native_origin(),
+                Some(crate::session::NativeInteractionOrigin::ProviderStartup { .. })
+            ),
+            "the card belongs to the run: {:?}",
+            asked[0].native_origin()
+        );
+    }
+
+    #[test]
+    fn a_setup_turn_without_the_bridge_still_rejects() {
+        let reply = permission_reply_of_a_setup_turn(None);
+        assert!(reply.contains("\"response\":\"reject\""), "{reply}");
+    }
+
     fn request(
         permission: &str,
         command: Option<&str>,

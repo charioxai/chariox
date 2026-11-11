@@ -7347,3 +7347,17 @@ starts at the owner's answer (it used to be the first five minutes from the prom
 nobody had seen yet with `app_install_approval_expired`). The kernel-operation interaction is unchanged for
 clients that show it in the Room (`install:<installation>`, its message still lists the review).
 Focused checks: `cargo test -p chariox-kernel --lib app_install_control`, `app_install_prompt_shape_is_pinned`.
+
+### Room setup and Room name suggestion — local 1004
+
+`CreateSession` takes an optional `setup: { git_init?: bool, new_worktree?: bool, publish?: bool }`. The request still names the current checkout; the kernel creates the Room and its first agent at once, then runs the requested steps in the background, in this order: `git_init` (plain `git init` in the folder; refused when it is already a repository), `worktree` (a new worktree of the workspace, then the first agent's working directory moves to it the way `UpdateAgentConfig` moves it) and `publish` (the Room's own agent creates a private GitHub repository named after the folder with the machine's own CLI login, adds `origin` and pushes; its answer ends with `PUBLISHED <url>` or `FAILED <reason in plain words>`, and the last line is the verdict. It runs as a utility turn under the `RoomCommands` policy: its command approvals reach the person as one Room interaction, and the failure line never tells the person to run a command. There is no host-specific logic in Chariox). `setup` is refused with a `slice_ref` or `kernel_ref`.
+
+Every client sees the progress in the session projection as `room_setup: { steps: [{ id: "git_init" | "worktree" | "publish", state: "pending" | "running" | "done" | "failed", message?: string }] }`. The field is absent when there is no setup or every step is done, and it is not stored: a restart drops a running setup. A failed step stays, with a short `message` that says what to do next, until `DismissRoomSetup` or (for `publish`) `RetryRoomSetup`; a failed `git_init` or `worktree` drops the steps after it.
+
+While a step is pending or running, or `git_init` or `worktree` failed and was not dismissed, a `SubmitPrompt` to an agent of that Room is queued (`Queued`) and starts by itself when the hold lifts. A failed `publish` never holds prompts. `RetryRoomSetup { session_id }` runs a failed `publish` again (an error when nothing failed); `DismissRoomSetup { session_id }` clears the failed steps (for `worktree`: continue in the current checkout) and is a no-op when nothing failed. Both answer `RoomSetupUpdated { session }` and follow the authorization of `AliasSession`.
+
+`SuggestSessionAlias { workspace_id }` answers `SessionAliasSuggested { workspace_id, alias }`: the name `CreateSession` would give a new Room in that workspace now. It changes nothing and any connected client may ask.
+
+`WaitingRoomLaunchTarget.git_available` (always serialized, `false` for readers that lack it) reports whether a `git` executable runs on the kernel's machine; a client offers "Initialize Git" only when it is true.
+
+Focused checks: `cargo test -p chariox-kernel --test kernel_websocket_runtime_integration room_setup`, `cargo test -p chariox-kernel --lib room_setup`.

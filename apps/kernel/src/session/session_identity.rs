@@ -133,6 +133,9 @@ pub struct CreateSessionRequest {
     pub owner_user_id: String,
     #[serde(default)]
     pub project_selection: super::SessionProjectSelection,
+    /// Steps the kernel runs on the new Room after creating it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<super::RoomSetupRequest>,
     #[serde(skip)]
     pub default_project_name_hint: Option<String>,
 }
@@ -153,6 +156,7 @@ impl CreateSessionRequest {
             hidden: false,
             owner_user_id: default_session_owner_user_id(),
             project_selection: super::SessionProjectSelection::Default,
+            setup: None,
             default_project_name_hint: None,
         }
     }
@@ -195,6 +199,11 @@ impl CreateSessionRequest {
         mode: crate::config::WorkspaceLiveSyncMode,
     ) -> Self {
         self.workspace_live_sync_mode = Some(mode);
+        self
+    }
+
+    pub fn with_setup(mut self, setup: super::RoomSetupRequest) -> Self {
+        self.setup = Some(setup);
         self
     }
 

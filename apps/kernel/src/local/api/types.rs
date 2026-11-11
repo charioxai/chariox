@@ -502,8 +502,11 @@ pub use workspace::*;
 /// install that waits for its owner is a passkey prompt (`app_install`); App summaries carry
 /// `display_name` and `icon`; the Vault reports `awaiting_passphrase`; a gateway request and its answer
 /// may carry bytes as bytes (`framed_plaintext_v1`).
-/// 1004 (files r1): Files on a machine are listed with a revision and a mode per entry and in pages
+/// 1004 (Landing 9): Files on a machine are listed with a revision and a mode per entry and in pages
 /// (`ListKernelDirectory.offset`), never reach the kernel's own state or Vault, and a file or folder is
 /// copied or moved between the owner's machines by a kernel-owned transfer job
-/// (`StartFileTransfer`, `GetFileTransfer`, `ListFileTransfers`, `CancelFileTransfer`).
+/// (`StartFileTransfer`, `GetFileTransfer`, `ListFileTransfers`, `CancelFileTransfer`). Room setup
+/// (`CreateSession.setup`, `RuntimeSession.room_setup`, `RetryRoomSetup`, `DismissRoomSetup`),
+/// `SuggestSessionAlias`, and `git_available` on the launch target. A yield without a deadline
+/// reports `wait.deadline_ms` as `null`.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1004;

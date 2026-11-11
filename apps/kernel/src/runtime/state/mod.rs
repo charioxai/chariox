@@ -198,6 +198,8 @@ mod room_exec_place_runtime_state;
 mod room_exec_runtime_state;
 mod room_screenshot;
 mod room_secret_observation;
+mod room_setup_publish;
+mod room_setup_runtime;
 mod room_shared_display;
 mod room_terminal_runtime_state;
 mod runtime_tool_call_activity;
@@ -305,6 +307,7 @@ struct KernelRuntimeOwnedState {
     attachment_store: AttachmentServiceStore,
     provider_store: ProviderProcessServiceStore,
     agent_moves: crate::agent_move::AgentMoveStore,
+    room_setup: crate::session::RoomSetupStore,
     pending_provider_launch_credentials: Arc<
         std::sync::Mutex<
             BTreeMap<String, crate::provider::ProviderCredentialEnvironment>,
@@ -903,6 +906,7 @@ impl KernelRuntimeState {
             pending_agent_context_handoffs,
             room_terminals,
             agent_moves,
+            room_setup,
         ) = {
             let started = Instant::now();
             loop {
@@ -927,6 +931,7 @@ impl KernelRuntimeState {
                         app.pending_agent_context_handoff_store(),
                         app.room_terminals(),
                         app.agent_moves.clone(),
+                        app.room_setup.clone(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -1184,6 +1189,7 @@ impl KernelRuntimeState {
                 attachment_store,
                 provider_store,
                 agent_moves,
+                room_setup,
                 pending_provider_launch_credentials: Arc::new(std::sync::Mutex::new(
                     BTreeMap::new(),
                 )),

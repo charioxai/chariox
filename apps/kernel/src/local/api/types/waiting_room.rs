@@ -26,6 +26,9 @@ pub struct GetWaitingRoomPublicSnapshotRequest;
 pub struct WaitingRoomLaunchTarget {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repository_state: Option<String>,
+    /// Whether a `git` executable runs on this kernel's machine.
+    #[serde(default)]
+    pub git_available: bool,
     pub workspace_id: String,
     pub worktree_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

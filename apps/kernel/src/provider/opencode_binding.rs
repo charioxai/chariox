@@ -556,6 +556,9 @@ pub(crate) fn run_opencode_utility_prompt(
     timeout: Duration,
     policy: ProviderUtilityExecutionPolicy,
     stop: Option<&crate::provider::UtilityStop>,
+    native_interaction_bridge: Option<
+        std::sync::Arc<dyn crate::provider::ProviderNativeInteractionBridge>,
+    >,
 ) -> Result<String, DaemonError> {
     let base_url = run
         .structured_endpoint()
@@ -600,6 +603,10 @@ pub(crate) fn run_opencode_utility_prompt(
         state.stop();
         return Err(error);
     }
+    // A turn that may run commands asks the person like any agent does.
+    state.native_approval_origin = native_interaction_bridge
+        .as_deref()
+        .map(|bridge| crate::provider::setup_turn_origin(bridge, run));
 
     let deadline = Instant::now() + timeout;
     let mut output = String::new();
@@ -608,7 +615,8 @@ pub(crate) fn run_opencode_utility_prompt(
         if stop.is_some_and(|stop| stop.is_stopped()) {
             break;
         }
-        let drain = match drain_opencode_events(run, &mut state, None) {
+        let drain = match drain_opencode_events(run, &mut state, native_interaction_bridge.clone())
+        {
             Ok(drain) => drain,
             Err(error) => {
                 state.stop();

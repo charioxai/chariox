@@ -182,9 +182,10 @@ pub use prompt_signals::{
 };
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
-    FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
-    ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
-    ProviderOutputPromptIdentity, ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
+    setup_turn_origin, FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob,
+    FinishedProviderPromptSubmitJob, ProviderNativeInteractionBridge,
+    ProviderNativeInteractionResolution, ProviderOutputPromptIdentity,
+    ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
     ProviderRunActorCompletionSignal, ProviderRunActorMailbox, ProviderRunOperationLanes,
     ProviderRunOperationPermit,
 };
@@ -437,6 +438,10 @@ pub(crate) enum ProviderUtilityExecutionPolicy {
     /// A provider command on the run's own session, such as Claude's
     /// `/compact`: sent bare, and it answers with no assistant text.
     SessionCommand,
+    /// A setup turn the person asked for (publishing a new Room): it runs commands in the run's
+    /// folder under the run's permissions, its approvals reach the person like any agent's, and
+    /// the whole answer comes back so a closing verdict line is never lost.
+    RoomCommands,
 }
 
 impl ProviderUtilityExecutionPolicy {
@@ -446,6 +451,16 @@ impl ProviderUtilityExecutionPolicy {
 
     pub(crate) fn is_read_only_discovery(self) -> bool {
         matches!(self, Self::MetadataOnlyDiscovery)
+    }
+
+    /// Command and file approvals of this turn go to the person through the kernel's bridge.
+    pub(crate) fn asks_the_person_for_approvals(self) -> bool {
+        matches!(self, Self::RoomCommands)
+    }
+
+    /// The answer is the agent's whole reply, not its first line.
+    pub(crate) fn returns_whole_answer(self) -> bool {
+        matches!(self, Self::RoomCommands)
     }
 
     /// The prompt goes out as given, without the kernel's turn context.
@@ -471,6 +486,7 @@ pub(crate) fn run_blocking_provider_utility_prompt(
         policy,
         None,
         None,
+        None,
     )
 }
 
@@ -485,6 +501,7 @@ pub(crate) fn run_blocking_provider_utility_prompt_with_admission(
     policy: ProviderUtilityExecutionPolicy,
     admission: Option<ProviderUtilityAdmission>,
     stop: Option<&UtilityStop>,
+    native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
 ) -> Result<String, crate::error::DaemonError> {
     match run.adapter_key() {
         "codex" => codex_runtime::run_codex_utility_prompt_with_admission(
@@ -495,6 +512,7 @@ pub(crate) fn run_blocking_provider_utility_prompt_with_admission(
             policy,
             admission,
             stop,
+            native_interaction_bridge,
         ),
         "opencode" if admission.is_some() => Err(crate::error::DaemonError::LocalTransport {
             operation,
@@ -507,6 +525,7 @@ pub(crate) fn run_blocking_provider_utility_prompt_with_admission(
             timeout,
             policy,
             stop,
+            native_interaction_bridge,
         ),
         adapter_key => Err(crate::error::DaemonError::LocalTransport {
             operation,
@@ -540,6 +559,20 @@ mod tests {
         ProviderClientInterface, ProviderLaunchResult, ProviderUtilityExecutionPolicy,
         RuntimeProviderRun,
     };
+
+    #[test]
+    fn only_room_commands_ask_the_person_and_keep_the_whole_answer() {
+        assert!(ProviderUtilityExecutionPolicy::RoomCommands.asks_the_person_for_approvals());
+        assert!(ProviderUtilityExecutionPolicy::RoomCommands.returns_whole_answer());
+        for other in [
+            ProviderUtilityExecutionPolicy::ExistingRun,
+            ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
+            ProviderUtilityExecutionPolicy::SessionCommand,
+        ] {
+            assert!(!other.asks_the_person_for_approvals());
+            assert!(!other.returns_whole_answer());
+        }
+    }
 
     #[test]
     fn claude_provider_mode_namespaces_keep_the_same_context_window() {

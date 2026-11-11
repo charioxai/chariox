@@ -457,6 +457,8 @@ pub enum LocalDaemonResponse {
     SessionDeleted { session: RuntimeSession, },
     KernelDeleted { kernel_id: String, deleted_sessions: Vec<RuntimeSession>, },
     SessionAliased { session: RuntimeSession, },
+    SessionAliasSuggested { workspace_id: String, alias: String, },
+    RoomSetupUpdated { session: RuntimeSession, },
     AgentAliased { agent: AgentInstance, session: RuntimeSession, },
     AgentProfileUpdated { agent: AgentInstance, session: RuntimeSession, },
     AgentSpawned {

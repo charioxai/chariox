@@ -213,7 +213,8 @@ impl SessionService {
         self.projects.values().cloned().collect()
     }
 
-    fn default_session_alias(&self, workspace_id: &str) -> String {
+    /// The name a new Room created now in `workspace_id` would get.
+    pub(crate) fn default_session_alias(&self, workspace_id: &str) -> String {
         let base = default_session_alias_base(workspace_id);
         let mut number = self
             .store
