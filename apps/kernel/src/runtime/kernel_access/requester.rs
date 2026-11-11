@@ -377,6 +377,10 @@ mod launcher_tests {
         crate::test_support::isolated_env_test!();
         let install = Install::new();
         let native = install.native("bin/codex");
+        // Name every harness by a fixture, so a real Codex, Claude Code or OpenCode
+        // above this test process in the OS ancestry is not an installed harness.
+        let claude = install.native("bin/claude");
+        let opencode = install.native("bin/opencode");
         let mut sibling = crate::process_spawn::command(&native)
             .args(["-c", "sleep 2; exit 0"])
             .spawn()
@@ -386,6 +390,8 @@ mod launcher_tests {
             .arg(std::env::current_exe().unwrap())
             .args(["--exact", PROBE, "--ignored", "--nocapture"])
             .env("CHARIOX_CODEX_BIN", &native)
+            .env("CHARIOX_CLAUDE_BIN", &claude)
+            .env("CHARIOX_OPENCODE_BIN", &opencode)
             .env("KA_EXPECT_UNKNOWN", "1")
             .env("KA_SIBLING_PID", sibling.id().to_string())
             .status()
