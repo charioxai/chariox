@@ -88,7 +88,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rooms_setup_queues_prompts_until_it_lifts() {
+    fn room_setup_queues_prompts_until_it_lifts() {
         use crate::session::{RoomSetupRequest, RoomSetupStepId};
         let owner = PromptStateOwner::default();
         let setup = crate::session::RoomSetupStore::default();
