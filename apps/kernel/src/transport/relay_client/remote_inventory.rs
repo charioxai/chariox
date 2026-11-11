@@ -169,11 +169,27 @@ pub(crate) async fn refresh_remote_inventory_projection(
             .filter(|kernel| kernel.machine_id == machine.machine_id)
             .count();
     }
-    if visible_kernel_ids.is_some() {
-        remote_machines.retain(|machine| machine.kernel_count > 0);
-    }
+    let remote_machines = listed_remote_machines(
+        remote_machines,
+        &runtime_config.host_machine_id,
+        visible_kernel_ids.is_some(),
+    );
     projection.update(remote_machines, remote_kernels);
     Ok(())
+}
+
+/// A machine is listed for the kernels a client can reach on it. This kernel is "local" to its
+/// clients, so its own machine is listed only while another kernel runs there; with Cloud
+/// visibility, a machine without a visible kernel is not listed at all.
+fn listed_remote_machines(
+    mut machines: Vec<crate::local::RemoteMachineRecord>,
+    host_machine_id: &str,
+    cloud_visibility: bool,
+) -> Vec<crate::local::RemoteMachineRecord> {
+    machines.retain(|machine| {
+        machine.kernel_count > 0 || !(cloud_visibility || machine.machine_id == host_machine_id)
+    });
+    machines
 }
 
 async fn validate_live_relay_kernels(
@@ -226,6 +242,48 @@ fn requires_peer_probe(is_known: bool, config: &crate::config::DaemonConfig) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // MP-08 / MP-11: the home's own machine is "local" in every client; without another kernel on
+    // it, it must not also appear as a remote machine with no kernels, whether or not Cloud is used.
+    #[test]
+    fn the_own_machine_is_listed_only_while_another_kernel_runs_on_it() {
+        let machine = |machine_id: &str, kernel_count| crate::local::RemoteMachineRecord {
+            machine_id: machine_id.into(),
+            machine_alias: None,
+            registry_alias: None,
+            display_name: machine_id.into(),
+            trust_status: crate::local::RemoteMachineTrustStatus::Approved,
+            online: true,
+            pending: false,
+            kernel_count,
+            available_providers: Vec::new(),
+            provider_accounts: Vec::new(),
+        };
+        let ids = |machines: Vec<crate::local::RemoteMachineRecord>| {
+            machines
+                .into_iter()
+                .map(|machine| machine.machine_id)
+                .collect::<Vec<_>>()
+        };
+        let listed = |cloud_visibility| {
+            ids(listed_remote_machines(
+                vec![machine("home", 0), machine("other", 0), machine("busy", 2)],
+                "home",
+                cloud_visibility,
+            ))
+        };
+        assert_eq!(listed(false), ["other", "busy"]);
+        assert_eq!(listed(true), ["busy"]);
+        assert_eq!(
+            ids(listed_remote_machines(
+                vec![machine("home", 1)],
+                "home",
+                false
+            )),
+            ["home"],
+            "a sibling kernel keeps the own machine reachable"
+        );
+    }
 
     // MP-08 / MP-10 / MP-11: a private relay's inventory is read with its own
     // token; a retained Cloud profile is not asked which targets are visible.
