@@ -73,6 +73,19 @@ test("managed environments share the Machine selector without duplicating runtim
   )
 })
 
+// MP-08: a new managed machine works in its own folder, so a home without a loaded worktree still rents it.
+test("a new managed machine starts without a home worktree", () => {
+  __setWaitingRoomWorktreeInventoryForTest(null)
+  const state = normalizeWaitingRoomState({
+    ...baseState(), selectedMachineRef: NEW_MANAGED_MACHINE_REF, selectedKernelRef: "",
+    worktreeSelectionId: "", projectSelectionId: "default", sliceSelectionId: "none",
+  }, [], catalog(), undefined, remote())
+  const decision = deriveWaitingRoomActivationDecision({ state: { ...state, worktreeSelectionId: "" }, sessions: [], catalog: catalog(), currentProvider: "opencode", currentModel: "opencode/gpt-5.4", remote: remote() })
+  assert.equal(decision.action, "create", decision.action === "error" ? decision.message : "")
+  if (decision.action !== "create") throw new Error("expected creation")
+  assert.equal(decision.launch.managedEnvironment?.kind, "new")
+})
+
 test("MP-02/MP-08/MP-11 ready enrollment uses ordinary launch choices", () => {
   __setWaitingRoomWorktreeInventoryForTest({ workspacePath: "/tmp/user-repo", currentWorktreePath: "/tmp/user-repo", options: [{ id: "existing:/tmp/user-repo", kind: "existing", label: "user", path: "/tmp/user-repo", branch: "main", isCurrent: true }] })
   try {
