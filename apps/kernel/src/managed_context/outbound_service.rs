@@ -624,7 +624,7 @@ pub(crate) fn start_managed_context_outbound_operation(
                 return;
             }
         };
-        let rented_machine_id = authoritative_ticket.target.machine_id.clone();
+        let target_machine_id = authoritative_ticket.target.machine_id.clone();
         let transfer = transfer_managed_context_package_with_resume(
             &transport,
             ManagedContextOutboundTransferRequest {
@@ -654,7 +654,7 @@ pub(crate) fn start_managed_context_outbound_operation(
         .await;
         match transfer {
             Ok(result) => {
-                approve_rented_machine(&rented_machine_id);
+                approve_transfer_target_machine(&target_machine_id);
                 complete_outbound_operation(
                     &task_store,
                     &task_context_id,
@@ -677,11 +677,11 @@ pub(crate) fn start_managed_context_outbound_operation(
     Ok(status)
 }
 
-// MP-08/MP-10: Cloud's ticket names the machine this home rented and the transfer proved its kernel key, so the
-// owner's own rented machine needs no `/machine approve` on this home.
-fn approve_rented_machine(machine_id: &str) {
+// MP-08/MP-10: Cloud's ticket names the machine this home asked Cloud for and the transfer proved its kernel key,
+// so the owner's own managed machine needs no `/machine approve` on this home.
+fn approve_transfer_target_machine(machine_id: &str) {
     if let Err(error) = crate::config::DaemonConfig::approve_remote_machine(machine_id, None) {
-        tracing::warn!(machine_id, %error, "rented machine stays pending: approval could not be saved; approve it with /machine approve");
+        tracing::warn!(machine_id, %error, "managed machine stays pending: approval could not be saved; approve it with /machine approve");
     }
 }
 
@@ -1946,16 +1946,16 @@ mod tests {
     use crate::transport::relay_crypto;
 
     #[test]
-    fn mp08_a_successful_transfer_approves_the_rented_machine_on_this_home() {
+    fn mp08_a_successful_transfer_approves_the_target_machine_on_this_home() {
         crate::test_support::isolated_env_test!();
         let approved = |machine_id: &str| {
             DaemonConfig::machine_registry_entries()
                 .iter()
                 .any(|entry| entry.machine_id == machine_id && entry.approved && !entry.forgotten)
         };
-        assert!(!approved("machine-rented"));
-        approve_rented_machine("machine-rented");
-        assert!(approved("machine-rented"));
+        assert!(!approved("machine-target"));
+        approve_transfer_target_machine("machine-target");
+        assert!(approved("machine-target"));
         assert!(!approved("machine-other"));
     }
 
