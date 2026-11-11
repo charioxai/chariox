@@ -70,7 +70,7 @@ impl PausedBrief {
         let utility_inputs = root.path().join("brief-utility-inputs");
         let answer = serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":BRIEF}]}}).to_string();
         let script = format!(
-            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in *'Update the handoff brief'*) printf '%s\\n' \"$line\" >> '{}'; touch '{}'; n=0; while [ ! -f '{}' ] && [ $n -lt 800 ]; do sleep .01; n=$((n+1)); done; printf '%s\\n' '{}' ;; *) printf '%s\\n' \"$line\" >> '{}' ;; esac; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done\n",
+            "#!/bin/sh\nwhile IFS= read -r line; do u=$(printf '%s' \"$line\" | sed -n 's/.*\"uuid\":\"\\([^\"]*\\)\".*/\\1/p'); case \"$line\" in *'Update the handoff brief'*) printf '%s\\n' \"$line\" >> '{}'; touch '{}'; n=0; while [ ! -f '{}' ] && [ $n -lt 800 ]; do sleep .01; n=$((n+1)); done; printf '%s\\n' '{}' ;; *) printf '%s\\n' \"$line\" >> '{}' ;; esac; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"user_message_uuids\":[\"'\"$u\"'\"]}}'; done\n",
             utility_inputs.display(), started.display(), release.display(), answer, captured.display()
         );
         let executable = root.path().join("paused-brief-fixture");

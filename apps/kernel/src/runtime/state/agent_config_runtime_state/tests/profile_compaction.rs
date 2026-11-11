@@ -115,7 +115,7 @@ async fn compact_fixture_with_lease(
     let release = root.path().join("release");
     let mut run = RuntimeProviderRun::new("compact-run", &request, ProviderLaunchResult {
         endpoint_mode: AgentEndpointMode::Managed, process_label: "fixture".into(), pty_target: None, pty_program: Some("/bin/sh".into()),
-        pty_args: vec!["-c".into(), format!("while IFS= read -r line; do case \"$line\" in *'surviving queued request'*) touch '{}';; *'/compact'*) printf '%s' \"$line\" > '{}';; esac; n=0; while [ ! -f '{}' ] && [ $n -lt 30 ]; do sleep .1; n=$((n+1)); done; if [ -f '{}' ]; then printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"errors\":[\"native compaction failed\"]}}'; else printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; fi; done", root.path().join("surviving-submitted").display(), marker.display(), release.display(), root.path().join("fail-compact").display())],
+        pty_args: vec!["-c".into(), format!("while IFS= read -r line; do u=$(printf '%s' \"$line\" | sed -n 's/.*\"uuid\":\"\\([^\"]*\\)\".*/\\1/p'); case \"$line\" in *'surviving queued request'*) touch '{}';; *'/compact'*) printf '%s' \"$line\" > '{}';; esac; n=0; while [ ! -f '{}' ] && [ $n -lt 30 ]; do sleep .1; n=$((n+1)); done; if [ -f '{}' ]; then printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"errors\":[\"native compaction failed\"],\"user_message_uuids\":[\"'\"$u\"'\"]}}'; else printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"user_message_uuids\":[\"'\"$u\"'\"]}}'; fi; done", root.path().join("surviving-submitted").display(), marker.display(), release.display(), root.path().join("fail-compact").display())],
         pty_env: Default::default(), pty_env_remove: vec![], working_directory: None, structured_endpoint: None,
     });
     run.set_execution_config(AgentExecutionMode::Plan, AgentPermissionLevel::Required);
@@ -844,10 +844,10 @@ async fn assert_queued_prompt_reaches_committed_profile(leased: bool) {
     let received = root.path().join("new-profile-input");
     let credential_matches = root.path().join("home-credential-matches");
     let executable = root.path().join("claude-queue-fixture");
-    std::fs::write(&executable, format!("#!/bin/sh\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '{}'; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done\n", received.display())).unwrap();
+    std::fs::write(&executable, format!("#!/bin/sh\nwhile IFS= read -r line; do u=$(printf '%s' \"$line\" | sed -n 's/.*\"uuid\":\"\\([^\"]*\\)\".*/\\1/p'); printf '%s\\n' \"$line\" >> '{}'; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"user_message_uuids\":[\"'\"$u\"'\"]}}'; done\n", received.display())).unwrap();
     if leased {
         // Only a boolean is recorded; synthetic launch secrets never enter logs.
-        std::fs::write(&executable, format!("#!/bin/sh\nif [ \"$CLAUDE_CODE_OAUTH_TOKEN\" = 'synthetic-home-token' ]; then touch '{}'; fi\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '{}'; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done\n", credential_matches.display(), received.display())).unwrap();
+        std::fs::write(&executable, format!("#!/bin/sh\nif [ \"$CLAUDE_CODE_OAUTH_TOKEN\" = 'synthetic-home-token' ]; then touch '{}'; fi\nwhile IFS= read -r line; do u=$(printf '%s' \"$line\" | sed -n 's/.*\"uuid\":\"\\([^\"]*\\)\".*/\\1/p'); printf '%s\\n' \"$line\" >> '{}'; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"user_message_uuids\":[\"'\"$u\"'\"]}}'; done\n", credential_matches.display(), received.display())).unwrap();
     }
     #[cfg(unix)]
     {

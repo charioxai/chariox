@@ -3971,7 +3971,7 @@ pub(in crate::runtime::state) mod tests {
         let brief = "## Goal\nRemember amber\n## Constraints & Preferences\nNone\n## Progress\nDone\n## Key Decisions\nNone\n## Next Steps\nRecall\n## Critical Context\namber";
         let answer = serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":brief}]}}).to_string();
         let script = format!(
-            "while IFS= read -r line; do case \"$line\" in *'Update the handoff brief'*) touch '{}'; n=0; while [ ! -f '{}' ] && [ $n -lt 200 ]; do sleep .01; n=$((n+1)); done; printf '%s\\n' '{}'; touch '{}' ;; *) touch '{}' ;; esac; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done",
+            "while IFS= read -r line; do u=$(printf '%s' \"$line\" | sed -n 's/.*\"uuid\":\"\\([^\"]*\\)\".*/\\1/p'); case \"$line\" in *'Update the handoff brief'*) touch '{}'; n=0; while [ ! -f '{}' ] && [ $n -lt 200 ]; do sleep .01; n=$((n+1)); done; printf '%s\\n' '{}'; touch '{}' ;; *) touch '{}' ;; esac; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"user_message_uuids\":[\"'\"$u\"'\"]}}'; done",
             started.display(), release.display(), answer, finished.display(), submitted.display()
         );
         let executable = root.path().join("brief-cli-fixture");

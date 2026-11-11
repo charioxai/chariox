@@ -100,7 +100,8 @@ if [ "$2" = /usage ]; then
   {usage_reply}
 fi
 while IFS= read -r line; do
-  echo '{{"type":"result","subtype":"success","is_error":false,"result":"fixture reply","usage":{{"output_tokens":1}}}}'
+  uuid=$(printf '%s' "$line" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
+  echo '{{"type":"result","subtype":"success","is_error":false,"result":"fixture reply","usage":{{"output_tokens":1}},"user_message_uuids":["'"$uuid"'"]}}'
 done
 "#, checks.display(), if logged_in { "exit 0" } else { "exit 1" })).unwrap();
         assert!(std::process::Command::new("install")
