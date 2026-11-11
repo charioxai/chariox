@@ -95,6 +95,7 @@ function scratch(files, allow = {}) {
   write('scripts/oss-boundary-leaks.allow.json', JSON.stringify(allow.leaks ?? []))
   write('scripts/control-plane-paths.allow.json', JSON.stringify(allow.paths ?? []))
   write('scripts/control-plane-requests.allow.json', JSON.stringify(allow.requests ?? []))
+  write('scripts/oss-boundary-files.allow.json', JSON.stringify(allow.files ?? []))
   return { root, files: Object.keys(files), done: () => rmSync(root, { recursive: true, force: true }) }
 }
 const fullProblemsOf = (files, allow) => {
@@ -111,6 +112,39 @@ test('a planted Cloud vocabulary leak is red until it is listed, and a stale ent
   assert.deepEqual(problemsOf({ 'apps/cli/src/plan.ts': 'export const preset = 1\n' }, { leaks: [{ path: 'apps/cli/src/plan.ts', removedBy: 'item 2', row: 'OSB-09', slice: 'B2' }] }), ['stale leak entry: apps/cli/src/plan.ts'])
   assert.deepEqual(problemsOf(files, { leaks: [{ path: 'apps/cli/src/plan.ts', row: 'OSB-09', slice: 'B2' }] }), ['leak entry: apps/cli/src/plan.ts'])
   assert.deepEqual(problemsOf({ 'apps/cli/src/plan.test.ts': 'const rent = "auto-stop"' }), [])
+})
+
+test('a planted provider word is red with its file and line, and green once the file is listed with a reason', () => {
+  const files = { 'deploy/prepare-image.sh': '#!/bin/sh\n# neutral\nexport SERVER=hetzner\n' }
+  const [found] = fullProblemsOf(files)
+  assert.deepEqual([found.file, found.line, found.kind], ['deploy/prepare-image.sh', 3, 'provider name'])
+  const entry = { path: 'deploy/prepare-image.sh', why: 'names an AI vendor billing page, not a compute provider' }
+  assert.deepEqual(problemsOf(files, { files: [entry] }), [])
+  assert.deepEqual(problemsOf(files, { files: [{ path: entry.path }] }), ['allowed file entry: scripts/oss-boundary-files.allow.json', 'provider name: deploy/prepare-image.sh'])
+})
+
+test('a whole-file entry whose file is gone or no longer names anything is red', () => {
+  const entry = path => ({ path, why: 'sample provider text' })
+  assert.deepEqual(problemsOf({ 'deploy/a.sh': 'echo neutral\n' }, { files: [entry('deploy/a.sh')] }), ['stale allowed file: deploy/a.sh'])
+  assert.deepEqual(problemsOf({ 'deploy/b.sh': 'echo hetzner\n' }, { files: [entry('deploy/gone.sh')] }).sort(), ['provider name: deploy/b.sh', 'stale allowed file: deploy/gone.sh'])
+  assert.deepEqual(problemsOf({ 'deploy/c.sh': 'echo "auto-stop"\n' }, { files: [entry('deploy/c.sh')] }), [])
+})
+
+test('the whole-file list may not grow past the recorded total', () => {
+  assert.ok(Number.isInteger(guard.ALLOWED_FILE_CEILING) && guard.ALLOWED_FILE_CEILING > 0, 'the guard records the whole-file ceiling')
+  const files = {}
+  const listed = []
+  for (let i = 0; i <= guard.ALLOWED_FILE_CEILING; i++) {
+    files[`deploy/f${i}.sh`] = 'echo hetzner\n'
+    listed.push({ path: `deploy/f${i}.sh`, why: 'sample provider text' })
+  }
+  assert.deepEqual(problemsOf(files, { files: listed }), ['allowed file list grew: scripts/oss-boundary-files.allow.json'])
+  assert.deepEqual(problemsOf(Object.fromEntries(Object.entries(files).slice(1)), { files: listed.slice(1) }), [])
+})
+
+test('the recorded whole-file ceiling is the current entry count, so deleting entries lowers it', () => {
+  const entries = JSON.parse(readFileSync(resolve(fileURLToPath(import.meta.url), '../oss-boundary-files.allow.json'), 'utf8'))
+  assert.ok(entries.length === guard.ALLOWED_FILE_CEILING, `${entries.length} entries but the ceiling is ${guard.ALLOWED_FILE_CEILING}: set ALLOWED_FILE_CEILING to the new total`)
 })
 
 test('a vendor host is allowed only in the default-host file', () => {
@@ -200,7 +234,7 @@ test('a planted-violation commit turns the guard CLI red and removing it turns i
     git('init', '-q', '-b', 'main')
     mkdirSync(join(root, 'scripts'))
     copyFileSync(fileURLToPath(new URL('./oss-boundary-guard.mjs', import.meta.url)), join(root, 'scripts/oss-boundary-guard.mjs'))
-    for (const name of ['oss-boundary-leaks', 'control-plane-paths', 'control-plane-requests']) write(`scripts/${name}.allow.json`, '[]')
+    for (const name of ['oss-boundary-leaks', 'oss-boundary-files', 'control-plane-paths', 'control-plane-requests']) write(`scripts/${name}.allow.json`, '[]')
     write('apps/kernel/src/local/api/types/request.rs', 'pub enum LocalDaemonRequest {\n    ListSlices(A),\n}\n')
     git('add', '-A'); git('commit', '-q', '-m', 'clean')
     const clean = guard()
@@ -214,6 +248,7 @@ test('a planted-violation commit turns the guard CLI red and removing it turns i
     for (const named of ['server type', 'provider name', 'auto-stop word', 'unlisted control-plane path', 'unlisted Cloud-shaped request: LocalDaemonRequest::RentManagedMachine']) {
       assert.ok(red.stderr.includes(named), `missing "${named}" in:\n${red.stderr}`)
     }
+    assert.ok(red.stderr.split('\n').some(line => line.startsWith('apps/kernel/src/runtime/rental_quote.rs:3: provider name')), `provider word not reported with file:line in:\n${red.stderr}`)
     for (const identifier of ['RentalQuote', 'HetznerServer', 'AutoStopPolicy', 'rentManagedMachine']) {
       assert.ok(red.stderr.split('\n').some(line => line.startsWith('apps/cli/src/camel-plants.ts:') && line.includes(identifier)), `CamelCase ${identifier} not reported in:\n${red.stderr}`)
     }
