@@ -84,7 +84,9 @@ impl CommandRouter {
     /// not the one it preferred.
     pub(crate) async fn publish_runtime_mcp_port(&self, port: u16) {
         self.config_projection.set_runtime_mcp_port(port);
-        self.app.lock().await.set_runtime_mcp_port(port);
+        self.runtime_state
+            .with_app_side_effect(|app| app.set_runtime_mcp_port(port))
+            .await;
     }
 
     pub(crate) async fn dispatch_authenticated_mcp_proxy_call(
