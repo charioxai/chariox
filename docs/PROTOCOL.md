@@ -7131,8 +7131,11 @@ the client or agent that asked carries no bytes and may go away:
   `move` deletes the source only after the destination holds the verified copy. A job reads
   `state` (`scanning`, `copying`, `finishing`, `done`, `failed`, `canceled`), `destination`,
   `bytes_done` / `bytes_total`, `files_done` / `files_total`, `skipped`, `current`, `sha256` (a
-  single file), `error` and times. It is in kernel memory: it survives the client, not a kernel
-  restart.
+  single file), `error` and times. It survives the client and a kernel restart: each job is recorded in
+  `<state>/file-transfers/`, and one the kernel stopped under continues from its staged bytes
+  once the machine it reads from can be reached (15 minutes; then it ends as failed and says so).
+  A move interrupted while the source was being deleted ends as failed with the copy kept, since
+  repeating the deletes blindly could remove what was not copied.
 - Peer requests between kernels of the same Cloud owner (the same admission as the peer agent
   requests: a key-bound identity of the same realm and user): `stat_machine_path { path }` →
   `machine_path_stat { stat }`; `list_machine_directory { path, offset }` → `machine_directory
@@ -7144,8 +7147,11 @@ the client or agent that asked carries no bytes and may go away:
 - A file is read in 4 MiB slices, each bound to the source's revision, staged beside the destination
   in a hidden `.chariox-copy-*` file and published when the assembled file has the source's digest;
   its permissions are those of the source. A folder is copied file by file (four at once) into a
-  hidden staging folder and renamed into place when whole: a failed or canceled folder transfer
-  publishes nothing and leaves no staging; `replace` swaps an existing folder whole. Links and
+  hidden staging folder (private, named by source machine, path and destination) and renamed into
+  place when whole, with the source's folder modes: a failed or canceled folder transfer publishes
+  nothing and leaves no staging; a retry keeps only what the source still has; `replace` swaps an
+  existing folder whole and is refused for a folder that holds the kernel's state; two transfers
+  never write to one destination at the same time (`keep_both` takes the next free name). Links and
   special files are skipped and counted. A dropped link is waited out for 15 minutes; a copy that
   gave up for a link keeps its staged bytes, and the same transfer started again continues from them.
   There is no size cap.
