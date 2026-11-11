@@ -230,10 +230,14 @@ function baselineCommit(root, env) {
   }
 }
 
-// For each shrink-only list, the entry keys at the accepted baseline. `keys` is null, with a note
-// saying what was not checked, when there is no baseline to compare with.
+// For each shrink-only list, the entry keys at the accepted baseline. In CI (CI=true) a missing
+// baseline throws: a runner that cannot name one would let every entry pass. Locally `keys` is
+// null, with a note saying what was not checked, when there is no baseline to compare with.
 export function acceptedEntries(root, env = process.env) {
   const { base, reason } = baselineCommit(root, env)
+  if (!base && env.CI === 'true') {
+    throw new Error(`${reason}. CI must fetch the commit the change branches from and export CHARIOX_BOUNDARY_BASE=<sha> for this step (see the "Fetch the commit the change branches from" step in .github/workflows/ci.yml); without it every list entry would pass unchecked`)
+  }
   return new Map(SHRINK_ONLY_LISTS.map(list => {
     const unchecked = why => ({ keys: null, note: `${list.label} ${list.file}: ${why}; membership NOT checked, so an entry added in this change is not detected` })
     if (!base) return [list, unchecked(reason)]
