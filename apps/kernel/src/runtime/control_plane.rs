@@ -5,6 +5,15 @@ use crate::local::{ControlPlaneRequest, ControlPlaneResponse, LocalDaemonRespons
 use crate::runtime::command::KernelCommand;
 use crate::runtime::state::KernelRuntimeState;
 
+/// What Cloud's control-plane route receives; the owner's kernel enrollment is the credential.
+fn cloud_request_body(
+    account_id: &str,
+    credential: &str,
+    request: &ControlPlaneRequest,
+) -> serde_json::Value {
+    serde_json::json!({"accountId": account_id, "kernelCredential": credential, "request": request})
+}
+
 pub(crate) async fn execute(
     config: &DaemonConfig,
     state: &KernelRuntimeState,
@@ -48,15 +57,22 @@ pub(crate) async fn execute(
         };
     };
     let mut result = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
-        profile.api_url.clone(), "/control-plane",
-        serde_json::json!({"accountId": profile.account_id, "kernelCredential": credential, "request": request}),
-    ).await.map_err(|error| {
-        match crate::runtime::cloud_api_client::cloud_error_code(&error) {
-            Some("authorization_denied" | "session_invalid" | "client_revoked" | "identity_revoked") =>
-                unavailable("control_plane_authorization_denied", "Check this kernel's owner enrollment and refresh machine capabilities"),
+        profile.api_url.clone(),
+        "/control-plane",
+        cloud_request_body(&profile.account_id, credential, request),
+    )
+    .await
+    .map_err(
+        |error| match crate::runtime::cloud_api_client::cloud_error_code(&error) {
+            Some(
+                "authorization_denied" | "session_invalid" | "client_revoked" | "identity_revoked",
+            ) => unavailable(
+                "control_plane_authorization_denied",
+                "Check this kernel's owner enrollment and refresh machine capabilities",
+            ),
             _ => error,
-        }
-    })?;
+        },
+    )?;
     let response_matches = matches!(
         (&result, request),
         (
@@ -186,5 +202,22 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("control_plane_grant_required"));
+    }
+
+    // Cloud's route test sends this file, so what Cloud accepts is what the kernel builds.
+    #[test]
+    fn the_acquire_request_matches_the_shared_contract() {
+        let request = ControlPlaneRequest::Acquire {
+            capability_revision: "a".repeat(128),
+            request_id: "kernel-acquire-1".into(),
+        };
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/cloud-contract/agent-acquire-request.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            cloud_request_body("account-1", "kcred_synthetic", &request),
+            fixture
+        );
     }
 }

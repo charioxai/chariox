@@ -67,6 +67,10 @@ fn owner_profile<'a>(
     Ok(profile)
 }
 
+fn ticket_request_body() -> serde_json::Value {
+    json!({"purpose":"owner_managed_machine","ttl_seconds":TICKET_SECONDS})
+}
+
 fn issue_blocking(
     profile: &crate::config::PersistedCloudRelayProfile,
 ) -> Result<Ticket, DaemonError> {
@@ -79,7 +83,7 @@ fn issue_blocking(
         .post(&format!("{}/v1/kernel-enrollment-tickets", profile.api_url.trim_end_matches('/')))
         .set("x-chariox-kernel-credential", credential)
         .set("content-type", "application/json")
-        .send_string(&json!({"purpose":"owner_managed_machine","ttl_seconds":TICKET_SECONDS}).to_string())
+        .send_string(&ticket_request_body().to_string())
         .map_err(|_| error("Chariox refused to issue an enrollment ticket; check this kernel's sign-in and retry"))?;
     let mut bytes = Zeroizing::new(Vec::new());
     response
@@ -275,6 +279,23 @@ mod tests {
             }
         });
         (url, seen)
+    }
+
+    // The files are what Cloud's own ticket route is fed with and what it answers; Cloud checks both against the same files.
+    #[test]
+    fn the_ticket_request_matches_the_shared_contract_and_its_answer_decodes() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/cloud-contract/own-machine-ticket-request.json"
+        ))
+        .unwrap();
+        assert_eq!(ticket_request_body(), fixture);
+        let answer: Ticket = serde_json::from_str(include_str!(
+            "../../tests/cloud-contract/own-machine-ticket-response.json"
+        ))
+        .unwrap();
+        assert_eq!(answer.ticket_id, "tk_synthetic");
+        assert!(!answer.ticket.is_empty());
+        assert!(chrono::DateTime::parse_from_rfc3339(&answer.expires_at).is_ok());
     }
 
     fn ticket_body(install_url: Option<&str>) -> String {
