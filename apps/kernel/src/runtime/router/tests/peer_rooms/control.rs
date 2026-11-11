@@ -160,6 +160,26 @@ fn the_message_and_steer_room_commands_reach_a_peer_like_the_tool() {
 }
 
 #[test]
+fn a_steer_can_ask_for_the_reply_like_a_message() {
+    run_peer_test("peer-room-steer-reply", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let steer = rooms
+            .room_command(
+                &rooms.sender_token,
+                format!(
+                    "agent steer peer \"stop editing\" --room {} --reply-requested",
+                    rooms.peer_room
+                ),
+            )
+            .await;
+        assert!(steer.ok, "{}", steer.payload);
+        let inbox = rooms.inbox(&rooms.peer_room, rooms.peer.id()).await;
+        assert_eq!(inbox.len(), 1, "{inbox:?}");
+        assert!(inbox[0].urgent && inbox[0].reply_requested, "{inbox:?}");
+    });
+}
+
+#[test]
 fn the_steer_room_command_keeps_the_authority_limit_and_the_message_one_does_not_have_it() {
     run_peer_test("peer-room-steer-clamp", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Required, AgentPermissionLevel::Yolo);

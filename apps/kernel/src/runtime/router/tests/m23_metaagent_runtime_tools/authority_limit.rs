@@ -431,7 +431,7 @@ async fn deadline() {
             },
         )
     };
-    set("a", 10 * 60_000).unwrap();
+    set("a", 10 * 60_000).await.unwrap();
     let later = room_command(&world, "a", "agent deadline set b 2h").await;
     assert!(
         !later.ok && error_text(&later).contains("parent"),
@@ -440,7 +440,7 @@ async fn deadline() {
     let sooner = room_command(&world, "a", "agent deadline set b 5m").await;
     assert!(sooner.ok, "{sooner:?}");
     // The user shortens the parent: the child and the grandchild end with it.
-    set("a", 60_000).unwrap();
+    set("a", 60_000).await.unwrap();
     for agent in ["b", "d"] {
         let got = room_command(&world, "a", &format!("agent deadline get {agent}")).await;
         let deadline_ms = got.payload["response"]["deadline"]["deadline_ms"]

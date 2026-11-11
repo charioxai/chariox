@@ -1173,6 +1173,7 @@ async fn agent_deadline_stops_an_active_turn_and_fences_later_admission() {
                 deadline_ms: now - 1,
             },
         )
+        .await
         .unwrap();
     f.runtime.tick_agent_deadlines(now).await.unwrap();
     let deadline = f
@@ -1262,6 +1263,7 @@ async fn agent_deadline_is_not_stopped_while_an_owned_source_is_still_stopping()
                 deadline_ms: now - 1,
             },
         )
+        .await
         .unwrap();
     let error = f.runtime.tick_agent_deadlines(now).await.unwrap_err();
     assert!(
@@ -1314,6 +1316,7 @@ async fn pending_deadline_cleanup_does_not_stop_the_sweep_for_other_wakes() {
                 deadline_ms: now - 1,
             },
         )
+        .await
         .unwrap();
 
     let other = "agent-other";

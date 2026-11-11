@@ -734,6 +734,14 @@ parent as one urgent `child_finished` inbox event carrying `child_agent_id`,
 on a question when the kernel restarted ends as `interrupted_by_restart`. The
 relay peer protocol needs no change for it.
 
+Relay peer 442 (Landing 8) adds `SetLeasedAgentDeadline {leased_agent_id, deadline_ms}`, answered by
+`LeasedAgentDeadlineSet {leased_agent_id}`. The home sends it before it records the
+deadline of an agent it leased to a worker (`agent spawn --kernel K --deadline`, `agent
+deadline set`, or a parent's deadline reaching a remote descendant). The worker arms the
+deadline on the backing agent of the leased agent, so its own scheduler stops the run with
+the home offline. A deadline only shortens: the worker refuses a later time with
+`agent_deadline_extension_refused`. No local shape changes.
+
 Local daemon protocol 1000 makes a
 sub-agent's decision one card with one holder. The kernel keeps the holder (the
 nearest parent that may answer, else the user) as state for routing and audit and

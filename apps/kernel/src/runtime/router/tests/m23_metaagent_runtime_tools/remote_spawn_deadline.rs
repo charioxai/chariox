@@ -1,64 +1,45 @@
-// MP-08 / MP-09 / MP-10 / MP-11: a Room `agent spawn` on another kernel that carries a deadline is
-// refused before the worker hears of it, so a refused spawn leaves nothing on the worker.
-use super::subtree::{error_text, room_command, world_with_config};
+// MP-08 / MP-09 / MP-10 / MP-11: a Room `agent spawn` on another kernel that carries a deadline
+// leases the agent and has the worker enforce the deadline.
+use super::subtree::{room_command, world_with_config};
 use super::*;
 use crate::runtime::state::kernel_access::test_support::worker_spy::WorkerSpy;
 use std::sync::atomic::Ordering;
 
 #[test]
-fn a_remote_spawn_with_a_deadline_is_refused_before_the_worker_is_asked() {
-    run_large_stack_async_test("remote-spawn-deadline-refused", refused_before_lease);
+fn a_remote_spawn_with_a_deadline_asks_the_worker_to_enforce_it() {
+    run_large_stack_async_test("remote-spawn-deadline-armed", armed_on_worker);
 }
 
-async fn refused_before_lease() {
+async fn armed_on_worker() {
     let worker = WorkerSpy::new(false);
-    let world = world_with_config("remote-spawn-deadline-refused", |config| {
+    let world = world_with_config("remote-spawn-deadline-armed", |config| {
         config.relay_url = Some(worker.url.clone());
         config.relay_token = Some("remote-spawn-deadline".into());
     })
     .await;
-    let agents_before = room_agents(&world).await;
-    for target in [
-        format!("--machine {}", worker.id),
-        format!("--kernel {}", worker.id),
+    for (alias, target) in [
+        ("far-machine", format!("--machine {}", worker.id)),
+        ("far-kernel", format!("--kernel {}", worker.id)),
     ] {
-        let refused = room_command(
+        let spawned = room_command(
             &world,
             "a",
-            &format!("agent spawn far --provider dev-stub {target} --deadline 30m"),
+            &format!("agent spawn {alias} --provider dev-stub {target} --deadline 30m"),
         )
         .await;
-        assert!(!refused.ok, "{refused:?}");
-        let message = error_text(&refused);
-        assert!(
-            message.contains("arm an agent deadline on its executing kernel"),
-            "{message}"
-        );
-        assert!(
-            message.contains("leased-agent deadlines require worker enforcement"),
-            "{message}"
-        );
+        assert!(spawned.ok, "{spawned:?}");
+        let agent = &spawned.payload["response"]["agent"];
+        let deadline_ms = agent["deadline_ms"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("the remote child carries its deadline: {agent}"));
+        let asked = worker.deadlines.lock().unwrap().clone();
         assert_eq!(
-            worker.requests.load(Ordering::SeqCst),
-            0,
-            "the worker received a lease request for a spawn that cannot be armed"
+            asked.last().map(|(_, ms)| *ms),
+            Some(deadline_ms),
+            "the worker was asked for the deadline the home recorded: {asked:?}"
         );
     }
-    assert_eq!(
-        room_agents(&world).await,
-        agents_before,
-        "no agent was created"
-    );
-}
-
-async fn room_agents(world: &super::subtree::World) -> usize {
-    world
-        .app
-        .lock()
-        .await
-        .agents()
-        .get_session_agents(&world.room)
-        .len()
+    assert_eq!(worker.deadlines.lock().unwrap().len(), 2);
 }
 
 #[test]

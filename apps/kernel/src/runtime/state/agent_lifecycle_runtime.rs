@@ -394,6 +394,10 @@ impl KernelRuntimeOwnedState {
                 }
             }
         }
+        // The provider wakes the agent when its background call ends: the task is not finished.
+        if !cancelled && self.holds_task_for_background_calls(room, agent, prompt.id(), run)? {
+            return Ok(None);
+        }
         let entries = self
             .operational_history_store
             .load_session_history_entries(room, Some(agent))?;
@@ -781,6 +785,41 @@ impl KernelRuntimeState {
             }
             settlement => self.finish_agent_task_settlement(settlement, source).await,
         }
+    }
+    /// Settles a task held for background calls, now that they ended, the notification turn
+    /// passed or the hold ran out. A turn that never answered is left to the ordinary sweep.
+    pub(super) async fn release_held_task(
+        &self,
+        task: &AgentTaskExecution,
+    ) -> Result<(), DaemonError> {
+        let settlement = self.owned.settle_answered_unsettled_turn(task)?;
+        if settlement.is_none() {
+            self.owned.background_holds.release(&task.task_id);
+        }
+        let source = crate::session::PromptQueueItem::new(
+            task.prompt_id.clone(),
+            "kernel-supervisor",
+            &task.agent_id,
+            "",
+            crate::session::PromptStatus::Completed,
+        );
+        self.finish_agent_task_settlement(settlement, &source).await
+    }
+    /// The provider's turn about an ended background call is the last part of the work of a child
+    /// held for it: the parent hears of the finish now.
+    pub(super) async fn release_tasks_held_for_notification(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        for task in
+            self.owned
+                .held_tasks_after_notification(session_id, agent_id, provider_run_id)?
+        {
+            Box::pin(self.release_held_task(&task)).await?;
+        }
+        Ok(())
     }
     pub(super) async fn finish_agent_task_settlement(
         &self,
@@ -1237,6 +1276,14 @@ impl KernelRuntimeState {
                         Box::pin(state.cancel_agent_task_resources(&cancelled)).await
                     },
                 );
+            }
+            if task.state != ExecutionState::Working {
+                self.owned.background_holds.release(&task.task_id);
+            } else if self.owned.is_held_for_background_calls(&task.task_id) {
+                if self.owned.held_task_due(&task, now)? {
+                    Box::pin(self.release_held_task(&task)).await?;
+                }
+                continue;
             }
             for obligation in task.obligations.iter().filter(|o| o.status == "open") {
                 let Some(source) = obligation.resource_id.as_ref() else {

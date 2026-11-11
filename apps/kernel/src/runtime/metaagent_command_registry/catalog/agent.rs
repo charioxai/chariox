@@ -177,7 +177,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
     MetaCommandDoc {
         name: "agent steer",
         aliases: &["agent steer"],
-        usage: "agent steer <agent-ref> <text> [--room <room> [--kernel <kernel-ref> | --machine <machine-ref>]]",
+        usage: "agent steer <agent-ref> <text> [--room <room> [--kernel <kernel-ref> | --machine <machine-ref>]] [--reply-requested]",
         examples: &["agent steer worker-1 \"stop editing parser.rs\"", "agent steer reviewer \"use the new schema\" --room 18e6036479710b80"],
         tags: &["agent", "steer", "message", "orchestration"],
         intents: &["redirect a worker", "steer a sub-agent", "interrupt a peer with an instruction"],
@@ -186,7 +186,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "agents below the caller; peers of the same owner with no more authority than the caller",
         routed: true,
-        description: "Send an urgent message to an agent. It reaches the agent as a message from you with your name on it, never as a user prompt. An agent below you, or a peer (an ordinary agent of this or another room, on this or another kernel, of the same owner) whose permission level and mode are at or below yours, can be steered; for a peer with more authority use `agent message`. This is chariox.send_agent_message with urgent set.",
+        description: "Send an urgent message to an agent. It reaches the agent as a message from you with your name on it, never as a user prompt. An agent below you, or a peer (an ordinary agent of this or another room, on this or another kernel, of the same owner) whose permission level and mode are at or below yours, can be steered; for a peer with more authority use `agent message`. With --reply-requested the agent is asked to answer, exactly as for `agent message`: its answer reaches your inbox as a source_completed event whose public_answer.excerpt is the bounded, redacted end of its reply. This is chariox.send_agent_message with urgent set.",
     },
     MetaCommandDoc {
         name: "agent message",
@@ -200,7 +200,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "any ordinary agent of the same owner, in this or another room, on this or another kernel",
         routed: true,
-        description: "Send a message to an agent. It arrives in the agent's inbox as a message from you with your name on it and gives you no authority over it. With --reply-requested the agent is asked to answer. A message never answers, approves or denies a decision card. This is chariox.send_agent_message.",
+        description: "Send a message to an agent. It arrives in the agent's inbox as a message from you with your name on it and gives you no authority over it. With --reply-requested the agent is asked to answer: its answer reaches your inbox as a source_completed event whose public_answer.excerpt is the bounded, redacted end of its reply (a refused or lost reply arrives as source_lost). A message never answers, approves or denies a decision card. This is chariox.send_agent_message.",
     },
     MetaCommandDoc {
         name: "agent deadline",

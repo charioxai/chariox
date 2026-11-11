@@ -38,7 +38,7 @@ impl<'a> PeerTarget<'a> {
 
 impl CommandRouter {
     /// `agent message <agent> <text> [--room R [--kernel K|--machine M]] [--reply-requested]` and
-    /// `agent steer <agent> <text> [--room R [--kernel K|--machine M]]`.
+    /// `agent steer <agent> <text> [--room R [--kernel K|--machine M]] [--reply-requested]`.
     pub(super) async fn dispatch_meta_agent_message_command(
         &self,
         provider_run: Option<&crate::provider::RuntimeProviderRun>,
@@ -52,7 +52,7 @@ impl CommandRouter {
             meta_command_failure_result(
                 command,
                 meta_command_error(if steer {
-                    "usage: agent steer <agent-ref> <text> [--room <room> [--kernel <kernel>|--machine <machine>]]; the text is one quoted argument"
+                    "usage: agent steer <agent-ref> <text> [--room <room> [--kernel <kernel>|--machine <machine>]] [--reply-requested]; the text is one quoted argument"
                 } else {
                     "usage: agent message <agent-ref> <text> [--room <room> [--kernel <kernel>|--machine <machine>]] [--reply-requested]; the text is one quoted argument"
                 }),
@@ -61,7 +61,7 @@ impl CommandRouter {
         let [agent, text, options @ ..] = args else {
             return usage();
         };
-        let Some(target) = PeerTarget::parse(options, !steer) else {
+        let Some(target) = PeerTarget::parse(options, true) else {
             return usage();
         };
         let (Some(provider_run), Some(prompt)) =

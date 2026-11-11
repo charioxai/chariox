@@ -443,6 +443,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 ));
             }
             let regs = registrations(tx, &task)?;
+            if ids.iter().any(|id| !regs.iter().any(|r| &r.id == id)) {
+                return Err(error(yield_refusal(tx, &t, &ids, &regs)?));
+            }
+            // A source that already ended is not something to wait on: its outcome is in the
+            // inbox and the kernel delivers it. Naming it is harmless, so it is dropped.
             let mut selected = vec![];
             for r in regs.iter().filter(|r| ids.contains(&r.id)) {
                 let pending:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND sequence>?4 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost','peer_event')",params![t.room_id,t.agent_id,r.source_id,sql_integer(cursor)?],|row|row.get(0)).map_err(sql)?;
@@ -450,18 +455,25 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     selected.push(r);
                 }
             }
-            if selected.len() != ids.len()
-                || t.obligations
-                    .iter()
-                    .filter(|o| o.requires_resolution())
-                    .any(|o| {
-                        !selected
-                            .iter()
-                            .any(|r| r.obligation_id.as_deref() == Some(&o.id))
-                    })
+            // Only work still running needs a source; the settlement of the turn applies the
+            // same rule.
+            if t.obligations
+                .iter()
+                .filter(|o| o.needs_live_source())
+                .any(|o| {
+                    !selected
+                        .iter()
+                        .any(|r| r.obligation_id.as_deref() == Some(&o.id))
+                })
             {
                 return Err(error(yield_refusal(tx, &t, &ids, &regs)?));
             }
+            if selected.is_empty() {
+                return Err(error(
+                    "nothing to wait on: every source you named has ended and its outcome is in your inbox; read it and reply with the final answer",
+                ));
+            }
+            let ids: Vec<String> = selected.iter().map(|r| r.id.clone()).collect();
             // Goal check-ins have a separate clock. Preserve the admitted wait
             // deadline so an early check-in cannot turn a live source into a timeout.
             t.wait = Some(AgentWait {
@@ -605,7 +617,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         .all(|id| regs.iter().any(|r| &r.id == id && (r.live || pending > 0)))
                     && t.obligations
                         .iter()
-                        .filter(|o| o.requires_resolution())
+                        .filter(|o| o.needs_live_source())
                         .all(|o| {
                             regs.iter().any(|r| {
                                 w.registration_ids.contains(&r.id)
@@ -736,7 +748,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
 }
 
 /// The event that tells `task` its source ended. A peer is followed, not waited on: its event
-/// names what happened and carries none of the peer's own text.
+/// names what happened and the turn it ended, and carries none of the peer's own text.
 pub(super) fn source_end(
     task: &AgentTaskExecution,
     source: &str,
@@ -746,13 +758,23 @@ pub(super) fn source_end(
     peer: bool,
 ) -> InboxEvent {
     if peer {
+        let mut payload = serde_json::json!({"task_id":task.task_id,"source_id":source,"occurrence_id":occurrence_id,"success":success,"event":peer_event_name(occurrence_id, success)});
+        // The answer text stays with the peer; the turn is named so its history is one read away.
+        // A task keeps its id across corrections and continuations, so the turn is the prompt
+        // that ended it.
+        if let Some(turn) = public_answer
+            .as_ref()
+            .and_then(|answer| Some((answer.get("agent_id")?, answer.get("prompt_id")?)))
+        {
+            payload["turn"] = serde_json::json!({"agent_id":turn.0,"turn_ref":turn.1});
+        }
         return occurrence(
             &task.room_id,
             &task.agent_id,
             source,
             occurrence_id,
             "peer_event",
-            serde_json::json!({"task_id":task.task_id,"source_id":source,"occurrence_id":occurrence_id,"success":success,"event":peer_event_name(occurrence_id, success)}),
+            payload,
         );
     }
     occurrence(

@@ -393,6 +393,7 @@ struct KernelRuntimeOwnedState {
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor,
     pending_agent_context_handoffs: PendingAgentContextHandoffStore,
     pending_mcp_continuations: PendingMcpContinuationStore,
+    background_holds: background_hold::BackgroundHolds,
     private_assessment_results: agent_assessment_result::AssessmentResults,
     private_work_results: agent_assessment_result::AssessmentResults,
     /// The turn each native provider TUI run was last seen on, to settle it once it ends.
@@ -677,6 +678,8 @@ pub(crate) use owner_handoff_runtime::{is_handoff_interaction_id, HANDOFF_OBLIGA
 mod declined_workspace_trust_runtime;
 mod dictation_runtime;
 mod kernel_computer_runtime;
+#[cfg(test)]
+mod leased_agent_deadline_tests;
 mod leased_computer_runtime;
 #[cfg(test)]
 mod leased_computer_runtime_tests;
@@ -1252,6 +1255,7 @@ impl KernelRuntimeState {
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
                 pending_agent_context_handoffs,
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
+                background_holds: Default::default(),
                 private_assessment_results: Default::default(),
                 private_work_results: private_assessment_dispatch.work_results.clone(),
                 private_assessment_dispatch,
@@ -1637,6 +1641,7 @@ mod agent_membership_read_tests;
 mod agent_parent_runtime;
 mod agent_subtree_cascade;
 mod agent_tree_runtime;
+mod background_hold;
 mod child_finished_event;
 
 mod agent_gone_announcement;

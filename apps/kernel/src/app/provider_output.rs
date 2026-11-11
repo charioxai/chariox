@@ -1203,6 +1203,19 @@ impl DaemonApp {
         )
     }
 
+    pub(crate) fn drain_claude_native_transcripts_after_stop_for_runtime(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        ProviderOutputClaudeNativeBridge::new(self).drain_transcripts_after_stop(
+            session_id,
+            provider_run_id,
+            provider_run,
+        )
+    }
+
     pub(crate) fn refresh_claude_native_session_for_runtime(
         &mut self,
         provider_run_id: &str,

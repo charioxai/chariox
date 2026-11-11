@@ -644,19 +644,6 @@ impl CommandRouter {
             ));
         }
 
-        if spawn.deadline.is_some() {
-            if let Err(error) = self
-                .runtime_state
-                .ensure_spawn_deadline_runs_here(
-                    spawn.kernel_ref.as_deref(),
-                    spawn.slice_ref.is_some() || spawn.slice_create.is_some(),
-                )
-                .await
-            {
-                return Ok(meta_command_failure_result(command, error));
-            }
-        }
-
         if let Some(reference) = spawn.slice_ref.as_deref() {
             match self.runtime_state.resolve_spawn_slice(
                 reference,

@@ -1171,6 +1171,24 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::SetLeasedAgentDeadline {
+            leased_agent_id,
+            deadline_ms,
+        } => {
+            let armed = router
+                .relay_set_leased_agent_deadline(&leased_agent_id, deadline_ms)
+                .await;
+            match armed {
+                Ok(()) => RelayPeerResponse::LeasedAgentDeadlineSet { leased_agent_id },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::LaunchLeasedNativeProviderRun {
             leased_agent_id,
             adapter_key,
@@ -2481,6 +2499,9 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
             leased_agent_id, ..
         }
         | RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::SetLeasedAgentDeadline {
             leased_agent_id, ..
         }
         | RelayPeerRequest::LaunchLeasedNativeProviderRun {

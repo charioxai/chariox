@@ -151,6 +151,7 @@ mod agent_tree_state;
 mod agent_wake_sources;
 mod app_quiet_tool_guard;
 mod approval_lifetime;
+mod background_hold;
 mod background_tool_settlement;
 mod browser_import_execution_gate;
 mod child_finished;

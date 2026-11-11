@@ -139,6 +139,10 @@ impl KernelRuntimeState {
                 })
                 .await?;
             }
+            if outcome.stopped_without_active_prompt {
+                self.release_held_turn_after_native_stop(session_id, &provider_run)
+                    .await?;
+            }
             if native_tui {
                 self.settle_finished_native_tui_turn(session_id, &provider_run)
                     .await;
@@ -279,6 +283,39 @@ impl KernelRuntimeState {
             owned.ensure_quiet_provider_recheck_scheduled(provider_run_id);
         }
         Ok(records)
+    }
+
+    /// A native Stop with no active prompt ends a child's notification turn: once the final
+    /// transcript flush is drained, its held task finishes with the turn's answer.
+    async fn release_held_turn_after_native_stop(
+        &self,
+        session_id: &str,
+        provider_run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return Ok(());
+        };
+        let provider_run_id = provider_run.id();
+        if self
+            .owned
+            .held_tasks_after_notification(session_id, agent_id, provider_run_id)?
+            .is_empty()
+        {
+            return Ok(());
+        }
+        // The final transcript flush can trail the Stop event.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        self.with_app_side_effect(|app| {
+            app.drain_claude_native_transcripts_after_stop_for_runtime(
+                session_id,
+                provider_run_id,
+                provider_run,
+            )
+        })
+        .await?;
+        self.flush_provider_history(provider_run_id).await?;
+        self.release_tasks_held_for_notification(session_id, agent_id, provider_run_id)
+            .await
     }
 
     async fn settle_owned_pty_prompt_if_quiet(
