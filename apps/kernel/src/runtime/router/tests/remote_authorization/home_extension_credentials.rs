@@ -322,3 +322,70 @@ async fn home_extension_invocation_rejects_wrong_worker_provider_run() {
         "unexpected denial: {denied}"
     );
 }
+
+/// A worker's request to the home kernel is refused on its handle and host before the home
+/// Vault is asked to unlock: a refusal must not raise an unlock card for the owner.
+#[tokio::test]
+async fn a_forwarded_request_the_handle_refuses_does_not_ask_the_locked_home_vault_to_unlock() {
+    let _environment = crate::env_lock::lock();
+    let private = crate::test_support::TestWorktree::new("forwarded-vault-refusal");
+    std::env::set_var("CHARIOX_HOME", private.path().join("home"));
+    let vault = private.path().join("vault.json");
+    crate::secret::create_chariox_encrypted_vault_for_test(&vault, "refusal passphrase").unwrap();
+    crate::credential::CharioxCredentialRegistry::user()
+        .unwrap()
+        .upsert(crate::config::UserCredentialConfig {
+            id: "bound_key".into(),
+            description: None,
+            source: crate::config::UserCredentialSourceConfig::Vault {
+                key: "bound_key".into(),
+            },
+            allowed_hosts: vec!["api.example.com".into()],
+            allowed_uses: vec![crate::config::UserCredentialUse::Http],
+            injection: crate::config::UserCredentialInjectionConfig::Header {
+                name: "authorization".into(),
+                value: "Bearer ${secret}".into(),
+            },
+            metadata: None,
+        })
+        .unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::CharioxEncrypted;
+    config.user_config.credential_vault.path = vault.display().to_string();
+    let (router, context, _agent_id) = remote_home_invocation_router_with_active_prompt_and_config(
+        "forwarded-vault-refusal",
+        config,
+    );
+    let session_id = context.home_session_id.clone();
+
+    for arguments in [
+        serde_json::json!({"credential_id": "bound_key", "url": "http://127.0.0.1:19/echo"}),
+        serde_json::json!({"credential_id": "no_such_key", "url": "https://api.example.com/"}),
+    ] {
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            router
+                .runtime_state
+                .dispatch_forwarded_home_credential_tool_call(
+                    context.clone(),
+                    crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL.to_string(),
+                    arguments.clone(),
+                ),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            panic!("{arguments} waited for the Vault unlock instead of being refused")
+        });
+        assert!(outcome.is_err(), "{arguments} should be refused");
+        let session = router
+            .runtime_state
+            .session_snapshot(&session_id)
+            .await
+            .unwrap();
+        assert!(
+            session.active_interactions().is_empty(),
+            "{arguments} asked for the unlock before refusing"
+        );
+    }
+}

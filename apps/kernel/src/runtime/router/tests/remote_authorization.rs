@@ -148,7 +148,17 @@ fn remote_home_invocation_router_with_active_prompt(
     crate::transport::relay_peer::RemoteExtensionInvocationContext,
     String,
 ) {
-    let config = DaemonConfig::for_tests();
+    remote_home_invocation_router_with_active_prompt_and_config(label, DaemonConfig::for_tests())
+}
+
+fn remote_home_invocation_router_with_active_prompt_and_config(
+    label: &str,
+    config: DaemonConfig,
+) -> (
+    CommandRouter,
+    crate::transport::relay_peer::RemoteExtensionInvocationContext,
+    String,
+) {
     let home_kernel_id = config.daemon_id.clone();
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let session = app
