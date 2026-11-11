@@ -1259,6 +1259,7 @@ async fn a_decision_the_holder_answered_can_be_acknowledged_by_sequence() {
             &serde_json::json!({"sequence": sequence, "handled": true}),
             1,
         )
+        .await
         .expect("an answered decision no longer needs an answer");
     assert_eq!(acked["acknowledged"], sequence);
 }

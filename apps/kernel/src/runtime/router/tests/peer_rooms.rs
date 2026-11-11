@@ -229,7 +229,7 @@ impl Rooms {
                     prompt: task.prompt_id.clone(),
                     registrations: vec!["completion-timer-parked".into()],
                     cursor: 0,
-                    deadline: now + 3_600_000,
+                    deadline: Some(now + 3_600_000),
                     reason: "Waiting for review".into(),
                     now,
                 })

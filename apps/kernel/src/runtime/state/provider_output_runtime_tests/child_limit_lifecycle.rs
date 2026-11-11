@@ -109,7 +109,7 @@ impl Family {
                 prompt: prompt.clone(),
                 registrations: vec![format!("completion-wake-{child}")],
                 cursor: 0,
-                deadline: now + 600_000,
+                deadline: Some(now + 600_000),
                 reason: "Wait for the timer".into(),
                 now,
             })
