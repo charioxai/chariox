@@ -255,6 +255,9 @@ pub struct RuntimeInteraction {
     /// MP-08 / MP-11 protocol 538: kernel-established sudo presentation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sudo_request: Option<crate::local::SudoRequestPresentation>,
+    /// An App install, update or reinstall the owner decides on, from the verified package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    app_install: Option<crate::local::AppInstallPresentation>,
     /// Protocol 470: structured OS requester for external access decisions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     requester: Option<crate::local::KernelAccessRequester>,
@@ -415,6 +418,7 @@ impl RuntimeInteraction {
             payment: None,
             decision_expires_at: None,
             sudo_request: None,
+            app_install: None,
         }
     }
 
@@ -471,6 +475,16 @@ impl RuntimeInteraction {
 
     pub fn sudo_request(&self) -> Option<&crate::local::SudoRequestPresentation> {
         self.sudo_request.as_ref()
+    }
+    pub fn app_install(&self) -> Option<&crate::local::AppInstallPresentation> {
+        self.app_install.as_ref()
+    }
+    pub(crate) fn with_app_install(
+        mut self,
+        presentation: crate::local::AppInstallPresentation,
+    ) -> Self {
+        self.app_install = Some(presentation);
+        self
     }
     pub(crate) fn with_sudo_request(
         mut self,
@@ -609,6 +623,7 @@ impl RuntimeInteraction {
             payment: None,
             decision_expires_at: None,
             sudo_request: None,
+            app_install: None,
         }
     }
 

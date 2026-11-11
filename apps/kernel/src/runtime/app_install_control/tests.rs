@@ -314,6 +314,80 @@ async fn immediate_receipt_then_real_pump_owner_decision_declines_without_activa
     f.shutdown().await;
 }
 
+/// Landing 8 item 6: the approval is a prompt of the owner's terminals wherever they look, with the App's
+/// signed review as data, and it does not end by itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn approval_is_a_prompt_of_every_owner_terminal_that_never_expires() {
+    let f = Fixture::new();
+    let (handle, digest) = f.uploaded().await;
+    status(f.request("alice", f.begin(handle, digest)).await);
+    f.until(|| {
+        let state = f.control().0.state.lock().unwrap();
+        state
+            .entries
+            .values()
+            .any(|e| matches!(e.step, Step::Waiting { .. }))
+    })
+    .await;
+    assert!(
+        f.state.passkey_prompts_for("bob").is_empty(),
+        "another user is not asked"
+    );
+    let prompts = f.state.passkey_prompts_for("alice");
+    let [prompt] = prompts.as_slice() else {
+        panic!("one prompt for the owner: {prompts:?}")
+    };
+    assert_eq!(prompt.kind, crate::local::PasskeyPromptKind::AppInstall);
+    assert_eq!(prompt.expires_at_ms, crate::local::NEVER_EXPIRES_MS);
+    assert_eq!(
+        (
+            prompt.approve_choice_id.as_str(),
+            prompt.refuse_choice_id.as_str()
+        ),
+        ("approve", "decline")
+    );
+    let install = prompt.app_install.as_ref().expect("the App's review");
+    assert_eq!(install.request_id, "install");
+    assert_eq!(
+        install.operation,
+        crate::local::AppInstallPromptOperation::Install
+    );
+    assert!(install.review["appId"].is_string() && install.review["capabilities"].is_object());
+    // The kernel-operation default of five minutes would decline an approval nobody had seen yet: this one has none.
+    let challenge = {
+        let state = f.control().0.state.lock().unwrap();
+        let Step::Waiting { challenge, .. } = &state.entries.values().next().unwrap().step else {
+            panic!("waiting")
+        };
+        challenge.clone()
+    };
+    let question = super::pump::approval_interaction(&challenge);
+    assert_eq!(question.timeout_sec(), None);
+    assert_eq!(question.default_on_timeout(), None);
+    // The registered question has none either, which the kernel accepts only for an App install.
+    assert!(
+        f.state
+            .passkey_prompts_for("alice")
+            .iter()
+            .all(|prompt| prompt.expires_at_ms == crate::local::NEVER_EXPIRES_MS),
+        "the registered approval is the one without a timeout"
+    );
+    // A decline through the prompt's own ids ends the operation like any other answer.
+    f.state
+        .resolve_terminal_runtime_interaction(
+            &prompt.session_id,
+            &prompt.interaction_id,
+            "decline",
+            None,
+            Some("alice"),
+        )
+        .await
+        .unwrap();
+    f.until(|| f.state.passkey_prompts_for("alice").is_empty())
+        .await;
+    f.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_cancel_under_saturated_admission_is_retained_before_stage_and_shutdown_drains() {
     let f = Fixture::new();

@@ -14,7 +14,6 @@ pub(crate) struct InstallApprovalChallenge {
     owner: String,
     request_id: String,
     interaction_id: String,
-    deadline: std::time::Instant,
     binding: StageTrustBinding,
     trust: TrustedPublisherSnapshot,
     capabilities_digest: String,
@@ -46,8 +45,9 @@ impl InstallApprovalChallenge {
     pub(crate) fn interaction_id(&self) -> &str {
         &self.interaction_id
     }
-    pub(crate) fn deadline(&self) -> std::time::Instant {
-        self.deadline
+    /// The operation a client reads for the outcome after the owner approves.
+    pub(crate) fn request_id(&self) -> &str {
+        &self.request_id
     }
     pub(crate) fn review(&self) -> &serde_json::Value {
         &self.review
@@ -156,8 +156,8 @@ impl DurableKernelStateStore {
             _ => Err(InstallOperationError::Storage),
         }
     }
-    /// Caller consumes the authenticated generic interaction result. The budget
-    /// retains its ORIGINAL interaction deadline and cancellation predicate.
+    /// Caller consumes the authenticated generic interaction result. The approval itself never expires; the
+    /// budget bounds only this decision, from the moment the owner answered, and carries its cancellation.
     pub(crate) fn decide_app_install(
         &self,
         challenge: Arc<InstallApprovalChallenge>,
@@ -655,7 +655,6 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                     owner,
                     request_id,
                     interaction_id,
-                    deadline: std::time::Instant::now() + std::time::Duration::from_secs(300),
                     binding,
                     trust,
                     capabilities_digest: update.release.capabilities_digest,
@@ -670,8 +669,6 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
             accepted,
             budget,
         } => {
-            let deadline = challenge.deadline;
-            let budget = budget.fork(move || std::time::Instant::now() >= deadline);
             limit(&budget)?;
             let tx = sql(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
             let current = load(&tx, &challenge.owner, &challenge.request_id)?

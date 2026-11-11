@@ -268,10 +268,20 @@ export type PasskeyPromptClosure = {
   reason: "expired" | "answered" | "revoked"
 }
 
+export type AppInstallPrompt = {
+  /** The operation to read (`GetAppInstallOperation`) for the outcome after the owner approves. */
+  request_id: string
+  operation: "install" | "update" | "reinstall"
+  /** The signed metadata the owner approves: `appId`, `version`, `publisherName`, `capabilities`. */
+  review: Record<string, unknown>
+}
+
 export type PasskeyPrompt = {
   sudo_request?: SudoRequestPresentation | null
   requester?: KernelAccessRequester | null
-  kind: "critical_approval" | "access_grant" | "access_extension" | "sudo" | "vault_secret"
+  kind: "critical_approval" | "access_grant" | "access_extension" | "sudo" | "vault_secret" | "app_install"
+  /** An App install, update or reinstall the owner decides on. It carries no passkey and never expires: `expires_at_ms` is the largest exact integer. */
+  app_install?: AppInstallPrompt | null
   /** Protocol 568: the term an access popup starts on; absent for sudo and critical approvals. */
   term?: KernelAccessTerm | null
   /** Sudo windows only since protocol 568. */

@@ -7175,3 +7175,20 @@ Client minimums do not change: no web or native client offers the header. Focuse
 `cargo test -p chariox-relay --lib -- binary_request control_during_bulk a_small_reply_waits frame_transport`
 and `cargo test -p chariox-kernel --lib -- framed_plaintext relay_upload kernel_gateway::link`;
 the measurement is `node scripts/relay-load-proof/file-share.mjs` (see its README).
+
+### App install approval: one prompt for the owner's terminals that waits — no protocol number
+
+An App install, update or reinstall that waits for its owner is now a prompt of the passkey feed
+(`passkey_prompts_changed`), so every terminal of the owner shows it wherever it looks, not only the one
+with the Room it was started in. `kind` is `app_install`: the approve choice is `approve`, the refuse choice
+is `decline`, neither carries a passkey, and `expires_at_ms` is 9007199254740991 (`NEVER_EXPIRES_MS`): the
+prompt stays until it is answered or cancelled, and a kernel restart asks a new question. The prompt carries
+`app_install: { request_id, operation: install | update | reinstall, review }`; `review` is the kernel's
+account of the verified package (`appId`, `version`, `publisherId`, `publisherName`, `keyId`,
+`keyFingerprint`, `packageDigest`, `capabilitiesDigest`, `capabilities`, `authoritySet`, `actions`). A client
+reads the outcome after the owner approves with `GetAppInstallOperation { request_id }`: phase `failed`
+carries the `failure` code (for example `app_wasm_runtime`). The approval's interaction has no timeout either (`timeout_sec` absent; the kernel accepts that for an App install only). The decision itself keeps a 30 second limit that
+starts at the owner's answer (it used to be the first five minutes from the prompt, which ended an approval
+nobody had seen yet with `app_install_approval_expired`). The kernel-operation interaction is unchanged for
+clients that show it in the Room (`install:<installation>`, its message still lists the review).
+Focused checks: `cargo test -p chariox-kernel --lib app_install_control`, `app_install_prompt_shape_is_pinned`.

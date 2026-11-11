@@ -119,9 +119,13 @@ impl VerifiedInstallCandidate {
             icon,
         };
         validate_release(&release)?;
+        let publisher_name = match package.release_manifest() {
+            chariox_app_package::ReleaseManifest::Node(manifest) => manifest.publisher.name,
+            chariox_app_package::ReleaseManifest::Wasm(manifest) => manifest.publisher.name,
+        };
         let review = json!({
             "appId": release.app_id, "version": release.version,
-            "publisherId": signer.publisher_id, "keyId": signer.key_id,
+            "publisherId": signer.publisher_id, "publisherName": publisher_name, "keyId": signer.key_id,
             "keyFingerprint": digest(signer.public_key.as_bytes()), "trustRevision": trust.revision().to_string(),
             "packageDigest": release.package_digest, "capabilitiesDigest": release.capabilities_digest,
             "capabilities": manifest.capabilities,
