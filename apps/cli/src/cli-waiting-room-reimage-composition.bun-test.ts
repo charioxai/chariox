@@ -700,6 +700,11 @@ function createHarness(router: TestRouter, options: {
       }
       case "GetManagedEnvironment":
         return { ManagedEnvironment: { environment: options.stoppedEnrolled && environmentReads++ === 0 ? oldEnvironment : replacementEnvironment } }
+      case "ApproveRemoteMachine": {
+        // The home trusts the owner's managed machine before the TUI connects to it.
+        const payload = requestPayload(request, "ApproveRemoteMachine")
+        return { RemoteMachineApproved: { machine: { machine_id: payload.machine_ref, trust_status: "approved" } } }
+      }
       default:
         throw new Error(`unexpected local request ${requestKind(request)}`)
     }
