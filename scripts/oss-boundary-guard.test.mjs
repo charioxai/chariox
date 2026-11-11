@@ -126,7 +126,11 @@ test('deploy/managed-kernel names the update coordinator by role, never "Cloud" 
 test('OSB-07: the hosted trigger ingress in apps/server names no connected-service route', () => {
   const root = resolve(fileURLToPath(import.meta.url), '../..')
   const files = boundaryFiles(root).filter(f => f.startsWith('apps/server/src/') && isProductSource(f))
-  const calls = files.flatMap(f => controlPlanePaths(f, readFileSync(join(root, f), 'utf8')).map(c => `${f}:${c.line}: ${c.path}`))
+  // An empty or truncated file list would pass the check below without scanning anything.
+  assert.ok(files.length >= 10 && files.includes('apps/server/src/agent-trigger-admission.ts'), `OSB-07 scanned ${files.length} files: ${files.slice(0, 3).join(', ')}`)
+  const scan = (list, read) => list.flatMap(f => controlPlanePaths(f, read(f)).map(c => `${f}:${c.line}: ${c.path}`))
+  assert.deepEqual(scan(['apps/server/src/planted.ts'], () => 'await fetch(`${base}/v1/managed-kernels/activity`)'), ['apps/server/src/planted.ts:1: /v1/managed-kernels/activity'], 'the scan reports a planted route')
+  const calls = scan(files, f => readFileSync(join(root, f), 'utf8'))
   assert.ok(calls.length === 0, `apps/server calls a control-plane route; configure an admission URL instead:\n${calls.join('\n')}`)
   const listed = JSON.parse(readFileSync(join(root, 'scripts/control-plane-paths.allow.json'), 'utf8')).filter(e => e.callers.some(c => c.startsWith('apps/server/')))
   assert.ok(listed.length === 0, `scripts/control-plane-paths.allow.json still lists apps/server callers: ${listed.map(e => e.path).join(', ')}`)
