@@ -646,6 +646,51 @@ fn a_paused_job_resumes_in_the_watch_a_hot_reload_starts_after_its_sibling_ended
     );
 }
 
+/// Pauses that outlived the bounded wait are ended only while room is still
+/// missing for them: when a holder leaves and there is room for all of them,
+/// the resume pass continues each, and none ends.
+#[cfg(target_os = "linux")]
+#[test]
+fn overdue_pauses_continue_when_room_returned_for_all_of_them() {
+    let pool = pool(1536);
+    let holder = Workload::start(domain(&pool, "a", false), &[("big", 800, 0, 0)]);
+    let mut growers = Workload::start(
+        domain(&pool, "b", false),
+        &[("one", 200, 48, 1000), ("two", 200, 48, 1000)],
+    );
+    let both_paused = |growers: &Workload| growers.waiting("one") && growers.waiting("two");
+    let deadline = std::time::Instant::now() + Duration::from_secs(40);
+    while !both_paused(&growers) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the two growers were not both paused"
+        );
+        settle(1);
+    }
+    // Together they could not have grown back: only the holder's room frees.
+    unsafe { libc::kill(holder.pid("big"), libc::SIGKILL) };
+    {
+        let mut observation = growers.domain.state.lock().unwrap();
+        for entry in observation
+            .admission
+            .values_mut()
+            .filter(|e| e.wait.is_some())
+        {
+            entry.since_ms = crate::session::unix_epoch_ms() - 61_000;
+        }
+    }
+    settle(6);
+    assert!(
+        growers.alive("one") && growers.alive("two"),
+        "a paused command was ended where the room had returned for all of them"
+    );
+    assert!(
+        !growers.waiting("one") && !growers.waiting("two"),
+        "a paused command did not continue"
+    );
+    assert!(growers.root_alive());
+}
+
 fn runaway_is_paused_before_the_line(cgroup: bool) {
     // 512 MiB/s: the PC-06 runaway.
     let (mut a, mut b, mut c, pool) = pressure(cgroup, 0, 512, 4);

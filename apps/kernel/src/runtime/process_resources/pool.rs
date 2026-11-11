@@ -227,11 +227,11 @@ impl Pool {
         let refused = ledger.take_refused(current);
         let fillers = ledger.take_fillers(current);
         let capacity = room.capacity;
-        drop(launches);
         drop(ledger);
         self.end_oversized(current, refused, capacity);
         self.end_fillers(current, fillers);
-        self.end_overdue_pause(&members);
+        self.end_overdue_pause(&members, &room);
+        drop(launches);
         // Paused and held commands do not grow: with nothing growing the
         // pool waits rather than stops.
         if may_stop && growing > 0 && self.pressed(&members) {
@@ -410,12 +410,12 @@ impl Pool {
     /// A command paused for longer than `PAUSE_LIMIT_MS` ends with the
     /// memory-stop outcome and its reason: room that did not come in that time
     /// is not coming, and it must not stay stopped with no outcome.
-    fn end_overdue_pause(&self, members: &[Arc<Mutex<Observation>>]) {
+    fn end_overdue_pause(&self, members: &[Arc<Mutex<Observation>>], room: &admission::Room) {
         let mut stopped_at = self.stopped_at.lock().unwrap_or_else(|e| e.into_inner());
         if stopped_at.get("").is_some_and(|at| at.elapsed() < SETTLE) {
             return;
         }
-        let Some(waiting) = admission::youngest_paused(members, PAUSE_LIMIT_MS) else {
+        let Some(waiting) = admission::youngest_paused(members, PAUSE_LIMIT_MS, Some(room)) else {
             return;
         };
         let notice = format!(
@@ -459,7 +459,7 @@ impl Pool {
         // A paused command holds memory and makes no progress: it yields
         // before a running command does, the newest first.
         if matches!(cause, Cause::Pressure) {
-            if let Some(waiting) = admission::youngest_paused(members, 0) {
+            if let Some(waiting) = admission::youngest_paused(members, 0, None) {
                 let notice = format!(
                     "chariox: stopped this waiting command under memory pressure: the pool is full, so the newest waiting command ends first ({} MiB resident) and the oldest running one can finish. Run it again; it starts when there is room.\n",
                     waiting.resident / MIB
