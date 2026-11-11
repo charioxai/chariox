@@ -21,6 +21,21 @@ pub(crate) trait ProviderNativeInteractionBridge: Send + Sync {
     ) -> Result<ProviderNativeInteractionResolution, DaemonError>;
 }
 
+/// Where a card raised by a setup turn belongs. The turn is no queued prompt, so the card is about
+/// the run it works on, like the kernel's own questions.
+pub(crate) fn setup_turn_origin(
+    bridge: &dyn ProviderNativeInteractionBridge,
+    run: &crate::provider::RuntimeProviderRun,
+) -> crate::session::NativeInteractionOrigin {
+    run.agent_instance_id()
+        .and_then(|agent_id| bridge.capture_turn_origin(run.session_id(), agent_id, run.id()))
+        .unwrap_or_else(
+            || crate::session::NativeInteractionOrigin::ProviderStartup {
+                provider_run_id: run.id().to_string(),
+            },
+        )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ProviderNativeInteractionResolution {
     pub(crate) status: String,

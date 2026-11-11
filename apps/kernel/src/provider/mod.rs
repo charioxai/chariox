@@ -182,9 +182,10 @@ pub use prompt_signals::{
 };
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
-    FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
-    ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
-    ProviderOutputPromptIdentity, ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
+    setup_turn_origin, FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob,
+    FinishedProviderPromptSubmitJob, ProviderNativeInteractionBridge,
+    ProviderNativeInteractionResolution, ProviderOutputPromptIdentity,
+    ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
     ProviderRunActorCompletionSignal, ProviderRunActorMailbox, ProviderRunOperationLanes,
     ProviderRunOperationPermit,
 };
@@ -524,6 +525,7 @@ pub(crate) fn run_blocking_provider_utility_prompt_with_admission(
             timeout,
             policy,
             stop,
+            native_interaction_bridge,
         ),
         adapter_key => Err(crate::error::DaemonError::LocalTransport {
             operation,

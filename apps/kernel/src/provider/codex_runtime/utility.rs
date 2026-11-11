@@ -123,15 +123,9 @@ pub(crate) fn run_codex_utility_prompt_with_admission(
     }
     // The person's approvals of this turn belong to the run, like the kernel's own questions:
     // the turn is not a queued prompt, so nothing else names what the card is about.
-    state.native_approval_origin = native_interaction_bridge.as_ref().map(|bridge| {
-        run.agent_instance_id()
-            .and_then(|agent_id| bridge.capture_turn_origin(run.session_id(), agent_id, run.id()))
-            .unwrap_or_else(
-                || crate::session::NativeInteractionOrigin::ProviderStartup {
-                    provider_run_id: run.id().to_string(),
-                },
-            )
-    });
+    state.native_approval_origin = native_interaction_bridge
+        .as_deref()
+        .map(|bridge| crate::provider::setup_turn_origin(bridge, run));
 
     let deadline = Instant::now() + timeout;
     let mut output = String::new();
