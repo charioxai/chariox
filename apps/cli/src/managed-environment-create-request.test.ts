@@ -15,9 +15,9 @@ test("a new managed machine launch posts exactly the shared create request, with
   const profile = {
     apiUrl: "http://127.0.0.1:44123", accountId: "account-1", userId: "owner-1",
     authenticatedFetch: async (url: string | URL, options?: RequestInit) => { posts.push({ url: String(url), body: JSON.parse(String(options?.body)) }); throw stop },
-  } as CloudControlProfile
+  } as unknown as CloudControlProfile
   const controller = new WaitingRoomManagedEnvironmentLaunchController({
-    createEnvironment: input => createManagedEnvironment(profile, input),
+    createEnvironment: (input: Parameters<typeof createManagedEnvironment>[1]) => createManagedEnvironment(profile, input),
     createIdempotencyKey: () => "create-request-1",
   } as never)
   await assert.rejects(controller.prepare({
