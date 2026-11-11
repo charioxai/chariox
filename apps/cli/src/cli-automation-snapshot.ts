@@ -34,6 +34,7 @@ import {
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
+import { waitingRoomManagedCatalogRemoteState } from "./waiting-room-managed-environments.js"
 
 export type CliAutomationSnapshotDeps = {
   attachmentId?: () => string | null
@@ -192,13 +193,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           slices: deps.slicesState(),
           ...(providerAccounts === undefined ? {} : { providerAccounts }),
           projects: deps.waitingRoomProjects?.() ?? [],
-          ...(managedEnvironmentCatalog
-            ? {
-                managedComputeClasses: managedEnvironmentCatalog.computeClasses,
-                managedContextSources: managedEnvironmentCatalog.contextSources,
-                managedEnvironments: managedEnvironmentCatalog.environments,
-              }
-            : {}),
+          ...waitingRoomManagedCatalogRemoteState(managedEnvironmentCatalog),
         }, waitingRoomTargets, deps.themeRegistryState()).map((row) => ({
           id: row.id,
           externalSessionId: row.id.startsWith("external-session:") ? row.id.slice("external-session:".length) : null,

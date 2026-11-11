@@ -11,10 +11,18 @@ export type WaitingRoomLaunchKernelInput = {
   relay_alias?: string | null
 }
 
+/** The kernel this client is connected to, as its relay status reports it. */
+export type WaitingRoomLaunchConnectedKernelInput = {
+  daemon_id?: string | null
+  daemon_alias?: string | null
+  machine_id?: string | null
+}
+
 export type WaitingRoomLaunchRemoteState = {
   machines?: readonly WaitingRoomLaunchMachineInput[]
   kernels?: readonly WaitingRoomLaunchKernelInput[]
   managedEnvironments?: readonly WaitingRoomLaunchManagedEnvironmentInput[]
+  relay?: WaitingRoomLaunchConnectedKernelInput | null
 }
 
 export type WaitingRoomLaunchManagedEnvironmentInput = {
@@ -57,9 +65,13 @@ export function waitingRoomLaunchMachineOptions<TMachine extends WaitingRoomLaun
     managedEnvironments?: readonly WaitingRoomLaunchManagedEnvironmentInput[]
   } = {},
 ): WaitingRoomLaunchMachineOption<TMachine>[] {
+  // A managed machine is offered once, as its environment, whose kernels are the same machine's.
+  const managedMachineIds = new Set((remote.managedEnvironments ?? [])
+    .filter((environment) => environment.desiredState !== "deleted")
+    .flatMap((environment) => environment.runtimeMachineId ? [environment.runtimeMachineId] : []))
   return [
     { id: "local", label: "local", machine: null, managedEnvironment: null },
-    ...(remote.machines ?? []).map((machine) => ({
+    ...(remote.machines ?? []).filter((machine) => !managedMachineIds.has(machine.machine_id)).map((machine) => ({
       id: machine.machine_id,
       label: machine.machine_alias ?? machine.display_name ?? machine.machine_id,
       machine,
@@ -93,6 +105,10 @@ export function waitingRoomSelectedLaunchMachineRef(
   if (selected === NEW_MANAGED_MACHINE_REF || managedEnvironmentIdFromMachineRef(selected)) {
     return selected
   }
+  const managed = remote.managedEnvironments?.find((environment) => (
+    environment.desiredState !== "deleted" && environment.runtimeMachineId === selected
+  ))
+  if (managed) return managedEnvironmentMachineRef(managed.environmentId)
   return options.some((option) => option.id === selected) ? selected : options[0]?.id ?? "local"
 }
 
@@ -100,6 +116,7 @@ export function waitingRoomLaunchKernelOptions<TKernel extends WaitingRoomLaunch
   remote: {
     kernels?: readonly TKernel[]
     managedEnvironments?: readonly WaitingRoomLaunchManagedEnvironmentInput[]
+    relay?: WaitingRoomLaunchConnectedKernelInput | null
   } = {},
   machineRef = "local",
 ): WaitingRoomLaunchKernelOption<TKernel>[] {
@@ -114,7 +131,7 @@ export function waitingRoomLaunchKernelOptions<TKernel extends WaitingRoomLaunch
     machineRef = environment.runtimeMachineId!
   }
   if (machineRef === NEW_MANAGED_MACHINE_REF) return []
-  return (remote.kernels ?? [])
+  const options: WaitingRoomLaunchKernelOption<TKernel>[] = (remote.kernels ?? [])
     .filter((kernel) => kernel.machine_id === machineRef)
     .map((kernel) => ({
       id: kernel.kernel_id,
@@ -122,6 +139,19 @@ export function waitingRoomLaunchKernelOptions<TKernel extends WaitingRoomLaunch
       machineId: kernel.machine_id,
       kernel,
     }))
+  // MP-08/MP-11: a kernel leaves itself out of its relay kernel list, so once this client is
+  // connected to the chosen machine's kernel that kernel is known only from the relay status.
+  const connected = remote.relay
+  if (connected?.daemon_id && connected.machine_id === machineRef
+    && !options.some((option) => option.id === connected.daemon_id)) {
+    options.push({
+      id: connected.daemon_id,
+      label: connected.daemon_alias ?? connected.daemon_id,
+      machineId: machineRef,
+      kernel: null,
+    })
+  }
+  return options
 }
 
 export function waitingRoomSelectedLaunchKernelRef(

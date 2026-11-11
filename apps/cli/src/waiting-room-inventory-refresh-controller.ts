@@ -452,10 +452,11 @@ export function createWaitingRoomInventoryRefreshController(
         return
       }
       refreshProjectionScope()
+      // Until a report names the connected kernel, its own presence cannot be told from a sibling's.
       const localPresence = mergeLocalKernelPresence(
         machines,
         [],
-        options.getLocalKernelPresences?.() ?? [],
+        activeKernelId ? options.getLocalKernelPresences?.() ?? [] : [],
         activeKernelId,
         inventoriesByKernel,
       )

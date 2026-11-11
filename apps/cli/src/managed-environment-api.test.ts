@@ -75,13 +75,13 @@ test("managed catalog and mutations use bound human HTTP metadata", async () => 
     paths.push(url.pathname)
     if (body) {bodies.push(body); assert.equal(body.accountId, metadata.accountId); assert.equal(body.kernelCredential, undefined); assert.equal(body.environmentId, undefined, "Cloud strictly accepts environment identity only in the path")}
     else assert.equal(url.searchParams.get("accountId"), metadata.accountId)
-    if (url.pathname.endsWith("/options")) return {computeClasses: [], contextSources: []}
+    if (url.pathname.endsWith("/options")) return {computeClasses: [], contextSources: [], rentUnavailable: null}
     if (url.pathname === "/managed-environments" && !body) return {environments: []}
     if (url.pathname.endsWith("/reimage/preflight")) return reimagePreflight()
     if (url.pathname.endsWith("/context-transfer")) return ticket()
     return {environment: {environmentId: "environment-1", accountId: metadata.accountId, managedRepositoryRoot: "/srv/chariox/repos"}, operation: {environmentId: "environment-1"}}
   })
-  assert.deepEqual(await listManagedEnvironmentCatalog(profile), {computeClasses: [], contextSources: [], environments: []})
+  assert.deepEqual(await listManagedEnvironmentCatalog(profile), {computeClasses: [], contextSources: [], environments: [], rentUnavailable: null})
   assert.equal((await getManagedEnvironment(profile, "environment-1")).environmentId, "environment-1")
   await getManagedEnvironmentReimagePreflight(profile, "environment-1")
   const created = await createManagedEnvironment(profile, {clientRequestId: "create-root-1", region: "hel1", computeClass: "agent-small", managedRepositoryRoot: "/srv/chariox/repos", shutdownPolicy: {kind: "last_work_finished", warningSeconds: 30}, contextPlan})

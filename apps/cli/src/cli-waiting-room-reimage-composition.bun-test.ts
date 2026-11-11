@@ -298,7 +298,9 @@ reimageTest("remote to local return restores local inventory scope and managed r
     await harness.initialize()
     harness.composition.reconcileWaitingRoom({ ...harness.state(), selectedMachineRef: "machine-old", selectedKernelRef: "kernel-old" })
     await new Promise(resolve => setImmediate(resolve))
-    assert.equal(harness.client.currentClient().socketPath, OLD_ENDPOINT)
+    // MP-08: the managed machine is offered once, as its environment, which home control browses.
+    assert.equal(harness.state().selectedMachineRef, managedEnvironmentMachineRef("environment-1"))
+    assert.equal(harness.client.currentClient().socketPath, LOCAL_ENDPOINT)
     harness.composition.reconcileWaitingRoom({ ...harness.state(), selectedMachineRef: "local", selectedKernelRef: "local" })
     await new Promise(resolve => setImmediate(resolve))
     assert.equal(harness.client.currentClient().socketPath, LOCAL_ENDPOINT)
@@ -636,6 +638,7 @@ function createHarness(router: TestRouter, options: {
     computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
     contextSources: options.contextSources ?? [],
     environments: [oldEnvironment],
+    rentUnavailable: null,
   }
   let mutableClient!: MutableLocalIpcClient
   let observedThroughEndpoint: string | null = null
@@ -699,6 +702,11 @@ function createHarness(router: TestRouter, options: {
       }
       case "GetManagedEnvironment":
         return { ManagedEnvironment: { environment: options.stoppedEnrolled && environmentReads++ === 0 ? oldEnvironment : replacementEnvironment } }
+      case "ApproveRemoteMachine": {
+        // The home trusts the owner's managed machine before the TUI connects to it.
+        const payload = requestPayload(request, "ApproveRemoteMachine")
+        return { RemoteMachineApproved: { machine: { machine_id: payload.machine_ref, trust_status: "approved" } } }
+      }
       default:
         throw new Error(`unexpected local request ${requestKind(request)}`)
     }
@@ -830,7 +838,7 @@ function createHarness(router: TestRouter, options: {
     cloudRequests.push({path: url.pathname, body})
     assert.equal(new Headers(init?.headers).get("authorization"), "Bearer synthetic-human-access")
     if (body) {assert.equal(body.accountId, "account-1"); assert.equal(body.kernelCredential, undefined)}
-    if (url.pathname.endsWith("/options")) return Response.json({computeClasses: catalog.computeClasses, contextSources: catalog.contextSources})
+    if (url.pathname.endsWith("/options")) return Response.json({computeClasses: catalog.computeClasses, contextSources: catalog.contextSources, rentUnavailable: catalog.rentUnavailable})
     if (url.pathname === "/managed-environments" && !body) return Response.json({environments: catalog.environments})
     if (url.pathname === "/managed-environments" && body) return Response.json({...reimageResult(replacementEnvironment, body.clientRequestId), operation: {...reimageResult(replacementEnvironment, body.clientRequestId).operation, kind: "create"}})
     if (url.pathname.endsWith("/reimage/preflight")) return Response.json(preflight())

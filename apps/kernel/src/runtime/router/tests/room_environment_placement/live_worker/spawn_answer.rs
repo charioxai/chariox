@@ -13,6 +13,11 @@ fn a_slice_worktree_spawn_answer_names_the_checkout_the_worker_created() {
     run_test(slice_worktree_spawn_answer_names_the_created_checkout);
 }
 
+#[test]
+fn a_kernel_spawn_without_a_folder_runs_in_the_worker_folder_not_the_parent_home_folder() {
+    run_test(kernel_spawn_without_a_folder_runs_in_the_worker_folder);
+}
+
 async fn start_fixture() -> LiveWorker {
     LiveWorker::start_configured_with_home_vault_and_worker_id(
         false,
@@ -45,6 +50,23 @@ async fn slice_spawn_answer_names_the_worker_folder() {
     let result = std::panic::AssertUnwindSafe(check_spawn_answer(&fixture))
         .catch_unwind()
         .await;
+    finish(fixture, result).await;
+}
+
+async fn kernel_spawn_without_a_folder_runs_in_the_worker_folder() {
+    let mut fixture = start_fixture().await;
+    let (_agent_worker_state, agent_worker) =
+        super::room_remote_agent_home_slice::start_remote_agent_worker(&mut fixture).await;
+    super::room_remote_agent_home_slice::wait_for_remote_agent_worker(&fixture).await;
+    let result = std::panic::AssertUnwindSafe(check_kernel_spawn_folder(&fixture, &agent_worker))
+        .catch_unwind()
+        .await;
+    agent_worker
+        .app
+        .lock()
+        .await
+        .teardown_provider_processes(Some("managed-dev-stub"), true)
+        .expect("clean the agent worker's provider processes");
     finish(fixture, result).await;
 }
 
@@ -81,9 +103,29 @@ async fn spawn_kid(
             .unwrap();
         app.slices().resolve("desktop").unwrap().worker_kernel_ref
     };
+    spawn_from_room(fixture, &spawn_command(&worker_ref), None).await
+}
+
+/// A Room agent of the first Room, working in `spawner_folder` when given, runs `command`
+/// through the room tool. Returns the answer's agent and the stored agent.
+async fn spawn_from_room(
+    fixture: &LiveWorker,
+    command: &str,
+    spawner_folder: Option<&str>,
+) -> (serde_json::Value, crate::agent::AgentInstance) {
+    let room = &fixture.rooms[0];
     let token = {
         let mut app = fixture.home.app.lock().await;
-        let spawner = spawn_test_agent(&mut app, room, "spawner", "dev-stub");
+        let spawner = match spawner_folder {
+            Some(folder) => crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(
+                    crate::agent::CreateAgentRequest::new(room, "dev-stub")
+                        .with_alias("spawner")
+                        .with_worktree(folder),
+                )
+                .expect("agent should spawn"),
+            None => spawn_test_agent(&mut app, room, "spawner", "dev-stub"),
+        };
         let spawner = app
             .agents_mut()
             .activate_agent_meta_mode(spawner.id(), None)
@@ -99,7 +141,7 @@ async fn spawn_kid(
         .dispatch_authenticated_runtime_tool_call(
             &token,
             crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
-            json!({"command": spawn_command(&worker_ref)}),
+            json!({"command": command}),
         )
         .await
         .expect("the spawn dispatches");
@@ -147,6 +189,36 @@ async fn check_spawn_answer(fixture: &LiveWorker) {
         "the facts the local answer and the footer read name the worker's folder"
     );
     assert_eq!(answer["branch"], serde_json::Value::Null, "{answer}");
+}
+
+/// The parent's folder is a path on the home machine: a child on another kernel that names no
+/// folder starts where that kernel starts its agents, as `/agent spawn --kernel` does.
+async fn check_kernel_spawn_folder(fixture: &LiveWorker, agent_worker: &CommandRouter) {
+    // The worker kernel runs in the fixture's worker folder, its own default for new agents.
+    let worker_folder = fixture._worker_state.worktree.path().display().to_string();
+    let home_folder = fixture.home_state.worktree.path().display().to_string();
+    assert_ne!(worker_folder, home_folder);
+
+    let (_, stored) = spawn_from_room(
+        fixture,
+        "agent spawn kid --provider managed-dev-stub --kernel agent-worker",
+        Some(&home_folder),
+    )
+    .await;
+
+    assert_ne!(
+        stored
+            .remote_execution()
+            .and_then(|binding| binding.worker_worktree_id.as_deref()),
+        Some(home_folder.as_str()),
+        "the worker is not sent the parent's home folder"
+    );
+    assert_eq!(
+        crate::app::RemoteLeaseRuntime::new(&mut *agent_worker.app.lock().await)
+            .leased_agent_working_directories(),
+        vec![worker_folder],
+        "the child runs in the worker's own folder"
+    );
 }
 
 /// The slice's published folder is where the worker is told to start from; `--worktree` makes
