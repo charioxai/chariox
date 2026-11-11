@@ -136,7 +136,8 @@ pub struct RuntimeProviderRun {
     started_at_ms: u64,
     last_activity_at_ms: u64,
     /// When the provider last wrote output; the run's start until it does.
-    #[serde(default)]
+    /// Kept in memory only: a restarted kernel counts a turn's quiet from its start.
+    #[serde(skip)]
     last_output_at_ms: u64,
 }
 

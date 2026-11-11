@@ -1,5 +1,4 @@
 //! What an agent waits on and the agents the health report flags are part of the client wire.
-use super::*;
 use crate::runtime::projection::{AgentRuntimeActivity, AgentRuntimeProjectionHealthSnapshot};
 use sha2::{Digest, Sha256};
 
