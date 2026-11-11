@@ -277,6 +277,32 @@ impl DurableKernelStateStore {
         TASK_QUERY_STEPS.with(|n| n.set(q.get_status(rusqlite::StatementStatus::VmStep)));
         tasks
     }
+    /// The agents of `room` that still hold lifecycle work: a task that is working, waiting or
+    /// blocked, or a wake that can still fire. An agent that yielded on a wake, or whose turn
+    /// ended under a background hold, is idle in the roster but is not finished.
+    pub(crate) fn agents_with_unfinished_work(
+        &self,
+        room: &str,
+    ) -> Result<std::collections::HashSet<String>, DaemonError> {
+        let armed = wakes::ARMED
+            .iter()
+            .map(|state| format!("'{state}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let db = self.lock_connection("agent.lifecycle.unfinished_agents")?;
+        let mut q = db
+            .prepare(&format!(
+                "SELECT agent_id FROM agent_tasks WHERE room_id=?1 AND state IN ('working','waiting','blocked') \
+                 UNION SELECT agent_id FROM agent_wakes WHERE room_id=?1 AND json_extract(payload,'$.state') IN ({armed})"
+            ))
+            .map_err(sql)?;
+        let agents = q
+            .query_map([room], |row| row.get::<_, String>(0))
+            .map_err(sql)?
+            .collect::<Result<_, _>>()
+            .map_err(sql)?;
+        Ok(agents)
+    }
     /// The room's unfinished tasks and its `finished` most recent finished ones, in ledger
     /// order. Older finished tasks are not read, so a long room costs a read no more.
     pub(crate) fn visible_agent_tasks(

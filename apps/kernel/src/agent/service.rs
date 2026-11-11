@@ -17,7 +17,8 @@ use super::{
 #[derive(Debug, Clone)]
 pub struct AgentService {
     store: AgentStore,
-    worker_run_durable_state: Option<DurableKernelStateStore>,
+    /// The kernel's durable state. A service without it (bare unit tests) has no lifecycle work.
+    durable_state: Option<DurableKernelStateStore>,
     pub(super) outside_events: Option<crate::durable_state::DurableKernelStateStore>,
 }
 
@@ -25,15 +26,16 @@ impl AgentService {
     pub fn new() -> Self {
         Self {
             store: AgentStore::new(),
-            worker_run_durable_state: None,
+            durable_state: None,
             outside_events: None,
         }
     }
 
     /// A restarted home resumes a leased turn against the worker run its binding names,
-    /// so every change of that run is written as the agent's durable update.
-    pub(crate) fn with_worker_run_durability(mut self, state: DurableKernelStateStore) -> Self {
-        self.worker_run_durable_state = Some(state);
+    /// so every change of that run is written as the agent's durable update. The same state
+    /// tells admission which children still hold lifecycle work.
+    pub(crate) fn with_durable_state(mut self, state: DurableKernelStateStore) -> Self {
+        self.durable_state = Some(state);
         self
     }
 
@@ -189,7 +191,20 @@ impl AgentService {
         let Some(parent) = agents.iter().find(|agent| agent.id() == parent.agent_id()) else {
             return Ok(());
         };
-        super::authority_limit::check_spawn(request, parent, &agents, earlier_in_batch, session)
+        let unfinished_work = self
+            .durable_state
+            .as_ref()
+            .map(|state| state.agents_with_unfinished_work(&request.session_id))
+            .transpose()?
+            .unwrap_or_default();
+        super::authority_limit::check_spawn(
+            request,
+            parent,
+            &agents,
+            earlier_in_batch,
+            session,
+            &unfinished_work,
+        )
     }
 
     pub(crate) fn create_agent_for_session(
@@ -1077,7 +1092,7 @@ impl AgentService {
             return Ok(previous);
         }
         let updated = agent.clone();
-        if let Some(state) = self.worker_run_durable_state.as_ref() {
+        if let Some(state) = self.durable_state.as_ref() {
             if let Err(error) = state.append_event(
                 "agent.updated",
                 Some(updated.id().to_string()),

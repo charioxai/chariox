@@ -392,7 +392,7 @@ impl DaemonApp {
 
         let mut app = Self {
             agents: AgentServiceStore::new(
-                AgentService::new().with_worker_run_durability(durable_state.clone()),
+                AgentService::new().with_durable_state(durable_state.clone()),
             ),
             attachments: AttachmentServiceStore::new(AttachmentService::new()),
             pty: PtyManager::new(),
