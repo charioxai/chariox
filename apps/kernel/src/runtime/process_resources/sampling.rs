@@ -278,6 +278,8 @@ impl ProcessTree {
         });
         // A shell whose jobs were commands in the previous program stays their
         // launcher whatever is left of them, so a job that waits is still found.
+        // Those jobs are the authority: once the workload's root has ended, the
+        // shell that survived it is no longer under the harness.
         let owned = &self.owned;
         let jobs = |shell: u32| {
             rows.iter()
@@ -286,10 +288,9 @@ impl ProcessTree {
         for row in rows.iter().filter(|row| {
             self.owned.contains_key(&row.pid)
                 && shell(&row.command)
-                && self.harness.contains(&row.parent)
                 && !self.harness.contains(&row.pid)
-                && (jobs(row.pid).nth(1).is_some()
-                    || jobs(row.pid).any(|job| super::admission::handed_over(&owned[&job.pid])))
+                && (jobs(row.pid).any(|job| super::admission::handed_over(&owned[&job.pid]))
+                    || (self.harness.contains(&row.parent) && jobs(row.pid).nth(1).is_some()))
         }) {
             self.launchers.insert(row.pid, row.birth.clone());
         }
