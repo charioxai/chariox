@@ -345,7 +345,8 @@ impl Run {
             // A link that stayed down leaves the staged files, so the same transfer continues.
             Err(reason) if reason.contains("stayed unreachable") => {}
             Err(_) => {
-                let _ = std::fs::remove_dir_all(&stage);
+                let stage = stage.clone();
+                let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(stage)).await;
             }
             Ok(()) => {}
         }
@@ -392,7 +393,10 @@ impl Run {
         for item in folders {
             restore_mode(&stage.join(&item.relative), Some(item.mode));
         }
-        publish_folder(stage, destination, replacing)?;
+        let (staged, target) = (stage.to_owned(), destination.to_owned());
+        tokio::task::spawn_blocking(move || publish_folder(&staged, &target, replacing))
+            .await
+            .map_err(|_| "The transfer stopped unexpectedly; nothing was published".to_owned())??;
         if request.delete_source {
             self.update(|job| {
                 job.state = FileTransferState::Finishing;
