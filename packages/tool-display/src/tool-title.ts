@@ -61,6 +61,8 @@ export function toolDisplayTitle(update: ToolTranscriptUpdate, patchFiles: reado
     case "mcpcharioxvisualshow":
     case "mcpcharioxcharioxvisualshow":
       return verb("Showed a page", "Showing a page")
+    case "charioxwait":
+      return verb("Waited", "Waiting")
     case "charioxvisualpreview":
     case "visualpreview":
     case "charioxcharioxvisualpreview":

@@ -847,6 +847,7 @@ impl KernelRuntimeState {
                     .await?;
             }
             ExecutionState::Waiting => {
+                self.owned.record_wait_started(&task);
                 self.move_seen_decisions_up(&task.room_id, &task.agent_id)
                     .await?;
             }
