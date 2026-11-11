@@ -88,6 +88,10 @@ pub(super) struct ProcessTree {
     /// running the provider's server): the harness. Commands are what it
     /// starts later.
     harness: std::collections::BTreeSet<u32>,
+    /// Shells the harness started that run several jobs at once (a tool call
+    /// that starts a holder and a grower): each job is a command of its own,
+    /// so the newest growing one can wait without the shell's other jobs.
+    launchers: std::collections::BTreeSet<u32>,
     #[cfg(target_os = "linux")]
     cgroup: Option<std::sync::Arc<super::cgroup::Domain>>,
     /// Without a cgroup: the environment entry the workload's processes
@@ -130,6 +134,7 @@ impl ProcessTree {
             root_unread: Some(0),
             unreadable: BTreeMap::new(),
             harness: std::collections::BTreeSet::from([root]),
+            launchers: std::collections::BTreeSet::new(),
             #[cfg(target_os = "linux")]
             cgroup: None,
             #[cfg(target_os = "linux")]
@@ -187,6 +192,7 @@ impl ProcessTree {
             root_unread: None,
             unreadable: BTreeMap::new(),
             harness: std::collections::BTreeSet::from([owned.root]),
+            launchers: std::collections::BTreeSet::new(),
             #[cfg(target_os = "linux")]
             cgroup: None,
             #[cfg(target_os = "linux")]
@@ -264,6 +270,23 @@ impl ProcessTree {
                 _ => None,
             };
         }
+        self.launchers = rows
+            .iter()
+            .filter(|row| {
+                self.owned.contains_key(&row.pid)
+                    && shell(&row.command)
+                    && self.harness.contains(&row.parent)
+                    && !self.harness.contains(&row.pid)
+                    && rows
+                        .iter()
+                        .filter(|child| {
+                            child.parent == row.pid && self.owned.contains_key(&child.pid)
+                        })
+                        .nth(1)
+                        .is_some()
+            })
+            .map(|row| row.pid)
+            .collect();
         // Once the original root is gone, only previously observed descendants
         // can remain owned. Never adopt a replacement process with its PID.
         Ok(rows
@@ -584,6 +607,7 @@ impl ProcessTree {
                 Some(parent)
                     if !self.harness.contains(&top)
                         && !self.harness.contains(parent)
+                        && !self.launchers.contains(parent)
                         && self.owned.contains_key(parent) =>
                 {
                     top = *parent

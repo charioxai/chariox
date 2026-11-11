@@ -454,7 +454,7 @@ fn pressure_pauses_the_newest_growing_command_before_stopping_any_in_cgroups() {
     slow_growth_is_paused_before_anything_is_stopped(true);
 }
 
-/// The shell of an agent's tool call starts a grower and ends: the grower is
+/// The program of an agent's tool call starts a grower and ends: the grower is
 /// then a command of its own, seen for the first time. It must read as the
 /// grower it is, or a pass that finds the pool full cannot pause it and ends
 /// the idle command beside it instead.
@@ -462,7 +462,7 @@ fn pressure_pauses_the_newest_growing_command_before_stopping_any_in_cgroups() {
 #[test]
 fn a_command_a_shell_leaves_behind_keeps_the_growth_it_had_inside_it() {
     let pool = pool(4096);
-    let wrapper = "sh -c 'sed 2d \"$1/alloc.py\" > \"$1/grow.py\"; python3 \"$1/grow.py\" 300 100 3000 & echo $! > \"$1/grow.pid\"; sleep 2' sh \"$0\"";
+    let wrapper = "sh -c 'sed 2d \"$1/alloc.py\" > \"$1/grow.py\"; python3 \"$1/grow.py\" 300 100 3000 & echo $! > \"$1/grow.pid\"; exec sleep 2' sh \"$0\"";
     let workload = Workload::run(
         domain(&pool, "agent", false),
         &[("wrapper", wrapper.into())],
@@ -481,7 +481,7 @@ fn a_command_a_shell_leaves_behind_keeps_the_growth_it_had_inside_it() {
         .trim()
         .parse::<u32>()
         .unwrap();
-    // Its shell ends two seconds after starting it: the first time the grower
+    // Its parent ends two seconds after starting it: the first time the grower
     // is a command of its own, it has been growing all along.
     let first = loop {
         assert!(
@@ -503,6 +503,33 @@ fn a_command_a_shell_leaves_behind_keeps_the_growth_it_had_inside_it() {
         "a growing command read as idle on its first sample: {} bytes/s",
         first.growth
     );
+}
+
+/// One shell command of an agent starts an idle holder and a grower and
+/// waits for them: they are two commands, so the grower (the newest) is paused
+/// where the pool is full, and the holder and the shell go on. Were the shell
+/// one command it would be the oldest, never paused, and ended with both.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_jobs_of_one_shell_command_are_paused_one_by_one() {
+    let pool = pool(1536);
+    let jobs = "sh -c 'python3 \"$1/alloc.py\" 800 0 0 & echo $! > \"$1/big.pid\"; python3 \"$1/alloc.py\" 300 48 1000 & echo $! > \"$1/grow.pid\"; wait' sh \"$0\"";
+    let mut workload = Workload::run(domain(&pool, "agent", false), &[("jobs", jobs.into())]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !workload.dir.join("grow.pid").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the jobs did not start"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    settle(11);
+    assert!(
+        workload.alive("big") && workload.alive("grow") && workload.alive("jobs"),
+        "a job or its shell was ended where the growing job could wait"
+    );
+    assert!(workload.waiting("grow"), "the growing job was not paused");
+    assert!(!workload.waiting("big"), "the idle holder was paused");
 }
 
 fn runaway_is_paused_before_the_line(cgroup: bool) {
