@@ -104,6 +104,16 @@ const fullProblemsOf = (files, allow) => {
 }
 const problemsOf = (files, allow) => fullProblemsOf(files, allow).map(p => `${p.kind}: ${p.file}`)
 
+// The in-process fixtures are scratch directories without a git repository; they must not depend on
+// the CI flag of the process that runs them (CI sets it, and `pnpm test` runs there). The child run
+// skips this test so the file is not run recursively.
+test('the whole file passes with CI=true: in-process fixtures never depend on the process CI flag', { skip: process.env.CHARIOX_GUARD_TEST_CHILD === '1' }, () => {
+  // NODE_TEST_CONTEXT would make the nested runner report to this one and exit 0.
+  const { NODE_TEST_CONTEXT, ...inherited } = process.env
+  const child = spawnSync(process.execPath, ['--test', fileURLToPath(import.meta.url)], { encoding: 'utf8', env: { ...inherited, CI: 'true', CHARIOX_GUARD_TEST_CHILD: '1' } })
+  assert.equal(child.status, 0, `${child.stdout}${child.stderr}`.split('\n').filter(line => /^\s*not ok|not a git repository/.test(line)).slice(0, 20).join('\n'))
+})
+
 test('a planted Cloud vocabulary leak is red until it is listed, and a stale entry is red', () => {
   const files = { 'apps/cli/src/plan.ts': 'export const preset = "agents_done" // auto-stop policy\n' }
   assert.equal(problemsOf(files).length, 1)
