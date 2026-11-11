@@ -190,13 +190,13 @@ require_root_owned_directory() {
 }
 
 # Schema 2 remains verifiable for current-release checks and legacy rollback.
-require_cloud_update_target() {
+require_update_evidence_target() {
   [ -n "$managed_release_update_id" ] || return 0
   node --input-type=module - "$1/usr/lib/chariox/release-manifest.json" <<'NODE'
 import { readFile } from "node:fs/promises"
 const manifest = JSON.parse(await readFile(process.argv[2], "utf8"))
 if (manifest.schemaVersion !== 3 || manifest.managedUpdateEvidenceVersion !== 1) {
-  console.error("Cloud managed release update target requires signed update evidence capability 1 (manifest schema 3)")
+  console.error("managed release update target requires signed update evidence capability 1 (manifest schema 3)")
   process.exit(1)
 }
 NODE
@@ -862,7 +862,7 @@ require_root_owned_directory "$releases_root/${expected_current_digest#sha256:}"
 verify_selected_release \
   "$releases_root/${expected_current_digest#sha256:}" "$expected_current_digest" "$trusted_public_key"
 verify_selected_release "$image_root" "$expected_new_digest" "$next_trusted_public_key" "${next_trusted_builder_public_key:-}"
-require_cloud_update_target "$image_root"
+require_update_evidence_target "$image_root"
 if [ "$managed_provider_topology" = path1 ]; then
   require_root_owned_directory "$install_root/etc"
   if path_exists "$install_root/etc/chariox"; then

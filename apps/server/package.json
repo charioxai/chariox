@@ -7,7 +7,7 @@
     "build": "pnpm --workspace-root run build:kernel-client && pnpm --filter @chariox/transcript-view run build && pnpm --filter @chariox/agent-trigger-gateway run build && tsc -p tsconfig.json",
     "lint": "pnpm --workspace-root run build:kernel-client && pnpm --filter @chariox/transcript-view run build && pnpm --filter @chariox/agent-trigger-gateway run build && tsc -p tsconfig.json --noEmit",
     "drill:live-publication-traces": "pnpm run build && node scripts/live-publication-trace-drill.mjs",
-    "test": "pnpm run build && node --test dist/index.test.js dist/agent-trigger-client.test.js dist/agent-trigger-live.test.js dist/agent-trigger-server.test.js dist/agent-trigger-assets.test.js dist/hosted-agent-trigger-server.test.js",
+    "test": "pnpm run build && node --test dist/index.test.js dist/agent-trigger-client.test.js dist/agent-trigger-live.test.js dist/agent-trigger-server.test.js dist/agent-trigger-assets.test.js dist/hosted-agent-trigger-server.test.js dist/agent-trigger-admission.test.js dist/agent-trigger-identity.test.js",
     "test:trigger-viewer-browser": "pnpm run build && node --test --test-concurrency=1 scripts/agent-trigger-viewer.browser-test.mjs"
   },
   "dependencies": {

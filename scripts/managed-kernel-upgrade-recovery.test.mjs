@@ -143,7 +143,7 @@ test("MP-07/MP-11 recovery rejects a foreign Cloud command without service mutat
     CHARIOX_MANAGED_RELEASE_UPDATE_ID: updateId.replace(/b$/, "c"),
   })
   assert.equal(result.status, 1)
-  assert.match(result.stderr, /does not match the Cloud command/)
+  assert.match(result.stderr, /does not match the update command/)
   assert.deepEqual(await serviceMutations(harness), calls)
   assert.deepEqual(await snapshot(harness), before)
 })

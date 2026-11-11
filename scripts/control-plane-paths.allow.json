@@ -1,13 +1,5 @@
 [
   {
-    "path": "/browser/agent-trigger-deployments/{}/admission",
-    "callers": [
-      "apps/server/src/hosted-agent-trigger-server.ts"
-    ],
-    "why": "hosted agent-trigger ingress asks the connected service to admit a deployment",
-    "slice": "B1"
-  },
-  {
     "path": "/browser/focusedElement/field_id",
     "callers": [
       "apps/kernel/src/runtime/state/tool_dispatch/slice/controller_browser.rs"

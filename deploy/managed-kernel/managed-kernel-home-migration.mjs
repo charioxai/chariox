@@ -151,7 +151,7 @@ async function plan(journalPath, roots, charioxUid, charioxGid) {
   const managedMetadata = await optionalMetadata(roots.managedHome, { bigint: true })
   if (legacyMetadata) requireType(legacyMetadata, "directory", "legacy managed kernel home")
   if (managedMetadata) requireType(managedMetadata, "directory", "managed service-account home")
-  // Older Cloud cloud-init created an empty legacy home skeleton next to
+  // Older provisioning created an empty legacy home skeleton next to
   // /home/chariox. It holds no state: remove it (rmdir fails if it fills).
   const skeleton = legacyMetadata && managedMetadata ? await emptyDirectoryTree(roots.legacyHome) : null
   if (skeleton) {
