@@ -294,6 +294,7 @@ fn a_paused_command_that_never_gets_room_to_grow_ends_after_the_stall_window() {
         let mut entry = entry(pid as u64, Peak::default());
         entry.admitted = true;
         entry.wait = wait;
+        entry.since_ms = crate::session::unix_epoch_ms();
         entry.paused_rate = 2 * GIB;
         let member = owner(
             unit,
@@ -350,6 +351,7 @@ fn paused_commands_that_free_nothing_end_the_largest_after_the_stall_window() {
         );
         waiting.admitted = true;
         waiting.wait = wait;
+        waiting.since_ms = crate::session::unix_epoch_ms();
         let member = owner(
             unit,
             true,

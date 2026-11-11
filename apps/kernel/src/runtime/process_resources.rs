@@ -333,6 +333,8 @@ impl PreparedDomain {
         // Per command: process-table time, resident and written bytes, and
         // their growth per second.
         let mut previous = std::collections::BTreeMap::<u32, Rates>::new();
+        // Resident bytes of each process at the last sample, and when.
+        let mut last_resident = (0u64, std::collections::BTreeMap::<u32, u64>::new());
         let mut write_growth_cache =
             std::collections::BTreeMap::<u32, disk_use::WriteGrowth>::new();
         let worker = std::thread::Builder::new()
@@ -377,7 +379,7 @@ impl PreparedDomain {
                                 rate(writes, before.writes, before.at, before.write_growth),
                             ),
                             Some(before) => (before.growth, before.write_growth),
-                            None => (0, 0),
+                            None => (inherited_growth(&samples, &pids, &last_resident, sampled_at), 0),
                         };
                         if write_growth >= admission::GROWING {
                             let volumes = write_growth_cache.entry(pid).or_default().sample(&pids, sampled_at);
@@ -402,6 +404,13 @@ impl PreparedDomain {
                     })
                     .collect::<Vec<_>>();
                 write_growth_cache.retain(|pid, _| disk_writes.contains_key(pid));
+                last_resident = (
+                    sampled_at,
+                    samples
+                        .iter()
+                        .map(|sample| (sample.pid, sample.resident_set_bytes))
+                        .collect(),
+                );
                 previous = commands
                     .iter()
                     .map(|command| {
@@ -568,6 +577,28 @@ struct Rates {
     growth: u64,
     writes: u64,
     write_growth: u64,
+}
+
+/// Growth per second of a command seen for the first time. Its processes
+/// were part of another command until now (a shell that started them and
+/// ended), so what they gained since the last sample is its growth: without
+/// it a grower reads as idle and cannot be paused in the pass that finds the
+/// pool full.
+fn inherited_growth(
+    samples: &[ProcessSample],
+    pids: &[u32],
+    (at, resident): &(u64, std::collections::BTreeMap<u32, u64>),
+    sampled_at: u64,
+) -> u64 {
+    if sampled_at <= *at {
+        return 0;
+    }
+    let (now, before) = samples
+        .iter()
+        .filter(|sample| pids.contains(&sample.pid))
+        .filter_map(|sample| Some((sample.resident_set_bytes, *resident.get(&sample.pid)?)))
+        .fold((0u64, 0u64), |(now, before), (n, b)| (now + n, before + b));
+    now.saturating_sub(before).saturating_mul(1000) / (sampled_at - *at)
 }
 
 /// Applies admission's decisions: a waiting command's subtree is stopped
