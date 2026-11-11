@@ -3,6 +3,8 @@ import assert from "node:assert/strict"
 import {mkdtempSync, rmSync, writeFileSync} from "node:fs"
 import {tmpdir} from "node:os"
 import {join} from "node:path"
+import {createHmac, randomBytes} from "node:crypto"
+import {relayAuthorization} from "@chariox/kernel-client/relay-authorization"
 import {buildHostedAgentTriggerServer} from "./hosted-agent-trigger-server.js"
 import {loadSelfHostedAdmissionConfig, remoteAdmission, selfHostedAdmission, type SelfHostedAdmissionConfig} from "./agent-trigger-admission.js"
 
@@ -67,4 +69,25 @@ test("a remote admission URL needs an {id} placeholder and HTTPS or loopback", (
   assert.throws(() => remoteAdmission({url: "http://admit.example/{id}", publicOrigin, forwardedHeaders: []}), /HTTPS or a loopback/)
   remoteAdmission({url: "https://admit.example/{id}/admission", publicOrigin, forwardedHeaders: []})
   remoteAdmission({url: "http://127.0.0.1:3000/{id}/admission", publicOrigin, forwardedHeaders: []})
+})
+
+/** A signed scoped relay client token with the header and claims the relay's JWT verifier takes, signed with a throwaway key. */
+function signedClientToken() {
+  const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url")
+  const input = `${part({alg: "HS256", typ: "JWT"})}.${part({iss: "fixture-operator", sub: "operator-terminal", subject_kind: "client", realm_id: "fixture-realm", client_id: "operator-terminal", public_key_thumbprint: randomBytes(32).toString("hex"), allowed_actions: ["client.metadata.read", "client.connect", "packet.route"], allowed_targets: null, iat: Math.floor(Date.now() / 1000) - 1, exp: Math.floor(Date.now() / 1000) + 3600, jti: randomBytes(16).toString("hex")})}`
+  return `${input}.${createHmac("sha256", randomBytes(32)).update(input).digest("base64url")}`
+}
+
+test("the relay credential may be a signed client token longer than a deployment id, within the relay token bound and charset", () => {
+  const dir = mkdtempSync(join(tmpdir(), "trigger-admission-"))
+  try {
+    const write = (token: string) => {const path = join(dir, `d${Math.random()}.json`); writeFileSync(path, JSON.stringify({...config, relay: {...config.relay, token}}), {mode: 0o600}); return path}
+    const jwt = signedClientToken()
+    assert.ok(jwt.length > 256 && relayAuthorization(jwt), "the fixture is a client token the relay client accepts, longer than a deployment id may be")
+    assert.equal(loadSelfHostedAdmissionConfig(write(jwt)).relay.token, jwt)
+    assert.throws(() => loadSelfHostedAdmissionConfig(write("a".repeat(16_385))), /relay\.token.*16384/)
+    assert.throws(() => loadSelfHostedAdmissionConfig(write(`${jwt} extra`)), /relay\.token.*characters/)
+    assert.throws(() => loadSelfHostedAdmissionConfig(write(`${jwt}\n`)), /relay\.token.*characters/)
+    assert.throws(() => loadSelfHostedAdmissionConfig(write("")), /relay\.token/)
+  } finally {rmSync(dir, {recursive: true, force: true})}
 })
