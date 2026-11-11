@@ -758,6 +758,7 @@ impl KernelRuntimeOwnedState {
     }
 
     pub(super) fn note_prompt_output(&self, provider_run_id: &str) {
+        let _ = self.provider_store.record_run_output(provider_run_id);
         let tracked = if let Some(state) = self.prompt_activity.write().get_mut(provider_run_id) {
             state.last_output_at = Some(Instant::now());
             true
@@ -771,6 +772,7 @@ impl KernelRuntimeOwnedState {
     }
 
     pub(super) fn note_prompt_response_content(&self, provider_run_id: &str) {
+        let _ = self.provider_store.record_run_output(provider_run_id);
         let first_response_content = {
             let mut prompt_activity = self.prompt_activity.write();
             if let Some(state) = prompt_activity.get_mut(provider_run_id) {
