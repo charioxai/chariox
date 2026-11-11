@@ -92,6 +92,7 @@ import {
   selectedManagedEnvironment,
   SIGNED_OUT_MANAGED_CATALOG,
   waitingRoomManagedCatalogRemoteState,
+  waitingRoomStateAfterFailedRent,
 } from "./waiting-room-managed-environments.js"
 import {
   WaitingRoomManagedEnvironmentReimageController,
@@ -610,6 +611,12 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       assertActive,
       environmentChanged,
       progress: (message) => deps.flashFooter(message, "info"),
+    }).catch((error: unknown) => {
+      if (!cancelled && deps.waitingRoomState().selectedMachineRef === expectedMachineRef) {
+        deps.setWaitingRoomState(waitingRoomStateAfterFailedRent(deps.waitingRoomState(), managedWaitingRoomRemote()))
+        deps.rebuildTranscript()
+      }
+      throw error
     })
     try {
       assertActive()

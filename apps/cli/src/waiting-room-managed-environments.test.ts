@@ -18,6 +18,7 @@ import {
   NEW_MANAGED_MACHINE_REF,
   SIGNED_OUT_MANAGED_CATALOG,
   waitingRoomManagedCatalogRemoteState,
+  waitingRoomStateAfterFailedRent,
 } from "./waiting-room-managed-environments.js"
 import { waitingRoomLaunchMachineOptions } from "@chariox/kernel-client/waiting-room-runtime-placement"
 import { waitingRoomRows } from "./waiting-room-rows.js"
@@ -125,6 +126,32 @@ test("a new managed Machine stays offered and disabled with the reason when rent
   assert.equal(managedEnvironmentDraftBlockReason(state, unavailable), reason, "Enter refuses with the same reason")
   const notSetUp = {...remote(), managedRentUnavailable: "Renting machines is not set up on this Chariox Cloud."}
   assert.equal(managedEnvironmentDraftBlockReason(state, notSetUp), "Renting machines is not set up on this Chariox Cloud.")
+})
+
+// MP-08: after a refused rent the person picks another region and presses Enter again; the deleted machine is not the choice.
+test("a rent Cloud refused and deleted returns the Machine row to a new machine with the same draft", () => {
+  const refusedRemote: WaitingRoomRemoteState = {
+    ...remote(),
+    managedEnvironments: remote().managedEnvironments!.map((environment) => ({
+      ...environment, desiredState: "deleted", observedState: "deleted", runtimeMachineId: null, runtimeKernelId: null,
+      lastErrorCode: "resource_unavailable", lastErrorMessage: "hel1 has no free agent-small machines right now.",
+    })),
+  }
+  const state: WaitingRoomState = {
+    ...baseState(),
+    selectedMachineRef: managedEnvironmentMachineRef("environment-1"),
+    selectedKernelRef: "",
+    managedComputeClass: "agent-small",
+    managedRegion: "hel1",
+  }
+  const after = waitingRoomStateAfterFailedRent(state, refusedRemote)
+  assert.equal(after.selectedMachineRef, NEW_MANAGED_MACHINE_REF)
+  assert.equal(after.managedComputeClass, "agent-small", "the draft is kept")
+  assert.equal(after.managedRegion, "hel1", "the person changes only the region")
+  assert.equal(waitingRoomRows(normalizeWaitingRoomState(after, [], catalog(), undefined, refusedRemote), [], catalog(), refusedRemote)
+    .find((row) => row.id === "launch-machine")?.value, "+ New Chariox-managed machine...")
+  const ready = { ...state, selectedKernelRef: "kernel-managed" }
+  assert.equal(waitingRoomStateAfterFailedRent(ready, remote()), ready, "a machine that still exists stays selected")
 })
 
 test("new managed Machine dialog owns every conditional configuration row", () => {

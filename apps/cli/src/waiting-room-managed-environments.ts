@@ -64,6 +64,16 @@ export function selectedManagedEnvironment(
     : null
 }
 
+/** After a rent Cloud deleted, the Machine row offers a new machine with the person's draft, so only the region needs changing. */
+export function waitingRoomStateAfterFailedRent(
+  state: WaitingRoomState,
+  remote: WaitingRoomRemoteState,
+): WaitingRoomState {
+  return selectedManagedEnvironment(state, remote)?.desiredState === "deleted"
+    ? { ...state, selectedMachineRef: NEW_MANAGED_MACHINE_REF, selectedKernelRef: "" }
+    : state
+}
+
 export function managedEnvironmentIsLaunchReady(environment: ManagedEnvironmentSummary): boolean {
   return environment.desiredState === "running"
     && environment.observedState === "ready"
