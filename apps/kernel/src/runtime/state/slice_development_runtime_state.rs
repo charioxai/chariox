@@ -34,14 +34,38 @@ impl KernelRuntimeState {
             .map_err(|error| slice_development_io_error("resolve", &storage_parent, error))
     }
 
+    /// Whether a Room belongs to `owner_user_id`. A Room that no longer exists belongs to nobody
+    /// else.
+    fn room_is_owned_by(&self, room_id: &str, owner_user_id: &str) -> bool {
+        self.owned
+            .session_store
+            .session_owner_user_id(room_id)
+            .is_none_or(|owner| self.same_owner(&owner, owner_user_id))
+    }
+
+    pub(crate) fn slices_usable_by_room(
+        &self,
+        session_id: &str,
+        owner_user_id: &str,
+    ) -> Vec<crate::slice::SliceRecord> {
+        self.owned
+            .slice_store
+            .list_usable_by_room(session_id, &|room| {
+                self.room_is_owned_by(room, owner_user_id)
+            })
+    }
+
     pub(crate) fn resolve_spawn_slice(
         &self,
         reference: &str,
         caller_agent_id: &str,
+        owner_user_id: &str,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
         self.owned
             .slice_store
-            .resolve_spawn_slice(reference, caller_agent_id)
+            .resolve_spawn_slice(reference, caller_agent_id, &|room| {
+                self.room_is_owned_by(room, owner_user_id)
+            })
     }
 
     pub(crate) fn slice_development_selection_for_session(

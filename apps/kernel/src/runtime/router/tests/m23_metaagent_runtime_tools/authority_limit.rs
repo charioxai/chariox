@@ -651,3 +651,268 @@ async fn room_defaults() {
     world.tokens.insert("p", token);
     assert_spawn_takes_the_tree_limit(&world, "p", "helper").await;
 }
+
+#[test]
+fn children_that_finished_do_not_count_against_the_sixteen_a_parent_runs() {
+    run_large_stack_async_test("authority-finished-children", finished_children);
+}
+
+async fn finished_children() {
+    let world = world("authority-finished-children").await;
+    let s = world.ids["s"].clone();
+    let token = launch(&world.app, &world.room, &s).await;
+    let mut world = world;
+    world.tokens.insert("s", token);
+    let mut children = Vec::new();
+    for index in 0..16 {
+        children.push(spawn_under(&world, &s, &format!("done-{index}")).await);
+    }
+    // A child that was never prompted is a prepared agent, not a finished one.
+    let waiting = room_command(&world, "s", "agent spawn waiting --provider dev-stub").await;
+    assert!(
+        !waiting.ok && error_text(&waiting).contains("at most 16"),
+        "{waiting:?}"
+    );
+    // Once each child has had its turn and is idle again, none of them is running.
+    {
+        let app = world.app.lock().await;
+        for child in &children {
+            app.agents().note_prompt_sent_at(child, 1).unwrap();
+        }
+    }
+    let next = room_command(&world, "s", "agent spawn next --provider dev-stub").await;
+    assert!(
+        next.ok,
+        "finished children must not block a spawn: {next:?}"
+    );
+    // Children that are working do count.
+    {
+        let app = world.app.lock().await;
+        for child in &children {
+            app.agents()
+                .set_agent_state(child, crate::agent::AgentState::Working)
+                .unwrap();
+        }
+    }
+    let over = room_command(&world, "s", "agent spawn over --provider dev-stub").await;
+    assert!(
+        !over.ok && error_text(&over).contains("at most 16"),
+        "sixteen working children are the cap: {over:?}"
+    );
+}
+
+fn git(workspace: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+        .args(args)
+        .current_dir(workspace)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?}");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn a_refused_spawn_leaves_no_checkout_or_branch_behind() {
+    run_large_stack_async_test("authority-spawn-atomic", refused_spawn_is_atomic);
+}
+
+async fn refused_spawn_is_atomic() {
+    let mut world = world("authority-spawn-atomic").await;
+    let workspace = world._env.root.join("workspace");
+    git(&workspace, &["init", "-q"]);
+    git(&workspace, &["commit", "-q", "--allow-empty", "-m", "x"]);
+    let s = world.ids["s"].clone();
+    let token = launch(&world.app, &world.room, &s).await;
+    world.tokens.insert("s", token);
+    // An alias that is taken refuses the spawn after the checkout would have been made.
+    let target = workspace.join("wt-alias");
+    let refused = room_command(
+        &world,
+        "a",
+        &format!(
+            "agent spawn s --provider dev-stub --worktree {} --branch alias-branch",
+            target.display()
+        ),
+    )
+    .await;
+    assert!(!refused.ok, "{refused:?}");
+    assert!(
+        !target.exists(),
+        "alias refusal left a checkout: {refused:?}"
+    );
+    assert!(
+        git(&workspace, &["branch", "--list", "alias-branch"])
+            .trim()
+            .is_empty(),
+        "alias refusal left a branch"
+    );
+    // The cap refuses it the same way.
+    for index in 0..16 {
+        spawn_under(&world, &s, &format!("fill-{index}")).await;
+    }
+    let target = workspace.join("wt-cap");
+    let refused = room_command(
+        &world,
+        "s",
+        &format!(
+            "agent spawn capped --provider dev-stub --worktree {} --branch cap-branch",
+            target.display()
+        ),
+    )
+    .await;
+    assert!(
+        !refused.ok && error_text(&refused).contains("at most 16"),
+        "{refused:?}"
+    );
+    assert!(!target.exists(), "cap refusal left a checkout");
+    assert!(
+        git(&workspace, &["branch", "--list", "cap-branch"])
+            .trim()
+            .is_empty(),
+        "cap refusal left a branch"
+    );
+    assert_eq!(
+        git(&workspace, &["worktree", "list"]).lines().count(),
+        1,
+        "git still lists a worktree for the refused spawn"
+    );
+    // A branch that existed before the spawn is not the spawn's to delete.
+    git(&workspace, &["branch", "kept-branch"]);
+    let target = workspace.join("wt-kept");
+    let refused = room_command(
+        &world,
+        "s",
+        &format!(
+            "agent spawn kept --provider dev-stub --worktree {} --branch kept-branch",
+            target.display()
+        ),
+    )
+    .await;
+    assert!(!refused.ok, "{refused:?}");
+    assert!(!target.exists());
+    assert!(
+        !git(&workspace, &["branch", "--list", "kept-branch"])
+            .trim()
+            .is_empty(),
+        "a refused spawn deleted a branch it did not create"
+    );
+}
+
+fn fail_events_of_kind(world: &World, kind: &str, message: &str) {
+    let path = world
+        .app
+        .try_lock()
+        .expect("app is idle")
+        .durable_state_store()
+        .path()
+        .to_owned();
+    rusqlite::Connection::open(path)
+        .expect("failure injection connection should open")
+        .execute_batch(&format!(
+            "CREATE TRIGGER fail_{kind_name} BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = '{kind}'
+             BEGIN SELECT RAISE(FAIL, '{message}'); END;",
+            kind_name = kind.replace('.', "_"),
+        ))
+        .expect("append failure should install");
+}
+
+fn checkout_and_branch_exist(
+    workspace: &std::path::Path,
+    target: &std::path::Path,
+    branch: &str,
+) -> bool {
+    target.exists()
+        && !git(workspace, &["branch", "--list", branch])
+            .trim()
+            .is_empty()
+}
+
+#[test]
+fn a_single_agent_registered_before_the_failure_keeps_its_checkout() {
+    run_large_stack_async_test("authority-spawn-retained", single_agent_keeps_checkout);
+}
+
+async fn single_agent_keeps_checkout() {
+    let mut world = world("authority-spawn-retained").await;
+    let workspace = world._env.root.join("workspace");
+    git(&workspace, &["init", "-q"]);
+    git(&workspace, &["commit", "-q", "--allow-empty", "-m", "x"]);
+    let s = world.ids["s"].clone();
+    let token = launch(&world.app, &world.room, &s).await;
+    world.tokens.insert("s", token);
+    // The agent is registered before its creation event is written, so the spawn fails with the
+    // agent in place.
+    fail_events_of_kind(&world, "agent.created", "injected agent.created failure");
+    let target = workspace.join("wt-single");
+    let failed = room_command(
+        &world,
+        "s",
+        &format!(
+            "agent spawn single --provider dev-stub --worktree {} --branch single-branch",
+            target.display()
+        ),
+    )
+    .await;
+    assert!(
+        !failed.ok && error_text(&failed).contains("injected agent.created failure"),
+        "{failed:?}"
+    );
+    assert!(
+        alias_exists(&world, "single").await,
+        "the agent stays registered"
+    );
+    assert!(
+        checkout_and_branch_exist(&workspace, &target, "single-branch"),
+        "a registered agent lost its checkout"
+    );
+}
+
+#[test]
+fn a_batch_registered_before_the_failure_keeps_its_checkouts() {
+    run_large_stack_async_test("authority-batch-retained", batch_keeps_checkouts);
+}
+
+async fn batch_keeps_checkouts() {
+    let world = world("authority-batch-retained").await;
+    let workspace = world._env.root.join("workspace");
+    git(&workspace, &["init", "-q"]);
+    git(&workspace, &["commit", "-q", "--allow-empty", "-m", "x"]);
+    // Every agent is registered when the batch event fails.
+    fail_events_of_kind(&world, "agents.created", "injected agents.created failure");
+    let first = workspace.join("wt-batch-1");
+    let second = workspace.join("wt-batch-2");
+    let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
+        "SpawnAgents": {"session_id": world.room, "agents": [
+            {"provider": "dev-stub", "alias": "batch-1", "worktree_placement":
+                {"target_directory": first, "branch": "batch-1", "from_ref": null}},
+            {"provider": "dev-stub", "alias": "batch-2", "worktree_placement":
+                {"target_directory": second, "branch": "batch-2", "from_ref": null}},
+        ]}
+    }))
+    .expect("public request");
+    let mut command = KernelCommand::from_local_request("batch", None, None, &request);
+    command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+    let failed = world
+        .router
+        .dispatch(command, request)
+        .await
+        .expect_err("the batch event fails");
+    assert!(
+        failed
+            .to_string()
+            .contains("injected agents.created failure"),
+        "{failed}"
+    );
+    for (alias, target) in [("batch-1", &first), ("batch-2", &second)] {
+        assert!(
+            alias_exists(&world, alias).await,
+            "{alias} stays registered"
+        );
+        assert!(
+            checkout_and_branch_exist(&workspace, target, alias),
+            "{alias} lost its checkout"
+        );
+    }
+}

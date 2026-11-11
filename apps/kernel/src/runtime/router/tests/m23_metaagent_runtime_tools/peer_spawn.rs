@@ -386,3 +386,114 @@ async fn follows() {
         "{refused}"
     );
 }
+
+#[test]
+fn room_naming_the_callers_own_room_is_refused_instead_of_making_a_child() {
+    run_large_stack_async_test("peer-spawn-own-room", own_room_refused);
+}
+
+async fn own_room_refused() {
+    let world = world("peer-spawn-own-room").await;
+    let own = world.room.clone();
+    let before = agents_of(&world, &own).await.len();
+    for who in ["a", "b"] {
+        let refused = spawn_into(&world, who, &own, "").await;
+        assert!(
+            !refused.ok && error_text(&refused).contains("omit --room"),
+            "{who}: {refused:?}"
+        );
+    }
+    assert_eq!(
+        agents_of(&world, &own).await.len(),
+        before,
+        "nothing was created"
+    );
+    // Without --room the same call is the sub-agent path.
+    let child = room_command(&world, "a", "agent spawn cx --provider dev-stub").await;
+    assert!(child.ok, "{child:?}");
+    let id = child.payload["response"]["agent"]["id"].as_str().unwrap();
+    let child = agents_of(&world, &own)
+        .await
+        .into_iter()
+        .find(|agent| agent.id() == id)
+        .unwrap();
+    assert_eq!(child.parent_agent_id(), Some(world.ids["a"].as_str()));
+}
+
+#[test]
+fn a_peer_spawn_says_the_owner_ends_it_and_a_delete_by_the_spawner_says_so_too() {
+    run_large_stack_async_test("peer-spawn-lifetime", peer_lifetime);
+}
+
+async fn peer_lifetime() {
+    let world = world("peer-spawn-lifetime").await;
+    let other = world.other_room.clone();
+    let spawned = spawn_into(&world, "a", &other, "--no-follow").await;
+    assert!(spawned.ok, "{spawned:?}");
+    let lifetime = spawned.payload["lifetime"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the spawn answer states the peer's lifetime: {spawned:?}"));
+    assert!(
+        lifetime.contains("owner") && lifetime.contains("agent cancel"),
+        "{lifetime}"
+    );
+    let id = spawned.payload["response"]["agent"]["id"].as_str().unwrap();
+    let refused = room_command(&world, "a", &format!("agent delete {id} --room {other}")).await;
+    let text = error_text(&refused);
+    assert!(
+        !refused.ok && text.contains("owner") && !text.contains("usage: agent delete"),
+        "{refused:?}"
+    );
+    assert!(
+        agents_of(&world, &other)
+            .await
+            .iter()
+            .any(|agent| agent.id() == id),
+        "the peer is still there"
+    );
+}
+
+#[test]
+fn a_room_spawn_with_slice_options_is_refused_before_any_slice_exists() {
+    run_large_stack_async_test("peer-spawn-own-room-slice", own_room_slice);
+}
+
+async fn own_room_slice() {
+    let world = world("peer-spawn-own-room-slice").await;
+    let own = world.room.clone();
+    let slices_before = world.router.runtime_state().list_slices().len();
+    for option in ["--slice new", "--slice new:headed"] {
+        let refused = spawn_into(&world, "a", &own, option).await;
+        assert!(
+            !refused.ok && error_text(&refused).contains("does not accept --slice"),
+            "{option}: {refused:?}"
+        );
+    }
+    assert_eq!(
+        world.router.runtime_state().list_slices().len(),
+        slices_before,
+        "the parser refuses the options before a slice is made"
+    );
+}
+
+#[test]
+fn a_delete_naming_the_callers_own_room_is_told_to_drop_the_room_option() {
+    run_large_stack_async_test("delete-own-room", delete_own_room);
+}
+
+async fn delete_own_room() {
+    let world = world("delete-own-room").await;
+    let own = world.room.clone();
+    let refused = room_command(&world, "a", &format!("agent delete b --room {own}")).await;
+    let text = error_text(&refused);
+    assert!(
+        !refused.ok && text.contains("without --room") && !text.contains("belongs to that room"),
+        "{refused:?}"
+    );
+    let other = world.other_room.clone();
+    let refused = room_command(&world, "a", &format!("agent delete q --room {other}")).await;
+    assert!(
+        !refused.ok && error_text(&refused).contains("belongs to that room and its owner"),
+        "{refused:?}"
+    );
+}

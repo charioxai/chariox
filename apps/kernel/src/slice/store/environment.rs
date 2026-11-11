@@ -165,6 +165,30 @@ impl SliceStore {
         Ok(guard)
     }
 
+    /// The slices `agent spawn --slice` admits for a Room: none reserved for another Room, none
+    /// whose worker is shared with another slice (the two checks `guard_environment_use` makes) and
+    /// none that belongs to another owner (`owns_room`).
+    pub(crate) fn list_usable_by_room(
+        &self,
+        session_id: &str,
+        owns_room: &dyn Fn(&str) -> bool,
+    ) -> Vec<SliceRecord> {
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .records
+            .values()
+            .filter(|slice| {
+                require_environment_session(slice, Some(session_id)).is_ok()
+                    && !has_shared_worker(slice, &state)
+                    && is_owned_through_rooms(slice, owns_room)
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Admit a command that may overlap other controller commands: it checks
     /// the same binding as `guard_environment_use` without taking the slice's
     /// operation slot. It still yields to lifecycle operations (start, stop,
@@ -300,6 +324,21 @@ impl SliceStore {
         state.records.insert(updated.id.clone(), updated.clone());
         Ok(updated)
     }
+}
+
+/// A slice records no owner of its own; it belongs to the owners of the Rooms it is reserved for
+/// or has been attached to. One slice used by a Room of another owner is not the caller's. A slice
+/// no Room has used yet belongs to nobody in particular.
+pub(super) fn is_owned_through_rooms(
+    slice: &SliceRecord,
+    owns_room: &dyn Fn(&str) -> bool,
+) -> bool {
+    slice
+        .environment_session_id
+        .iter()
+        .chain(slice.session_id.iter())
+        .chain(slice.session_ids.iter())
+        .all(|room| owns_room(room))
 }
 
 fn require_environment_session(

@@ -4,6 +4,17 @@ use super::request::meta_kernel_command;
 use super::result::{meta_command_error, meta_command_failure_result};
 use super::*;
 
+/// What a spawner is told about the peer it created in another room.
+pub(super) const PEER_LIFETIME: &str = "the new agent belongs to that room and its owner and stays until the owner deletes it; you cannot delete it, and `agent cancel <agent> --room <room>` stops its turn";
+
+/// The value of `--room` in a command's arguments.
+fn room_option(args: &[String]) -> Option<&str> {
+    args.iter()
+        .position(|arg| arg == "--room")
+        .and_then(|index| args.get(index + 1))
+        .map(String::as_str)
+}
+
 /// `agent children` lists at most this many descendants.
 const CHILDREN_LISTED_LIMIT: usize = 64;
 
@@ -17,6 +28,9 @@ impl CommandRouter {
         command: &str,
         tokens: &[String],
     ) -> Result<Option<RuntimeToolResult>, DaemonError> {
+        if let Some(listed) = self.reach_list_result(session, caller, command, tokens) {
+            return Ok(Some(listed));
+        }
         if tokens.first().map(String::as_str) != Some("agent") {
             return Ok(None);
         }
@@ -43,6 +57,30 @@ impl CommandRouter {
                 )
                 .await,
             ),
+            // A peer created in another room is that room's owner's to delete.
+            Some("delete" | "destroy" | "remove")
+                if args
+                    .iter()
+                    .any(|arg| matches!(arg.as_str(), "--room" | "--kernel" | "--machine")) =>
+            {
+                let own_room = match room_option(args) {
+                    Some(room) => self
+                        .runtime_state
+                        .resolve_session_ref_id(room, None)
+                        .await
+                        .is_ok_and(|room| room == session.id()),
+                    None => false,
+                };
+                let message = if own_room {
+                    "an agent in your own room is deleted without --room: `agent delete <agent>`"
+                } else {
+                    "an agent in another room belongs to that room and its owner: only the owner deletes it; `agent cancel <agent> --room <room>` stops its turn"
+                };
+                Some(meta_command_failure_result(
+                    command,
+                    meta_command_error(message),
+                ))
+            }
             Some("children") => {
                 Some(self.meta_agent_children_result(session, caller, command, args))
             }

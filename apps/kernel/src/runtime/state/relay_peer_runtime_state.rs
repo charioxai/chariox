@@ -215,8 +215,17 @@ impl KernelRuntimeState {
         let account_profile = account_profile.to_string();
         self.with_app_side_effect(move |app| {
             let mut runtime = RemoteLeaseRuntime::new(app);
+            // Resolve the folder first: a worker with nowhere to put it refuses before the
+            // lease's one authorization is used.
+            let fresh_folder = match (&worktree_id, &worktree_placement) {
+                (None, None) => Some(runtime.resolve_fresh_leased_agent_folder(&lease_id)?),
+                _ => None,
+            };
             runtime.consume_execution_lease_authorization(&lease_id)?;
-            runtime.create_leased_agent(
+            if let Some(folder) = &fresh_folder {
+                runtime.create_fresh_leased_agent_folder(folder)?;
+            }
+            let created = runtime.create_leased_agent(
                 &lease_id,
                 &provider,
                 &account_profile,
@@ -225,9 +234,18 @@ impl KernelRuntimeState {
                 execution_mode,
                 permission_level,
                 workspace_live_sync_mode,
-                worktree_id,
+                fresh_folder
+                    .as_ref()
+                    .map(|folder| folder.display().to_string())
+                    .or(worktree_id),
                 worktree_placement,
-            )
+            );
+            match fresh_folder {
+                Some(folder) => {
+                    created.map_err(|error| runtime.remove_unused_fresh_folder(&folder, error))
+                }
+                None => created,
+            }
         })
         .await
     }
