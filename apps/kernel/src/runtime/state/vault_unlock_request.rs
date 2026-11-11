@@ -8,8 +8,8 @@ use crate::config::{CredentialVaultBackend, CredentialVaultUnlockPolicy};
 // Everything the owner reads about an unlock that did not happen lives here.
 pub(crate) mod wording {
     pub(super) const WRONG_PASSPHRASE: &str = "That is not the Vault passphrase. Try again.";
-    pub(super) const MISSING: &str =
-        "This kernel has no Vault yet. Create it on that machine first.";
+    pub(super) const AWAITING_PASSPHRASE: &str =
+        "This kernel's Vault has no passphrase yet. Choose one to create it.";
     pub(super) const LOCKED: &str = "The Vault is locked. Unlock it, then try again.";
     pub(super) const OWNER_ONLY: &str = "Only the owner of this kernel can unlock its Vault.";
     pub(crate) const EXISTS: &str =
@@ -26,7 +26,7 @@ pub(crate) mod wording {
 
 const WRONG_PASSPHRASE: &str = "vault_passphrase_wrong";
 const RATE_LIMITED: &str = "vault_unlock_rate_limited";
-const MISSING: &str = "vault_missing";
+const AWAITING_PASSPHRASE: &str = "vault_awaiting_passphrase";
 const LOCKED: &str = "vault_locked";
 const OWNER_ONLY: &str = "vault_unlock_owner_only";
 pub(crate) const EXISTS: &str = "vault_exists";
@@ -87,9 +87,9 @@ impl KernelRuntimeState {
     }
 
     /// The Vault menu opens on an open Vault. A locked one is unlocked by the
-    /// client first (`UnlockCredentialVault`), not through an agent's prompt.
-    /// A kernel with no Vault file yet still gets the first-time prompt that
-    /// creates it.
+    /// client first (`UnlockCredentialVault`), not through an agent's prompt;
+    /// a kernel with no Vault yet is refused the same way, and its owner's
+    /// client creates the Vault (`CreateCredentialVault`).
     pub(crate) fn require_unlocked_vault(&self) -> Result<(), DaemonError> {
         let config = self
             .owned
@@ -99,7 +99,6 @@ impl KernelRuntimeState {
             .credential_vault;
         let path = expand_vault_path(&config.path);
         if config.backend == CredentialVaultBackend::CharioxEncrypted
-            && path.exists()
             && !crate::secret::chariox_encrypted_vault_status(&path)?.unlocked
         {
             return Err(vault_locked_error());
@@ -108,7 +107,8 @@ impl KernelRuntimeState {
     }
 
     /// `UnlockCredentialVault`: unlocks the existing Vault for the owner's
-    /// own client. It never creates a Vault.
+    /// own client. It never creates a Vault; a kernel that has none asks for
+    /// a passphrase, which `CreateCredentialVault` takes.
     pub(crate) async fn unlock_credential_vault_for_owner(
         &self,
         owner: &str,
@@ -118,10 +118,9 @@ impl KernelRuntimeState {
         let config = user_config.credential_vault;
         let path = expand_vault_path(&config.path);
         if config.backend != CredentialVaultBackend::CharioxEncrypted {
-            return Ok((
-                crate::secret::chariox_encrypted_vault_status(&path)?,
-                "not_required",
-            ));
+            let mut status = crate::secret::chariox_encrypted_vault_status(&path)?;
+            status.awaiting_passphrase = false;
+            return Ok((status, "not_required"));
         }
         if request.surface == crate::local::VaultUnlockSurface::Card {
             return Err(refusal(CARD_SURFACE, wording::CARD_SURFACE, false));
@@ -169,8 +168,12 @@ impl KernelRuntimeState {
             ));
         }
         if !create && !path.exists() {
-            log_outcome(owner, path, "missing");
-            return Err(refusal(MISSING, wording::MISSING, false));
+            log_outcome(owner, path, "awaiting_passphrase");
+            return Err(refusal(
+                AWAITING_PASSPHRASE,
+                wording::AWAITING_PASSPHRASE,
+                false,
+            ));
         }
         let (check_path, secret) = (
             path.to_owned(),

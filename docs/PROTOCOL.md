@@ -6349,11 +6349,12 @@ needs no session or agent: it is about the kernel's Vault, like `GetCredentialVa
 owner's user id. A session member, an agent and a Metaagent get `vault_unlock_owner_only`;
 kernel-access grant holders and sudo agents are refused too, and no agent tool carries it. The passphrase
 is a redacted, zeroed value: command records show `[redacted]`, and it is never logged. The
-request unlocks an existing Vault only; a missing Vault file is refused and never created.
+request unlocks an existing Vault only; a kernel with no Vault file is refused with
+`vault_awaiting_passphrase` and nothing is created (`CreateCredentialVault` below takes the passphrase).
 How long the Vault stays open is the owner's choice on every unlock (local 984, below).
 
 Refusals carry a code and a plain sentence: `vault_passphrase_wrong`,
-`vault_unlock_rate_limited` (the sentence names the wait in seconds), `vault_missing`,
+`vault_unlock_rate_limited` (the sentence names the wait in seconds), `vault_awaiting_passphrase`,
 `vault_unlock_owner_only` and `vault_locked`. A session-less operation that needs the Vault
 while it is locked answers `vault_locked`, so a client unlocks and repeats the same operation;
 `ManageCredentialVault` on a locked Vault answers it too and raises no prompt. Wrong passphrases are
@@ -6412,6 +6413,23 @@ Vault is never replaced (`vault_exists`); a kernel that keeps its secrets outsid
 the seal to the kernel the Project is on and the create to the new kernel before the Project is sent, so the
 Environment's Secrets and secret-looking Files are written into the new Vault. Focused checks:
 `cargo test -p chariox-kernel --lib vault_creation` and `credential_vault_creation_973_shapes_are_pinned`.
+A kernel always gets a Vault, and its owner can give it one from any client, so no state is "missing":
+`GetCredentialVaultStatus` answers `awaiting_passphrase: true` (absent otherwise, only for a Chariox Vault) while
+the kernel has no Vault file. The owner's authenticated client on any surface (local socket, relay/web, remote
+TUI) then sends `CreateCredentialVault`; an agent, a Metaagent and a session member get
+`vault_unlock_owner_only`, and wrong passphrases stay in the shared rate limit. A client offers "Use the same
+passphrase as <kernel>" when the owner has another kernel whose Vault is open, in this order: (1) read the new
+kernel's `kernelId` and relay public key from the kernel list; (2) send `SealCredentialVaultKey { targetKernelId,
+targetPublicKey }` to the open kernel (`vault_locked` asks the owner to unlock that one first); (3) send
+`CreateCredentialVault { origin: { kind: "seed", seed } }` to the new kernel with the answered seed. The seed
+travels only inside the end-to-end-encrypted relay traffic, and both requests need the owner's id. A kernel
+that has an explicit `CHARIOX_HOME` and no config keeps its default Vault at `$CHARIOX_HOME/vault/vault.json`; without
+one it stays `~/.chariox/vault/vault.json`. An agent or an App install that needs the Vault while the kernel has none
+gets the answer a locked Vault gets (`vault_locked`; the unlock card for an agent run), never an instruction to go to
+the machine. No protocol number changes with this: the status field is optional on the wire and `vault_missing`
+became `vault_awaiting_passphrase`. Focused checks: `cargo test -p chariox-kernel --lib vault_creation` and
+`vault_path`.
+
 ### Vault unlock duration — local 984 / relay peer 425
 
 Every Vault unlock names how long the Vault stays open. `UnlockCredentialVault { passphrase, duration }`

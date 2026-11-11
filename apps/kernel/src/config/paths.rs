@@ -268,7 +268,7 @@ fn expand_user_path(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
-fn chariox_home_dir() -> Option<PathBuf> {
+pub(super) fn chariox_home_dir() -> Option<PathBuf> {
     env::var_os("CHARIOX_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)

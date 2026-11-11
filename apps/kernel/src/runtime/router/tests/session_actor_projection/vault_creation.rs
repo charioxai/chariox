@@ -1,6 +1,6 @@
 //! `CreateCredentialVault` and `SealCredentialVaultKey`: the owner's client gives a kernel its own Vault, also
 //! one that opens with the passphrase of another kernel's Vault.
-use super::vault_unlock_request::{code_of, Fixture, PASSPHRASE};
+use super::vault_unlock_request::{caller_of, code_of, Fixture, PASSPHRASE};
 use super::*;
 use crate::config::CredentialVaultUnlockPolicy;
 use crate::local::{
@@ -161,4 +161,113 @@ fn the_requests_and_their_answer_keep_a_secret_out_of_debug_and_command_records(
         &request,
     );
     assert!(!format!("{recorded:?}").contains("sentinel-passphrase-9a2e"));
+}
+
+#[tokio::test]
+async fn a_kernel_with_no_vault_is_awaiting_its_passphrase_until_one_is_chosen() {
+    let target = kernel_without_vault();
+    let status = target.status().await;
+    assert!(status.awaiting_passphrase && !status.unlocked);
+
+    target
+        .send(create(CredentialVaultOrigin::Passphrase {
+            passphrase: VaultPassphrase::new("chosen on the first visit"),
+        }))
+        .await
+        .unwrap();
+    assert!(!target.status().await.awaiting_passphrase);
+    crate::secret::lock_chariox_encrypted_vault(&target.vault).unwrap();
+    let locked = target.status().await;
+    assert!(!locked.awaiting_passphrase && !locked.unlocked);
+}
+
+const OWNER: &str = "enrolled-owner";
+
+fn owner_over_the_relay() -> KernelCaller {
+    caller_of(Some(KernelConnectionClass::Terminal), Some(OWNER))
+}
+
+#[tokio::test]
+async fn the_owner_creates_the_vault_from_a_remote_client_with_a_passphrase() {
+    let target = Fixture::enrolled(OWNER, false);
+    let created = target
+        .send_as(
+            owner_over_the_relay(),
+            create(CredentialVaultOrigin::Passphrase {
+                passphrase: VaultPassphrase::new("typed in the browser"),
+            }),
+        )
+        .await
+        .unwrap();
+    let LocalDaemonResponse::CredentialVaultUnlocked { action, .. } = created else {
+        panic!("unexpected {created:?}");
+    };
+    assert_eq!(action, "created");
+    assert!(target.vault.exists());
+}
+
+#[tokio::test]
+async fn a_remote_client_gives_a_new_kernel_the_passphrase_of_another_of_the_owners_kernels() {
+    let source = Fixture::enrolled(OWNER, true);
+    source
+        .send_as(
+            owner_over_the_relay(),
+            LocalDaemonRequest::UnlockCredentialVault(crate::local::UnlockCredentialVaultRequest {
+                passphrase: VaultPassphrase::new(PASSPHRASE),
+                duration: crate::local::VaultUnlockDuration::Minutes { minutes: 30 },
+                surface: crate::local::VaultUnlockSurface::VaultWindow,
+            }),
+        )
+        .await
+        .unwrap();
+    let target = Fixture::enrolled(OWNER, false);
+    // The client reads the target's id and relay key from the kernel list, asks the
+    // unlocked kernel to seal for them, then hands the seed to the new kernel.
+    let seed = match source
+        .send_as(
+            owner_over_the_relay(),
+            LocalDaemonRequest::SealCredentialVaultKey(SealCredentialVaultKeyRequest {
+                target_kernel_id: target.kernel_id.clone(),
+                target_public_key: target.relay_public_key.clone(),
+            }),
+        )
+        .await
+        .unwrap()
+    {
+        LocalDaemonResponse::CredentialVaultKeySealed { seed } => seed,
+        other => panic!("unexpected {other:?}"),
+    };
+    target
+        .send_as(
+            owner_over_the_relay(),
+            create(CredentialVaultOrigin::Seed {
+                seed: Box::new(seed),
+            }),
+        )
+        .await
+        .unwrap();
+    crate::secret::lock_chariox_encrypted_vault(&target.vault).unwrap();
+    target.unlock(PASSPHRASE).await.unwrap();
+    assert!(target.status().await.unlocked);
+}
+
+#[tokio::test]
+async fn a_member_of_a_shared_session_cannot_create_the_owners_vault() {
+    let target = Fixture::enrolled(OWNER, false);
+    let member = caller_of(
+        Some(KernelConnectionClass::Terminal),
+        Some("session-member"),
+    );
+    let (code, _) = code_of(
+        target
+            .send_as(
+                member,
+                create(CredentialVaultOrigin::Passphrase {
+                    passphrase: VaultPassphrase::new("not the owner"),
+                }),
+            )
+            .await,
+    );
+    assert_eq!(code, "vault_unlock_owner_only");
+    assert!(!target.vault.exists());
 }
