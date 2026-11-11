@@ -138,7 +138,6 @@ async fn agent_on_second_home_local_slice_uses_the_room_environment_without_dire
         &mut fixture,
         agent_worker_kernel_id,
         &agent_worker_machine_id,
-        &agent_slice_id,
     )
     .await;
     wait_for_agent_slice_worker(&fixture, agent_worker_kernel_id).await;
@@ -552,14 +551,12 @@ async fn start_agent_slice_worker(
     fixture: &mut LiveWorker,
     worker_kernel_id: &str,
     worker_machine_id: &str,
-    slice_id: &str,
 ) -> (TestState, Arc<CommandRouter>) {
     let mut worker_state = TestState::new();
     worker_state.config.relay_url = fixture.home_state.config.relay_url.clone();
     worker_state.config.relay_token = fixture.home_state.config.relay_token.clone();
     worker_state.config.relay_heartbeat_ms = 50;
     worker_state.config.daemon_id = worker_kernel_id.to_string();
-    worker_state.config.daemon_alias = Some(format!("slice:{slice_id}:worker:test"));
     worker_state.config.host_machine_id = worker_machine_id.to_string();
     let worker = Arc::new(CommandRouter::with_interactive_capacity(
         Arc::new(Mutex::new(

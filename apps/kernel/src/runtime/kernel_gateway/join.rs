@@ -27,6 +27,29 @@ fn refused(detail: impl Into<String>) -> GatewayError {
     }
 }
 
+/// What the pairing link says about the kernel. The link's name is the computer's name at
+/// pairing time, so it is kept as the machine name that the kernel's status refreshes, never
+/// as a kernel name that would outlive a rename.
+fn paired_presence(
+    token: &crate::runtime::invite_tokens::PairingInviteToken,
+    public_key: &str,
+) -> RelayKernelPresence {
+    RelayKernelPresence {
+        kernel_id: token.target_daemon_id.clone(),
+        machine_id: token.issuer_machine_id.clone(),
+        machine_alias: token.target_daemon_alias.clone(),
+        relay_alias: None,
+        kernel_alias: None,
+        available_providers: Vec::new(),
+        provider_accounts: Vec::new(),
+        capabilities: Vec::new(),
+        accepting_remote_leases: false,
+        leased_agent_count: 0,
+        local_session_count: 0,
+        public_key: public_key.to_string(),
+    }
+}
+
 impl KernelGateway {
     pub(crate) async fn join(
         &self,
@@ -110,34 +133,12 @@ impl KernelGateway {
                 "the kernel did not admit this kernel's key; it may run an older Chariox kernel. Update it and make a new link.",
             ));
         }
-        let mut presence = RelayKernelPresence {
-            kernel_id: token.target_daemon_id.clone(),
-            machine_id: token.issuer_machine_id.clone(),
-            machine_alias: None,
-            relay_alias: None,
-            kernel_alias: token.target_daemon_alias.clone(),
-            available_providers: Vec::new(),
-            provider_accounts: Vec::new(),
-            capabilities: Vec::new(),
-            accepting_remote_leases: false,
-            leased_agent_count: 0,
-            local_session_count: 0,
-            public_key: link.target_public_key().to_string(),
-        };
+        let mut presence = paired_presence(&token, link.target_public_key());
         if let Ok(status) = status_of(&link).await {
             status.apply_to(&mut presence);
         }
-        let mut known: Vec<RelayKernelPresence> = self
-            .paired
-            .all()?
-            .into_iter()
-            .map(|target| target.presence)
-            .filter(|other| other.kernel_id != presence.kernel_id)
-            .collect();
-        known.push(presence.clone());
-        let known: Vec<&RelayKernelPresence> = known.iter().collect();
         let target = GatewayKernel {
-            name: super::names::display_name(&presence, &known),
+            name: super::names::display_name(&presence),
             label: super::names::label(&presence),
             kernel_id: presence.kernel_id.clone(),
             machine_id: presence.machine_id.clone(),
@@ -163,5 +164,43 @@ impl KernelGateway {
         let id = super::names::find(&known, name)?.kernel_id.clone();
         self.paired.remove(&id)?;
         Ok(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::self_hosted::TargetStatus;
+    use super::*;
+    use crate::runtime::invite_tokens::PairingInviteToken;
+
+    fn link(name: &str) -> PairingInviteToken {
+        PairingInviteToken {
+            version: 1,
+            intent: crate::local::PairingInviteIntent::Client,
+            invite_id: "invite".into(),
+            relay_url: "wss://relay.example/ws".into(),
+            relay_token: String::new(),
+            target_daemon_id: "k-1".into(),
+            target_daemon_alias: Some(name.into()),
+            issuer_machine_id: "machine-1".into(),
+            issued_at_ms: 1,
+            expires_at_ms: 2,
+            terminal_type: None,
+            pairing_code: None,
+            terminal_id: None,
+        }
+    }
+
+    #[test]
+    fn pairing_keeps_the_computer_name_only_until_the_kernel_says_its_new_one() {
+        let mut presence = paired_presence(&link("Old Name"), "key");
+        assert_eq!(presence.machine_alias.as_deref(), Some("Old Name"));
+        assert_eq!(presence.kernel_alias, None);
+        TargetStatus {
+            capabilities: vec!["kernel_gateway_v1".into()],
+            machine_alias: Some("Studio Box".into()),
+        }
+        .apply_to(&mut presence);
+        assert_eq!(super::super::names::display_name(&presence), "Studio Box");
     }
 }

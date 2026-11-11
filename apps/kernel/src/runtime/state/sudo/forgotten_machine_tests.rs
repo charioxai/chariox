@@ -85,8 +85,7 @@ async fn forgetting_the_worker_machine_ends_the_leased_sudo_window_and_refuses_l
     crate::test_support::isolated_env_test!();
     let f = fixture_with_options(None, true);
     let worker = crate::config::DaemonConfig::for_tests();
-    crate::config::DaemonConfig::approve_remote_machine(MACHINE, Some("amrig worker".into()))
-        .unwrap();
+    crate::config::DaemonConfig::approve_remote_machine(MACHINE).unwrap();
     lease_agent_to_machine(&f, &worker.daemon_id);
     let window = open(&f, None).await;
     let state = f.state.with_relay_peer_authority(
@@ -166,7 +165,7 @@ async fn forgetting_a_private_slice_worker_delivers_both_cleanup_requests() {
                 task: std::thread::spawn(|| {}),
             },
         );
-    crate::config::DaemonConfig::approve_remote_machine(MACHINE, None).unwrap();
+    crate::config::DaemonConfig::approve_remote_machine(MACHINE).unwrap();
     lease_agent_to_machine(&f, worker.worker_kernel_id());
     let agent_id = f.request.target_agent_id.as_deref().unwrap();
     let mut binding = f

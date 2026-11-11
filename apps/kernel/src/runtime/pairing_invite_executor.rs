@@ -233,7 +233,7 @@ pub(crate) async fn execute_create_pairing_invite_request(
         relay_url: relay_url.clone(),
         relay_token,
         target_daemon_id: config.daemon_id.clone(),
-        target_daemon_alias: config.daemon_alias.clone().or(request.alias),
+        target_daemon_alias: config.machine_name(),
         issuer_machine_id: config.host_machine_id.clone(),
         issued_at_ms,
         expires_at_ms,
@@ -280,7 +280,7 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
     let pairing_code = random_pairing_code();
     let mut terminal_id = format!("{}-{}", terminal_type.as_str(), random_hex_id());
     let target_daemon_id = config.daemon_id.clone();
-    let target_daemon_alias = config.daemon_alias.clone().or(request.alias);
+    let target_daemon_alias = config.machine_name();
     // Enrollment can issue a CLIENT grant only after the receiving terminal
     // supplies its key. Bootstrap belongs to that terminal's own client profile.
     let relay_token = if config.cloud_relay.as_ref().is_some_and(|profile| {

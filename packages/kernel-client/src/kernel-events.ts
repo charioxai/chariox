@@ -113,7 +113,6 @@ export type KernelEvent =
     machines: Array<{
       machine_id: string
       machine_alias?: string | null
-      registry_alias?: string | null
       display_name: string
       trust_status: "approved" | "pending" | "forgotten"
       online: boolean

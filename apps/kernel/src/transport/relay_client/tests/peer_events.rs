@@ -265,7 +265,6 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
 
     let mut config_home = DaemonConfig::for_tests();
     config_home.daemon_id = "daemon-home".to_string();
-    config_home.daemon_alias = Some("home".to_string());
     config_home.host_machine_id = "machine-home".to_string();
     config_home.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_home.relay_token = Some("secret".to_string());
@@ -286,7 +285,6 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
 
     let mut config_worker = DaemonConfig::for_tests();
     config_worker.daemon_id = "daemon-worker".to_string();
-    config_worker.daemon_alias = Some("worker".to_string());
     config_worker.host_machine_id = "machine-worker".to_string();
     config_worker.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config_worker.relay_token = Some("secret".to_string());

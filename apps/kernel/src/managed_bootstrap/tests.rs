@@ -2143,7 +2143,6 @@ impl Fixture {
                 relay_url: "wss://relay.example.test".to_string(),
                 issuer_id: "issuer-1".to_string(),
                 machine_id: String::new(),
-                machine_alias: "Managed agents".to_string(),
                 machine_credential: format!("mcred_{}", "b".repeat(43)),
             },
         }
@@ -2616,7 +2615,6 @@ fn path1_test_cloud_response(
             relay_url: "wss://relay.example.test".to_string(),
             issuer_id: "issuer-1".to_string(),
             machine_id: "managed-machine-1".to_string(),
-            machine_alias: "Managed agents".to_string(),
             machine_credential: format!("mcred_{}", "b".repeat(43)),
         },
     }

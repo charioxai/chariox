@@ -1,5 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { deriveWaitingRoomControlActivationDecision } from "./waiting-room-controller.js"
+import { parseSlashCommand } from "./commands.js"
 
 import {
   handleRemoteMachineSlashCommand,
@@ -18,7 +20,7 @@ test("remote machine command renders recovery hints", async () => {
   assert.match(harness.footers.at(1)?.message ?? "", /cold-kernel id=kernel-2/)
   assert.match(harness.footers.at(1)?.message ?? "", /readiness=blocked/)
   assert.match(harness.footers.at(1)?.message ?? "", /accepting_remote_leases=false/)
-  assert.match(harness.footers.at(1)?.message ?? "", /next: run \/machine kernels builder; enable remote leases on cold-kernel or choose another worker/)
+  assert.match(harness.footers.at(1)?.message ?? "", /next: run \/machine kernels machine-1; enable remote leases on cold-kernel or choose another worker/)
   assert.deepEqual(harness.notices, [])
   assert.deepEqual(harness.notices, [])
 })
@@ -34,7 +36,7 @@ test("remote machine command renders unknown lease state with refresh recovery",
   assert.match(harness.footers.at(0)?.message ?? "", /accepting_remote_leases=unknown/)
   assert.match(harness.footers.at(0)?.message ?? "", /readiness=unknown/)
   assert.doesNotMatch(harness.footers.at(0)?.message ?? "", /enable remote leases/)
-  assert.match(harness.footers.at(0)?.message ?? "", /next: run \/machine kernels builder; refresh cold-kernel readiness or reconnect that worker before launching remote agents/)
+  assert.match(harness.footers.at(0)?.message ?? "", /next: run \/machine kernels machine-1; refresh cold-kernel readiness or reconnect that worker before launching remote agents/)
 })
 
 test("remote machine command prioritizes unknown readiness over empty providers", async () => {
@@ -47,7 +49,7 @@ test("remote machine command prioritizes unknown readiness over empty providers"
 
   assert.match(harness.footers.at(0)?.message ?? "", /readiness=unknown/)
   assert.match(harness.footers.at(0)?.message ?? "", /providers=-/)
-  assert.match(harness.footers.at(0)?.message ?? "", /next: run \/machine kernels builder; refresh cold-kernel readiness or reconnect that worker before launching remote agents/)
+  assert.match(harness.footers.at(0)?.message ?? "", /next: run \/machine kernels machine-1; refresh cold-kernel readiness or reconnect that worker before launching remote agents/)
   assert.doesNotMatch(harness.footers.at(0)?.message ?? "", /configure provider CLIs/)
 })
 
@@ -55,7 +57,6 @@ test("remote machine mutation commands patch cached machines without refreshing 
   const harness = remoteMachineHarness()
 
   await handleRemoteMachineSlashCommand(harness.deps, command("approve", "machine-2"))
-  await handleRemoteMachineSlashCommand(harness.deps, command("rename", "machine-2", "New", "Name"))
   await handleRemoteMachineSlashCommand(harness.deps, command("forget", "machine-2"))
 
   assert.deepEqual(harness.machines.map((machine) => [
@@ -65,10 +66,9 @@ test("remote machine mutation commands patch cached machines without refreshing 
   ]), [
     ["machine-1", "Builder", "approved"],
   ])
-  assert.equal(harness.reconcileCount, 3)
+  assert.equal(harness.reconcileCount, 2)
   assert.equal(harness.footers.at(0)?.message, "approved remote machine cold")
-  assert.equal(harness.footers.at(1)?.message, "renamed remote machine machine-2 to New Name")
-  assert.equal(harness.footers.at(2)?.message, "forgot remote machine New Name")
+  assert.equal(harness.footers.at(1)?.message, "forgot remote machine New Name")
 })
 
 test("remote machine reimage command requires an explicit second confirmation", async () => {
@@ -106,7 +106,6 @@ function remoteMachineHarness(kernelOverrides: Record<string, unknown> = {}) {
   const machines: RemoteMachineSummary[] = [{
     machine_id: "machine-1",
     machine_alias: "builder",
-    registry_alias: null,
     display_name: "Builder",
     trust_status: "approved" as const,
     online: true,
@@ -116,7 +115,6 @@ function remoteMachineHarness(kernelOverrides: Record<string, unknown> = {}) {
   }, {
     machine_id: "machine-2",
     machine_alias: "cold",
-    registry_alias: null,
     display_name: "cold",
     trust_status: "pending" as const,
     online: true,
@@ -150,12 +148,6 @@ function remoteMachineHarness(kernelOverrides: Record<string, unknown> = {}) {
       trust_status: "forgotten",
       online: false,
     }),
-    renameRemoteMachine: async (machineRef, alias) => ({
-      machine_id: machineRef,
-      display_name: alias,
-      trust_status: "approved",
-      online: true,
-    }),
     listRemoteMachineKernels: async () => [{
       kernel_id: "kernel-2",
       machine_id: "machine-1",
@@ -181,16 +173,16 @@ function remoteMachineHarness(kernelOverrides: Record<string, unknown> = {}) {
 }
 
 test("machine add shows the single-use enrollment command in a toast, readable and pasteable whole", async () => {
-  const labels: unknown[] = []
+  let asked = 0
   const footers: { message: string; tone: string; display: string | undefined }[] = []
   const notices: string[] = []
   const command = " (setup_script=$(curl -fsSL https://dl.example/install.sh) && printf '%s\\n' ket_abc | sh -c \"$setup_script\" sh --enroll --api-url https://example.test)"
   const deps = { flashFooter: (message: string, tone: string, display?: string) => footers.push({ message, tone, display }), appendNotice: (m: string) => notices.push(m),
-    issueOwnMachineEnrollment: async (label?: string) => { labels.push(label); return { command, expires_at: "2026-11-03T13:10:00Z" } },
+    issueOwnMachineEnrollment: async () => { asked++; return { command, expires_at: "2026-11-03T13:10:00Z" } },
   }
-  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add build box", args: ["add", "build", "box"] })
   await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add", args: ["add"] })
-  assert.deepEqual(labels, ["build box", undefined])
+  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add", args: ["add"] })
+  assert.equal(asked, 2, "the machine names itself: no name is asked for")
   assert.equal(footers.length, 2)
   // The footer line would clip the command; a toast shows all of it.
   assert.deepEqual(footers.map(f => f.display), ["toast", "toast"])
@@ -216,4 +208,33 @@ test("MP-08/MP-11 machine results never enter the agent transcript", async () =>
   assert.deepEqual(harness.notices, [])
   assert.ok(harness.footers.some(f => f.message.includes("cold id=machine-2")))
   assert.ok(harness.footers.some(f => f.message.includes("cold-kernel id=kernel-2")))
+})
+
+test("a machine whose name has spaces is listed through the command the machine row stages", async () => {
+  const decision = deriveWaitingRoomControlActivationDecision({
+    state: { focus: "machine", machineIndex: 0 } as never,
+    workspacePath: "/workspace",
+    worktreePath: "/workspace",
+    remote: {
+      machines: [{
+        machine_id: "machine-3c9f",
+        machine_alias: "Miguel's Mac Studio",
+        display_name: "Miguel's Mac Studio",
+        trust_status: "approved",
+        online: true,
+        pending: false,
+        kernel_count: 2,
+        available_providers: [],
+      }],
+    },
+  })
+  assert.equal(decision.action, "stage-command")
+  const parsed = parseSlashCommand((decision as { command: string }).command)
+  assert.equal(parsed?.kind, "machine")
+  const { deps } = remoteMachineHarness()
+  const asked: Array<string | undefined> = []
+  const listed = deps.listRemoteMachineKernels!
+  deps.listRemoteMachineKernels = async (machineRef) => { asked.push(machineRef); return listed(machineRef) }
+  await handleRemoteMachineSlashCommand(deps, parsed as ReturnType<typeof command>)
+  assert.deepEqual(asked, ["machine-3c9f"])
 })

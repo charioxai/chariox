@@ -6,7 +6,6 @@ type FooterTone = "info" | "error"
 export type RemoteMachineSummary = {
   machine_id: string
   machine_alias?: string | null
-  registry_alias?: string | null
   display_name?: string
   trust_status?: "approved" | "pending" | "forgotten"
   online?: boolean
@@ -37,7 +36,7 @@ type RemoteMachineKernelSummary = {
 
 export type RemoteMachineCommandHandlerDeps = {
   flashFooter: (message: string, tone: FooterTone, display?: "toast") => void
-  issueOwnMachineEnrollment?: (machineLabel?: string) => Promise<import("./remote-machine-api.js").OwnMachineEnrollment>
+  issueOwnMachineEnrollment?: () => Promise<import("./remote-machine-api.js").OwnMachineEnrollment>
   refreshWaitingRoomData?: () => Promise<void>
   getRemoteMachines?: () => RemoteMachineSummary[]
   setRemoteMachines?: (machines: RemoteMachineSummary[]) => void
@@ -45,7 +44,6 @@ export type RemoteMachineCommandHandlerDeps = {
   listRemoteMachines?: () => Promise<RemoteMachineSummary[]>
   approveRemoteMachine?: (machineRef: string) => Promise<RemoteMachineRegistration>
   forgetRemoteMachine?: (machineRef: string) => Promise<RemoteMachineRegistration>
-  renameRemoteMachine?: (machineRef: string, alias: string) => Promise<RemoteMachineRegistration>
   listRemoteMachineKernels?: (machineRef: string) => Promise<RemoteMachineKernelSummary[]>
   reimageManagedEnvironment?: (
     environmentId: string,
@@ -60,7 +58,7 @@ export async function handleRemoteMachineSlashCommand(
   const args = command.args
   const subcommand = args[0]
   if (subcommand === "add") {
-    await enrollOwnMachine(deps, args.slice(1).join(" ").trim())
+    await enrollOwnMachine(deps)
     return
   }
   if (subcommand === "list") {
@@ -79,15 +77,11 @@ export async function handleRemoteMachineSlashCommand(
     await forgetRemoteMachine(deps, args[1])
     return
   }
-  if (subcommand === "rename") {
-    await renameRemoteMachine(deps, args[1], args.slice(2).join(" ").trim())
-    return
-  }
   if (subcommand === "reimage") {
     await reimageManagedEnvironment(deps, args[1], args[2], args.length)
     return
   }
-  deps.flashFooter("usage: /machine add [name] | /machine linked | /machine unlink <name> | /machine list | /machine kernels <machine-ref> | /machine approve <machine-ref> | /machine forget <machine-ref> | /machine rename <machine-ref> <alias> | /machine reimage <environment-id> [confirm|cancel]", "error", "toast")
+  deps.flashFooter("usage: /machine add | /machine linked | /machine unlink <name> | /machine list | /machine kernels <machine-ref> | /machine approve <machine-ref> | /machine forget <machine-ref> | /machine reimage <environment-id> [confirm|cancel]", "error", "toast")
 }
 
 async function reimageManagedEnvironment(
@@ -183,8 +177,7 @@ function remoteMachineNextAction(machine: RemoteMachineSummary): string {
 
 function remoteKernelNextAction(kernel: RemoteMachineKernelSummary): string {
   const kernelLabel = remoteKernelLabel(kernel)
-  const machineLabel = kernel.machine_alias ?? kernel.machine_id
-  const inspect = machineLabel ? `run /machine kernels ${machineLabel}; ` : ""
+  const inspect = kernel.machine_id ? `run /machine kernels ${kernel.machine_id}; ` : ""
   const readiness = remoteKernelReadiness(kernel)
   if (readiness === "blocked") {
     return `${inspect}enable remote leases on ${kernelLabel} or choose another worker`
@@ -240,24 +233,6 @@ async function forgetRemoteMachine(
   deps.flashFooter(`forgot remote machine ${machine.display_name ?? machine.machine_id}`, "info")
 }
 
-async function renameRemoteMachine(
-  deps: RemoteMachineCommandHandlerDeps,
-  machineRef: string | undefined,
-  alias: string,
-): Promise<void> {
-  if (!deps.renameRemoteMachine) {
-    deps.flashFooter("remote machine registration is unavailable in this build", "error", "toast")
-    return
-  }
-  if (!machineRef || !alias) {
-    deps.flashFooter("usage: /machine rename <machine-ref> <alias>", "error", "toast")
-    return
-  }
-  const machine = await deps.renameRemoteMachine(machineRef, alias)
-  await applyRemoteMachineCommandPatch(deps, machine, "upsert")
-  deps.flashFooter(`renamed remote machine ${machine.machine_id} to ${machine.display_name ?? alias}`, "info")
-}
-
 async function applyRemoteMachineCommandPatch(
   deps: RemoteMachineCommandHandlerDeps,
   machine: RemoteMachineRegistration,
@@ -298,10 +273,10 @@ function enrollmentCommandForDisplay(command: string): string {
   return command.trim().replace(" && ", " && \\\n").replace(" | ", " | \\\n").replace(" --api-url ", " \\\n--api-url ")
 }
 
-async function enrollOwnMachine(deps: RemoteMachineCommandHandlerDeps, machineLabel: string): Promise<void> {
-  if (!deps.issueOwnMachineEnrollment) { deps.flashFooter("usage: /machine add [name]", "error", "toast"); return }
+async function enrollOwnMachine(deps: RemoteMachineCommandHandlerDeps): Promise<void> {
+  if (!deps.issueOwnMachineEnrollment) { deps.flashFooter("usage: /machine add", "error", "toast"); return }
   try {
-    const { command, expires_at } = await deps.issueOwnMachineEnrollment(machineLabel || undefined)
+    const { command, expires_at } = await deps.issueOwnMachineEnrollment()
     deps.flashFooter(`Run this once in the new machine's shell before ${expires_at}:\n${enrollmentCommandForDisplay(command)}`, "info", "toast")
   } catch (error) { deps.flashFooter(error instanceof Error ? error.message : "could not prepare the enrollment command", "error", "toast") }
 }

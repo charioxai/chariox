@@ -84,7 +84,7 @@ test("waiting room remote rows render machine and kernel inventory", () => {
   assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-1")?.title, "builder-kernel @ builder")
   assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-1")?.value, "ready codex,opencode")
   assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-1")?.focused, true)
-  assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-2")?.value, "blocked no providers · next: run /machine kernels cold; enable remote access on cold-kernel or choose another kernel")
+  assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-2")?.value, "blocked no providers · next: run /machine kernels machine-2; enable remote access on cold-kernel or choose another kernel")
 })
 
 test("waiting room remote rows warn when machine kernels reject leases", () => {
@@ -113,7 +113,7 @@ test("waiting room remote rows warn when machine kernels reject leases", () => {
     24,
   )
 
-  assert.equal(rows.find((row) => row.id === "machine:machine-1")?.value, "1 kernel codex · ready=0/1 blocked=1 leased=0 · next: run /machine kernels Worker; enable remote access on kernel-1 or choose another kernel")
+  assert.equal(rows.find((row) => row.id === "machine:machine-1")?.value, "1 kernel codex · ready=0/1 blocked=1 leased=0 · next: run /machine kernels machine-1; enable remote access on kernel-1 or choose another kernel")
 })
 
 test("waiting room remote rows distinguish provider and unknown readiness", () => {
@@ -177,7 +177,7 @@ test("waiting room remote rows flag kernels with missing provider accounts", () 
     24,
   )
 
-  assert.equal(rows.find((row) => row.id === "machine:machine-1")?.value, "1 kernel codex · ready=0/1 needs-account=1 leased=0 · next: run /machine kernels Worker; configure/import or refresh provider accounts on Worker")
+  assert.equal(rows.find((row) => row.id === "machine:machine-1")?.value, "1 kernel codex · ready=0/1 needs-account=1 leased=0 · next: run /machine kernels machine-1; configure/import or refresh provider accounts on Worker")
   assert.equal(rows.find((row) => row.id === "remote-kernel:kernel-account")?.value, "needs-account codex · next: run /machine kernels machine-1; configure/import or refresh provider accounts on account-kernel")
 })
 

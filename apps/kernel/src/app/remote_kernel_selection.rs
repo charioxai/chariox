@@ -82,8 +82,6 @@ pub(super) fn no_remote_kernel_available_message(
 
 pub(super) fn kernel_presence_matches_ref(kernel: &RelayKernelPresence, kernel_ref: &str) -> bool {
     kernel.kernel_id == kernel_ref
-        || kernel.kernel_alias.as_deref() == Some(kernel_ref)
-        || kernel.relay_alias.as_deref() == Some(kernel_ref)
 }
 
 pub(super) fn ensure_kernel_can_host_provider(
@@ -167,10 +165,7 @@ pub(super) fn usable_kernel_refs_message(
 }
 
 fn kernel_presence_matches_machine_ref(kernel: &RelayKernelPresence, machine_ref: &str) -> bool {
-    kernel.machine_id == machine_ref
-        || kernel.machine_alias.as_deref() == Some(machine_ref)
-        || kernel.relay_alias.as_deref() == Some(machine_ref)
-        || kernel.kernel_alias.as_deref() == Some(machine_ref)
+    kernel.machine_id == machine_ref || kernel.machine_alias.as_deref() == Some(machine_ref)
 }
 
 fn format_kernel_targets<'a>(kernels: impl Iterator<Item = &'a RelayKernelPresence>) -> String {
@@ -183,12 +178,7 @@ fn format_kernel_targets<'a>(kernels: impl Iterator<Item = &'a RelayKernelPresen
 }
 
 fn kernel_label(kernel: &RelayKernelPresence) -> String {
-    kernel
-        .relay_alias
-        .as_deref()
-        .or(kernel.kernel_alias.as_deref())
-        .unwrap_or(&kernel.kernel_id)
-        .to_string()
+    kernel.kernel_id.clone()
 }
 
 #[cfg(test)]

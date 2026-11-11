@@ -177,8 +177,8 @@ pub(crate) fn cloud_kernel_presence_body(
         "kernelId".to_string(),
         serde_json::Value::String(config.daemon_id.clone()),
     );
-    if let Some(alias) = config.daemon_alias.clone() {
-        body.insert("kernelAlias".to_string(), serde_json::Value::String(alias));
+    if let Some(name) = config.machine_name() {
+        body.insert("machineName".to_string(), serde_json::Value::String(name));
     }
     body.insert(
         "status".to_string(),
@@ -233,7 +233,6 @@ mod tests {
             client_id: Some("client-1".to_string()),
             client_alias: None,
             machine_id: Some("machine-1".to_string()),
-            machine_alias: None,
             machine_credential: Some("machine-secret".to_string()),
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,
@@ -243,7 +242,6 @@ mod tests {
 
     fn config(profile: Option<PersistedCloudRelayProfile>) -> DaemonConfig {
         let mut config = DaemonConfig::new("kernel-1", "host-1", "tester");
-        config.daemon_alias = Some("dev kernel".to_string());
         config.relay_url = Some("wss://relay.test".to_string());
         config.relay_token = Some(bound_token("public"));
         config.cloud_relay = profile;
@@ -350,13 +348,38 @@ mod tests {
         assert_eq!(subject.machine_id, None);
     }
 
+    // The file is what Cloud's strict schema accepts; Cloud checks it against that schema.
+    #[test]
+    fn presence_body_has_exactly_the_fields_cloud_accepts() {
+        let mut kernel_profile = profile();
+        kernel_profile.machine_credential = None;
+        kernel_profile.kernel_credential = Some("kcred_synthetic".to_string());
+        let mut config = config(Some(kernel_profile.clone()));
+        config.machine_name_for_tests = Some("fixture-machine".into());
+        let body = cloud_kernel_presence_body(&config, &kernel_profile, true, None)
+            .expect("presence body should build");
+        let accepted: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/cloud-contract/presence-request.json"
+        ))
+        .unwrap();
+        let fields = |value: &serde_json::Value| {
+            value
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(fields(&body), fields(&accepted));
+    }
+
     #[test]
     fn presence_body_requires_machine_and_uses_machine_credentials_first() {
         let body = cloud_kernel_presence_body(&config(Some(profile())), &profile(), true, None)
             .expect("presence body should build");
         assert_eq!(body["machineCredential"], "machine-secret");
         assert_eq!(body["status"], "ONLINE");
-        assert_eq!(body["kernelAlias"], "dev kernel");
+        assert!(body.get("kernelAlias").is_none());
         assert_eq!(body["metadata"]["host"], "127.0.0.1");
         assert_eq!(body["metadata"]["port"], 43118);
         assert_eq!(body["metadata"]["relay_public_key"], "public");

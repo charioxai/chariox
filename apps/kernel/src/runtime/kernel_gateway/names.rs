@@ -1,17 +1,9 @@
-//! What a user calls a kernel. A machine can run several of the user's kernels, so
-//! the name is the machine's when it is the only kernel there and `<machine>/<label>`
-//! otherwise; the kernel id and its aliases are accepted too.
+//! What a user calls a kernel: the name the relay or Cloud directory shows for it
+//! (the computer's name, `-2`, `-3` for further kernels on that computer), or its kernel id.
 use chariox_relay::protocol::RelayKernelPresence;
 
 use super::error::GatewayError;
 use crate::local::GatewayKernel;
-
-fn machine_name(kernel: &RelayKernelPresence) -> String {
-    kernel
-        .machine_alias
-        .clone()
-        .unwrap_or_else(|| kernel.machine_id.clone())
-}
 
 pub(super) fn label(kernel: &RelayKernelPresence) -> String {
     kernel
@@ -21,43 +13,23 @@ pub(super) fn label(kernel: &RelayKernelPresence) -> String {
         .unwrap_or_else(|| kernel.kernel_id.clone())
 }
 
-/// `<machine>/<alias>`, or the machine alone when the kernel has no alias of its own.
-pub(super) fn machine_and_alias(machine: &str, alias: Option<&str>) -> String {
-    match alias.map(str::trim) {
-        Some(alias) if !alias.is_empty() && alias != machine => format!("{machine}/{alias}"),
-        _ => machine.to_string(),
-    }
-}
-
-/// How this kernel names itself to its owner.
+/// How this kernel names itself to its owner: the name of its computer.
 pub(super) fn own_name(config: &crate::config::DaemonConfig) -> String {
-    let machine = config
-        .host_machine_alias
+    config
+        .machine_name()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| config.host_machine_id.clone())
+}
+
+/// The name `chariox kernels` shows for `kernel`: the distinct name the relay or Cloud
+/// directory gives it, else the computer's name (shared by every kernel on that computer).
+pub(super) fn display_name(kernel: &RelayKernelPresence) -> String {
+    kernel
+        .kernel_alias
         .clone()
-        .filter(|alias| !alias.trim().is_empty())
-        .unwrap_or_else(|| config.host_machine_id.clone());
-    machine_and_alias(&machine, config.daemon_alias.as_deref())
-}
-
-fn qualified(kernel: &RelayKernelPresence) -> String {
-    format!("{}/{}", machine_name(kernel), label(kernel))
-}
-
-/// The name `chariox kernels` shows for `kernel`, among all the user's known kernels.
-pub(super) fn display_name(kernel: &RelayKernelPresence, all: &[&RelayKernelPresence]) -> String {
-    let shares_machine = all
-        .iter()
-        .any(|other| other.machine_id == kernel.machine_id && other.kernel_id != kernel.kernel_id);
-    if shares_machine {
-        qualified(kernel)
-    } else {
-        kernel
-            .machine_alias
-            .clone()
-            .or_else(|| kernel.kernel_alias.clone())
-            .or_else(|| kernel.relay_alias.clone())
-            .unwrap_or_else(|| kernel.kernel_id.clone())
-    }
+        .or_else(|| kernel.relay_alias.clone())
+        .or_else(|| kernel.machine_alias.clone())
+        .unwrap_or_else(|| kernel.kernel_id.clone())
 }
 
 /// The list `chariox kernels` prints: the kernels of one machine together, by label.
@@ -73,67 +45,56 @@ pub(super) fn grouped(mut kernels: Vec<GatewayKernel>) -> Vec<GatewayKernel> {
     kernels
 }
 
-/// The one kernel `name` means. A kernel id or a `<machine>/<label>` name wins; a
-/// machine name or an alias shared by several kernels is `kernel_ambiguous` and lists
-/// every candidate with the name that picks it.
+/// The one kernel `name` means. A kernel id wins, then a kernel's own name; a computer
+/// name shared by several kernels is `kernel_ambiguous` and lists every candidate with
+/// the kernel id that picks it.
 pub(super) fn find<'a>(
     all: &[&'a RelayKernelPresence],
     name: &str,
 ) -> Result<&'a RelayKernelPresence, GatewayError> {
-    let exact = |matches: Vec<&'a RelayKernelPresence>| match matches.as_slice() {
-        [one] => Some(*one),
-        _ => None,
-    };
-    if let Some(one) = exact(
-        all.iter()
-            .copied()
-            .filter(|k| k.kernel_id == name)
-            .collect(),
-    ) {
-        return Ok(one);
-    }
-    if let Some(one) = exact(
-        all.iter()
-            .copied()
-            .filter(|k| qualified(k) == name)
-            .collect(),
-    ) {
-        return Ok(one);
-    }
-    let matches: Vec<&RelayKernelPresence> = all
-        .iter()
-        .copied()
-        .filter(|k| {
-            [&k.kernel_alias, &k.relay_alias, &k.machine_alias]
-                .into_iter()
-                .flatten()
-                .any(|alias| alias == name)
-        })
-        .collect();
-    match matches.as_slice() {
-        [] => Err(GatewayError::Unknown { name: name.into() }),
-        [one] => Ok(one),
-        several => Err(GatewayError::Ambiguous {
+    let by = |matches: Vec<&'a RelayKernelPresence>| match matches.as_slice() {
+        [one] => Some(Ok(*one)),
+        [] => None,
+        several => Some(Err(GatewayError::Ambiguous {
             name: name.into(),
             candidates: several
                 .iter()
-                .map(|k| format!("{} (kernel id {})", qualified(k), k.kernel_id))
+                .map(|k| format!("{} (kernel id {})", display_name(k), k.kernel_id))
                 .collect(),
-        }),
-    }
+        })),
+    };
+    let named = |names: fn(&RelayKernelPresence) -> [Option<&str>; 2]| {
+        all.iter()
+            .copied()
+            .filter(|k| names(k).into_iter().flatten().any(|own| own == name))
+            .collect::<Vec<_>>()
+    };
+    by(all
+        .iter()
+        .copied()
+        .filter(|k| k.kernel_id == name)
+        .collect())
+    .or_else(|| {
+        by(named(|k| {
+            [k.kernel_alias.as_deref(), k.relay_alias.as_deref()]
+        }))
+    })
+    .or_else(|| by(named(|k| [k.machine_alias.as_deref(), None])))
+    .unwrap_or_else(|| Err(GatewayError::Unknown { name: name.into() }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn kernel(id: &str, machine: &str, alias: Option<&str>) -> RelayKernelPresence {
+    // A registration names the kernel through the relay name only: `kernel_alias` is gone.
+    fn kernel(id: &str, machine: &str, relay_alias: Option<&str>) -> RelayKernelPresence {
         RelayKernelPresence {
             kernel_id: id.into(),
             machine_id: format!("machine-id-{machine}"),
             machine_alias: Some(machine.into()),
-            relay_alias: None,
-            kernel_alias: alias.map(Into::into),
+            relay_alias: relay_alias.map(Into::into),
+            kernel_alias: None,
             available_providers: Vec::new(),
             provider_accounts: Vec::new(),
             capabilities: Vec::new(),
@@ -145,27 +106,37 @@ mod tests {
     }
 
     #[test]
-    fn a_machine_with_two_kernels_needs_the_label_and_one_kernel_needs_only_the_machine() {
-        let (main, dev, solo) = (
-            kernel("k-main", "b3", Some("main")),
-            kernel("k-dev", "b3", Some("dev")),
-            kernel("k-mac", "mac", None),
+    fn a_kernel_is_named_by_its_own_name_and_a_shared_computer_name_is_ambiguous() {
+        let (main, second, solo) = (
+            kernel("k-main", "b3", Some("b3")),
+            kernel("k-second", "b3", Some("b3-2")),
+            kernel("k-mac", "mac", Some("mac")),
         );
-        let all = [&main, &dev, &solo];
-        assert_eq!(display_name(&main, &all), "b3/main");
-        assert_eq!(display_name(&dev, &all), "b3/dev");
-        assert_eq!(display_name(&solo, &all), "mac");
-        assert_eq!(find(&all, "b3/dev").unwrap().kernel_id, "k-dev");
+        let all = [&main, &second, &solo];
+        assert_eq!(display_name(&main), "b3");
+        assert_eq!(display_name(&second), "b3-2");
+        assert_eq!(find(&all, "b3-2").unwrap().kernel_id, "k-second");
+        assert_eq!(find(&all, "b3").unwrap().kernel_id, "k-main");
         assert_eq!(find(&all, "mac").unwrap().kernel_id, "k-mac");
-        assert_eq!(find(&all, "k-main").unwrap().kernel_id, "k-main");
-        let ambiguous = find(&all, "b3").unwrap_err();
-        assert_eq!(ambiguous.code(), "kernel_ambiguous");
-        let message = ambiguous.message();
-        assert!(
-            message.contains("b3/main") && message.contains("b3/dev"),
-            "{message}"
-        );
+        assert_eq!(find(&all, "k-second").unwrap().kernel_id, "k-second");
         assert_eq!(find(&all, "nope").unwrap_err().code(), "kernel_unknown");
+        let unnamed = [&kernel("k-a", "pc", None), &kernel("k-b", "pc", None)];
+        let ambiguous = find(&unnamed, "pc").unwrap_err();
+        assert_eq!(ambiguous.code(), "kernel_ambiguous");
+        assert!(ambiguous.message().contains("k-a") && ambiguous.message().contains("k-b"));
+    }
+
+    // Two kernels of one computer share its name as `machine_alias`; the relay's own names
+    // for them (`pc`, `pc-2`) are what tell them apart.
+    #[test]
+    fn two_kernels_of_one_computer_are_shown_under_their_distinct_relay_names() {
+        let (first, second) = (
+            kernel("k-1", "pc", Some("pc")),
+            kernel("k-2", "pc", Some("pc-2")),
+        );
+        assert_eq!(display_name(&first), "pc");
+        assert_eq!(display_name(&second), "pc-2");
+        assert_eq!(label(&second), "pc-2");
     }
 
     #[test]
@@ -192,15 +163,12 @@ mod tests {
     }
 
     #[test]
-    fn a_kernel_names_itself_by_its_machine_and_its_alias() {
+    fn a_kernel_names_itself_by_its_computer() {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.host_machine_id = "machine-1".into();
+        config.machine_name_for_tests = None;
         assert_eq!(own_name(&config), "machine-1");
-        config.host_machine_alias = Some("mac".into());
-        assert_eq!(own_name(&config), "mac");
-        config.daemon_alias = Some(" dev ".into());
-        assert_eq!(own_name(&config), "mac/dev");
-        config.daemon_alias = Some("mac".into());
+        config.machine_name_for_tests = Some("mac".into());
         assert_eq!(own_name(&config), "mac");
     }
 }

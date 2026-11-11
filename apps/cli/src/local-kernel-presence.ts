@@ -8,7 +8,6 @@ const maximumLocalKernelPresences = 128
 
 export type LocalKernelPresence = {
   readonly kernelId: string
-  readonly kernelAlias?: string | null
   readonly machineId: string
   readonly machineAlias?: string | null
   readonly host: string
@@ -52,7 +51,6 @@ function readPresence(path: string, nowMs: number): LocalKernelPresence[] {
     const record = JSON.parse(readFileSync(path, "utf8")) as {
       readonly schema_version?: number
       readonly kernel_id?: string
-      readonly kernel_alias?: string | null
       readonly machine_id?: string
       readonly machine_alias?: string | null
       readonly host?: string
@@ -75,7 +73,6 @@ function readPresence(path: string, nowMs: number): LocalKernelPresence[] {
     }
     return [{
       kernelId: record.kernel_id.trim(),
-      kernelAlias: record.kernel_alias?.trim() || null,
       machineId: record.machine_id.trim(),
       machineAlias: record.machine_alias?.trim() || null,
       host: record.host.trim(),

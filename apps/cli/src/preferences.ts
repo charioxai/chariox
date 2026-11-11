@@ -27,7 +27,6 @@ export type RelayCloudProfile = {
   clientId?: string
   clientAlias?: string
   machineId?: string
-  machineAlias?: string
   kernelId?: string
   kernelEnrolled?: boolean
   tokenExpiresAtMs?: number
@@ -242,7 +241,7 @@ function normalizePromptDraftEntry(entry: unknown) {
 
 export function publicRelayCloudProfile(profile: RelayCloudProfile | null | undefined): RelayCloudProfile | null {
   if (!profile) return null
-  const keys = ["apiUrl", "email", "accountId", "userId", "accountSlug", "realmId", "relayUrl", "issuerId", "clientId", "clientAlias", "machineId", "machineAlias", "kernelId", "kernelEnrolled", "tokenExpiresAtMs"] as const
+  const keys = ["apiUrl", "email", "accountId", "userId", "accountSlug", "realmId", "relayUrl", "issuerId", "clientId", "clientAlias", "machineId", "kernelId", "kernelEnrolled", "tokenExpiresAtMs"] as const
   return Object.fromEntries(keys.filter(key => profile[key] !== undefined).map(key => [key, profile[key]])) as RelayCloudProfile
 }
 function sanitizePreferences(current: CharioxPreferences): CharioxPreferences {

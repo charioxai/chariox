@@ -345,7 +345,7 @@ test("waiting room inventory refresh makes fresh local sibling kernels visible",
     snapshots: [inventory("v1", { kernelId: "kernel-a", machineId: "machine-a" })],
     localKernelPresences: [
       { kernelId: "kernel-a", machineId: "machine-a", host: "127.0.0.1", port: 43_121, heartbeatAtMs: 1 },
-      { kernelId: "kernel-b", kernelAlias: "Experiments", machineId: "machine-a", machineAlias: "Laptop", host: "127.0.0.1", port: 43_122, heartbeatAtMs: 1 },
+      { kernelId: "kernel-b", machineId: "machine-a", machineAlias: "Laptop", host: "127.0.0.1", port: 43_122, heartbeatAtMs: 1 },
     ],
   })
 
@@ -539,7 +539,6 @@ test("waiting room inventory relay and machine patches apply without fetching", 
     {
       machine_id: "machine-2",
       machine_alias: "worker",
-      registry_alias: null,
       display_name: "worker",
       trust_status: "approved",
       online: true,

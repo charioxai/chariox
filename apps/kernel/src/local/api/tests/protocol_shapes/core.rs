@@ -80,7 +80,6 @@ fn local_daemon_protocol_waiting_room_git_credentials_shape_is_versioned() {
                 relay_url: Some("wss://relay.example.test".to_string()),
                 relay_token_configured: true,
                 daemon_id: "kernel-1".to_string(),
-                daemon_alias: Some("Source kernel".to_string()),
                 machine_id: "machine-1".to_string(),
                 machine_alias: Some("Source machine".to_string()),
             },

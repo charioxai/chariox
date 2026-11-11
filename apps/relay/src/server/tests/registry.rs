@@ -435,16 +435,16 @@ fn relay_aliases_differentiate_kernels_on_same_machine() {
     let kernels = registry.live_kernels_for_machine("shared-machine");
     assert_eq!(kernels.len(), 2);
     assert_eq!(kernels[0].kernel_id, "daemon-a");
-    assert_eq!(kernels[0].relay_alias.as_deref(), Some("machine 1 (macOS)"));
+    assert_eq!(kernels[0].relay_alias.as_deref(), Some("macOS computer"));
     assert_eq!(kernels[1].kernel_id, "daemon-b");
-    assert_eq!(kernels[1].relay_alias.as_deref(), Some("machine 2 (macOS)"));
+    assert_eq!(kernels[1].relay_alias.as_deref(), Some("macOS computer-2"));
 
-    let exact = registry.live_kernels_for_machine("machine 2 (macOS)");
+    let exact = registry.live_kernels_for_machine("macOS computer-2");
     assert_eq!(exact.len(), 1);
     assert_eq!(exact[0].kernel_id, "daemon-b");
     assert_eq!(
         registry
-            .live_kernel("machine 2 (macOS)")
+            .live_kernel("macOS computer-2")
             .expect("relay alias should resolve to a kernel")
             .kernel_id,
         "daemon-b"

@@ -1,0 +1,41 @@
+{
+  "environmentId": "managed_env_1",
+  "kernelId": "managed-kernel-1",
+  "generation": 1,
+  "runtimeReleaseDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "managedRepositoryRoot": "/srv/remote agents",
+  "contextPlan": {
+    "schemaVersion": 1,
+    "contextId": "managed_ctx_1",
+    "planDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "source": {
+      "sourceTargetId": "source-target",
+      "relayRealmId": "realm-2",
+      "machineId": "source-machine",
+      "kernelId": "source-kernel",
+      "keyThumbprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    "kernelContext": "source_kernel",
+    "developmentSetup": {
+      "kind": "empty"
+    },
+    "providerAccounts": {
+      "kind": "none"
+    },
+    "gitCredentials": {
+      "kind": "none"
+    }
+  },
+  "cloudRelay": {
+    "apiUrl": "https://cloud.example.test",
+    "email": "owner-1@example.test",
+    "accountId": "account-1",
+    "userId": "owner-1",
+    "accountSlug": "account-one",
+    "realmId": "realm-2",
+    "relayUrl": "wss://relay-2.example.test",
+    "issuerId": "issuer-2",
+    "machineId": "managed-machine-1",
+    "machineCredential": "mcred_synthetic"
+  }
+}

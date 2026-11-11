@@ -138,7 +138,7 @@ fn usage_snapshot_uses_agent_projection_and_never_serializes_remote_credentials(
     crate::test_support::isolated_env_test!();
     let worktree = crate::test_support::TestWorktree::new("usage-snapshot-agent");
     let mut config = DaemonConfig::for_tests();
-    config.daemon_alias = Some("PR reviewer".into());
+    config.machine_name_for_tests = Some("PR reviewer".into());
     let harness = LocalRouterTestHarness::with_config(config);
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(

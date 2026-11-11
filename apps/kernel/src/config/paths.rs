@@ -167,10 +167,6 @@ impl DaemonConfig {
             .unwrap_or_else(|| default_state_dir().join("kernel-events"))
     }
 
-    pub fn default_runtime_identity_path() -> PathBuf {
-        default_state_dir().join("daemon").join("identity.json")
-    }
-
     pub fn default_machine_identity_path() -> PathBuf {
         default_config_dir().join("machine").join("identity.json")
     }

@@ -11,7 +11,7 @@ import { requireRelayTokenKeyBinding } from "./relay-api.js"
 import type { WaitingRoomRemoteState } from "./waiting-room-types.js"
 
 export type CloudKernelTarget = {
-  daemonId?: string; daemonAlias?: string; machineId?: string; machineAlias?: string
+  daemonId?: string; machineId?: string; name?: string
   status: "ONLINE" | "OFFLINE" | "STALE" | "REVOKED" | "DRAINING"
   acceptingLeases?: boolean; available_providers?: string[]
 }
@@ -201,9 +201,9 @@ export function cloudDirectoryProjection(targets: CloudKernelTarget[]): Required
   return {
     machines: machineIds.map(machineId => {
       const kernels = targets.filter(target => target.machineId === machineId)
-      return { machine_id: machineId, machine_alias: kernels[0]?.machineAlias ?? null, kernel_count: kernels.length, online: kernels.some(target => target.status === "ONLINE"), trust_status: "approved" }
+      return { machine_id: machineId, machine_alias: kernels[0]?.name ?? null, kernel_count: kernels.length, online: kernels.some(target => target.status === "ONLINE"), trust_status: "approved" }
     }),
-    kernels: targets.filter(target => target.status === "ONLINE" && target.machineId).map(target => ({ kernel_id: target.daemonId!, machine_id: target.machineId!, machine_alias: target.machineAlias ?? null, kernel_alias: target.daemonAlias ?? null, available_providers: target.available_providers ?? [], accepting_remote_leases: target.acceptingLeases ?? false })),
+    kernels: targets.filter(target => target.status === "ONLINE" && target.machineId).map(target => ({ kernel_id: target.daemonId!, machine_id: target.machineId!, relay_alias: target.name ?? null, machine_alias: target.name ?? null, available_providers: target.available_providers ?? [], accepting_remote_leases: target.acceptingLeases ?? false })),
   }
 }
 

@@ -117,7 +117,6 @@ fn cloud_kernel_ownership_local_router_drill() {
                 client_id: Some("old-terminal-id".into()),
                 client_alias: None,
                 machine_id: None,
-                machine_alias: None,
             },
         ))
         .unwrap();

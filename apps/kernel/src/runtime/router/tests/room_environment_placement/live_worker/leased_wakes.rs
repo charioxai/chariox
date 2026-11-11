@@ -789,7 +789,6 @@ fn agent_worker_state(fixture: &LiveWorker) -> TestState {
     state.config.relay_token = fixture.home_state.config.relay_token.clone();
     state.config.relay_heartbeat_ms = 50;
     state.config.daemon_id = AGENT_WORKER.into();
-    state.config.daemon_alias = Some(AGENT_WORKER.into());
     state.config.host_machine_id = "a10-agent-worker-machine".into();
     state
 }

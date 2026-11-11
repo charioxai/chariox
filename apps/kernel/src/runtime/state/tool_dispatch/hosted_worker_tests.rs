@@ -25,7 +25,6 @@ async fn assert_browser_dispatch(
     std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &script);
     let mut config = crate::config::DaemonConfig::for_tests();
     config.daemon_id = worker.into();
-    config.daemon_alias = Some("slice:friendly-name".into());
     config.host_machine_id = machine.into();
     let app = crate::DaemonApp::bootstrap(config).unwrap();
     let router = crate::runtime::router::CommandRouter::with_interactive_capacity(

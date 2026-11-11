@@ -79,10 +79,10 @@ test("machine add asks for an enrollment command and no longer pairs a link", as
   const asked: unknown[] = []
   const deps = {
     ...harness.deps,
-    issueOwnMachineEnrollment: async (label?: string) => { asked.push(label); return { command: " (true)", expires_at: "2026-11-03T13:10:00Z" } },
+    issueOwnMachineEnrollment: async () => { asked.push("asked"); return { command: " (true)", expires_at: "2026-11-03T13:10:00Z" } },
   }
-  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add lan", args: ["add", "lan"] })
-  assert.deepEqual(asked, ["lan"])
+  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add", args: ["add"] })
+  assert.deepEqual(asked, ["asked"])
   await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: `/machine add ${LINK}`, args: ["add", LINK] })
   assert.deepEqual(harness.joins, [])
 })

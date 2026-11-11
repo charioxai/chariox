@@ -29,7 +29,6 @@ export type WaitingRoomInventory = {
   structuralVersion: string
   activityRevision: string
   kernelId: string
-  kernelAlias?: string | null
   machineId: string
   machineAlias?: string | null
   launchTarget?: {
@@ -80,7 +79,6 @@ export async function getWaitingRoomInventory(client: LocalIpcClient, getManaged
     structuralVersion: payload.structural_version,
     activityRevision: payload.activity_revision,
     kernelId: payload.relay_status.daemon_id,
-    kernelAlias: payload.relay_status.daemon_alias ?? null,
     machineId: payload.relay_status.machine_id,
     machineAlias: payload.relay_status.machine_alias ?? null,
     launchTarget: payload.launch_target
@@ -93,7 +91,6 @@ export async function getWaitingRoomInventory(client: LocalIpcClient, getManaged
     sessions: (payload.sessions ?? []).map((session) => ({
       ...session,
       kernel_id: payload.relay_status.daemon_id,
-      kernel_alias: payload.relay_status.daemon_alias ?? null,
       machine_id: payload.relay_status.machine_id,
       machine_alias: payload.relay_status.machine_alias ?? null,
     })).sort((left, right) => right.created_at_ms - left.created_at_ms),

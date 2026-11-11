@@ -33,7 +33,7 @@ pub(crate) async fn execute_start_cloud_relay_login_request(
     let response: CloudDeviceStartResponse = post_cloud_json(
         api_url.clone(),
         "/auth/device/start",
-        kernel_device_enrollment_body(&config, &request),
+        kernel_device_enrollment_body(&config),
     )
     .await?;
     Ok(LocalDaemonResponse::CloudRelayLoginStarted {
@@ -127,25 +127,13 @@ pub(crate) async fn execute_logout_cloud_relay_request(
 
 pub(crate) fn kernel_device_enrollment_body(
     config: &crate::config::DaemonConfig,
-    request: &StartCloudRelayLoginRequest,
 ) -> serde_json::Value {
     let mut body = serde_json::json!({
         "enrollmentKind": "KERNEL", "kernelId": config.daemon_id, "machineId": config.host_machine_id,
         "publicKeyThumbprint": crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key),
     });
-    for (field, alias) in [
-        (
-            "machineAlias",
-            request
-                .machine_alias
-                .as_ref()
-                .or(config.host_machine_alias.as_ref()),
-        ),
-        ("kernelAlias", config.daemon_alias.as_ref()),
-    ] {
-        if let Some(alias) = alias.filter(|value| !value.trim().is_empty()) {
-            body[field] = serde_json::json!(alias);
-        }
+    if let Some(name) = config.machine_name() {
+        body["machineName"] = serde_json::json!(name);
     }
     body
 }
@@ -154,20 +142,26 @@ pub(crate) fn kernel_device_enrollment_body(
 mod enrollment_display_tests {
     use super::*;
     #[test]
-    fn enrollment_display_aliases_are_optional_and_kernel_alias_is_authoritative() {
+    fn enrollment_reports_the_os_machine_name_and_no_kernel_name() {
         let mut config = crate::config::DaemonConfig::for_tests();
-        let request: StartCloudRelayLoginRequest =
-            serde_json::from_value(serde_json::json!({"api_url": "https://cloud.example.test"}))
-                .unwrap();
-        let body = kernel_device_enrollment_body(&config, &request);
+        config.machine_name_for_tests = Some("fixture-machine".into());
+        let mut body = kernel_device_enrollment_body(&config);
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/cloud-contract/device-start-request.json"
+        ))
+        .unwrap();
+        // The thumbprint is of a key made for the test; the file carries a stand-in of the same shape.
+        assert_eq!(body["publicKeyThumbprint"].as_str().unwrap().len(), 64);
+        body["publicKeyThumbprint"] = expected["publicKeyThumbprint"].clone();
+        assert_eq!(
+            body, expected,
+            "the file is what Cloud's strict schema accepts"
+        );
+        assert_eq!(body["machineName"], "fixture-machine");
         assert!(body.get("machineAlias").is_none());
         assert!(body.get("kernelAlias").is_none());
-        config.host_machine_alias = Some("fixture-machine".into());
-        config.daemon_alias = Some("fixture-kernel".into());
-        let body = kernel_device_enrollment_body(&config, &request);
-        assert_eq!(body["machineAlias"], "fixture-machine");
-        assert_eq!(body["kernelAlias"], "fixture-kernel");
         assert_eq!(body["kernelId"], config.daemon_id);
+        assert_eq!(body["machineId"], config.host_machine_id);
     }
 }
 
@@ -228,7 +222,6 @@ pub(crate) fn enrolled_profile(
         client_id: None,
         client_alias: None,
         machine_id: profile.machine_id,
-        machine_alias: profile.machine_alias,
         machine_credential: None,
         kernel_id: profile.kernel_id,
         kernel_credential: Some(kernel_credential),

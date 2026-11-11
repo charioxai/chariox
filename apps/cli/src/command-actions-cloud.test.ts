@@ -40,11 +40,10 @@ test("relay cloud login without args uses device flow", async () => {
       machine_id: "machine-1",
       machine_alias: "laptop",
     }),
-    startCloudDeviceLogin: async (apiUrl: string, input: { clientId?: string; machineId?: string; machineAlias?: string }) => {
+    startCloudDeviceLogin: async (apiUrl: string, input: { clientId?: string; machineId?: string }) => {
       assert.equal(apiUrl, DEFAULT_CONTROL_PLANE_URL)
       assert.equal(input.clientId, undefined)
       assert.equal(input.machineId, "machine-1")
-      assert.equal(input.machineAlias, "laptop")
       return {
         apiUrl,
         deviceCode: "dev-code",
