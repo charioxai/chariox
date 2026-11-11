@@ -155,6 +155,7 @@ mod background_hold;
 mod background_tool_settlement;
 mod browser_import_execution_gate;
 mod child_finished;
+mod child_limit_lifecycle;
 mod child_receipts;
 mod claude_plan;
 mod cleanup_liveness;
