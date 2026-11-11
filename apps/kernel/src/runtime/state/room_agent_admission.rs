@@ -72,8 +72,8 @@ impl KernelRuntimeState {
         actor_id: &str,
         request: &LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
-        if matches!(request, LocalDaemonRequest::ArchiveAgent(_)) {
-            return Err(denied("only the owner can archive or unarchive agents"));
+        if matches!(request, LocalDaemonRequest::HideAgent(_)) {
+            return Err(denied("only the owner can hide or unhide agents"));
         }
         if matches!(request, LocalDaemonRequest::SetAgentParent(_)) {
             return Err(denied("only the user can change an agent's parent"));
@@ -132,8 +132,8 @@ impl KernelRuntimeState {
             LocalDaemonRequest::GetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::ListDescendants(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::AliasAgent(r) => (&r.session_id, &r.agent_id, false),
-            LocalDaemonRequest::ArchiveAgent(_) => {
-                return Err(denied("only the owner can archive or unarchive agents"))
+            LocalDaemonRequest::HideAgent(_) => {
+                return Err(denied("only the owner can hide or unhide agents"))
             }
             LocalDaemonRequest::DestroyAgent(r) => (&r.session_id, &r.agent_id, true),
             LocalDaemonRequest::UpdateAgentConfig(r) => (&r.session_id, &r.agent_id, false),

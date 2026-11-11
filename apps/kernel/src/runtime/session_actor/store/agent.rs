@@ -806,29 +806,20 @@ impl SessionRuntimeStore {
         self.with_session_projection_action_result(result).await
     }
 
-    pub(in crate::runtime::session_actor) async fn archive_agent(
+    pub(in crate::runtime::session_actor) async fn hide_agent(
         &self,
-        request: crate::local::ArchiveAgentRequest,
+        request: crate::local::HideAgentRequest,
         caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = match self
-            .state
-            .archive_agent_in_session(&request, &caller_user_id)
-            .await
-        {
-            Ok(agent) => {
-                match self.reconcile_room_environment_actors_if_started(&request.session_id) {
-                    Ok(()) => self
-                        .state
-                        .session_snapshot(&request.session_id)
-                        .await
-                        .map(|session| LocalDaemonResponse::AgentArchived { session, agent }),
-                    Err(error) => Err(error),
-                }
-            }
+        let result = match self.state.hide_agent_in_session(&request, &caller_user_id) {
+            Ok(agent) => self
+                .state
+                .session_snapshot(&request.session_id)
+                .await
+                .map(|session| LocalDaemonResponse::AgentHidden { session, agent }),
             Err(error) => Err(error),
         };
         self.with_session_projection_action_result(result).await

@@ -463,7 +463,7 @@ response_policies! {
         RemoteExtensionManifestSynced,
         HomeExtensionAuditListed,
         SliceAuditListed,
-        AgentArchived,
+        AgentHidden,
         AgentParentChanged,
         AgentDestroyed,
         AgentFocused,

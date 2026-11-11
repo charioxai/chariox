@@ -1,6 +1,6 @@
 // MP-08 / MP-09 / MP-10 / MP-11: agent triggers on a real kernel with a real Codex account.
 // Schedule once/every, HTTP invoke, QUEUE and STEER while busy, then (after the caller restarts the
-// kernel) the same URL, offline 503, disabled 403, removal and archive. Never prints credentials.
+// kernel) the same URL, offline 503, disabled 403, and removal. Never prints credentials.
 // Every `expect` that fails ends the drill with exit 1 and no `<phase>_ok` receipt in the state file.
 // usage: DRILL_LABEL=<profile label> DRILL_PROFILE=<product-linked CODEX_HOME> \
 //   node scripts/drills/agent-triggers.mjs <run|after-restart> <CHARIOX_HOME> <kernel port> <state.json> <work dir>
@@ -195,10 +195,6 @@ try {
     const afterDelete = await fetch(state.http_url, { method: 'POST', body: '{}' }).then(r => ({ status: r.status })).catch(error => ({ refused: String(error.cause?.code ?? error) }))
     log('http-after-delete', afterDelete)
     expect('deleted-connection-refused', afterDelete.refused === 'ECONNREFUSED', afterDelete)
-    await rpc({ ArchiveAgent: { session_id: state.session_id, agent_id: state.agent_id, archived: true } })
-    const left = (await triggers()).length
-    log('archived', { triggers_left: left })
-    expect('archive-removes-every-trigger', left === 0, { triggers_left: left })
   }
   state[`${phase}_answers`] = await answers()
   state[`${phase}_ok`] = true; save()

@@ -177,6 +177,7 @@ impl AgentServiceStore {
             .create_default_agent(session_id, worktree_id, provider, sessions)
     }
 
+    #[cfg(test)]
     pub(crate) fn archive_agent(
         &self,
         agent_id: &str,
@@ -184,6 +185,14 @@ impl AgentServiceStore {
         sessions: &mut SessionService,
     ) -> Result<AgentInstance, DaemonError> {
         self.write().archive_agent(agent_id, archived, sessions)
+    }
+
+    pub(crate) fn set_agent_hidden(
+        &self,
+        agent_id: &str,
+        hidden: bool,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().set_agent_hidden(agent_id, hidden)
     }
 
     pub fn destroy_agent(

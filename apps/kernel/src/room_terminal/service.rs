@@ -576,32 +576,6 @@ impl RoomTerminalService {
         Ok(())
     }
 
-    pub(crate) fn stop_agent(&self, session_id: &str, agent_id: &str) -> Result<(), DaemonError> {
-        for owner in self
-            .owners_for_session(session_id)
-            .into_iter()
-            .filter(|owner| owner.opened_by == TerminalActor::Agent(agent_id.to_owned()))
-        {
-            self.pump_terminal(&owner, true);
-            self.stop_owner(&owner, false)?;
-            let pending = {
-                let mut state = owner.lock();
-                if state.removed {
-                    continue;
-                }
-                let pending = self
-                    .inner
-                    .store
-                    .enqueue_save(&state.terminal.persisted_record())?;
-                state.terminal.unsaved_since = None;
-                pending
-            };
-            pending.wait()?;
-        }
-        self.report_work();
-        Ok(())
-    }
-
     /// The Room ended: detach its registry entries before stopping their work.
     pub fn end_session(&self, session_id: &str) {
         let removed = {

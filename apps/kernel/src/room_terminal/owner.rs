@@ -8,14 +8,13 @@ use std::time::Instant;
 use tokio::sync::{oneshot, Notify};
 
 use super::terminal::Terminal;
-use super::types::{RoomTerminalEvent, TerminalActor};
+use super::types::RoomTerminalEvent;
 use crate::error::DaemonError;
 use crate::pty::PtyManager;
 
 pub(super) struct TerminalOwner {
     pub session_id: String,
     pub title: String,
-    pub opened_by: TerminalActor,
     exited: AtomicBool,
     state: Mutex<TerminalState>,
     pub output_changed: Notify,
@@ -40,7 +39,6 @@ impl TerminalOwner {
         Self {
             session_id: terminal.record.session_id.clone(),
             title: terminal.record.title.clone(),
-            opened_by: terminal.record.opened_by.clone(),
             exited: AtomicBool::new(exited),
             state: Mutex::new(TerminalState {
                 terminal,

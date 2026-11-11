@@ -5280,7 +5280,7 @@ session}`. 930 has one source, `{"kind": "schedule", "interval_seconds", "repeat
 queue, `steer` is queued and then steered into the running turn exactly like the queued-prompt
 steer. A refused steer leaves the firing queued, records `last_error` and raises a notice. A
 schedule whose previous firing is still queued or running coalesces (`coalesced` counts it).
-Triggers are deleted with their agent and when it is archived. Whoever may prompt the agent may manage its triggers. The
+Triggers are deleted with their agent. Whoever may prompt the agent may manage its triggers. The
 session lists them in `agent_triggers`. `/wait-in` and `/wait-every` are queue-policy schedule
 triggers. 931 removes the `/wait` schedule shape: `CreateAgentPromptSchedule`,
 `CancelAgentPromptSchedule` and the session's `agent_prompt_schedules` are gone, and stored
@@ -5491,21 +5491,18 @@ notification and `completed` on the completed one. Clients draw `images` when
 present and need no minimum version: a kernel below 910 never sends the fields.
 Snapshot: `provider-tool-images-910.json`; drill: `scripts/drills/tool-result-images.mjs`.
 
-### MP-08 / MP-09 / MP-10 / MP-11 — reversible agent archive (636 / peer 239)
+### MP-08 / MP-09 / MP-10 / MP-11 — hide an agent (Landing 8)
 
-`ArchiveAgent { session_id, agent_id, archived }` retains its protocol592 shape.
-It durably fences the owner's agent before stopping its provider process,
-queued prompts, wakes and terminals, withdrawing process-bound interactions and
-releasing its worker lease. Identity, configuration, history, provider thread and
-grants stay. Errors leave it archived and explain how to retry cleanup. Unarchive
-finishes cleanup, refreshes remote placement and returns the same agent idle;
-no prompt is launched. Children and unrelated Room agents continue. An active
-workflow node must be paused/rebound first. Agents cannot archive through sudo.
-`AgentArchived { session, agent }` returns the result and repaired focus.
-`ListArchivedAgents { session_id }` returns `AgentsListed` with archived agents;
-ordinary `ListAgents` omits them. Session snapshots retain the archived flag,
-including across restart. New archive UI requires local636. See AGENT_ARCHIVE.md
-for edge cases, resource ownership and the proposal approval requirement.
+`HideAgent { session_id, agent_id, hidden }` keeps an agent out of the Room's panes
+without touching its work: the run, queued prompts, wakes and triggers all go on.
+`AgentHidden { session, agent }` returns the result. The agent's `hidden` flag
+(absent when false) is part of every session snapshot, so every client of the Room
+sees it. The kernel clears the flag when the agent's last active or queued prompt
+finishes (a workflow prompt included) and when the agent raises a decision card, which is how a
+hidden agent comes back for every client; hiding an idle agent holds until
+`hidden: false`. Only the owner hides or unhides, and an agent cannot do it through sudo.
+There is no agent-level archive: `ArchiveAgent`, `ListArchivedAgents`, `AgentArchived` and the
+agent `archived` flag are removed (Rooms are still archived). Drill: `local::api::tests::agent_hide`.
 
 ### MP-08 / MP-10 / MP-11: parked-task Stop reply (643 / peer 239)
 

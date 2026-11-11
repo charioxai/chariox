@@ -31,10 +31,6 @@ async fn hidden_and_addressable() {
     let mut expected = visible.clone();
     expected.sort();
     assert_eq!(listed_ids, expected, "only the room agents are listed");
-    assert!(
-        listed(&world, "ListArchivedAgents").await.is_empty(),
-        "the archived list never carries them either"
-    );
     // By-id requests keep working for a hidden sub-agent (the grandchild gets a deadline).
     let armed = room_command(&world, "a", "agent deadline set d 30m").await;
     assert!(armed.ok, "{armed:?}");

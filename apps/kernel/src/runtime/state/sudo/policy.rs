@@ -263,7 +263,7 @@ pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::GetCredential(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::GetUserConfig(_)
-            | LocalDaemonRequest::ArchiveAgent(_)
+            | LocalDaemonRequest::HideAgent(_)
             | LocalDaemonRequest::SetAgentParent(_)
             | LocalDaemonRequest::ListCredentials(_)
             // Sudo must not serialize literal MCP env/header credentials either.

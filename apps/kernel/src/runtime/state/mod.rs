@@ -513,9 +513,9 @@ type RemoteWorkspaceLiveSyncInvocationResult = (
     Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
 );
 
-mod agent_archive_runtime_state;
 mod agent_config_owned_state;
 mod agent_config_runtime_state;
+mod agent_hidden_runtime_state;
 mod agent_lifecycle_owned_state;
 mod agent_model_choice;
 mod agent_model_resolution;

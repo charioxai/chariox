@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { abortAgentMoveRequest, archiveAgentRequest, listDescendantsRequest, setAgentParentRequest, updateAgentSubstitutesRequest } from "./ipc-agent-requests.js"
+import { abortAgentMoveRequest, hideAgentRequest, listDescendantsRequest, setAgentParentRequest, updateAgentSubstitutesRequest } from "./ipc-agent-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION, type OutsideEvent } from "./kernel-types.js"
 
 test("agent substitute add request carries the chosen account profile", () => {
@@ -48,8 +48,8 @@ test("agent substitute add request omits account profile for default semantics",
 })
 
 
-test("archive and restore share one explicit agent-scoped request", () => {
-  for (const archived of [true, false]) assert.deepEqual(archiveAgentRequest("room", "agent", archived), { ArchiveAgent: { session_id: "room", agent_id: "agent", archived } })
+test("hiding an agent uses the shared HideAgent request", () => {
+  assert.deepEqual(hideAgentRequest("room", "agent", true), { HideAgent: { session_id: "room", agent_id: "agent", hidden: true } })
 })
 
 test("moving an agent in the tree names its new parent or none", () => {

@@ -929,8 +929,7 @@ impl KernelRuntimeState {
             )?;
         }
         self.remove_destroyed_agent_provider_processes(local_provider_run_ids);
-        super::agent_archive_runtime_state::end_agent_processes(destroyed.session_id(), agent_id)
-            .await?;
+        end_agent_processes(destroyed.session_id(), agent_id).await?;
         self.append_agent_durable_event("agent.deleted", &destroyed, None)
             .await?;
         // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: a removed delegate is a
@@ -1459,6 +1458,22 @@ fn slice_worker_ready(slice: &crate::slice::SliceRecord, provider: Option<&str>)
         .providers
         .iter()
         .any(|candidate| candidate == provider)
+}
+
+/// A deleted agent's jobs end, including those of a provider process removed later.
+async fn end_agent_processes(session_id: &str, agent_id: &str) -> Result<(), DaemonError> {
+    let (session_id, owner) = (
+        session_id.to_string(),
+        crate::runtime::process_resources::SessionProcessOwner::Agent(agent_id.to_string()),
+    );
+    tokio::task::spawn_blocking(move || {
+        crate::runtime::process_resources::end_owner(Some(&session_id), Some(&owner))
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "end agent processes",
+        message: error.to_string(),
+    })
 }
 
 #[cfg(test)]

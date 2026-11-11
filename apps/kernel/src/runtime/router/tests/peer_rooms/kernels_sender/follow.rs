@@ -491,64 +491,6 @@ impl Kernel {
         );
         self.router.dispatch(command, request).await.unwrap();
     }
-
-    async fn archive(&self, archived: bool) {
-        let request = serde_json::from_value(serde_json::json!({"ArchiveAgent": {
-            "session_id": self.room, "agent_id": self.agent.id(), "archived": archived,
-        }}))
-        .unwrap();
-        self.as_owner(&format!("archive-{archived}"), request).await;
-    }
-}
-
-#[test]
-fn a_followed_peer_archived_on_its_kernel_is_a_lost_source_until_it_is_unarchived() {
-    run_peer_test("peer-follow-archived", || async {
-        let (a, b) = two_kernels(
-            "peer-follow-archived",
-            AgentPermissionLevel::Yolo,
-            AgentPermissionLevel::Yolo,
-        );
-        // B's worker is idle: archiving it ends no turn, and only the follow can tell A.
-        b.end_turn(false).await;
-        let task = with_task(&a).await;
-        let follow = serde_json::json!({"source_id": "worker", "room": b.room, "kernel": b.name});
-        a.subscribe(&task, follow.clone())
-            .await
-            .expect("A follows an idle peer on another kernel");
-        b.archive(true).await;
-        b.router
-            .runtime_state
-            .sweep_agent_lifecycle_for_test()
-            .await
-            .unwrap();
-        let events = a.peer_events_after_delivery(1).await;
-        assert_eq!(events.len(), 1, "{events:?}");
-        assert_eq!(events[0].payload["event"], "source_lost", "{:?}", events[0]);
-        assert_eq!(events[0].source_id, source_of(&b));
-        let late = a.subscribe(&task, follow.clone()).await.unwrap_err();
-        assert!(
-            late.contains("agent_unavailable"),
-            "an archived peer takes no new follow: {late}"
-        );
-
-        // Unarchived, it is a live source again.
-        b.archive(false).await;
-        a.subscribe(&task, follow)
-            .await
-            .expect("A follows the unarchived peer");
-        b.router
-            .runtime_state
-            .sweep_agent_lifecycle_for_test()
-            .await
-            .unwrap();
-        assert_eq!(
-            a.peer_events_after_delivery(2).await.len(),
-            1,
-            "an unarchived peer is not lost"
-        );
-        unlink(&[&a, &b]);
-    });
 }
 
 #[test]

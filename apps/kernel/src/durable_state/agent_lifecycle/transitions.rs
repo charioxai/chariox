@@ -724,7 +724,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::DelegateUnavailable { .. }
         | Operation::ReleaseSpawn { .. }
         | Operation::Sweep { .. }
-        | Operation::ArchiveTask { .. }
         | Operation::CancelTask { .. }
         | Operation::CancelTaskByAgent { .. }
         | Operation::NoteTurnCancel { .. }
