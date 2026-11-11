@@ -7,7 +7,7 @@
 use super::*;
 #[cfg(target_os = "macos")]
 use crate::runtime::bounded_process::BoundedCommandExt as _;
-use crate::runtime::kernel_access::process::inspect;
+use crate::runtime::kernel_access::process::{inspect, ProcessIdentity};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -290,6 +290,16 @@ fn take_adopted(pid: u32) -> Option<HeldCommand> {
     inspect(pid)
         .is_ok_and(|(current, _)| sampling::same_birth(&current, &held.identity))
         .then_some(held)
+}
+
+/// Whether the previous program handed over the command that is `identity`.
+/// Its parent shell ran several jobs, whoever is left of them now.
+pub(super) fn handed_over(identity: &ProcessIdentity) -> bool {
+    ADOPTED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&identity.pid)
+        .is_some_and(|held| sampling::same_birth(identity, &held.identity))
 }
 
 /// The machine-wide part of admission, under the pool.
@@ -803,18 +813,10 @@ impl Ledger {
             let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
             let unit = observation.unit.clone();
             let entry = observation.admission.get_mut(&pid)?;
-            // Both resources must have room now: what it waited for, and the
-            // other one for the peak it is known to reach.
-            let (memory, disk) = match reason {
-                WaitReason::Memory => (need(entry, reason, room), entry.writes_ahead(room)),
-                WaitReason::Disk => (entry.memory_ahead(room), need(entry, reason, room)),
-            };
-            let volume = entry.disk(room);
-            let fits = (memory <= state.memory_room(&unit, room) || !state.heavy_running)
-                && volume.is_none_or(|volume| disk <= state.spare(volume, &unit, room));
-            if !fits {
+            if !state.fits(entry, &unit, reason, room) {
                 continue;
             }
+            let volume = entry.disk(room);
             state.reserve_memory(&unit, entry.memory_ahead(room), room);
             if let Some(volume) = volume {
                 state.reserve_disk(volume, entry.writes_ahead(room), &unit, room);
@@ -840,10 +842,18 @@ pub(super) struct PausedCommand {
     pub control: std::sync::mpsc::Sender<WatchCommand>,
 }
 
-/// The newest command paused on memory. When the pool is full and nothing
+/// The newest command paused on memory for at least `waited_ms`, and, when
+/// `blocked_in` is given, one that cannot continue in that room (a command
+/// that can is left to the next resume). When the pool is full and nothing
 /// else can pause, it yields before a running command does: it has made the
 /// least progress, and the oldest running command can then finish.
-pub(super) fn youngest_paused(members: &[Arc<Mutex<Observation>>]) -> Option<PausedCommand> {
+pub(super) fn youngest_paused(
+    members: &[Arc<Mutex<Observation>>],
+    waited_ms: u64,
+    blocked_in: Option<&Room>,
+) -> Option<PausedCommand> {
+    let now = crate::session::unix_epoch_ms();
+    let state = blocked_in.map(|room| State::read(members, room));
     let mut newest: Option<(u64, PausedCommand)> = None;
     for member in members {
         let observation = member.lock().unwrap_or_else(|e| e.into_inner());
@@ -855,6 +865,10 @@ pub(super) fn youngest_paused(members: &[Arc<Mutex<Observation>>]) -> Option<Pau
                 continue;
             };
             if matches!(entry.wait, Some(Wait::Paused(WaitReason::Memory)))
+                && now.saturating_sub(entry.since_ms) >= waited_ms
+                && blocked_in.zip(state.as_ref()).is_none_or(|(room, state)| {
+                    !state.fits(entry, &observation.unit, WaitReason::Memory, room)
+                })
                 && newest
                     .as_ref()
                     .is_none_or(|(arrived, _)| entry.arrived > *arrived)
@@ -893,6 +907,20 @@ impl State {
             .copied()
             .unwrap_or(0)
             .saturating_sub(self.memory_by_unit.get(unit).copied().unwrap_or(0))
+    }
+
+    /// Whether a waiting command can continue now. Both resources must have
+    /// room: what it waited for, and the other one for the peak it is known
+    /// to reach.
+    fn fits(&self, entry: &Entry, unit: &str, reason: WaitReason, room: &Room) -> bool {
+        let (memory, disk) = match reason {
+            WaitReason::Memory => (need(entry, reason, room), entry.writes_ahead(room)),
+            WaitReason::Disk => (entry.memory_ahead(room), need(entry, reason, room)),
+        };
+        (memory <= self.memory_room(unit, room) || !self.heavy_running)
+            && entry
+                .disk(room)
+                .is_none_or(|volume| disk <= self.spare(volume, unit, room))
     }
 
     fn memory_room(&self, unit: &str, room: &Room) -> u64 {

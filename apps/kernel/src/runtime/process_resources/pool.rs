@@ -16,6 +16,11 @@ const RUNAWAY_BYTES_PER_SECOND: u64 = 128 * MIB;
 /// A stopped command's memory takes a moment to show as free; no second stop
 /// for the same cause before then.
 const SETTLE: Duration = Duration::from_secs(1);
+/// A paused command whose room does not come ends instead of waiting for
+/// ever. The kernel's stall signal averages ten seconds and judges a pool
+/// every pass; a pause that outlasts six such windows is waiting on a pool
+/// that is full by accounting but never stalls (an idle holder).
+const PAUSE_LIMIT_MS: u64 = 60_000;
 
 pub(super) struct Pool {
     pub(super) ceiling: u64,
@@ -222,10 +227,11 @@ impl Pool {
         let refused = ledger.take_refused(current);
         let fillers = ledger.take_fillers(current);
         let capacity = room.capacity;
-        drop(launches);
         drop(ledger);
         self.end_oversized(current, refused, capacity);
         self.end_fillers(current, fillers);
+        self.end_overdue_pause(&members, &room);
+        drop(launches);
         // Paused and held commands do not grow: with nothing growing the
         // pool waits rather than stops.
         if may_stop && growing > 0 && self.pressed(&members) {
@@ -401,6 +407,49 @@ impl Pool {
             || (self.host && host_short(self.margin))
     }
 
+    /// A command paused for longer than `PAUSE_LIMIT_MS` ends with the
+    /// memory-stop outcome and its reason: room that did not come in that time
+    /// is not coming, and it must not stay stopped with no outcome.
+    fn end_overdue_pause(&self, members: &[Arc<Mutex<Observation>>], room: &admission::Room) {
+        let mut stopped_at = self.stopped_at.lock().unwrap_or_else(|e| e.into_inner());
+        if stopped_at.get("").is_some_and(|at| at.elapsed() < SETTLE) {
+            return;
+        }
+        let Some(waiting) = admission::youngest_paused(members, PAUSE_LIMIT_MS, Some(room)) else {
+            return;
+        };
+        let notice = format!(
+            "chariox: stopped this waiting command: the pool stayed full for {} s and it could not continue ({} MiB resident). Run it again; it starts when there is room.\n",
+            PAUSE_LIMIT_MS / 1000,
+            waiting.resident / MIB
+        );
+        if self.end_waiting(waiting, notice) {
+            stopped_at.insert(String::new(), Instant::now());
+        }
+    }
+
+    /// Ends a paused command with the memory-stop outcome; whether it was sent.
+    fn end_waiting(&self, waiting: admission::PausedCommand, notice: String) -> bool {
+        crate::logging::warn_with_fields(
+            "process_resources.memory_stop",
+            notice.trim_end(),
+            serde_json::json!({
+                "pid": waiting.pid,
+                "resident_bytes": waiting.resident,
+                "ceiling_bytes": self.ceiling,
+                "waiting": true,
+            }),
+        );
+        waiting
+            .control
+            .send(WatchCommand::MemoryStop {
+                pid: waiting.pid,
+                limit_bytes: self.ceiling,
+                notice,
+            })
+            .is_ok()
+    }
+
     fn stop_one(&self, members: &[Arc<Mutex<Observation>>], unit: Option<&str>, cause: Cause) {
         let mut stopped_at = self.stopped_at.lock().unwrap_or_else(|e| e.into_inner());
         let key = unit.unwrap_or_default().to_string();
@@ -410,30 +459,12 @@ impl Pool {
         // A paused command holds memory and makes no progress: it yields
         // before a running command does, the newest first.
         if matches!(cause, Cause::Pressure) {
-            if let Some(waiting) = admission::youngest_paused(members) {
+            if let Some(waiting) = admission::youngest_paused(members, 0, None) {
                 let notice = format!(
                     "chariox: stopped this waiting command under memory pressure: the pool is full, so the newest waiting command ends first ({} MiB resident) and the oldest running one can finish. Run it again; it starts when there is room.\n",
                     waiting.resident / MIB
                 );
-                crate::logging::warn_with_fields(
-                    "process_resources.memory_stop",
-                    notice.trim_end(),
-                    serde_json::json!({
-                        "pid": waiting.pid,
-                        "resident_bytes": waiting.resident,
-                        "ceiling_bytes": self.ceiling,
-                        "waiting": true,
-                    }),
-                );
-                if waiting
-                    .control
-                    .send(WatchCommand::MemoryStop {
-                        pid: waiting.pid,
-                        limit_bytes: self.ceiling,
-                        notice,
-                    })
-                    .is_ok()
-                {
+                if self.end_waiting(waiting, notice) {
                     stopped_at.insert(key, Instant::now());
                 }
                 return;

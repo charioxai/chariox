@@ -88,6 +88,12 @@ pub(super) struct ProcessTree {
     /// running the provider's server): the harness. Commands are what it
     /// starts later.
     harness: std::collections::BTreeSet<u32>,
+    /// Shells the harness started that ran several jobs at once (a tool call
+    /// that starts a holder and a grower), by birth: each job is a command of
+    /// its own, so the newest growing one can wait without the shell's other
+    /// jobs. A shell stays one while it lives, so a job whose siblings ended
+    /// keeps its command, its wait and its stop.
+    launchers: BTreeMap<u32, String>,
     #[cfg(target_os = "linux")]
     cgroup: Option<std::sync::Arc<super::cgroup::Domain>>,
     /// Without a cgroup: the environment entry the workload's processes
@@ -130,6 +136,7 @@ impl ProcessTree {
             root_unread: Some(0),
             unreadable: BTreeMap::new(),
             harness: std::collections::BTreeSet::from([root]),
+            launchers: BTreeMap::new(),
             #[cfg(target_os = "linux")]
             cgroup: None,
             #[cfg(target_os = "linux")]
@@ -187,6 +194,7 @@ impl ProcessTree {
             root_unread: None,
             unreadable: BTreeMap::new(),
             harness: std::collections::BTreeSet::from([owned.root]),
+            launchers: BTreeMap::new(),
             #[cfg(target_os = "linux")]
             cgroup: None,
             #[cfg(target_os = "linux")]
@@ -263,6 +271,28 @@ impl ProcessTree {
                 }
                 _ => None,
             };
+        }
+        self.launchers.retain(|pid, birth| {
+            rows.iter()
+                .any(|row| row.pid == *pid && row.birth == *birth)
+        });
+        // A shell whose jobs were commands in the previous program stays their
+        // launcher whatever is left of them, so a job that waits is still found.
+        // Those jobs are the authority: once the workload's root has ended, the
+        // shell that survived it is no longer under the harness.
+        let owned = &self.owned;
+        let jobs = |shell: u32| {
+            rows.iter()
+                .filter(move |child| child.parent == shell && owned.contains_key(&child.pid))
+        };
+        for row in rows.iter().filter(|row| {
+            self.owned.contains_key(&row.pid)
+                && shell(&row.command)
+                && !self.harness.contains(&row.pid)
+                && (jobs(row.pid).any(|job| super::admission::handed_over(&owned[&job.pid]))
+                    || (self.harness.contains(&row.parent) && jobs(row.pid).nth(1).is_some()))
+        }) {
+            self.launchers.insert(row.pid, row.birth.clone());
         }
         // Once the original root is gone, only previously observed descendants
         // can remain owned. Never adopt a replacement process with its PID.
@@ -584,6 +614,7 @@ impl ProcessTree {
                 Some(parent)
                     if !self.harness.contains(&top)
                         && !self.harness.contains(parent)
+                        && !self.launchers.contains_key(parent)
                         && self.owned.contains_key(parent) =>
                 {
                     top = *parent
@@ -605,14 +636,16 @@ impl ProcessTree {
     }
 
     /// What a command runs: past shells that only run one child (`sh -c`,
-    /// a harness's tool shell) to that child.
+    /// a harness's tool shell) to that child. A launcher stays itself: its
+    /// jobs are commands of their own, whoever is left.
     pub fn effective(&self, command: u32, samples: &[ProcessSample]) -> u32 {
         let mut pid = command;
         for _ in 0..8 {
             let shell = samples
                 .iter()
                 .find(|sample| sample.pid == pid)
-                .is_some_and(|sample| shell(&sample.command));
+                .is_some_and(|sample| shell(&sample.command))
+                && !self.launchers.contains_key(&pid);
             let mut children = self.parents.iter().filter(|(_, parent)| **parent == pid);
             match (shell, children.next(), children.next()) {
                 (true, Some((child, _)), None) => pid = *child,
