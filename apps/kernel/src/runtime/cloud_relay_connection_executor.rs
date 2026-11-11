@@ -15,6 +15,7 @@ use crate::runtime::cloud_api_client::{
     cloud_profile_from_persisted, issue_cloud_runtime_token, issue_cloud_terminal_client_token,
     CloudRuntimeTokenRequestOptions, CloudTerminalClientOptions,
 };
+use crate::runtime::cloud_machine_rebind::rebind_machine_if_moved;
 use crate::runtime::cloud_relay_control::{
     cloud_relay_profile_has_runtime_credentials, cloud_relay_runtime_token_is_fresh,
     cloud_runtime_token_subject, relay_token_expiry_ms, relay_token_payload,
@@ -74,6 +75,7 @@ pub(crate) async fn ensure_cloud_relay_connection_replacing(
         return Ok(());
     }
     migrate_legacy_kernel_profile(runtime_state, config_projection).await?;
+    rebind_machine_if_moved(runtime_state, config_projection).await?;
     let config = config_projection.snapshot();
     let Some(profile) = config.cloud_relay.clone() else {
         return Ok(());
@@ -131,6 +133,7 @@ pub(crate) async fn execute_connect_cloud_relay_request(
     _request: ConnectCloudRelayRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     migrate_legacy_kernel_profile(runtime_state, config_projection).await?;
+    rebind_machine_if_moved(runtime_state, config_projection).await?;
     let mut profile = required_cloud_relay_profile(config_projection)?;
     let config = config_projection.snapshot();
     let token_subject = cloud_runtime_token_subject(&config, &profile);

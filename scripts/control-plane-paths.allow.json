@@ -58,6 +58,14 @@
     "seam": "hosted relay account (cloud_api_client)"
   },
   {
+    "path": "/kernels/rebind-machine",
+    "callers": [
+      "apps/kernel/src/runtime/cloud_machine_rebind.rs"
+    ],
+    "why": "hosted relay sign-in, tokens and presence of the owner's connected service; the self-hosted control plane serves the same paths",
+    "seam": "hosted relay account (cloud_api_client)"
+  },
+  {
     "path": "/kernels/unlink",
     "callers": [
       "apps/kernel/src/runtime/cloud_relay_login_executor.rs"

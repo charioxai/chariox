@@ -69,6 +69,7 @@ pub(crate) mod child_shutdown;
 mod claude_setup_token_login;
 mod client_catalog_revisions;
 pub(crate) mod cloud_api_client;
+pub(crate) mod cloud_machine_rebind;
 mod cloud_relay_authorization;
 pub(crate) mod cloud_relay_connection_executor;
 pub(crate) mod cloud_relay_control;
