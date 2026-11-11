@@ -13,10 +13,16 @@ import {
   shouldEndSessionOnCliExit,
 } from "./runtime.js"
 
+// MP-08: the person reads the reason, not the internal transport steps it passed through.
 test("describeCliError prefers structured error messages", () => {
+  assert.equal(describeCliError(new LocalIpcError("connect local socket", "timed out")), "timed out")
   assert.equal(
-    describeCliError(new LocalIpcError("connect local socket", "timed out")),
-    "kernel transport `connect local socket` failed: timed out",
+    describeCliError(new LocalIpcError("handle kernel response", "local transport `get_live_kernel` failed: kernel `box` is not connected right now")),
+    "kernel `box` is not connected right now",
+  )
+  assert.equal(
+    describeCliError(new Error("Could not start the agent: kernel transport `handle kernel response` failed: local transport `spawn` failed: the folder is missing")),
+    "Could not start the agent: the folder is missing",
   )
   assert.equal(describeCliError(new Error("boom")), "boom")
   assert.equal(describeCliError("plain"), "plain")

@@ -23,9 +23,12 @@ export function shouldEndSessionOnCliExit(_createdSession: boolean, _connectedCl
   return false
 }
 
+// The kernel and client name each transport step a failure passed through; the person reads only the reason.
+const transportStep = /(?:kernel|local) transport `[^`]*` failed: /g
+
 export function describeCliError(error: unknown): string {
   if (error instanceof LocalIpcError || error instanceof Error) {
-    return error.message
+    return error.message.replace(transportStep, "")
   }
   return String(error)
 }
