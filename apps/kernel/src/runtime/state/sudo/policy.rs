@@ -197,6 +197,11 @@ impl KernelRuntimeState {
         request: &LocalDaemonRequest,
     ) -> Result<String, DaemonError> {
         let turn = self.sudo_window_bound(id)?;
+        if teardown_request(request) {
+            return Err(error(
+                "sudo cannot end or delete a Room, Project or kernel; ask the owner to do it from a Chariox client",
+            ));
+        }
         if sudo_request_forbidden(request) {
             return Err(error("sudo cannot answer approvals, grant authority, read secrets, change the passkey or access configuration"));
         }
@@ -215,14 +220,28 @@ impl KernelRuntimeState {
     }
 }
 
-pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
+/// Ending or deleting a Room, Project or kernel is the owner's decision, with or without /sudo.
+pub(crate) fn teardown_request(request: &LocalDaemonRequest) -> bool {
     matches!(
         request,
-        LocalDaemonRequest::RequestKernelSudo(_)
+        LocalDaemonRequest::EndSession(_)
+            | LocalDaemonRequest::DeleteSession(_)
+            | LocalDaemonRequest::ArchiveProject(_)
+            | LocalDaemonRequest::DeleteProject(_)
+            | LocalDaemonRequest::DeleteKernel(_)
+    )
+}
+
+pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
+    teardown_request(request)
+        || matches!(
+            request,
+            LocalDaemonRequest::RequestKernelSudo(_)
         | LocalDaemonRequest::ExtendKernelSudo(_)
         | LocalDaemonRequest::RenewKernelSudoRequester(_)
         // Approvals belong to the user, including for elevated agents.
         | LocalDaemonRequest::RespondToInteraction(_)
+        | LocalDaemonRequest::AcceptAppHostAction(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
         | LocalDaemonRequest::GetKernelAccessStatus(_)
         | LocalDaemonRequest::CoverKernelAccessProcess(_)
@@ -246,9 +265,6 @@ pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::GetUserConfig(_)
             | LocalDaemonRequest::ArchiveAgent(_)
             | LocalDaemonRequest::SetAgentParent(_)
-            | LocalDaemonRequest::EndSession(_)
-            | LocalDaemonRequest::DeleteSession(_)
-            | LocalDaemonRequest::DeleteKernel(_)
             | LocalDaemonRequest::ListCredentials(_)
             // Sudo must not serialize literal MCP env/header credentials either.
             | LocalDaemonRequest::GetMcpServer(_)
@@ -285,7 +301,8 @@ pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::SetProviderAccountCredential(_)
             | LocalDaemonRequest::GetProviderAccountProfile(_)
             | LocalDaemonRequest::ImportNativeProviderAccountProfile(_)
-    ) || matches!(request, LocalDaemonRequest::SetUserConfigValue(config) if sudo_config_forbidden(&config.path))
+        )
+        || matches!(request, LocalDaemonRequest::SetUserConfigValue(config) if sudo_config_forbidden(&config.path))
         || matches!(request, LocalDaemonRequest::UnsetUserConfigValue(config) if sudo_config_forbidden(&config.path))
         || matches!(request, LocalDaemonRequest::SubmitPrompt(prompt) if is_sudo_prompt(&prompt.prompt) || is_sudo_control(&prompt.prompt))
         || matches!(request, LocalDaemonRequest::SubmitPrompts(prompts) if prompts.prompts.iter().any(|prompt| is_sudo_prompt(&prompt.prompt) || is_sudo_control(&prompt.prompt)))
@@ -417,4 +434,21 @@ fn owner_vault_is_not_a_sudo_operation() {
     assert!(sudo_request_forbidden(&LocalDaemonRequest::OwnerVault(
         crate::local::OwnerVaultRequest::Reveal { id: "entry".into() }
     )));
+}
+
+// Accepting an App's host action releases the payload it asked to write or open; like every
+// approval it is the user's, also for an elevated agent.
+#[cfg(test)]
+#[test]
+fn sudo_cannot_accept_an_app_host_action() {
+    let request =
+        LocalDaemonRequest::AcceptAppHostAction(crate::local::AcceptAppHostActionRequest {
+            session_id: "s".into(),
+            operation_id: "o".into(),
+        });
+    assert!(sudo_request_forbidden(&request));
+    assert_eq!(
+        crate::runtime::state::reach::reach_need(&request),
+        crate::runtime::state::reach::ReachNeed::Excluded
+    );
 }
