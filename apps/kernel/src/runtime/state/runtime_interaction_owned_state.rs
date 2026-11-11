@@ -73,6 +73,47 @@ impl KernelRuntimeOwnedState {
         })
     }
 
+    /// A blocked task's Resume or Cancel is bound to whoever owned the room when it was raised, who
+    /// may be gone by the time anyone answers (a restart left it open). The room's current owner and
+    /// the blocked agent's owner can always answer it, so the card never stays open with nobody
+    /// allowed to close it.
+    fn may_answer_blocked_task_decision(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        caller_user_id: Option<&str>,
+    ) -> bool {
+        let Some(caller) = caller_user_id else {
+            return false;
+        };
+        if !super::agent_task_owner_interactions::is_blocked_task_decision(interaction_id) {
+            return false;
+        }
+        let Ok(session) = self.session_store.get_session(session_id) else {
+            return false;
+        };
+        if self.is_decision_owner_in(
+            Some(session.owner_user_id()),
+            Some(caller),
+            session.owner_user_id(),
+        ) {
+            return true;
+        }
+        session
+            .active_interactions()
+            .iter()
+            .find(|interaction| interaction.id() == interaction_id)
+            .and_then(|interaction| interaction.related_agent_id())
+            .and_then(|agent| self.agent_store.get_agent(agent).ok())
+            .is_some_and(|agent| {
+                self.is_decision_owner_in(
+                    Some(session.owner_user_id()),
+                    Some(caller),
+                    agent.owner_user_id(),
+                )
+            })
+    }
+
     /// Who owns a kernel decision: its operation owner, or for a card payment an agent asked in
     /// its Room, that Room's owner. The passkey popup and the answer read this one rule.
     pub(super) fn kernel_decision_owner(
@@ -356,11 +397,15 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error(super::decision_holder::HOLDER_CHANGED));
         }
+        let task_owner_answer =
+            self.may_answer_blocked_task_decision(session_id, interaction_id, caller_user_id);
         if pending
             .kernel_operation_owner
             .as_deref()
             .or(pending.terminal_credential_owner.as_deref())
-            .is_some_and(|owner| !self.is_decision_owner(session_id, caller_user_id, owner))
+            .is_some_and(|owner| {
+                !task_owner_answer && !self.is_decision_owner(session_id, caller_user_id, owner)
+            })
         {
             return Err(interaction_reference_error(
                 session_id,
@@ -450,16 +495,18 @@ impl KernelRuntimeOwnedState {
             } else {
                 owner.to_owned()
             };
-            if !self.is_decision_owner_in(
-                session
-                    .as_ref()
-                    .map(crate::session::RuntimeSession::owner_user_id),
-                caller_user_id,
-                &owner,
-            ) || (review
-                && session.as_ref().is_none_or(|session| {
-                    self.owner_context_review_owner(session.owner_user_id()) != owner
-                }))
+            if !(task_owner_answer
+                || self.is_decision_owner_in(
+                    session
+                        .as_ref()
+                        .map(crate::session::RuntimeSession::owner_user_id),
+                    caller_user_id,
+                    &owner,
+                ))
+                || (review
+                    && session.as_ref().is_none_or(|session| {
+                        self.owner_context_review_owner(session.owner_user_id()) != owner
+                    }))
             {
                 return Err(interaction_error(
                     "Only the operation owner can answer this decision",

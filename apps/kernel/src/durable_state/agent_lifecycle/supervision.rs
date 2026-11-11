@@ -543,7 +543,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Ok(Outcome::Task(t));
             }
             t.state = ExecutionState::Cancelled;
-            t.reason = "Restart failure superseded by a new owner turn".into();
+            t.reason = "Interrupted attempt superseded by a later turn".into();
             t.last_progress_at_ms = now;
             t.revision += 1;
             save(tx, &t)?;

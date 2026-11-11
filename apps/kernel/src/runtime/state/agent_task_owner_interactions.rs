@@ -220,8 +220,10 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    /// A new owner turn replaces a failed attempt (a restart, a refused or unacknowledged dispatch),
-    /// not a goal or owned work.
+    /// A later turn of an agent replaces its interrupted attempts (a restart, a refused or
+    /// unacknowledged dispatch), not a goal or owned work. Every such attempt still waiting on the
+    /// owner is cancelled, however many turns ago it was interrupted, so no card stays open for
+    /// work the agent has moved past.
     pub(super) async fn retire_superseded_restart_task(
         &self,
         room: &str,
@@ -235,55 +237,37 @@ impl KernelRuntimeState {
         {
             return Ok(false);
         }
-        let session = self.owned.session_store.get_session(room)?;
-        if !prompt.owner_request() || prompt.source_user_id() != Some(session.owner_user_id()) {
-            return Ok(false);
-        }
-        let Some(previous) = self
-            .owned
-            .completed_git_turn_snapshots
-            .latest_projection_for_agent(room, prompt.target_agent_id())
-        else {
-            return Ok(false);
-        };
-        if previous
-            .outcome
-            .as_ref()
-            .is_none_or(|outcome| outcome.kind == crate::provider::TurnOutcomeKind::Completed)
-            || previous.prompt_id == prompt.id()
-        {
-            return Ok(false);
-        }
-        let task = self
+        let mut retired_any = false;
+        for task in self
             .owned
             .durable_state_store
             .agent_tasks(Some(room), Some(prompt.target_agent_id()))?
             .into_iter()
-            .find(|task| {
-                task.prompt_id == previous.prompt_id
-                    && task.owner_user_id == session.owner_user_id()
+            .filter(|task| {
+                task.prompt_id != prompt.id()
                     && task.state == ExecutionState::Blocked
                     && task.goal.is_none()
                     && task.obligations.is_empty()
                     && task.wait.is_none()
                     && task.pending_prompt_id.is_none()
-            });
-        let Some(task) = task else { return Ok(false) };
-        let crate::durable_state::agent_lifecycle::Outcome::Task(retired) =
-            self.owned.durable_state_store.agent_lifecycle(
-                crate::durable_state::agent_lifecycle::Operation::RetireRestartFailure {
-                    task: task.task_id,
-                    revision: task.blocked_revision,
-                    now: crate::session::unix_epoch_ms(),
-                },
-            )?
-        else {
-            unreachable!()
-        };
-        if retired.state == ExecutionState::Blocked {
-            return Ok(false);
+            })
+        {
+            let crate::durable_state::agent_lifecycle::Outcome::Task(retired) =
+                self.owned.durable_state_store.agent_lifecycle(
+                    crate::durable_state::agent_lifecycle::Operation::RetireRestartFailure {
+                        task: task.task_id,
+                        revision: task.blocked_revision,
+                        now: crate::session::unix_epoch_ms(),
+                    },
+                )?
+            else {
+                unreachable!()
+            };
+            retired_any |= retired.state != ExecutionState::Blocked;
         }
-        self.retract_stale_task_owner_interactions(room).await;
-        Ok(true)
+        if retired_any {
+            self.retract_stale_task_owner_interactions(room).await;
+        }
+        Ok(retired_any)
     }
 }
