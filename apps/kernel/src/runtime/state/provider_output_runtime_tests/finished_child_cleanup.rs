@@ -246,3 +246,95 @@ async fn deleting_a_blocked_child_clears_its_interrupted_card() {
         "nobody is left to resume it"
     );
 }
+
+/// The child finishes a newer, independent task `prompt`; its older task stays unfinished.
+/// Returns the receipt of the newer task in the parent's inbox.
+async fn child_finishes_a_newer_task(team: &Family, prompt: &str) -> u64 {
+    let store = &team.runtime.owned.durable_state_store;
+    let kid = &team.kids[0];
+    let crate::durable_state::agent_lifecycle::Outcome::Task(_) = store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: team.room.clone(),
+            agent: kid.child.clone(),
+            prompt: prompt.into(),
+            run: None,
+            now: 3,
+        })
+        .unwrap()
+    else {
+        panic!("begun")
+    };
+    let crate::durable_state::agent_lifecycle::Outcome::Settled { task, .. } = store
+        .agent_lifecycle(Operation::Settle {
+            room: team.room.clone(),
+            agent: kid.child.clone(),
+            prompt: prompt.into(),
+            run: kid.child_run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now: 4,
+        })
+        .unwrap()
+    else {
+        panic!("settled")
+    };
+    assert_ne!(task.task_id, kid.task.task_id);
+    team.runtime
+        .announce_child_finished(&task, None, None)
+        .await
+        .unwrap();
+    store
+        .agent_inbox(&team.room, &team.parent, 0)
+        .unwrap()
+        .into_iter()
+        .rfind(|event| event.kind == "child_finished")
+        .expect("the newer task's finish reaches the parent")
+        .sequence
+}
+
+// Review P1: a child with an older task still waiting is not finished by the newer task's receipt.
+#[tokio::test]
+async fn a_handled_receipt_keeps_a_child_whose_older_task_is_unfinished() {
+    let team = family_of("child-cleanup-older-task", 1, None, true, true).await;
+    let child = team.kids[0].child.clone();
+    let newer = child_finishes_a_newer_task(&team, "newer-prompt").await;
+    ack(&team, newer, true).await;
+    assert!(
+        child_exists(&team, &child),
+        "the older task is still unfinished: the child stays"
+    );
+    // The older task ends and its receipt is handled: now the child goes.
+    let store = &team.runtime.owned.durable_state_store;
+    let crate::durable_state::agent_lifecycle::Outcome::Settled { task, .. } = store
+        .agent_lifecycle(Operation::Settle {
+            room: team.room.clone(),
+            agent: child.clone(),
+            prompt: team.kids[0].child_prompt.id().into(),
+            run: team.kids[0].child_run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now: 5,
+        })
+        .unwrap()
+    else {
+        panic!("settled")
+    };
+    team.runtime
+        .announce_child_finished(&task, None, None)
+        .await
+        .unwrap();
+    let older = store
+        .agent_inbox(&team.room, &team.parent, 0)
+        .unwrap()
+        .into_iter()
+        .rfind(|event| event.kind == "child_finished")
+        .unwrap()
+        .sequence;
+    assert_ne!(older, newer);
+    ack(&team, older, true).await;
+    assert!(
+        !child_exists(&team, &child),
+        "with nothing left unfinished, the handled receipt ends the child"
+    );
+}
