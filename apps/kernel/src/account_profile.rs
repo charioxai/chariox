@@ -10,6 +10,8 @@ mod account_copy;
 #[path = "account_profile_vault_login.rs"]
 mod vault_login;
 pub(crate) use vault_login::{VaultLoginOpen, VaultLoginSeal};
+#[path = "account_profile_discovery.rs"]
+mod discovery;
 #[path = "account_profile_usage.rs"]
 mod usage;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1029,6 +1031,8 @@ struct RegistryDocument {
     profiles: Vec<StoredProviderAccountProfile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pending_replica_cleanup: Vec<PendingReplicaCleanup>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    seen_machine_locations: Vec<discovery::SeenMachineLocation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1047,6 +1051,7 @@ impl Default for RegistryDocument {
             credential_copy_notices: Vec::new(),
             profiles: Vec::new(),
             pending_replica_cleanup: Vec::new(),
+            seen_machine_locations: Vec::new(),
         }
     }
 }
@@ -1061,6 +1066,10 @@ pub struct ProviderAccountProfileRegistry {
     generation: Arc<AtomicU64>,
     /// Profiles whose Vault login an import or its rollback is writing right now.
     vault_login_slots: vault_login::VaultLoginSlots,
+    /// Tells the kernel when who is signed in changed, however it changed.
+    auth_changes: Arc<discovery::AuthChanges>,
+    /// Machine locations whose last probe found no usable login; memory only.
+    probe_backoff: Arc<discovery::ProbeBackoff>,
 }
 
 type ProviderAccountUsageRefreshKey = (String, String, String);
@@ -1142,12 +1151,15 @@ impl ProviderAccountProfileRegistry {
             | migrate_legacy_default_profile_labels(&mut document)
             | migrate_legacy_managed_claude_scope(&mut document)
             | migrate_automatic_labels(&mut document);
+        let auth_changes = Arc::new(discovery::AuthChanges::new(&document));
         let registry = Self {
             path,
             document: Arc::new(RwLock::new(document)),
             usage_refresh_attempts: Arc::new(ProviderAccountUsageRefreshCoordinator::default()),
             generation: Arc::new(AtomicU64::new(0)),
             vault_login_slots: vault_login::VaultLoginSlots::default(),
+            auth_changes,
+            probe_backoff: Arc::default(),
         };
         if changed {
             let document = registry.read_document()?;
@@ -1820,7 +1832,7 @@ impl ProviderAccountProfileRegistry {
         }
         let canonical = validate_linked_root(path)?;
         let mut document = self.write_document()?;
-        let locator = ProviderAccountLocator::linked(provider, canonical)?;
+        let locator = ProviderAccountLocator::linked(provider, canonical.clone())?;
         if let Some(existing) = document.profiles.iter().find(|stored| {
             stored.public.owner_user_id == owner_user_id
                 && stored.public.provider == provider
@@ -1837,6 +1849,7 @@ impl ProviderAccountProfileRegistry {
         let (label, label_source) =
             resolved_new_profile_label(&document, owner_user_id, provider, label)?;
         ensure_unique_label(&document, owner_user_id, provider, &label)?;
+        document.remember_machine_location(provider, &canonical);
         let profile_id = unique_profile_id(&document, owner_user_id, provider, &label);
         let profile = new_public_profile(
             owner_user_id,
@@ -1978,14 +1991,7 @@ impl ProviderAccountProfileRegistry {
         let provider = normalize_provider(provider)?;
         let mut document = self.write_document()?;
         let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
-        let removed = document.profiles.remove(index);
-        if removed.public.is_default {
-            if let Some(next) = document.profiles.iter_mut().find(|profile| {
-                profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
-            }) {
-                next.public.is_default = true;
-            }
-        }
+        let removed = take_registration(&mut document, owner_user_id, provider, index);
         self.persist_locked(&document)?;
         Ok(project_usage_freshness(removed.public))
     }
@@ -3657,6 +3663,7 @@ impl ProviderAccountProfileRegistry {
             .map_err(|error| registry_error("write account profile registry", error.to_string()))?;
         atomic_write_private_internal(&self.path, &bytes, true)?;
         self.generation.fetch_add(1, Ordering::Release);
+        self.auth_changes.observe(document);
         Ok(())
     }
 
@@ -4461,6 +4468,23 @@ fn resolve_stored_profile_mut<'a>(
     Ok(&mut document.profiles[index])
 }
 
+fn take_registration(
+    document: &mut RegistryDocument,
+    owner_user_id: &str,
+    provider: &str,
+    index: usize,
+) -> StoredProviderAccountProfile {
+    let removed = document.profiles.remove(index);
+    if removed.public.is_default {
+        if let Some(next) = document.profiles.iter_mut().find(|profile| {
+            profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
+        }) {
+            next.public.is_default = true;
+        }
+    }
+    removed
+}
+
 fn resolved_profile_index(
     document: &RegistryDocument,
     owner_user_id: &str,
@@ -5056,6 +5080,11 @@ fn remove_managed_root(root: &Path, registry_path: &Path) -> Result<(), DaemonEr
 
 fn atomic_write_private(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
     atomic_write_private_internal(path, bytes, false)
+}
+
+/// Machine-level discovery files use the registry's private-file discipline.
+pub(crate) fn write_private_machine_file(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
+    atomic_write_private(path, bytes)
 }
 
 fn atomic_write_private_internal(

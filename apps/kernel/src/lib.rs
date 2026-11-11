@@ -46,6 +46,7 @@ pub mod prompt_notes;
 pub mod prompt_transcript;
 pub mod provider;
 pub mod provider_account_copy;
+mod provider_discovery;
 pub(crate) mod provider_output_policy;
 pub mod provider_vault_login;
 pub mod pty;

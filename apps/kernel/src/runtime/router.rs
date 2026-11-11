@@ -55,6 +55,7 @@ pub(crate) use slice_relay_token_bridge::ManagedSliceRelayTokenInstallRequest;
 pub(in crate::runtime) use slice_relay_token_bridge::{
     managed_slice_relay_identity_from_environment, ManagedSliceRelayIdentity,
 };
+mod provider_discovery;
 mod status_projection_bridge;
 mod transport_bridge;
 
