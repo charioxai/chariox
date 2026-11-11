@@ -34,9 +34,12 @@ export type RelayAuthorization = {
   allowed_actions: string[]; allowed_targets?: string[] | null
 }
 
+/** The longest relay token the client side parses; credentials handed to a relay connection are held to the same bound. */
+export const MAX_RELAY_TOKEN_LENGTH = 16_384
+
 // Public scheduling/scope metadata only. The relay verifies the signature.
 export function relayAuthorization(token: string | null): RelayAuthorization | null {
-  if (!token || token.length > 16_384) return null
+  if (!token || token.length > MAX_RELAY_TOKEN_LENGTH) return null
   const parts = token.split(".")
   if (parts.length !== 3) return null
   try {

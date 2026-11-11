@@ -1,5 +1,6 @@
 import {createHash, timingSafeEqual} from "node:crypto"
 import {readFileSync, statSync} from "node:fs"
+import {MAX_RELAY_TOKEN_LENGTH} from "@chariox/kernel-client/relay-authorization"
 import type {AgentTriggerRelayBootstrap} from "@chariox/kernel-client/agent-trigger-ingress-client"
 import type {AgentTriggerBinding} from "./hosted-agent-trigger-invoke.js"
 
@@ -53,9 +54,15 @@ export function loadSelfHostedAdmissionConfig(path: string): SelfHostedAdmission
     if (typeof value !== "string" || value.length < min || value.length >= 256) throw Error(`${path}: ${what} must be a string of ${min} to 255 characters`)
     return value
   }
+  // A signed client token (base64url segments joined by dots) is far longer than an id; opaque shared tokens use the same characters or base64.
+  const relayToken = (value: unknown) => {
+    if (typeof value !== "string" || value.length < 1 || value.length > MAX_RELAY_TOKEN_LENGTH) throw Error(`${path}: relay.token must be a string of 1 to ${MAX_RELAY_TOKEN_LENGTH} characters`)
+    if (!/^[A-Za-z0-9._~+/=-]+$/.test(value)) throw Error(`${path}: relay.token may only hold letters, digits and . _ ~ + / = - characters: paste the token without spaces or line breaks`)
+    return value
+  }
   const relayUrl = new URL(text(raw.relay?.url, "relay.url"))
   if (relayUrl.protocol !== "wss:" && !(relayUrl.protocol === "ws:" && isLoopbackUrl(relayUrl))) throw Error(`${path}: relay.url must be wss:// (ws:// only on loopback)`)
-  const relay = {url: relayUrl.href, token: text(raw.relay?.token, "relay.token")}
+  const relay = {url: relayUrl.href, token: relayToken(raw.relay?.token)}
   if (!Array.isArray(raw.deployments) || raw.deployments.length === 0) throw Error(`${path}: list at least one deployment`)
   const ids = new Set<string>()
   const deployments = raw.deployments.map((item, index) => {
