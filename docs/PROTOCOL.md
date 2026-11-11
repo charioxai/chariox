@@ -7066,3 +7066,40 @@ the lowest round trip, between 32 KiB and 1 MiB (`apps/relay/src/drain_window.rs
 writer also keeps one transfer slot free for small frames. No client minimum changes. Focused
 checks: `cargo test -p chariox-relay -- upload slow_link_tests drain_window` and
 `cargo test -p chariox-kernel --lib -- connector::upload connector::writer`.
+
+
+### Requests as bytes, plaintext bytes as bytes and link-sized binary chunks — local 1003 / relay peer 442
+
+MP-08 / MP-09 / MP-10 / MP-11 (relay8): a file chunk crossed the relay as base64 in the sealed
+plaintext and as base64 again around its ciphertext, 1.78 times its size on a put and 1.33 times on
+a get. Three additions bring both directions to the size of the bytes plus a few hundred bytes.
+
+- **`CXR3` request frame.** A client or kernel that offers the request header
+  `x-chariox-relay-requests: binary-v1` next to the binary events (`x-chariox-relay-protocol: 98`)
+  is answered with the same header. Its `ClientRequest` may then be sent as `CXR3`, and a daemon that
+  offered it is sent every `DaemonRequest` that way, whoever sent the request: four magic bytes, a
+  big-endian u32 JSON header length, a strict header of at most 4 KiB, then raw ciphertext (at least
+  the 16-byte tag). The header is the request's own routing: `kind` `client_request`
+  (`request_id`, `target`) or `daemon_request` (`relay_request_id`, `caller_identity`), plus
+  `sender_public_key` and the 16-character nonce. The frame is bounded and chunked like `CXR2`.
+  A `CXR3` frame on a connection that did not negotiate it ends the connection. Web clients do not
+  offer it and keep the JSON envelope.
+- **`CXF1` plaintext.** A kernel that advertises the capability `framed_plaintext_v1` reads a sealed
+  plaintext that starts with `CXF1`, a big-endian u32 header length, the JSON with every
+  `data_base64` string (at most four levels deep) replaced by `"$bytes":[offset,length]`, then the
+  raw bytes, contiguous and covering the payload exactly. A key of the request's own that is `$`s
+  followed by `bytes` is written with one more `$` and read back with one fewer, so the segment key
+  is the only plain `$bytes` and the JSON comes back unchanged. The kernel gateway frames every request to
+  such a kernel; the kernel answers a framed request in a framed answer and a JSON request in JSON.
+  The reply size ceilings apply to the JSON before it is framed.
+- **Link-sized binary chunks.** To a peer that negotiated `CXR3`, binary `CXB1` chunks follow the
+  measured link like text frames do: `DrainWindow::chunk_bytes`, between 4 KiB and 16 KiB, and the
+  smallest until a rate is measured, so that the window's lowest round trip does not contain a
+  16 KiB frame's drain time. A receiver takes a non-final chunk of at least 4,080 payload bytes. A
+  peer that did not negotiate takes only full chunks, as before. A small frame therefore waits
+  about 25 ms of bulk at the link's rate and not a 16 KiB frame (131 ms at 1 Mbit/s).
+
+Client minimums do not change: no web or native client offers the header. Focused checks:
+`cargo test -p chariox-relay --lib -- binary_request control_during_bulk a_small_reply_waits frame_transport`
+and `cargo test -p chariox-kernel --lib -- framed_plaintext relay_upload kernel_gateway::link`;
+the measurement is `node scripts/relay-load-proof/file-share.mjs` (see its README).

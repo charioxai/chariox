@@ -495,4 +495,6 @@ pub use workspace::*;
 /// data), `exec_place` with `placeable_on` on held launches, and a sub-agent tree node's mode, permission
 /// level and effort.
 /// Temporary 1003 (landing 8): a notification agent trigger's summary carries `source_available`.
+/// It also says a gateway request and its answer may carry their bytes as bytes
+/// (`framed_plaintext_v1`), and the relay takes requests as `CXR3` frames (peer 442).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1003;

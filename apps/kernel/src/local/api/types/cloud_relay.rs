@@ -186,6 +186,7 @@ pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
     "room_exec_v1",
     "agent_deadline_v1",
     "outside_steer_events_v1",
+    "framed_plaintext_v1",
     crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_CAPABILITY,
     crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY,
 ];

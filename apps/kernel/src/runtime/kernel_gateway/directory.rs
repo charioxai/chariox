@@ -158,6 +158,12 @@ pub(super) fn is_gateway_ready(kernel: &RelayKernelPresence) -> bool {
     advertises(kernel, GATEWAY_CAPABILITY)
 }
 
+/// A kernel that reads a request's bytes as bytes (`framed_plaintext`) says so; an older one
+/// reads only JSON, so a request to it keeps its bytes in base64.
+pub(super) fn reads_framed_plaintext(kernel: &RelayKernelPresence) -> bool {
+    advertises(kernel, crate::transport::framed_plaintext::CAPABILITY)
+}
+
 /// A kernel that runs the Room terminal service says so; an older one would only answer
 /// that it cannot read the request.
 const ROOM_TERMINAL_CAPABILITY: &str = "room_terminal_v1";

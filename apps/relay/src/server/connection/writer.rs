@@ -3,7 +3,7 @@
 use crate::drain_window::FLOOR_BYTES;
 use crate::drain_window::{DrainWindow, SendStamp};
 use crate::frame_transport::{
-    binary_chunk, text_chunk, TransportFrame, BINARY_CHUNK_PAYLOAD_BYTES, CHUNK_BYTES,
+    binary_chunk, binary_chunk_payload, text_chunk, TransportFrame, CHUNK_BYTES,
     MAX_ASSEMBLY_BYTES, MAX_MESSAGE_BYTES, MAX_TRANSFERS, PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES,
 };
 use crate::meter::{ConnectionMeter, Direction, CONTROL_SCOPE, DISPLAY_TUNNEL_SCOPE};
@@ -40,6 +40,9 @@ fn lane(message: &Message, usage: &WriterUsage) -> (Lane, Option<String>, Option
             ))
         ) {
             return (Lane::Reply, None, None);
+        }
+        if bytes.starts_with(b"CXR3") {
+            return (Lane::Request, None, None);
         }
         return match crate::binary_event::decode(bytes) {
             Ok((header, _)) if header.kind == "client_event" => {
@@ -109,14 +112,15 @@ struct Transfer {
     waiting: usize,
 }
 impl Transfer {
-    /// The next frame; a text frame stays within `limit` bytes.
-    fn next_chunk(&self, limit: usize) -> Option<(Message, usize)> {
+    /// The next frame; a text frame stays within `limit` bytes, and so does a binary one toward a
+    /// receiver that takes chunks shorter than a full one (`adaptive`).
+    fn next_chunk(&self, limit: usize, adaptive: bool) -> Option<(Message, usize)> {
         if let Some(Message::Binary(binary)) = &self.binary {
             if binary.len() > CHUNK_BYTES {
                 if self.offset == binary.len() {
                     return None;
                 }
-                let end = (self.offset + BINARY_CHUNK_PAYLOAD_BYTES).min(binary.len());
+                let end = (self.offset + binary_chunk_payload(limit, adaptive)).min(binary.len());
                 return Some((
                     Message::Binary(
                         binary_chunk(
@@ -227,7 +231,22 @@ async fn upgrade<S: Sink<Message> + Unpin>(writer: &mut S) {
     )
     .await;
 }
-fn receiver_message(message: Message, binary_events: bool) -> Option<Message> {
+fn receiver_message(
+    message: Message,
+    binary_events: bool,
+    binary_requests: bool,
+) -> Option<Message> {
+    if binary_requests {
+        if let Message::Text(text) = &message {
+            if text.starts_with("{\"kind\":\"daemon_request\"") {
+                if let Ok(envelope) = serde_json::from_str::<crate::protocol::RelayEnvelope>(text) {
+                    if let Ok(Some(bytes)) = crate::binary_request::from_envelope(&envelope) {
+                        return Some(Message::Binary(bytes.into()));
+                    }
+                }
+            }
+        }
+    }
     if binary_events {
         if let Message::Text(text) = &message {
             if text.starts_with("{\"kind\":\"client_response\"") {
@@ -377,11 +396,13 @@ fn leaves_control_slots(lane: Lane, active: &VecDeque<Transfer>) -> bool {
 }
 // Consecutive small sends allowed while a bulk transfer waits for its turn.
 const SMALL_STREAK: usize = 4;
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_writer<S>(
     mut writer: S,
     mut outgoing: mpsc::Receiver<Message>,
     chunks: bool,
     binary_events: bool,
+    binary_requests: bool,
     mut receipts: mpsc::Receiver<(u32, u32)>,
     mut controls: mpsc::Receiver<Message>,
     usage: WriterUsage,
@@ -420,7 +441,7 @@ where
             match outgoing.try_recv() {
                 Ok(message) => {
                     let admitted = message.len();
-                    match receiver_message(message, binary_events) {
+                    match receiver_message(message, binary_events, binary_requests) {
                         Some(m) => pending.push_back(Queued::new(m, admitted, &usage)),
                         None => return "bad_outgoing_message",
                     }
@@ -536,7 +557,14 @@ where
                     };
                     transfer.id = id;
                 }
-                if let Some((message, end)) = transfer.next_chunk(credit.drain.chunk_bytes()) {
+                if let Some((message, end)) = transfer.next_chunk(
+                    if binary_requests {
+                        credit.drain.first_chunk_bytes()
+                    } else {
+                        credit.drain.chunk_bytes()
+                    },
+                    binary_requests,
+                ) {
                     let small_binary = transfer
                         .binary
                         .as_ref()
@@ -619,7 +647,7 @@ where
                 if !credit.receipt(id,offset,&mut active){return "bad_receipt";}
             }
             message=outgoing.recv(),if open && pending.len()<capacity=>{
-                match message {Some(message)=>{let admitted=message.len();match receiver_message(message,binary_events){Some(m)=>pending.push_back(Queued::new(m,admitted,&usage)),None=>return "bad_outgoing_message"}},None=>open=false}
+                match message {Some(message)=>{let admitted=message.len();match receiver_message(message,binary_events,binary_requests){Some(m)=>pending.push_back(Queued::new(m,admitted,&usage)),None=>return "bad_outgoing_message"}},None=>open=false}
             }
         }
     }
@@ -665,6 +693,7 @@ mod tests {
             rx,
             true,
             true,
+            false,
             ack_rx,
             cr,
             WriterUsage::fixture(true),
@@ -802,6 +831,7 @@ mod tests {
             rx,
             true,
             true,
+            false,
             ack_rx,
             cr,
             WriterUsage::fixture(true),
@@ -857,6 +887,7 @@ mod tests {
             rx,
             true,
             false,
+            false,
             ack_rx,
             cr,
             WriterUsage::fixture(true),
@@ -896,6 +927,7 @@ mod tests {
             rx,
             true,
             true,
+            false,
             ack_rx,
             cr,
             WriterUsage::fixture(true),
@@ -963,6 +995,7 @@ mod tests {
             outgoing,
             true,
             true,
+            false,
             ack_rx,
             controls,
             WriterUsage::fixture_with_queue(true, queue.clone()),
@@ -1025,6 +1058,7 @@ mod tests {
             outgoing,
             true,
             true,
+            false,
             ack_rx,
             controls,
             WriterUsage::fixture_with_queue(true, queue),
@@ -1079,6 +1113,7 @@ mod tests {
             outgoing,
             true,
             true,
+            false,
             ack_rx,
             controls,
             WriterUsage::fixture_with_queue(false, queue),
@@ -1176,6 +1211,7 @@ mod tests {
             outgoing,
             true,
             true,
+            false,
             ack_rx,
             controls,
             WriterUsage::fixture_with_queue(false, sender.queue()),
@@ -1230,6 +1266,128 @@ mod tests {
             "the small replies waited {delays:?}, bound {bound:?}"
         );
     }
+    // The same bound for the binary frames every bulk answer travels in now: toward a peer that
+    // offered binary requests the chunks follow the measured link like text frames do, so a
+    // small reply waits one short chunk and not a full 16 KiB (131 ms at 1 Mbit/s).
+    #[tokio::test(start_paused = true)]
+    async fn a_small_reply_waits_one_short_chunk_behind_a_binary_answer_on_a_1_mbit_link() {
+        const RATE: f64 = 125_000.0;
+        const ONE_WAY: Duration = Duration::from_millis(30);
+        let (wire_tx, mut wire_rx) = mpsc::unbounded_channel::<Message>();
+        let sink = Box::pin(futures_util::sink::unfold(
+            wire_tx,
+            |tx, message: Message| async move {
+                let _ = tx.send(message);
+                Ok::<_, std::convert::Infallible>(tx)
+            },
+        ));
+        let (arrived_tx, mut arrived) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let mut free_at = tokio::time::Instant::now();
+            while let Some(message) = wire_rx.recv().await {
+                free_at = free_at.max(tokio::time::Instant::now())
+                    + Duration::from_secs_f64(message.len() as f64 / RATE);
+                tokio::time::sleep_until(free_at).await;
+                let arrived_tx = arrived_tx.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(ONE_WAY).await;
+                    let _ = arrived_tx.send((tokio::time::Instant::now(), message));
+                });
+            }
+        });
+        let (_control, controls) = mpsc::channel(8);
+        let (sender, outgoing) = RelaySender::channel(1024);
+        let (ack_tx, ack_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
+        let task = tokio::spawn(run_writer(
+            sink,
+            outgoing,
+            true,
+            true,
+            true,
+            ack_rx,
+            controls,
+            WriterUsage::fixture_with_queue(false, sender.queue()),
+        ));
+        let answer = |request_id: &str, ciphertext: &[u8]| {
+            let header = crate::binary_response::ResponseHeader::ClientResponse {
+                request_id: request_id.into(),
+                sender_public_key: "opaque-key".into(),
+                nonce: "abcdefghijklmnop".into(),
+            };
+            Message::Binary(
+                crate::binary_response::encode(&header, ciphertext)
+                    .unwrap()
+                    .into(),
+            )
+        };
+        sender
+            .try_send(answer("bulk", &vec![7; 2 * 1024 * 1024]))
+            .unwrap();
+        let start = tokio::time::Instant::now();
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        let mut next_small = start + Duration::from_secs(3);
+        let (mut sent_small_at, mut delays, mut shortest_chunk) = (None, Vec::new(), usize::MAX);
+        let mut sizes = Vec::new();
+        while delays.len() < 8 {
+            let (at, message) = arrived.recv().await.expect("the writer ended");
+            let receipt = match &message {
+                Message::Text(text) => receiver.receive(text).unwrap().1,
+                Message::Binary(bytes) if bytes.starts_with(b"CXB1") => {
+                    if bytes.len() > 16 + 64 {
+                        shortest_chunk = shortest_chunk.min(bytes.len());
+                    }
+                    sizes.push(bytes.len());
+                    receiver.receive_binary(bytes).unwrap().1
+                }
+                Message::Binary(bytes) => {
+                    if let Ok((
+                        crate::binary_response::ResponseHeader::ClientResponse {
+                            request_id, ..
+                        },
+                        _,
+                    )) = crate::binary_response::decode(bytes)
+                    {
+                        if request_id == "small-reply" {
+                            delays.push(at.duration_since(sent_small_at.take().unwrap()));
+                        }
+                    }
+                    None
+                }
+                _ => None,
+            };
+            if let Some(receipt) = receipt {
+                let TransportFrame::TransportAck {
+                    transfer_id,
+                    offset,
+                } = serde_json::from_str(&receipt).unwrap()
+                else {
+                    panic!("receipt expected")
+                };
+                let ack_tx = ack_tx.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(ONE_WAY).await;
+                    let _ = ack_tx.send((transfer_id, offset)).await;
+                });
+            }
+            if sent_small_at.is_none() && at >= next_small {
+                sender.try_send(answer("small-reply", &[1; 64])).unwrap();
+                sent_small_at = Some(tokio::time::Instant::now());
+                next_small = at + Duration::from_millis(300);
+            }
+        }
+        task.abort();
+        assert!(
+            shortest_chunk < CHUNK_BYTES,
+            "the chunks follow the link: shortest {shortest_chunk} bytes"
+        );
+        let bound = Duration::from_millis(30 + 100);
+        let worst = delays.iter().max().unwrap();
+        assert!(
+            *worst <= bound,
+            "the small replies waited {delays:?}, bound {bound:?}; last chunks {:?}",
+            &sizes[sizes.len().saturating_sub(12)..]
+        );
+    }
     // MP-08/MP-10: queued mirror credits answer back-to-back. A written reply
     // must not hold one of the two reply slots until its WAN receipt returns
     // (appsfix r14: packets 2-3 of one click arrived one RTT apart).
@@ -1250,6 +1408,7 @@ mod tests {
             rx,
             true,
             true,
+            false,
             ack_rx,
             cr,
             WriterUsage::fixture(true),
@@ -1316,6 +1475,7 @@ mod tests {
             rx,
             true,
             true,
+            false,
             ar,
             cr,
             WriterUsage::fixture(true),
@@ -1391,6 +1551,7 @@ mod tests {
             rx,
             false,
             false,
+            false,
             ar,
             cr,
             WriterUsage::fixture(false),
@@ -1416,6 +1577,7 @@ mod tests {
             socket,
             rx,
             true,
+            false,
             false,
             ar,
             cr,
@@ -1494,6 +1656,7 @@ mod tests {
             rx,
             true,
             false,
+            false,
             ar,
             cr,
             WriterUsage::fixture(true),
@@ -1556,6 +1719,7 @@ mod tests {
             rx,
             true,
             false,
+            false,
             ar,
             cr,
             WriterUsage::fixture(true),
@@ -1607,6 +1771,7 @@ mod tests {
             socket,
             rx,
             true,
+            false,
             false,
             ar,
             cr,
@@ -1691,6 +1856,7 @@ mod tests {
             rx,
             true,
             false,
+            false,
             ar,
             cr,
             WriterUsage::fixture(true),
@@ -1743,7 +1909,7 @@ mod tests {
         let binary = crate::binary_event::encode(&header, &[7; 100 * 1024]).unwrap();
         assert!(
             matches!(
-                receiver_message(Message::Binary(binary.into()), true),
+                receiver_message(Message::Binary(binary.into()), true, false),
                 Some(Message::Binary(_))
             ),
             "negotiated binary events must not add a base64 JSON envelope above the chunk boundary"
@@ -1784,6 +1950,7 @@ mod tests {
                 rx,
                 true,
                 true,
+                false,
                 ar,
                 cr,
                 WriterUsage::fixture(true),
@@ -1860,6 +2027,7 @@ mod tests {
             outgoing,
             true,
             true,
+            false,
             ack_rx,
             controls,
             WriterUsage::fixture_with_queue(true, queue),
@@ -1907,7 +2075,7 @@ mod binary_reply_regression {
             error: None,
         })
         .unwrap();
-        let binary = receiver_message(Message::Text(text.into()), true).unwrap();
+        let binary = receiver_message(Message::Text(text.into()), true, false).unwrap();
         assert!(
             matches!(binary, Message::Binary(_)),
             "negotiated successful replies must not base64 ciphertext"

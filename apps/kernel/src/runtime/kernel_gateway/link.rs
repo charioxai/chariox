@@ -62,6 +62,8 @@ pub(super) struct Link {
     pending: Pending,
     subscriptions: Subscriptions,
     alive: Arc<AtomicBool>,
+    /// The relay takes a request's ciphertext as bytes (`CXR3`) instead of base64 in JSON.
+    binary_requests: bool,
     opened_at: Instant,
     /// When the relay token this connection runs on was issued; renewal restarts it.
     token_issued_at: Mutex<Instant>,
@@ -92,6 +94,8 @@ impl Link {
         // ciphertext as bytes (CXR2 / CXR1) instead of base64 inside JSON.
         let binary_events =
             crate::transport::relay_socket_connect::binary_events_accepted(&handshake);
+        let binary_requests =
+            crate::transport::relay_socket_connect::binary_requests_accepted(&handshake);
         let target = ClientTarget {
             daemon_id: Some(params.target_kernel_id.clone()),
             daemon_alias: None,
@@ -163,6 +167,7 @@ impl Link {
                     outgoing_rx,
                     bulk_rx,
                     upload_chunks.then_some(receipts_rx),
+                    binary_requests,
                 )
                 .await;
                 alive.store(false, Ordering::SeqCst);
@@ -274,6 +279,7 @@ impl Link {
             pending,
             subscriptions,
             alive,
+            binary_requests,
             opened_at: Instant::now(),
             token_issued_at: Mutex::new(Instant::now()),
             target,
@@ -300,27 +306,38 @@ impl Link {
             plaintext,
         )
         .map_err(|error| relay_failure("encrypt_failed", error.to_string()))?;
-        let (reply, answer) = oneshot::channel();
-        self.pending
-            .lock()
-            .expect("pending poisoned")
-            .insert(request_id.clone(), reply);
         let envelope = RelayEnvelope::ClientRequest {
             request_id: request_id.clone(),
             target: self.target.clone(),
             encrypted_request,
         };
+        let message = if self.binary_requests {
+            let frame = chariox_relay::binary_request::from_envelope(&envelope)
+                .map_err(|error| relay_failure("encrypt_failed", error.to_string()))?
+                .expect("a client request has a binary frame");
+            Message::Binary(frame.into())
+        } else {
+            Message::Text(
+                serde_json::to_string(&envelope)
+                    .expect("envelope serializes")
+                    .into(),
+            )
+        };
         chariox_relay::transport_timing::record(
             "kernel_gateway_enqueue",
             chariox_relay::transport_timing::envelope_signature(&envelope),
         );
-        let text = serde_json::to_string(&envelope).expect("envelope serializes");
-        let lane = if text.len() > CHUNK_BYTES {
+        let (reply, answer) = oneshot::channel();
+        self.pending
+            .lock()
+            .expect("pending poisoned")
+            .insert(request_id.clone(), reply);
+        let lane = if message.len() > CHUNK_BYTES {
             &self.bulk
         } else {
             &self.outgoing
         };
-        if lane.send(Message::Text(text.into())).is_err() {
+        if lane.send(message).is_err() {
             self.pending
                 .lock()
                 .expect("pending poisoned")
@@ -453,11 +470,12 @@ async fn write<S>(
     mut outgoing: mpsc::UnboundedReceiver<Message>,
     mut bulk: mpsc::UnboundedReceiver<Message>,
     mut receipts: Option<mpsc::UnboundedReceiver<(u32, u32)>>,
+    binary_requests: bool,
 ) where
     S: Sink<Message> + Unpin,
 {
     let chunked = receipts.is_some();
-    let mut uploads = Uploads::new();
+    let mut uploads = Uploads::new(binary_requests);
     loop {
         let chunk_ready = uploads.ready(Lane::Event);
         let take_bulk = !uploads.busy(Lane::Event);
@@ -899,13 +917,13 @@ mod tests {
     }
 
     /// A relay that answers like a target kernel and, when the client offers binary
-    /// frames, sends each answer as a CXR2 frame like the real relay does. Reports the
-    /// bytes it put on the socket for each answer.
+    /// frames, takes each request as a CXR3 frame and sends each answer as a CXR2 frame like the
+    /// real relay does. Reports the bytes each request and each answer took on the socket.
     #[allow(
         clippy::result_large_err,
         reason = "the tungstenite handshake callback fixes its error type"
     )]
-    async fn binary_relay() -> (String, mpsc::UnboundedReceiver<usize>) {
+    async fn binary_relay() -> (String, mpsc::UnboundedReceiver<(usize, usize)>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
         let (sent, sizes) = mpsc::unbounded_channel();
@@ -920,6 +938,13 @@ mod tests {
                     binary = request.headers().get(header).is_some_and(|v| v == "98");
                     if binary {
                         response.headers_mut().insert(header, "98".parse().unwrap());
+                        let requests = chariox_relay::binary_request::HEADER;
+                        if request.headers().get(requests).is_some() {
+                            response.headers_mut().insert(
+                                requests,
+                                chariox_relay::binary_request::OFFER.parse().unwrap(),
+                            );
+                        }
                     }
                     Ok(response)
                 },
@@ -944,12 +969,20 @@ mod tests {
                 ))
                 .await
                 .unwrap();
-            while let Some(Ok(Message::Text(text))) = socket.next().await {
-                let Ok(RelayEnvelope::ClientRequest {
+            while let Some(Ok(message)) = socket.next().await {
+                let request_wire = message.len();
+                let envelope = match &message {
+                    Message::Text(text) => serde_json::from_str(text).ok(),
+                    Message::Binary(bytes) => {
+                        chariox_relay::binary_request::into_envelope(bytes).ok()
+                    }
+                    _ => None,
+                };
+                let Some(RelayEnvelope::ClientRequest {
                     request_id,
                     encrypted_request,
                     ..
-                }) = serde_json::from_str(&text)
+                }) = envelope
                 else {
                     continue;
                 };
@@ -977,19 +1010,18 @@ mod tests {
                     ),
                     false => Message::Text(serde_json::to_string(&answer).unwrap().into()),
                 };
-                let _ = sent.send(frame.len());
+                let _ = sent.send((request_wire, frame.len()));
                 socket.send(frame).await.unwrap();
             }
         });
         (url, sizes)
     }
 
-    // MP-08 / MP-09 / MP-10 / MP-11 (relayproof r3): a 64 KiB file chunk of `files get` came
-    // back as base64 ciphertext inside a JSON envelope: 1.78 times its size on the link
-    // with the base64 inside the plaintext. The link takes the relay's existing binary
-    // answer frames (CXR2), so the ciphertext travels as bytes.
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayproof r3, relay8): a 64 KiB file chunk crossed the link
+    // as base64 ciphertext inside a JSON envelope, in both directions. The link takes the relay's
+    // binary request (CXR3) and answer (CXR2) frames, so the ciphertext travels as bytes.
     #[tokio::test]
-    async fn an_answer_travels_as_binary_ciphertext() {
+    async fn a_request_and_its_answer_travel_as_binary_ciphertext() {
         let (url, mut sizes) = binary_relay().await;
         let link = Link::open(LinkParams {
             relay_url: url,
@@ -1006,12 +1038,14 @@ mod tests {
             .request("chunk".into(), &chunk, Duration::from_secs(5))
             .await;
         assert!(answer.ok() == Some(chunk.clone()), "the answer decrypts");
-        let wire = sizes.recv().await.unwrap();
-        assert!(
-            wire <= chunk.len() + 1024,
-            "{wire} bytes on the link for a {} byte answer",
-            chunk.len()
-        );
+        let (request_wire, answer_wire) = sizes.recv().await.unwrap();
+        for (what, wire) in [("request", request_wire), ("answer", answer_wire)] {
+            assert!(
+                wire <= chunk.len() + 1024,
+                "{wire} bytes on the link for a {} byte {what}",
+                chunk.len()
+            );
+        }
     }
 
     async fn open(url: String, target_private_key: &str) -> Result<Link, LinkFailure> {
