@@ -2587,8 +2587,14 @@ Rules:
   `ClientCatalogRevisions` approach), so they survive a kernel restart.
 - Each watch is authorised like the request it replaces; a refused key is listed in
   `refused` and never answered with an empty snapshot.
-- A snapshot is at most 1 MiB; larger resources page with their existing cursors
-  and send `changes`.
+- A frame is at most 1 MiB. A larger resource with a cursor pages with it and
+  sends `changes`. A larger resource without one (`provider_catalog`,
+  `provider_commands`, `terminal_commands`) is sent as parts of one snapshot,
+  `snapshot: { data, part: { index, count } }`, the top-level array items split
+  across parts. Every part carries the same `revision` and comes from one
+  materialised snapshot; if the resource changes mid-send the kernel abandons the
+  send and restarts with the new revision. A client commits only when it holds
+  all `count` parts of one revision.
 - Only public projections travel: never secret values, tokens or credentials.
 
 Resources (v1): `vault_status`, `vault_entries`, `provider_accounts`,
@@ -2602,9 +2608,15 @@ with the conditional `GetClientCatalogSnapshot.known`, `provider_catalog_changed
 `slices_changed` and the `SubscribeUserAppViews` long poll; each replaced event or
 request is removed in the change that moves its resource.
 
-`AttachSessionView` gains `known_revision` (the Room's public history revision); a
-match answers the history as `unchanged`. Live Room events stay on the session
-subscription with `resume_from_event_id`.
+`AttachSessionView` gains `known_revision`; a match answers the history as
+`unchanged`. The revision identifies the projection the attach returns, not the
+Room: the history outline covers one group of six agents chosen by
+`preferred_agent_id` (or the focused agent) and the effective
+`latest_prompt_count` (`runtime/router/session_view.rs`). The kernel hashes the
+public history revision, the state event id, the selected agent group ids and the
+turn count for the caller, so a client holding another group or turn count, or no
+history (`known_revision: null`), gets the full history. Live Room events stay on
+the session subscription with `resume_from_event_id`.
 
 ## 4.2 Planned Command-Dispatch Surface
 
