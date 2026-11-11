@@ -466,7 +466,7 @@ impl KernelRuntimeState {
         Ok((result, package, manifest))
     }
 
-    pub(super) async fn dispatch_capability_runtime_tool_call(
+    pub(crate) async fn dispatch_capability_runtime_tool_call(
         &self,
         provider_run: &crate::provider::RuntimeProviderRun,
         tool_name: &str,

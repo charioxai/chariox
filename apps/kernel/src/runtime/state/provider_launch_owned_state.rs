@@ -517,7 +517,7 @@ impl KernelRuntimeOwnedState {
 }
 
 #[cfg(test)]
-pub(super) async fn owned_runtime_state(
+pub(crate) async fn owned_runtime_state(
     app: &Arc<Mutex<crate::app::DaemonApp>>,
 ) -> KernelRuntimeState {
     let (

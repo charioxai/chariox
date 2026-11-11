@@ -1260,10 +1260,84 @@ async fn silent_agent_ids(turn: &QuietNativeTurn) -> Vec<String> {
         .collect()
 }
 
+/// The liveness the room agent tools (list and detail, through the tool
+/// dispatch a provider run uses) and the session reads give for the turn's
+/// agent, as another agent or a client would see it.
+async fn public_liveness(
+    turn: &QuietNativeTurn,
+) -> Vec<(&'static str, crate::runtime::projection::AgentLiveness)> {
+    let run = turn
+        .app
+        .lock()
+        .await
+        .providers
+        .get_run(&turn.run_id)
+        .unwrap();
+    let runtime =
+        crate::runtime::state::provider_launch_owned_state::owned_runtime_state(&turn.app).await;
+    let from_tool = |entry: &serde_json::Value| {
+        serde_json::from_value::<crate::runtime::projection::AgentLiveness>(
+            entry["liveness"].clone(),
+        )
+        .expect("the tool entry carries the agent's liveness")
+    };
+    let listed = runtime
+        .dispatch_capability_runtime_tool_call(
+            &run,
+            crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL,
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+    let list_entry = listed.payload["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == turn.agent_id.as_str())
+        .unwrap()
+        .clone();
+    let detail = runtime
+        .dispatch_capability_runtime_tool_call(
+            &run,
+            crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL,
+            serde_json::json!({ "agent": turn.agent_id }),
+        )
+        .await
+        .unwrap();
+    let session_read = runtime
+        .session_snapshot_projection(&turn.session_id, 0)
+        .unwrap();
+    let mut app = turn.app.lock().await;
+    let snapshot = crate::runtime::projection::SessionSnapshotProjection::from_daemon_app(
+        &mut app,
+        &turn.session_id,
+        0,
+    )
+    .unwrap();
+    vec![
+        ("agent tool list", from_tool(&list_entry)),
+        ("agent tool detail", from_tool(&detail.payload["agent"])),
+        (
+            "runtime session read",
+            session_read.agent_activity[&turn.agent_id].liveness.clone(),
+        ),
+        (
+            "app session snapshot",
+            snapshot.agent_activity[&turn.agent_id].liveness.clone(),
+        ),
+    ]
+}
+
 #[tokio::test]
 async fn health_lists_a_native_turn_with_no_new_output_as_silent() {
     let turn = quiet_native_turn("claude-native-quiet-health");
     assert_eq!(silent_agent_ids(&turn).await, vec![turn.agent_id.clone()]);
+    for (view, liveness) in public_liveness(&turn).await {
+        assert!(
+            liveness.stalled,
+            "{view} did not flag a turn with no new output as stalled"
+        );
+    }
     let _ = fs::remove_dir_all(&turn.root);
 }
 
@@ -1307,6 +1381,13 @@ async fn a_native_claude_transcript_drain_that_wrote_output_is_not_a_quiet_run()
         silent_agent_ids(&turn).await.is_empty(),
         "Health listed an agent that was writing transcript output as silent"
     );
+    let fresh = after - after % 10_000;
+    for (view, liveness) in public_liveness(&turn).await {
+        assert!(
+            !liveness.stalled && liveness.last_activity_at_ms == Some(fresh),
+            "{view} still shows the activity from before the transcript drain: {liveness:?} (fresh {fresh})"
+        );
+    }
     let _ = fs::remove_dir_all(&turn.root);
 }
 

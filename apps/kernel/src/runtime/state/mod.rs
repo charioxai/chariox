@@ -579,7 +579,7 @@ mod provider_account_copy;
 mod provider_account_copy_offer;
 mod provider_focus_owned_state;
 mod provider_launch_failure_runtime;
-mod provider_launch_owned_state;
+pub(crate) mod provider_launch_owned_state;
 mod provider_launch_runtime;
 pub(crate) use provider_launch_runtime::ProviderLaunchStartOutcome;
 mod claude_setup_token_capture;
