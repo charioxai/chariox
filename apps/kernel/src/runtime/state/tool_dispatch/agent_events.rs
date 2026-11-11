@@ -133,7 +133,11 @@ impl KernelRuntimeState {
         let payload = match name {
             "chariox.events.inbox" => self.read_agent_inbox(room, actor, &args)?,
             "chariox.events.subscriptions" => {
-                serde_json::json!({"task":task,"registrations":self.owned.durable_state_store.agent_registrations(task_id)?})
+                serde_json::json!({
+                    "task":task,
+                    "registrations":self.owned.durable_state_store.agent_registrations(task_id)?,
+                    "peer_follows":self.owned.durable_state_store.agent_peer_follows(room, actor)?,
+                })
             }
             "chariox.events.unsubscribe" => {
                 let id = args["registration_id"]

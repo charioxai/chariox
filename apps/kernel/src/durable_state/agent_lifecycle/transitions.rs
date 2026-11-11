@@ -385,10 +385,22 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         } => {
             let t = load(tx, &task)?;
             current(&t, &prompt)?;
-            let mut reg = registrations(tx, &task)?
+            // A follow outlives the turn that made it, so the agent ends it from a later turn.
+            let mut reg = match registrations(tx, &task)?
                 .into_iter()
                 .find(|r| r.id == registration)
-                .ok_or_else(|| error("registration unavailable in this task"))?;
+            {
+                Some(own) => own,
+                None => super::peer_follows::held_by(tx, &t.room_id, &t.agent_id)?
+                    .into_iter()
+                    .find(|r| r.id == registration)
+                    .ok_or_else(|| error("registration unavailable to this agent"))?,
+            };
+            let holder = if reg.task_id == t.task_id {
+                t.clone()
+            } else {
+                load(tx, &reg.task_id)?
+            };
             reg.live = false;
             tx.execute(
                 "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
@@ -396,19 +408,20 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             )
             .map_err(sql)?;
             // An invalidated wait must wake, rather than sleep on a dead registration.
-            if t.wait
+            if holder
+                .wait
                 .as_ref()
                 .is_some_and(|w| w.registration_ids.contains(&reg.id))
             {
                 event(
                     tx,
                     occurrence(
-                        &t.room_id,
-                        &t.agent_id,
+                        &holder.room_id,
+                        &holder.agent_id,
                         &reg.source_id,
-                        &format!("unsubscribe-{}-{}", reg.id, t.revision),
+                        &format!("unsubscribe-{}-{}", reg.id, holder.revision),
                         "source_lost",
-                        serde_json::json!({"task_id":t.task_id,"registration_id":reg.id}),
+                        serde_json::json!({"task_id":holder.task_id,"registration_id":reg.id}),
                     ),
                 )?;
             }
@@ -826,7 +839,7 @@ pub(super) fn recover_source(
                 registration.peer && registration.obligation_id.is_none(),
             ),
         )?;
-        registration.live = false;
+        registration.live = super::peer_follows::outlives(&registration, &id);
         registration.source_cursor =
             u64::try_from(seq).map_err(|_| error("corrupt source sequence"))?;
         tx.execute(

@@ -446,8 +446,17 @@ impl KernelRuntimeState {
                 ),
             )
             .await;
-            if let Ok(Ok(RelayPeerResponse::PeerAgentOutcomeAck { .. })) = answered {
+            if let Ok(Ok(RelayPeerResponse::PeerAgentOutcomeAck { ack, .. })) = answered {
                 store.agent_lifecycle(Operation::PeerOutboxDelivered { delivery })?;
+                // A follow goes on until its follower says it is over; a follower that no longer
+                // holds it must not be owed the next turn end.
+                if ack == PeerOutcomeAck::UnknownSubscription {
+                    store.agent_lifecycle(Operation::UnfollowPeer {
+                        kernel: row.subscriber_kernel_id.clone(),
+                        subscription: row.subscription_id.clone(),
+                        generation: i64::MAX as u64,
+                    })?;
+                }
                 continue;
             }
             store.agent_lifecycle(Operation::PeerOutboxRetry {
