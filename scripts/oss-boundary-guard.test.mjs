@@ -147,6 +147,89 @@ test('the recorded whole-file ceiling is the current entry count, so deleting en
   assert.ok(entries.length === guard.ALLOWED_FILE_CEILING, `${entries.length} entries but the ceiling is ${guard.ALLOWED_FILE_CEILING}: set ALLOWED_FILE_CEILING to the new total`)
 })
 
+// A throwaway repository with the guard and the four lists, to drive the CLI against a real
+// merge base. `base` is the accepted state; `change` edits the tree and commits on top of it.
+function baselineRepo(baseFiles, baseList) {
+  const root = mkdtempSync(join(tmpdir(), 'oss-boundary-baseline-'))
+  const git = (...args) => { const r = spawnSync('git', ['-c', 'user.name=drill', '-c', 'user.email=drill@example.test', ...args], { cwd: root, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim() }
+  const write = (path, text) => { mkdirSync(dirname(join(root, path)), { recursive: true }); writeFileSync(join(root, path), text) }
+  git('init', '-q', '-b', 'main')
+  mkdirSync(join(root, 'scripts'))
+  copyFileSync(fileURLToPath(new URL('./oss-boundary-guard.mjs', import.meta.url)), join(root, 'scripts/oss-boundary-guard.mjs'))
+  for (const name of ['oss-boundary-leaks', 'control-plane-paths', 'control-plane-requests']) write(`scripts/${name}.allow.json`, '[]')
+  if (baseList) write('scripts/oss-boundary-files.allow.json', JSON.stringify(baseList))
+  for (const [path, text] of Object.entries(baseFiles)) write(path, text)
+  git('add', '-A'); git('commit', '-q', '-m', 'accepted baseline')
+  const guard = env => spawnSync(process.execPath, ['scripts/oss-boundary-guard.mjs'], { cwd: root, encoding: 'utf8', env: { ...process.env, CHARIOX_BOUNDARY_BASE: '', ...env } })
+  return { root, git, write, guard, base: git('rev-parse', 'HEAD'), done: () => rmSync(root, { recursive: true, force: true }) }
+}
+const listed = (path, why = 'sample provider text') => ({ path, why })
+
+test('swapping one whole-file entry for a new provider file is red and names the new entry', () => {
+  const repo = baselineRepo({ 'deploy/old.sh': 'echo hetzner\n' }, [listed('deploy/old.sh')])
+  try {
+    repo.git('update-ref', 'refs/remotes/origin/main', repo.base)
+    repo.git('rm', '-q', 'deploy/old.sh')
+    repo.write('deploy/new.sh', 'echo hetzner\n')
+    repo.write('scripts/oss-boundary-files.allow.json', JSON.stringify([listed('deploy/new.sh', 'looks harmless')]))
+    repo.git('add', '-A'); repo.git('commit', '-q', '-m', 'same-count swap')
+    for (const env of [{ CHARIOX_BOUNDARY_BASE: repo.base }, {}]) {
+      const red = repo.guard(env)
+      assert.equal(red.status, 1, `swap passed with ${JSON.stringify(env)}:\n${red.stdout}${red.stderr}`)
+      assert.match(red.stderr, /^scripts\/oss-boundary-files\.allow\.json:0: new allowed file: deploy\/new\.sh .*move the logic to Cloud/m)
+    }
+    repo.git('rm', '-q', 'deploy/new.sh')
+    repo.write('scripts/oss-boundary-files.allow.json', '[]')
+    repo.git('add', '-A'); repo.git('commit', '-q', '-m', 'shrink')
+    const green = repo.guard({})
+    assert.equal(green.status, 0, green.stderr)
+  } finally { repo.done() }
+})
+
+test('an unchanged list and a pure deletion are green against the merge base', () => {
+  const repo = baselineRepo({ 'deploy/a.sh': 'echo hetzner\n', 'deploy/b.sh': 'echo hetzner\n' }, [listed('deploy/a.sh'), listed('deploy/b.sh')])
+  try {
+    const same = repo.guard({ CHARIOX_BOUNDARY_BASE: repo.base })
+    assert.equal(same.status, 0, same.stderr)
+    assert.match(same.stdout, /oss-boundary-guard: ok/)
+    repo.git('rm', '-q', 'deploy/b.sh')
+    repo.write('scripts/oss-boundary-files.allow.json', JSON.stringify([listed('deploy/a.sh')]))
+    const shrunk = repo.guard({ CHARIOX_BOUNDARY_BASE: repo.base })
+    assert.equal(shrunk.status, 0, shrunk.stderr)
+  } finally { repo.done() }
+})
+
+test('without a base ref the guard says loudly that membership was not checked, and an unusable base is red', () => {
+  const repo = baselineRepo({ 'deploy/a.sh': 'echo hetzner\n' }, [listed('deploy/a.sh')])
+  try {
+    const noRef = repo.guard({})
+    assert.equal(noRef.status, 0, noRef.stderr)
+    assert.match(noRef.stderr, /WARNING.*whole-file list.*no origin\/main.*membership NOT checked/)
+    const bad = repo.guard({ CHARIOX_BOUNDARY_BASE: 'no-such-ref' })
+    assert.equal(bad.status, 1)
+    assert.match(bad.stderr, /CHARIOX_BOUNDARY_BASE=no-such-ref is not a commit/)
+  } finally { repo.done() }
+})
+
+test('a base that predates the whole-file list is reported as unchecked, not silently accepted', () => {
+  const repo = baselineRepo({ 'deploy/a.sh': 'echo hetzner\n' }, null)
+  try {
+    repo.write('scripts/oss-boundary-files.allow.json', JSON.stringify([listed('deploy/a.sh')]))
+    const run = repo.guard({ CHARIOX_BOUNDARY_BASE: repo.base })
+    assert.equal(run.status, 0, run.stderr)
+    assert.match(run.stderr, /WARNING.*not in .*introduced by this change.*membership NOT checked/)
+  } finally { repo.done() }
+})
+
+test('outside a git repository the accepted list is unavailable and the note says what was checked', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'oss-boundary-nogit-'))
+  try {
+    const accepted = guard.acceptedAllowedFiles(dir, {})
+    assert.equal(accepted.paths, null)
+    assert.match(accepted.note, /not a git repository.*membership NOT checked/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('a vendor host is allowed only in the default-host file', () => {
   const host = 'export const DEFAULT_CONTROL_PLANE_URL = "https://chariox.com"\n'
   assert.deepEqual(problemsOf({ 'packages/kernel-client/src/default-control-plane.ts': host }), [])
