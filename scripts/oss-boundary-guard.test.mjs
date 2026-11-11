@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import * as guard from './oss-boundary-guard.mjs'
 import { boundaryProblems, controlPlanePaths, enumVariants, isCheckedPath, providerNameFindings, vocabularyFindings } from './oss-boundary-guard.mjs'
@@ -144,7 +144,7 @@ function baselineRepo(baseFiles, baseList, baseLeaks = []) {
   if (baseList) write('scripts/oss-boundary-files.allow.json', JSON.stringify(baseList))
   for (const [path, text] of Object.entries(baseFiles)) write(path, text)
   git('add', '-A'); git('commit', '-q', '-m', 'accepted baseline')
-  const guard = env => spawnSync(process.execPath, ['scripts/oss-boundary-guard.mjs'], { cwd: root, encoding: 'utf8', env: { ...process.env, CHARIOX_BOUNDARY_BASE: '', ...env } })
+  const guard = env => spawnSync(process.execPath, ['scripts/oss-boundary-guard.mjs'], { cwd: root, encoding: 'utf8', env: { ...process.env, CI: '', CHARIOX_BOUNDARY_BASE: '', ...env } })
   return { root, git, write, guard, base: git('rev-parse', 'HEAD'), done: () => rmSync(root, { recursive: true, force: true }) }
 }
 const listed = (path, why = 'sample provider text') => ({ path, why })
@@ -244,6 +244,63 @@ test('without a base ref the guard says loudly that membership was not checked, 
   } finally { repo.done() }
 })
 
+// What actions/checkout leaves on a runner: one shallow commit, no origin/main, no merge base.
+function shallowCheckout(repo) {
+  const root = mkdtempSync(join(tmpdir(), 'oss-boundary-shallow-'))
+  const git = (...args) => { const r = spawnSync('git', ['-c', 'user.name=drill', '-c', 'user.email=drill@example.test', ...args], { cwd: root, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim() }
+  git('clone', '-q', '--depth=1', '--no-tags', pathToFileURL(repo.root).href, '.')
+  git('update-ref', '-d', 'refs/remotes/origin/main')
+  const guard = env => spawnSync(process.execPath, ['scripts/oss-boundary-guard.mjs'], { cwd: root, encoding: 'utf8', env: { ...process.env, CI: '', CHARIOX_BOUNDARY_BASE: '', ...env } })
+  return { root, git, guard, done: () => rmSync(root, { recursive: true, force: true }) }
+}
+
+test('in CI a checkout without a baseline is red and says how CI provides one; a local run only warns', () => {
+  const repo = baselineRepo({ 'deploy/a.sh': 'echo hetzner\n' }, [listed('deploy/a.sh')])
+  try {
+    repo.write('README.md', 'second commit, so the clone below is genuinely shallow\n')
+    repo.git('add', '-A'); repo.git('commit', '-q', '-m', 'change')
+    const shallow = shallowCheckout(repo)
+    try {
+      assert.equal(shallow.git('rev-parse', '--is-shallow-repository'), 'true')
+      const ci = shallow.guard({ CI: 'true' })
+      assert.equal(ci.status, 1, `CI without a base passed:\n${ci.stdout}${ci.stderr}`)
+      assert.match(ci.stderr, /oss-boundary-guard: .*no origin\/main to compare with/)
+      assert.match(ci.stderr, /CI must fetch the commit the change branches from and export CHARIOX_BOUNDARY_BASE=<sha>/)
+      assert.doesNotMatch(ci.stdout, /oss-boundary-guard: ok/)
+      const local = shallow.guard({})
+      assert.equal(local.status, 0, local.stderr)
+      assert.match(local.stderr, /WARNING.*whole-file list.*membership NOT checked/)
+      assert.match(local.stdout, /oss-boundary-guard: ok/)
+    } finally { shallow.done() }
+  } finally { repo.done() }
+})
+
+test('in CI a base commit makes membership enforced: a swap is red and an unchanged list is green', () => {
+  const repo = baselineRepo({ 'deploy/old.sh': 'echo hetzner\n' }, [listed('deploy/old.sh')])
+  try {
+    const unchanged = shallowCheckout(repo)
+    try {
+      // The runner fetches the base commit (depth 1) next to the shallow checkout.
+      const ci = { CI: 'true', CHARIOX_BOUNDARY_BASE: repo.base }
+      const green = unchanged.guard(ci)
+      assert.equal(green.status, 0, green.stderr)
+      assert.doesNotMatch(green.stderr, /WARNING/)
+    } finally { unchanged.done() }
+    repo.git('rm', '-q', 'deploy/old.sh')
+    repo.write('deploy/new.sh', 'echo hetzner\n')
+    repo.write('scripts/oss-boundary-files.allow.json', JSON.stringify([listed('deploy/new.sh', 'looks harmless')]))
+    repo.git('add', '-A'); repo.git('commit', '-q', '-m', 'same-count swap')
+    const swapped = shallowCheckout(repo)
+    try {
+      swapped.git('fetch', '-q', '--no-tags', '--depth=1', 'origin', repo.base)
+      const red = swapped.guard({ CI: 'true', CHARIOX_BOUNDARY_BASE: repo.base })
+      assert.equal(red.status, 1, `swap passed in CI:\n${red.stdout}${red.stderr}`)
+      assert.match(red.stderr, /^scripts\/oss-boundary-files\.allow\.json:0: new allowed file: deploy\/new\.sh .*move the logic to Cloud/m)
+      assert.doesNotMatch(red.stderr, /WARNING/)
+    } finally { swapped.done() }
+  } finally { repo.done() }
+})
+
 test('a base that predates the whole-file list is reported as unchecked, not silently accepted', () => {
   const repo = baselineRepo({ 'deploy/a.sh': 'echo hetzner\n' }, null, null)
   try {
@@ -333,7 +390,7 @@ test('a planted-violation commit turns the guard CLI red and removing it turns i
   const root = mkdtempSync(join(tmpdir(), 'oss-boundary-drill-'))
   const git = (...args) => { const r = spawnSync('git', ['-c', 'user.name=drill', '-c', 'user.email=drill@example.test', ...args], { cwd: root, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout }
   const write = (path, text) => { mkdirSync(dirname(join(root, path)), { recursive: true }); writeFileSync(join(root, path), text) }
-  const guard = () => spawnSync(process.execPath, ['scripts/oss-boundary-guard.mjs'], { cwd: root, encoding: 'utf8' })
+  const guard = () => spawnSync(process.execPath, ['scripts/oss-boundary-guard.mjs'], { cwd: root, encoding: 'utf8', env: { ...process.env, CI: '', CHARIOX_BOUNDARY_BASE: '' } })
   try {
     git('init', '-q', '-b', 'main')
     mkdirSync(join(root, 'scripts'))
