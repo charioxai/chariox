@@ -16,7 +16,7 @@ fn compile(
     AppCatalog::compile(package, &binding, trust).unwrap()
 }
 
-fn component() -> Vec<u8> {
+pub(super) fn component() -> Vec<u8> {
     use wit_component::{dummy_module, embed_component_metadata, ComponentEncoder, StringEncoding};
     use wit_parser::{LiftLowerAbi, ManglingAndAbi, Resolve};
     let mut resolve = Resolve::default();

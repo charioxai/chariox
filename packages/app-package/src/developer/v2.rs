@@ -19,6 +19,8 @@ pub(super) fn generate_manifest(
         schema: v2::APP_SCHEMA_V2.into(),
         app_id: options.app_id,
         version: options.version,
+        display_name: None,
+        icon: None,
         publisher: options.publisher,
         app_contract_version: v2::APP_CONTRACT_VERSION_V2,
         resource_policy: crate::RESOURCE_POLICY.into(),

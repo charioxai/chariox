@@ -4,6 +4,10 @@ export type AppReleaseSummary = {
   publisher_id: string
   package_digest: string
   schema_version: number
+  /** The signed manifest's `displayName`; absent when the App declares none. */
+  display_name?: string
+  /** The signed manifest's icon as a PNG or SVG `data:` URL; absent when none. */
+  icon?: string
 }
 
 export type AppPublisherEnrollmentSummary = {
@@ -29,6 +33,9 @@ export type AppInstallationSummary = {
   /** Opaque decimal generation, never convert to a JavaScript number. */
   generation: string
   active_release: AppReleaseSummary | null
+  /** `display_name` and `icon` of the active (or retained) release, for list rows. */
+  display_name?: string
+  icon?: string
   pending_generation: string | null
   admission_paused: boolean
   /** Protocol 363: uninstalled, with its data kept for a reinstall. */

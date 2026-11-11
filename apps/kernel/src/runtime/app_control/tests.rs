@@ -18,6 +18,8 @@ fn seed(store: &DurableKernelStateStore, owner: &str, id: &str) {
                     capabilities_digest: format!("sha256:{:064x}", 2),
                     catalog_digest: format!("sha256:{:064x}", 3),
                     view_digest: format!("sha256:{:064x}", 4),
+                    display_name: None,
+                    icon: None,
                 },
                 now_ms: 1,
             },
@@ -308,4 +310,73 @@ fn saved_snapshot_restore_shared_router_authenticates_local_and_relay_owners() {
         harness.dispatch_as_user("bob", request).unwrap(),
         failed(AppRequestErrorCode::Conflict)
     );
+}
+
+fn active(
+    display_name: Option<&str>,
+    icon: Option<&str>,
+) -> chariox_app_runtime::installation::Installation {
+    use chariox_app_runtime::installation::{channel::InstallationChannel, ActiveGeneration};
+    chariox_app_runtime::installation::Installation {
+        installation_id: "todo".into(),
+        app_id: "com.chariox.todo".into(),
+        owner_id: "alice".into(),
+        channel: InstallationChannel::Release,
+        dev_room_id: None,
+        generation: 1,
+        active: Some(ActiveGeneration {
+            generation: 1,
+            release: ReleaseMetadata {
+                app_id: "com.chariox.todo".into(),
+                version: "1.0.0".into(),
+                publisher_id: "publisher".into(),
+                package_digest: format!("sha256:{:064x}", 1),
+                schema_version: 1,
+                capabilities_digest: format!("sha256:{:064x}", 2),
+                catalog_digest: format!("sha256:{:064x}", 3),
+                view_digest: format!("sha256:{:064x}", 4),
+                display_name: display_name.map(Into::into),
+                icon: icon.map(Into::into),
+            },
+            approval: CapabilityApproval {
+                decision_id: "private-decision".into(),
+                authority_ref: "private-authority".into(),
+            },
+        }),
+        pending_generation: None,
+        admission_paused: false,
+        retained: None,
+    }
+}
+
+#[test]
+fn the_summaries_carry_the_signed_display_name_and_icon_of_the_active_release() {
+    let icon = "data:image/svg+xml;base64,PHN2Zy8+";
+    let summary = installation_summary(active(Some("Todo list"), Some(icon)));
+    assert_eq!(summary.display_name.as_deref(), Some("Todo list"));
+    assert_eq!(summary.icon.as_deref(), Some(icon));
+    let release = summary.active_release.unwrap();
+    assert_eq!(release.display_name.as_deref(), Some("Todo list"));
+    assert_eq!(release.icon.as_deref(), Some(icon));
+}
+
+#[test]
+fn the_summaries_of_a_release_without_presentation_omit_both_fields() {
+    let summary = installation_summary(active(None, None));
+    assert!(summary.display_name.is_none() && summary.icon.is_none());
+    let json = serde_json::to_value(&summary).unwrap();
+    for key in ["display_name", "icon"] {
+        assert!(json.get(key).is_none(), "{key}");
+        assert!(json["active_release"].get(key).is_none(), "{key}");
+    }
+}
+
+#[test]
+fn an_uninstalled_installation_keeps_the_presentation_of_its_retained_release() {
+    let mut value = active(Some("Todo list"), Some("data:image/png;base64,AA=="));
+    value.retained = value.active.take();
+    let summary = installation_summary(value);
+    assert!(summary.active_release.is_none());
+    assert_eq!(summary.display_name.as_deref(), Some("Todo list"));
+    assert_eq!(summary.icon.as_deref(), Some("data:image/png;base64,AA=="));
 }

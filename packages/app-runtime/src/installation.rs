@@ -56,6 +56,12 @@ pub struct ReleaseMetadata {
     pub capabilities_digest: String,
     pub catalog_digest: String,
     pub view_digest: String,
+    /// Signed presentation read from the manifest: the human name and the
+    /// icon as a `data:` URL. Absent for packages that declare neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// Opaque reference to a kernel-recorded human or existing-policy decision.

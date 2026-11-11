@@ -20,6 +20,24 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   `ui-actions`, `agent-panel`, `connections`, `directed-events`), so a package
   cannot understate them. The kernel states which features it supports; no
   protocol number is copied into a package.
+- Optional `displayName` and `icon` give the App a human name and picture for
+  lists and windows; `appId` stays the identity, and clients fall back to it
+  when `displayName` is absent. `displayName` is 1 to 64 characters, already
+  trimmed, with no control characters. `icon` is the package path of a `.png`
+  or `.svg` file (for example `ui/icon.svg`) of at most 32 KiB, which must be
+  listed in the signed inventory, so both fields are covered by the signature.
+  A PNG must be well formed and at most 512 by 512 pixels. An SVG must start
+  with an `svg` element and carry no `script`, `foreignObject`, `iframe`,
+  `embed`, `object`, `audio`, `video` or `canvas` element, no `on*` attribute,
+  no `javascript:`, doctype, entity or `@import`, and every `href`, `src` and
+  `url(...)` must point at a `#fragment` of the same file. `pack` and `verify`
+  both refuse a package that breaks these rules; a package without the fields
+  stays valid. The kernel reads both from the verified package only and sends
+  them as optional `display_name` and `icon` (a `data:image/png;base64,` or
+  `data:image/svg+xml;base64,` URL) on `AppReleaseSummary`, and as the same
+  names on `AppInstallationSummary` for the active release (or the retained one
+  of an uninstalled installation that keeps its data). Both fields are absent
+  from the JSON when the App declares none.
 - Optional `idempotentTools` names sorted, unique declared backend tools that
   the worker may replay once after instance loss. Omission permits no automatic
   replay; effects and action descriptions never imply idempotence.

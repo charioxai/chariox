@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
+    display,
     manifest::ManifestV2,
     ui_actions::{read_ui_actions, UiActionDeclaration},
     world::{check_world, SupportedWorld, WorldId},
@@ -120,6 +121,11 @@ impl<'a> VerifiedPackageV2<'a> {
     }
     pub fn ui_actions(&self) -> &[UiActionDeclaration] {
         &self.ui_actions
+    }
+    /// The signed icon as a `data:` URL, when the manifest names one.
+    pub fn icon_data_url(&self) -> Option<String> {
+        let path = self.manifest.icon.as_deref()?;
+        display::icon_data_url(path, self.files.get(path)?)
     }
     pub fn package_digest(&self) -> &str {
         &self.digests.delivered
@@ -417,6 +423,9 @@ fn read_documents(
                 format!("idempotentTools names undeclared tool `{name}`"),
             ));
         }
+    }
+    if let Some(icon) = &manifest.icon {
+        display::validate_icon(icon, files)?;
     }
     let ui_actions = match &manifest.ui_actions {
         Some(path) => read_ui_actions(files[path.as_str()], limits)?,
