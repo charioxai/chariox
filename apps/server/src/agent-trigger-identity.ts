@@ -6,7 +6,10 @@ const VERSION = 1
 /** The ingress's own relay key, created once by `pair`. Only a private file keeps the kernel's pairing usable. */
 export function createTriggerIdentity(path: string): Buffer {
   const ecdh = createECDH("prime256v1"); ecdh.generateKeys()
-  const key = ecdh.getPrivateKey()
+  // OpenSSL omits leading zero bytes from the scalar; the stored key is fixed-width P-256, as the CLI stores its own.
+  const scalar = ecdh.getPrivateKey()
+  const key = Buffer.alloc(32)
+  scalar.copy(key, key.length - scalar.length)
   const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
   try { writeSync(fd, JSON.stringify({version: VERSION, private_key: key.toString("base64url")})) } finally { closeSync(fd) }
   return key
