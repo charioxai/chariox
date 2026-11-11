@@ -85,7 +85,10 @@ async fn a_spawn_that_finds_no_folder_does_not_use_up_the_lease_authorization() 
     crate::test_support::isolated_env_test!();
     let root = crate::test_support::TestWorktree::new("leased-folder-unresolved");
     // No usable home folder: the worker cannot make an agent folder.
-    let (_app, runtime) = worker_runtime(&root, "/").await;
+    let (_app, runtime) = worker_runtime(&root, "{root}").await;
+    // The kernel keeps its state under the real home; only the spawn sees the unusable one, so the
+    // test needs no write access to `/`.
+    std::env::set_var("HOME", "/");
     let lease = runtime
         .create_bound_relay_execution_lease(
             "home",
