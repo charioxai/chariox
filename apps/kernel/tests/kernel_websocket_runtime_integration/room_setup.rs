@@ -8,7 +8,7 @@ use chariox_kernel::local::{
     SuggestSessionAliasRequest,
 };
 use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
-use chariox_kernel::session::{RoomPublishRequest, RoomSetupRequest};
+use chariox_kernel::session::RoomSetupRequest;
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use serde_json::{json, Value};
 use tokio::net::TcpStream;
@@ -350,10 +350,7 @@ fn a_failed_publish_never_holds_prompts_and_can_be_retried() {
             &mut socket,
             &workspace,
             RoomSetupRequest {
-                publish: Some(RoomPublishRequest {
-                    private: true,
-                    name: None,
-                }),
+                publish: true,
                 ..Default::default()
             },
         )
@@ -363,10 +360,10 @@ fn a_failed_publish_never_holds_prompts_and_can_be_retried() {
         })
         .await;
         assert_eq!(failed["room_setup"]["steps"][0]["id"], "publish");
-        assert!(failed["room_setup"]["steps"][0]["message"]
+        let message = failed["room_setup"]["steps"][0]["message"]
             .as_str()
-            .unwrap()
-            .contains("retry"));
+            .unwrap();
+        assert_eq!(message, "The agent could not start publishing");
 
         launch_stub_provider(&mut socket, &room).await;
         assert!(submit(&mut socket, &room, "work goes on").await["Started"].is_object());

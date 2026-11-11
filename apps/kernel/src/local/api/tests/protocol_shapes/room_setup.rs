@@ -1,8 +1,7 @@
 //! The wire shapes of Room setup and the Room name suggestion (local 1004).
 use super::*;
 use crate::session::{
-    RoomPublishRequest, RoomSetupRequest, RoomSetupState, RoomSetupStep, RoomSetupStepId,
-    RoomSetupStepState,
+    RoomSetupRequest, RoomSetupState, RoomSetupStep, RoomSetupStepId, RoomSetupStepState,
 };
 
 fn json(value: impl serde::Serialize) -> serde_json::Value {
@@ -15,10 +14,7 @@ fn create_session_setup_wire_shape() {
         RoomSetupRequest {
             git_init: true,
             new_worktree: true,
-            publish: Some(RoomPublishRequest {
-                private: false,
-                name: Some("app".into()),
-            }),
+            publish: true,
         },
     );
     assert_eq!(
@@ -26,23 +22,18 @@ fn create_session_setup_wire_shape() {
         serde_json::json!({
             "git_init": true,
             "new_worktree": true,
-            "publish": {"private": false, "name": "app"}
+            "publish": true
         })
     );
     let plain = crate::session::CreateSessionRequest::new("/work/app", "/work/app");
     assert!(json(&plain).get("setup").is_none());
 
-    // Absent flags are off and a publish request is private by default.
+    // Absent flags are off.
     let parsed: RoomSetupRequest =
-        serde_json::from_value(serde_json::json!({"publish": {}})).unwrap();
-    assert!(!parsed.git_init && !parsed.new_worktree);
-    assert_eq!(
-        parsed.publish,
-        Some(RoomPublishRequest {
-            private: true,
-            name: None
-        })
-    );
+        serde_json::from_value(serde_json::json!({"publish": true})).unwrap();
+    assert!(!parsed.git_init && !parsed.new_worktree && parsed.publish);
+    let none: RoomSetupRequest = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert!(!none.publish);
 }
 
 #[test]

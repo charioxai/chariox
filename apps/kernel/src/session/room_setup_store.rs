@@ -4,9 +4,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use super::room_setup::{
-    RoomPublishRequest, RoomSetupRequest, RoomSetupState, RoomSetupStepId, RoomSetupStepState,
-};
+use super::room_setup::{RoomSetupRequest, RoomSetupState, RoomSetupStepId, RoomSetupStepState};
 use crate::error::DaemonError;
 
 #[derive(Debug, Clone, Default)]
@@ -18,7 +16,6 @@ pub(crate) struct RoomSetupStore {
 struct RoomSetup {
     agent_id: String,
     state: RoomSetupState,
-    publish: Option<RoomPublishRequest>,
 }
 
 impl RoomSetupStore {
@@ -36,7 +33,6 @@ impl RoomSetupStore {
                 RoomSetup {
                     agent_id: agent_id.to_string(),
                     state,
-                    publish: request.publish.clone(),
                 },
             );
         }
@@ -105,11 +101,8 @@ impl RoomSetupStore {
         self.rooms().remove(session_id);
     }
 
-    /// The agent and request of a failed `publish` step, which becomes pending again.
-    pub(crate) fn retry_publish(
-        &self,
-        session_id: &str,
-    ) -> Result<(String, RoomPublishRequest), DaemonError> {
+    /// The agent of a failed `publish` step, which becomes pending again.
+    pub(crate) fn retry_publish(&self, session_id: &str) -> Result<String, DaemonError> {
         let mut rooms = self.rooms();
         let failed_publish = rooms.get_mut(session_id).and_then(|setup| {
             let step = setup.state.steps.iter_mut().find(|step| {
@@ -117,7 +110,7 @@ impl RoomSetupStore {
             })?;
             step.state = RoomSetupStepState::Pending;
             step.message = None;
-            Some((setup.agent_id.clone(), setup.publish.clone()?))
+            Some(setup.agent_id.clone())
         });
         failed_publish.ok_or_else(|| DaemonError::LocalTransport {
             operation: "retry room setup",
@@ -159,10 +152,7 @@ mod tests {
         RoomSetupRequest {
             git_init: true,
             new_worktree: true,
-            publish: Some(RoomPublishRequest {
-                private: true,
-                name: None,
-            }),
+            publish: true,
         }
     }
 
@@ -219,9 +209,7 @@ mod tests {
         );
         assert!(!store.holds_prompts("room"));
         assert!(store.state("room").unwrap().has_failed());
-        let (agent, request) = store.retry_publish("room").unwrap();
-        assert_eq!(agent, "agent");
-        assert!(request.private);
+        assert_eq!(store.retry_publish("room").unwrap(), "agent");
         assert!(store.holds_prompts("room"));
         assert!(!store.state("room").unwrap().has_failed());
         assert!(store.retry_publish("room").is_err());

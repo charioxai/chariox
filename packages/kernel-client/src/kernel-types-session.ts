@@ -102,7 +102,7 @@ export type RuntimeSession = {
 export type RoomSetupRequest = {
   git_init?: boolean
   new_worktree?: boolean
-  publish?: { private?: boolean; name?: string | null } | null
+  publish?: boolean
 }
 
 export type RoomSetupStepId = "git_init" | "worktree" | "publish"

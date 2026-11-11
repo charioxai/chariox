@@ -5,7 +5,7 @@ use super::room_setup_publish::short_reason;
 use super::*;
 use crate::runtime::workspace_git_common::{git_command_output, run_git};
 use crate::runtime::workspace_worktrees::create_waiting_room_worktree;
-use crate::session::{RoomPublishRequest, RoomSetupRequest, RoomSetupStepId};
+use crate::session::{RoomSetupRequest, RoomSetupStepId};
 
 impl KernelRuntimeState {
     /// Runs the steps of a Room just created with `setup`, in order, and returns at once.
@@ -47,25 +47,19 @@ impl KernelRuntimeState {
             {
                 return;
             }
-            if let Some(publish) = setup.publish.as_ref() {
-                self.run_room_publish_step(session_id, agent_id, publish)
-                    .await;
+            if setup.publish {
+                self.run_room_publish_step(session_id, agent_id).await;
             }
         };
         steps_ran.await;
         self.release_room_prompts(session_id);
     }
 
-    async fn run_room_publish_step(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        publish: &RoomPublishRequest,
-    ) {
+    async fn run_room_publish_step(&self, session_id: &str, agent_id: &str) {
         self.run_room_setup_step(
             session_id,
             RoomSetupStepId::Publish,
-            self.run_room_publish(session_id, agent_id, publish),
+            self.run_room_publish(session_id, agent_id),
         )
         .await;
     }
@@ -201,14 +195,12 @@ impl KernelRuntimeState {
         caller_user_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         self.ensure_room_control(session_id, caller_user_id)?;
-        let (agent_id, publish) = self.owned.room_setup.retry_publish(session_id)?;
+        let agent_id = self.owned.room_setup.retry_publish(session_id)?;
         let session = self.owned.session_snapshot(session_id)?;
         let runtime = self.as_kernel();
         let session_id = session_id.to_string();
         tokio::spawn(async move {
-            runtime
-                .run_room_publish_step(&session_id, &agent_id, &publish)
-                .await;
+            runtime.run_room_publish_step(&session_id, &agent_id).await;
             runtime.release_room_prompts(&session_id);
         });
         Ok(session)

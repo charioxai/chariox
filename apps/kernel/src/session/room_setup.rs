@@ -9,21 +9,9 @@ pub struct RoomSetupRequest {
     pub git_init: bool,
     #[serde(default)]
     pub new_worktree: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub publish: Option<RoomPublishRequest>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RoomPublishRequest {
-    #[serde(default = "default_private")]
-    pub private: bool,
-    /// Repository name; the folder name when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
-
-fn default_private() -> bool {
-    true
+    /// Publish the folder as a private repository named after it, with the machine's own login.
+    #[serde(default)]
+    pub publish: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,7 +61,7 @@ impl RoomSetupState {
         let ids = [
             (request.git_init, RoomSetupStepId::GitInit),
             (request.new_worktree, RoomSetupStepId::Worktree),
-            (request.publish.is_some(), RoomSetupStepId::Publish),
+            (request.publish, RoomSetupStepId::Publish),
         ];
         let steps: Vec<_> = ids
             .into_iter()

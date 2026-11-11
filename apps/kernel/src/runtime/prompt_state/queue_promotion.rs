@@ -101,7 +101,7 @@ mod tests {
             &RoomSetupRequest {
                 git_init: true,
                 new_worktree: true,
-                publish: None,
+                publish: false,
             },
         );
         let outcome = owner

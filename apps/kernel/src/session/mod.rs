@@ -69,8 +69,7 @@ pub(crate) use room_environment::{
     EnvironmentTabRuntimeBinding, RoomEnvironmentRegistry, TabRegistry,
 };
 pub use room_setup::{
-    RoomPublishRequest, RoomSetupRequest, RoomSetupState, RoomSetupStep, RoomSetupStepId,
-    RoomSetupStepState,
+    RoomSetupRequest, RoomSetupState, RoomSetupStep, RoomSetupStepId, RoomSetupStepState,
 };
 pub(crate) use room_setup_store::RoomSetupStore;
 pub use runtime_project::{
