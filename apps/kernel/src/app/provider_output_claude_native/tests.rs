@@ -1151,6 +1151,99 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
     let _ = fs::remove_dir_all(root);
 }
 
+// A busy native Claude turn writes to its transcript, not to a structured poll:
+// that output must move the run's output clock or the turn reads as stalled.
+#[test]
+fn a_native_claude_transcript_drain_that_wrote_output_is_not_a_quiet_run() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-output-clock");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-output-clock-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    let transcript_file = root.join("session.jsonl");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(
+        &transcript_file,
+        serde_json::json!({
+            "type": "assistant",
+            "uuid": "assistant-working",
+            "message": {
+                "id": "message-working",
+                "role": "assistant",
+                "stop_reason": "tool_use",
+                "content": [{ "type": "text", "text": "still working" }]
+            }
+        })
+        .to_string(),
+    )
+    .expect("transcript should be written");
+    let context_file = context_file.display().to_string();
+
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-native",
+        "default",
+        "claude-sonnet",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        "provider-run-claude-output-clock",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-output-clock".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Default::default(),
+            pty_env: std::collections::BTreeMap::from([(
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                context_file.clone(),
+            )]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    let before = app
+        .providers
+        .get_run(run.id())
+        .expect("run should exist")
+        .last_output_at_ms();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .drain_claude_transcript(
+            session.id(),
+            run.id(),
+            &context_file,
+            &transcript_file.display().to_string(),
+        )
+        .expect("transcript should drain");
+
+    let after = app
+        .providers
+        .get_run(run.id())
+        .expect("run should exist")
+        .last_output_at_ms();
+    assert!(
+        after > before,
+        "a native transcript drain that wrote output left the run reading as quiet"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: Claude fires SessionEnd when a stop from Health
 // ends its process tree. That is not the turn finishing: the exit settles it.
 #[test]
