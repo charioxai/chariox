@@ -30,10 +30,29 @@ impl Fixture {
         )
     }
 
+    /// A kernel enrolled for `owner`, whose own client reaches it over the relay.
+    pub(super) fn enrolled(owner: &str, create_vault: bool) -> Self {
+        Self::build_for(
+            CredentialVaultBackend::CharioxEncrypted,
+            CredentialVaultUnlockPolicy::Ttl,
+            create_vault,
+            Some(owner),
+        )
+    }
+
     fn build(
         backend: CredentialVaultBackend,
         policy: CredentialVaultUnlockPolicy,
         create_vault: bool,
+    ) -> Self {
+        Self::build_for(backend, policy, create_vault, None)
+    }
+
+    fn build_for(
+        backend: CredentialVaultBackend,
+        policy: CredentialVaultUnlockPolicy,
+        create_vault: bool,
+        owner: Option<&str>,
     ) -> Self {
         let root =
             std::env::temp_dir().join(format!("vault-unlock-{:016x}", rand::random::<u64>()));
@@ -50,6 +69,12 @@ impl Fixture {
         config.user_config.credential_vault.path = vault.display().to_string();
         config.user_config.credential_vault.unlock_policy = policy;
         config.user_config_path = root.join("config.toml");
+        if let Some(owner) = owner {
+            config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+                user_id: owner.to_owned(),
+                ..Default::default()
+            });
+        }
         let app = DaemonApp::bootstrap(config).unwrap();
         let session = RuntimeSession::new(
             format!("vault-unlock-{:016x}", rand::random::<u64>()),
@@ -226,21 +251,6 @@ impl Fixture {
                 .await
                 .map(|managed| (managed.status, managed.action))
         })
-    }
-
-    /// The person answers the unlock prompt that appeared in the agent's terminal.
-    async fn answer_the_unlock_prompt(&self, passphrase: &str) {
-        let prompt = self.the_open_unlock_prompt().await;
-        let answer =
-            LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
-                session_id: self.session.clone(),
-                interaction_id: prompt,
-                choice_id: "unlock_kernel".into(),
-                custom_reply: Some(passphrase.to_owned()),
-                passkey: None,
-                passkey_remember_minutes: None,
-            });
-        self.send(answer).await.unwrap();
     }
 }
 
@@ -445,13 +455,13 @@ async fn wrong_unlocks_count_against_the_interaction_unlock() {
 }
 
 #[tokio::test]
-async fn a_missing_vault_is_refused_and_not_created() {
+async fn unlocking_a_kernel_with_no_vault_asks_for_a_passphrase_and_creates_nothing() {
     let f = Fixture::new(CredentialVaultUnlockPolicy::Ttl, false);
     let (code, message) = code_of(f.unlock(PASSPHRASE).await);
-    assert_eq!(code, "vault_missing");
+    assert_eq!(code, "vault_awaiting_passphrase");
     assert_eq!(
         message,
-        "This kernel has no Vault yet. Create it on that machine first."
+        "This kernel's Vault has no passphrase yet. Choose one to create it."
     );
     assert!(!f.vault.exists());
 }
@@ -461,14 +471,19 @@ async fn a_plain_backend_needs_no_unlock() {
     let f = Fixture::build(
         CredentialVaultBackend::ProcessMemory,
         CredentialVaultUnlockPolicy::Ttl,
-        true,
+        false,
     );
-    let LocalDaemonResponse::CredentialVaultUnlocked { action, .. } =
+    assert!(
+        !f.status().await.awaiting_passphrase,
+        "a plain backend has no Vault to create"
+    );
+    let LocalDaemonResponse::CredentialVaultUnlocked { action, status } =
         f.unlock(PASSPHRASE).await.unwrap()
     else {
         panic!("expected CredentialVaultUnlocked");
     };
     assert_eq!(action, "not_required");
+    assert!(!status.awaiting_passphrase);
 }
 
 #[tokio::test]
@@ -654,26 +669,38 @@ async fn the_vault_menu_on_a_locked_vault_asks_the_client_to_unlock_and_raises_n
 }
 
 #[tokio::test]
-async fn the_vault_menu_on_a_kernel_with_no_vault_still_makes_the_first_one() {
-    let f = Fixture::new(CredentialVaultUnlockPolicy::Ttl, false);
-    let runtime = f.router.runtime_state.clone();
-    let request = crate::local::ManageCredentialVaultRequest {
-        session_id: f.session.clone(),
-        agent_id: Some(f.agent.clone()),
-    };
-    let operation = tokio::spawn(async move {
-        crate::runtime::user_config_executor::execute_manage_credential_vault_request(
+async fn the_vault_menu_on_a_kernel_with_no_vault_is_refused_like_a_locked_one() {
+    let missing = Fixture::new(CredentialVaultUnlockPolicy::Ttl, false);
+    let locked = Fixture::locked();
+    let mut refusals = Vec::new();
+    for f in [&missing, &locked] {
+        let runtime = f.router.runtime_state.clone();
+        let request = crate::local::ManageCredentialVaultRequest {
+            session_id: f.session.clone(),
+            agent_id: Some(f.agent.clone()),
+        };
+        let answer = crate::runtime::user_config_executor::execute_manage_credential_vault_request(
             &runtime, request,
         )
-        .await
-    });
-    f.answer_the_unlock_prompt(PASSPHRASE).await;
-    operation.await.unwrap().unwrap();
-    assert!(f.vault.exists(), "the first-time prompt created the Vault");
-    assert!(f.status().await.unlocked);
+        .await;
+        refusals.push(code_of(answer));
+        assert!(f.no_prompt_is_open().await, "no prompt creates a Vault");
+    }
+    assert_eq!(refusals[0], refusals[1]);
+    assert_eq!(refusals[0].0, "vault_locked");
+    assert!(!missing.vault.exists(), "an agent never creates the Vault");
 }
 
-fn caller_of(class: Option<KernelConnectionClass>, user: Option<&str>) -> KernelCaller {
+#[tokio::test]
+async fn a_session_less_write_on_a_kernel_with_no_vault_asks_to_unlock_like_a_locked_one() {
+    let missing = Fixture::new(CredentialVaultUnlockPolicy::Ttl, false);
+    let (code, message) = code_of(missing.send(set_secret("value")).await);
+    assert_eq!(code, "vault_locked");
+    assert!(!message.contains("machine"), "{message}");
+    assert!(!missing.vault.exists());
+}
+
+pub(super) fn caller_of(class: Option<KernelConnectionClass>, user: Option<&str>) -> KernelCaller {
     let source = match class {
         Some(KernelConnectionClass::Terminal) if user.is_some() => KernelCommandSource::RelayClient,
         Some(KernelConnectionClass::RelayPeer) => KernelCommandSource::RelayPeer,

@@ -270,6 +270,7 @@ pub use api::{
     AppPublisherEnrollmentSummary, BeginAppDevPushRequest, BeginAppInstallRequest,
     BeginAppPublisherEnrollmentRequest, BeginAppUpdateRequest,
 };
+pub use api::{AppInstallPresentation, AppInstallPromptOperation, NEVER_EXPIRES_MS};
 pub use api::{
     ApproveBrowserImportRequest, BrowserImportConsentStatus, BrowserImportSelection,
     BrowserImportSourceRequest, CancelBrowserImportRequest, PrepareBrowserImportRequest,

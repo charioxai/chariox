@@ -447,3 +447,34 @@ test("MP-08/MP-09/MP-10/MP-11 a card payment's popup offers no remember window",
     assert.doesNotMatch(frame, /Remember for|Tab remember/)
   } finally { harness.renderer.destroy() }
 })
+
+test("an App install decision shows the App's review, no passkey and no countdown", async () => {
+  const harness = await createTestRenderer({ width: 90, height: 30, useThread: false })
+  const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
+  harness.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(harness.renderer, noActions)
+  surface.assign(box)
+  const install: PasskeyPrompt = {
+    kind: "app_install", session_id: "room-1", session_alias: "Projects", interaction_id: "app_install_op-1",
+    title: "Install App", message: "Install this App with the declared capabilities?\n\n{\"appId\":\"com.excalidraw\"}",
+    approve_choice_id: "approve", refuse_choice_id: "decline", requested_at_ms: 1, expires_at_ms: Number.MAX_SAFE_INTEGER,
+    app_install: { request_id: "op-1", operation: "install", review: { appId: "com.excalidraw", version: "1.0.0", publisherName: "Excalidraw", capabilities: { clipboard: ["write"], network: [{ origin: "https://excalidraw.com", methods: ["GET"] }] } } },
+  }
+  try {
+    surface.render({ ...view, prompt: install, passkey: { length: 0, rememberMinutes: 0 }, remainingMs: Number.MAX_SAFE_INTEGER }, { width: 90, height: 30 })
+    await harness.renderOnce()
+    const frame = harness.captureCharFrame()
+    assert.match(frame, /Install com\.excalidraw/)
+    assert.match(frame, /Version 1\.0\.0 · Published by Excalidraw/)
+    assert.match(frame, /• Connect to https:\/\/excalidraw\.com \(GET\)/)
+    assert.match(frame, /• Write to your clipboard/)
+    assert.match(frame, /\[ Install \] +\[ Cancel \]/)
+    assert.match(frame, /Enter confirms · Ctrl\+R cancels/)
+    assert.doesNotMatch(frame, /Passkey:|expires|left|Remember|appId/)
+    surface.render({ ...view, open: false, prompt: install, passkey: { length: 0, rememberMinutes: 0 }, remainingMs: Number.MAX_SAFE_INTEGER }, { width: 90, height: 30 })
+    await harness.renderOnce()
+    const indicator = harness.captureCharFrame()
+    assert.match(indicator, /Chariox · Install App · F8/)
+    assert.doesNotMatch(indicator, /left/)
+  } finally { harness.renderer.destroy() }
+})

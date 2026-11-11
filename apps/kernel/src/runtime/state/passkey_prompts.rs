@@ -14,6 +14,7 @@ use super::{KernelRuntimeOwnedState, KernelRuntimeState, RuntimeChangeSignal};
 use crate::error::DaemonError;
 use crate::local::{
     KernelAccessTerm, PasskeyPrompt, PasskeyPromptClosureReason, PasskeyPromptKind,
+    NEVER_EXPIRES_MS,
 };
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeSession};
 
@@ -96,6 +97,14 @@ pub(super) fn passkey_prompt_for_scope(
     interaction: &RuntimeInteraction,
     registered_at_ms: u64,
 ) -> Result<Option<Arc<PasskeyPrompt>>, DaemonError> {
+    if let Some(install) = interaction.app_install() {
+        return Ok(Some(app_install_prompt(
+            session_id,
+            session_alias,
+            interaction,
+            install,
+        )));
+    }
     let choices = interaction.choices();
     if !choices
         .iter()
@@ -140,10 +149,39 @@ pub(super) fn passkey_prompt_for_scope(
         refuse_choice_id: refuse.id().to_owned(),
         requested_at_ms: interaction.requested_at_ms(),
         expires_at_ms: registered_at_ms.saturating_add(timeout_ms),
+        app_install: None,
         term: None,
         lifetime_minutes: None,
         max_lifetime_minutes: None,
     })))
+}
+
+/// The popup for an App install the owner decides on: approve and decline carry no passkey, and the
+/// prompt waits until it is answered or withdrawn.
+fn app_install_prompt(
+    session_id: &str,
+    session_alias: Option<&str>,
+    interaction: &RuntimeInteraction,
+    install: &crate::local::AppInstallPresentation,
+) -> Arc<PasskeyPrompt> {
+    Arc::new(PasskeyPrompt {
+        sudo_request: None,
+        requester: None,
+        kind: PasskeyPromptKind::AppInstall,
+        session_id: session_id.to_owned(),
+        session_alias: session_alias.map(str::to_owned),
+        interaction_id: interaction.id().to_owned(),
+        title: interaction.title().unwrap_or("Install App").to_owned(),
+        message: interaction.message().to_owned(),
+        approve_choice_id: "approve".to_owned(),
+        refuse_choice_id: "decline".to_owned(),
+        requested_at_ms: interaction.requested_at_ms(),
+        expires_at_ms: NEVER_EXPIRES_MS,
+        app_install: Some(install.clone()),
+        term: None,
+        lifetime_minutes: None,
+        max_lifetime_minutes: None,
+    })
 }
 
 /// The popup for an outside agent's Vault value request: the approve choice is the secret
@@ -170,6 +208,7 @@ pub(super) fn vault_secret_prompt(
         requested_at_ms: interaction.requested_at_ms(),
         expires_at_ms: registered_at_ms
             .saturating_add(interaction.timeout_sec().unwrap_or_default() * 1000),
+        app_install: None,
         term: None,
         lifetime_minutes: None,
         max_lifetime_minutes: None,
@@ -189,13 +228,16 @@ impl KernelRuntimeOwnedState {
             .write()
             .iter()
             .filter(|(_, pending)| pending.belongs_to(&self.session_store))
-            .filter(|(_, pending)| {
-                pending
-                    .kernel_operation_deadline
-                    .is_some_and(|deadline| now < deadline)
-            })
             .filter_map(|(id, pending)| {
                 let prompt = pending.passkey_prompt.clone()?;
+                // An App install waits for its answer; every other prompt ends at its deadline.
+                let open = match pending.kernel_operation_deadline {
+                    Some(deadline) => now < deadline,
+                    None => prompt.kind == PasskeyPromptKind::AppInstall,
+                };
+                if !open {
+                    return None;
+                }
                 Some((id.clone(), pending.kernel_operation_owner.clone(), prompt))
             })
             .collect::<Vec<_>>();

@@ -37,9 +37,10 @@ fingerprint/revision and signed declarations.
 
 The controller registers an owner-scoped kernel-operation RuntimeInteraction in
 the original session. Approve/decline uses the existing authenticated terminal
-response route. A private challenge retains the exact nonce, stage, signer,
-capability digest and original five-minute monotonic deadline. The deciding writer
-transaction checks all of them, including after queue/SQLite delays. Replaced,
+response route. A private challenge retains the exact nonce, stage, signer
+and capability digest. It waits for the owner for as long as it takes: only a cancel, or a
+withdrawn interaction, ends it. The deciding writer transaction checks all of them, including
+after queue/SQLite delays, and its own 30 second limit starts when the owner answers. Replaced,
 cancelled or expired challenges cannot become fresh consent. Recovery may ask a
 new question, but cannot replay an old human response as a new authorization.
 

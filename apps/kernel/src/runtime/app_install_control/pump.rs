@@ -1,6 +1,10 @@
 //! One bounded pass per existing kernel tick; human waits hold no App permits.
 use super::*;
+use crate::local::{AppInstallPresentation, AppInstallPromptOperation};
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
+
+/// How long the durable decision may take once the owner has answered.
+const DECISION_LIMIT: Duration = Duration::from_secs(30);
 struct PumpGuard<'a>(&'a AtomicBool);
 impl Drop for PumpGuard<'_> {
     fn drop(&mut self) {
@@ -11,6 +15,43 @@ struct Prompt {
     key: Key,
     session: String,
     challenge: Arc<InstallApprovalChallenge>,
+}
+
+/// The question the owner is asked: a kernel-operation decision with the App's review attached, and no timeout of its
+/// own (the default kernel-operation timeout would end an approval nobody has seen yet).
+pub(super) fn approval_interaction(challenge: &InstallApprovalChallenge) -> RuntimeInteraction {
+    let (title, question, action, operation) = if challenge.is_reinstall() {
+        ("Reinstall App", "Reinstall this App into its kept data with the declared capabilities? Its earlier automations, inbox routes and connection grants are not restored.", "Reinstall", AppInstallPromptOperation::Reinstall)
+    } else if challenge.is_update() {
+        ("Update App", "Replace the installed App with this release and its declared capabilities? Its data is kept.", "Update", AppInstallPromptOperation::Update)
+    } else {
+        (
+            "Install App",
+            "Install this App with the declared capabilities?",
+            "Install",
+            AppInstallPromptOperation::Install,
+        )
+    };
+    let message = format!(
+        "{question}\n\n{}",
+        serde_json::to_string_pretty(challenge.review()).unwrap_or_default()
+    );
+    RuntimeInteraction::for_kernel_operation(
+        challenge.interaction_id(),
+        format!("install:{}", challenge.installation_id()),
+        title,
+        message,
+        vec![
+            RuntimeInteractionChoice::new("approve", action, "approve", None),
+            RuntimeInteractionChoice::new("decline", "Cancel", "decline", None),
+        ],
+    )
+    .with_app_install(AppInstallPresentation {
+        request_id: challenge.request_id().to_owned(),
+        operation,
+        review: challenge.review().clone(),
+    })
+    .without_timeout()
 }
 
 fn spawn(
@@ -163,13 +204,13 @@ impl AppInstallControl {
                     session,
                     challenge,
                     receiver,
-                    deadline,
                 } = &mut entry.step
                 {
                     let decision = receiver.try_recv();
-                    let expired =
-                        entry.cancelled.load(Ordering::Acquire) || Instant::now() >= *deadline;
-                    if expired || matches!(decision, Err(oneshot::error::TryRecvError::Closed)) {
+                    // The approval waits for the owner for as long as it takes; only a cancel, or an
+                    // interaction that was withdrawn, ends it.
+                    let cancelled = entry.cancelled.load(Ordering::Acquire);
+                    if cancelled || matches!(decision, Err(oneshot::error::TryRecvError::Closed)) {
                         close.push((session.clone(), challenge.interaction_id().to_owned()));
                         entry.step = if entry.cancelled.load(Ordering::Acquire) {
                             Step::Stop
@@ -180,10 +221,11 @@ impl AppInstallControl {
                         let accepted = value.status == "answered"
                             && value.choice_id.as_deref() == Some("approve")
                             && value.reply.as_deref() == Some("approve");
+                        // The decision's own limit starts with the answer, however long the owner took.
                         entry.step = Step::Decide {
                             challenge: challenge.clone(),
                             accepted,
-                            deadline: *deadline,
+                            deadline: Instant::now() + DECISION_LIMIT,
                         };
                     }
                 }
@@ -269,31 +311,7 @@ impl AppInstallControl {
                 }
                 continue;
             }
-            let (title, question, action) = if prompt.challenge.is_reinstall() {
-                ("Reinstall App", "Reinstall this App into its kept data with the declared capabilities? Its earlier automations, inbox routes and connection grants are not restored.", "Reinstall")
-            } else if prompt.challenge.is_update() {
-                ("Update App", "Replace the installed App with this release and its declared capabilities? Its data is kept.", "Update")
-            } else {
-                (
-                    "Install App",
-                    "Install this App with the declared capabilities?",
-                    "Install",
-                )
-            };
-            let message = format!(
-                "{question}\n\n{}",
-                serde_json::to_string_pretty(prompt.challenge.review()).unwrap_or_default()
-            );
-            let interaction = RuntimeInteraction::for_kernel_operation(
-                prompt.challenge.interaction_id(),
-                format!("install:{}", prompt.challenge.installation_id()),
-                title,
-                message,
-                vec![
-                    RuntimeInteractionChoice::new("approve", action, "approve", None),
-                    RuntimeInteractionChoice::new("decline", "Cancel", "decline", None),
-                ],
-            );
+            let interaction = approval_interaction(&prompt.challenge);
             let result = runtime
                 .create_kernel_operation_interaction(&prompt.session, &prompt.key.0, interaction)
                 .await;
@@ -316,7 +334,6 @@ impl AppInstallControl {
                                 entry.prompt_refused = false;
                                 entry.step = Step::Waiting {
                                     session: prompt.session.clone(),
-                                    deadline: prompt.challenge.deadline(),
                                     challenge: prompt.challenge.clone(),
                                     receiver,
                                 }
