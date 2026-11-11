@@ -24,6 +24,12 @@ process itself, or a job it left running. It is killed at once, without a grace
 period in which a runaway keeps growing, and no second command is stopped for
 the same cause within one second. The owner keeps running.
 
+A command that admission paused (it grew toward a full pool) continues when its
+room frees. If the pool stays full by accounting for 60 s without ever stalling
+(an idle command keeps its memory), the paused command ends the same way a
+memory stop does, with the reason on its error stream: a pause never lasts for
+ever.
+
 `CHARIOX_PROCESS_MEMORY_LIMIT_MIB` sets an optional owner-set hard cap per agent
 and per terminal (an integer of at least 16 MiB; invalid values refuse the launch
 with an explanation). Over its cap, one command of that owner is stopped the same
