@@ -890,6 +890,13 @@ fn registry(
     > = std::sync::OnceLock::new();
     REGISTRY.get_or_init(Mutex::default)
 }
+/// Runs `f` while this thread holds the registry lock, as worker cleanup does.
+#[cfg(test)]
+pub(crate) fn with_registry_held<R>(f: impl FnOnce() -> R) -> R {
+    let _held = registry().lock().unwrap_or_else(|e| e.into_inner());
+    f()
+}
+
 pub(crate) fn samples_for_key(key: &str) -> Vec<ProcessSample> {
     let state = registry()
         .lock()
