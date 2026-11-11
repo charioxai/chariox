@@ -180,8 +180,19 @@ pub(crate) fn project_agent_tree(
             permission_level: Some(effective.permission_level),
             effort: agent.effort().map(str::to_owned),
             account_profile: agent.account_profile().map(str::to_owned),
-            workspace_id: agent.workspace_id().map(str::to_owned),
-            worktree_id: agent.worktree_id().map(str::to_owned),
+            // An agent with no place of its own works where its Room does.
+            workspace_id: Some(
+                agent
+                    .workspace_id()
+                    .unwrap_or_else(|| session.workspace_id())
+                    .to_owned(),
+            ),
+            worktree_id: Some(
+                agent
+                    .worktree_id()
+                    .unwrap_or_else(|| session.worktree_id())
+                    .to_owned(),
+            ),
             worker_kernel_id: agent
                 .remote_execution()
                 .map(|remote| remote.worker_kernel_id.clone()),

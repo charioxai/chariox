@@ -21,7 +21,9 @@
       "outcome": "completed",
       "needs_user": false,
       "deadline_ms": null,
-      "created_at_ms": 2
+      "created_at_ms": 2,
+      "workspace_id": "workspace",
+      "worktree_id": "worktree"
     },
     {
       "agent_id": "cancelled",
@@ -37,7 +39,9 @@
       "outcome": "cancelled",
       "needs_user": false,
       "deadline_ms": null,
-      "created_at_ms": 3
+      "created_at_ms": 3,
+      "workspace_id": "workspace",
+      "worktree_id": "worktree"
     }
   ]
 }

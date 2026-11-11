@@ -480,14 +480,26 @@ async fn a_node_reports_its_account_workspace_worktree_and_machine() {
     let team = team_with("tree-footer", None, true).await;
     let before = read(&team);
     let node = &before.nodes[0];
+    // A child with no place of its own works where its Room does.
+    let room = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap();
     assert_eq!(
         (
             &node.account_profile,
-            &node.workspace_id,
-            &node.worktree_id,
+            node.workspace_id.as_deref(),
+            node.worktree_id.as_deref(),
             &node.worker_kernel_id
         ),
-        (&None, &None, &None, &None)
+        (
+            &None,
+            Some(room.workspace_id()),
+            Some(room.worktree_id()),
+            &None
+        )
     );
     let agents = &team.runtime.owned.agent_store;
     let child = agents.get_agent(&team.child).unwrap();
