@@ -237,7 +237,7 @@ const problem = (file, kind, text, line = 0) => ({ file, line, kind, text })
 // in the change that deletes entries; raising it needs the owner, not a reviewer.
 export const LEAK_ROWS = new Set(['OSB-04', 'OSB-05', 'OSB-06', 'OSB-07', 'OSB-09'])
 export const LEAK_SLICES = new Set(['B0', 'B1', 'B2', 'B3', 'B4a', 'B4b', 'B5', 'B6', 'B7', 'B8'])
-export const LEAK_ENTRY_CEILING = 39
+export const LEAK_ENTRY_CEILING = 36
 
 function vocabularyProblems(root, files) {
   const leaks = new Map()
