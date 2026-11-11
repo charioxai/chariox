@@ -276,16 +276,20 @@ impl ProcessTree {
             rows.iter()
                 .any(|row| row.pid == *pid && row.birth == *birth)
         });
+        // A shell whose jobs were commands in the previous program stays their
+        // launcher whatever is left of them, so a job that waits is still found.
+        let owned = &self.owned;
+        let jobs = |shell: u32| {
+            rows.iter()
+                .filter(move |child| child.parent == shell && owned.contains_key(&child.pid))
+        };
         for row in rows.iter().filter(|row| {
             self.owned.contains_key(&row.pid)
                 && shell(&row.command)
                 && self.harness.contains(&row.parent)
                 && !self.harness.contains(&row.pid)
-                && rows
-                    .iter()
-                    .filter(|child| child.parent == row.pid && self.owned.contains_key(&child.pid))
-                    .nth(1)
-                    .is_some()
+                && (jobs(row.pid).nth(1).is_some()
+                    || jobs(row.pid).any(|job| super::admission::handed_over(&owned[&job.pid])))
         }) {
             self.launchers.insert(row.pid, row.birth.clone());
         }

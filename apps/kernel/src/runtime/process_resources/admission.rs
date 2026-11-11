@@ -7,7 +7,7 @@
 use super::*;
 #[cfg(target_os = "macos")]
 use crate::runtime::bounded_process::BoundedCommandExt as _;
-use crate::runtime::kernel_access::process::inspect;
+use crate::runtime::kernel_access::process::{inspect, ProcessIdentity};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -290,6 +290,16 @@ fn take_adopted(pid: u32) -> Option<HeldCommand> {
     inspect(pid)
         .is_ok_and(|(current, _)| sampling::same_birth(&current, &held.identity))
         .then_some(held)
+}
+
+/// Whether the previous program handed over the command that is `identity`.
+/// Its parent shell ran several jobs, whoever is left of them now.
+pub(super) fn handed_over(identity: &ProcessIdentity) -> bool {
+    ADOPTED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&identity.pid)
+        .is_some_and(|held| sampling::same_birth(identity, &held.identity))
 }
 
 /// The machine-wide part of admission, under the pool.

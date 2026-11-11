@@ -600,6 +600,52 @@ fn a_paused_job_resumes_when_its_sibling_job_ends() {
     );
 }
 
+/// The same shell when a hot reload comes after the sibling ended: the next
+/// program watches the shell with one job left and learns the boundary only
+/// from the paused command it was handed. Without it the job folds into the
+/// shell, and nothing continues the stopped process.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_paused_job_resumes_in_the_watch_a_hot_reload_starts_after_its_sibling_ended() {
+    let pool = pool(1536);
+    let jobs = "sh -c 'python3 \"$1/alloc.py\" 800 0 0 & echo $! > \"$1/big.pid\"; python3 \"$1/alloc.py\" 300 48 1000 & echo $! > \"$1/grow.pid\"; wait' sh \"$0\"";
+    let mut workload = Workload::run(domain(&pool, "agent", false), &[("jobs", jobs.into())]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !workload.dir.join("grow.pid").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the jobs did not start"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    settle(11);
+    assert!(workload.waiting("grow"), "the growing job was not paused");
+    // The previous program's end: what it hands over crosses as JSON, and its
+    // watch does nothing from here, so nothing continues the job when its
+    // sibling ends.
+    let held: Vec<HeldCommand> =
+        serde_json::from_slice(&serde_json::to_vec(&pool.held_commands()).unwrap()).unwrap();
+    workload.domain.bind_key("hot-reload-previous");
+    let _previous_program = control::pause_sampling_for_key("hot-reload-previous");
+    unsafe { libc::kill(workload.pid("big"), libc::SIGKILL) };
+    settle(2);
+    assert!(workload.waiting("grow"), "nothing watched, yet it moved");
+
+    // The next program: its own pool, and a watch of the same shell that sees
+    // one job left.
+    adopt_admission(held);
+    let _next_program = workload.watched_again(domain(&self::pool(1536), "agent", false));
+    settle(5);
+    assert!(
+        workload.alive("grow") && workload.alive("jobs"),
+        "the job or its shell was ended where room had freed"
+    );
+    assert!(
+        !workload.waiting("grow"),
+        "the paused job stayed stopped in the watch started after its sibling ended"
+    );
+}
+
 fn runaway_is_paused_before_the_line(cgroup: bool) {
     // 512 MiB/s: the PC-06 runaway.
     let (mut a, mut b, mut c, pool) = pressure(cgroup, 0, 512, 4);
