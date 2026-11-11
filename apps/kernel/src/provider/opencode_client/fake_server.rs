@@ -28,6 +28,11 @@ pub(crate) struct FakeOpenCodeServer {
 
 impl FakeOpenCodeServer {
     pub(crate) fn start(prompt_reply: PromptReply) -> Self {
+        Self::start_with_messages(prompt_reply, "[]")
+    }
+
+    /// Like `start`, with `messages` as the session's message history.
+    pub(crate) fn start_with_messages(prompt_reply: PromptReply, messages: &'static str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake OpenCode server");
         listener
             .set_nonblocking(true)
@@ -60,6 +65,11 @@ impl FakeOpenCodeServer {
                             PromptReply::Status { code, body } => (*code, *body),
                             PromptReply::Dropped => continue,
                         }
+                    } else if request_line.starts_with("GET ") && request_line.contains("/message")
+                    {
+                        (200, messages)
+                    } else if request_line.starts_with("GET /config") {
+                        (200, "{}")
                     } else if request_line.starts_with("GET ") {
                         (200, "[]")
                     } else {

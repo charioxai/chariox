@@ -30,6 +30,7 @@ async fn assert_native_confirmation_survives(change: &str) {
             root.session_request(),
         )
         .await;
+        super::seeded_catalog::seed_claude_aliases(&app, "claude-headless").await;
         let owner = crate::session::DEFAULT_LOCAL_USER_ID;
         let account = runtime
             .owned

@@ -475,6 +475,7 @@ async fn sudo_task_creates_a_same_workspace_session_with_kernel_default_agent_se
     for (key, value) in [
         ("providers.default", "codex"),
         ("providers.model", "gpt-test"),
+        ("providers.effort", "high"),
     ] {
         f.state
             .set_user_config_value(key.to_string(), value.to_string())

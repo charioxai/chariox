@@ -44,6 +44,7 @@ async fn compact_fixture_with_lease(
         root.session_request(),
     )
     .await;
+    super::seeded_catalog::seed_claude_aliases(&app, "claude").await;
     let lease = if leased {
         let mut app = app.lock().await;
         let mut worker = crate::app::RemoteLeaseRuntime::new(&mut app);

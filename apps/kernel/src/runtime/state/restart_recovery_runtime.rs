@@ -117,6 +117,7 @@ impl KernelRuntimeState {
         DurableRestartRecoveryTask(tokio::spawn(async move {
             state.owned.publication_activation.wait().await;
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            state.resolve_stored_agent_models().await;
             state.resume_idle_agent_trigger_queues(idle_queue_agents);
             for (session_id, agent_id, prompt_id) in uncertain_steer_targets {
                 state.spawn_remote_queued_steer_receipt_reconciliation(

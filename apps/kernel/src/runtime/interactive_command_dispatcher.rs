@@ -51,6 +51,11 @@ pub(crate) fn dispatch_interactive_command<'a>(
             inner.agent_defaults = runtime_state
                 .resolve_session_agent_defaults(inner.agent_defaults)
                 .await?;
+            if inner.kernel_ref.is_none() && inner.slice_ref.is_none() {
+                inner.agent_defaults = runtime_state
+                    .resolve_new_session_defaults(&inner.owner_user_id, inner.agent_defaults)
+                    .await?;
+            }
             session_runtime
                 .dispatch_session_command(command, LocalDaemonRequest::CreateSession(inner))
                 .await

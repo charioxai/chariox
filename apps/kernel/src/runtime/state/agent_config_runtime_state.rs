@@ -1280,13 +1280,19 @@ impl KernelRuntimeState {
                 caller_user_id,
                 selections.clone(),
             )?;
+            let selections = if original.remote_execution().is_none() {
+                self.resolve_updated_agent_selection(caller_user_id, &original, &target, selections)
+                    .await?
+            } else {
+                selections
+            };
             if original.remote_execution().is_none() {
                 self.compact_before_window_downshift(
                     session_id,
                     &target.agent,
                     Some(&target.provider),
                     Some(&target.account_profile),
-                    target.model.as_deref(),
+                    selections.model.as_deref().or(target.model.as_deref()),
                 )
                 .await?;
             }
