@@ -121,6 +121,17 @@ pub(crate) fn run_codex_utility_prompt_with_admission(
     if let Some(turn_id) = codex_turn_id_from_start_response(&response) {
         state.active_turn_id = Some(turn_id);
     }
+    // The person's approvals of this turn belong to the run, like the kernel's own questions:
+    // the turn is not a queued prompt, so nothing else names what the card is about.
+    state.native_approval_origin = native_interaction_bridge.as_ref().map(|bridge| {
+        run.agent_instance_id()
+            .and_then(|agent_id| bridge.capture_turn_origin(run.session_id(), agent_id, run.id()))
+            .unwrap_or_else(
+                || crate::session::NativeInteractionOrigin::ProviderStartup {
+                    provider_run_id: run.id().to_string(),
+                },
+            )
+    });
 
     let deadline = Instant::now() + timeout;
     let mut output = String::new();
@@ -354,6 +365,14 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(interaction.message().to_string());
+            // The kernel's bridge cannot show a card that names no origin; it answers as if nobody did.
+            if interaction.native_origin().is_none() {
+                return Ok(crate::provider::ProviderNativeInteractionResolution {
+                    status: "timed_out".into(),
+                    choice_id: None,
+                    reply: None,
+                });
+            }
             Ok(crate::provider::ProviderNativeInteractionResolution {
                 status: "answered".into(),
                 choice_id: Some("allow_once".into()),

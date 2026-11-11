@@ -105,7 +105,11 @@ impl KernelRuntimeState {
         match self.room_publish_answer(session_id, agent_id, prompt).await {
             Ok(answer) => parse_publish_answer(&answer),
             Err(error) => {
-                tracing::warn!(session_id, %error, "room publish turn failed");
+                crate::logging::warn_with_fields(
+                    "daemon.room_setup",
+                    "room publish turn failed",
+                    serde_json::json!({ "session_id": session_id, "error": error.to_string() }),
+                );
                 Err("The agent could not start publishing".into())
             }
         }
