@@ -25,13 +25,13 @@ fn mp11_leased_agent_file_copy_442_is_pinned() {
         },
     ];
     let responses = [
-        RelayPeerResponse::LeasedAgentFileRead {
+        RelayPeerResponse::FileSliceRead {
             size_bytes: 3,
             sha256: Some("ab".repeat(32)),
             revision: "2049:17:3:1.5:1.5".into(),
             content: RemoteFileBytes::encode(b"abc"),
         },
-        RelayPeerResponse::LeasedAgentFileRead {
+        RelayPeerResponse::FileSliceRead {
             size_bytes: 3,
             sha256: None,
             revision: "2049:17:3:1.5:1.5".into(),
@@ -46,7 +46,7 @@ fn mp11_leased_agent_file_copy_442_is_pinned() {
             sha256: None,
         },
         RelayPeerResponse::LeasedAgentFileDiscarded,
-        RelayPeerResponse::LeasedAgentFileRefused {
+        RelayPeerResponse::FileRefused {
             reason: "`.git/hooks/pre-commit` is inside .git".into(),
         },
     ];
@@ -72,14 +72,14 @@ fn mp11_leased_agent_file_copy_442_is_pinned() {
             .map(|response| serde_json::to_value(response).unwrap())
             .collect::<Vec<_>>(),
         [
-            serde_json::json!({"kind": "leased_agent_file_read", "size_bytes": 3, "sha256": sha,
+            serde_json::json!({"kind": "file_slice_read", "size_bytes": 3, "sha256": sha,
                 "revision": "2049:17:3:1.5:1.5", "content": "YWJj"}),
-            serde_json::json!({"kind": "leased_agent_file_read", "size_bytes": 3,
+            serde_json::json!({"kind": "file_slice_read", "size_bytes": 3,
                 "revision": "2049:17:3:1.5:1.5", "content": ""}),
             serde_json::json!({"kind": "leased_agent_file_written", "received": 3, "sha256": sha}),
             serde_json::json!({"kind": "leased_agent_file_written", "received": 0}),
             serde_json::json!({"kind": "leased_agent_file_discarded"}),
-            serde_json::json!({"kind": "leased_agent_file_refused",
+            serde_json::json!({"kind": "file_refused",
                 "reason": "`.git/hooks/pre-commit` is inside .git"}),
         ]
     );

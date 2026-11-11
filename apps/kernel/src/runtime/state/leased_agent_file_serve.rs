@@ -44,11 +44,11 @@ impl KernelRuntimeState {
 }
 
 pub(super) fn serve(workspace: &Workspace, request: RelayPeerRequest) -> RelayPeerResponse {
-    let refused = |reason| RelayPeerResponse::LeasedAgentFileRefused { reason };
+    let refused = |reason| RelayPeerResponse::FileRefused { reason };
     match request {
         RelayPeerRequest::ReadLeasedAgentFile { path, offset, .. } => {
             match read_slice(workspace, &path, offset) {
-                Ok(slice) => RelayPeerResponse::LeasedAgentFileRead {
+                Ok(slice) => RelayPeerResponse::FileSliceRead {
                     size_bytes: slice.size_bytes,
                     sha256: slice.sha256,
                     revision: slice.revision,

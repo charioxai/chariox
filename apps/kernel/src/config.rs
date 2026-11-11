@@ -31,7 +31,7 @@ mod secret_link;
 mod slices;
 mod socket_path;
 mod storage;
-pub(crate) use paths::default_state_dir;
+pub(crate) use paths::{default_state_dir, kernel_state_roots};
 pub(crate) use socket_path::validate_local_socket_path;
 mod totp;
 mod user_config_mutation;

@@ -3,7 +3,8 @@
 //! is the size and SHA-256; the bytes never reach the model.
 use super::*;
 use crate::agent_file_copy::{
-    pull, push, Copied, CopyOptions, LinkError, RemoteWorkspace, SourceSlice, Workspace, WriteSlice,
+    pull, push, Copied, CopyOptions, LinkError, RemoteSource, RemoteWorkspace, SourceSlice,
+    Workspace, WriteSlice,
 };
 use crate::runtime::kernel_files::StagedWrite;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse, RemoteFileBytes};
@@ -139,6 +140,7 @@ impl KernelRuntimeState {
         let options = CopyOptions {
             overwrite: args.overwrite,
             expect_sha256: args.expect_sha256.clone(),
+            ..Default::default()
         };
         if pulling {
             pull(
@@ -188,9 +190,7 @@ impl LeasedWorkspace<'_> {
             Err(error) => Err(error),
         };
         match response {
-            Ok(RelayPeerResponse::LeasedAgentFileRefused { reason }) => {
-                Err(LinkError::Refused(reason))
-            }
+            Ok(RelayPeerResponse::FileRefused { reason }) => Err(LinkError::Refused(reason)),
             Ok(response) => Ok(response),
             Err(DaemonError::RelayTransport { code, message, .. })
                 if DEFINITIVE_LINK_CODES.contains(&code.as_str()) =>
@@ -208,7 +208,7 @@ fn unexpected() -> LinkError {
     LinkError::Refused("The leased agent's kernel answered with something unexpected".to_owned())
 }
 
-impl RemoteWorkspace for LeasedWorkspace<'_> {
+impl RemoteSource for LeasedWorkspace<'_> {
     async fn read(&self, path: &str, offset: u64) -> Result<SourceSlice, LinkError> {
         match self
             .ask(RelayPeerRequest::ReadLeasedAgentFile {
@@ -218,7 +218,7 @@ impl RemoteWorkspace for LeasedWorkspace<'_> {
             })
             .await?
         {
-            RelayPeerResponse::LeasedAgentFileRead {
+            RelayPeerResponse::FileSliceRead {
                 size_bytes,
                 sha256,
                 revision,
@@ -234,7 +234,9 @@ impl RemoteWorkspace for LeasedWorkspace<'_> {
             _ => Err(unexpected()),
         }
     }
+}
 
+impl RemoteWorkspace for LeasedWorkspace<'_> {
     async fn write(&self, path: &str, slice: &WriteSlice<'_>) -> Result<StagedWrite, LinkError> {
         match self
             .ask(RelayPeerRequest::WriteLeasedAgentFile {

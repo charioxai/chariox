@@ -354,7 +354,8 @@ pub(super) async fn handle_daemon_peer_request(
             | RelayPeerRequest::UnsubscribeWorkflowNotifications { .. }
             | RelayPeerRequest::DeliverWorkflowNotification { .. }
     ) || project_environment_request(&request)
-        || peer_agent_request(&request);
+        || peer_agent_request(&request)
+        || machine_file_request(&request);
     if same_owner_request {
         // The existing relay projects home-kernel claims to a bound Machine
         // identity for peer requests (the same seam used by execution leases).
@@ -1140,6 +1141,24 @@ pub(super) async fn handle_daemon_peer_request(
                 .await;
             match updated {
                 Ok(leased_agent) => RelayPeerResponse::LeasedAgentMetaModeUpdated { leased_agent },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        request @ (RelayPeerRequest::StatMachinePath { .. }
+        | RelayPeerRequest::ListMachineDirectory { .. }
+        | RelayPeerRequest::ReadMachineFile { .. }
+        | RelayPeerRequest::DeleteMachinePath { .. }
+        | RelayPeerRequest::StartFileTransfer { .. }
+        | RelayPeerRequest::GetFileTransfer { .. }
+        | RelayPeerRequest::CancelFileTransfer { .. }) => {
+            match router.relay_machine_files(request).await {
+                Ok(response) => response,
                 Err(error) => {
                     return RelayRequestOutcome {
                         display_event: None,
@@ -2603,6 +2622,20 @@ fn project_environment_setup_request(request: &RelayPeerRequest) -> bool {
     )
 }
 
+/// Files on this machine that another kernel of the same owner asks for.
+fn machine_file_request(request: &RelayPeerRequest) -> bool {
+    matches!(
+        request,
+        RelayPeerRequest::StatMachinePath { .. }
+            | RelayPeerRequest::ListMachineDirectory { .. }
+            | RelayPeerRequest::ReadMachineFile { .. }
+            | RelayPeerRequest::DeleteMachinePath { .. }
+            | RelayPeerRequest::StartFileTransfer { .. }
+            | RelayPeerRequest::GetFileTransfer { .. }
+            | RelayPeerRequest::CancelFileTransfer { .. }
+    )
+}
+
 fn peer_agent_request(request: &RelayPeerRequest) -> bool {
     matches!(
         request,
@@ -3133,7 +3166,7 @@ mod tests {
             offset: 0,
         })
         .await;
-        let RelayPeerResponse::LeasedAgentFileRead {
+        let RelayPeerResponse::FileSliceRead {
             size_bytes,
             sha256: read_sha256,
             content,
@@ -3149,7 +3182,7 @@ mod tests {
         let hook = send(write(".git/hooks/pre-commit")).await;
         assert!(matches!(
             decode_lease_worker_response(&source_private_key, hook),
-            RelayPeerResponse::LeasedAgentFileRefused { reason } if reason.contains(".git")
+            RelayPeerResponse::FileRefused { reason } if reason.contains(".git")
         ));
         assert!(!workspace.root.join(".git/hooks/pre-commit").exists());
 
