@@ -2541,6 +2541,71 @@ Protocol v295 clients may render Actor colors and pointer presence and may publi
 
 No minimum version changes for clients that do not use these Environment controls. A released client that invokes `environment.start`, `environment.stop`, or `environment.retry` must require protocol v270 or newer; one that updates the canonical viewport must require v271 or newer; one that requests or depends on human takeover state must require v272 or newer; one that releases input must require v273 or newer; one that renders Action ordering or queue state must require v274 or newer; one that replays Environment events must require v275 or newer; one that renders active cancellation state must require v276 or newer; one that cancels Actions must require v277 or newer; one that renders Action timing or terminal outcomes must require v278 or newer; one that lists Action history must require v279 or newer; one that submits human pointer clicks must require v294 or newer; one that renders or publishes pointer presence must require v295 or newer; one that captures a Room screenshot or reads its chunks must require v296 or newer; one that submits human pointer movement, drag, scroll, text, or key input must require v302 or newer; one that writes or reads the human clipboard contract must require v303 or newer.
 
+## 4.1.1 Kernel Resource Subscription (proposed)
+
+Status: proposed for Landing 9 (Cloud `docs/CLIENT_DATA_PLANE.md` section 6); not
+implemented. The protocol number is allocated when it lands; the relay peer
+protocol is unchanged because the relay forwards `subscription_scope` as an opaque
+string.
+
+One generic contract replaces request/response polling for every value a client
+shows: the client says which resources it shows and the revision it holds; the
+kernel answers each with `unchanged`, `changes` (since that revision) or
+`snapshot`, then pushes the same for every later change until the client stops
+watching.
+
+Frames:
+
+```text
+Subscribe { request_id, session_id: "__kernel_resources__", attachment_id,
+            subscription_scope: "kernel_resources", heartbeat_interval_ms? }
+
+Request  WatchKernelResources {
+           subscription_request_id: String,
+           watches: [ { resource: String, params: Object, known_revision: String? } ]
+         }                                  // replaces the whole watch set
+Response KernelResourcesWatched { refused: [ { resource, params, code, message } ] }
+
+Event    KernelResourceChanged {           // wire name kernel_resource_changed
+           resource, params, revision: String,
+           body: { "unchanged": {} }
+               | { "snapshot": { data } }
+               | { "changes": { base_revision, changes: [..] } }
+         }
+```
+
+Rules:
+
+- The scope and sentinel session id follow `waiting_room_inventory`
+  (`WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE`); heartbeat and reconnect are the
+  subscription's own.
+- Every newly watched key gets one answer right after `KernelResourcesWatched`, then
+  one event per change, in order per key. `changes` is sent only when the kernel
+  can produce it from the client's revision; otherwise `snapshot`. A client that
+  cannot apply `changes` re-watches the key with `known_revision: null`.
+- Revisions are opaque content hashes of the public projection (the
+  `ClientCatalogRevisions` approach), so they survive a kernel restart.
+- Each watch is authorised like the request it replaces; a refused key is listed in
+  `refused` and never answered with an empty snapshot.
+- A snapshot is at most 1 MiB; larger resources page with their existing cursors
+  and send `changes`.
+- Only public projections travel: never secret values, tokens or credentials.
+
+Resources (v1): `vault_status`, `vault_entries`, `provider_accounts`,
+`provider_catalog`, `provider_commands`, `terminal_commands`, `app_installations`,
+`user_app_views`, `extensions`, `notification_sources`, `session_processes`,
+`room_terminals`, `slices`, `user_config`, `dictation_status`,
+`project_environment`; later `room_list`, which replaces the
+`waiting_room_inventory` scope and its `waiting_room_inventory_changed` /
+`waiting_room_rows_changed` events. The feed also replaces `client_catalog_changed`
+with the conditional `GetClientCatalogSnapshot.known`, `provider_catalog_changed`,
+`slices_changed` and the `SubscribeUserAppViews` long poll; each replaced event or
+request is removed in the change that moves its resource.
+
+`AttachSessionView` gains `known_revision` (the Room's public history revision); a
+match answers the history as `unchanged`. Live Room events stay on the session
+subscription with `resume_from_event_id`.
+
 ## 4.2 Planned Command-Dispatch Surface
 
 The current local API baseline does not yet expose slash-command discovery/invocation, but the protocol should reserve room for it.
