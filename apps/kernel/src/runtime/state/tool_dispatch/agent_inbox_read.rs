@@ -190,18 +190,30 @@ impl KernelRuntimeState {
         let work = self.owned.sudo_work_task(room, actor);
         let mut finished_children = Vec::new();
         let mut ack = |event: &InboxEvent| {
-            self.owned
-                .durable_state_store
-                .agent_lifecycle(Operation::Ack {
+            let subtree = if handled && event.kind == "child_finished" {
+                self.finished_child_subtree(room, actor, &event.payload)?
+            } else {
+                None
+            };
+            // The deletion is recorded in the write that handles the receipt.
+            let operation = match subtree.clone() {
+                Some(subtree) => Operation::AckHandledChild {
+                    room: room.into(),
+                    agent: actor.into(),
+                    sequence: event.sequence,
+                    subtree,
+                    now,
+                },
+                None => Operation::Ack {
                     room: room.into(),
                     agent: actor.into(),
                     sequence: event.sequence,
                     handled,
                     now,
-                })?;
-            if handled && event.kind == "child_finished" {
-                finished_children.push(event.payload.clone());
-            }
+                },
+            };
+            self.owned.durable_state_store.agent_lifecycle(operation)?;
+            finished_children.extend(subtree);
             Ok::<_, DaemonError>(())
         };
         if let Some(through) = args["through"].as_u64() {
@@ -248,8 +260,7 @@ impl KernelRuntimeState {
                 }
                 cursor = last;
             }
-            self.end_handled_children(room, actor, &finished_children)
-                .await?;
+            self.end_handled_children(&finished_children).await;
             return Ok(serde_json::json!({"acknowledged": acknowledged, "skipped": skipped}));
         }
         let seq = args["sequence"]
@@ -274,8 +285,7 @@ impl KernelRuntimeState {
             ));
         }
         ack(&event)?;
-        self.end_handled_children(room, actor, &finished_children)
-            .await?;
+        self.end_handled_children(&finished_children).await;
         Ok(serde_json::json!({"acknowledged": seq}))
     }
 }
