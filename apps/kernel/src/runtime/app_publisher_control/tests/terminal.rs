@@ -75,6 +75,19 @@ async fn authenticated_terminal_reviews_a_key_without_granting_it_or_exposing_ot
             code: AppRequestErrorCode::InvalidRequest
         }
     ));
+    let mut reserved = begin.clone();
+    reserved.publisher_id = chariox_app_package::v2::DEV_PUBLISHER_ID.into();
+    assert!(matches!(
+        send(
+            &f,
+            "alice",
+            LocalDaemonRequest::BeginAppPublisherEnrollment(reserved)
+        )
+        .await,
+        LocalDaemonResponse::AppRequestFailed {
+            code: AppRequestErrorCode::ReservedPublisher
+        }
+    ));
     let pending = status(
         send(
             &f,

@@ -295,6 +295,11 @@ impl KernelRuntimeState {
                     json!({"view": installation, "app": installation, "generation": context.binding.generation,
                         "actions": context.declared, "state": state.unwrap_or_else(|error| json!({"unavailable": error}))})
                 }
+                // Opening reads the view's actions and state; with no Room
+                // browser to open it in, it stays a view the agent can open.
+                Err(error) if error.code == "no_browser_controller" => {
+                    json!({"view": installation, "app": installation, "openable": true})
+                }
                 Err(error) => {
                     let mut entry =
                         json!({"view": installation, "app": installation, "unavailable": error});
@@ -422,6 +427,14 @@ impl KernelRuntimeState {
         }
         let opened_target;
         let target = if agent.has_extension_grant(ExtensionKind::App, target) {
+            // The grant outlives an uninstall, so the agent still has the view
+            // tools and learns here that the App is gone.
+            if self.app_not_installed(agent.owner_user_id(), target).await {
+                return Err(failure(
+                    "APP_NOT_INSTALLED",
+                    "The App is not installed. Reinstall it to use it again.",
+                ));
+            }
             let authority = AppViewAuthority::new(
                 self.owned.agent_store.clone(),
                 Some(agent),
@@ -476,7 +489,17 @@ impl KernelRuntimeState {
                         },
                     )
                     .await
-                    .map_err(|error| failure("view_unavailable", error.to_string()))?;
+                    .map_err(|error| {
+                        let code =
+                            if crate::runtime::state::app_view_runtime::is_no_browser_controller(
+                                &error,
+                            ) {
+                                "no_browser_controller"
+                            } else {
+                                "view_unavailable"
+                            };
+                        failure(code, error.to_string())
+                    })?;
                 if let Some(context) = retired {
                     // A successful close must not leave the old binding for
                     // the next call or browser-loss restore before the drain.
@@ -508,6 +531,18 @@ impl KernelRuntimeState {
         }
         context.declared = lease.catalog().app_catalog().ui_actions().to_vec();
         Ok(context)
+    }
+
+    async fn app_not_installed(&self, owner: &str, installation: &str) -> bool {
+        let store = self.owned.durable_state_store.clone();
+        let (owner, installation) = (owner.to_owned(), installation.to_owned());
+        tokio::task::spawn_blocking(move || {
+            store
+                .get_app_installation(&owner, &installation)
+                .is_ok_and(|installation| installation.active.is_none())
+        })
+        .await
+        .unwrap_or(false)
     }
 
     /// A user-domain App is reachable only through its owner's retained view

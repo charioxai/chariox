@@ -6,6 +6,8 @@ use chariox_app_runtime::publisher_trust::TrustDecisionReceipt;
 pub(crate) enum PublisherOperationError {
     #[error("app_publisher_operation_invalid")]
     Invalid,
+    #[error("app_publisher_operation_reserved_publisher")]
+    ReservedPublisher,
     #[error("app_publisher_operation_not_found")]
     NotFound,
     #[error("app_publisher_operation_conflict")]
