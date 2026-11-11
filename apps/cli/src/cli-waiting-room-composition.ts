@@ -28,7 +28,7 @@ import {
 import { createProviderPromptProjectionController } from "./provider-prompt-projection-controller.js"
 import { createProviderSelectionController } from "./provider-selection-controller.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
-import { forgetRemoteMachine } from "./remote-machine-api.js"
+import { approveRemoteMachine, forgetRemoteMachine } from "./remote-machine-api.js"
 import {
   archiveSessionById,
   createSession,
@@ -499,6 +499,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     ),
     startContextTransfer: (ticket, launchId) => startManagedContextTransfer(deps.client, ticket, launchId),
     getContextTransferStatus: (contextId) => getManagedContextTransferStatus(deps.client, contextId),
+    approveMachine: async (machineId) => {
+      await approveRemoteMachine(deps.client.currentClient(), machineId)
+    },
     connectKernel: async (machineId, kernelId, isActive) => {
       const sourceRelay = deps.relayStatusState()
       const connectedTarget: { inventory: WaitingRoomInventory | null } = { inventory: null }

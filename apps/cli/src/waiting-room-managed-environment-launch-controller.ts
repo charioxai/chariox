@@ -59,6 +59,8 @@ export type WaitingRoomManagedEnvironmentLaunchControllerDeps = {
   /** `launchId` is the client request id of the create that made this machine, when this controller made it. */
   startContextTransfer(ticket: ManagedContextTransferTicket, launchId?: string): Promise<ManagedContextTransferStatus>
   getContextTransferStatus(contextId: string): Promise<ManagedContextTransferStatus>
+  /** Trusts the owner's managed machine on the home kernel, as `/machine approve` does. */
+  approveMachine(machineId: string): Promise<void>
   connectKernel(
     machineId: string,
     kernelId: string,
@@ -212,6 +214,9 @@ export class WaitingRoomManagedEnvironmentLaunchController {
     const kernelId = enrolled && attempt.selectedKernelRef
       ? attempt.selectedKernelRef
       : environment.runtimeKernelId as string
+    // MP-08/MP-10: Cloud names this machine as the owner's own, so the home trusts it before this client leaves the home.
+    await this.deps.approveMachine(machineId)
+    attempt.assertActive()
     let connection: ManagedEnvironmentKernelConnection
     while (true) {
       attempt.progress(`Connecting to ${environment.name}.`)

@@ -35,6 +35,8 @@ test("managed TUI launch creates Empty context and returns the target workspace"
   assert.equal(harness.createdInputs[0]?.clientRequestId, "key-1")
   assert.equal(harness.createdInputs[0]?.managedRepositoryRoot, "/home/chariox")
   assert.deepEqual(harness.connectedKernels, [{ machineId: "machine-managed", kernelId: "kernel-managed" }])
+  // MP-08: the owner's own managed machine needs no `/machine approve` on this home, also without a context transfer.
+  assert.deepEqual(harness.approvedMachines, ["machine-managed"])
   assert.equal(prepared.workspacePath, "/managed/empty/context-1")
   assert.equal(prepared.worktreePath, "/managed/empty/context-1")
   assert.deepEqual(prepared.projectSelection, { kind: "default" })
@@ -394,6 +396,7 @@ function createHarness(options: HarnessOptions) {
     idempotencyKey: string
   }> = []
   const connectedKernels: Array<{ machineId: string; kernelId: string }> = []
+  const approvedMachines: string[] = []
   const transferStarts: string[] = []
   const transferLaunchKeys: (string | undefined)[] = []
   const transferStatusRequests: string[] = []
@@ -454,6 +457,10 @@ function createHarness(options: HarnessOptions) {
       if (!next) throw new Error("missing transfer status")
       return next
     },
+    approveMachine: async (machineId) => {
+      assert.equal(connectedKernels.length, 0, "the home approves the machine before this client connects to it")
+      approvedMachines.push(machineId)
+    },
     connectKernel: async (machineId, kernelId, isActive) => {
       connectAttempts += 1
       if (!isActive()) return null
@@ -492,6 +499,7 @@ function createHarness(options: HarnessOptions) {
     createdInputs,
     lifecycleRequests,
     connectedKernels,
+    approvedMachines,
     transferStarts,
     transferLaunchKeys,
     transferStatusRequests,
