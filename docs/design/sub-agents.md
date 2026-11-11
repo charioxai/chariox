@@ -56,7 +56,7 @@ Kinds this feature adds (ordinary `InboxEvent` rows):
 | Kind | Source | Steers | `needs_answer` | Payload |
 |---|---|---|---|---|
 | `child_finished` | child | yes | no | `TurnOutcome` (with `deadline_reached`), answer reference |
-| `child_decision` | child | yes | yes | interaction id, one-line question, choices |
+| `child_decision` | child | yes | yes | interaction id, one-line question, the card's text as `detail` (and `detail_truncated` when cut) when it has more than its title, choices |
 | `message` | peer, kernel-stamped | sender's choice, default no | no | text, attachments |
 | `peer_event` | followed peer | no | no | turn ended, state changed, error |
 

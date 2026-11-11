@@ -2,6 +2,12 @@ use tokio::sync::oneshot;
 
 use super::*;
 
+/// The parent agent that answered a decision and the child agent that raised it.
+pub(super) struct ParentAnswer<'a> {
+    pub(super) holder: &'a str,
+    pub(super) child: &'a str,
+}
+
 impl KernelRuntimeState {
     pub(crate) fn update_forwarded_provider_login_interaction(
         &self,
@@ -423,28 +429,42 @@ impl KernelRuntimeState {
                 self.owned
                     .closed_interaction_error(session_id, interaction_id, error)
             })?;
-        self.audit_interaction_answered(session_id, interaction_id, choice_id, connection_class);
+        self.audit_interaction_answered(
+            session_id,
+            interaction_id,
+            choice_id,
+            connection_class,
+            None,
+        );
         self.schedule_question_answer_delivery(interaction_id)
     }
 
-    /// Who closed a decision and through which connection; never the reply text.
+    /// Who closed a decision and through which connection; never the reply text. A decision a
+    /// parent agent held names that agent in `answered_by_agent` and the child that raised it in
+    /// `child_agent_id`, because the audit row is keyed by the interaction alone.
     /// The answer already took effect, so a failed record is logged, not returned.
-    fn audit_interaction_answered(
+    pub(super) fn audit_interaction_answered(
         &self,
         session_id: &str,
         interaction_id: &str,
         choice_id: &str,
         connection_class: Option<crate::local::KernelConnectionClass>,
+        parent_answer: Option<ParentAnswer<'_>>,
     ) {
+        let mut payload = serde_json::json!({
+            "session_id": session_id,
+            "choice_id": choice_id,
+            "connection_class": connection_class,
+            "at_ms": crate::session::unix_epoch_ms(),
+        });
+        if let Some(parent) = parent_answer {
+            payload["answered_by_agent"] = parent.holder.into();
+            payload["child_agent_id"] = parent.child.into();
+        }
         let recorded = self.owned.durable_state_store.append_event(
             "interaction.answered",
             Some(interaction_id.into()),
-            serde_json::json!({
-                "session_id": session_id,
-                "choice_id": choice_id,
-                "connection_class": connection_class,
-                "at_ms": crate::session::unix_epoch_ms(),
-            }),
+            payload,
         );
         if let Err(error) = recorded {
             crate::logging::error_with_fields(

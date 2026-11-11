@@ -743,14 +743,21 @@ an external agent following the room hears the same interaction id as an
 `interaction` event with `value.shown_in` set; a decision a parent agent holds is
 not listed to the user until it reaches the user. A holder agent gets an urgent
 `child_decision` inbox event (`interaction_id`, `child_agent_id`, `child_alias`,
-`question`, `choices`, `text_allowed`, `needs_answer`) and answers with the room
+`question`, optional `detail` and `detail_truncated`, `choices`, `text_allowed`,
+`needs_answer`). `detail` is the card's own text beyond its title (the command a permission
+card allows), with secret-shaped values redacted (a secret with no recognizable prefix or
+shape can pass) and cut at 1000 characters with a closing `…`; it is absent when the card has
+no text beyond its title. `detail_truncated` is `true` only when the text was cut: the cut part
+can hold the command that matters, so a holder passes such a decision with `agent pass`
+instead of allowing it unless it can read the full card. The holder answers with the room
 command `agent answer <interaction> <choice-id|text>` or hands it on with `agent
 pass <interaction>`; both return `ChildDecision {status}` with `status` one of
 `answered`, `passed`, `not_holder`, `settled_by_user`, `unknown_interaction`,
 `invalid_answer`, and no text; `--room`, `--kernel` and `--machine` are refused
 with `peer_decision_refused`, because a peer never settles a decision. The decision moves up at once, with no model turn, when its holder's turn
 ends, errors, is cancelled or is blocked. A decision answered by a parent closes
-as `resolution.via = "parent_agent"`. The relay peer protocol needs no change for it.
+as `resolution.via = "parent_agent"` and writes an `interaction.answered` audit event whose
+`answered_by_agent` names the parent and `child_agent_id` the child that raised it. The relay peer protocol needs no change for it.
 
 Agents may spawn without room agent-count limits, message any current room
 agent, create workflows, and observe/run peers' workflows. Agent rename/delete

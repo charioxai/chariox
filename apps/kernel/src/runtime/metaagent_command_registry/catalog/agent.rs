@@ -228,7 +228,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "the current holder of a sub-agent's decision",
         routed: true,
-        description: "Answer a decision a sub-agent raised and your child_decision event named, with one of its choice ids or free text. Only the current holder can answer, and only in this room: it never answers for a peer, so --room, --kernel and --machine are refused. A settled decision reports settled_by_user, an id you were never offered reports unknown_interaction.",
+        description: "Answer a decision a sub-agent raised and your child_decision event named, with one of its choice ids or free text. The event's detail is the card's own text, for example the command it allows, with secret-shaped values redacted; read it before you answer. When detail_truncated is true the detail was cut at 1000 characters and the rest of the command is unknown: pass the decision (agent pass) unless you can read the full card yourself, and never allow a cut command. Only the current holder can answer, and only in this room: it never answers for a peer, so --room, --kernel and --machine are refused. A settled decision reports settled_by_user, an id you were never offered reports unknown_interaction.",
     },
     MetaCommandDoc {
         name: "agent pass",
