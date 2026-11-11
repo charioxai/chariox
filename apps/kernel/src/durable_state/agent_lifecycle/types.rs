@@ -44,6 +44,15 @@ pub struct AgentTaskExecution {
     pub pending_prompt_id: Option<String>,
 }
 impl AgentTaskExecution {
+    /// Who began stopping this turn, as recorded when the cancellation began. A path that only
+    /// settles a cancellation consumes this; it never makes a new owner Stop.
+    pub(crate) fn recorded_cancel_initiator(&self) -> CancelInitiator {
+        if self.reason == super::supervision::AGENT_CANCELLED_REASON {
+            CancelInitiator::Agent
+        } else {
+            CancelInitiator::Owner
+        }
+    }
     /// The owner stopped this turn; the agent stays stopped until prompted again.
     pub(crate) fn stopped_by_owner(&self) -> bool {
         self.state == ExecutionState::Cancelled
@@ -52,6 +61,28 @@ impl AgentTaskExecution {
                 super::supervision::OWNER_CANCELLED_REASON
                     | super::supervision::AGENT_ARCHIVED_REASON
             )
+    }
+}
+/// Who stops a running turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CancelInitiator {
+    Owner,
+    Agent,
+}
+impl CancelInitiator {
+    pub(crate) fn cancel_task(self, task: String, owner: String, revision: u64) -> Operation {
+        match self {
+            Self::Owner => Operation::CancelTask {
+                task,
+                owner,
+                revision,
+            },
+            Self::Agent => Operation::CancelTaskByAgent {
+                task,
+                owner,
+                revision,
+            },
+        }
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -529,6 +560,19 @@ pub(crate) enum Operation {
         task: String,
         owner: String,
         revision: u64,
+    },
+    /// [`Operation::CancelTask`] for a cancel an agent (a peer, or a parent) issues: it ends the
+    /// task, not the agent, so later messages still run.
+    CancelTaskByAgent {
+        task: String,
+        owner: String,
+        revision: u64,
+    },
+    /// Records who is stopping a running turn whose task settles as cancelled later. The owner's
+    /// Stop always wins; an agent's cancel never overwrites it.
+    NoteTurnCancel {
+        task: String,
+        initiator: CancelInitiator,
     },
     /// Rolls back an admission whose prompt submission was rejected.
     Withdraw {

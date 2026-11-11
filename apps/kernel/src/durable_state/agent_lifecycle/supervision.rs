@@ -520,7 +520,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         obligation.dispatch_state = "cancelled".into();
                     }
                 }
-                cancel_intent(tx, &mut t)?;
+                cancel_intent(tx, &mut t, false)?;
                 t.reason = AGENT_ARCHIVED_REASON.into();
                 t.revision += 1;
                 save(tx, &t)?;
@@ -531,14 +531,25 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             task,
             owner,
             revision,
-        } => {
+        } => cancel_task(tx, &task, &owner, revision, false),
+        Operation::CancelTaskByAgent {
+            task,
+            owner,
+            revision,
+        } => cancel_task(tx, &task, &owner, revision, true),
+        Operation::NoteTurnCancel { task, initiator } => {
             let mut t = load(tx, &task)?;
-            if t.owner_user_id.is_empty() || t.owner_user_id != owner || t.revision != revision {
-                return Err(error("stale or foreign owner cancellation; reload the task in its owning room and retry"));
-            }
-            if !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
-                cancel_intent(tx, &mut t)?;
-                t.revision += 1;
+            let noted = match initiator {
+                CancelInitiator::Owner => OWNER_CANCELLED_REASON,
+                CancelInitiator::Agent if t.reason == OWNER_CANCELLED_REASON => {
+                    OWNER_CANCELLED_REASON
+                }
+                CancelInitiator::Agent => AGENT_CANCELLED_REASON,
+            };
+            if !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
+                && t.reason != noted
+            {
+                t.reason = noted.into();
                 save(tx, &t)?;
             }
             Ok(Outcome::Task(t))
@@ -624,7 +635,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 ExecutionState::Cancelled
             };
             if !resume {
-                cancel_intent(tx, &mut t)?;
+                cancel_intent(tx, &mut t, false)?;
             }
             t.owner_action = None;
             t.no_progress_wakes = 0;
@@ -674,9 +685,33 @@ pub(super) const AGENT_ARCHIVED_REASON: &str =
     "Agent archived; its running and queued work was cancelled";
 /// Shown to the person on the Stopped stripe; the supervised cancellation state itself stays in the task's obligations.
 pub(super) const OWNER_CANCELLED_REASON: &str = "Stopped by you";
+/// An agent's cancel ends the turn; the agent stays reachable, so this is not `stopped_by_owner`.
+pub(super) const AGENT_CANCELLED_REASON: &str = "Stopped by an agent";
+fn cancel_task(
+    tx: &Transaction<'_>,
+    task: &str,
+    owner: &str,
+    revision: u64,
+    by_agent: bool,
+) -> Result<Outcome, DaemonError> {
+    let mut t = load(tx, task)?;
+    if t.owner_user_id.is_empty() || t.owner_user_id != owner || t.revision != revision {
+        return Err(error(
+            "stale or foreign owner cancellation; reload the task in its owning room and retry",
+        ));
+    }
+    if !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
+        cancel_intent(tx, &mut t, by_agent)?;
+        t.revision += 1;
+        save(tx, &t)?;
+    }
+    Ok(Outcome::Task(t))
+}
+/// `by_agent`: an agent, not the owner, cancels the task; it keeps the agent reachable.
 pub(super) fn cancel_intent(
     tx: &Transaction<'_>,
     task: &mut AgentTaskExecution,
+    by_agent: bool,
 ) -> Result<(), DaemonError> {
     super::goals::clock(task, crate::session::unix_epoch_ms());
     if let Some(g) = &mut task.goal {
@@ -684,7 +719,12 @@ pub(super) fn cancel_intent(
     }
     task.state = ExecutionState::Cancelled;
     task.wait = None;
-    task.reason = OWNER_CANCELLED_REASON.into();
+    task.reason = if by_agent {
+        AGENT_CANCELLED_REASON
+    } else {
+        OWNER_CANCELLED_REASON
+    }
+    .into();
     for obligation in &mut task.obligations {
         if matches!(obligation.status.as_str(), "failed" | "settling")
             || matches!(obligation.kind.as_str(), "reply" | "message")
@@ -729,7 +769,11 @@ pub(super) fn cancel_intent(
         serde_json::json!({
             "cancelled_task_id": task.task_id,
             "reason": task.reason,
-            "message": "The owner cancelled this task and its retained work. Keep it cancelled unless the owner starts new work.",
+            "message": if by_agent {
+                "Another agent cancelled this task and its retained work. Keep it cancelled; a message from an agent is new work."
+            } else {
+                "The owner cancelled this task and its retained work. Keep it cancelled unless the owner starts new work."
+            },
         }),
     );
     // A cancellation is context for the next turn, never a new turn that

@@ -661,7 +661,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 });
             }
             if cancelled {
-                super::supervision::cancel_intent(tx, &mut t)?;
+                let by_agent = t.reason == super::supervision::AGENT_CANCELLED_REASON;
+                super::supervision::cancel_intent(tx, &mut t, by_agent)?;
             } else if t.state != ExecutionState::Blocked {
                 let open = t
                     .obligations
@@ -725,6 +726,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::Sweep { .. }
         | Operation::ArchiveTask { .. }
         | Operation::CancelTask { .. }
+        | Operation::CancelTaskByAgent { .. }
+        | Operation::NoteTurnCancel { .. }
         | Operation::RetireRestartFailure { .. }
         | Operation::OwnerResponse { .. }) => super::supervision::apply(tx, op),
         op @ (Operation::CreateWake { .. }

@@ -120,6 +120,54 @@ impl Drop for Fixture {
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
+fn settle_cancelled(f: &Fixture) -> AgentTaskExecution {
+    let Outcome::Settled { task, .. } = f.apply(Operation::Settle {
+        room: "room".into(),
+        agent: "parent".into(),
+        prompt: "p".into(),
+        run: "run".into(),
+        has_answer: false,
+        cancelled: true,
+        now: 3,
+    }) else {
+        panic!("the turn settles")
+    };
+    task
+}
+#[test]
+fn the_owners_stop_outranks_an_agents_cancel_in_either_order() {
+    for owner_first in [true, false] {
+        let f = Fixture::new();
+        f.begin("p");
+        let note = |initiator| {
+            f.apply(Operation::NoteTurnCancel {
+                task: "p".into(),
+                initiator,
+            })
+        };
+        if owner_first {
+            note(CancelInitiator::Owner);
+            note(CancelInitiator::Agent);
+        } else {
+            note(CancelInitiator::Agent);
+            note(CancelInitiator::Owner);
+        }
+        let task = settle_cancelled(&f);
+        assert_eq!(task.state, ExecutionState::Cancelled);
+        assert_eq!(task.reason, "Stopped by you", "owner first: {owner_first}");
+        assert!(task.stopped_by_owner());
+    }
+    let f = Fixture::new();
+    f.begin("p");
+    f.apply(Operation::NoteTurnCancel {
+        task: "p".into(),
+        initiator: CancelInitiator::Agent,
+    });
+    let task = settle_cancelled(&f);
+    assert_eq!(task.reason, "Stopped by an agent");
+    assert!(!task.stopped_by_owner());
+}
+
 #[test]
 fn a02_queue_dispatch_revalidates_blocked_cancelled_and_done_tasks() {
     for state in ["blocked", "cancelled", "done"] {

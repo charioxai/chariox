@@ -3687,6 +3687,7 @@ async fn stopping_a_turn_without_a_provider_cancels_its_workflow_run_outside_the
             &fixture.session_id,
             &creator,
             prompt.id(),
+            crate::durable_state::agent_lifecycle::CancelInitiator::Owner,
         ),
     )
     .await

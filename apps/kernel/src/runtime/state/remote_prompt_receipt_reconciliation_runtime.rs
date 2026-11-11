@@ -299,12 +299,11 @@ impl KernelRuntimeState {
                     && binding_after.active_worker_provider_run_id.as_deref()
                         == Some(expected_provider_run_id) =>
             {
-                self.cancel_remote_agent_prompt_if_remote(
+                self.continue_remote_agent_prompt_cancellation(
                     &dispatch.session_id,
                     &dispatch.agent_id,
                     &dispatch.source_attachment_id,
-                    Some(&dispatch.prompt_id),
-                    None,
+                    &dispatch.prompt_id,
                 )
                 .await?;
                 Ok(())

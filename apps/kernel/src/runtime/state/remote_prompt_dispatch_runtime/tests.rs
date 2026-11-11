@@ -6894,3 +6894,348 @@ mod projection_acknowledgement {
         assert_eq!(worker_run(&app, &agent_id), None);
     }
 }
+
+// A peer's cancel of a remote turn ends the task, not the agent: whichever remote path later
+// settles it keeps the recorded initiator, and only a real new owner Stop takes it over.
+mod agent_issued_remote_cancel {
+    use super::lost_worker_run::delivered_fixture;
+    use super::*;
+    use crate::durable_state::agent_lifecycle::{AgentTaskExecution, ExecutionState, Operation};
+
+    async fn agent_attachment(fixture: &ReceiptReconciliationFixture) -> String {
+        let mut app = fixture.app.lock().await;
+        crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                &fixture.session_id,
+                "agent:peer-reviewer",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("the peer's seat attaches")
+            .id()
+            .to_string()
+    }
+
+    fn turn_task(fixture: &ReceiptReconciliationFixture) -> AgentTaskExecution {
+        fixture
+            .runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&fixture.session_id), Some(&fixture.agent_id))
+            .unwrap()
+            .into_iter()
+            .find(|task| task.prompt_id == fixture.dispatch.prompt_id)
+            .expect("the turn's task")
+    }
+
+    fn assert_agent_cancelled(task: &AgentTaskExecution) {
+        assert_eq!(task.state, ExecutionState::Cancelled, "{task:?}");
+        assert_eq!(task.reason, "Stopped by an agent");
+        assert!(
+            !task.stopped_by_owner(),
+            "later messages run on an agent-cancelled task"
+        );
+    }
+
+    async fn peer_cancels(fixture: &ReceiptReconciliationFixture) {
+        let peer = agent_attachment(fixture).await;
+        fixture
+            .runtime
+            .owned
+            .begin_remote_prompt_cancellation_if_matches(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &peer,
+                Some(&fixture.dispatch.prompt_id),
+            )
+            .expect("the peer's cancel begins")
+            .expect("the prompt is cancelling");
+        assert_eq!(turn_task(fixture).reason, "Stopped by an agent");
+    }
+
+    #[tokio::test]
+    async fn recovery_after_a_pending_ack_keeps_a_peers_cancel_of_an_owner_prompt() {
+        let fixture =
+            make_receipt_reconciliation_fixture("ws://127.0.0.1:9", "peer-recovery").await;
+        let owned = &fixture.runtime.owned;
+        let mut config = owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        owned.config_projection.update(config);
+        let owner = owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap()
+            .owner_user_id()
+            .to_string();
+        owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Begin {
+                owner,
+                room: fixture.session_id.clone(),
+                agent: fixture.agent_id.clone(),
+                prompt: fixture.dispatch.prompt_id.clone(),
+                run: None,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+        // The prompt is the owner's, and its delivery ACK is still pending when the peer cancels.
+        peer_cancels(&fixture).await;
+        owned
+            .mark_active_prompt_delivery(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some("worker-run-acked".to_string()),
+                None,
+            )
+            .unwrap();
+        owned
+            .agent_store
+            .set_remote_execution_active_worker_provider_run_id(
+                &fixture.agent_id,
+                Some("worker-run-acked".to_string()),
+            )
+            .unwrap();
+        let mut claim = RemotePromptAgentClaim::try_acquire(
+            Arc::clone(&owned.remote_prompt_recoveries),
+            &fixture.session_id,
+            &fixture.agent_id,
+        )
+        .expect("the test owns the recovery claim");
+        claim.mark_active_prompt(&fixture.dispatch.prompt_id);
+
+        fixture
+            .runtime
+            .resume_remote_prompt_cancellation_with_claim(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &mut claim,
+            )
+            .await
+            .expect("recovery resumes the cancellation");
+        assert_eq!(
+            turn_task(&fixture).reason,
+            "Stopped by an agent",
+            "recovery is not a new owner Stop"
+        );
+
+        owned
+            .finalize_remote_prompt_cancellation_after_worker_settled(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+            )
+            .unwrap();
+        assert_agent_cancelled(&turn_task(&fixture));
+    }
+
+    async fn begin_owner_turn_task(fixture: &ReceiptReconciliationFixture) {
+        let owned = &fixture.runtime.owned;
+        let mut config = owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        owned.config_projection.update(config);
+        let owner = owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap()
+            .owner_user_id()
+            .to_string();
+        owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Begin {
+                owner,
+                room: fixture.session_id.clone(),
+                agent: fixture.agent_id.clone(),
+                prompt: fixture.dispatch.prompt_id.clone(),
+                run: None,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_dispatch_ack_keeps_a_peers_cancel_of_an_owner_prompt() {
+        let fixture = make_receipt_reconciliation_fixture("ws://127.0.0.1:9", "peer-ack").await;
+        begin_owner_turn_task(&fixture).await;
+        // The peer cancels while the owner's prompt is still waiting for the worker's ACK.
+        peer_cancels(&fixture).await;
+
+        fixture
+            .runtime
+            .finish_remote_prompt_dispatch(
+                fixture.dispatch.clone(),
+                Ok("worker-run-peer-ack".to_string()),
+            )
+            .await
+            .expect("the ACK settles the held dispatch");
+
+        assert_eq!(
+            turn_task(&fixture).reason,
+            "Stopped by an agent",
+            "settling the ACK is not a new owner Stop"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restart_recovery_keeps_a_peers_cancel_when_the_receipt_is_active() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture =
+            delivered_fixture(&relay_url, "peer-receipt", "worker-run-peer-receipt").await;
+        peer_cancels(&fixture).await;
+
+        let worker_id = fixture.worker_id.clone();
+        let worker_machine_id = fixture.worker_machine_id.clone();
+        let worker_public_key = fixture.worker_public_key.clone();
+        let worker_private_key = fixture.worker_private_key.clone();
+        let home_public_key = fixture.home_public_key.clone();
+        let leased_agent_id = fixture.leased_agent_id.clone();
+        let prompt_id = fixture.dispatch.prompt_id.clone();
+        let server = tokio::spawn(async move {
+            let receipt_request = receive_fake_worker_peer_request(
+                &listener,
+                &worker_id,
+                &worker_machine_id,
+                &worker_public_key,
+                &worker_private_key,
+                None,
+            )
+            .await;
+            assert!(matches!(
+                &receipt_request.request,
+                RelayPeerRequest::GetLeasedPromptReceipt { .. }
+            ));
+            send_fake_worker_peer_response(
+                receipt_request,
+                &worker_id,
+                &worker_private_key,
+                &home_public_key,
+                RelayPeerResponse::LeasedPromptReceiptQueried {
+                    receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        home_prompt_id: prompt_id,
+                        worker_provider_run_id: "worker-run-peer-receipt".to_string(),
+                        phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                        target_home_prompt_id: None,
+                        execution_lease_id: Some("lease-receipt-peer-receipt".to_string()),
+                    }),
+                },
+            )
+            .await;
+            let cancel_request = receive_fake_worker_peer_request(
+                &listener,
+                &worker_id,
+                &worker_machine_id,
+                &worker_public_key,
+                &worker_private_key,
+                None,
+            )
+            .await;
+            assert!(matches!(
+                &cancel_request.request,
+                RelayPeerRequest::CancelLeasedPrompt { .. }
+            ));
+            send_fake_worker_peer_response(
+                cancel_request,
+                &worker_id,
+                &worker_private_key,
+                &home_public_key,
+                RelayPeerResponse::LeasedPromptCancelled {
+                    cancellation: crate::session::PromptCancellation {
+                        prompt: crate::session::PromptQueueItem::new(
+                            "worker-local-peer-receipt",
+                            "worker-attachment-peer-receipt",
+                            &leased_agent_id,
+                            "the peer-cancelled prompt",
+                            crate::session::PromptStatus::Cancelling,
+                        ),
+                        started_next: None,
+                    },
+                },
+            )
+            .await;
+        });
+
+        assert!(fixture
+            .runtime
+            .recover_remote_prompt_after_kernel_restart(
+                &fixture.session_id,
+                &fixture.agent_id,
+                Some(crate::session::DurablePromptDeliveryPhase::Delivered),
+                None,
+            )
+            .await
+            .expect("restart recovery resumes the delivered cancellation"));
+        server.abort();
+
+        assert_eq!(
+            turn_task(&fixture).reason,
+            "Stopped by an agent",
+            "re-sending the cancel after a restart is not a new owner Stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_already_settled_leaves_a_peers_cancel_agent_cancelled() {
+        let fixture =
+            delivered_fixture("ws://127.0.0.1:9", "peer-settled", "worker-run-settled").await;
+        peer_cancels(&fixture).await;
+        fixture
+            .runtime
+            .owned
+            .finalize_remote_prompt_cancellation_after_worker_settled(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+            )
+            .unwrap();
+        assert_agent_cancelled(&turn_task(&fixture));
+    }
+
+    #[tokio::test]
+    async fn the_silence_deadline_leaves_a_peers_cancel_agent_cancelled() {
+        let fixture =
+            delivered_fixture("ws://127.0.0.1:9", "peer-deadline", "worker-run-silent").await;
+        peer_cancels(&fixture).await;
+        assert!(fixture
+            .runtime
+            .end_remote_cancellation_the_worker_never_answered(
+                &fixture.session_id,
+                &fixture.agent_id
+            )
+            .expect("home ends the cancellation"));
+        assert_agent_cancelled(&turn_task(&fixture));
+    }
+
+    #[tokio::test]
+    async fn an_owner_stop_after_a_peers_cancel_still_wins_through_settlement() {
+        let fixture =
+            delivered_fixture("ws://127.0.0.1:9", "peer-then-owner", "worker-run-owner").await;
+        peer_cancels(&fixture).await;
+        fixture
+            .runtime
+            .owned
+            .begin_remote_prompt_cancellation_if_matches(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+                Some(&fixture.dispatch.prompt_id),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(turn_task(&fixture).reason, "Stopped by you");
+        fixture
+            .runtime
+            .owned
+            .finalize_remote_prompt_cancellation_after_worker_settled(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+            )
+            .unwrap();
+        let task = turn_task(&fixture);
+        assert_eq!(task.state, ExecutionState::Cancelled);
+        assert!(task.stopped_by_owner());
+    }
+}

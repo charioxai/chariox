@@ -44,7 +44,7 @@ pub(in crate::durable_state::agent_lifecycle) fn control(
             };
             return Ok(Outcome::Task(resumed));
         }
-        "cancel" => super::super::supervision::cancel_intent(tx, &mut t)?,
+        "cancel" => super::super::supervision::cancel_intent(tx, &mut t, false)?,
         "interval" => {
             let n = value
                 .as_deref()

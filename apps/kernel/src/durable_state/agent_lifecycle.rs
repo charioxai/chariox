@@ -71,7 +71,8 @@ pub use types::{
 };
 mod wake_receipts;
 pub(crate) use types::{
-    unresolved_source_outcome, InboxEvent, Operation, Outcome, Registration, WakeEnd,
+    unresolved_source_outcome, CancelInitiator, InboxEvent, Operation, Outcome, Registration,
+    WakeEnd,
 };
 pub(crate) const SWEEP_MS: u64 = 30_000;
 pub(crate) const DELIVERY_TIMEOUT_MS: u64 = 120_000;
