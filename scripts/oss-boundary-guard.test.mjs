@@ -259,9 +259,12 @@ test('a base that predates the whole-file list is reported as unchecked, not sil
 test('outside a git repository the accepted list is unavailable and the note says what was checked', () => {
   const dir = mkdtempSync(join(tmpdir(), 'oss-boundary-nogit-'))
   try {
-    const accepted = guard.acceptedAllowedFiles(dir, {})
-    assert.equal(accepted.paths, null)
-    assert.match(accepted.note, /not a git repository.*membership NOT checked/)
+    const accepted = [...guard.acceptedEntries(dir, {}).values()]
+    assert.equal(accepted.length, 2)
+    for (const { keys, note } of accepted) {
+      assert.equal(keys, null)
+      assert.match(note, /not a git repository.*membership NOT checked/)
+    }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -315,23 +318,6 @@ test('a leak-list entry needs an owner row and a plan slice', () => {
     assert.deepEqual(problemsOf(files, { leaks: [{ ...entry, ...broken }] }), ['leak entry: apps/cli/src/plan.ts'], JSON.stringify(broken))
   }
   assert.match(fullProblemsOf(files, { leaks: [{ ...entry, row: undefined }] })[0].text, /owner row/)
-})
-
-test('the leak list may not grow past the recorded total', () => {
-  assert.ok(Number.isInteger(guard.LEAK_ENTRY_CEILING) && guard.LEAK_ENTRY_CEILING > 0, 'the guard records the leak-list ceiling')
-  const files = {}
-  const leaks = []
-  for (let i = 0; i <= guard.LEAK_ENTRY_CEILING; i++) {
-    files[`apps/cli/src/leak${i}.ts`] = 'export const preset = "agents_done" // auto-stop policy\n'
-    leaks.push({ path: `apps/cli/src/leak${i}.ts`, removedBy: 'B2', row: 'OSB-09', slice: 'B2' })
-  }
-  assert.deepEqual(problemsOf(files, { leaks }), ['leak list grew: scripts/oss-boundary-leaks.allow.json'])
-  assert.deepEqual(problemsOf(Object.fromEntries(Object.entries(files).slice(1)), { leaks: leaks.slice(1) }), [])
-})
-
-test('the recorded leak ceiling is the current entry count, so deleting entries lowers it', () => {
-  const entries = JSON.parse(readFileSync(resolve(fileURLToPath(import.meta.url), '../oss-boundary-leaks.allow.json'), 'utf8'))
-  assert.ok(entries.length === guard.LEAK_ENTRY_CEILING, `${entries.length} entries but the ceiling is ${guard.LEAK_ENTRY_CEILING}: set LEAK_ENTRY_CEILING to the new total`)
 })
 
 test('the repository has no unlisted provider names, Cloud vocabulary, control-plane paths or Cloud-shaped requests', () => {

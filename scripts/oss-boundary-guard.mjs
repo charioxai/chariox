@@ -8,10 +8,10 @@
 //   3. Cloud-shaped local-API requests and kernel-client builders are listed in
 //      scripts/control-plane-requests.allow.json.
 // Test files and docs may use these words as sample data. The leak list
-// (scripts/oss-boundary-leaks.allow.json) may only shrink: an entry whose file no longer
-// matches fails, so deleting a leak means deleting its entry in the same change. The whole-file
-// list (scripts/oss-boundary-files.allow.json) follows the same rule, and is also compared with the
-// list at the merge base so a swapped-in entry is red.
+// (scripts/oss-boundary-leaks.allow.json) and the whole-file list (scripts/oss-boundary-files.allow.json)
+// may only shrink: an entry whose file no longer matches fails, so deleting a leak means deleting
+// its entry in the same change, and an entry that is not in the list at the merge base is red, so a
+// swapped-in entry cannot hide behind a deleted one.
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -202,54 +202,64 @@ function readAllowlist(root, name) {
 const problem = (file, kind, text, line = 0) => ({ file, line, kind, text })
 
 // Every leak is owned: the plan row it belongs to and the slice (docs/design/OSS_BOUNDARY_PLAN.md,
-// section 2) that deletes it. The ceiling is the recorded entry total and only goes down: lower it
-// in the change that deletes entries; raising it needs the owner, not a reviewer.
+// section 2) that deletes it.
 export const LEAK_ROWS = new Set(['OSB-04', 'OSB-05', 'OSB-06', 'OSB-07', 'OSB-09'])
 export const LEAK_SLICES = new Set(['B0', 'B1', 'B2', 'B3', 'B4a', 'B4b', 'B5', 'B6', 'B7', 'B8'])
-export const LEAK_ENTRY_CEILING = 39
 
-// Whole-file exceptions (scripts/oss-boundary-files.allow.json), each with a reason: the name is
-// not a compute provider's business logic. The list only shrinks: an entry whose file no longer
-// names anything fails, and an entry that is not in the list at the merge base fails. The accepted
-// list is read from git history, not from the working tree, so editing the list cannot excuse
-// the entry that was just added to it.
-const ALLOWED_FILES_LIST = 'scripts/oss-boundary-files.allow.json'
+// The two shrink-only lists. Whole-file exceptions each carry a reason: the name is not a compute
+// provider's business logic. Leak entries each name the item that deletes them. An entry that is
+// not in the list at the merge base fails, and it excuses nothing. The accepted list is read from
+// git history, not from the working tree, so editing the list cannot excuse the entry that was
+// just added to it.
+const ALLOWED_FILES_LIST = { label: 'whole-file list', file: 'scripts/oss-boundary-files.allow.json', key: 'path', newKind: 'new allowed file' }
+const LEAK_LIST = { label: 'leak list', file: 'scripts/oss-boundary-leaks.allow.json', key: 'path', newKind: 'new leak entry' }
+const SHRINK_ONLY_LISTS = [ALLOWED_FILES_LIST, LEAK_LIST]
 const gitOut = (root, ...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 28 }).trim()
 
-// The whole-file list at the accepted baseline: the commit named by CHARIOX_BOUNDARY_BASE, else
-// the merge base of HEAD and origin/main. `paths` is null, with a note saying what was not
-// checked, when there is no baseline to compare with. An explicit base that is not a commit throws.
-export function acceptedAllowedFiles(root, env = process.env) {
-  const unchecked = reason => ({ paths: null, note: `whole-file list ${ALLOWED_FILES_LIST}: ${reason}; membership NOT checked, so an entry added in this change is not detected` })
-  try { gitOut(root, 'rev-parse', '--git-dir') } catch { return unchecked('not a git repository') }
-  let base
+// The commit the change branches from: CHARIOX_BOUNDARY_BASE, else the merge base of HEAD and
+// origin/main. `reason` says why there is none. An explicit base that is not a commit throws.
+function baselineCommit(root, env) {
+  try { gitOut(root, 'rev-parse', '--git-dir') } catch { return { reason: 'not a git repository' } }
   if (env.CHARIOX_BOUNDARY_BASE) {
-    try { base = gitOut(root, 'rev-parse', '--verify', `${env.CHARIOX_BOUNDARY_BASE}^{commit}`) } catch {
+    try { return { base: gitOut(root, 'rev-parse', '--verify', `${env.CHARIOX_BOUNDARY_BASE}^{commit}`) } } catch {
       throw new Error(`CHARIOX_BOUNDARY_BASE=${env.CHARIOX_BOUNDARY_BASE} is not a commit in ${root}: unset it or name the commit the change branches from`)
     }
-  } else {
-    try { base = gitOut(root, 'merge-base', 'HEAD', 'origin/main') } catch { return unchecked('no origin/main to compare with (fetch it or set CHARIOX_BOUNDARY_BASE to the commit the change branches from)') }
   }
-  let text
-  try { text = gitOut(root, 'show', `${base}:./${ALLOWED_FILES_LIST}`) } catch {
-    return unchecked(`not in ${base.slice(0, 12)}, so the list is introduced by this change`)
+  try { return { base: gitOut(root, 'merge-base', 'HEAD', 'origin/main') } } catch {
+    return { reason: 'no origin/main to compare with (fetch it or set CHARIOX_BOUNDARY_BASE to the commit the change branches from)' }
   }
-  return { paths: new Set(JSON.parse(text).map(entry => entry.path)), note: null }
 }
 
-function allowedFileProblems(root, files, entries, accepted) {
-  const problems = []
-  for (const entry of entries) {
-    if (accepted.paths && entry.path && !accepted.paths.has(entry.path)) {
-      problems.push(problem(ALLOWED_FILES_LIST, 'new allowed file', `${entry.path} is not in the list at the merge base: move the logic to Cloud instead of adding an entry`))
+// For each shrink-only list, the entry keys at the accepted baseline. `keys` is null, with a note
+// saying what was not checked, when there is no baseline to compare with.
+export function acceptedEntries(root, env = process.env) {
+  const { base, reason } = baselineCommit(root, env)
+  return new Map(SHRINK_ONLY_LISTS.map(list => {
+    const unchecked = why => ({ keys: null, note: `${list.label} ${list.file}: ${why}; membership NOT checked, so an entry added in this change is not detected` })
+    if (!base) return [list, unchecked(reason)]
+    let text
+    try { text = gitOut(root, 'show', `${base}:./${list.file}`) } catch {
+      return [list, unchecked(`not in ${base.slice(0, 12)}, so the list is introduced by this change`)]
     }
-  }
+    return [list, { keys: new Set(JSON.parse(text).map(entry => entry[list.key])), note: null }]
+  }))
+}
+
+const isAccepted = (list, entry, accepted) => !accepted.get(list).keys || accepted.get(list).keys.has(entry[list.key])
+
+function newEntryProblems(list, entries, accepted) {
+  return entries.filter(entry => entry[list.key] && !isAccepted(list, entry, accepted))
+    .map(entry => problem(list.file, list.newKind, `${entry[list.key]} is not in the list at the merge base: move the logic to Cloud instead of adding an entry`))
+}
+
+function allowedFileProblems(root, files, entries) {
+  const problems = []
   const tracked = new Set(files)
   for (const entry of entries) {
     const text = entry.path && tracked.has(entry.path) ? readText(root, entry.path) : null
-    if (!entry.path || !entry.why) problems.push(problem(ALLOWED_FILES_LIST, 'allowed file entry', `${entry.path ?? '?'} needs a path and a why`))
+    if (!entry.path || !entry.why) problems.push(problem(ALLOWED_FILES_LIST.file, 'allowed file entry', `${entry.path ?? '?'} needs a path and a why`))
     else if (text === null || providerNameFindings(entry.path, text).length + vocabularyFindings(entry.path, text).length === 0) {
-      problems.push(problem(entry.path, 'stale allowed file', `no longer names a provider or Cloud word: delete the entry from ${ALLOWED_FILES_LIST}`))
+      problems.push(problem(entry.path, 'stale allowed file', `no longer names a provider or Cloud word: delete the entry from ${ALLOWED_FILES_LIST.file}`))
     }
   }
   return problems
@@ -259,20 +269,18 @@ function vocabularyProblems(root, files, accepted) {
   const leaks = new Map()
   const problems = []
   const entries = readAllowlist(root, 'oss-boundary-leaks.allow.json')
-  for (const entry of entries) {
+  problems.push(...newEntryProblems(LEAK_LIST, entries, accepted))
+  // An entry that is not in the accepted list excuses nothing: its file is scanned and reported too.
+  for (const entry of entries.filter(entry => isAccepted(LEAK_LIST, entry, accepted))) {
     if (!entry.path || !entry.removedBy) { leaks.set(entry.path ?? '?', null); continue }
     if (!LEAK_ROWS.has(entry.row) || !LEAK_SLICES.has(entry.slice)) {
       problems.push(problem(entry.path, 'leak entry', `needs an owner row (${[...LEAK_ROWS].join('|')}) and a plan slice (${[...LEAK_SLICES].join('|')})`))
     }
     leaks.set(entry.path, entry)
   }
-  if (entries.length > LEAK_ENTRY_CEILING) {
-    problems.push(problem('scripts/oss-boundary-leaks.allow.json', 'leak list grew', `${entries.length} entries, recorded total ${LEAK_ENTRY_CEILING}: move the logic to Cloud instead of adding an entry`))
-  }
   const allowedEntries = readAllowlist(root, 'oss-boundary-files.allow.json')
-  problems.push(...allowedFileProblems(root, files, allowedEntries, accepted))
-  // An entry that is not in the accepted list excuses nothing: its file is scanned and reported too.
-  const allowedFiles = new Set(allowedEntries.filter(entry => entry.why && (!accepted.paths || accepted.paths.has(entry.path))).map(entry => entry.path))
+  problems.push(...newEntryProblems(ALLOWED_FILES_LIST, allowedEntries, accepted), ...allowedFileProblems(root, files, allowedEntries))
+  const allowedFiles = new Set(allowedEntries.filter(entry => entry.why && isAccepted(ALLOWED_FILES_LIST, entry, accepted)).map(entry => entry.path))
   const matched = new Set()
   for (const path of files.filter(path => isCheckedPath(path, allowedFiles))) {
     const text = readText(root, path)
@@ -344,7 +352,7 @@ function requestProblems(root, files) {
   return problems
 }
 
-export function boundaryProblems(root, files = trackedFiles(root), accepted = acceptedAllowedFiles(root)) {
+export function boundaryProblems(root, files = trackedFiles(root), accepted = acceptedEntries(root)) {
   return [...vocabularyProblems(root, files, accepted), ...controlPlanePathProblems(root, files), ...requestProblems(root, files)]
 }
 
@@ -356,11 +364,11 @@ function trackedFiles(root) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const root = resolve(fileURLToPath(import.meta.url), '../..')
   let accepted
-  try { accepted = acceptedAllowedFiles(root) } catch (error) {
+  try { accepted = acceptedEntries(root) } catch (error) {
     console.error(`oss-boundary-guard: ${error.message}`)
     process.exit(1)
   }
-  if (accepted.note) console.error(`oss-boundary-guard: WARNING ${accepted.note}`)
+  for (const { note } of accepted.values()) if (note) console.error(`oss-boundary-guard: WARNING ${note}`)
   const problems = boundaryProblems(root, undefined, accepted)
   for (const f of problems) console.error(`${f.file}:${f.line}: ${f.kind}: ${f.text}`)
   if (problems.length) {
