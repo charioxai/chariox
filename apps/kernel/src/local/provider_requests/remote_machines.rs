@@ -42,11 +42,7 @@ pub(crate) fn remote_machine_records(
         records.push(RemoteMachineRecord {
             machine_id: entry.machine_id.clone(),
             machine_alias: None,
-            registry_alias: entry.alias.clone(),
-            display_name: entry
-                .alias
-                .clone()
-                .unwrap_or_else(|| entry.machine_id.clone()),
+            display_name: entry.machine_id.clone(),
             trust_status: RemoteMachineTrustStatus::Approved,
             online: false,
             pending: false,
@@ -77,15 +73,13 @@ fn remote_machine_record(
         || entry
             .map(|entry| entry.approved && !entry.forgotten)
             .unwrap_or(false);
-    let registry_alias = entry.and_then(|entry| entry.alias.clone());
-    let display_name = registry_alias
+    let display_name = machine
+        .machine_alias
         .clone()
-        .or_else(|| machine.machine_alias.clone())
         .unwrap_or_else(|| machine.machine_id.clone());
     RemoteMachineRecord {
         machine_id: machine.machine_id,
         machine_alias: machine.machine_alias,
-        registry_alias,
         display_name,
         trust_status: if approved {
             RemoteMachineTrustStatus::Approved
@@ -149,26 +143,21 @@ pub(crate) fn record_for_machine_id(
 
 pub(crate) fn forgotten_machine_record(
     machine_id: String,
-    registry_alias: Option<String>,
     live_machines: Vec<RelayMachinePresence>,
     local_machine_id: &str,
 ) -> RemoteMachineRecord {
     let live = live_machines
         .into_iter()
         .find(|machine| machine.machine_id == machine_id && machine.machine_id != local_machine_id);
-    let display_name = registry_alias
-        .clone()
-        .or_else(|| {
-            live.as_ref()
-                .and_then(|machine| machine.machine_alias.clone())
-        })
+    let display_name = live
+        .as_ref()
+        .and_then(|machine| machine.machine_alias.clone())
         .unwrap_or_else(|| machine_id.clone());
     RemoteMachineRecord {
         machine_id,
         machine_alias: live
             .as_ref()
             .and_then(|machine| machine.machine_alias.clone()),
-        registry_alias,
         display_name,
         trust_status: RemoteMachineTrustStatus::Forgotten,
         online: live.is_some(),

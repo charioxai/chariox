@@ -18,12 +18,6 @@ pub struct ForgetRemoteMachineRequest {
     pub machine_ref: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RenameRemoteMachineRequest {
-    pub machine_ref: String,
-    pub alias: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PairingInviteIntent {
@@ -196,8 +190,6 @@ pub struct RemoteMachineRecord {
     pub machine_id: String,
     #[serde(default)]
     pub machine_alias: Option<String>,
-    #[serde(default)]
-    pub registry_alias: Option<String>,
     pub display_name: String,
     pub trust_status: RemoteMachineTrustStatus,
     pub online: bool,

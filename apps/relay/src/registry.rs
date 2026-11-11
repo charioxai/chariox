@@ -847,7 +847,12 @@ impl RelayRegistry {
             .collect()
     }
 
+    /// What a kernel is called in this relay's lists: its computer's name, "-2", "-3" for
+    /// the computer's later kernels in start order, and the end of the machine ID only when
+    /// two computers share a name. A relay keeps no history, so the numbers follow the
+    /// kernels registered now; Cloud keeps them for the life of a kernel.
     fn relay_kernel_aliases(&self, realm_id: &str) -> BTreeMap<String, String> {
+        let machine_names = self.machine_names_in_realm(realm_id);
         let mut registrations = self
             .daemon_registrations_in_realm(realm_id)
             .collect::<Vec<_>>();
@@ -856,23 +861,69 @@ impl RelayRegistry {
                 .cmp(&normalized_kernel_started_at_ms(right))
                 .then_with(|| left.daemon_id.cmp(&right.daemon_id))
         });
-
+        let mut machines_by_name = BTreeMap::<String, BTreeSet<&str>>::new();
+        for registration in &registrations {
+            let name = machine_names
+                .get(&registration.machine_id)
+                .map(MachineName::label)
+                .unwrap_or_default();
+            machines_by_name
+                .entry(name)
+                .or_default()
+                .insert(registration.machine_id.as_str());
+        }
+        let mut kernels_seen = BTreeMap::<&str, usize>::new();
         registrations
             .into_iter()
-            .enumerate()
-            .map(|(index, registration)| {
-                let os_name = registration
-                    .os_name
-                    .clone()
-                    .or_else(|| registration.machine_alias.clone())
-                    .unwrap_or_else(|| "unknown".to_string());
-                (
-                    registration.daemon_id.clone(),
-                    format!("machine {} ({})", index + 1, os_name),
-                )
+            .map(|registration| {
+                let name = machine_names
+                    .get(&registration.machine_id)
+                    .map(MachineName::label)
+                    .unwrap_or_default();
+                let ordinal = kernels_seen
+                    .entry(registration.machine_id.as_str())
+                    .or_default();
+                *ordinal += 1;
+                let mut label = name.clone();
+                if *ordinal > 1 {
+                    label = format!("{label}-{ordinal}");
+                }
+                let computers = &machines_by_name[&name];
+                if computers.len() > 1 {
+                    label = format!(
+                        "{label} ({})",
+                        distinct_id_suffix(&registration.machine_id, computers)
+                    );
+                }
+                (registration.daemon_id.clone(), label)
             })
             .collect()
     }
+}
+
+/// The end of `machine_id`, at least four characters, that no other computer in `group` shares.
+fn distinct_id_suffix(machine_id: &str, group: &BTreeSet<&str>) -> String {
+    let tail = |id: &str, length: usize| -> String {
+        let digits = id
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<Vec<_>>();
+        digits[digits.len().saturating_sub(length)..]
+            .iter()
+            .collect::<String>()
+            .to_uppercase()
+    };
+    let longest = group.iter().map(|id| id.len()).max().unwrap_or(4);
+    (4..=longest.max(4))
+        .find(|length| {
+            let own = tail(machine_id, *length);
+            group
+                .iter()
+                .filter(|other| **other != machine_id)
+                .all(|other| tail(other, *length) != own)
+        })
+        .map(|length| tail(machine_id, length))
+        .unwrap_or_else(|| tail(machine_id, longest))
 }
 
 /// What a machine is called: its registered name, else a plain label.

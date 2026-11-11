@@ -37,7 +37,6 @@ fn kernel_with_room_of(
     let mut config = DaemonConfig::for_tests();
     config.room_agent_tools = true;
     config.daemon_id = id.into();
-    config.daemon_alias = Some(format!("{id}-name"));
     if signed_in {
         config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
             user_id: OWNER.into(),

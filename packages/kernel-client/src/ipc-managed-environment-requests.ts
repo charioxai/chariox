@@ -242,7 +242,6 @@ export type ManagedContextTransferTicket = {
 
 export type CreateManagedEnvironmentInput = {
   readonly clientRequestId: string
-  readonly name: string
   readonly region: string
   readonly computeClass: string
   readonly managedRepositoryRoot?: string

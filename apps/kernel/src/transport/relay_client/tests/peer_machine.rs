@@ -34,9 +34,8 @@ fn a_machine_name_resolves_to_the_kernel_it_runs_and_an_unknown_name_is_unreacha
         let mut kernel = |id: &str, machine_id: &str, machine: Option<&str>| {
             let mut config = DaemonConfig::for_tests();
             config.daemon_id = id.to_string();
-            config.daemon_alias = Some(id.trim_start_matches("daemon-").to_string());
             config.host_machine_id = machine_id.to_string();
-            config.host_machine_alias = machine.map(str::to_string);
+            config.machine_name_for_tests = machine.map(str::to_string);
             config.relay_url = Some(relay_url.clone());
             config.relay_token = Some("secret".to_string());
             config.relay_heartbeat_ms = 50;
@@ -74,9 +73,22 @@ fn a_machine_name_resolves_to_the_kernel_it_runs_and_an_unknown_name_is_unreacha
             .expect("a machine of the owner resolves");
         assert_eq!(resolved.as_deref(), Some("daemon-worker"));
 
+        // Two kernels of one computer have two names: the computer's name for the first, numbered from 2 after it.
+        for (name, kernel) in [
+            ("builder-twins", "daemon-twin-a"),
+            ("builder-twins-2", "daemon-twin-b"),
+        ] {
+            let resolved = runtime
+                .resolve_peer_kernel(name)
+                .await
+                .expect("a kernel's name resolves to it");
+            assert_eq!(resolved.as_deref(), Some(kernel), "{name}");
+        }
+
+        // The computer itself, which runs two kernels, names neither.
         for (name, reason) in [
             ("no-such-machine", "kernel_unreachable"),
-            ("builder-twins", "kernel_ambiguous"),
+            ("machine-twins", "kernel_ambiguous"),
         ] {
             let refusal = runtime
                 .resolve_peer_kernel(name)
@@ -101,21 +113,18 @@ fn a_machine_name_resolves_to_the_kernel_it_runs_and_an_unknown_name_is_unreacha
     });
 }
 
-/// The name the owner gave the machine at Cloud enrollment is the machine name the relay
-/// matches `--machine` against while the Cloud relay carries this kernel; the local alias
-/// (`CHARIOX_MACHINE_ALIAS` or the host name) stays the name on a private relay.
+/// A kernel tells every relay, Cloud's or a private one, the name its computer has.
 #[test]
-fn the_enrolled_machine_name_is_the_name_the_relay_knows() {
+fn the_relay_knows_the_machine_by_the_name_its_computer_reports() {
     crate::test_support::isolated_env_test!();
     // Each kernel gets its own state: the first one still owns its durable state.
     let enrolled = |relay_url: &str| {
         let mut config = DaemonConfig::for_tests();
-        config.host_machine_alias = Some("ao-b-machine".to_string());
+        config.machine_name_for_tests = Some("ao-b-machine".to_string());
         config.relay_url = Some(relay_url.to_string());
         config.relay_token = Some("relay-token".to_string());
         config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
             relay_url: "wss://relay.example.test".to_string(),
-            machine_alias: Some("aoorch-b".to_string()),
             ..Default::default()
         });
         config
@@ -124,7 +133,7 @@ fn the_enrolled_machine_name_is_the_name_the_relay_knows() {
         DaemonApp::bootstrap(enrolled("wss://relay.example.test")).expect("kernel bootstraps");
     assert_eq!(
         app.relay_registration().machine_alias.as_deref(),
-        Some("aoorch-b")
+        Some("ao-b-machine")
     );
 
     let mut private =

@@ -1008,6 +1008,9 @@ async fn run_daemon_relay_connector_inner(
                 }
                 let mut cloud_presence_schedule =
                     CloudPresencePublishSchedule::new(Instant::now(), &daemon_id);
+                // A rename of the computer reaches Cloud and the relay at the next heartbeat tick,
+                // not at the next 30 s presence refresh.
+                let mut published_machine_name = router.machine_name();
                 let refresh_remote_inventory = should_refresh_remote_inventory(
                     static_relay.is_none(),
                     router.managed_slice_relay_identity().is_some(),
@@ -1313,6 +1316,18 @@ async fn run_daemon_relay_connector_inner(
                                 let mut registration = router.relay_registration().await;
                                 registration.auth_token = active_relay_token.clone();
                                 heartbeat_registration = Some(registration);
+                            }
+                            let current_machine_name = router.machine_name();
+                            if current_machine_name != published_machine_name {
+                                published_machine_name = current_machine_name;
+                                if heartbeat_registration.is_none() {
+                                    let mut registration = router.relay_registration().await;
+                                    registration.auth_token = active_relay_token.clone();
+                                    heartbeat_registration = Some(registration);
+                                }
+                                if let Some(presence) = presence {
+                                    presence.publish(true, "machine renamed");
+                                }
                             }
                             if heartbeat_registration.is_some() {
                                 published_accounts = accounts;

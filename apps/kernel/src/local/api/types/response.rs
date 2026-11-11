@@ -329,7 +329,6 @@ pub enum LocalDaemonResponse {
     WorkspaceGitActionCompleted { result: WorkspaceGitActionResult, },
     RemoteMachineApproved { machine: RemoteMachineRecord, },
     RemoteMachineForgotten { machine: RemoteMachineRecord, },
-    RemoteMachineRenamed { machine: RemoteMachineRecord, },
     PairingInviteCreated { invite: PairingInviteRecord, },
     PairingInviteJoined { pairing: PairingJoinRecord, },
     TerminalPairingLinkCreated { pairing: TerminalPairingLinkRecord, },

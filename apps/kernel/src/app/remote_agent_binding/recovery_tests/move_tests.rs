@@ -1,7 +1,7 @@
 use super::*;
 #[tokio::test(flavor = "multi_thread")]
 async fn mk03_public_move_materializes_current_project_and_return_uses_fresh_root() {
-    let fixture = Fixture::with_relay_fixture(false, false, false, false).await;
+    let fixture = Fixture::with_relay_fixture(false, false, false).await;
     let (session_id, original, notes) = {
         let home = fixture.home.lock().await;
         let agent = home
@@ -165,7 +165,7 @@ async fn mk03_public_move_materializes_current_project_and_return_uses_fresh_roo
 }
 
 async fn crash_fixture() -> (Fixture, String, PathBuf) {
-    let fixture = Fixture::with_relay_fixture(false, false, false, false).await;
+    let fixture = Fixture::with_relay_fixture(false, false, false).await;
     let (session, path) = {
         let home = fixture.home.lock().await;
         let agent = home
@@ -1499,7 +1499,7 @@ async fn mk03_prompt_queued_mid_move_advances_after_abort() {
 }
 
 async fn slice_membership_survives_completion_crash(forward: bool) {
-    let fixture = Fixture::with_relay_fixture(false, false, false, true).await;
+    let fixture = Fixture::with_relay_fixture(false, false, true).await;
     let session = {
         let home = fixture.home.lock().await;
         home.agents()

@@ -234,16 +234,16 @@ function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine, k
     const kernelLabel = kernels.length === 1 && firstKernel
       ? waitingRoomRemoteKernelLabel(firstKernel)
       : "one of this machine's kernels"
-    return `run /machine kernels ${machineLabel}; enable remote access on ${kernelLabel} or choose another kernel`
+    return `run /machine kernels ${machine.machine_id}; enable remote access on ${kernelLabel} or choose another kernel`
   }
   if (kernels.length > 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "needs-provider")) {
-    return `run /machine kernels ${machineLabel}; configure provider CLIs on ${machineLabel}`
+    return `run /machine kernels ${machine.machine_id}; configure provider CLIs on ${machineLabel}`
   }
   if (kernels.length > 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "needs-account")) {
-    return `run /machine kernels ${machineLabel}; configure/import or refresh provider accounts on ${machineLabel}`
+    return `run /machine kernels ${machine.machine_id}; configure/import or refresh provider accounts on ${machineLabel}`
   }
   if (kernels.length > 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "unknown")) {
-    return `refresh ${machineLabel} or run /machine kernels ${machineLabel}`
+    return `refresh ${machineLabel} or run /machine kernels ${machine.machine_id}`
   }
   if (kernels.length > 0 && !kernels.some((kernel) => remoteKernelReadiness(kernel) === "ready")) {
     return `fix listed kernel readiness issues on ${machineLabel} or choose another kernel`
@@ -256,8 +256,7 @@ function waitingRoomRemoteMachineNextAction(machine: WaitingRoomRemoteMachine, k
 
 function waitingRoomRemoteKernelNextAction(kernel: WaitingRoomRemoteKernel): string {
   const kernelLabel = waitingRoomRemoteKernelLabel(kernel)
-  const machineLabel = kernel.machine_alias ?? kernel.machine_id
-  const inspect = machineLabel ? `run /machine kernels ${machineLabel}; ` : ""
+  const inspect = kernel.machine_id ? `run /machine kernels ${kernel.machine_id}; ` : ""
   const readiness = remoteKernelReadiness(kernel)
   if (readiness === "blocked") {
     return `${inspect}enable remote access on ${kernelLabel} or choose another kernel`
@@ -275,7 +274,7 @@ function waitingRoomRemoteKernelNextAction(kernel: WaitingRoomRemoteKernel): str
 }
 
 function waitingRoomRemoteMachineLabel(machine: WaitingRoomRemoteMachine): string {
-  return machine.registry_alias ?? machine.machine_alias ?? machine.display_name ?? machine.machine_id
+  return machine.machine_alias ?? machine.display_name ?? machine.machine_id
 }
 
 function waitingRoomRemoteKernelLabel(kernel: WaitingRoomRemoteKernel): string {

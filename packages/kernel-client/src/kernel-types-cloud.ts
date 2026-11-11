@@ -12,7 +12,6 @@ export type RelayStatus = {
   relay_url?: string | null
   relay_token_configured: boolean
   daemon_id: string
-  daemon_alias?: string | null
   machine_id: string
   machine_alias?: string | null
 }
@@ -29,7 +28,6 @@ export type CloudRelayProfile = {
   client_id?: string | null
   client_alias?: string | null
   machine_id?: string | null
-  machine_alias?: string | null
   kernel_id?: string | null
   kernel_enrolled?: boolean
   token_expires_at_ms?: number | null
@@ -116,7 +114,6 @@ export type KernelClientConnection = {
 export type RemoteMachineRecord = {
   machine_id: string
   machine_alias?: string | null
-  registry_alias?: string | null
   display_name: string
   trust_status: "approved" | "pending" | "forgotten"
   online: boolean

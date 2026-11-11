@@ -38,6 +38,11 @@ impl KernelRuntimeState {
         .await
     }
 
+    /// The computer's name now, read without the app lock: a heartbeat must not wait behind work that holds it.
+    pub(crate) fn machine_name(&self) -> Option<String> {
+        self.owned.config_projection.snapshot().machine_name()
+    }
+
     pub(crate) async fn relay_registration(&self) -> chariox_relay::protocol::DaemonRegistration {
         self.with_app_side_effect(|app| app.relay_registration())
             .await

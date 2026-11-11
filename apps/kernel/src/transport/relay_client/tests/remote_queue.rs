@@ -56,7 +56,7 @@ impl RemoteQueueFixture {
         let mut config_worker = DaemonConfig::for_tests();
         config_worker.daemon_id = format!("{name}-worker");
         config_worker.host_machine_id = format!("{name}-worker-machine");
-        config_worker.host_machine_alias = Some(format!("{name}-builder"));
+        config_worker.machine_name_for_tests = Some(format!("{name}-builder"));
         config_worker.relay_url = Some(relay_url.clone());
         config_worker.relay_token = Some("secret".to_string());
         config_worker.relay_heartbeat_ms = 50;

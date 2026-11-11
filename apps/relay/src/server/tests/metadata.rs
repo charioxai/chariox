@@ -104,7 +104,7 @@ async fn metadata_queries_return_live_machines_and_kernels() {
         request_id: "kernels-1".to_string(),
         auth_token: "secret".to_string(),
         query: RelayMetadataQuery::ListLiveKernelsForMachine {
-            machine_ref: "machine 1 (macOS)".to_string(),
+            machine_ref: "workstation".to_string(),
         },
     };
     client_socket
@@ -133,7 +133,7 @@ async fn metadata_queries_return_live_machines_and_kernels() {
             assert_eq!(kernels.len(), 1);
             assert_eq!(kernels[0].kernel_id, "daemon-1");
             assert_eq!(kernels[0].machine_alias.as_deref(), Some("workstation"));
-            assert_eq!(kernels[0].relay_alias.as_deref(), Some("machine 1 (macOS)"));
+            assert_eq!(kernels[0].relay_alias.as_deref(), Some("workstation"));
             assert_eq!(kernels[0].available_providers, vec!["opencode", "codex"]);
             assert!(kernels[0].accepting_remote_leases);
             assert_eq!(kernels[0].leased_agent_count, 2);

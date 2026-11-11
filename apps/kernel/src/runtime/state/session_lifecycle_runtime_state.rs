@@ -1443,8 +1443,7 @@ pub(super) fn kernel_ref_matches_local_config(
     kernel_ref: &str,
 ) -> bool {
     let kernel_ref = kernel_ref.trim();
-    !kernel_ref.is_empty()
-        && (config.daemon_id == kernel_ref || config.daemon_alias.as_deref() == Some(kernel_ref))
+    !kernel_ref.is_empty() && config.daemon_id == kernel_ref
 }
 
 fn slice_worker_ready(slice: &crate::slice::SliceRecord, provider: Option<&str>) -> bool {

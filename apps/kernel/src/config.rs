@@ -17,6 +17,7 @@ mod env_loader;
 mod identity;
 mod kernel_access;
 mod kernel_cloud_state;
+pub(crate) mod os_machine;
 mod pairings;
 mod paths;
 mod persisted_daemon;
@@ -152,9 +153,9 @@ pub struct DaemonConfig {
     pub publication_control_state_root: Option<PathBuf>,
     pub daemon_id: String,
     pub host_machine_id: String,
-    pub host_machine_alias: Option<String>,
     pub os_name: String,
-    pub daemon_alias: Option<String>,
+    #[cfg(test)]
+    pub(crate) machine_name_for_tests: Option<String>,
     pub relay_url: Option<String>,
     pub relay_token: Option<String>,
     pub managed_slice_relay_recovery_token: Option<String>,
@@ -211,13 +212,13 @@ impl DaemonConfig {
             .is_some_and(|profile| normalize_relay_url_for_match(&profile.relay_url) == relay_url)
     }
 
-    /// The machine name the relay matches `--machine` against: the name the owner gave this
-    /// machine at Cloud enrollment while the Cloud relay carries this kernel, else the local alias.
-    pub(crate) fn relay_machine_alias(&self) -> Option<String> {
-        crate::runtime::cloud_relay_control::active_cloud_profile(self)
-            .and_then(|profile| profile.machine_alias.clone())
-            .filter(|alias| !alias.trim().is_empty())
-            .or_else(|| self.host_machine_alias.clone())
+    /// The OS's name for this computer, read live so renaming the computer in the OS
+    /// renames it everywhere on the next check-in.
+    pub(crate) fn machine_name(&self) -> Option<String> {
+        #[cfg(test)]
+        return self.machine_name_for_tests.clone();
+        #[cfg(not(test))]
+        os_machine::machine_name()
     }
 
     pub(crate) fn apply_remote_relay_override(&mut self, relay_url: String, relay_token: String) {
@@ -280,9 +281,9 @@ impl DaemonConfig {
             provider_runtime_init_delay_ms: 0,
             daemon_id: daemon_id.clone(),
             host_machine_id: host_machine_id.into(),
-            host_machine_alias: None,
             os_name: default_os_name(),
-            daemon_alias: None,
+            #[cfg(test)]
+            machine_name_for_tests: None,
             relay_url: None,
             relay_token: None,
             managed_slice_relay_recovery_token: None,

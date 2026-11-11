@@ -870,7 +870,6 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)
         | LocalDaemonRequest::ApproveRemoteMachine(_)
         | LocalDaemonRequest::ForgetRemoteMachine(_)
-        | LocalDaemonRequest::RenameRemoteMachine(_)
         | LocalDaemonRequest::CreatePairingInvite(_)
         | LocalDaemonRequest::JoinPairingInvite(_)
         | LocalDaemonRequest::CreateTerminalPairingLink(_)

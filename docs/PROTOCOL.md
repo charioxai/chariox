@@ -4415,7 +4415,7 @@ local protocol/portability behavior, not live provider login, provisioning or
 fresh-machine MP-10 acceptance.
 ### Own machine enrollment (local 971 / relay peer 420)
 
-`IssueOwnMachineEnrollment { machine_label? }` replaces `AddSshMachine` and
+`IssueOwnMachineEnrollment {}` (the machine names itself; there is no label) replaces `AddSshMachine` and
 `RemoveSshMachine`; Chariox no longer installs a kernel over SSH. Only the
 kernel's owner (and an agent or external client acting under the owner's sudo
 window or access grant) may send it. A request that names another user, such as a
@@ -5181,7 +5181,7 @@ See [the real drill](drills/MP08_CONTROL_PLANE_MACHINES.md).
 Kernel gateway (same provisional 568/176). A grant holder names another kernel and the local kernel
 forwards the request over the relay, as a terminal-class client of the target kernel; the target stays the
 authority for its own sessions, agents, terminals and files.
-- Unix-socket frames: `request` frames take an optional `kernel` (the name `ListGatewayKernels` shows: the machine's name when the user has one kernel there, else `<machine>/<label>`; a kernel id, a kernel alias or a machine alias also works when it fits exactly one kernel, else `kernel_ambiguous` lists the candidates).
+- Unix-socket frames: `request` frames take an optional `kernel` (the name `ListGatewayKernels` shows: the computer's name, `<name>-2`, `<name>-3` for its later kernels; a kernel id or a machine name also works when it fits exactly one kernel, else `kernel_ambiguous` lists the candidates).
   The response frame echoes it (`kernel`, absent for local answers). A frame with `kernel` on a connection
   that is not a grant holder's is refused; a kernel request is never answered locally.
 - Subscriptions: a `subscribe` frame with `kernel` starts the same event stream on that kernel (a relay

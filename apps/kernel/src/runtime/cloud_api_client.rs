@@ -59,7 +59,6 @@ pub(crate) struct CloudDeviceProfileResponse {
     pub(crate) relay_url: String,
     pub(crate) issuer_id: String,
     pub(crate) machine_id: Option<String>,
-    pub(crate) machine_alias: Option<String>,
     pub(crate) kernel_id: Option<String>,
     pub(crate) public_key_thumbprint: Option<String>,
 }
@@ -441,7 +440,6 @@ pub(crate) fn cloud_profile_from_persisted(
         client_id: profile.client_id.clone(),
         client_alias: profile.client_alias.clone(),
         machine_id: profile.machine_id.clone(),
-        machine_alias: profile.machine_alias.clone(),
         kernel_id: profile.kernel_id.clone(),
         kernel_enrolled: profile
             .kernel_credential
@@ -454,6 +452,21 @@ pub(crate) fn cloud_profile_from_persisted(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The file is Cloud's own approved poll answer; Cloud checks its real answer against the same file.
+    #[test]
+    fn the_approved_poll_answer_cloud_sends_decodes() {
+        let answer: CloudDevicePollResponse = serde_json::from_str(include_str!(
+            "../../tests/cloud-contract/device-poll-approved-response.json"
+        ))
+        .unwrap();
+        assert_eq!(answer.status, "approved");
+        assert_eq!(answer.kernel_credential.as_deref(), Some("kcred_synthetic"));
+        let profile = answer.profile.unwrap();
+        assert_eq!(profile.machine_id.as_deref(), Some("machine-1"));
+        assert_eq!(profile.kernel_id.as_deref(), Some("kernel-1"));
+        assert_eq!(profile.realm_id, "realm-1");
+    }
 
     #[test]
     fn managed_slice_active_token_request_matches_cloud_runtime_contract() {

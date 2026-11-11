@@ -24,20 +24,18 @@ const PROBE_DEADLINE: Duration = Duration::from_secs(5);
 /// What a paired kernel says about itself in its status answer.
 pub(super) struct TargetStatus {
     pub(super) capabilities: Vec<String>,
-    pub(super) kernel_alias: Option<String>,
     pub(super) machine_alias: Option<String>,
 }
 
 impl TargetStatus {
-    /// Takes the names the kernel gives itself: the pairing link only carried its ids.
+    /// Takes the name the kernel gives itself: the pairing link only carried its ids.
     pub(super) fn apply_to(self, presence: &mut RelayKernelPresence) {
         presence.capabilities = self.capabilities;
-        presence.kernel_alias = self.kernel_alias.or(presence.kernel_alias.take());
         presence.machine_alias = self.machine_alias.or(presence.machine_alias.take());
     }
 }
 
-/// The status of a kernel (capabilities such as `kernel_gateway_v1`, and its aliases).
+/// The status of a kernel (capabilities such as `kernel_gateway_v1`, and its machine name).
 pub(super) async fn status_of(link: &Link) -> Result<TargetStatus, LinkFailure> {
     let request = serde_json::to_vec(
         &serde_json::json!({"request": LocalDaemonRequest::RelayStatus(RelayStatusRequest)}),
@@ -64,7 +62,6 @@ pub(super) async fn status_of(link: &Link) -> Result<TargetStatus, LinkFailure> 
         capabilities: status("capabilities")
             .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default(),
-        kernel_alias: text("daemon_alias"),
         machine_alias: text("machine_alias"),
     })
 }
@@ -100,13 +97,11 @@ impl KernelGateway {
                 .map(|target| self.probe(target)),
         )
         .await;
-        let known: Vec<&RelayKernelPresence> =
-            probed.iter().map(|probed| &probed.presence).collect();
         Ok(names::grouped(
             probed
                 .iter()
                 .map(|probed| GatewayKernel {
-                    name: names::display_name(&probed.presence, &known),
+                    name: names::display_name(&probed.presence),
                     label: names::label(&probed.presence),
                     kernel_id: probed.presence.kernel_id.clone(),
                     machine_id: probed.presence.machine_id.clone(),
@@ -205,13 +200,12 @@ mod tests {
     #[test]
     fn a_name_means_one_paired_kernel_and_every_other_case_is_a_typed_error() {
         let kernels = vec![
-            paired("k-b3", Some("b3"), Some("ovh")),
+            paired("k-b3", None, Some("b3")),
             paired("k-x", None, Some("shared")),
-            paired("k-y", Some("y"), Some("shared")),
+            paired("k-y", None, Some("shared")),
         ];
         assert_eq!(named(&kernels, "b3").unwrap().kernel_id, "k-b3");
         assert_eq!(named(&kernels, "k-x").unwrap().kernel_id, "k-x");
-        assert_eq!(named(&kernels, "shared/y").unwrap().kernel_id, "k-y");
         assert_eq!(
             named(&kernels, "nope").unwrap_err().code(),
             "kernel_unknown"
@@ -226,7 +220,6 @@ mod tests {
         let name = "b3".to_string();
         let answered = Ok(TargetStatus {
             capabilities: Vec::new(),
-            kernel_alias: None,
             machine_alias: None,
         });
         assert_eq!(status_after(&answered), GatewayKernelStatus::Online);
@@ -246,21 +239,18 @@ mod tests {
         let mut presence = paired("k-x", None, None).presence;
         TargetStatus {
             capabilities: vec!["kernel_gateway_v1".into()],
-            kernel_alias: Some("dev".into()),
             machine_alias: Some("b3".into()),
         }
         .apply_to(&mut presence);
-        assert_eq!(presence.kernel_alias.as_deref(), Some("dev"));
+        assert_eq!(presence.kernel_alias, None);
         assert_eq!(presence.machine_alias.as_deref(), Some("b3"));
         assert_eq!(presence.capabilities, ["kernel_gateway_v1"]);
         // A status that names nothing keeps what was learned before.
         TargetStatus {
             capabilities: Vec::new(),
-            kernel_alias: None,
             machine_alias: None,
         }
         .apply_to(&mut presence);
-        assert_eq!(presence.kernel_alias.as_deref(), Some("dev"));
         assert_eq!(presence.machine_alias.as_deref(), Some("b3"));
         assert!(presence.capabilities.is_empty());
     }

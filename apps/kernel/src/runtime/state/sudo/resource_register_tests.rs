@@ -84,7 +84,7 @@ async fn resource_register_forwarded_calls_use_home_state_and_reject_stale_conte
     let f = fixture();
     let mut turn = elevate(&f);
     let worker = crate::config::DaemonConfig::for_tests();
-    crate::config::DaemonConfig::approve_remote_machine("worker-machine", None).unwrap();
+    crate::config::DaemonConfig::approve_remote_machine("worker-machine").unwrap();
     super::forgotten_machine_tests::lease_agent_to_machine(&f, &worker.daemon_id);
     turn.placement = Some("lease".into());
     f.state

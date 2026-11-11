@@ -1481,7 +1481,6 @@ mod tests {
                 client_id: None,
                 client_alias: None,
                 machine_id: None,
-                machine_alias: None,
                 kernel_id: None,
                 kernel_enrolled: false,
                 token_expires_at_ms: None,

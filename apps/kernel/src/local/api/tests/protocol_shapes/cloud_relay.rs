@@ -215,7 +215,7 @@ fn relay_status_native_process_identity_is_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
-        "f381ca6abd2db0ecbbf771c64020ee267e65da3134f353ba17c72e2c4d438f94"
+        "cd16cce847349b4f533b672fb46f830c80626c2259ec24c358ee9da698daddce"
     );
 }
 
@@ -271,7 +271,7 @@ fn kernel_cloud_ownership_status_and_connect_never_serialize_credentials() {
     assert!(!encoded.contains("secret"));
     assert_eq!(
         format!("{:x}", Sha256::digest(encoded.as_bytes())),
-        "7780e190db04ee7a94c6194558d4eb5899a933e1c9f5b60b0a843b6cf2215c42"
+        "d576e4b22ec7d0700135f82ee0d7eba18a7fd4e0d455fbb498b52d005a0ddd8c"
     );
 }
 

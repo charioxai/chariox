@@ -383,7 +383,6 @@ response_policies! {
         WorkspaceGitActionCompleted,
         RemoteMachineApproved,
         RemoteMachineForgotten,
-        RemoteMachineRenamed,
         TerminalsListed,
         PairedClientsListed,
         PairedClientRecorded,

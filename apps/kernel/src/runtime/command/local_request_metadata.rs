@@ -936,7 +936,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CommitAndPushWorkspaceChanges(_) => "workspace.git.commit_and_push",
         LocalDaemonRequest::ApproveRemoteMachine(_) => "remote_machine.approve",
         LocalDaemonRequest::ForgetRemoteMachine(_) => "remote_machine.forget",
-        LocalDaemonRequest::RenameRemoteMachine(_) => "remote_machine.rename",
         LocalDaemonRequest::CreatePairingInvite(_) => "pairing_invite.create",
         LocalDaemonRequest::JoinPairingInvite(_) => "pairing_invite.join",
         LocalDaemonRequest::CreateTerminalPairingLink(_) => "terminal_pairing_link.create",

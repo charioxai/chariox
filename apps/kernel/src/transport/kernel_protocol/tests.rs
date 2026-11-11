@@ -789,7 +789,6 @@ fn waiting_room_snapshot(
             relay_url: None,
             relay_token_configured: false,
             daemon_id: "daemon-1".to_string(),
-            daemon_alias: None,
             machine_id: "machine-1".to_string(),
             machine_alias: None,
         },

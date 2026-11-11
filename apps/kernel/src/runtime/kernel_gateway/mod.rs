@@ -431,6 +431,7 @@ impl KernelGateway {
     /// a gateway the user revoked there while no grant was using it.
     async fn register_for(&self, grant_id: &str, target: &str) -> Result<(), GatewayError> {
         let snapshot = self.config.snapshot();
+        let machine_name = snapshot.machine_name();
         let Some(profile) = snapshot.cloud_relay else {
             return Ok(());
         };
@@ -441,7 +442,7 @@ impl KernelGateway {
                 GATEWAY_CLIENT_ID,
                 &identity.thumbprint,
                 grant_id,
-                snapshot.daemon_alias.as_deref(),
+                machine_name.as_deref(),
                 target,
             )
             .await

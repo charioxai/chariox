@@ -178,7 +178,6 @@ test("kernel event dispatch applies relay and remote-machine patches without ref
     machines: [{
       machine_id: "machine-2",
       machine_alias: "worker",
-      registry_alias: null,
       display_name: "worker",
       trust_status: "approved",
       online: true,

@@ -273,6 +273,10 @@ impl CommandRouter {
             .generation()
     }
 
+    pub(crate) fn machine_name(&self) -> Option<String> {
+        self.runtime_state.machine_name()
+    }
+
     pub(crate) async fn relay_registration(&self) -> chariox_relay::protocol::DaemonRegistration {
         self.runtime_state.relay_registration().await
     }

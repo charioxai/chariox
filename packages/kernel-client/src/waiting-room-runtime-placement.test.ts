@@ -21,7 +21,7 @@ test("waiting room launch machine options include local and remote labels", () =
     label: option.label,
   })), [
     { id: "local", label: "local" },
-    { id: "machine-1", label: "registry-one" },
+    { id: "machine-1", label: "machine one" },
     { id: "machine-2", label: "display two" },
     { id: "machine-without-kernel", label: "machine-without-kernel" },
   ])
@@ -120,7 +120,7 @@ test("waiting room MP-08/MP-11 ready managed machines expose the common discover
 })
 
 test("waiting room launch value labels reflect normalized selections", () => {
-  assert.equal(formatWaitingRoomLaunchMachineValue({ selectedMachineRef: "machine-1" }, remote()), "registry-one")
+  assert.equal(formatWaitingRoomLaunchMachineValue({ selectedMachineRef: "machine-1" }, remote()), "machine one")
   assert.equal(formatWaitingRoomLaunchKernelValue({
     selectedMachineRef: "machine-1",
     selectedKernelRef: "kernel-1b",
@@ -160,7 +160,6 @@ function remote() {
     machines: [
       {
         machine_id: "machine-1",
-        registry_alias: "registry-one",
         machine_alias: "machine one",
         kernel_count: 2,
       },

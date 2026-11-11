@@ -5836,7 +5836,6 @@ mod tests {
             client_id: None,
             client_alias: None,
             machine_id: Some(machine_id),
-            machine_alias: Some("Managed test".to_string()),
             machine_credential: Some(test_machine_credential()),
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,

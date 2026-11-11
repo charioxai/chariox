@@ -1,0 +1,7 @@
+{
+  "enrollmentKind": "KERNEL",
+  "kernelId": "daemon-test",
+  "machineId": "machine-test",
+  "publicKeyThumbprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "machineName": "fixture-machine"
+}

@@ -148,7 +148,6 @@ import {
   forgetRemoteMachine,
   listRemoteMachineKernels,
   listRemoteMachines,
-  renameRemoteMachine,
 } from "./remote-machine-api.js"
 import { forgetGatewayKernel, joinKernelLink, listGatewayKernels } from "./kernel-gateway-api.js"
 import {
@@ -698,12 +697,11 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getRemoteMachines: remoteMachinesState,
     setRemoteMachines: setRemoteMachinesState,
     reconcileWaitingRoom: () => reconcileWaitingRoom(),
-    issueOwnMachineEnrollment: (machineLabel) => issueOwnMachineEnrollment(client, machineLabel),
+    issueOwnMachineEnrollment: () => issueOwnMachineEnrollment(client),
     listRemoteMachines: () => listRemoteMachines(client),
     listRemoteMachineKernels: (machineRef) => listRemoteMachineKernels(client, machineRef),
     approveRemoteMachine: (machineRef) => approveRemoteMachine(client, machineRef),
     forgetRemoteMachine: (machineRef) => forgetRemoteMachine(client, machineRef),
-    renameRemoteMachine: (machineRef, alias) => renameRemoteMachine(client, machineRef, alias),
     joinKernelLink: (link, relayToken) => joinKernelLink(client, link, relayToken),
     listGatewayKernels: () => listGatewayKernels(client),
     forgetGatewayKernel: (name) => forgetGatewayKernel(client, name),

@@ -457,7 +457,6 @@ async fn start_remote_agent_worker(fixture: &mut LiveWorker) -> (TestState, Arc<
     worker_state.config.relay_token = fixture.home_state.config.relay_token.clone();
     worker_state.config.relay_heartbeat_ms = 50;
     worker_state.config.daemon_id = "agent-worker".to_string();
-    worker_state.config.daemon_alias = Some("agent-worker".to_string());
     worker_state.config.host_machine_id = "agent-worker-machine".to_string();
     let worker = Arc::new(CommandRouter::with_interactive_capacity(
         Arc::new(Mutex::new(

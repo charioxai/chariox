@@ -298,7 +298,6 @@ pub enum LocalDaemonRequest {
     CommitAndPushWorkspaceChanges(CommitAndPushWorkspaceChangesRequest),
     ApproveRemoteMachine(ApproveRemoteMachineRequest),
     ForgetRemoteMachine(ForgetRemoteMachineRequest),
-    RenameRemoteMachine(RenameRemoteMachineRequest),
     CreatePairingInvite(CreatePairingInviteRequest),
     JoinPairingInvite(JoinPairingInviteRequest),
     CreateTerminalPairingLink(CreateTerminalPairingLinkRequest),

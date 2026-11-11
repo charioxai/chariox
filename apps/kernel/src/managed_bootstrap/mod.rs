@@ -906,8 +906,6 @@ fn validate_exchange_response(
         || !valid_identifier(&response.cloud_relay.issuer_id)
         || response.cloud_relay.email.trim().is_empty()
         || response.cloud_relay.email.len() > 320
-        || response.cloud_relay.machine_alias.trim().is_empty()
-        || response.cloud_relay.machine_alias.len() > 256
         || !valid_managed_relay_url(&response.cloud_relay.relay_url)
         || !valid_secret(&response.cloud_relay.machine_credential, "mcred_")
         || response.context_plan.validate().is_err()
@@ -1096,7 +1094,6 @@ fn persisted_profile(profile: ManagedCloudRelayProfile) -> PersistedCloudRelayPr
         client_id: None,
         client_alias: None,
         machine_id: Some(profile.machine_id),
-        machine_alias: Some(profile.machine_alias),
         machine_credential: Some(profile.machine_credential),
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,

@@ -21,8 +21,6 @@ pub struct StartCloudRelayLoginRequest {
     pub client_alias: Option<String>,
     #[serde(default)]
     pub machine_id: Option<String>,
-    #[serde(default)]
-    pub machine_alias: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,8 +99,6 @@ pub struct CloudRelayProfile {
     #[serde(default)]
     pub machine_id: Option<String>,
     #[serde(default)]
-    pub machine_alias: Option<String>,
-    #[serde(default)]
     pub kernel_id: Option<String>,
     #[serde(default)]
     pub kernel_enrolled: bool,
@@ -163,7 +159,6 @@ pub struct RelayStatus {
     pub relay_url: Option<String>,
     pub relay_token_configured: bool,
     pub daemon_id: String,
-    pub daemon_alias: Option<String>,
     pub machine_id: String,
     pub machine_alias: Option<String>,
 }

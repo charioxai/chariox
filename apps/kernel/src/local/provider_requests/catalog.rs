@@ -1495,13 +1495,7 @@ fn approved_live_remote_machines(
                 .find(|entry| {
                     entry.machine_id == machine.machine_id && entry.approved && !entry.forgotten
                 })
-                .map(|entry| {
-                    let mut machine = machine.clone();
-                    if entry.alias.is_some() {
-                        machine.machine_alias = entry.alias.clone();
-                    }
-                    machine
-                })
+                .map(|_| machine.clone())
         })
         .collect()
 }
