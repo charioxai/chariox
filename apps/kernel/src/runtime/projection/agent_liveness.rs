@@ -98,10 +98,14 @@ pub struct SilentAgentHealth {
 }
 
 /// The agents whose turn is running and whose provider run wrote nothing for
-/// longer than [`STALLED_AFTER_MS`]: what the health report flags.
+/// longer than [`STALLED_AFTER_MS`]: what the health report flags. Quiet counts
+/// from the later of the run's last output and the start of the admitted turn,
+/// as the session liveness does: time in the queue is not quiet time. A prompt
+/// with no admitted turn yet has not begun to be quiet.
 pub(crate) fn silent_agents(
     agents: &[super::AgentRuntimeProjection],
     runs: &[crate::provider::RuntimeProviderRun],
+    active_turns: &BTreeMap<String, crate::app::ActiveTurnState>,
     now_ms: u64,
 ) -> Vec<SilentAgentHealth> {
     agents
@@ -114,12 +118,19 @@ pub(crate) fn silent_agents(
             ) {
                 return None;
             }
+            let turn_started_at_ms =
+                super::session_snapshot_projection::active_turn_for_session_agent(
+                    active_turns,
+                    &agent.session_id,
+                    &agent.agent_id,
+                )?
+                .started_at_ms;
             let last_output = runs
                 .iter()
                 .filter(|run| run.agent_instance_id() == Some(agent.agent_id.as_str()))
                 .map(crate::provider::RuntimeProviderRun::last_output_at_ms)
                 .max();
-            let quiet_since_ms = last_output.max(Some(prompt.created_at_ms()))?;
+            let quiet_since_ms = last_output.max(Some(turn_started_at_ms))?;
             (now_ms.saturating_sub(quiet_since_ms) > STALLED_AFTER_MS).then(|| SilentAgentHealth {
                 session_id: agent.session_id.clone(),
                 agent_id: agent.agent_id.clone(),
@@ -346,33 +357,43 @@ mod tests {
     #[test]
     fn a_running_turn_without_provider_output_for_over_the_limit_is_listed_as_silent() {
         let now = 100 * MINUTE;
-        let prompt = |created: u64| {
-            let mut value = serde_json::to_value(crate::session::PromptQueueItem::new(
+        let prompt = || {
+            crate::session::PromptQueueItem::new(
                 "p",
                 "attachment",
                 "agent-1",
                 "work",
                 crate::session::PromptStatus::Running,
-            ))
-            .unwrap();
-            value["created_at_ms"] = created.into();
-            serde_json::from_value::<crate::session::PromptQueueItem>(value).unwrap()
+            )
         };
-        let agent = |id: &str, created: u64| super::super::AgentRuntimeProjection {
+        let agent = |id: &str| super::super::AgentRuntimeProjection {
             session_id: "room".into(),
             agent_id: id.into(),
-            active_prompt: Some(prompt(created)),
+            active_prompt: Some(prompt()),
             next_queued_prompt: None,
             queued_prompt_count: 0,
         };
+        let turn = |id: &str, started: u64| {
+            let mut turn = crate::app::ActiveTurnState::new(
+                "room".into(),
+                id.into(),
+                "p".into(),
+                format!("run-{id}"),
+            );
+            turn.started_at_ms = started;
+            (turn.provider_run_id.clone(), turn)
+        };
+        let turns = BTreeMap::from([
+            turn("agent-1", now - 20 * MINUTE),
+            turn("agent-2", now - MINUTE),
+        ]);
         let silent = silent_agents(
-            &[
-                agent("agent-1", now - 20 * MINUTE),
-                agent("agent-2", now - MINUTE),
-            ],
+            &[agent("agent-1"), agent("agent-2"), agent("agent-3")],
             &[],
+            &turns,
             now,
         );
+        // agent-3 has no admitted turn: nothing has started to be quiet.
         assert_eq!(silent.len(), 1);
         assert_eq!(silent[0].agent_id, "agent-1");
         assert_eq!(silent[0].quiet_since_ms, now - 20 * MINUTE);

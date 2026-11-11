@@ -364,7 +364,7 @@ pub(crate) fn agent_activity_for_session_projection(
     activity
 }
 
-fn active_turn_for_session_agent<'a>(
+pub(super) fn active_turn_for_session_agent<'a>(
     active_turns: &'a BTreeMap<String, ActiveTurnState>,
     session_id: &str,
     agent_id: &str,
