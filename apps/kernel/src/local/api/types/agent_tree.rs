@@ -47,6 +47,17 @@ pub struct AgentTreeNode {
     /// The node's effective variant; omitted when it has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// The provider account profile the node runs under; omitted when it uses the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_profile: Option<String>,
+    /// The workspace and worktree the node works in; omitted when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_id: Option<String>,
+    /// The kernel that runs the node when it is not this one; omitted for a local node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_kernel_id: Option<String>,
     pub depth: u32,
     pub state: AgentTreeState,
     pub outcome: Option<crate::provider::TurnOutcomeKind>,

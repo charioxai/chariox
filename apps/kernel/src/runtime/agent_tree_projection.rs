@@ -67,6 +67,10 @@ fn redact_parameters(node: &mut AgentTreeNode) {
     node.execution_mode = None;
     node.permission_level = None;
     node.effort = None;
+    node.account_profile = None;
+    node.workspace_id = None;
+    node.worktree_id = None;
+    node.worker_kernel_id = None;
 }
 
 /// What the viewer reads of `tree`, by the rule the session projection applies to agents: an agent
@@ -175,6 +179,12 @@ pub(crate) fn project_agent_tree(
             execution_mode: Some(effective.mode),
             permission_level: Some(effective.permission_level),
             effort: agent.effort().map(str::to_owned),
+            account_profile: agent.account_profile().map(str::to_owned),
+            workspace_id: agent.workspace_id().map(str::to_owned),
+            worktree_id: agent.worktree_id().map(str::to_owned),
+            worker_kernel_id: agent
+                .remote_execution()
+                .map(|remote| remote.worker_kernel_id.clone()),
             depth,
             state,
             outcome: turn.and_then(|turn| turn.outcome),
