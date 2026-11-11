@@ -2590,8 +2590,7 @@ Rules:
 - A frame is at most 1 MiB. A larger resource with a cursor pages with it and
   sends `changes`. A larger resource without one (`provider_catalog`,
   `provider_commands`, `terminal_commands`) is sent as parts of one snapshot,
-  `snapshot: { data, part: { index, count } }`, the top-level array items split
-  across parts. Every part carries the same `revision` and comes from one
+  `snapshot: { chunk, part: { index, count } }`: the kernel serialises the whole projection once to JSON and cuts the bytes into chunks of at most 1 MiB (on UTF-8 boundaries); the client joins the chunks in order and parses the complete projection, so any shape (objects, maps, a provider whose `models` alone exceeds 1 MiB) is reconstructed exactly. Every part carries the same `revision` and comes from one
   materialised snapshot; if the resource changes mid-send the kernel abandons the
   send and restarts with the new revision. A client commits only when it holds
   all `count` parts of one revision.
