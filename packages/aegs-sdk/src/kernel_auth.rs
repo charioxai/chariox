@@ -599,4 +599,70 @@ mod admission_order_tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(after.is_ok(), "{after:?}");
     }
+
+    // A read that fails while the operator rewrites the file must not turn the last good list
+    // into an empty one: the kernels it admitted stay admitted until a read succeeds.
+    #[tokio::test]
+    async fn a_failed_reread_keeps_the_last_good_allowlist() {
+        let (dir, file) = allowlist_dir("allowlist-keep", &["listed"]);
+        let auth = ManagementAuth::new(Admission::Allowlist { file: file.clone() });
+        let now = 1_700_000_000_000;
+        assert!(authenticate(&auth, "listed", "owner", "n0", now)
+            .await
+            .is_ok());
+
+        std::fs::write(&file, "{ not json").unwrap();
+        let garbage = authenticate(&auth, "listed", "owner", "n1", now + 60_000).await;
+
+        std::fs::remove_file(&file).unwrap();
+        let missing = authenticate(&auth, "listed", "owner", "n2", now + 120_000).await;
+        let stranger = authenticate(&auth, "stranger", "owner", "n3", now + 120_000).await;
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(garbage.is_ok(), "garbage file: {garbage:?}");
+        assert!(missing.is_ok(), "missing file: {missing:?}");
+        assert_eq!(stranger, Err(Refusal::NotAdmitted));
+    }
+
+    // With no successful read ever, nobody is admitted; the first good read admits.
+    #[tokio::test]
+    async fn a_never_readable_allowlist_admits_nobody_until_it_reads() {
+        let (dir, file) = allowlist_dir("allowlist-never", &["listed"]);
+        std::fs::write(&file, "{ not json").unwrap();
+        let auth = ManagementAuth::new(Admission::Allowlist { file: file.clone() });
+        let now = 1_700_000_000_000;
+        let refused = authenticate(&auth, "listed", "owner", "n0", now).await;
+
+        let listed = serde_json::json!({ kernel_id_for_public_key(&kernel("listed").1): "listed" });
+        std::fs::write(&file, listed.to_string()).unwrap();
+        let admitted = authenticate(&auth, "listed", "owner", "n1", now + 60_000).await;
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(refused, Err(Refusal::NotAdmitted));
+        assert!(admitted.is_ok(), "{admitted:?}");
+    }
+
+    // A successful read replaces the list, and a parsed empty list means nobody is admitted.
+    #[tokio::test]
+    async fn a_successful_reread_replaces_the_list_even_when_it_is_empty() {
+        let (dir, file) = allowlist_dir("allowlist-replace", &["first"]);
+        let auth = ManagementAuth::new(Admission::Allowlist { file: file.clone() });
+        let now = 1_700_000_000_000;
+        assert!(authenticate(&auth, "first", "owner", "n0", now)
+            .await
+            .is_ok());
+
+        let second = serde_json::json!({ kernel_id_for_public_key(&kernel("second").1): "second" });
+        std::fs::write(&file, second.to_string()).unwrap();
+        let swapped_out = authenticate(&auth, "first", "owner", "n1", now + 60_000).await;
+        let swapped_in = authenticate(&auth, "second", "owner", "n2", now + 60_000).await;
+
+        std::fs::write(&file, "{}").unwrap();
+        let emptied = authenticate(&auth, "second", "owner", "n3", now + 120_000).await;
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(swapped_out, Err(Refusal::NotAdmitted));
+        assert!(swapped_in.is_ok(), "{swapped_in:?}");
+        assert_eq!(emptied, Err(Refusal::NotAdmitted));
+    }
 }
