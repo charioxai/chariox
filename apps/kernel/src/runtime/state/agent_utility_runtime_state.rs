@@ -63,6 +63,13 @@ impl KernelRuntimeState {
         Ok((agent, provider_run))
     }
 
+    /// The bridge that shows a provider's permission questions to every client of the Room.
+    pub(crate) fn provider_native_interaction_bridge(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::provider::ProviderNativeInteractionBridge>> {
+        self.owned.provider_store.native_interaction_bridge()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run_structured_provider_utility_prompt(
         &self,
