@@ -298,7 +298,9 @@ reimageTest("remote to local return restores local inventory scope and managed r
     await harness.initialize()
     harness.composition.reconcileWaitingRoom({ ...harness.state(), selectedMachineRef: "machine-old", selectedKernelRef: "kernel-old" })
     await new Promise(resolve => setImmediate(resolve))
-    assert.equal(harness.client.currentClient().socketPath, OLD_ENDPOINT)
+    // MP-08: the managed machine is offered once, as its environment, which home control browses.
+    assert.equal(harness.state().selectedMachineRef, managedEnvironmentMachineRef("environment-1"))
+    assert.equal(harness.client.currentClient().socketPath, LOCAL_ENDPOINT)
     harness.composition.reconcileWaitingRoom({ ...harness.state(), selectedMachineRef: "local", selectedKernelRef: "local" })
     await new Promise(resolve => setImmediate(resolve))
     assert.equal(harness.client.currentClient().socketPath, LOCAL_ENDPOINT)
