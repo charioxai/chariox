@@ -108,6 +108,7 @@ mod shapes {
             room_id: "room-a".into(),
             agent_id: "agent-a".into(),
         };
+        let a2 = a.clone();
         let b = PeerAgentStamp {
             kernel_id: "kernel-b".into(),
             room_id: "room-b".into(),
@@ -172,6 +173,11 @@ mod shapes {
                     generation: 1,
                 }),
             },
+            RelayPeerRequest::DeleteRoomPeer {
+                protocol_version: v,
+                request_id: "request-4".into(),
+                sender: a2,
+            },
             RelayPeerRequest::DeliverPeerAgentOutcome {
                 protocol_version: v,
                 delivery_id: "delivery-1".into(),
@@ -211,6 +217,10 @@ mod shapes {
                 duplicate: true,
                 agent: b,
                 alias: "reviewer".into(),
+            },
+            RelayPeerResponse::RoomPeerDeleted {
+                protocol_version: v,
+                duplicate: true,
             },
             RelayPeerResponse::PeerAgentOutcomeAck {
                 protocol_version: v,

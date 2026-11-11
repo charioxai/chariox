@@ -4,6 +4,7 @@
 //! failure into one typed refusal the agent can act on. An unknown room, kernel or agent and one
 //! the caller may not address give the same refusal.
 use super::*;
+use crate::durable_state::agent_lifecycle::created_peers::CreatedPeer;
 use crate::durable_state::agent_lifecycle::Operation;
 use crate::runtime::room_tool_admission::{denied, retry_later};
 use crate::transport::relay_peer::{
@@ -382,6 +383,18 @@ impl KernelRuntimeState {
             }
             _ => None,
         };
+        // The peer lives and dies with its creator. The link is written before the request goes
+        // out, named by the request, so a lost answer still leaves the peer to delete.
+        let created = CreatedPeer {
+            creator_room: sender.session_id().into(),
+            creator_agent: sender.id().into(),
+            kernel: kernel.into(),
+            peer: request_id.clone(),
+            created_at_ms: 0,
+        };
+        // An earlier attempt of this spawn may have written the link and may have created the
+        // peer: only a link this attempt wrote is its to take back.
+        let link_is_new = self.record_created_peer(created.clone())?;
         let request = RelayPeerRequest::SpawnRoomPeer {
             protocol_version: RELAY_PEER_PROTOCOL_VERSION,
             request_id,
@@ -418,6 +431,9 @@ impl KernelRuntimeState {
         let (agent, alias, duplicate) = match answered {
             Ok(spawned) => spawned,
             Err(error) => {
+                if !lost && link_is_new {
+                    self.release_created_peer(created)?;
+                }
                 if let (Some(registration), Some((task, prompt)), false) = (held, task, lost) {
                     self.owned
                         .durable_state_store
@@ -446,6 +462,47 @@ impl KernelRuntimeState {
             duplicate,
             follow_registration_id,
         })
+    }
+
+    /// Deletes the peer a spawn created on another kernel for a creator that has ended. The
+    /// kernel finds it by the spawn's request id, whatever its room is called now; a peer that is
+    /// not there any more is the outcome asked for.
+    pub(crate) async fn delete_created_peer_on_kernel(
+        &self,
+        created: &CreatedPeer,
+    ) -> Result<(), DaemonError> {
+        let config = self.owned.config_projection.snapshot();
+        let Some(owner) = config
+            .cloud_relay
+            .as_ref()
+            .map(|profile| profile.user_id.clone())
+            .filter(|owner| !owner.is_empty())
+        else {
+            return Err(refusal(
+                "owner_unverified",
+                "this kernel is not signed in to the Cloud account of the creator's owner, so it cannot reach the peer to delete it",
+            ));
+        };
+        let request = RelayPeerRequest::DeleteRoomPeer {
+            protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+            request_id: created.peer.clone(),
+            sender: PeerAgentStamp {
+                kernel_id: config.daemon_id,
+                room_id: created.creator_room.clone(),
+                agent_id: created.creator_agent.clone(),
+            },
+        };
+        match self
+            .peer_agent_link(&owner, &created.kernel, request)
+            .await?
+        {
+            RelayPeerResponse::RoomPeerDeleted { .. } => Ok(()),
+            // A peer in a room this owner cannot address still exists: the link stays.
+            RelayPeerResponse::PeerAgentRefused { refusal, .. } => {
+                Err(refused(&created.kernel, refusal))
+            }
+            _ => Err(kernel_unreachable(&created.kernel)),
+        }
     }
 
     /// One spawn call is one request id, which the receiving kernel remembers with its answer.

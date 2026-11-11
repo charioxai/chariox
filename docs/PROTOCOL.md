@@ -780,6 +780,21 @@ owner-admitted capability paths remain separate until the capability-grants PR.
 Current room, run/lease and creator fences apply after waits before effects;
 a replaced provider run cannot receive an asynchronous room-tool result.
 
+A peer a room agent creates with `agent spawn --room` (in another room of this kernel, or
+on another kernel with `--kernel`) ends with its creator. The kernel records the link when
+it creates the peer (for another kernel, before the request goes out, named by the spawn
+`request_id`; an offline retry of the same spawn never takes back a link an earlier attempt
+wrote). When the creator is deleted, or its room ends or is deleted, the kernel deletes
+each peer it created through the ordinary agent delete, audited as `agent.deleted`; on another
+kernel that is the same-owner `DeleteRoomPeer` request, which names only the spawn's
+`request_id`: the receiving kernel finds the peer by the spawn key, whatever its room is called
+now. A delete that arrives before its spawn created the peer waits for a spawn that is acting
+and otherwise is remembered as the spawn's answer, so that spawn is refused and creates
+nothing; `RoomPeerDeleted` answers both. A link stays until its delete is done, so an
+unreachable kernel or a restart only delays it; a pass every 30 s and at start finishes what is
+left, and a link older than seven days is dropped with an error log. Agents the creator only
+messaged or followed, and sub-agents (which follow their parent), are not touched.
+
 Before delegation, message submission or workflow invocation, the kernel
 persists `room.obligation.registered` with actor/room/run/prompt, kind and
 resource reference. A dispatch receipt records accepted resource identity or

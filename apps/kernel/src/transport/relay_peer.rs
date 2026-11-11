@@ -908,6 +908,13 @@ pub enum RelayPeerRequest {
         caller_authority: PeerCallerAuthority,
         follow: Option<PeerFollow>,
     },
+    /// The creator of a peer here has ended: delete the agent its spawn `request_id` created,
+    /// wherever it is now, or see to it that the spawn creates none.
+    DeleteRoomPeer {
+        protocol_version: u32,
+        request_id: String,
+        sender: PeerAgentStamp,
+    },
     /// A followed peer's event, or the reply to a message, back to the kernel that asked.
     DeliverPeerAgentOutcome {
         protocol_version: u32,
@@ -1430,6 +1437,12 @@ pub enum RelayPeerResponse {
         duplicate: bool,
         agent: PeerAgentStamp,
         alias: String,
+    },
+    /// `duplicate` when there was no peer to delete: it was already gone, or its spawn had not
+    /// created it and now will not.
+    RoomPeerDeleted {
+        protocol_version: u32,
+        duplicate: bool,
     },
     PeerAgentOutcomeAck {
         protocol_version: u32,

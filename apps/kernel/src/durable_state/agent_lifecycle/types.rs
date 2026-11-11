@@ -446,6 +446,14 @@ pub(crate) enum Operation {
     PeerOutboxDelivered {
         delivery: String,
     },
+    /// A room agent created a peer in another room.
+    RecordCreatedPeer {
+        peer: super::created_peers::CreatedPeer,
+    },
+    /// The peer of a creator that ended is deleted, or was already gone.
+    ReleaseCreatedPeer {
+        peer: super::created_peers::CreatedPeer,
+    },
     /// Another attempt later; outcomes past their age are dropped with it.
     PeerOutboxRetry {
         delivery: String,
@@ -700,6 +708,10 @@ pub(crate) enum Outcome {
     Swept(Vec<AgentTaskExecution>),
     Wakes(Vec<AgentWake>),
     PeerFollowed(super::peer_follows::PeerFollowed),
+    /// Whether the link was new, or an earlier attempt of the same spawn had written it.
+    CreatedPeerRecorded {
+        inserted: bool,
+    },
     Saved,
 }
 pub(crate) struct Request {

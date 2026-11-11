@@ -236,6 +236,8 @@ pub(crate) struct KernelRuntimeState {
     unknown_peer_follows: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
     /// Peer spawns this kernel life is creating, by sending kernel and request id.
     peer_spawns_in_flight: peer_agent_inbound::PeerSpawnsInFlight,
+    /// One pass at a time deletes the peers whose creator ended.
+    created_peer_release: Arc<tokio::sync::Mutex<()>>,
     /// When Cloud's kernel directory was last read, and the kernels it listed as unlinked.
     unlinked_kernels: Arc<std::sync::Mutex<Option<UnlinkedKernels>>>,
     lifecycle_sweeps: lifecycle_sweep_flight::SweepFlight,
@@ -1117,6 +1119,7 @@ impl KernelRuntimeState {
             restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             unknown_peer_follows: Default::default(),
             peer_spawns_in_flight: Default::default(),
+            created_peer_release: Default::default(),
             unlinked_kernels: Default::default(),
             lifecycle_sweeps: Default::default(),
             peer_outcome_deliveries: Default::default(),
@@ -1614,6 +1617,7 @@ impl KernelRuntimeState {
     }
 }
 
+mod created_peers;
 mod peer_agent_follow;
 pub(crate) use peer_agent_follow::peer_source_stamp;
 pub(crate) mod peer_agent_inbound;

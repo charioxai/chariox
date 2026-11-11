@@ -424,6 +424,12 @@ impl SessionRuntimeStore {
         let result = match self.state.spawn_agent(create_request).await {
             Ok(agent) => {
                 let session_id = agent.session_id().to_string();
+                // A peer lives and dies with the room agent that made it.
+                if let (true, Some(creator)) = (is_peer, caller_metaagent_id.as_deref()) {
+                    if let Err(error) = self.state.record_created_local_peer(creator, &agent) {
+                        return self.with_session_projection_action_result(Err(error)).await;
+                    }
+                }
                 if let Some(slice_ref) = slice_ref_for_agent {
                     let agent_id = agent.id().to_string();
                     if let Err(error) = self

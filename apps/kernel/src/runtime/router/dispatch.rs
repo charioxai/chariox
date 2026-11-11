@@ -75,6 +75,16 @@ impl CommandRouter {
             *deadline_ms = facts.deadline_ms;
             *branch = facts.branch;
         }
+        if response.is_ok()
+            && matches!(
+                follow_request,
+                LocalDaemonRequest::DestroyAgent(_)
+                    | LocalDaemonRequest::EndSession(_)
+                    | LocalDaemonRequest::DeleteSession(_)
+            )
+        {
+            self.finish_created_peers_in_background();
+        }
         crate::runtime::external_response::finish_response(&response_command, response)
     }
 

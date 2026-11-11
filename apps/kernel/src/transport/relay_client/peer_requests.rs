@@ -578,6 +578,7 @@ pub(super) async fn handle_daemon_peer_request(
         | RelayPeerRequest::SubscribePeerAgent { .. }
         | RelayPeerRequest::UnsubscribePeerAgent { .. }
         | RelayPeerRequest::SpawnRoomPeer { .. }
+        | RelayPeerRequest::DeleteRoomPeer { .. }
         | RelayPeerRequest::DeliverPeerAgentOutcome { .. }
         | RelayPeerRequest::ReadProjectEnvironment { .. }
         | RelayPeerRequest::PullProjectEnvironmentSecret { .. }
@@ -2610,6 +2611,7 @@ fn peer_agent_request(request: &RelayPeerRequest) -> bool {
             | RelayPeerRequest::SubscribePeerAgent { .. }
             | RelayPeerRequest::UnsubscribePeerAgent { .. }
             | RelayPeerRequest::SpawnRoomPeer { .. }
+            | RelayPeerRequest::DeleteRoomPeer { .. }
             | RelayPeerRequest::DeliverPeerAgentOutcome { .. }
     )
 }
@@ -2620,7 +2622,8 @@ fn peer_agent_stamp_matches(request: &RelayPeerRequest, from_daemon_id: &str) ->
         RelayPeerRequest::PeerAgentMessage { sender, .. }
         | RelayPeerRequest::PeerAgentCancel { sender, .. }
         | RelayPeerRequest::SubscribePeerAgent { sender, .. }
-        | RelayPeerRequest::SpawnRoomPeer { sender, .. } => sender.kernel_id.as_str(),
+        | RelayPeerRequest::SpawnRoomPeer { sender, .. }
+        | RelayPeerRequest::DeleteRoomPeer { sender, .. } => sender.kernel_id.as_str(),
         RelayPeerRequest::DeliverPeerAgentOutcome {
             outcome:
                 crate::transport::relay_peer::PeerAgentOutcome::Event { source, .. }

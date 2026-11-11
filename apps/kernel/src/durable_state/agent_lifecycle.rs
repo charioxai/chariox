@@ -23,6 +23,7 @@ pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
 pub(crate) use worker_stops::{UnstoppedWorkerRun, WorkerStopMutation};
 #[cfg(test)]
 mod blocked_intent_tests;
+pub(crate) mod created_peers;
 mod delivery_waits;
 #[cfg(test)]
 mod fault_tests;
@@ -130,6 +131,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     }
     index_task_lookups(db)?;
     outside::initialize(db)?;
+    created_peers::initialize(db)?;
     peer_follows::initialize(db)?;
     deadlines::initialize(db)?;
     wakes::initialize(db)?;
