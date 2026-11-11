@@ -50,12 +50,19 @@ fn client_protocol_conformance_gate_covers_required_surfaces_and_axes() {
     );
     assert_file_contains(
         "apps/kernel/src/local/api/tests/protocol_shapes/landing8.rs",
-        &["landing8_1003_442_shapes_round_trip", "landing8-protocol.json"],
+        &[
+            "landing8_1003_442_shapes_round_trip",
+            "landing8-protocol.json",
+        ],
         &mut failures,
     );
     assert_file_contains(
         "packages/kernel-client/src/landing8-protocol.test.ts",
-        &["landing8-protocol.json", "hideAgentRequest", "source_available"],
+        &[
+            "landing8-protocol.json",
+            "hideAgentRequest",
+            "source_available",
+        ],
         &mut failures,
     );
 

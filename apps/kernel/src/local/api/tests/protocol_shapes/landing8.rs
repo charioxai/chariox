@@ -5,9 +5,10 @@ use crate::transport::relay_peer::{RelayPeerRequest, RELAY_PEER_PROTOCOL_VERSION
 
 #[test]
 fn landing8_1003_442_shapes_round_trip() {
-    let fixture: serde_json::Value =
-        serde_json::from_str(include_str!("../../../../../../../fixtures/landing8-protocol.json"))
-            .unwrap();
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../../../fixtures/landing8-protocol.json"
+    ))
+    .unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
     assert_eq!(fixture["relayPeer"], RELAY_PEER_PROTOCOL_VERSION);
 
