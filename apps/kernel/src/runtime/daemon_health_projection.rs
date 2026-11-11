@@ -94,9 +94,14 @@ pub(crate) async fn build_daemon_health_projection(
             &provider_runs,
         ),
     );
+    // The provider store holds the live output clock; the run projection only
+    // copies it when a run is published, which output alone does not do.
+    let live_runs = input
+        .runtime_state
+        .provider_runs_for_external_session_attachment();
     projection.agent_runtime_projection.silent_agents = crate::runtime::projection::silent_agents(
         &input.agent_runtime_projection.list(),
-        &provider_runs,
+        &live_runs,
         crate::session::unix_epoch_ms(),
     );
     projection.app_lock = crate::runtime::app_lock::app_lock_health_snapshot();
