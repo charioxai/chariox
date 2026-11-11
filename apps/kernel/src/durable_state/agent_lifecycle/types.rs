@@ -223,6 +223,13 @@ pub struct AgentWake {
     pub last_acknowledged_at_ms: Option<u64>,
     pub alerted_sequence: Option<u64>,
 }
+
+impl AgentWake {
+    /// The source can still fire: a fired, exited, lost or cancelled wake cannot.
+    pub(crate) fn is_armed(&self) -> bool {
+        super::wakes::ARMED.contains(&self.state.as_str())
+    }
+}
 /// How a driver reports the end of its source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WakeEnd {

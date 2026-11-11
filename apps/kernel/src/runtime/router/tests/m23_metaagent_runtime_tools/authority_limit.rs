@@ -701,6 +701,41 @@ async fn finished_children() {
     );
 }
 
+#[test]
+fn children_with_a_prompt_through_real_admission_keep_their_places() {
+    run_large_stack_async_test("authority-prompted-children", prompted_children);
+}
+
+async fn prompted_children() {
+    let mut world = world("authority-prompted-children").await;
+    let s = world.ids["s"].clone();
+    let token = launch(&world.app, &world.room, &s).await;
+    world.tokens.insert("s", token);
+    for index in 0..16 {
+        spawn_under(&world, &s, &format!("busy-{index}")).await;
+        let prompted =
+            room_command(&world, "s", &format!("prompt busy-{index} \"keep going\"")).await;
+        assert!(prompted.ok, "{prompted:?}");
+    }
+    // The prompt left the stored state alone, but each child is running its turn.
+    {
+        let app = world.app.lock().await;
+        let child = app
+            .agents()
+            .get_session_agents(&world.room)
+            .into_iter()
+            .find(|agent| agent.alias() == Some("busy-0"))
+            .unwrap();
+        assert!(child.last_prompt_sent_at_ms().is_some());
+        assert_ne!(child.state(), crate::agent::AgentState::Working);
+    }
+    let over = room_command(&world, "s", "agent spawn over --provider dev-stub").await;
+    assert!(
+        !over.ok && error_text(&over).contains("at most 16"),
+        "sixteen children running a prompt are the cap: {over:?}"
+    );
+}
+
 fn git(workspace: &std::path::Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git")
         .args(["-c", "user.name=t", "-c", "user.email=t@t"])
