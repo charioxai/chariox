@@ -1,6 +1,6 @@
 {
-  "local": 1003,
-  "peer": 442,
+  "local": 1004,
+  "peer": 443,
   "response": {
     "kind": "room_browser_controller",
     "session_id": "room",

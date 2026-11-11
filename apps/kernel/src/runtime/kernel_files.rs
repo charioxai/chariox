@@ -4,6 +4,7 @@
 //! requests add no power over a terminal on the kernel, only a transfer that
 //! is chunked, resumable and checked by sha256. Paths are absolute or `~/`.
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -16,6 +17,7 @@ use crate::local::{
     LocalDaemonResponse, ReadKernelFileRequest, StatKernelFileRequest, WriteKernelFileRequest,
     KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
 };
+use crate::machine_files::StateGuard;
 
 /// Directory listings stop here and say so.
 const MAX_DIRECTORY_ENTRIES: usize = 2000;
@@ -42,6 +44,7 @@ pub(crate) fn is_public_code(code: &str) -> bool {
             | "file_exists"
             | "file_io_failed"
             | "file_staging_untrusted"
+            | "file_state_protected"
     )
 }
 
@@ -72,8 +75,9 @@ fn io_failure(path: &Path, error: &std::io::Error) -> DaemonError {
     }
 }
 
-/// `~/x` becomes the kernel user's home; anything else must be absolute.
-fn resolve(path: &str) -> Result<PathBuf, DaemonError> {
+/// `~/x` becomes the kernel user's home; anything else must be absolute. The kernel's own state
+/// and the Vault are not files of the machine as far as this service goes.
+fn resolve(path: &str, guard: &StateGuard) -> Result<PathBuf, DaemonError> {
     let resolved = match path.strip_prefix("~/") {
         Some(rest) => std::env::var_os("HOME")
             .map(PathBuf::from)
@@ -86,14 +90,16 @@ fn resolve(path: &str) -> Result<PathBuf, DaemonError> {
             .join(rest),
         None => PathBuf::from(path),
     };
-    if resolved.is_absolute() {
-        Ok(resolved)
-    } else {
-        Err(fail(
+    if !resolved.is_absolute() {
+        return Err(fail(
             "file_path_invalid",
             format!("\"{path}\" is not an absolute path; start it with / or ~/."),
-        ))
+        ));
     }
+    guard
+        .check(&resolved)
+        .map_err(|message| fail("file_state_protected", message))?;
+    Ok(resolved)
 }
 
 fn partial_of(path: &Path) -> PathBuf {
@@ -142,8 +148,11 @@ pub(crate) fn sha256_of_open(file: &std::fs::File, path: &Path) -> Result<String
     }
 }
 
-pub(crate) fn stat(request: &StatKernelFileRequest) -> Result<LocalDaemonResponse, DaemonError> {
-    let path = resolve(&request.path)?;
+pub(crate) fn stat(
+    request: &StatKernelFileRequest,
+    guard: &StateGuard,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let path = resolve(&request.path, guard)?;
     let partial_size = std::fs::metadata(partial_of(&path)).ok().map(|m| m.len());
     let stat = match std::fs::symlink_metadata(&path) {
         Ok(metadata) => {
@@ -159,6 +168,8 @@ pub(crate) fn stat(request: &StatKernelFileRequest) -> Result<LocalDaemonRespons
                 kind: Some(kind),
                 size: Some(followed.len()),
                 modified_ms: modified_ms(&followed),
+                revision: Some(crate::agent_file_copy::revision(&followed)),
+                mode: Some(followed.mode() & 0o7777),
                 sha256: if hashed {
                     Some(sha256_of(&path)?)
                 } else {
@@ -173,6 +184,8 @@ pub(crate) fn stat(request: &StatKernelFileRequest) -> Result<LocalDaemonRespons
             kind: None,
             size: None,
             modified_ms: None,
+            revision: None,
+            mode: None,
             sha256: None,
             partial_size,
         },
@@ -183,30 +196,42 @@ pub(crate) fn stat(request: &StatKernelFileRequest) -> Result<LocalDaemonRespons
 
 pub(crate) fn list(
     request: &ListKernelDirectoryRequest,
+    guard: &StateGuard,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let path = resolve(&request.path)?;
+    let path = resolve(&request.path, guard)?;
     let mut entries = Vec::new();
-    let mut truncated = false;
     for entry in std::fs::read_dir(&path).map_err(|e| io_failure(&path, &e))? {
         let entry = entry.map_err(|e| io_failure(&path, &e))?;
-        if entries.len() == MAX_DIRECTORY_ENTRIES {
-            truncated = true;
-            break;
+        // The kernel's own folders are not listed, not even by name.
+        if guard.check(&entry.path()).is_err() {
+            continue;
         }
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
+        // A link shows what it points to, as a file manager does; a broken one stays a link.
+        let followed = std::fs::metadata(entry.path()).unwrap_or_else(|_| metadata.clone());
         entries.push(KernelDirectoryEntry {
             name: entry.file_name().to_string_lossy().into_owned(),
             kind: kind_of(metadata.file_type()),
-            size: metadata.len(),
-            modified_ms: modified_ms(&metadata),
+            size: followed.len(),
+            modified_ms: modified_ms(&followed),
+            revision: crate::agent_file_copy::revision(&followed),
+            mode: followed.mode() & 0o7777,
         });
     }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
+    let first = usize::try_from(request.offset).unwrap_or(usize::MAX);
+    let page: Vec<_> = entries
+        .iter()
+        .skip(first)
+        .take(MAX_DIRECTORY_ENTRIES)
+        .cloned()
+        .collect();
+    let truncated = first.saturating_add(page.len()) < entries.len();
     Ok(LocalDaemonResponse::KernelDirectoryListed {
         path: path.display().to_string(),
-        entries,
+        entries: page,
         truncated,
     })
 }
@@ -218,14 +243,17 @@ fn too_large(size: u64) -> DaemonError {
     )
 }
 
-pub(crate) fn read(request: &ReadKernelFileRequest) -> Result<LocalDaemonResponse, DaemonError> {
+pub(crate) fn read(
+    request: &ReadKernelFileRequest,
+    guard: &StateGuard,
+) -> Result<LocalDaemonResponse, DaemonError> {
     if request.length > KERNEL_FILE_MAX_CHUNK_BYTES {
         return Err(fail(
             "file_chunk_too_large",
             format!("Read at most {KERNEL_FILE_MAX_CHUNK_BYTES} bytes per request."),
         ));
     }
-    let path = resolve(&request.path)?;
+    let path = resolve(&request.path, guard)?;
     let mut file = std::fs::File::open(&path).map_err(|e| io_failure(&path, &e))?;
     let metadata = file.metadata().map_err(|e| io_failure(&path, &e))?;
     if !metadata.is_file() {
@@ -335,7 +363,10 @@ fn offset_mismatch(path: &Path, have: u64) -> DaemonError {
     )
 }
 
-pub(crate) fn write(request: &WriteKernelFileRequest) -> Result<LocalDaemonResponse, DaemonError> {
+pub(crate) fn write(
+    request: &WriteKernelFileRequest,
+    guard: &StateGuard,
+) -> Result<LocalDaemonResponse, DaemonError> {
     if request.total_size > KERNEL_FILE_MAX_BYTES {
         return Err(too_large(request.total_size));
     }
@@ -348,7 +379,7 @@ pub(crate) fn write(request: &WriteKernelFileRequest) -> Result<LocalDaemonRespo
             format!("Write at most {KERNEL_FILE_MAX_CHUNK_BYTES} bytes per request."),
         ));
     }
-    let path = resolve(&request.path)?;
+    let path = resolve(&request.path, guard)?;
     let written = write_at(
         &path,
         &partial_of(&path),
@@ -575,6 +606,7 @@ mod tests {
             "file_exists",
             "file_io_failed",
             "file_staging_untrusted",
+            "file_state_protected",
         ] {
             assert!(is_public_code(code), "{code}");
         }
@@ -582,6 +614,20 @@ mod tests {
     }
 
     use super::*;
+
+    // These tests run with nothing protected; the guard has its own tests.
+    fn stat(request: &StatKernelFileRequest) -> Result<LocalDaemonResponse, DaemonError> {
+        super::stat(request, &StateGuard::default())
+    }
+    fn list(request: &ListKernelDirectoryRequest) -> Result<LocalDaemonResponse, DaemonError> {
+        super::list(request, &StateGuard::default())
+    }
+    fn read(request: &ReadKernelFileRequest) -> Result<LocalDaemonResponse, DaemonError> {
+        super::read(request, &StateGuard::default())
+    }
+    fn write(request: &WriteKernelFileRequest) -> Result<LocalDaemonResponse, DaemonError> {
+        super::write(request, &StateGuard::default())
+    }
 
     fn scratch() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("kernel-files-{:08x}", rand::random::<u32>()));
@@ -976,6 +1022,7 @@ mod tests {
             entries, truncated, ..
         } = list(&ListKernelDirectoryRequest {
             path: dir.display().to_string(),
+            offset: 0,
         })
         .unwrap()
         else {

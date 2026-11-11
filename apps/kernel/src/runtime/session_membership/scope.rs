@@ -694,6 +694,10 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListKernelDirectory(_)
         | LocalDaemonRequest::ReadKernelFile(_)
         | LocalDaemonRequest::WriteKernelFile(_)
+        | LocalDaemonRequest::StartFileTransfer(_)
+        | LocalDaemonRequest::GetFileTransfer(_)
+        | LocalDaemonRequest::ListFileTransfers
+        | LocalDaemonRequest::CancelFileTransfer(_)
         | LocalDaemonRequest::BeginAppPublisherEnrollment(_)
         | LocalDaemonRequest::GetAppPublisherEnrollment(_)
         | LocalDaemonRequest::CancelAppPublisherEnrollment(_)

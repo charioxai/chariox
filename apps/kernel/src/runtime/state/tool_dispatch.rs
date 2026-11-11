@@ -215,6 +215,7 @@ impl KernelRuntimeState {
             specs.extend(super::resource_register::specs());
             specs.push(super::agent_auth::spec());
             specs.push(super::file_copy_tool::file_copy_spec());
+            specs.extend(super::machine_files_tools::files_tool_specs());
         }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             let room_tools = self.room_agent_tools_enabled();
@@ -429,6 +430,9 @@ impl KernelRuntimeState {
         }
         if super::environment_tools::is_environment_tool(tool_name) {
             return Box::pin(self.environment_tool(auth_token, tool_name, arguments)).await;
+        }
+        if super::machine_files_tools::is_files_tool(tool_name) {
+            return Box::pin(self.files_tool(auth_token, tool_name, arguments)).await;
         }
         if super::file_copy_tool::is_file_copy_tool(tool_name) {
             return Box::pin(self.file_copy_tool(auth_token, arguments)).await;

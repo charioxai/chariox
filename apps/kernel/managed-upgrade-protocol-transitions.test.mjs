@@ -20,7 +20,7 @@ test("MP-08/MP-09/MP-10/MP-11 managed upgrades admit only the target and the cur
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
   assert.equal(policy.protocol, runtimeProtocol)
   assert.equal(policy.protocol, localProtocolVersion)
-  assert.deepEqual(admittedPredecessorProtocols, [1001, 1002])
+  assert.deepEqual(admittedPredecessorProtocols, [1002, 1003])
   const publication = await readFile(join(REPOSITORY_ROOT, "docker/publication/Dockerfile"), "utf8")
   const publicationPins = [...publication.matchAll(/^ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=(\d+)$/gm)].map(match => Number(match[1]))
   assert.deepEqual(publicationPins, [runtimeProtocol, runtimeProtocol], "builder and runtime publication pins must match the binary")

@@ -264,6 +264,23 @@ fn expand_user_path(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
+/// Every folder where this kernel keeps its own state: its home, config, state and logs. Files on
+/// the machine never reach into them.
+pub(crate) fn kernel_state_roots() -> Vec<PathBuf> {
+    let mut roots = vec![
+        default_config_dir(),
+        default_state_dir(),
+        crate::logging::default_log_root(),
+    ];
+    roots.extend(chariox_home_dir());
+    roots.extend(
+        env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .map(|home| PathBuf::from(home).join(".chariox")),
+    );
+    roots
+}
+
 pub(super) fn chariox_home_dir() -> Option<PathBuf> {
     env::var_os("CHARIOX_HOME")
         .filter(|value| !value.is_empty())

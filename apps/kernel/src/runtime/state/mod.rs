@@ -108,6 +108,8 @@ pub(crate) use outside_events::{is_outside_event_request, source_not_available};
 mod environment_tools;
 mod file_copy_tool;
 mod leased_agent_file_serve;
+mod machine_files_runtime;
+mod machine_files_tools;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_browser;
@@ -238,6 +240,8 @@ pub(crate) struct KernelRuntimeState {
     unknown_peer_follows: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
     /// Peer spawns this kernel life is creating, by sending kernel and request id.
     peer_spawns_in_flight: peer_agent_inbound::PeerSpawnsInFlight,
+    /// File transfers whose destination is this kernel.
+    file_transfers: Arc<crate::machine_files::TransferJobs>,
     /// One pass at a time deletes the peers whose creator ended.
     created_peer_release: Arc<tokio::sync::Mutex<()>>,
     /// When Cloud's kernel directory was last read, and the kernels it listed as unlinked.
@@ -1127,6 +1131,7 @@ impl KernelRuntimeState {
             restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             unknown_peer_follows: Default::default(),
             peer_spawns_in_flight: Default::default(),
+            file_transfers: Default::default(),
             created_peer_release: Default::default(),
             unlinked_kernels: Default::default(),
             lifecycle_sweeps: Default::default(),

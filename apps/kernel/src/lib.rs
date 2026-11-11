@@ -34,6 +34,7 @@ pub mod hot_reload;
 pub mod io;
 pub mod local;
 pub mod logging;
+pub(crate) mod machine_files;
 pub mod managed_bootstrap;
 pub mod managed_context;
 pub mod mcp;
