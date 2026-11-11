@@ -433,13 +433,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     "nothing to wait on: every tracked obligation is resolved; reply with the final answer",
                 ));
             }
+            if t.goal.is_some() && deadline.is_none() {
+                return Err(error("a goal yield requires a finite future deadline_ms"));
+            }
             if ids.is_empty()
-                || deadline <= now
-                || deadline > i64::MAX as u64
+                || deadline.is_some_and(|d| d <= now || d > i64::MAX as u64)
                 || reason.trim().is_empty()
             {
                 return Err(error(
-                    "yield requires named live sources and a finite future deadline",
+                    "yield requires named live sources and, when given, a future deadline",
                 ));
             }
             let regs = registrations(tx, &task)?;
@@ -598,7 +600,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 // MP-08/MP-09/MP-10/MP-11 F03: the deadline was checked
                 // at admission. A late native boundary commits that same
                 // wait; the normal sweep delivers its elapsed deadline.
-                w.deadline_ms > w.started_at_ms
+                w.deadline_ms
+                    .is_none_or(|deadline| deadline > w.started_at_ms)
                     && !w.registration_ids.is_empty()
                     && w.registration_ids
                         .iter()
@@ -683,6 +686,35 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 task: t,
                 correction,
             })
+        }
+        Operation::AckHandledChild {
+            room,
+            agent,
+            sequence,
+            subtree,
+            now,
+        } => {
+            let outcome = super::delivery::apply(
+                tx,
+                Operation::Ack {
+                    room: room.clone(),
+                    agent,
+                    sequence,
+                    handled: true,
+                    now,
+                },
+            )?;
+            if let (Outcome::Event(event), Some(root)) = (&outcome, subtree.first()) {
+                if event.state == "handled" {
+                    migration::audit(
+                        tx,
+                        crate::durable_state::agent_subtree_deletion::AGENT_SUBTREE_DELETING,
+                        root,
+                        serde_json::json!({ "session_id": room, "agent_ids": subtree }),
+                    )?;
+                }
+            }
+            Ok(outcome)
         }
         op @ (Operation::Send { .. }
         | Operation::Occur(_)
@@ -895,7 +927,7 @@ fn retain_question_wait(
         let deadline_ms = super::wakes::question_deadline(tx, t, &selected)?;
         t.wait = Some(AgentWait {
             registration_ids: selected.into_iter().map(|r| r.id).collect(),
-            deadline_ms,
+            deadline_ms: Some(deadline_ms),
             started_at_ms: now,
             inbox_cursor: 0,
             long_wait_notified: false,

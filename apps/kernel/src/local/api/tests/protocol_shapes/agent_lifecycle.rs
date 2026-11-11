@@ -38,7 +38,7 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
         }],
         wait: Some(AgentWait {
             registration_ids: vec!["reg".into()],
-            deadline_ms: 60_000,
+            deadline_ms: Some(60_000),
             started_at_ms: 1,
             inbox_cursor: 3,
             long_wait_notified: false,

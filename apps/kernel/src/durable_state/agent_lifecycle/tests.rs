@@ -98,7 +98,7 @@ impl Fixture {
             prompt: "p".into(),
             registrations: vec!["reg".into()],
             cursor: 0,
-            deadline: 60_000,
+            deadline: Some(60_000),
             reason: "child result".into(),
             now: 2,
         });
@@ -303,7 +303,7 @@ fn a02_yield_refuses_missing_dead_or_uncovered_sources() {
                 prompt: "p".into(),
                 registrations: ids,
                 cursor: 0,
-                deadline: 10,
+                deadline: Some(10),
                 reason: "waiting".into(),
                 now: 1
             })
@@ -317,7 +317,7 @@ fn a02_yield_refuses_missing_dead_or_uncovered_sources() {
             prompt: "p".into(),
             registrations: vec!["reg".into()],
             cursor: 0,
-            deadline: 1,
+            deadline: Some(1),
             reason: "waiting".into(),
             now: 1
         })
@@ -460,7 +460,7 @@ fn a02_no_progress_blocks_on_third_wake_and_durable_counter_survives_reopen() {
             "parent",
             "timer",
             &format!("tick-{n}"),
-            "deadline_reached",
+            "wait_recheck",
             serde_json::json!({"task_id":"p"}),
         ))) else {
             panic!()
@@ -490,7 +490,7 @@ fn a02_no_progress_blocks_on_third_wake_and_durable_counter_survives_reopen() {
             prompt: prompt.clone(),
             registrations: vec!["reg".into()],
             cursor: e.sequence,
-            deadline: 60_000,
+            deadline: Some(60_000),
             reason: "same child wait".into(),
             now: 20 + n,
         });
@@ -754,7 +754,7 @@ fn a02_named_wake_keeps_independent_waits_separate() {
         prompt: "other".into(),
         registrations: vec!["other-reg".into()],
         cursor: 0,
-        deadline: 60_000,
+        deadline: Some(60_000),
         reason: "peer".into(),
         now: 2,
     });
@@ -1072,7 +1072,7 @@ fn a02_artifact_receipt_resets_guard_once_and_survives_restart() {
         "parent",
         "timer",
         "tick",
-        "deadline_reached",
+        "wait_recheck",
         serde_json::json!({"task_id":"p"}),
     ))) else {
         panic!()
@@ -1651,7 +1651,7 @@ fn a02_review_wake_wait_is_consumed_at_provider_io() {
         prompt: "wake".into(),
         registrations: vec!["reg".into()],
         cursor: event.sequence,
-        deadline: 80_000,
+        deadline: Some(80_000),
         reason: "next result".into(),
         now: 8,
     });
@@ -3312,7 +3312,7 @@ fn yield_without_open_obligation_points_to_the_final_answer() {
             prompt: "p".into(),
             registrations: vec![],
             cursor: 0,
-            deadline: 60_000,
+            deadline: Some(60_000),
             reason: "nothing".into(),
             now: 2,
         })
@@ -3353,7 +3353,7 @@ fn a02_late_native_settlement_delivers_the_original_deadline_once() {
     let inbox = f.store.agent_inbox("room", "parent", 0).unwrap();
     assert_eq!(inbox.len(), 1);
     assert_eq!(inbox[0].kind, "deadline_reached");
-    assert_eq!(f.task().wait.unwrap().deadline_ms, 60_000);
+    assert_eq!(f.task().wait.unwrap().deadline_ms, Some(60_000));
 }
 
 // MP-08/MP-09/MP-10/MP-11 F03: continued native polling cannot replace a
@@ -3372,12 +3372,12 @@ fn a02_accepted_wait_rejects_repeated_yield_without_extending_deadline() {
             prompt: "p".into(),
             registrations: vec!["reg".into()],
             cursor: 0,
-            deadline: 120_000,
+            deadline: Some(120_000),
             reason: "polling".into(),
             now: 3,
         })
         .is_err());
-    assert_eq!(f.task().wait.unwrap().deadline_ms, 60_000);
+    assert_eq!(f.task().wait.unwrap().deadline_ms, Some(60_000));
 }
 
 // MP-08/MP-10/MP-11 F04: a delivered message remains satisfied while the
@@ -3457,7 +3457,7 @@ fn a02_existing_child_subscription_uses_the_submitted_task_not_prior_agent_resul
             prompt: "p".into(),
             registrations: vec![reg.id],
             cursor: 0,
-            deadline: 60_000,
+            deadline: Some(60_000),
             reason: "child completion".into(),
             now: 5,
         });
@@ -3546,7 +3546,7 @@ fn a02_child_subscription_prefers_unresolved_completion_to_delivered_message() {
             prompt: "p".into(),
             registrations: vec![reg.id],
             cursor: 0,
-            deadline: 60_000,
+            deadline: Some(60_000),
             reason: "actual child completion".into(),
             now: 3,
         });
@@ -3592,7 +3592,7 @@ fn a02_message_turn_yielding_on_the_earlier_wait_is_told_to_finish() {
             prompt: "message-turn".into(),
             registrations: vec!["reg".into()],
             cursor: 0,
-            deadline: 120_000,
+            deadline: Some(120_000),
             reason: "back to the child result".into(),
             now: 4,
         })

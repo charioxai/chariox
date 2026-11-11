@@ -2,10 +2,6 @@
 use super::*;
 use crate::durable_state::agent_lifecycle::{AgentTaskExecution, ExecutionState};
 
-fn task_needs_owner_interaction(task: &AgentTaskExecution) -> bool {
-    task.state == ExecutionState::Blocked && !task.goal.as_ref().is_some_and(|goal| goal.paused)
-}
-
 /// The decision a blocked task raises: Resume or Cancel. It belongs to the owner but not to their terminal,
 /// so a holder or an agent driving the room may answer it like any routine question.
 pub(super) const BLOCKED_TASK_DECISION_PREFIX: &str = "task-blocked-";
@@ -15,6 +11,16 @@ pub(super) fn is_blocked_task_decision(interaction_id: &str) -> bool {
 }
 
 impl KernelRuntimeOwnedState {
+    /// A blocked task of a deleted agent has nobody left to resume: it raises no decision.
+    fn task_needs_owner_interaction(&self, task: &AgentTaskExecution) -> bool {
+        task.state == ExecutionState::Blocked
+            && !task.goal.as_ref().is_some_and(|goal| goal.paused)
+            && !self
+                .durable_state_store
+                .agent_deletion_recorded(&task.agent_id)
+                .unwrap_or(false)
+    }
+
     /// Admission cannot wait for the asynchronous task pump to release ended decisions.
     pub(super) fn sweep_stale_task_owner_interactions(&self) -> Result<(), DaemonError> {
         let rooms = self
@@ -63,7 +69,8 @@ impl KernelRuntimeOwnedState {
                     .iter()
                     .find(|task| task.task_id == task_id)
                     .is_none_or(|task| {
-                        !task_needs_owner_interaction(task) || revision != task.blocked_revision
+                        !self.task_needs_owner_interaction(task)
+                            || revision != task.blocked_revision
                     })
             })
             .map(str::to_owned)
@@ -92,7 +99,7 @@ impl KernelRuntimeState {
         if self.defer_task_for_human_control(&task).await {
             return Ok(());
         }
-        if !task_needs_owner_interaction(&task) {
+        if !self.owned.task_needs_owner_interaction(&task) {
             self.retract_stale_task_owner_interactions(&task.room_id)
                 .await;
             return Ok(());

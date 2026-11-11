@@ -201,7 +201,7 @@ impl Fixture {
                 prompt: task.prompt_id.clone(),
                 registrations: vec![registration.into()],
                 cursor: 0,
-                deadline: now + 60_000,
+                deadline: Some(now + 60_000),
                 reason: "Wait for the test source".into(),
                 now,
             })
@@ -1454,7 +1454,6 @@ async fn event_tools_arm_wait_and_cancel_through_the_runtime_mcp_entry() {
     for bad in [
         serde_json::json!({"registration_ids":[registration],"inbox_cursor":0,"deadline_ms":now - 1,"reason":"late"}),
         serde_json::json!({"registration_ids":["no-such-registration"],"inbox_cursor":0,"deadline_ms":now + 60_000,"reason":"unknown"}),
-        serde_json::json!({"registration_ids":[registration],"inbox_cursor":0,"reason":"no deadline"}),
     ] {
         assert!(
             call(&f, &token, "chariox.events.yield", &task, bad)

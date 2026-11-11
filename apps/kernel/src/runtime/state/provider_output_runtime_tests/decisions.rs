@@ -239,7 +239,7 @@ impl Tree {
                 prompt: task.task_id.clone(),
                 registrations: ids,
                 cursor: 0,
-                deadline: now + 7_200_000,
+                deadline: Some(now + 7_200_000),
                 reason: "waiting for the child".into(),
                 now,
             })

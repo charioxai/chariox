@@ -731,8 +731,10 @@ has a higher permission level or mode than its parent, and a retry with the
 same command id returns the same child. The end of a child's work reaches its
 parent as one urgent `child_finished` inbox event carrying `child_agent_id`,
 `success`, the typed turn `outcome` and `deadline_reached`; a turn that waited
-on a question when the kernel restarted ends as `interrupted_by_restart`. The
-relay peer protocol needs no change for it.
+on a question when the kernel restarted ends as `interrupted_by_restart`. When the
+parent acks that event with `handled: true`, the kernel deletes the sub-agent the
+parent spawned (an agent a person moved under the parent stays). The relay peer
+protocol needs no change for it.
 
 Local daemon protocol 1000 makes a
 sub-agent's decision one card with one holder. The kernel keeps the holder (the
@@ -955,7 +957,9 @@ Ordinary provider runs receive `chariox.events.subscribe`, `subscriptions`,
 `unsubscribe`, `inbox`, `ack`, `yield` and `blocked`. Each requires current
 `task_id` and `origin_prompt_id`; room/run/turn fences precede resource lookup
 or mutation. A valid yield names admitted completion registrations, covers all
-unresolved obligations and has a finite future deadline. Waiting commits only
+unresolved obligations. `deadline_ms` is optional (a goal task must give a future one):
+without it the wait ends when a registered source completes, with no timed wake
+(`wait.deadline_ms` is then null). Waiting commits only
 when the official provider turn settles. Source completion/loss and overdue
 waits wake the retained task; ACK and provider acceptance remain distinct.
 
@@ -4288,7 +4292,7 @@ from #885. The room agent tools surface publishes
 `chariox.events.subscribe/subscriptions/inbox/ack/yield/blocked`. Tools require the
 current task and prompt IDs; hidden turn context supplies both. Independent
 user prompts retain separate task records. Work can be working, waiting on
-admitted named sources with a future deadline, blocked on an explicit owner
+admitted named sources (a goal adds a future deadline), blocked on an explicit owner
 action, done, or owner-cancelled. Cancellation is never successful completion.
 
 Obligation/registration, wait intent, event admission and delivery intent commit

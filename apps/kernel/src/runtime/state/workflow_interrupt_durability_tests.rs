@@ -528,7 +528,7 @@ async fn workflow_wait_cancellation(cancel_creator: bool) {
             prompt: prompt.id().into(),
             registrations: vec!["completion-workflow-timer".into()],
             cursor: 0,
-            deadline: now + 120_000,
+            deadline: Some(now + 120_000),
             reason: "wait for actual source".into(),
             now,
         })

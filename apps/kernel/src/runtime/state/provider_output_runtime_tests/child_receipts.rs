@@ -60,6 +60,7 @@ async fn each_finished_child_is_one_inbox_item_and_its_ack_settles_the_delegatio
                 &serde_json::json!({"sequence": event["sequence"], "handled": true}),
                 crate::session::unix_epoch_ms(),
             )
+            .await
             .unwrap();
     }
     let parent_task = store.agent_task(&parent_task.task_id).unwrap().unwrap();
@@ -154,6 +155,7 @@ async fn a_retry_after_the_lead_still_shows_all_three_children_and_the_ack_throu
             &serde_json::json!({"through": last, "handled": true}),
             crate::session::unix_epoch_ms(),
         )
+        .await
         .unwrap();
     assert_eq!(
         acked["skipped"],

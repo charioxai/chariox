@@ -1685,7 +1685,7 @@ async fn inbox_wake_recovers_original_notes_in_hidden_provider_context() {
             prompt: task_id.into(),
             registrations: vec!["wait-source".into()],
             cursor: 0,
-            deadline: now + 60_000,
+            deadline: Some(now + 60_000),
             reason: "Waiting for the source".into(),
             now,
         },

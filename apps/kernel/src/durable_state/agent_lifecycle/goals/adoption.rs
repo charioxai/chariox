@@ -77,7 +77,7 @@ pub(in crate::durable_state::agent_lifecycle) fn adopt(
     t.reason = "Owner adopted legacy invocation; existing run/nodes drain without relaunch".into();
     t.wait = Some(AgentWait {
         registration_ids,
-        deadline_ms: due,
+        deadline_ms: Some(due),
         started_at_ms: now,
         inbox_cursor: 0,
         long_wait_notified: false,
