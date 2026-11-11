@@ -427,3 +427,163 @@ fn a_wait_longer_than_two_minutes_does_not_emit_a_notice() {
         "the waiting row must remain available"
     );
 }
+
+#[cfg(target_os = "linux")]
+/// A build: grows to `top` MiB at `rate` MiB/s, holds it a moment and ends.
+fn build(rate: u64, top: u64) -> String {
+    format!("python3 -c '{DIE_WITH_PARENT}import time\nb=[]\nfor _ in range({top}//8):\n b.append(bytearray(8*1048576)); time.sleep(8/{rate})\ntime.sleep(1.5)' build")
+}
+
+/// The scheduler state letter of a command (`T` once admission stopped it),
+/// `None` once it ended.
+#[cfg(target_os = "linux")]
+fn letter(pid: i32) -> Option<char> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let state = stat.rsplit_once(')')?.1.trim().chars().next()?;
+    (state != 'Z' && state != 'X').then_some(state)
+}
+
+/// Five builds that together need 2 GB start one after another in a 1.5 GB
+/// pool: the incident of 2026-11-10 on b3, with real processes. The oldest
+/// is never paused and finishes first, the pool is never left with every
+/// build paused, the paused ones continue in line when memory frees, and no
+/// build is stopped again right after it continued.
+#[cfg(target_os = "linux")]
+fn five_growing_builds(cgroup: bool) {
+    const BUILDS: usize = 5;
+    take_wait_events();
+    let pool = pool(1500);
+    let mut builds = Vec::new();
+    for index in 0..BUILDS {
+        builds.push(Workload::run(
+            domain(&pool, &format!("build-{index}"), cgroup),
+            &[("job", build(100, 400))],
+        ));
+        std::thread::sleep(Duration::from_millis(600));
+    }
+    let pids = builds
+        .iter()
+        .map(|build| build.pid("job"))
+        .collect::<Vec<_>>();
+    let started = std::time::Instant::now();
+    let mut paused = [false; BUILDS];
+    let mut finished_at = vec![None::<Duration>; BUILDS];
+    let mut stops = vec![Vec::<Duration>::new(); BUILDS];
+    let mut resumes = vec![Vec::<Duration>::new(); BUILDS];
+    let mut all_paused_since = None::<Duration>;
+    let mut longest_all_paused = Duration::ZERO;
+    let mut oldest_stopped = false;
+    while finished_at.iter().any(Option::is_none) && started.elapsed() < Duration::from_secs(90) {
+        let now = started.elapsed();
+        let mut waiting = 0;
+        let mut running = 0;
+        for index in 0..BUILDS {
+            if finished_at[index].is_some() {
+                continue;
+            }
+            // Reap an ended build so it reads as gone.
+            let mut status = 0;
+            unsafe { libc::waitpid(pids[index], &mut status, libc::WNOHANG) };
+            let Some(state) = letter(pids[index]) else {
+                finished_at[index] = Some(now);
+                continue;
+            };
+            let stopped = state == 'T';
+            if stopped && !paused[index] {
+                stops[index].push(now);
+                oldest_stopped |= index == 0;
+            }
+            if !stopped && paused[index] {
+                resumes[index].push(now);
+            }
+            paused[index] = stopped;
+            if stopped {
+                waiting += 1;
+            } else {
+                running += 1;
+            }
+        }
+        if waiting > 0 && running == 0 {
+            let since = *all_paused_since.get_or_insert(now);
+            longest_all_paused = longest_all_paused.max(now - since);
+        } else {
+            all_paused_since = None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let evidence = format!(
+        "finished {finished_at:?}\nstops {stops:?}\nresumes {resumes:?}\nlongest all paused {longest_all_paused:?}"
+    );
+    if let Ok(path) = std::env::var("HEALTHPAUSE_EVIDENCE") {
+        let _ = std::fs::write(path, &evidence);
+    }
+    assert!(
+        finished_at.iter().all(Option::is_some),
+        "a build never finished: {evidence}"
+    );
+    // (a) The pool was never left with every build paused for long.
+    assert!(
+        longest_all_paused < Duration::from_secs(3),
+        "every build was paused for {longest_all_paused:?}: {evidence}"
+    );
+    // (b) The oldest build never waited and ended first.
+    assert!(!oldest_stopped, "the oldest build was paused: {evidence}");
+    let first_end = *finished_at.iter().flatten().min().unwrap();
+    assert_eq!(finished_at[0], Some(first_end), "{evidence}");
+    // (c) Memory frees when the oldest ends: the paused builds continue
+    // then, one at a time, never before.
+    let mut continued = (1..BUILDS)
+        .flat_map(|index| resumes[index].iter().copied())
+        .collect::<Vec<_>>();
+    continued.sort();
+    assert!(
+        continued.first().is_some_and(|first| *first >= first_end),
+        "a build continued before memory freed: {evidence}"
+    );
+    assert!(
+        continued
+            .windows(2)
+            .all(|pair| pair[1] - pair[0] >= Duration::from_millis(900)),
+        "builds continued less than a second apart: {evidence}"
+    );
+    // (d) No build is stopped within a second of continuing.
+    for index in 0..BUILDS {
+        for resumed in &resumes[index] {
+            assert!(
+                !stops[index]
+                    .iter()
+                    .any(|stop| stop > resumed && *stop - *resumed < Duration::from_secs(1)),
+                "build {index} was stopped again right after it continued: {evidence}"
+            );
+        }
+    }
+    // The stopped builds were told, and the room too.
+    let began = take_wait_events()
+        .into_iter()
+        .filter(|event| matches!(event.change, WaitChange::Began))
+        .count();
+    let paused_builds = (1..BUILDS)
+        .filter(|index| !stops[*index].is_empty())
+        .count();
+    assert!(paused_builds > 0, "no build was paused: {evidence}");
+    assert!(
+        began >= paused_builds,
+        "{began} events for {paused_builds} pauses"
+    );
+    for index in (1..BUILDS).filter(|index| !stops[*index].is_empty()) {
+        builds[index].assert_told("job", "is paused while it grows");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn five_growing_builds_in_a_small_pool_finish_without_a_deadlock() {
+    five_growing_builds(false);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires a writable cgroup-v2 delegated parent"]
+fn five_growing_builds_in_a_small_pool_finish_without_a_deadlock_in_cgroups() {
+    five_growing_builds(true);
+}

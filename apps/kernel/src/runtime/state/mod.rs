@@ -287,6 +287,8 @@ struct KernelRuntimeOwnedState {
     sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
     sudo_timer_changes: Arc<RuntimeChangeSignal>,
     sudo_end_wakes: Arc<std::sync::Mutex<BTreeMap<String, (crate::local::KernelSudoTurn, String)>>>,
+    /// What agents are told in their inbox about their commands that wait for room.
+    process_wait_notices: Arc<std::sync::Mutex<process_wait_notices::WaitNotices>>,
     sudo_verified_at: Arc<std::sync::Mutex<BTreeMap<String, (std::time::Instant, u64)>>>,
     /// Worker side of A10 leased sudo windows, keyed by backing agent.
     leased_sudo_grants: Arc<std::sync::Mutex<BTreeMap<String, sudo::leased::WorkerSudoGrant>>>,
@@ -649,6 +651,7 @@ mod browser_region_card;
 mod disk_pressure;
 mod disk_usage;
 mod owner_vault;
+mod process_wait_notices;
 mod process_waits;
 mod runtime_interaction_state;
 mod runtime_notice_owned_state;
@@ -1166,6 +1169,7 @@ impl KernelRuntimeState {
                 sudo_timer_changes: Default::default(),
                 sudo_verified_at: Default::default(),
                 sudo_end_wakes: Default::default(),
+                process_wait_notices: Default::default(),
                 leased_sudo_grants: Default::default(),
                 leased_sudo_fenced: Default::default(),
                 config_projection,

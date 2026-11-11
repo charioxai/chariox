@@ -237,7 +237,7 @@ impl ProcessTree {
     }
 
     pub fn sample(&mut self) -> Result<Vec<ProcessSample>, SamplingError> {
-        let rows = process_rows()?;
+        let rows = process_rows(self.root)?;
         self.observe(&rows)?;
         self.parents = rows
             .iter()
@@ -419,7 +419,7 @@ impl ProcessTree {
         if self.marker.is_none() {
             return true;
         }
-        let snapshot = match process_observation() {
+        let snapshot = match process_observation(self.root) {
             Ok(snapshot) => snapshot,
             Err(_) => {
                 self.empty_since = None;
@@ -443,7 +443,7 @@ impl ProcessTree {
         before_root_stop: impl FnOnce(),
         force_domain: impl FnOnce(),
     ) -> Result<Vec<String>, String> {
-        let mut rows = fresh_rows()?;
+        let mut rows = fresh_rows(self.root)?;
         self.observe(&rows)?;
         let target = match process_id {
             None => self.root,
@@ -491,7 +491,7 @@ impl ProcessTree {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(20));
-                rows = fresh_rows()?;
+                rows = fresh_rows(self.root)?;
                 self.observe(&rows)?;
                 if !running {
                     let mut grown = selected.clone();
@@ -502,7 +502,7 @@ impl ProcessTree {
                 }
             }
         }
-        rows = fresh_rows()?;
+        rows = fresh_rows(self.root)?;
         self.observe(&rows)?;
         self.select_descendants(&rows, &mut selected);
         let survivors = selected.iter().any(|pid| {
@@ -973,7 +973,13 @@ thread_local! {
 }
 
 /// A process table read now, within `ps`'s own deadline, never the cached one.
-fn fresh_rows() -> Result<Vec<Row>, String> {
+fn fresh_rows(root: u32) -> Result<Vec<Row>, String> {
+    if let Some(errno) = ps_failure::injected(root) {
+        return Err(format!(
+            "the current processes could not be read ({}); the process may still be running, retry",
+            std::io::Error::from_raw_os_error(errno)
+        ));
+    }
     read_process_rows().map_err(|error| {
         format!(
             "the current processes could not be read ({error}); the process may still be running, retry"
@@ -981,9 +987,8 @@ fn fresh_rows() -> Result<Vec<Row>, String> {
     })
 }
 
-pub(super) fn process_rows() -> Result<std::sync::Arc<Vec<Row>>, SamplingError> {
-    #[cfg(test)]
-    if let Some(errno) = ps_failure::injected() {
+pub(super) fn process_rows(root: u32) -> Result<std::sync::Arc<Vec<Row>>, SamplingError> {
+    if let Some(errno) = ps_failure::injected(root) {
         return Err(SamplingError::Short(errno));
     }
     #[cfg(test)]
@@ -994,20 +999,18 @@ pub(super) fn process_rows() -> Result<std::sync::Arc<Vec<Row>>, SamplingError> 
 }
 
 #[cfg(target_os = "linux")]
-fn process_observation() -> Result<RowObservation, SamplingError> {
+fn process_observation(root: u32) -> Result<RowObservation, SamplingError> {
+    if let Some(errno) = ps_failure::injected(root) {
+        return Err(SamplingError::Short(errno));
+    }
     #[cfg(test)]
-    {
-        if let Some(errno) = ps_failure::injected() {
-            return Err(SamplingError::Short(errno));
-        }
-        if let Some(observation) = TEST_SAMPLER.with(|sampler| {
-            sampler
-                .borrow()
-                .as_ref()
-                .map(Sampler::successful_observation)
-        }) {
-            return observation;
-        }
+    if let Some(observation) = TEST_SAMPLER.with(|sampler| {
+        sampler
+            .borrow()
+            .as_ref()
+            .map(Sampler::successful_observation)
+    }) {
+        return observation;
     }
     sampler().successful_observation()
 }
@@ -1038,9 +1041,8 @@ pub(super) fn warm_up() -> Result<(), SamplingError> {
     }
 }
 
-pub(super) fn ensure_available() -> std::io::Result<()> {
-    #[cfg(test)]
-    if let Some(errno) = ps_failure::injected() {
+pub(super) fn ensure_available(root: u32) -> std::io::Result<()> {
+    if let Some(errno) = ps_failure::injected(root) {
         return Err(std::io::Error::from_raw_os_error(errno));
     }
     let _ = sampler();
@@ -1048,28 +1050,41 @@ pub(super) fn ensure_available() -> std::io::Result<()> {
 }
 
 fn run_ps() -> std::io::Result<std::process::Output> {
-    #[cfg(test)]
-    if let Some(code) = ps_failure::injected() {
-        return Err(std::io::Error::from_raw_os_error(code));
-    }
     crate::process_spawn::command("ps")
         .env("LC_ALL", "C")
         .args(["-axo", "pid=,ppid=,rss=,pcpu=,etime=,lstart=,comm="])
         .output_with_deadline(std::time::Duration::from_secs(1))
 }
 
-/// Makes starting `ps` fail with an errno, as a kernel at its descriptor limit does.
+/// Makes starting `ps` fail with an errno for the tree of one root process,
+/// as a kernel at its descriptor limit does. Other trees, and the tests that
+/// watch them, are unaffected.
+#[cfg(not(test))]
+pub(super) mod ps_failure {
+    pub(super) fn injected(_root: u32) -> Option<i32> {
+        None
+    }
+}
+
 #[cfg(test)]
 pub(super) mod ps_failure {
-    static ERRNO: std::sync::Mutex<Option<i32>> = std::sync::Mutex::new(None);
+    static ERRNO: std::sync::Mutex<std::collections::BTreeMap<u32, i32>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-    pub(super) fn injected() -> Option<i32> {
-        *ERRNO.lock().unwrap_or_else(|e| e.into_inner())
+    pub(super) fn injected(root: u32) -> Option<i32> {
+        ERRNO
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&root)
+            .copied()
     }
 
-    /// Also forgets the table read meanwhile, so the next read sees the change.
-    pub(in crate::runtime::process_resources) fn set(errno: Option<i32>) {
-        *ERRNO.lock().unwrap_or_else(|e| e.into_inner()) = errno;
+    pub(in crate::runtime::process_resources) fn set(root: u32, errno: Option<i32>) {
+        let mut faults = ERRNO.lock().unwrap_or_else(|e| e.into_inner());
+        match errno {
+            Some(errno) => faults.insert(root, errno),
+            None => faults.remove(&root),
+        };
     }
 }
 
@@ -1409,7 +1424,10 @@ mod stop_tests {
         let child = fork_child(&mut input, &mut output);
         let identity = inspect(child).unwrap().0;
         assert!(
-            !process_rows().unwrap().iter().any(|row| row.pid == child),
+            !process_rows(shell.id())
+                .unwrap()
+                .iter()
+                .any(|row| row.pid == child),
             "the cached table must not know the child"
         );
         let stopped = tree.stop(None, || {}, || {});
@@ -1429,9 +1447,9 @@ mod stop_tests {
         let child = fork_child(&mut input, &mut output);
         let identity = inspect(child).unwrap().0;
         tree.observe(&read_process_rows().unwrap()).unwrap();
-        ps_failure::set(Some(libc::EMFILE));
+        ps_failure::set(shell.id(), Some(libc::EMFILE));
         let stopped = tree.stop(None, || {}, || {});
-        ps_failure::set(None);
+        ps_failure::set(shell.id(), None);
         let still_running = same_process(child, &identity) && shell.try_wait().unwrap().is_none();
         kill_if_still_there(child, &identity);
         let _ = shell.kill();

@@ -1152,6 +1152,165 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
     let _ = fs::remove_dir_all(root);
 }
 
+// A busy native Claude turn writes to its transcript, not to a structured poll:
+// that output must move the run's output clock or the turn reads as stalled.
+struct QuietNativeTurn {
+    app: std::sync::Arc<tokio::sync::Mutex<DaemonApp>>,
+    session_id: String,
+    agent_id: String,
+    run_id: String,
+    context_file: String,
+    transcript_file: PathBuf,
+    root: PathBuf,
+    _worktree: crate::test_support::TestWorktree,
+}
+
+// A native turn that started 20 minutes ago whose last output, as the published
+// run projection also reads, was 15 minutes ago.
+fn quiet_native_turn(name: &str) -> QuietNativeTurn {
+    use crate::test_support::working_agent_ages::{age_working_agent, WorkingAgentAges, MINUTE_MS};
+    let worktree = crate::test_support::TestWorktree::new(name);
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-output-clock-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    let transcript_file = root.join("session.jsonl");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(
+        &transcript_file,
+        serde_json::json!({
+            "type": "assistant",
+            "uuid": "assistant-working",
+            "message": {
+                "id": "message-working",
+                "role": "assistant",
+                "stop_reason": "tool_use",
+                "content": [{ "type": "text", "text": "still working" }]
+            }
+        })
+        .to_string(),
+    )
+    .expect("transcript should be written");
+    let context_file = context_file.display().to_string();
+
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-native",
+        "default",
+        "claude-sonnet",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        "provider-run-claude-output-clock",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-output-clock".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Default::default(),
+            pty_env: std::collections::BTreeMap::from([(
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                context_file.clone(),
+            )]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    age_working_agent(
+        &mut app,
+        run.clone(),
+        WorkingAgentAges {
+            prompt_queued_ms_ago: 20 * MINUTE_MS,
+            turn_started_ms_ago: 20 * MINUTE_MS,
+            last_output_ms_ago: 15 * MINUTE_MS,
+        },
+    );
+    QuietNativeTurn {
+        session_id: session.id().to_string(),
+        agent_id: agent.id().to_string(),
+        run_id: run.id().to_string(),
+        app: std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+        context_file,
+        transcript_file,
+        root,
+        _worktree: worktree,
+    }
+}
+
+async fn silent_agent_ids(turn: &QuietNativeTurn) -> Vec<String> {
+    crate::runtime::router::CommandRouter::with_interactive_capacity(turn.app.clone(), 1)
+        .daemon_health_projection(0)
+        .await
+        .agent_runtime_projection
+        .silent_agents
+        .into_iter()
+        .map(|silent| silent.agent_id)
+        .collect()
+}
+
+#[tokio::test]
+async fn health_lists_a_native_turn_with_no_new_output_as_silent() {
+    let turn = quiet_native_turn("claude-native-quiet-health");
+    assert_eq!(silent_agent_ids(&turn).await, vec![turn.agent_id.clone()]);
+    let _ = fs::remove_dir_all(&turn.root);
+}
+
+#[tokio::test]
+async fn a_native_claude_transcript_drain_that_wrote_output_is_not_a_quiet_run() {
+    let turn = quiet_native_turn("claude-native-output-clock");
+    let before = turn
+        .app
+        .lock()
+        .await
+        .providers
+        .get_run(&turn.run_id)
+        .expect("run should exist")
+        .last_output_at_ms();
+
+    {
+        let mut app = turn.app.lock().await;
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .drain_claude_transcript(
+                &turn.session_id,
+                &turn.run_id,
+                &turn.context_file,
+                &turn.transcript_file.display().to_string(),
+            )
+            .expect("transcript should drain");
+    }
+
+    let after = turn
+        .app
+        .lock()
+        .await
+        .providers
+        .get_run(&turn.run_id)
+        .expect("run should exist")
+        .last_output_at_ms();
+    assert!(
+        after > before,
+        "a native transcript drain that wrote output left the run reading as quiet"
+    );
+    assert!(
+        silent_agent_ids(&turn).await.is_empty(),
+        "Health listed an agent that was writing transcript output as silent"
+    );
+    let _ = fs::remove_dir_all(&turn.root);
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: Claude fires SessionEnd when a stop from Health
 // ends its process tree. That is not the turn finishing: the exit settles it.
 #[test]

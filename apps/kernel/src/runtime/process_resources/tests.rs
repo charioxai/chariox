@@ -729,18 +729,19 @@ fn a_sampler_short_of_resources_keeps_ownership_beyond_the_unreadable_grace() {
 
 /// Starting `ps` fails with `errno` until dropped.
 #[cfg(unix)]
-struct PsFailing;
+struct PsFailing(u32);
 #[cfg(unix)]
 impl PsFailing {
-    fn with(errno: i32) -> Self {
-        sampling::ps_failure::set(Some(errno));
-        Self
+    /// Only the tree rooted at `root` sees the failure.
+    fn with(root: u32, errno: i32) -> Self {
+        sampling::ps_failure::set(root, Some(errno));
+        Self(root)
     }
 }
 #[cfg(unix)]
 impl Drop for PsFailing {
     fn drop(&mut self) {
-        sampling::ps_failure::set(None);
+        sampling::ps_failure::set(self.0, None);
     }
 }
 
@@ -772,7 +773,7 @@ fn a_kernel_short_of_resources_for_a_moment_keeps_the_tree_it_watches() {
     }
     let mut outcomes = Vec::new();
     for errno in [libc::EMFILE, libc::ENFILE, libc::EAGAIN, libc::ENOMEM] {
-        let failing = PsFailing::with(errno);
+        let failing = PsFailing::with(pid, errno);
         std::thread::sleep(Duration::from_millis(350));
         let held = samples_for_key(&key);
         std::thread::sleep(Duration::from_secs(1));
@@ -820,7 +821,7 @@ fn a_kernel_short_of_resources_for_a_moment_keeps_the_tree_it_watches() {
 fn a_missing_ps_keeps_the_last_snapshot_without_ending_work() {
     let (mut child, _domain, key) = watched_sleep("ps-missing");
     let before = samples_for_key(&key);
-    let failing = PsFailing::with(libc::ENOENT);
+    let failing = PsFailing::with(child.id(), libc::ENOENT);
     std::thread::sleep(Duration::from_millis(600));
     let alive = child.try_wait().unwrap().is_none();
     let after = samples_for_key(&key);
@@ -832,6 +833,50 @@ fn a_missing_ps_keeps_the_last_snapshot_without_ending_work() {
         before, after,
         "failed refresh replaced the last good sample"
     );
+}
+
+/// A tree whose `ps` fails does not make the trees of other tests (or other
+/// workloads) lose their samples or refuse to start.
+#[cfg(unix)]
+#[test]
+fn a_ps_failure_for_one_tree_leaves_every_other_tree_alone() {
+    let (mut failing_child, _failing_domain, _) = watched_sleep("fault-scoped");
+    let (mut other, _other_domain, key) = watched_sleep("fault-other");
+    let failing = PsFailing::with(failing_child.id(), libc::ENOENT);
+    let mut third = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let started = PreparedDomain::watchdog("fault-third", None, roomy()).start(third.id());
+    let first = samples_for_key(&key)
+        .iter()
+        .map(|sample| sample.sampled_at_ms)
+        .max()
+        .unwrap_or(0);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let sampled_on = loop {
+        let latest = samples_for_key(&key)
+            .iter()
+            .map(|sample| sample.sampled_at_ms)
+            .max()
+            .unwrap_or(0);
+        if latest > first || std::time::Instant::now() >= deadline {
+            break latest > first;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let other_alive = other.try_wait().unwrap().is_none();
+    drop(failing);
+    for child in [&mut failing_child, &mut other, &mut third] {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert!(started.is_ok(), "another tree's failure refused a start");
+    assert!(
+        sampled_on,
+        "another tree's failure stopped this tree's samples"
+    );
+    assert!(other_alive, "another tree's failure ended this tree");
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11: disk is active-process I/O, never filesystem capacity.
@@ -860,4 +905,24 @@ fn disk_io_sample_reports_real_owned_process_writes() {
             .is_some_and(|bytes| bytes >= 1048576),
         "the shared process sample carries actual disk I/O: {wire}"
     );
+}
+
+/// The line a paused command is told reaches the pipe an agent's tool reads
+/// the command's error stream from, not only a file.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_notice_reaches_the_pipe_a_tool_reads_the_error_stream_from() {
+    use std::io::Read;
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let notice = "chariox: this command is paused while it grows for memory.\n";
+    announce(child.id(), notice);
+    let mut heard = vec![0; notice.len()];
+    child.stderr.take().unwrap().read_exact(&mut heard).unwrap();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(String::from_utf8(heard).unwrap(), notice);
 }

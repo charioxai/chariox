@@ -1069,6 +1069,7 @@ mod tests {
                 )]),
                 active_turn: None,
                 last_completed_turn: None,
+                liveness: Default::default(),
             },
         )]);
         store.project_external_observed_activity("session-1", &mut activity);

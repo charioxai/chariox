@@ -38,6 +38,21 @@ export type AgentRuntimeActivity = {
   queued_prompt_controls?: Record<string, AgentQueuedPromptControl>
   active_turn?: AgentActiveTurn | null
   last_completed_turn?: CompletedGitTurnActionProjection | null
+  liveness?: AgentLiveness
+}
+
+/** What an agent waits on and how long it has been quiet; absent while there is nothing to say. */
+export type AgentLiveness = {
+  last_activity_at_ms?: number
+  waiting_on?: AgentWaitingOn
+  stalled?: boolean
+}
+
+export type AgentWaitingOn = {
+  kind: "provider" | "background_command" | "timer" | "source" | "command_paused" | "command_held"
+  detail?: string
+  resource?: "memory" | "disk"
+  since_ms: number
 }
 
 export type AgentQueuedPromptControl = {

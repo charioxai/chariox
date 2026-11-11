@@ -85,6 +85,7 @@ pub(crate) fn note_prompt_tool_output(
 }
 
 pub(crate) fn note_prompt_output(app: &mut DaemonApp, provider_run_id: &str) {
+    let _ = app.providers().record_run_output(provider_run_id);
     if let Some(state) = app.prompt_activity.write().get_mut(provider_run_id) {
         state.last_output_at = Some(Instant::now());
     }
@@ -92,6 +93,7 @@ pub(crate) fn note_prompt_output(app: &mut DaemonApp, provider_run_id: &str) {
 }
 
 pub(crate) fn note_prompt_response_content(app: &mut DaemonApp, provider_run_id: &str) {
+    let _ = app.providers().record_run_output(provider_run_id);
     let first_response_content = {
         let mut prompt_activity = app.prompt_activity.write();
         if let Some(state) = prompt_activity.get_mut(provider_run_id) {

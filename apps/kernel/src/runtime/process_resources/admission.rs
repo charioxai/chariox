@@ -31,6 +31,9 @@ const AHEAD: u64 = 2;
 /// one is judged.
 const FILLER_SETTLE: Duration = Duration::from_secs(2);
 const REMEMBERED: usize = 4096;
+/// Paused commands keep their memory. When memory stays short this long
+/// without the pool gaining room, the largest paused command ends.
+const STALL: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -301,6 +304,10 @@ pub(super) struct Ledger {
     /// The owner whose command started last for each reason: the next one in
     /// line is the following owner's.
     served: BTreeMap<u8, String>,
+    /// Since when a command has been paused for memory, and the room the pool
+    /// had then.
+    stall: Option<(Instant, u64)>,
+    pub(super) stall_window: Duration,
     pub(super) peaks: Peaks,
 }
 
@@ -317,8 +324,11 @@ pub(super) type Volume = dyn Fn(&Path) -> Option<Space> + Send + Sync;
 pub(super) struct Room<'a> {
     /// Memory left under the pressure line.
     pub memory: u64,
-    /// Memory is short: pause the newest growing command.
-    pub tight: bool,
+    /// What the pool keeps for the machine: memory below it is short.
+    pub margin: u64,
+    /// Bytes per second everything that runs grows by: memory below it is
+    /// short too, since it would be gone in a second.
+    pub growing: u64,
     pub light: u64,
     pub growth_room: u64,
     /// The whole pool: what a command can never exceed, however long it waits.
@@ -330,6 +340,25 @@ pub(super) struct Room<'a> {
     pub launch_memory: BTreeMap<String, u64>,
 }
 
+impl Room<'_> {
+    /// Memory is short: pause the newest growing command.
+    pub(super) fn tight(&self) -> bool {
+        self.memory < self.margin.max(self.growing)
+    }
+
+    /// A paused command that grows at `rate` continues only if the pool then
+    /// stays out of short memory for `AHEAD` seconds at the rate of everything
+    /// that runs; otherwise the next sample would pause it again.
+    fn room_to_continue(&self, rate: u64) -> bool {
+        let growing = self.growing.saturating_add(rate);
+        self.memory
+            >= self
+                .margin
+                .max(growing)
+                .saturating_add(growing.saturating_mul(AHEAD))
+    }
+}
+
 impl Ledger {
     pub(super) fn new(file: Option<PathBuf>) -> Self {
         Self {
@@ -337,6 +366,8 @@ impl Ledger {
             resumed_at: BTreeMap::new(),
             filler_at: None,
             served: BTreeMap::new(),
+            stall: None,
+            stall_window: STALL,
             peaks: Peaks::load(file),
         }
     }
@@ -523,7 +554,7 @@ impl Ledger {
         let mut changed = Vec::new();
         self.hold(current, room, &mut state);
         let mut may_stop = false;
-        if room.tight {
+        if room.tight() {
             match self.pause(members, WaitReason::Memory, |entry, command| {
                 (entry.resident >= room.light
                     && command.growth >= GROWING
@@ -537,7 +568,7 @@ impl Ledger {
         // Paused commands keep their memory, so a tight pool stays tight
         // until one of them finishes. When nothing heavy runs any more, the
         // next in line continues anyway: one command always makes progress.
-        if !room.tight || !state.heavy_running {
+        if !room.tight() || !state.heavy_running {
             if let Some(owner) = self.resume(members, WaitReason::Memory, &mut state, room) {
                 changed.push(owner);
             }
@@ -566,6 +597,28 @@ impl Ledger {
             }
         }
         may_stop
+    }
+
+    /// Whether a command has stayed paused for memory for the stall window
+    /// without the pool gaining room: what the paused commands hold is then
+    /// never freed by waiting. A paused command continues only with room to
+    /// grow, so it can wait with memory above the pressure line too. Starts
+    /// over once it ends.
+    pub(super) fn stalled(&mut self, members: &[Arc<Mutex<Observation>>], room: &Room) -> bool {
+        if youngest_paused(members).is_none() {
+            self.stall = None;
+            return false;
+        }
+        let (since, base) = *self.stall.get_or_insert((Instant::now(), room.memory));
+        if room.memory >= base.saturating_add(room.light) {
+            self.stall = Some((Instant::now(), room.memory));
+            return false;
+        }
+        if since.elapsed() < self.stall_window {
+            return false;
+        }
+        self.stall = None;
+        true
     }
 
     /// Marks the command filling a nearly full volume: the agent's writer
@@ -812,6 +865,12 @@ impl Ledger {
             let volume = entry.disk(room);
             let fits = (memory <= state.memory_room(&unit, room) || !state.heavy_running)
                 && volume.is_none_or(|volume| disk <= state.spare(volume, &unit, room));
+            let paused_memory =
+                reason == WaitReason::Memory && matches!(entry.wait, Some(Wait::Paused(_)));
+            let fits = fits
+                && (!paused_memory
+                    || !state.heavy_running
+                    || room.room_to_continue(entry.paused_rate));
             if !fits {
                 continue;
             }
@@ -836,6 +895,9 @@ impl Ledger {
 /// makes no progress.
 pub(super) struct PausedCommand {
     pub pid: u32,
+    arrived: u64,
+    /// When it began to wait (Unix ms).
+    pub since_ms: u64,
     pub resident: u64,
     pub control: std::sync::mpsc::Sender<WatchCommand>,
 }
@@ -844,7 +906,19 @@ pub(super) struct PausedCommand {
 /// else can pause, it yields before a running command does: it has made the
 /// least progress, and the oldest running command can then finish.
 pub(super) fn youngest_paused(members: &[Arc<Mutex<Observation>>]) -> Option<PausedCommand> {
-    let mut newest: Option<(u64, PausedCommand)> = None;
+    paused_by(members, |paused| paused.arrived)
+}
+
+/// The command paused on memory that holds the most: ending it frees the most.
+pub(super) fn largest_paused(members: &[Arc<Mutex<Observation>>]) -> Option<PausedCommand> {
+    paused_by(members, |paused| paused.resident)
+}
+
+fn paused_by(
+    members: &[Arc<Mutex<Observation>>],
+    rank: impl Fn(&PausedCommand) -> u64,
+) -> Option<PausedCommand> {
+    let mut best: Option<(u64, PausedCommand)> = None;
     for member in members {
         let observation = member.lock().unwrap_or_else(|e| e.into_inner());
         let Some(control) = observation.control.clone() else {
@@ -854,23 +928,23 @@ pub(super) fn youngest_paused(members: &[Arc<Mutex<Observation>>]) -> Option<Pau
             let Some(entry) = observation.admission.get(&command.pid) else {
                 continue;
             };
-            if matches!(entry.wait, Some(Wait::Paused(WaitReason::Memory)))
-                && newest
-                    .as_ref()
-                    .is_none_or(|(arrived, _)| entry.arrived > *arrived)
-            {
-                newest = Some((
-                    entry.arrived,
-                    PausedCommand {
-                        pid: command.pid,
-                        resident: command.resident,
-                        control: control.clone(),
-                    },
-                ));
+            if !matches!(entry.wait, Some(Wait::Paused(WaitReason::Memory))) {
+                continue;
+            }
+            let paused = PausedCommand {
+                pid: command.pid,
+                arrived: entry.arrived,
+                since_ms: entry.since_ms,
+                resident: command.resident,
+                control: control.clone(),
+            };
+            let score = rank(&paused);
+            if best.as_ref().is_none_or(|(best, _)| score > *best) {
+                best = Some((score, paused));
             }
         }
     }
-    newest.map(|(_, command)| command)
+    best.map(|(_, command)| command)
 }
 
 /// Machine-wide facts one pass decides on.

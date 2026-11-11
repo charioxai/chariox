@@ -159,6 +159,43 @@ async fn daemon_health_projection_reports_session_and_agent_mailboxes_inner() {
     assert!(!projection.provider_catalog.cached);
 }
 
+// A prompt that waited in the queue starts on a run whose last output is older
+// than the silence limit: the turn is quiet only since it started.
+#[tokio::test]
+async fn daemon_health_measures_silence_from_the_turn_start_not_the_queue_time() {
+    use crate::test_support::working_agent_ages::{age_working_agent, WorkingAgentAges, MINUTE_MS};
+    let worktree = crate::test_support::TestWorktree::new("daemon-health-silence-turn-start");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let run = launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "claude-code",
+        "sonnet",
+    );
+    age_working_agent(
+        &mut app,
+        run,
+        WorkingAgentAges {
+            prompt_queued_ms_ago: 20 * MINUTE_MS,
+            turn_started_ms_ago: MINUTE_MS,
+            last_output_ms_ago: 15 * MINUTE_MS,
+        },
+    );
+
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let projection = router.daemon_health_projection(0).await;
+
+    assert!(
+        projection.agent_runtime_projection.silent_agents.is_empty(),
+        "an old queued prompt that just started was listed as silent at dispatch"
+    );
+}
+
 #[tokio::test]
 async fn daemon_health_reports_duplicate_active_chariox_provider_runs_per_agent() {
     let worktree = crate::test_support::TestWorktree::new("daemon-health-reports-duplicate");

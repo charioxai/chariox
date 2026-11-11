@@ -148,6 +148,14 @@ impl KernelRuntimeState {
         self.owned
             .session_projection
             .project_external_observed_activity(session.id(), &mut activity);
+        crate::runtime::projection::annotate_waits(
+            &mut activity,
+            &self.session_processes(session.id()),
+            &crate::runtime::projection::YieldedSources::of_room(
+                &self.owned.durable_state_store,
+                session.id(),
+            ),
+        );
         activity
     }
 

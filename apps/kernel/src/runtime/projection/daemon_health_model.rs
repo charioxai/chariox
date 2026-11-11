@@ -45,6 +45,9 @@ pub struct AgentRuntimeProjectionHealthSnapshot {
     pub projected_agents: usize,
     pub active_prompts: usize,
     pub queued_prompts: usize,
+    /// Running turns whose provider run has been silent for too long.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub silent_agents: Vec<super::SilentAgentHealth>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]

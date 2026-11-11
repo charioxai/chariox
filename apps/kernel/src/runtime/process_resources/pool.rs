@@ -54,6 +54,8 @@ pub(super) struct CommandUse {
 
 pub(super) enum Cause {
     Pressure,
+    /// Memory stayed short while commands paused for it freed nothing.
+    Stalled(Duration),
     Cap(u64),
 }
 
@@ -210,7 +212,8 @@ impl Pool {
         // can strand a paused descendant while its parent keeps the reservation.
         let room = admission::Room {
             memory: sampled.memory,
-            tight: sampled.memory < self.margin.max(growing),
+            margin: self.margin,
+            growing,
             light,
             growth_room: admission::growth_room(self.ceiling),
             capacity: self.ceiling.saturating_sub(self.margin),
@@ -219,6 +222,9 @@ impl Pool {
             launch_memory,
         };
         let may_stop = ledger.pass(&members, current, &room);
+        let stalled = ledger
+            .stalled(&members, &room)
+            .then_some(ledger.stall_window);
         let refused = ledger.take_refused(current);
         let fillers = ledger.take_fillers(current);
         let capacity = room.capacity;
@@ -226,6 +232,10 @@ impl Pool {
         drop(ledger);
         self.end_oversized(current, refused, capacity);
         self.end_fillers(current, fillers);
+        if let Some(window) = stalled {
+            self.stop_one(&members, None, Cause::Stalled(window));
+            return;
+        }
         // Paused and held commands do not grow: with nothing growing the
         // pool waits rather than stops.
         if may_stop && growing > 0 && self.pressed(&members) {
@@ -408,36 +418,52 @@ impl Pool {
             return;
         }
         // A paused command holds memory and makes no progress: it yields
-        // before a running command does, the newest first.
-        if matches!(cause, Cause::Pressure) {
-            if let Some(waiting) = admission::youngest_paused(members) {
+        // before a running command does, the newest first. When waiting
+        // freed nothing, the largest one yields.
+        let paused = match cause {
+            Cause::Pressure => admission::youngest_paused(members).map(|waiting| {
                 let notice = format!(
                     "chariox: stopped this waiting command under memory pressure: the pool is full, so the newest waiting command ends first ({} MiB resident) and the oldest running one can finish. Run it again; it starts when there is room.\n",
                     waiting.resident / MIB
                 );
-                crate::logging::warn_with_fields(
-                    "process_resources.memory_stop",
-                    notice.trim_end(),
-                    serde_json::json!({
-                        "pid": waiting.pid,
-                        "resident_bytes": waiting.resident,
-                        "ceiling_bytes": self.ceiling,
-                        "waiting": true,
-                    }),
+                (waiting, notice)
+            }),
+            Cause::Stalled(window) => admission::largest_paused(members).map(|waiting| {
+                let paused_for = crate::session::unix_epoch_ms().saturating_sub(waiting.since_ms);
+                let notice = format!(
+                    "chariox: stopped this command: it was paused for memory for {} and the {} MiB it holds is the largest of the paused commands. The pool gained no room for {} s while the paused commands freed nothing, so waiting longer would not help. Run it again; it starts when there is room.\n",
+                    super::waits::duration(paused_for),
+                    waiting.resident / MIB,
+                    window.as_secs()
                 );
-                if waiting
-                    .control
-                    .send(WatchCommand::MemoryStop {
-                        pid: waiting.pid,
-                        limit_bytes: self.ceiling,
-                        notice,
-                    })
-                    .is_ok()
-                {
-                    stopped_at.insert(key, Instant::now());
-                }
-                return;
+                (waiting, notice)
+            }),
+            Cause::Cap(_) => None,
+        };
+        if let Some((waiting, notice)) = paused {
+            crate::logging::warn_with_fields(
+                "process_resources.memory_stop",
+                notice.trim_end(),
+                serde_json::json!({
+                    "pid": waiting.pid,
+                    "resident_bytes": waiting.resident,
+                    "ceiling_bytes": self.ceiling,
+                    "waiting": true,
+                    "stalled": matches!(cause, Cause::Stalled(_)),
+                }),
+            );
+            if waiting
+                .control
+                .send(WatchCommand::MemoryStop {
+                    pid: waiting.pid,
+                    limit_bytes: self.ceiling,
+                    notice,
+                })
+                .is_ok()
+            {
+                stopped_at.insert(key, Instant::now());
             }
+            return;
         }
         let snapshot = members
             .iter()
@@ -503,6 +529,7 @@ impl Pool {
                     owner_bytes / MIB
                 ),
             ),
+            Cause::Stalled(_) => return,
             Cause::Pressure => (
                 share,
                 format!(

@@ -488,6 +488,9 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 Ok(Some(poll_result)) => {
                     self.pending_structured_output_records
                         .mark_poll_succeeded(&provider_run_id);
+                    if poll_result.has_output() {
+                        let _ = self.provider_store.record_run_output(&provider_run_id);
+                    }
                     poll_result
                 }
                 Ok(None) => {

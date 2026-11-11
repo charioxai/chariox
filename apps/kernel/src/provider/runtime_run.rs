@@ -135,6 +135,10 @@ pub struct RuntimeProviderRun {
     terminal_diagnostic: Option<String>,
     started_at_ms: u64,
     last_activity_at_ms: u64,
+    /// When the provider last wrote output; the run's start until it does.
+    /// Kept in memory only: a restarted kernel counts a turn's quiet from its start.
+    #[serde(skip)]
+    last_output_at_ms: u64,
 }
 
 impl std::fmt::Debug for RuntimeProviderRun {
@@ -226,6 +230,7 @@ impl RuntimeProviderRun {
             terminal_diagnostic: None,
             started_at_ms: now,
             last_activity_at_ms: now,
+            last_output_at_ms: now,
         }
     }
 
@@ -295,6 +300,7 @@ impl RuntimeProviderRun {
             terminal_diagnostic: None,
             started_at_ms: now,
             last_activity_at_ms: now,
+            last_output_at_ms: now,
         }
     }
 
@@ -521,6 +527,12 @@ impl RuntimeProviderRun {
     #[cfg(test)]
     pub(crate) fn with_working_directory_for_test(mut self, directory: PathBuf) -> Self {
         self.working_directory = Some(directory);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_last_output_at_ms_for_test(mut self, at_ms: u64) -> Self {
+        self.last_output_at_ms = at_ms;
         self
     }
 
@@ -773,6 +785,12 @@ impl RuntimeProviderRun {
         self.last_activity_at_ms
     }
 
+    /// When the provider last produced output. Polling or configuring the run
+    /// does not move it, so a quiet provider stays quiet.
+    pub fn last_output_at_ms(&self) -> u64 {
+        self.last_output_at_ms
+    }
+
     pub(crate) fn active_selection_cmp(&self, other: &Self) -> Ordering {
         (
             provider_run_active_selection_rank(self.state),
@@ -789,6 +807,12 @@ impl RuntimeProviderRun {
 
     pub fn touch_activity(&mut self) {
         self.last_activity_at_ms = unix_epoch_ms();
+    }
+
+    pub fn record_output(&mut self) {
+        let now = unix_epoch_ms();
+        self.last_activity_at_ms = now;
+        self.last_output_at_ms = now;
     }
 
     pub fn mark_running(&mut self) {

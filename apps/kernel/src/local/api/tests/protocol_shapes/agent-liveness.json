@@ -1,0 +1,32 @@
+{
+  "activity": {
+    "active_prompt_count": 1,
+    "busy": true,
+    "liveness": {
+      "last_activity_at_ms": 1700000000000,
+      "stalled": true,
+      "waiting_on": {
+        "detail": "cargo test",
+        "kind": "command_paused",
+        "resource": "memory",
+        "since_ms": 1700000030000
+      }
+    },
+    "prompt_status": "running",
+    "queued_prompt_count": 0,
+    "status": "working",
+    "unread_idle_output": false
+  },
+  "health": {
+    "active_prompts": 1,
+    "projected_agents": 2,
+    "queued_prompts": 0,
+    "silent_agents": [
+      {
+        "agent_id": "agent-a",
+        "quiet_since_ms": 1700000000000,
+        "session_id": "session-a"
+      }
+    ]
+  }
+}

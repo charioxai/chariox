@@ -477,3 +477,40 @@ fn node_upload_is_accepted_while_native_v2_runtime_is_unavailable() {
         result.err()
     );
 }
+
+/// A restarted kernel with a volatile Vault holds another dev key than the
+/// one its store bound: the build ends with that reason instead of retrying
+/// as a storage fault for ever.
+#[test]
+fn a_dev_build_whose_bound_key_is_gone_from_the_vault_fails_with_its_reason() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
+    let root = Scratch::new();
+    let store = root.store();
+    store
+        .mutate_app_publisher_with_budget(
+            "alice",
+            AppPublisherMutation::BindDevIdentity {
+                public_key: SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes(),
+            },
+            crate::runtime::app_operation_budget::AppOperationBudget::from_supervisor(|| false),
+        )
+        .unwrap();
+    let (uploads, service) = service(&store);
+    let bytes = node_archive(31);
+    let handle = upload(&uploads, "alice", &bytes, true);
+    let error = runtime()
+        .block_on(service.prepare(
+            "alice".into(),
+            handle,
+            Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+            PreparationSource::Dev {
+                expected_upload_digest: digest(&bytes),
+            },
+        ))
+        .err()
+        .expect("a dev build under a lost dev key must not prepare");
+    std::env::remove_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT");
+    assert_eq!(format!("{error:?}"), "DevIdentityChanged");
+}

@@ -69,6 +69,9 @@ impl KernelRuntimeState {
                     owned
                         .structured_output_records
                         .mark_poll_succeeded(&finished_run_id);
+                    if poll_result.has_output() {
+                        let _ = owned.provider_store.record_run_output(&finished_run_id);
+                    }
                     poll_result
                 }
                 Ok(None) => {
