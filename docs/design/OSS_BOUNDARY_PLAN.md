@@ -32,7 +32,7 @@ $ node --test scripts/oss-boundary-guard.test.mjs
 # tests 15  # pass 15  # fail 0
 ```
 
-Green does not mean the rows pass. What exempts the code: `scripts/oss-boundary-leaks.allow.json` (41 entries), `scripts/control-plane-paths.allow.json` (47 entries, 11 marked "none; the path goes away"), `scripts/control-plane-requests.allow.json` (12 entries, 2 marked Cloud-only), and `ALLOWED_FILES` (29 whole files, justified as AI-provider billing text, upstream benchmark data, fixtures).
+Green does not mean the rows pass. What exempts the code: `scripts/oss-boundary-leaks.allow.json` (41 entries), `scripts/control-plane-paths.allow.json` (47 entries, 11 marked "none; the path goes away"), `scripts/control-plane-requests.allow.json` (12 entries, 2 marked Cloud-only), and `scripts/oss-boundary-files.allow.json` (28 whole files, justified as AI-provider billing text, upstream benchmark data, fixtures).
 
 ### 1.2 Exact method
 
