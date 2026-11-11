@@ -840,10 +840,15 @@ pub(super) struct PausedCommand {
     pub control: std::sync::mpsc::Sender<WatchCommand>,
 }
 
-/// The newest command paused on memory. When the pool is full and nothing
-/// else can pause, it yields before a running command does: it has made the
-/// least progress, and the oldest running command can then finish.
-pub(super) fn youngest_paused(members: &[Arc<Mutex<Observation>>]) -> Option<PausedCommand> {
+/// The newest command paused on memory for at least `waited_ms`. When the
+/// pool is full and nothing else can pause, it yields before a running
+/// command does: it has made the least progress, and the oldest running
+/// command can then finish.
+pub(super) fn youngest_paused(
+    members: &[Arc<Mutex<Observation>>],
+    waited_ms: u64,
+) -> Option<PausedCommand> {
+    let now = crate::session::unix_epoch_ms();
     let mut newest: Option<(u64, PausedCommand)> = None;
     for member in members {
         let observation = member.lock().unwrap_or_else(|e| e.into_inner());
@@ -855,6 +860,7 @@ pub(super) fn youngest_paused(members: &[Arc<Mutex<Observation>>]) -> Option<Pau
                 continue;
             };
             if matches!(entry.wait, Some(Wait::Paused(WaitReason::Memory)))
+                && now.saturating_sub(entry.since_ms) >= waited_ms
                 && newest
                     .as_ref()
                     .is_none_or(|(arrived, _)| entry.arrived > *arrived)

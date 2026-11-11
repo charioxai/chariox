@@ -532,6 +532,41 @@ fn the_jobs_of_one_shell_command_are_paused_one_by_one() {
     assert!(!workload.waiting("big"), "the idle holder was paused");
 }
 
+/// A command paused on a pool that is full by accounting but never stalls
+/// (an idle holder keeps its memory) is not left waiting for ever: after the
+/// bounded wait it ends with the memory-stop reason, and the holder goes on.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_command_paused_on_a_full_pool_that_never_stalls_ends_after_the_bounded_wait() {
+    let (mut a, mut b, _c, _pool) = pressure(false, 300, 48, 9);
+    assert!(
+        b.waiting("grow"),
+        "the newest growing command was not paused"
+    );
+    settle(3);
+    assert!(
+        b.alive("grow") && b.waiting("grow"),
+        "the pause ended before its bounded wait"
+    );
+    {
+        let mut observation = b.domain.state.lock().unwrap();
+        for entry in observation
+            .admission
+            .values_mut()
+            .filter(|e| e.wait.is_some())
+        {
+            entry.since_ms = crate::session::unix_epoch_ms() - 61_000;
+        }
+    }
+    settle(3);
+    assert!(
+        !b.alive("grow"),
+        "the paused command stayed stopped with no outcome"
+    );
+    b.assert_told("grow", "stopped this waiting command");
+    assert!(a.alive("big") && a.alive("idle") && a.root_alive() && b.root_alive());
+}
+
 /// The same shell, after one of its two jobs ended while the other was
 /// paused: the shell runs one job now, but that job stays a command of its
 /// own, with its wait. Were it folded back into the shell, its entry would
