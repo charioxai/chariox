@@ -208,11 +208,12 @@ async fn read_allowlist(file: &PathBuf) -> Result<BTreeSet<String>, String> {
     Ok(entries.into_keys().collect())
 }
 
-/// The allowlist as last read; an unreadable file counts as an empty list until the next read.
+/// The allowlist as last read. A read that fails keeps the previous list in force; `listed` is
+/// `None` only while no read has ever succeeded, and then nobody is admitted.
 #[derive(Default)]
 struct AllowlistCache {
     read_at_ms: Option<u64>,
-    listed: BTreeSet<String>,
+    listed: Option<BTreeSet<String>>,
 }
 
 #[derive(Clone)]
@@ -315,13 +316,23 @@ impl ManagementAuth {
             (read_at_ms..read_at_ms.saturating_add(ALLOWLIST_CACHE_MS)).contains(&now_ms)
         });
         if !fresh {
-            cache.listed = read_allowlist(file).await.unwrap_or_else(|error| {
-                eprintln!("AEGS allowlist {} is unreadable: {error}", file.display());
-                BTreeSet::new()
-            });
+            match read_allowlist(file).await {
+                Ok(listed) => cache.listed = Some(listed),
+                Err(error) if cache.listed.is_some() => eprintln!(
+                    "AEGS allowlist {} could not be read: {error}; the previous list stays in force until a read succeeds",
+                    file.display()
+                ),
+                Err(error) => eprintln!(
+                    "AEGS allowlist {} could not be read: {error}; no read has succeeded yet, so no kernel is admitted until one does",
+                    file.display()
+                ),
+            }
             cache.read_at_ms = Some(now_ms);
         }
-        cache.listed.contains(kernel_id)
+        cache
+            .listed
+            .as_ref()
+            .is_some_and(|listed| listed.contains(kernel_id))
     }
 
     /// A replay is refused before it can spend an admitted kernel's request budget.
