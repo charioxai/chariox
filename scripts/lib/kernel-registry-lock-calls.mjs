@@ -2,13 +2,18 @@ import { closing, inside, lineOf } from './rust-scan.mjs'
 
 const processResources = 'apps/kernel/src/runtime/process_resources.rs'
 const processControl = 'apps/kernel/src/runtime/process_resources/control.rs'
+const handover = 'apps/kernel/src/runtime/process_resources/handover.rs'
+const projection = 'apps/kernel/src/runtime/process_resources/projection.rs'
+const launch = 'apps/kernel/src/runtime/process_resources/launch.rs'
 const providerProcesses = 'apps/kernel/src/app/provider_processes.rs'
+const ptyManager = 'apps/kernel/src/pty/manager.rs'
 
 // Entry points that take the process-resources registry mutex, directly (`via: 'registry()'`) or through the entry
 // point or private helper named in `via`. `form` is how a caller names it: a method (`x.call(..)`), a path
 // (`process_resources::call(..)`) or a plain function. Whatever ends, lists or hands over a process waits for that
 // mutex, so a runtime thread that takes it waits behind them. Add the entry point here, not its callers, when a new
-// function takes the registry lock; the lint checks every row against its definition.
+// function takes the registry lock; the lint checks every row against its definition. A method name other types
+// share (`release`, `observe`) names the `receiver` the production callers use, so the others are not flagged.
 export const registryLockCalls = [
   { call: 'bind_key', form: 'method', defined: processResources, via: 'registry()' },
   { call: 'unbind_key', form: 'method', defined: processResources, via: 'registry()' },
@@ -18,13 +23,25 @@ export const registryLockCalls = [
   { call: 'outside_ended_for_key', form: 'path', defined: processControl, via: 'registry()' },
   { call: 'stop_for_key', form: 'path', defined: processControl, via: 'ask(' },
   { call: 'start_now_for_key', form: 'path', defined: processControl, via: 'ask(' },
-  { call: 'remove_process', form: 'method', defined: 'apps/kernel/src/pty/manager.rs', via: 'unbind_key(' },
+  { call: 'end_owner', form: 'path', defined: processControl, via: 'registry()' },
+  { call: 'stop_released', form: 'path', defined: processControl, via: 'released_keys(' },
+  { call: 'keys_for_session', form: 'path', defined: projection, via: 'listed_keys(' },
+  { call: 'for_session', form: 'path', defined: projection, via: 'observed_keys_for_session(' },
+  { call: 'hand_over_released', form: 'path', defined: handover, via: 'registry()' },
+  { call: 'adopt_released', form: 'path', defined: handover, via: 'start_released(' },
+  { call: 'bind_terminal_for_key', form: 'path', defined: processResources, via: 'with_submissions_for_key(' },
+  { call: 'line_started_for_key', form: 'path', defined: processResources, via: 'with_submissions_for_key(' },
+  { call: 'line_finished_for_key', form: 'path', defined: processResources, via: 'with_submissions_for_key(' },
+  { call: 'release', form: 'method', receiver: 'resources', defined: processResources, via: 'registry()' },
+  { call: 'observe', form: 'method', receiver: 'permit', defined: launch, via: 'samples_for_key(' },
+  { call: 'release_exited_process_jobs', form: 'method', defined: ptyManager, via: 'release(' },
+  { call: 'remove_process', form: 'method', defined: ptyManager, via: 'unbind_key(' },
   { call: 'remove_provider_pty_process', form: 'function', defined: providerProcesses, via: 'remove_process(' },
   { call: 'remove_run', form: 'method', defined: providerProcesses, via: 'remove_provider_pty_process(' },
 ]
 
-const callPattern = ({ call, form }) => new RegExp({
-  method: `\\.${call}\\s*\\(`,
+const callPattern = ({ call, form, receiver = '' }) => new RegExp({
+  method: `${receiver && `\\b${receiver}`}\\.${call}\\s*\\(`,
   path: `\\bprocess_resources::${call}\\s*\\(`,
   function: `(?<![.\\w:])(?<!\\bfn\\s+)${call}\\s*\\(`,
 }[form], 'g')
