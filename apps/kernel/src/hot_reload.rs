@@ -7,6 +7,7 @@
 //! (clients, the relay, idle provider processes) comes back as after any
 //! restart.
 
+use crate::config::ListenPort;
 use crate::runtime::bounded_process::AsyncBoundedCommandExt as _;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -314,16 +315,21 @@ static INHERITED_LISTENERS: Mutex<BTreeMap<String, i32>> = Mutex::new(BTreeMap::
 pub(crate) fn tcp_listener(
     name: &str,
     host: &str,
-    port: u16,
+    port: ListenPort,
 ) -> std::io::Result<std::net::TcpListener> {
     use std::os::fd::{AsRawFd, FromRawFd};
-    let same = |listener: &std::net::TcpListener| {
+    let same_host = |listener: &std::net::TcpListener| {
         listener.local_addr().is_ok_and(|address| {
-            address.port() == port
-                && host
-                    .parse::<std::net::IpAddr>()
-                    .map_or(true, |ip| ip == address.ip())
+            host.parse::<std::net::IpAddr>()
+                .map_or(true, |ip| ip == address.ip())
         })
+    };
+    let same = |listener: &std::net::TcpListener| match port {
+        ListenPort::Exact(port) => {
+            same_host(listener) && listener.local_addr().is_ok_and(|a| a.port() == port)
+        }
+        // Providers of the previous program hold the port it got, whichever it is.
+        ListenPort::PreferredElseAny(_) => same_host(listener),
     };
     // The kept copy holds the port, so binding it again here would fail.
     let kept = lock(&LISTENERS).get(name).and_then(|fd| {
@@ -337,9 +343,20 @@ pub(crate) fn tcp_listener(
             unsafe { std::net::TcpListener::from_raw_fd(fd) }
         })
     };
-    let listener = match kept.filter(same).or_else(|| inherited().filter(same)) {
+    // A kept listener answers only for the port it was bound to: with a
+    // preferred port, a second bind in this process is another endpoint.
+    let kept = kept.filter(|listener| matches!(port, ListenPort::Exact(_)) && same(listener));
+    let listener = match kept.or_else(|| inherited().filter(same)) {
         Some(listener) => listener,
-        None => std::net::TcpListener::bind((host, port))?,
+        None => match port {
+            ListenPort::Exact(port) => std::net::TcpListener::bind((host, port))?,
+            ListenPort::PreferredElseAny(port) => match std::net::TcpListener::bind((host, port)) {
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                    std::net::TcpListener::bind((host, 0))?
+                }
+                bound => bound?,
+            },
+        },
     };
     let kept = unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
     if kept >= 0 {
@@ -1040,6 +1057,31 @@ mod tests {
         create_chariox_encrypted_vault_for_test, unlock_existing_chariox_encrypted_vault,
         VaultUnlockLease,
     };
+
+    #[test]
+    fn a_taken_preferred_port_falls_back_but_an_exact_port_fails() {
+        let holder = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let taken = holder.local_addr().unwrap().port();
+
+        let fallback = tcp_listener(
+            "test_preferred",
+            "127.0.0.1",
+            ListenPort::PreferredElseAny(taken),
+        )
+        .expect("a taken preferred port falls back to one the OS assigns");
+        let port = fallback.local_addr().unwrap().port();
+        assert_ne!(port, taken);
+        // The table is the process's: a later test that lists the descriptors
+        // a hot reload hands over must not find this listener in it.
+        let kept = lock(&LISTENERS).remove("test_preferred").unwrap();
+        // SAFETY: the kept copy of the listener, owned by the table until removed.
+        unsafe { libc::close(kept) };
+
+        let error = tcp_listener("test_exact", "127.0.0.1", ListenPort::Exact(taken))
+            .expect_err("a taken exact port is an error");
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+        assert!(lock(&LISTENERS).get("test_exact").is_none());
+    }
 
     fn unlocked_vault() -> PathBuf {
         let path = std::env::temp_dir().join(format!(

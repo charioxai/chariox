@@ -34,6 +34,9 @@ impl DaemonConfig {
         let user_config = load_user_config_from_path(&user_config_path);
         let kernel_websocket_host =
             env::var("CHARIOX_KERNEL_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let runtime_mcp_port = env::var("CHARIOX_MCP_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok());
         let kernel_websocket_port = env::var("CHARIOX_KERNEL_PORT")
             .ok()
             .and_then(|value| value.parse::<u16>().ok())
@@ -141,10 +144,8 @@ impl DaemonConfig {
                 .unwrap_or(super::DEFAULT_KERNEL_WEBSOCKET_WRITE_DELAY_MS),
             runtime_mcp_host: env::var("CHARIOX_MCP_HOST")
                 .unwrap_or_else(|_| "127.0.0.1".to_string()),
-            runtime_mcp_port: env::var("CHARIOX_MCP_PORT")
-                .ok()
-                .and_then(|value| value.parse::<u16>().ok())
-                .unwrap_or(43120),
+            runtime_mcp_port: runtime_mcp_port.unwrap_or(43120),
+            runtime_mcp_port_explicit: runtime_mcp_port.is_some(),
             session_history_root_default: env::var_os("CHARIOX_SESSION_HISTORY_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(Self::default_session_history_root),
