@@ -1263,7 +1263,7 @@ async fn silent_agent_ids(turn: &QuietNativeTurn) -> Vec<String> {
 #[tokio::test]
 async fn health_lists_a_native_turn_with_no_new_output_as_silent() {
     let turn = quiet_native_turn("claude-native-quiet-health");
-    assert_eq!(silent_agent_ids(&turn).await, [turn.agent_id.clone()]);
+    assert_eq!(silent_agent_ids(&turn).await, vec![turn.agent_id.clone()]);
     let _ = fs::remove_dir_all(&turn.root);
 }
 
