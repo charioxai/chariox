@@ -6,13 +6,12 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use super::workspace_path::{resolve, Access};
-use super::Workspace;
+use super::workspace_path::Access;
+use super::Place;
 use crate::runtime::kernel_files::{self, StagedChunk, StagedWrite};
 
 /// A slice is the Environment import's: one peer message stays well under the relay's bound.
 pub(crate) const SLICE_BYTES: u64 = crate::project_environment::IMPORT_CHUNK_BYTES;
-pub(crate) const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Up to one slice of a source file, bound to the version of the file it was read from.
 pub(crate) struct SourceSlice {
@@ -38,11 +37,11 @@ pub(crate) struct WriteSlice<'a> {
 /// The slice of the file at `relative` that starts at `offset`; the first one carries the
 /// file's digest.
 pub(crate) fn read_slice(
-    workspace: &Workspace,
+    place: &impl Place,
     relative: &str,
     offset: u64,
 ) -> Result<SourceSlice, String> {
-    let path = resolve(&workspace.root, relative, Access::Read)?;
+    let path = place.resolve(relative, Access::Read)?;
     let unreadable = || format!("`{relative}` could not be read");
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -53,8 +52,8 @@ pub(crate) fn read_slice(
     if !metadata.is_file() {
         return Err(format!("`{relative}` is not a regular file"));
     }
-    if metadata.len() > MAX_FILE_BYTES {
-        return Err(too_large(relative, metadata.len()));
+    if metadata.len() > place.max_file_bytes() {
+        return Err(too_large(relative, metadata.len(), place.max_file_bytes()));
     }
     let revision = revision(&metadata);
     let sha256 = if offset == 0 {
@@ -82,20 +81,19 @@ pub(crate) fn read_slice(
 /// expected digest. A slice that does not continue what is staged is not written: the answer
 /// names the offset to continue from, so a sender that lost an answer resumes where it stopped.
 pub(crate) fn write_slice(
-    workspace: &Workspace,
+    place: &impl Place,
     relative: &str,
     slice: &WriteSlice<'_>,
 ) -> Result<StagedWrite, String> {
-    if workspace.read_only {
-        return Err(
-            "The receiving agent is in plan mode and does not take files; switch it to build mode first"
-                .to_owned(),
-        );
+    place.accepts_files()?;
+    if slice.total_size > place.max_file_bytes() {
+        return Err(too_large(
+            relative,
+            slice.total_size,
+            place.max_file_bytes(),
+        ));
     }
-    if slice.total_size > MAX_FILE_BYTES {
-        return Err(too_large(relative, slice.total_size));
-    }
-    let path = resolve(&workspace.root, relative, Access::Write)?;
+    let path = place.resolve(relative, Access::Write)?;
     let staging = staging_of(&path);
     // The last slice landed and only its answer was lost: the file is already published.
     let published = || StagedWrite {
@@ -106,7 +104,7 @@ pub(crate) fn write_slice(
         if !slice.overwrite && holds(&path, slice.total_size, slice.sha256) {
             return Ok(published());
         }
-        let folder = path.parent().unwrap_or(&workspace.root);
+        let folder = path.parent().unwrap_or(place.root());
         let budget = crate::managed_context::limits::disk_budget(folder);
         if slice.total_size > budget {
             return Err(crate::managed_context::limits::disk_shortage(
@@ -147,9 +145,16 @@ pub(crate) fn write_slice(
     })
 }
 
+/// Bytes an unfinished copy to `relative` has staged.
+pub(crate) fn staged_len(place: &impl Place, relative: &str) -> u64 {
+    place
+        .resolve(relative, Access::Write)
+        .map_or(0, |path| kernel_files::staged_bytes(&staging_of(&path)))
+}
+
 /// Drops what an unfinished copy staged for `relative`.
-pub(crate) fn discard(workspace: &Workspace, relative: &str) {
-    if let Ok(path) = resolve(&workspace.root, relative, Access::Write) {
+pub(crate) fn discard(place: &impl Place, relative: &str) {
+    if let Ok(path) = place.resolve(relative, Access::Write) {
         kernel_files::discard_staging(&staging_of(&path));
     }
 }
@@ -157,7 +162,7 @@ pub(crate) fn discard(workspace: &Workspace, relative: &str) {
 /// Where the copy to `path` stages its bytes: beside the destination, under a `.chariox` name that
 /// no copy may name as source or destination, so it never collides with a workspace file and is
 /// removed only by the copy that made it.
-fn staging_of(path: &Path) -> PathBuf {
+pub(crate) fn staging_of(path: &Path) -> PathBuf {
     let name = path.file_name().unwrap_or_default().as_encoded_bytes();
     let digest = Sha256::digest(name);
     let id: String = digest[..16]
@@ -182,7 +187,8 @@ fn holds(path: &Path, size: u64, sha256: &str) -> bool {
         .is_some_and(|digest| digest == sha256)
 }
 
-fn revision(metadata: &std::fs::Metadata) -> String {
+/// Changes whenever the file is written or replaced.
+pub(crate) fn revision(metadata: &std::fs::Metadata) -> String {
     format!(
         "{}:{}:{}:{}.{}:{}.{}",
         metadata.dev(),
@@ -195,10 +201,10 @@ fn revision(metadata: &std::fs::Metadata) -> String {
     )
 }
 
-fn too_large(relative: &str, size: u64) -> String {
+pub(crate) fn too_large(relative: &str, size: u64, limit: u64) -> String {
     format!(
         "`{relative}` has {size} bytes; a copy moves at most {} MiB (split it, for example with `split -b`)",
-        MAX_FILE_BYTES / (1024 * 1024)
+        limit / (1024 * 1024)
     )
 }
 

@@ -49,6 +49,8 @@ pub enum LocalDaemonResponse {
     KernelDirectoryListed { path: String, entries: Vec<KernelDirectoryEntry>, truncated: bool, },
     KernelFileChunk { path: String, offset: u64, data_base64: String, size: u64, eof: bool, },
     KernelFileWritten { path: String, received: u64, complete: bool, sha256: Option<String>, },
+    FileTransfer { job: FileTransferJob, },
+    FileTransfers { jobs: Vec<FileTransferJob>, },
     RoomBrowserArtifact { result: crate::transport::runtime_tools::RuntimeToolResult },
     /// Protocol 477: the safe outcome of the owner's hand-off action.
     HandoffResolved { outcome: HandoffOutcome },

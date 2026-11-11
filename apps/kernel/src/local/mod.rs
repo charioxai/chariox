@@ -282,7 +282,8 @@ pub use api::{
     RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
 };
 pub use api::{
-    CoverKernelAccessProcessRequest, CoveredProcess, ExtendKernelSudoRequest,
+    CoverKernelAccessProcessRequest, CoveredProcess, ExtendKernelSudoRequest, FileTransferConflict,
+    FileTransferEndpoint, FileTransferJob, FileTransferRef, FileTransferState,
     ForgetGatewayKernelRequest, GatewayAttachmentRef, GatewayKernel, GatewayKernelStatus,
     GatewayKernelVia, GetKernelAccessStatusRequest, GetVaultSecretStatusRequest,
     HeartbeatAttachmentsRequest, JoinKernelLinkRequest, KernelAccessGrant, KernelAccessHolderState,
@@ -290,8 +291,9 @@ pub use api::{
     KernelFileStat, KernelSudoTurn, ListGatewayKernelsRequest, ListKernelAccessGrantsRequest,
     ListKernelDirectoryRequest, OnBehalfOf, ReadKernelFileRequest, RenewKernelSudoRequesterRequest,
     RequestKernelAccessRequest, RequestKernelSudoRequest, RequestVaultSecretRequest,
-    RevokeKernelAccessGrantRequest, StatKernelFileRequest, VaultPaymentApproval, VaultPaymentClaim,
-    VaultSecretStatus, WriteKernelFileRequest, KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
+    RevokeKernelAccessGrantRequest, StartFileTransferRequest, StatKernelFileRequest,
+    VaultPaymentApproval, VaultPaymentClaim, VaultSecretStatus, WriteKernelFileRequest,
+    KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
 };
 pub use api::{
     DictationCommand, DictationContext, DictationKeyState, DictationModelState, DictationProvider,

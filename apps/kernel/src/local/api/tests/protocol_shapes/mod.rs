@@ -123,6 +123,7 @@ mod screenshot;
 mod waiting_room_workspace;
 
 mod leased_agent_file_copy;
+mod machine_files;
 mod payment_card;
 mod provider_tool_background_lifecycle;
 mod provider_tool_images;

@@ -217,6 +217,8 @@ response_policies! {
         KernelDirectoryListed,
         KernelFileChunk,
         KernelFileWritten,
+        FileTransfer,
+        FileTransfers,
         RoomBrowserArtifact,
         RoomTerminal,
         AppPublisherEnrollmentStatus,

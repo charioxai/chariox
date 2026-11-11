@@ -5330,8 +5330,9 @@ authority for its own sessions, agents, terminals and files.
   target keeps running.
 - Kernel files (kernel API requests, any kernel, owner only: a Chariox terminal or a local grant holder, or the
   gateway acting for one): `StatKernelFile { path, with_sha256 }` -> `KernelFileStat { stat: {path, exists, kind,
-  size, modified_ms, sha256, partial_size} }`; `ListKernelDirectory { path }` -> `KernelDirectoryListed { path,
-  entries, truncated }` (2000 entries); `ReadKernelFile { path, offset, length }` (length <= 64 KiB) ->
+  size, modified_ms, revision, mode, sha256, partial_size} }`; `ListKernelDirectory { path, offset }` ->
+  `KernelDirectoryListed { path, entries: [{name, kind, size, modified_ms, revision, mode}], truncated }` (2000
+  entries a page, sorted by name; `truncated` means more follow at `offset` + the entries returned; local 1004); `ReadKernelFile { path, offset, length }` (length <= 64 KiB) ->
   `KernelFileChunk { path, offset, data_base64, size, eof }`; `WriteKernelFile { path, offset, data_base64,
   total_size, sha256?, overwrite }` (chunk <= 64 KiB; chunks may be sent without waiting for each answer, and one that arrives ahead of the staged bytes waits up to 2 s for them) -> `KernelFileWritten { path, received, complete,
   sha256 }`. Paths are absolute or `~/`. An upload lives in `<path>.chariox-partial` and the file appears at `path`
@@ -6784,7 +6785,7 @@ lease admission (`lease_resource` → the leased agent's caller binding) admits 
 and nothing else is needed, so a private relay works:
 
 - `read_leased_agent_file { leased_agent_id, path, offset }` →
-  `leased_agent_file_read { size_bytes, sha256?, revision, content }`: one slice of at most
+  `file_slice_read { size_bytes, sha256?, revision, content }`: one slice of at most
   4 MiB (the Environment import's slice). The slice at offset 0 carries the whole file's SHA-256;
   every slice carries the file's `revision` (device, inode, size, mtime, ctime), and the home
   refuses a slice of another revision.
@@ -6803,7 +6804,7 @@ and nothing else is needed, so a private relay works:
   home retries it for 30 s more and the failure names the leftover; the next copy to that path
   replaces it.
 
-Refusals are `leased_agent_file_refused { reason }`, final and phrased for the model. A receiving
+Refusals are `file_refused { reason }` (peer 443 renamed the 442 answers `leased_agent_file_read` and `leased_agent_file_refused`, which the machine file requests share), final and phrased for the model. A receiving
 workspace refuses absolute paths, `..`, any link on the way, a final link or folder, any write
 under `.git` (any case, any depth) or `.chariox*`, a plan-mode receiver, an existing file without
 `overwrite`, more than 256 MiB, and more than the volume's free space. Reads refuse the same path
@@ -7188,6 +7189,64 @@ request frames, `SetLeasedAgentDeadline`, `DeleteRoomPeer` and the leased agent 
 client (`landing8-protocol.test.ts`). Focused checks:
 `cargo test -p chariox-kernel --lib -- landing8 protocol_shapes client_protocol_conformance` and
 `node --test packages/kernel-client/dist/landing8-protocol.test.js`.
+
+### MP-08 / MP-09 / MP-10 / MP-11: Files on the owner's machines — local 1004 / relay peer 443
+
+The Kernel files requests above are the owner's Files service on a machine. Local 1004 adds a
+`revision` (device, inode, size, mtime, ctime) and the Unix `mode` to each entry and stat, and a
+page `offset` to `ListKernelDirectory`. **The kernel's own state is never listed, read or written**:
+its home (`CHARIOX_HOME`, `~/.chariox`), config, state and log folders and the Vault file (as
+configured) answer `file_state_protected`; a listing omits them, links are resolved first, and
+`..` cannot reach them. The same refusal holds for the peer requests and for the agent tools.
+
+A file or folder is copied or moved between two machines of the owner by a kernel-owned transfer
+job. The kernel that is to hold the copy (the destination) pulls from the source, over the relay;
+the client or agent that asked carries no bytes and may go away:
+
+- Local requests (owner only, like the file requests): `StartFileTransfer { source: { kernel?,
+  path }, destination_folder, name?, conflict, move }` → `FileTransfer { job }`;
+  `GetFileTransfer { job_id }` → `FileTransfer { job }`; `ListFileTransfers` → `FileTransfers
+  { jobs }` (newest first; 64 finished jobs are kept); `CancelFileTransfer { job_id }`. `kernel`
+  names a kernel of the same owner (id, name or machine name); absent means this machine.
+  `conflict` is `fail` (default; the error names the choices), `replace`, `keep_both`
+  (`name (2).ext`, `name (3).ext`, ...) or `skip` (done, nothing copied, `skipped` counts it).
+  `move` deletes the source only after the destination holds the verified copy. A job reads
+  `state` (`scanning`, `copying`, `finishing`, `done`, `failed`, `canceled`), `destination`,
+  `bytes_done` / `bytes_total`, `files_done` / `files_total`, `skipped`, `current`, `sha256` (a
+  single file), `error` and times. It survives the client and a kernel restart: each job is recorded in
+  `<state>/file-transfers/`, and one the kernel stopped under continues from its staged bytes
+  once the machine it reads from can be reached (15 minutes; then it ends as failed and says so).
+  A move interrupted while the source was being deleted ends as failed with the copy kept, since
+  repeating the deletes blindly could remove what was not copied.
+- Peer requests between kernels of the same Cloud owner (the same admission as the peer agent
+  requests: a key-bound identity of the same realm and user): `stat_machine_path { path }` →
+  `machine_path_stat { stat }`; `list_machine_directory { path, offset }` → `machine_directory
+  { entries, truncated }`; `read_machine_file { path, offset }` → `file_slice_read` (4 MiB slices; the
+  slice at offset 0 carries the file's SHA-256); `delete_machine_path { path, expect_revision? }` →
+  `machine_path_deleted` (a file only while its revision is still `expect_revision`; a folder only
+  when empty); `start_file_transfer { request }`, `get_file_transfer { job_id }`,
+  `cancel_file_transfer { job_id }` → `file_transfer { job }`. A refusal is `file_refused { reason }`.
+- A file is read in 4 MiB slices, each bound to the source's revision, staged beside the destination
+  in a hidden `.chariox-copy-*` file and published when the assembled file has the source's digest;
+  its permissions are those of the source. A folder is copied file by file (four at once) into a
+  hidden staging folder (private, named by source machine, path and destination) and renamed into
+  place when whole, with the source's folder modes: a failed or canceled folder transfer publishes
+  nothing and leaves no staging; a retry keeps only what the source still has; `replace` swaps an
+  existing folder whole and is refused for a folder that holds the kernel's state; two transfers
+  never write to one destination at the same time (`keep_both` takes the next free name). Links and
+  special files are skipped and counted. A dropped link is waited out for 15 minutes; a copy that
+  gave up for a link keeps its staged bytes, and the same transfer started again continues from them.
+  There is no size cap.
+- Agent tools (the owner's reach, like the peer agent tools): `chariox.files.list`,
+  `chariox.files.read` (a page of at most 64 KiB), `chariox.files.copy { source: { machine?, path },
+  destination: { machine?, folder, name? }, conflict?, move?, wait_seconds? }` and
+  `chariox.files.transfer { job_id, machine?, cancel?, wait_seconds? }`. A copy result is the job
+  without its start time; no file content ever reaches the model.
+
+Peer 443 also renames the 442 answers `leased_agent_file_read` and `leased_agent_file_refused` to
+`file_slice_read` and `file_refused`, since both file services use them. Managed upgrades admit
+1002 and 1003. Focused checks: `cargo test -p chariox-kernel --lib -- machine_files kernel_files
+agent_file_copy file_copy_tool machine_file_requests protocol_shapes::machine_files`.
 
 ### Source availability of a notification trigger — local 1003
 

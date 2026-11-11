@@ -58,11 +58,13 @@ impl FakeWorker {
     }
 }
 
-impl RemoteWorkspace for FakeWorker {
+impl RemoteSource for FakeWorker {
     async fn read(&self, path: &str, offset: u64) -> Result<SourceSlice, LinkError> {
         self.deliver(|| read_slice(&self.workspace, path, offset))
     }
+}
 
+impl RemoteWorkspace for FakeWorker {
     async fn write(&self, path: &str, slice: &WriteSlice<'_>) -> Result<StagedWrite, LinkError> {
         self.deliver(|| write_slice(&self.workspace, path, slice))
     }
@@ -144,11 +146,8 @@ async fn a_file_crosses_both_ways_byte_for_byte_with_its_digest() {
     .await
     .unwrap();
     assert_eq!(
-        pulled,
-        Copied {
-            bytes: BUNDLE as u64,
-            sha256: sha256.clone()
-        }
+        (pulled.bytes, pulled.sha256.as_str()),
+        (BUNDLE as u64, sha256.as_str())
     );
     assert_eq!(digest_of(&home.root.join("inbox/x.bundle")), sha256);
 
@@ -160,6 +159,7 @@ async fn a_file_crosses_both_ways_byte_for_byte_with_its_digest() {
         &CopyOptions {
             overwrite: false,
             expect_sha256: Some(sha256.to_uppercase()),
+            ..Default::default()
         },
     )
     .await
@@ -289,6 +289,7 @@ async fn an_existing_file_is_replaced_only_with_overwrite_and_oversized_files_ne
     let replace = CopyOptions {
         overwrite: true,
         expect_sha256: None,
+        ..Default::default()
     };
     push(&home, "new", &remote, "old", &replace).await.unwrap();
     assert_eq!(digest_of(&worker.root.join("old")), sha256);
@@ -296,6 +297,7 @@ async fn an_existing_file_is_replaced_only_with_overwrite_and_oversized_files_ne
     let wrong = CopyOptions {
         overwrite: true,
         expect_sha256: Some("0".repeat(64)),
+        ..Default::default()
     };
     let error = push(&home, "new", &remote, "other", &wrong)
         .await
@@ -305,7 +307,7 @@ async fn an_existing_file_is_replaced_only_with_overwrite_and_oversized_files_ne
 
     std::fs::File::create(worker.root.join("huge"))
         .unwrap()
-        .set_len(MAX_FILE_BYTES + 1)
+        .set_len(home.max_file_bytes() + 1)
         .unwrap();
     let error = pull(&remote, "huge", &home, "huge", &CopyOptions::default())
         .await
@@ -481,6 +483,7 @@ async fn a_file_named_like_the_old_staging_sidecar_is_never_touched() {
         &CopyOptions {
             overwrite: true,
             expect_sha256: None,
+            ..Default::default()
         },
     )
     .await
