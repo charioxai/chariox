@@ -327,6 +327,8 @@ pub(super) type Volume = dyn Fn(&Path) -> Option<Space> + Send + Sync;
 pub(super) struct Room<'a> {
     /// Memory left under the pressure line.
     pub memory: u64,
+    /// The machine's free memory, not the pool's ceiling, set `memory`.
+    pub host_bound: bool,
     /// Memory is short: pause the newest growing command.
     pub tight: bool,
     pub light: u64,
@@ -842,19 +844,44 @@ pub(super) struct PausedCommand {
     pub control: std::sync::mpsc::Sender<WatchCommand>,
 }
 
-/// The newest command paused on memory for at least `waited_ms`, and, when
-/// `blocked_in` is given, one that cannot continue in that room (a command
-/// that can is left to the next resume). When the pool is full and nothing
+/// What kept a paused command from continuing: the memory left for it, and
+/// what it needs to go on.
+pub(super) struct Blocked {
+    pub left: u64,
+    pub need: u64,
+}
+
+/// The newest command paused on memory. When the pool is full and nothing
 /// else can pause, it yields before a running command does: it has made the
 /// least progress, and the oldest running command can then finish.
-pub(super) fn youngest_paused(
+pub(super) fn youngest_paused(members: &[Arc<Mutex<Observation>>]) -> Option<PausedCommand> {
+    newest_paused(members, 0, |_, _| Some(())).map(|(command, ())| command)
+}
+
+/// The newest command paused on memory for at least `waited_ms` that cannot
+/// continue in `room` (a command that can is left to the next resume), with
+/// the figures that kept it.
+pub(super) fn blocked_paused(
     members: &[Arc<Mutex<Observation>>],
     waited_ms: u64,
-    blocked_in: Option<&Room>,
-) -> Option<PausedCommand> {
+    room: &Room,
+) -> Option<(PausedCommand, Blocked)> {
+    let state = State::read(members, room);
+    newest_paused(members, waited_ms, |entry, unit| {
+        (!state.fits(entry, unit, WaitReason::Memory, room)).then(|| Blocked {
+            left: state.memory_room(unit, room),
+            need: need(entry, WaitReason::Memory, room),
+        })
+    })
+}
+
+fn newest_paused<T>(
+    members: &[Arc<Mutex<Observation>>],
+    waited_ms: u64,
+    verdict: impl Fn(&Entry, &str) -> Option<T>,
+) -> Option<(PausedCommand, T)> {
     let now = crate::session::unix_epoch_ms();
-    let state = blocked_in.map(|room| State::read(members, room));
-    let mut newest: Option<(u64, PausedCommand)> = None;
+    let mut newest: Option<(u64, PausedCommand, T)> = None;
     for member in members {
         let observation = member.lock().unwrap_or_else(|e| e.into_inner());
         let Some(control) = observation.control.clone() else {
@@ -864,15 +891,15 @@ pub(super) fn youngest_paused(
             let Some(entry) = observation.admission.get(&command.pid) else {
                 continue;
             };
-            if matches!(entry.wait, Some(Wait::Paused(WaitReason::Memory)))
-                && now.saturating_sub(entry.since_ms) >= waited_ms
-                && blocked_in.zip(state.as_ref()).is_none_or(|(room, state)| {
-                    !state.fits(entry, &observation.unit, WaitReason::Memory, room)
-                })
-                && newest
+            if !matches!(entry.wait, Some(Wait::Paused(WaitReason::Memory)))
+                || now.saturating_sub(entry.since_ms) < waited_ms
+                || newest
                     .as_ref()
-                    .is_none_or(|(arrived, _)| entry.arrived > *arrived)
+                    .is_some_and(|(arrived, ..)| entry.arrived <= *arrived)
             {
+                continue;
+            }
+            if let Some(found) = verdict(entry, &observation.unit) {
                 newest = Some((
                     entry.arrived,
                     PausedCommand {
@@ -880,11 +907,12 @@ pub(super) fn youngest_paused(
                         resident: command.resident,
                         control: control.clone(),
                     },
+                    found,
                 ));
             }
         }
     }
-    newest.map(|(_, command)| command)
+    newest.map(|(_, command, found)| (command, found))
 }
 
 /// Machine-wide facts one pass decides on.

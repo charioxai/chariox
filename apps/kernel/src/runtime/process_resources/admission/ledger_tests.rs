@@ -23,6 +23,7 @@ fn volume(free: &Arc<AtomicU64>) -> Box<Volume> {
 fn room<'a>(memory: u64, tight: bool, volume: &'a Volume) -> Room<'a> {
     Room {
         memory,
+        host_bound: false,
         tight,
         light: 512 * MIB,
         growth_room: GIB,

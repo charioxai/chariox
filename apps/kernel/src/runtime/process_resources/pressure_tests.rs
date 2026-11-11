@@ -569,21 +569,28 @@ fn a_command_paused_on_a_full_pool_that_never_stalls_ends_after_the_bounded_wait
     );
     b.assert_told("grow", "stopped this waiting command");
     // The failure names the limit that bound it and the room it left.
-    b.assert_told("grow", "the 1536 MiB shared ceiling");
+    b.assert_told("grow", "under the 1.5 GB shared ceiling");
     assert!(a.alive("big") && a.alive("idle") && a.root_alive() && b.root_alive());
 }
 
-/// The number in `notice` that follows `before`, in MiB.
+/// The size in `notice` that follows `before`, in MB as the notice words it
+/// (`size`: "147 MB", "1.5 GB").
 #[cfg(target_os = "linux")]
-fn mib_after(notice: &str, before: &str) -> u64 {
-    let rest = notice
+fn size_after(notice: &str, before: &str) -> f64 {
+    let mut words = notice
         .split_once(before)
         .unwrap_or_else(|| panic!("the notice has no {before:?}: {notice:?}"))
-        .1;
-    rest.split_whitespace()
+        .1
+        .split_whitespace();
+    let number = words
         .next()
-        .and_then(|number| number.parse().ok())
-        .unwrap_or_else(|| panic!("no number after {before:?}: {notice:?}"))
+        .and_then(|number| number.parse::<f64>().ok())
+        .unwrap_or_else(|| panic!("no number after {before:?}: {notice:?}"));
+    match words.next() {
+        Some("GB") => number * 1024.0,
+        Some("MB") => number,
+        unit => panic!("no size unit after {before:?}: {unit:?} in {notice:?}"),
+    }
 }
 
 /// A launch reservation, not what runs, keeps the paused command from
@@ -594,7 +601,7 @@ fn mib_after(notice: &str, before: &str) -> u64 {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_pause_held_by_a_launch_reservation_ends_with_the_room_and_need_that_decided() {
-    let (mut a, mut b, _c, pool) = pressure(false, 300, 48, 9);
+    let (a, mut b, _c, pool) = pressure(false, 300, 48, 9);
     assert!(
         b.waiting("grow"),
         "the newest growing command was not paused"
@@ -630,17 +637,17 @@ fn a_pause_held_by_a_launch_reservation_ends_with_the_room_and_need_that_decided
         "the paused command stayed stopped with no outcome"
     );
     let notice = b.told("grow");
-    let need = mib_after(&notice, "it needs ");
-    let left = mib_after(&notice, "only ");
+    let need = size_after(&notice, "it still needs ");
+    let left = size_after(&notice, "only ");
     assert!(
         left < need,
         "the notice does not explain the block: {notice:?}"
     );
     assert!(
-        notice.contains("under the 1536 MiB shared ceiling"),
+        notice.contains("under the 1.5 GB shared ceiling"),
         "{notice:?}"
     );
-    assert!(!notice.contains("in use"), "{notice:?}");
+    assert!(!notice.contains("MiB in use"), "{notice:?}");
     assert!(b.root_alive());
 }
 
