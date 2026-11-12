@@ -62,7 +62,16 @@ export function remoteJobLinesForAgent(jobs: readonly JobView[] | undefined, age
     }
     const machine = job.machine_label ?? result?.ran_on.machine, address = job.address ?? result?.ran_on.ip
     const allocating = ["starting", "allocating", "queued"].includes(job.state)
-    const parts = [allocating ? "Starting a remote machine" : `${result || job.state === "finished" ? "Ran" : "Running"} on ${machine ?? "a remote machine"}`, ...address ? [address] : [], job.command]
+    const label = machine ?? "a remote machine"
+    const phases: Record<string, string> = {
+      uploading: `Uploading to ${label}`,
+      running: `Running on ${label}`,
+      reconnecting: `Reconnecting to ${label}`,
+      returning: `Returning files from ${label}`,
+      deleting: `Deleting ${label}`,
+      finished: `Ran on ${label}`,
+    }
+    const parts = [allocating ? "Starting a remote machine" : phases[job.state] ?? `Remote job ${job.state} on ${label}`, ...address ? [address] : [], job.command]
     if (!allocating || result) {
       const seconds = Math.floor((result?.duration_ms ?? Math.max(0, now - job.started_at_ms)) / 1000)
       parts.push(`${Math.floor(seconds / 60)}m ${seconds % 60}s`)

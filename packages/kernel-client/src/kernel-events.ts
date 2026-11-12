@@ -245,7 +245,7 @@ export type SessionProcess = {
 }
 
 export type JobView = {
-  job_id: string; agent_id: string; command: string; state: "starting" | "queued" | "allocating" | "running" | "deleting" | "finished";
+  job_id: string; agent_id: string; command: string; state: "starting" | "queued" | "allocating" | "uploading" | "running" | "reconnecting" | "returning" | "deleting" | "finished";
   placement: "local" | "remote"; started_at_ms: number; machine_label?: string | null; address?: string | null;
   class_id?: string | null; rate_per_minute?: { amount_micros: number; currency: string } | null;
   estimate_micros?: number | null; deleted: boolean; result?: JobResult | null;

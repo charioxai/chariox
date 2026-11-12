@@ -60,3 +60,18 @@ test("remote refusal with no allocated machine does not claim execution or delet
   assert.match(lines[0]!, /Remote request refused.*Daily budget reached/)
   assert.doesNotMatch(lines.join("\n"), /Ran on|Deleted|this machine/)
 })
+
+test("remote progress labels reflect upload, reconnect, return and deletion instead of running", () => {
+  const job = { job_id: "j", agent_id: "a", command: "build", placement: "remote" as const, started_at_ms: 1000, machine_label: "offload-1234", deleted: false }
+  for (const [state, label] of [
+    ["uploading", "Uploading to offload-1234"],
+    ["reconnecting", "Reconnecting to offload-1234"],
+    ["returning", "Returning files from offload-1234"],
+    ["deleting", "Deleting offload-1234"],
+  ] as const) {
+    const lines = remoteJobLinesForAgent([{ ...job, state }], "a", 1000)
+    assert.equal(lines[0]!.split(" · ")[0], label)
+    assert.doesNotMatch(lines.join("\n"), /Running on|Deleted/)
+  }
+  assert.match(remoteJobLinesForAgent([{ ...job, state: "running" }], "a", 1000)[0]!, /^Running on /)
+})
