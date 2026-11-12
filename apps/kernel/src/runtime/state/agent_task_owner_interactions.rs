@@ -120,12 +120,14 @@ impl KernelRuntimeState {
             "Browser access ended. Allow this agent to use your browser tabs and continue?"
                 .to_owned()
         } else {
-            let reason = crate::terminal::public_task_failure_reason(&task.reason);
             // The card shows in the room agent's pane, so it says which agent needs the person.
-            match self.owned.agent_store.get_agent(&task.agent_id) {
-                Ok(agent) => format!("{}: {reason}", agent.alias().unwrap_or(agent.agent_ref())),
-                Err(_) => reason,
-            }
+            let agent = self.owned.agent_store.get_agent(&task.agent_id).ok();
+            super::agent_task_projection::blocked_card_message(
+                agent
+                    .as_ref()
+                    .map(|agent| agent.alias().unwrap_or(agent.agent_ref())),
+                &task,
+            )
         };
         if let Some(existing) = session.active_interactions().iter().find(|i| i.id() == id) {
             let live = self
