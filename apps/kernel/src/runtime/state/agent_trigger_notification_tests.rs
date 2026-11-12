@@ -3119,7 +3119,10 @@ async fn notification_trigger_after_source_room_removal(delete: bool) {
     assert!(trigger_listening_in(&snapshot(), trigger.id()));
 
     if delete {
-        rig.runtime.delete_session_id(&rig.session_id).await.unwrap();
+        rig.runtime
+            .delete_session_id(&rig.session_id)
+            .await
+            .unwrap();
     } else {
         rig.runtime.end_session(&rig.session_id).await.unwrap();
     }
