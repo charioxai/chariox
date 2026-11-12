@@ -868,7 +868,7 @@ impl Ledger {
             let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
             let unit = observation.unit.clone();
             let entry = observation.admission.get_mut(&pid)?;
-            if !state.fits(entry, &unit, reason, room) {
+            if state.blocked_by(entry, &unit, reason, room).is_some() {
                 continue;
             }
             let volume = entry.disk(room);
@@ -900,11 +900,11 @@ pub(super) struct PausedCommand {
     pub control: std::sync::mpsc::Sender<WatchCommand>,
 }
 
-/// What kept a paused command from continuing: the memory left for it, and
-/// what it needs to go on.
-pub(super) struct Blocked {
-    pub left: u64,
-    pub need: u64,
+/// What kept a paused command from continuing: the resource that had too
+/// little room, the room left for it and what it needs to go on.
+pub(super) enum Blocked {
+    Memory { left: u64, need: u64 },
+    Disk { spare: u64, need: u64 },
 }
 
 /// The newest command paused on memory. When the pool is full and nothing
@@ -916,7 +916,7 @@ pub(super) fn youngest_paused(members: &[Arc<Mutex<Observation>>]) -> Option<Pau
 
 /// The newest command paused on memory for at least `waited_ms` that cannot
 /// continue in `room` (a command that can is left to the next resume), with
-/// the figures that kept it.
+/// the resource and figures that kept it.
 pub(super) fn blocked_paused(
     members: &[Arc<Mutex<Observation>>],
     waited_ms: u64,
@@ -927,12 +927,7 @@ pub(super) fn blocked_paused(
         members,
         waited_ms,
         |paused| paused.arrived,
-        |entry, unit| {
-            (!state.fits(entry, unit, WaitReason::Memory, room)).then(|| Blocked {
-                left: state.memory_room(unit, room),
-                need: need(entry, WaitReason::Memory, room),
-            })
-        },
+        |entry, unit| state.blocked_by(entry, unit, WaitReason::Memory, room),
     )
 }
 
@@ -1006,21 +1001,31 @@ impl State {
             .saturating_sub(self.memory_by_unit.get(unit).copied().unwrap_or(0))
     }
 
-    /// Whether a waiting command can continue now. Both resources must have
-    /// room: what it waited for, and the other one for the peak it is known
-    /// to reach.
-    fn fits(&self, entry: &Entry, unit: &str, reason: WaitReason, room: &Room) -> bool {
+    /// What keeps a waiting command from continuing now, `None` when it can.
+    /// Both resources must have room: what it waited for, and the other one
+    /// for the peak it is known to reach. Memory is named first when both
+    /// lack it.
+    fn blocked_by(
+        &self,
+        entry: &Entry,
+        unit: &str,
+        reason: WaitReason,
+        room: &Room,
+    ) -> Option<Blocked> {
         let (memory, disk) = match reason {
             WaitReason::Memory => (need(entry, reason, room), entry.writes_ahead(room)),
             WaitReason::Disk => (entry.memory_ahead(room), need(entry, reason, room)),
         };
+        let left = self.memory_room(unit, room);
         let paused_memory =
             reason == WaitReason::Memory && matches!(entry.wait, Some(Wait::Paused(_)));
-        (memory <= self.memory_room(unit, room) || !self.heavy_running)
-            && entry
-                .disk(room)
-                .is_none_or(|volume| disk <= self.spare(volume, unit, room))
-            && (!paused_memory || !self.heavy_running || room.room_to_continue(entry.paused_rate))
+        if self.heavy_running
+            && (memory > left || (paused_memory && !room.room_to_continue(entry.paused_rate)))
+        {
+            return Some(Blocked::Memory { left, need: memory });
+        }
+        let spare = self.spare(entry.disk(room)?, unit, room);
+        (disk > spare).then_some(Blocked::Disk { spare, need: disk })
     }
 
     fn memory_room(&self, unit: &str, room: &Room) -> u64 {
