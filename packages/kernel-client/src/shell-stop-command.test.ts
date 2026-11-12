@@ -7,6 +7,7 @@ import { executeShellCommand } from "./shell-executor.js"
 for (const [response, message] of [
   [{ PromptCancelled: { cancellation: { prompt: { id: "active" } } } }, "cancellation requested for prompt active"],
   [{ AgentTaskUpdated: { session_id: "room", task: { task_id: "parked", state: "cancelled" } } }, "cancelled task parked"],
+  [{ NothingToStop: { session_id: "room", agent_id: "agent" } }, "nothing to stop"],
 ] as const) {
   test(`shared stop reports ${message}`, async () => {
     const requests: Record<string, unknown>[] = []

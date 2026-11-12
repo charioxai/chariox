@@ -821,3 +821,57 @@ async fn owner_timer_cancellation_after_unsubscribe_reaches_next_turn_once() {
         cancel_request(&f, request.clone()).await.unwrap();
     }
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: repeated unconditional Stop is idempotent.
+#[tokio::test]
+async fn unconditional_stop_of_an_idle_agent_succeeds_with_or_without_room_tools() {
+    for room_tools in [false, true] {
+        let f = fixture_with_options(None, room_tools);
+        for target in [None, f.request.target_agent_id.clone()] {
+            for _ in 0..2 {
+                let request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+                    session_id: f.request.session_id.clone(),
+                    attachment_id: f.request.attachment_id.clone(),
+                    target_agent_id: target.clone(),
+                    expected_prompt_id: None,
+                });
+                let command = crate::runtime::command::KernelCommand::from_local_request(
+                    "stop-idle",
+                    None,
+                    None,
+                    &request,
+                );
+                let response = f
+                    .router
+                    .dispatch(command, request)
+                    .await
+                    .expect("unconditional Stop of an idle agent must succeed");
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({
+                        "NothingToStop": {
+                            "session_id": f.request.session_id,
+                            "agent_id": f.request.target_agent_id,
+                        }
+                    })
+                );
+            }
+        }
+        let request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+            session_id: f.request.session_id.clone(),
+            attachment_id: f.request.attachment_id.clone(),
+            target_agent_id: f.request.target_agent_id.clone(),
+            expected_prompt_id: Some("already-finished-prompt".into()),
+        });
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "stop-exact-idle",
+            None,
+            None,
+            &request,
+        );
+        assert!(matches!(
+            f.router.dispatch(command, request).await,
+            Err(DaemonError::NoActivePrompt { .. })
+        ));
+    }
+}
