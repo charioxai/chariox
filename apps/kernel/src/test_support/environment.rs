@@ -4,6 +4,8 @@ use std::time::Duration;
 use wait_timeout::ChildExt;
 
 const CHILD_TEST: &str = "CHARIOX_ISOLATED_ENV_TEST";
+#[cfg(unix)]
+const REAP_ATTEMPTS: u32 = 100;
 
 pub(crate) fn environment_test_isolated() -> bool {
     std::env::var_os(CHILD_TEST).is_some()
@@ -65,6 +67,15 @@ pub(crate) fn isolate_environment_test() -> bool {
     }
     let stdout = root.path().join("stdout");
     let stderr = root.path().join("stderr");
+    // Provider harnesses the test starts run in sessions of their own, so no
+    // group signal reaches them; every descendant inherits this claim instead.
+    #[cfg(unix)]
+    let claim = root.path().display().to_string();
+    #[cfg(unix)]
+    command.env(
+        crate::runtime::owned_process_signals::CLAIM_VARIABLE,
+        &claim,
+    );
     command
         .env(CHILD_TEST, name)
         .stdout(Stdio::from(File::create(&stdout).unwrap()))
@@ -103,6 +114,8 @@ pub(crate) fn isolate_environment_test() -> bool {
         let _ = child.kill();
         let _ = child.wait();
     }
+    #[cfg(unix)]
+    end_claimed_descendants(&claim);
     let stdout = std::fs::read_to_string(stdout).unwrap();
     let stderr = std::fs::read_to_string(stderr).unwrap();
     assert!(
@@ -115,6 +128,21 @@ pub(crate) fn isolate_environment_test() -> bool {
         }
     }
     true
+}
+
+/// The isolated test has ended, passed or not: whatever it started and left
+/// running (provider servers, detached helpers) must not outlive it.
+#[cfg(unix)]
+fn end_claimed_descendants(claim: &str) {
+    use crate::runtime::owned_process_signals::OwnedProcessSignals;
+    for _ in 0..REAP_ATTEMPTS {
+        match OwnedProcessSignals::end_claimed_tree(claim, None) {
+            Ok(true) => return,
+            Ok(false) => std::thread::sleep(Duration::from_millis(20)),
+            Err(error) => panic!("isolated test descendants could not be ended: {error}"),
+        }
+    }
+    panic!("isolated test descendants are still running after {REAP_ATTEMPTS} attempts");
 }
 
 #[cfg(all(test, unix))]
