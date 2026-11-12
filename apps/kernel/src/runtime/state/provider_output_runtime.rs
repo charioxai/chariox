@@ -461,6 +461,9 @@ pub(super) fn provider_run_ids_for_owned_output_pump(
     owned: &KernelRuntimeOwnedState,
     session: &crate::session::RuntimeSession,
 ) -> BTreeSet<String> {
+    let held_background_runs = owned
+        .background_holds
+        .provider_run_ids_for_session(session.id());
     let mut provider_run_ids = BTreeSet::new();
     if let Some(provider_run_id) = session.active_provider_run_id().filter(|run_id| {
         owned
@@ -487,7 +490,8 @@ pub(super) fn provider_run_ids_for_owned_output_pump(
             .filter(|run| run.session_id() == session.id())
             .filter(|run| {
                 (!run.client_interface().is_chariox()
-                    || crate::provider::provider_run_uses_claude_native_bridge(run))
+                    || crate::provider::provider_run_uses_claude_native_bridge(run)
+                    || held_background_runs.contains(run.id()))
                     && matches!(
                         run.state(),
                         crate::provider::ProviderRunState::Starting
