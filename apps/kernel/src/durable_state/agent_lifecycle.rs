@@ -1517,6 +1517,8 @@ pub(crate) struct EventSubmitReceipt {
     pub stale: bool,
     /// Client-visible receipt, present only when this job recorded it.
     pub notice: Option<String>,
+    /// The event, when the provider refused it and it is pending again.
+    pub refused: Option<InboxEvent>,
 }
 
 pub(crate) fn finish_provider_event_submit(
@@ -1539,6 +1541,7 @@ pub(crate) fn finish_provider_event_submit(
             steered: event.target_prompt_id.is_some(),
             stale: true,
             notice: None,
+            refused: None,
         }));
     }
     let steered = event.target_prompt_id.is_some();
@@ -1547,6 +1550,7 @@ pub(crate) fn finish_provider_event_submit(
             steered,
             stale: false,
             notice: None,
+            refused: None,
         }));
     }
     let state = match &finished.result {
@@ -1565,6 +1569,7 @@ pub(crate) fn finish_provider_event_submit(
             steered,
             stale: false,
             notice: Some(receipt_notice(&settled)),
+            refused: (settled.state == "pending").then_some(settled),
         })),
         _ => Err(error("receipt outcome mismatch")),
     }

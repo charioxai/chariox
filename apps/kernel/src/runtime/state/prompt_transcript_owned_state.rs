@@ -939,6 +939,55 @@ impl KernelRuntimeOwnedState {
         self.append_operational_history_entry_with_context(entry, context);
     }
 
+    /// Rewrites the newest row of `merge_key` in place, so it keeps its place in the turn it was
+    /// written in, or appends `entry` when no row has that key yet.
+    pub(super) fn upsert_operational_history_row(
+        &self,
+        entry: &crate::history::SessionHistoryEntry,
+        merge_key: &str,
+    ) -> Option<crate::history::HistoryEvent> {
+        let entry = self
+            .room_secret_observations
+            .protect_transcript_entry(entry.clone());
+        let context = self.operational_history_context(&entry, None, None, None);
+        let _append_guard = self.transcript_history_append_guard();
+        let stored = self
+            .operational_history_store
+            .replace_latest_transcript_by_merge_key(
+                &entry.session_id,
+                entry.agent_id.as_deref(),
+                merge_key,
+                &entry,
+                context.clone(),
+            )
+            .and_then(|replaced| match replaced {
+                Some(event) => Ok(event),
+                None => self
+                    .operational_history_store
+                    .append_transcript(&entry, context),
+            });
+        match stored {
+            Ok(event) => {
+                if self.history_archive_enabled() {
+                    self.enqueue_history_archive_event(&event);
+                }
+                Some(event)
+            }
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "failed to write an operational history row",
+                    serde_json::json!({
+                        "session_id": entry.session_id.as_str(),
+                        "merge_key": merge_key,
+                        "error": error.to_string(),
+                    }),
+                );
+                None
+            }
+        }
+    }
+
     pub(super) fn append_operational_history_entry_with_context(
         &self,
         entry: &crate::history::SessionHistoryEntry,

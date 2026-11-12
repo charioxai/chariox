@@ -1691,6 +1691,7 @@ mod agent_task_projection;
 mod agent_trigger_firings;
 #[cfg(test)]
 mod agent_turn_task_tests;
+mod agent_wait_rows;
 mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod agent_workflow_tasks;

@@ -47,6 +47,7 @@ impl KernelRuntimeState {
             return Ok(());
         };
         let target = Some(active.id().to_string());
+        let waiting = self.owned.waiting_tasks(room, agent);
         let Outcome::Event(attempt) =
             self.owned
                 .durable_state_store
@@ -67,6 +68,7 @@ impl KernelRuntimeState {
         if attempt.state == "blocked" {
             return Ok(());
         }
+        self.owned.record_woken_waits(&waiting, &attempt);
         let result = self
             .steer_remote_agent_message_for_turn(room, &prompt, Some(active.id()), Some(&binding))
             .await;

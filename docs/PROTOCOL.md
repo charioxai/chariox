@@ -7176,6 +7176,20 @@ pair's peer number for chunked kernel uploads. Managed upgrades admit 1000 and 1
 `fixtures/room-exec-protocol.json`, `fixtures/agent-tree-finished.json`. Focused check:
 `cargo test -p chariox-kernel --lib -- workflow_gate exec_place placeable_on agent_tree protocol_shapes`.
 
+Landing 9 sub-panes carries local daemon protocol 1005 and relay peer 444 (provisional: the Landing 9
+union restamps; 1004/443 are taken by #1346). It adds the optional `account_profile`, `workspace_id`,
+`worktree_id` and `worker_kernel_id` of an `AgentTreeNode` (omitted when the node has none, and for a
+viewer who may not see parameters), so a client shows a sub-agent's machine, workspace, worktree, provider,
+account, model, variant, mode and permissions without reading each agent. An agent's wait is a row of its
+own transcript: when a wait commits at the end of a turn the kernel writes a `provider_tool` row
+`{"tool":"chariox.wait","id":"wait:<task>:<started_at_ms>","status":"running","input":{"reason","deadline_ms"},
+"started_at_ms","finished_at_ms":null}` under the merge key `wait:<task>:<started_at_ms>`; when the agent wakes (or the
+owner stops the task) the kernel rewrites that same row in place (same history sequence) as `"status":"completed"` with
+`finished_at_ms` and `woken_by {kind, source_id}` (`kind` is the inbox event kind that woke it, or `cancelled`). Only a wake that
+ends the wait closes the row: a message, or an event that steers another turn, leaves it running, and a wake the provider
+refuses rewrites it back to running. Focused
+check: `cargo test -p chariox-kernel --lib -- a_yield_writes_one_wait_row stopping_a_waiting_task a_node_reports protocol_shapes`.
+
 Landing 8 carries local daemon protocol 1003 and relay peer 442. Local 1003: `HideAgent` /
 `AgentHidden` and the agents' `hidden` flag replace the agent archive (`ArchiveAgent`,
 `ListArchivedAgents` and `AgentArchived` are gone); machines carry no aliases and

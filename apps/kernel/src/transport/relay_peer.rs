@@ -207,12 +207,12 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// answers `x-chariox-relay-requests: binary-v1`, and sizes binary chunks to the link. It adds
 /// `SetLeasedAgentDeadline`, `DeleteRoomPeer` and the `chariox.file.copy` requests
 /// `ReadLeasedAgentFile`, `WriteLeasedAgentFile` and `DiscardLeasedAgentFile`.
-/// MP-08 / MP-09 / MP-10 / MP-11: peer 443 (files r1) adds the machine file requests `StatMachinePath`,
+/// MP-08 / MP-09 / MP-10 / MP-11: peer 444 (files and sub-agent panes) adds the machine file requests `StatMachinePath`,
 /// `ListMachineDirectory`, `ReadMachineFile` and `DeleteMachinePath` and the transfer requests
 /// `StartFileTransfer`, `GetFileTransfer` and `CancelFileTransfer` between kernels of one owner, and
 /// renames the answers `LeasedAgentFileRead` and `LeasedAgentFileRefused` to `FileSliceRead` and
 /// `FileRefused`, which both file services use.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 443;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 444;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

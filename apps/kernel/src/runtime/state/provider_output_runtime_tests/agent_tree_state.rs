@@ -472,3 +472,77 @@ async fn a_node_reports_the_settings_it_runs_with_and_a_change_moves_the_revisio
     );
     assert!(after.rev > before.rev, "{} > {}", after.rev, before.rev);
 }
+
+// Landing 9 sub-panes: a list row shows what the prompt footer shows, so a node also reports the
+// account, workspace, worktree and the machine its agent runs on; a change moves the revision.
+#[tokio::test]
+async fn a_node_reports_its_account_workspace_worktree_and_machine() {
+    let team = team_with("tree-footer", None, true).await;
+    let before = read(&team);
+    let node = &before.nodes[0];
+    // A child with no place of its own works where its Room does.
+    let room = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap();
+    assert_eq!(
+        (
+            &node.account_profile,
+            node.workspace_id.as_deref(),
+            node.worktree_id.as_deref(),
+            &node.worker_kernel_id
+        ),
+        (
+            &None,
+            Some(room.workspace_id()),
+            Some(room.worktree_id()),
+            &None
+        )
+    );
+    let agents = &team.runtime.owned.agent_store;
+    let child = agents.get_agent(&team.child).unwrap();
+    agents
+        .set_agent_runtime_profile_with_account_profile(
+            &team.child,
+            child.provider(),
+            child.model().map(str::to_owned),
+            child.effort().map(str::to_owned),
+            Some("work".into()),
+            child.provider_resume_state().clone(),
+        )
+        .unwrap();
+    agents
+        .update_agent_config(
+            &team.child,
+            None,
+            None,
+            Some(Some("workspace-a".into())),
+            Some(Some("tree-a".into())),
+        )
+        .unwrap();
+    agents
+        .bind_remote_execution(
+            &team.child,
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel".into(),
+                worker_machine_id: "worker-machine".into(),
+                execution_lease_id: "lease".into(),
+                leased_agent_id: "leased".into(),
+                active_worker_provider_run_id: None,
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: None,
+                worker_worktree_id: None,
+            },
+        )
+        .unwrap();
+    let after = read(&team);
+    let node = &after.nodes[0];
+    assert_eq!(node.account_profile.as_deref(), Some("work"));
+    assert_eq!(node.workspace_id.as_deref(), Some("workspace-a"));
+    assert_eq!(node.worktree_id.as_deref(), Some("tree-a"));
+    assert_eq!(node.worker_kernel_id.as_deref(), Some("worker-kernel"));
+    assert!(after.rev > before.rev);
+}

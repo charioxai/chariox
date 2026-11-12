@@ -2379,3 +2379,450 @@ async fn owner_browser_reload_after_a_wake_offers_approval_in_place() {
         .iter()
         .any(|choice| choice.id() == "allow_browser")));
 }
+
+impl Fixture {
+    /// The kernel-owned rows of the agent's waits: (history sequence, merge key, row JSON).
+    fn wait_rows(&self) -> Vec<(u64, String, serde_json::Value)> {
+        self.runtime
+            .owned
+            .operational_history_store
+            .load_session_events(&self.room, Some(&self.agent))
+            .unwrap()
+            .into_iter()
+            .filter_map(|event| {
+                let entry = event.to_session_history_entry()?;
+                let key = entry.merge_key.clone()?;
+                (entry.kind == crate::history::SessionHistoryEntryKind::ProviderTool
+                    && key.starts_with("wait:"))
+                .then(|| {
+                    (
+                        event.sequence,
+                        key,
+                        serde_json::from_str(&entry.text).unwrap(),
+                    )
+                })
+            })
+            .collect()
+    }
+}
+
+// Landing 9 sub-panes: a wait is a row of the agent's transcript. The kernel writes it when the
+// wait starts and updates that same row when the agent wakes, so no client has to invent it.
+#[tokio::test]
+async fn a_yield_writes_one_wait_row_and_the_wake_updates_it_in_place() {
+    let f = fixture("wait-row-in-place", true).await;
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    let prompt = f
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &f.agent)
+        .unwrap();
+    let task = f.begin(&f.prompt_id);
+    let wake = f.arm(&task, "wake-a").unwrap();
+    let now = crate::session::unix_epoch_ms();
+    f.store()
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec![wake.registration_id.clone()],
+            cursor: 0,
+            deadline: now + 60_000,
+            reason: "Wait for the test source".into(),
+            now,
+        })
+        .unwrap();
+    f.runtime
+        .owned
+        .complete_local_prompt_without_advance(&f.room, &f.agent, Some(&f.run))
+        .unwrap();
+    let settlement = f
+        .runtime
+        .owned
+        .settle_agent_task(&f.room, &f.agent, &prompt, &f.run, false)
+        .unwrap();
+    assert_eq!(f.task(&task.task_id).state, ExecutionState::Waiting);
+    f.runtime
+        .finish_agent_task_settlement(settlement, &prompt)
+        .await
+        .unwrap();
+
+    let waiting = f.wait_rows();
+    assert_eq!(waiting.len(), 1, "one wait, one row: {waiting:?}");
+    let (sequence, key, row) = &waiting[0];
+    assert_eq!(row["status"], "running", "{row}");
+    assert_eq!(row["tool"], "chariox.wait", "{row}");
+    assert_eq!(row["input"]["reason"], "Wait for the test source", "{row}");
+    assert_eq!(row["input"]["deadline_ms"], now + 60_000, "{row}");
+    assert!(row["finished_at_ms"].is_null(), "{row}");
+
+    f.runtime
+        .wake_sink(KIND)
+        .occurred(f.occurrence("wake-a", "line-1", None))
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while f.task(&task.task_id).state != ExecutionState::Working {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the wake reaches the waiting task");
+
+    let woken = f.wait_rows();
+    assert_eq!(woken.len(), 1, "the wake updates the row: {woken:?}");
+    let (woken_sequence, woken_key, row) = &woken[0];
+    assert_eq!((woken_sequence, woken_key), (sequence, key));
+    assert_eq!(row["status"], "completed", "{row}");
+    assert_eq!(row["woken_by"]["kind"], "output_matched", "{row}");
+    let started = row["started_at_ms"].as_u64().unwrap();
+    assert!(row["finished_at_ms"].as_u64().unwrap() >= started, "{row}");
+}
+
+// A wait the owner stops does not stay a running row in the transcript: the same row says it was cancelled.
+#[tokio::test]
+async fn stopping_a_waiting_task_closes_its_wait_row_in_place() {
+    let f = fixture("wait-row-cancelled", true).await;
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    let prompt = f
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &f.agent)
+        .unwrap();
+    let task = f.begin(&f.prompt_id);
+    let wake = f.arm(&task, "wake-a").unwrap();
+    let now = crate::session::unix_epoch_ms();
+    f.store()
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec![wake.registration_id.clone()],
+            cursor: 0,
+            deadline: now + 60_000,
+            reason: "Wait for the test source".into(),
+            now,
+        })
+        .unwrap();
+    f.runtime
+        .owned
+        .complete_local_prompt_without_advance(&f.room, &f.agent, Some(&f.run))
+        .unwrap();
+    let settlement = f
+        .runtime
+        .owned
+        .settle_agent_task(&f.room, &f.agent, &prompt, &f.run, false)
+        .unwrap();
+    f.runtime
+        .finish_agent_task_settlement(settlement, &prompt)
+        .await
+        .unwrap();
+    let before = f.wait_rows();
+    assert_eq!(before.len(), 1);
+
+    let waiting = f.task(&task.task_id);
+    let Outcome::Task(cancelled) = f
+        .store()
+        .agent_lifecycle(Operation::CancelTask {
+            task: task.task_id.clone(),
+            owner: "local".into(),
+            revision: waiting.revision,
+        })
+        .unwrap()
+    else {
+        panic!("the cancelled task")
+    };
+    f.runtime
+        .cancel_agent_task_resources(&cancelled)
+        .await
+        .unwrap();
+
+    let after = f.wait_rows();
+    assert_eq!(after.len(), 1, "{after:?}");
+    assert_eq!((after[0].0, &after[0].1), (before[0].0, &before[0].1));
+    assert_eq!(after[0].2["status"], "completed", "{}", after[0].2);
+    assert_eq!(
+        after[0].2["woken_by"]["kind"], "cancelled",
+        "{}",
+        after[0].2
+    );
+}
+
+// Live drill, 11-11: a sub-agent's end wakes the Room agent through an event that names no task, and the woken turn runs as a
+// task of its own, so the yielded task still reads waiting. The wait row ends with the wake all the same, because the
+// event is the end of the source the wait is on.
+#[tokio::test]
+async fn an_event_that_names_no_task_still_ends_the_wait_row_of_the_agent_it_wakes() {
+    let f = fixture("wait-row-unnamed-wake", true).await;
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    let prompt = f
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &f.agent)
+        .unwrap();
+    let task = f.begin(&f.prompt_id);
+    let wake = f.arm(&task, "wake-a").unwrap();
+    let now = crate::session::unix_epoch_ms();
+    f.store()
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec![wake.registration_id.clone()],
+            cursor: 0,
+            deadline: now + 60_000,
+            reason: "Wait for the test source".into(),
+            now,
+        })
+        .unwrap();
+    f.runtime
+        .owned
+        .complete_local_prompt_without_advance(&f.room, &f.agent, Some(&f.run))
+        .unwrap();
+    let settlement = f
+        .runtime
+        .owned
+        .settle_agent_task(&f.room, &f.agent, &prompt, &f.run, false)
+        .unwrap();
+    f.runtime
+        .finish_agent_task_settlement(settlement, &prompt)
+        .await
+        .unwrap();
+    assert_eq!(f.wait_rows()[0].2["status"], "running");
+
+    let Outcome::Event(event) = f
+        .store()
+        .agent_lifecycle(Operation::Occur(
+            crate::durable_state::agent_lifecycle::occurrence(
+                &f.room,
+                &f.agent,
+                "wake-a",
+                "child-ended",
+                "child_finished",
+                serde_json::json!({"child": "a-child"}),
+            ),
+        ))
+        .unwrap()
+    else {
+        panic!("event")
+    };
+    f.runtime.sweep_agent_lifecycle_for_test().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let delivered = f
+                .store()
+                .agent_inbox(&f.room, &f.agent, 0)
+                .unwrap()
+                .into_iter()
+                .any(|e| e.sequence == event.sequence && e.state == "accepted");
+            if delivered {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the event is delivered as a turn");
+
+    let rows = f.wait_rows();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].2["status"], "completed", "{}", rows[0].2);
+    assert_eq!(
+        rows[0].2["woken_by"]["kind"], "child_finished",
+        "{}",
+        rows[0].2
+    );
+}
+
+impl Fixture {
+    /// A task that yielded on `wake-a` and settled to Waiting. Its wait row is not written yet:
+    /// `finish_agent_task_settlement` does that, as the prompt settlement does after the commit.
+    async fn settle_a_yield(
+        &self,
+    ) -> (
+        AgentTaskExecution,
+        Option<(AgentTaskExecution, bool)>,
+        crate::session::PromptQueueItem,
+    ) {
+        let session = self
+            .runtime
+            .owned
+            .session_store
+            .get_session(&self.room)
+            .unwrap();
+        let prompt = self
+            .runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &self.agent)
+            .unwrap();
+        let task = self.begin(&self.prompt_id);
+        let wake = self.arm(&task, "wake-a").unwrap();
+        let now = crate::session::unix_epoch_ms();
+        self.store()
+            .agent_lifecycle(Operation::Yield {
+                task: task.task_id.clone(),
+                prompt: task.prompt_id.clone(),
+                registrations: vec![wake.registration_id.clone()],
+                cursor: 0,
+                deadline: now + 60_000,
+                reason: "Wait for the test source".into(),
+                now,
+            })
+            .unwrap();
+        self.runtime
+            .owned
+            .complete_local_prompt_without_advance(&self.room, &self.agent, Some(&self.run))
+            .unwrap();
+        let settlement = self
+            .runtime
+            .owned
+            .settle_agent_task(&self.room, &self.agent, &prompt, &self.run, false)
+            .unwrap();
+        assert_eq!(self.task(&task.task_id).state, ExecutionState::Waiting);
+        (task, settlement, prompt)
+    }
+
+    fn occur(&self, source: &str, id: &str, kind: &str, payload: serde_json::Value) -> u64 {
+        let Outcome::Event(event) = self
+            .store()
+            .agent_lifecycle(Operation::Occur(
+                crate::durable_state::agent_lifecycle::occurrence(
+                    &self.room,
+                    &self.agent,
+                    source,
+                    id,
+                    kind,
+                    payload,
+                ),
+            ))
+            .unwrap()
+        else {
+            panic!("event")
+        };
+        event.sequence
+    }
+
+    async fn until_inbox_event(&self, sequence: u64, state: &str) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let reached = self
+                    .store()
+                    .agent_inbox(&self.room, &self.agent, 0)
+                    .unwrap()
+                    .into_iter()
+                    .any(|e| e.sequence == sequence && e.state == state);
+                if reached {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the event reaches {state}"));
+    }
+}
+
+// A message wakes the agent for a turn but leaves the task waiting on its source: the wait goes on,
+// so its row stays running until the source ends it.
+#[tokio::test]
+async fn a_message_does_not_end_the_wait_row_of_a_task_that_keeps_waiting() {
+    let f = fixture("wait-row-message", true).await;
+    let (task, settlement, prompt) = f.settle_a_yield().await;
+    f.runtime
+        .finish_agent_task_settlement(settlement, &prompt)
+        .await
+        .unwrap();
+    assert_eq!(f.wait_rows()[0].2["status"], "running");
+
+    let sequence = f.occur(
+        "a-peer",
+        "peer-says-hi",
+        "message",
+        serde_json::json!({"text": "hi"}),
+    );
+    f.runtime.sweep_agent_lifecycle_for_test().await.unwrap();
+    f.until_inbox_event(sequence, "accepted").await;
+
+    assert_eq!(f.task(&task.task_id).state, ExecutionState::Waiting);
+    let rows = f.wait_rows();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].2["status"], "running", "{}", rows[0].2);
+}
+
+// An attempt the provider refuses runs nothing: the task is back to waiting and so is its row.
+#[tokio::test]
+async fn a_refused_wake_leaves_the_wait_row_running() {
+    let f = fixture("wait-row-refused", true).await;
+    let (task, settlement, prompt) = f.settle_a_yield().await;
+    f.runtime
+        .finish_agent_task_settlement(settlement, &prompt)
+        .await
+        .unwrap();
+    let sequence = f.occur(
+        "wake-a",
+        "line-1",
+        "output_matched",
+        serde_json::json!({"task_id": task.task_id}),
+    );
+
+    // What the delivery does before it dispatches the wake.
+    let waiting = f.runtime.owned.waiting_tasks(&f.room, &f.agent);
+    let Outcome::Event(attempt) = f
+        .store()
+        .agent_lifecycle(Operation::Attempt {
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            sequence,
+            prompt: "prompt-wake".into(),
+            target: None,
+            run: None,
+            now: crate::session::unix_epoch_ms(),
+            work: None,
+            through: sequence,
+        })
+        .unwrap()
+    else {
+        panic!("attempt")
+    };
+    f.runtime.owned.record_woken_waits(&waiting, &attempt);
+    assert_eq!(f.task(&task.task_id).state, ExecutionState::Working);
+
+    f.runtime
+        .record_agent_delivery_receipt(&f.room, &f.agent, sequence, "rejected")
+        .unwrap();
+
+    assert_eq!(f.task(&task.task_id).state, ExecutionState::Waiting);
+    let rows = f.wait_rows();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].2["status"], "running", "{}", rows[0].2);
+    assert!(rows[0].2["woken_by"].is_null(), "{}", rows[0].2);
+}
+
+// The source can end right after the yield: a wake that lands between the commit of Waiting and the
+// row of that wait moves the task on, and the row written afterwards must not stay running.
+#[tokio::test]
+async fn a_wake_between_settlement_and_its_finish_leaves_no_running_wait_row() {
+    let f = fixture("wait-row-raced", true).await;
+    let (task, settlement, prompt) = f.settle_a_yield().await;
+    let sequence = f.occur(
+        "wake-a",
+        "line-1",
+        "output_matched",
+        serde_json::json!({"task_id": task.task_id}),
+    );
+    f.runtime.sweep_agent_lifecycle_for_test().await.unwrap();
+    f.until_inbox_event(sequence, "accepted").await;
+    assert_eq!(f.task(&task.task_id).state, ExecutionState::Working);
+
+    f.runtime
+        .finish_agent_task_settlement(settlement, &prompt)
+        .await
+        .unwrap();
+
+    let running: Vec<_> = f
+        .wait_rows()
+        .into_iter()
+        .filter(|(_, _, row)| row["status"] == "running")
+        .collect();
+    assert!(running.is_empty(), "a wait that already ended: {running:?}");
+}

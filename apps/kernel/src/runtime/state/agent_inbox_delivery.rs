@@ -232,6 +232,7 @@ impl KernelRuntimeState {
         let target_prompt = steer
             .as_ref()
             .and_then(|d| d.target_active_prompt_id.clone());
+        let waiting = self.owned.waiting_tasks(room, agent);
         let Outcome::Event(attempt) =
             self.owned
                 .durable_state_store
@@ -252,6 +253,7 @@ impl KernelRuntimeState {
         if attempt.state == "blocked" {
             return Ok(());
         }
+        self.owned.record_woken_waits(&waiting, &attempt);
         if let Some(dispatch) = steer {
             // A turn that is settling holds its lane until it ends. The steer then
             // sent nothing: the row waits for the idle wake instead of the lane.
@@ -688,6 +690,7 @@ impl KernelRuntimeState {
         // A refused pre-I/O attempt remains retryable; only acceptance or an
         // uncertain receipt needs a client notice. Sweep surfaces bounded failures.
         if event.state == "pending" {
+            self.owned.record_wake_refused(&event);
             return Ok(());
         }
         self.owned.record_notice_for_agent(
