@@ -5,6 +5,7 @@ import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
 import type { AgentTaskExecution } from "@chariox/kernel-client/kernel-types"
 import { getManagedContextTransferStatus } from "./managed-environment-api.js"
 import { getCloudClientControlProfile } from "./cloud-client-control.js"
+import { createCloudClientInvite } from "./cloud-client-invite.js"
 import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
 import { getAppInstallationRequest, listWorkflowNotificationsRequest } from "@chariox/kernel-client/ipc-requests"
 import type { AppInstallationSummary, WorkflowNotificationSourceSummary } from "@chariox/kernel-client/kernel-types"
@@ -682,7 +683,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     logoutCloudRelay: (_profile, options) => logoutCloudRelay(client, options),
     issueCloudClientRelayToken: createInitialCloudClientTokenIssuer(client, options.clientId ?? "chariox-cli"),
     ...(deps.cloudClient ? {
-      createCloudSessionInvite: (sessionId: string, inviteOptions: Parameters<CloudClient["collaboration"]["createSessionInvite"]>[1]) => deps.cloudClient!.collaboration.createSessionInvite(sessionId, inviteOptions),
+      createCloudSessionInvite: (sessionId: string, inviteOptions: Omit<Parameters<CloudClient["collaboration"]["createSessionInvite"]>[1], "kernelId">) => createCloudClientInvite(deps.cloudClient!, client, sessionId, inviteOptions),
       acceptCloudSessionInvite: (inviteToken: string) => deps.cloudClient!.collaboration.acceptSessionInvite(inviteToken),
       listCloudSessionMembers: (sessionId: string) => deps.cloudClient!.collaboration.sessionMembers(sessionId),
       listCloudCollaborators: () => deps.cloudClient!.collaboration.collaborators(),
