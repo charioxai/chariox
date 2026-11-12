@@ -3357,6 +3357,14 @@ test('the shown Tab freezes while nobody watches or acts, and the next request w
   assert.deepEqual(states(), ['frozen', 'active'], 'a request wakes the Tab before it is read');
   await host.freezeIdleShown();
   assert.deepEqual(states(), ['frozen', 'active'], 'a request starts the linger again');
+  let finish;
+  host.activeTarget = host.tabs.get(shown.tab_id).target_id;
+  host.request = () => new Promise(resolve => { finish = resolve; });
+  const waiting = host.handle({ id: 9, method: 'host.browser', params: { op: 'wait' } });
+  await new Promise(resolve => setTimeout(resolve, 80));
+  await host.freezeIdleShown();
+  assert.deepEqual(states(), ['frozen', 'active'], 'a request still running keeps the Tab awake past the linger');
+  finish({}); await waiting;
 }, { shownIdleMs: 50 }));
 
 // brperf: an agent Tab nobody acts in stops rendering; the agent's next action wakes it before it acts.

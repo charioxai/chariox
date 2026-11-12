@@ -127,7 +127,7 @@ export class KernelBrowserHost {
   constructor(root, { appStorageRoot, chromium = new HostChromium(root, { appStorageRoot }), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }), personIdleMs = PERSON_IDLE_MS, backgroundIdleMs = BACKGROUND_IDLE_MS, shownIdleMs = SHOWN_IDLE_MS } = {}) {
     this.root = root;
     this.personIdleMs = personIdleMs; this.backgroundIdleMs = backgroundIdleMs;
-    this.shownIdleMs = shownIdleMs; this.usedAt = Date.now(); this.frozen = null; this.freezing = null;
+    this.shownIdleMs = shownIdleMs; this.usedAt = Date.now(); this.running = 0; this.frozen = null; this.freezing = null;
     this.shownTimer = setInterval(() => { this.freezing ??= this.freezeIdleShown().catch(() => {}).finally(() => { this.freezing = null; }); }, SHOWN_IDLE_CHECK_MS);
     this.shownTimer.unref?.();
     this.timing = displayTiming(root);
@@ -1041,15 +1041,12 @@ export class KernelBrowserHost {
   }
   async freezeIdleShown() {
     const target = this.activeTarget;
-    if (this.frozen || !this.browser || !target || this.watched() || Date.now() - this.usedAt < this.shownIdleMs) return;
+    if (this.frozen || this.running || !this.browser || !target || this.watched() || Date.now() - this.usedAt < this.shownIdleMs) return;
     const { connection, sessionId } = await this.browser.resolvePageTarget(target);
     await connection.send('Page.setWebLifecycleState', { state: 'frozen' }, sessionId);
     this.frozen = { connection, sessionId };
   }
-  // Every request but a parked state read or an unwatched park is a use: it wakes the shown Tab before it runs.
-  async wakeShown(request) {
-    if (request.method === 'health' || request.method === 'host.browser' && (request.params?.op === 'state_signal' || request.params?.op === 'display_park' && request.params.parked === true)) return;
-    this.usedAt = Date.now();
+  async wakeShown() {
     await this.freezing;
     const frozen = this.frozen;
     if (!frozen) return;
@@ -1441,7 +1438,17 @@ export class KernelBrowserHost {
       node_ref: params.node_ref, reveal_node_ref: params.reveal_node_ref ?? null, read: params.read ?? "node",
       expected_document_url: params.expected_document_url }, { signal }));
   }
-  async handle(request, { signal } = {}) {
+  // Every request but a parked state read or an unwatched park is a use: it wakes the shown Tab before it runs, and
+  // the linger starts again when the last one ends.
+  async handle(request, options) {
+    const use = request.method !== 'health' && !(request.method === 'host.browser' && (request.params?.op === 'state_signal'
+      || request.params?.op === 'display_park' && request.params.parked === true));
+    if (!use) return this.handleNow(request, options);
+    this.running++;
+    try { await this.wakeShown(); return await this.handleNow(request, options); }
+    finally { this.running--; this.usedAt = Date.now(); }
+  }
+  async handleNow(request, { signal } = {}) {
     if (request.method === "host.downloads.cleanup") {
       if (!this.browser) await this.downloads.close();
       else await this.downloads.cleanupSession(request.params.session_id);
@@ -1450,7 +1457,6 @@ export class KernelBrowserHost {
     const browserAtEntry = this.browser;
     try { assertNotCancelled(signal); } catch { return { id: request.id, ok: false, error: { code: "browser_action_cancelled", message: "MD-3: browser action cancelled" } }; }
     try {
-      await this.wakeShown(request);
       if (request.method === "health") return { id: request.id, ok: true, result: { state: "ready", process_id: process.pid, diagnostic_code: null } };
       if (request.method === "shutdown") return { id: request.id, ok: true, result: await this.stop() };
       if (request.method === "host.protect") return { id: request.id, ok: true, result: await this.protect(request.params) };
