@@ -2427,7 +2427,7 @@ async fn a_yield_writes_one_wait_row_and_the_wake_updates_it_in_place() {
             prompt: task.prompt_id.clone(),
             registrations: vec![wake.registration_id.clone()],
             cursor: 0,
-            deadline: now + 60_000,
+            deadline: Some(now + 60_000),
             reason: "Wait for the test source".into(),
             now,
         })
@@ -2498,7 +2498,7 @@ async fn stopping_a_waiting_task_closes_its_wait_row_in_place() {
             prompt: task.prompt_id.clone(),
             registrations: vec![wake.registration_id.clone()],
             cursor: 0,
-            deadline: now + 60_000,
+            deadline: Some(now + 60_000),
             reason: "Wait for the test source".into(),
             now,
         })
@@ -2569,7 +2569,7 @@ async fn an_event_that_names_no_task_still_ends_the_wait_row_of_the_agent_it_wak
             prompt: task.prompt_id.clone(),
             registrations: vec![wake.registration_id.clone()],
             cursor: 0,
-            deadline: now + 60_000,
+            deadline: Some(now + 60_000),
             reason: "Wait for the test source".into(),
             now,
         })
@@ -2664,7 +2664,7 @@ impl Fixture {
                 prompt: task.prompt_id.clone(),
                 registrations: vec![wake.registration_id.clone()],
                 cursor: 0,
-                deadline: now + 60_000,
+                deadline: Some(now + 60_000),
                 reason: "Wait for the test source".into(),
                 now,
             })
