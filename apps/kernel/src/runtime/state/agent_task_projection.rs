@@ -436,7 +436,7 @@ mod tests {
         );
     }
     fn owing_task(obligations: serde_json::Value, reason: &str) -> AgentTaskExecution {
-        serde_json::from_value(serde_json::json!({"task_id":"t","room_id":"r","agent_id":"a","prompt_id":"t","provider_run_id":"run","revision":1,"state":"blocked","reason":reason,"obligations":obligations,"wait":null,"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":3,"correction_used":true,"pending_prompt_id":null})).unwrap()
+        serde_json::from_value(serde_json::json!({"task_id":"t","room_id":"r","agent_id":"a","prompt_id":"t","provider_run_id":"run","revision":1,"state":"blocked","reason":reason,"obligations":obligations,"wait":null,"last_progress_at_ms":1,"correction_used":true,"pending_prompt_id":null})).unwrap()
     }
     fn timer_and_child() -> serde_json::Value {
         serde_json::json!([
@@ -476,21 +476,11 @@ mod tests {
         assert!(none.contains("final answer") && !none.contains("chariox.events.yield"), "{none}");
     }
     #[test]
-    fn the_blocked_card_names_what_is_owed_and_what_is_missing() {
+    fn the_blocked_card_names_what_is_owed() {
         let card = blocked_card_message(Some("c1"), &owing_task(timer_and_child(), "Repeated invalid turn end; owner must resume or cancel"));
         assert!(card.starts_with("c1: Repeated invalid turn end"), "{card}");
         assert!(card.contains("wake-7") && card.contains("obligation-9"), "{card}");
-        let wakes = blocked_card_message(
-            None,
-            &owing_task(
-                serde_json::json!([]),
-                "Three consecutive wakes without handled progress; owner must resume or cancel",
-            ),
-        );
-        assert!(
-            wakes.contains("chariox.events.inbox") && wakes.contains("chariox.events.ack"),
-            "{wakes}"
-        );
+
     }
     #[test]
     fn a02_public_answer_survives_steering_without_borrowing_later_tasks() {
