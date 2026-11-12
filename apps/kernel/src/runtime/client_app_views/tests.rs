@@ -316,7 +316,8 @@ async fn client_app_view_router_uses_terminal_owner_and_refuses_agents() {
     let _scratch = Scratch(root.clone());
     let mut config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
     config.user_config_path = root.join("config.toml");
-    config.local_socket_path = root.join("kernel.sock");
+    let socket = crate::test_support::TestSocketDirectory::new();
+    config.local_socket_path = socket.path().join("kernel.sock");
     config.user_config.state.path = Some(root.join("kernel.db").display().to_string());
     config.user_config.history.operational.path =
         Some(root.join("events.db").display().to_string());

@@ -72,6 +72,34 @@ pub(crate) async fn bootstrap_after_test_owner_exit(config: DaemonConfig) -> Dae
     .expect("the dropped kernel's background owners should exit")
 }
 
+/// Unix socket paths must fit sun_path even when the executor sets a long TMPDIR.
+#[cfg(unix)]
+pub(crate) struct TestSocketDirectory(PathBuf);
+
+#[cfg(unix)]
+impl TestSocketDirectory {
+    pub(crate) fn new() -> Self {
+        let path = PathBuf::from("/tmp").join(format!("cx-sock-{:032x}", rand::random::<u128>()));
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&path)
+            .expect("create private test socket directory");
+        Self(path)
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TestSocketDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// A real, disposable working directory for provider-launch fixtures.
 ///
 /// Provider launch preflight intentionally rejects synthetic paths. Keep the
