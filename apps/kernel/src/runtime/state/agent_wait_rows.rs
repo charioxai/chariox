@@ -8,6 +8,16 @@ use crate::terminal::{TerminalOutputAppend, TerminalOutputKind};
 
 const WAIT_TOOL: &str = "chariox.wait";
 
+/// Writing a row and closing it are one decision about the wait at a time: a wake that lands while
+/// the row is being written finds the row, or the writer finds the wake.
+static WAIT_ROWS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn wait_rows_guard() -> std::sync::MutexGuard<'static, ()> {
+    WAIT_ROWS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn wait_merge_key(task_id: &str, started_at_ms: u64) -> String {
     format!("wait:{task_id}:{started_at_ms}")
 }
@@ -30,20 +40,79 @@ impl KernelRuntimeOwnedState {
         );
     }
 
-    /// An event that starts a turn for the agent ends the waits it was in: the rows of the waits `before` held
-    /// close, whatever the ledger still says of those tasks (the woken turn runs as a task of its own).
+    /// The delivery attempt of `event` (and the rows that share its prompt) ends the waits it ends:
+    /// those whose task left Waiting, and those whose source reports its end through an event that
+    /// names no task (a child finishing). A message, or an urgent event steering another turn,
+    /// leaves the wait going on.
     pub(super) fn record_woken_waits(&self, before: &[AgentTaskExecution], event: &InboxEvent) {
+        let _rows = wait_rows_guard();
+        let still_waiting = self.waiting_tasks(&event.room_id, &event.agent_id);
+        let batch = event
+            .prompt_id
+            .as_deref()
+            .and_then(|prompt| {
+                self.durable_state_store
+                    .agent_events_for_prompt(&event.room_id, &event.agent_id, prompt)
+                    .ok()
+            })
+            .filter(|batch| !batch.is_empty())
+            .unwrap_or_else(|| vec![event.clone()]);
         for task in before {
             let Some(wait) = task.wait.as_ref() else {
                 continue;
             };
-            self.close_wait_row(
-                task,
+            let kept = still_waiting.iter().any(|t| {
+                t.task_id == task.task_id
+                    && t.wait.as_ref().map(|w| w.started_at_ms) == Some(wait.started_at_ms)
+            });
+            let ended_by = if kept {
+                batch
+                    .iter()
+                    .find(|e| self.event_reports_wait_source(task, e))
+            } else {
+                Some(event)
+            };
+            if let Some(ended_by) = ended_by {
+                self.close_wait_row(
+                    task,
+                    &wait_merge_key(&task.task_id, wait.started_at_ms),
+                    &ended_by.kind,
+                    &ended_by.source_id,
+                );
+            }
+        }
+    }
+
+    /// A refused wake did not run: the waits it closed are going on again.
+    pub(super) fn record_wake_refused(&self, event: &InboxEvent) {
+        let _rows = wait_rows_guard();
+        for task in self.waiting_tasks(&event.room_id, &event.agent_id) {
+            let Some(wait) = task.wait.as_ref() else {
+                continue;
+            };
+            self.reopen_wait_row(
+                &task,
                 &wait_merge_key(&task.task_id, wait.started_at_ms),
-                &event.kind,
-                &event.source_id,
+                event,
             );
         }
+    }
+
+    /// The event is the end of a source the task's wait is on.
+    fn event_reports_wait_source(&self, task: &AgentTaskExecution, event: &InboxEvent) -> bool {
+        let Some(wait) = task.wait.as_ref() else {
+            return false;
+        };
+        event.is_source_outcome()
+            && self
+                .durable_state_store
+                .agent_registrations(&task.task_id)
+                .unwrap_or_default()
+                .iter()
+                .any(|registration| {
+                    wait.registration_ids.contains(&registration.id)
+                        && event.reports_source(&registration.source_id)
+                })
     }
 
     /// A task that ended without a wake (the owner stopped it) closes the row of the wait it was in.
@@ -58,20 +127,7 @@ impl KernelRuntimeOwnedState {
 
     /// Rewrites the newest row whose key starts with `prefix` as completed, in place, unless it already is.
     fn close_wait_row(&self, task: &AgentTaskExecution, prefix: &str, kind: &str, source: &str) {
-        let Ok(Some(event)) = self
-            .operational_history_store
-            .latest_transcript_by_merge_key_prefix(&task.room_id, &task.agent_id, prefix)
-        else {
-            return;
-        };
-        let Some(entry) = event.to_session_history_entry() else {
-            return;
-        };
-        let (Some(key), Some(run), Ok(mut row)) = (
-            entry.merge_key.clone(),
-            entry.provider_run_id.clone(),
-            serde_json::from_str::<serde_json::Value>(&entry.text),
-        ) else {
+        let Some((key, run, mut row)) = self.latest_wait_row(task, prefix) else {
             return;
         };
         if row["status"] != "running" {
@@ -81,6 +137,42 @@ impl KernelRuntimeOwnedState {
         row["finished_at_ms"] = crate::session::unix_epoch_ms().into();
         row["woken_by"] = serde_json::json!({"kind": kind, "source_id": source});
         self.write_wait_row(task, &run, &key, row);
+    }
+
+    /// Rewrites a row that `event` closed as running again, in place.
+    fn reopen_wait_row(&self, task: &AgentTaskExecution, key: &str, event: &InboxEvent) {
+        let Some((key, run, mut row)) = self.latest_wait_row(task, key) else {
+            return;
+        };
+        if row["status"] != "completed"
+            || row["woken_by"]["kind"] != event.kind.as_str()
+            || row["woken_by"]["source_id"] != event.source_id.as_str()
+        {
+            return;
+        }
+        row["status"] = "running".into();
+        row["finished_at_ms"] = serde_json::Value::Null;
+        row.as_object_mut().map(|row| row.remove("woken_by"));
+        self.write_wait_row(task, &run, &key, row);
+    }
+
+    /// The newest row whose key starts with `prefix`: its key, run and content.
+    fn latest_wait_row(
+        &self,
+        task: &AgentTaskExecution,
+        prefix: &str,
+    ) -> Option<(String, String, serde_json::Value)> {
+        let event = self
+            .operational_history_store
+            .latest_transcript_by_merge_key_prefix(&task.room_id, &task.agent_id, prefix)
+            .ok()??;
+        let entry = event.to_session_history_entry()?;
+        let row = serde_json::from_str(&entry.text).ok()?;
+        Some((
+            entry.merge_key.clone()?,
+            entry.provider_run_id.clone()?,
+            row,
+        ))
     }
 
     /// The agent's tasks whose wait is committed: what a wake can end.

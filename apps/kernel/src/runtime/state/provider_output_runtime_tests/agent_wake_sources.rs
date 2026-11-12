@@ -2549,7 +2549,8 @@ async fn stopping_a_waiting_task_closes_its_wait_row_in_place() {
 }
 
 // Live drill, 11-11: a sub-agent's end wakes the Room agent through an event that names no task, and the woken turn runs as a
-// task of its own, so the yielded task still reads waiting. The wait row ends with the wake all the same.
+// task of its own, so the yielded task still reads waiting. The wait row ends with the wake all the same, because the
+// event is the end of the source the wait is on.
 #[tokio::test]
 async fn an_event_that_names_no_task_still_ends_the_wait_row_of_the_agent_it_wakes() {
     let f = fixture("wait-row-unnamed-wake", true).await;
@@ -2595,7 +2596,7 @@ async fn an_event_that_names_no_task_still_ends_the_wait_row_of_the_agent_it_wak
             crate::durable_state::agent_lifecycle::occurrence(
                 &f.room,
                 &f.agent,
-                "a-child",
+                "wake-a",
                 "child-ended",
                 "child_finished",
                 serde_json::json!({"child": "a-child"}),
@@ -2643,7 +2644,12 @@ impl Fixture {
         Option<(AgentTaskExecution, bool)>,
         crate::session::PromptQueueItem,
     ) {
-        let session = self.runtime.owned.session_store.get_session(&self.room).unwrap();
+        let session = self
+            .runtime
+            .owned
+            .session_store
+            .get_session(&self.room)
+            .unwrap();
         let prompt = self
             .runtime
             .owned
@@ -2682,7 +2688,12 @@ impl Fixture {
             .store()
             .agent_lifecycle(Operation::Occur(
                 crate::durable_state::agent_lifecycle::occurrence(
-                    &self.room, &self.agent, source, id, kind, payload,
+                    &self.room,
+                    &self.agent,
+                    source,
+                    id,
+                    kind,
+                    payload,
                 ),
             ))
             .unwrap()
@@ -2724,7 +2735,12 @@ async fn a_message_does_not_end_the_wait_row_of_a_task_that_keeps_waiting() {
         .unwrap();
     assert_eq!(f.wait_rows()[0].2["status"], "running");
 
-    let sequence = f.occur("a-peer", "peer-says-hi", "message", serde_json::json!({"text": "hi"}));
+    let sequence = f.occur(
+        "a-peer",
+        "peer-says-hi",
+        "message",
+        serde_json::json!({"text": "hi"}),
+    );
     f.runtime.sweep_agent_lifecycle_for_test().await.unwrap();
     f.until_inbox_event(sequence, "accepted").await;
 
