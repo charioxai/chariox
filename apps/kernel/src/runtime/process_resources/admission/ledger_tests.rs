@@ -282,6 +282,61 @@ fn the_newest_paused_command_yields_before_the_oldest_running_one() {
     assert!(stops(&middle_heard).is_empty() && stops(&oldest_heard).is_empty());
 }
 
+/// A command paused on memory that the disk, not the memory, keeps from
+/// continuing (its known writes do not fit above the floor) ends after 60 s
+/// with the disk as the reason: the notice does not print memory figures that
+/// did not decide it, such as a memory room larger than the need.
+#[test]
+fn a_pause_the_disk_keeps_ends_naming_the_disk() {
+    // 2 GiB above the floor; the paused command writes 6 GiB.
+    let pool = pool::Pool::with_volume(1500 * MIB, volume(&Arc::new(AtomicU64::new(12 * GIB))));
+    let command_of = |unit: &str, pid: u32, expected: Peak, wait: Option<Wait>, since_ms: u64| {
+        let mut waiting = entry(pid as u64, expected);
+        waiting.admitted = true;
+        waiting.wait = wait;
+        waiting.since_ms = since_ms;
+        let member = owner(unit, true, vec![command(pid, 0, 0)], vec![(pid, waiting)]);
+        let (control, heard) = std::sync::mpsc::channel();
+        {
+            let mut member = member.lock().unwrap();
+            member.samples = vec![sample(0)];
+            member.control = Some(control);
+        }
+        pool.join(&member);
+        (member, heard)
+    };
+    let heavy = Peak {
+        memory: 800 * MIB,
+        ..Default::default()
+    };
+    let (running, _running_heard) = command_of("a", 1, heavy, None, 0);
+    let writer = Peak {
+        memory: 400 * MIB,
+        ..scratch(6 * GIB)
+    };
+    let waited = crate::session::unix_epoch_ms() - 61_000;
+    let (_paused, paused_heard) = command_of(
+        "c",
+        3,
+        writer,
+        Some(Wait::Paused(WaitReason::Memory)),
+        waited,
+    );
+
+    pool.enforce(&running, None);
+    let notice = paused_heard
+        .try_iter()
+        .find_map(|command| match command {
+            WatchCommand::MemoryStop { notice, .. } => Some(notice),
+            _ => None,
+        })
+        .expect("the paused command was not ended");
+    assert!(
+        notice.contains("of disk") && !notice.contains("still needs"),
+        "the disk kept it, but the notice names memory: {notice}"
+    );
+}
+
 #[test]
 fn two_writers_that_together_reach_the_floor_do_not_both_start() {
     // 8 GiB above the floor; each job writes 6 GiB of scratch and deletes it.
