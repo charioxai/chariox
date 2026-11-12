@@ -292,9 +292,6 @@ fn a_paused_command_that_never_gets_room_to_grow_ends_after_the_stall_window() {
     let pool = pool::Pool::with_volume(8 * GIB, volume(&Arc::new(AtomicU64::new(100 * GIB))));
     pool.ledger.lock().unwrap().stall_window = Duration::from_millis(50);
     let command_of = |unit: &str, pid: u32, resident: u64, wait: Option<Wait>| {
-        // The paused command's measured rate is still the burst it was paused at: a rate that fell with the
-        // watch's samples would need less and less room, and the pause would end by continuing.
-        let growth = if wait.is_some() { 2 * GIB } else { 0 };
         let mut entry = entry(pid as u64, Peak::default());
         entry.admitted = true;
         entry.wait = wait;
@@ -303,7 +300,7 @@ fn a_paused_command_that_never_gets_room_to_grow_ends_after_the_stall_window() {
         let member = owner(
             unit,
             true,
-            vec![command(pid, resident, growth)],
+            vec![command(pid, resident, 0)],
             vec![(pid, entry)],
         );
         let (control, heard) = std::sync::mpsc::channel();
