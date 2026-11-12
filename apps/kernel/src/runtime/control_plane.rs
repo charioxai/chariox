@@ -82,6 +82,22 @@ pub(crate) async fn execute(
         } else if let Some(reach) = command.reach_caller_id() {
             state.authorize_gateway_request(&reach, &request_shape)?;
         }
+        if let (ControlPlaneRequest::AcquireJob { job_ref, .. }, Some(job_id)) =
+            (request, command.caller.caller_id.strip_prefix("job:"))
+        {
+            let (room, agent, owner) = state.job_acquisition_subject(job_id)?;
+            if job_ref != job_id
+                || command.session_id.as_deref() != Some(room.as_str())
+                || command.agent_id.as_deref() != Some(agent.as_str())
+                || command.caller.metaagent_id.as_deref() != Some(agent.as_str())
+                || command.caller.user_id.as_deref() != Some(owner.as_str())
+            {
+                return Err(unavailable(
+                    "control_plane_binding_invalid",
+                    "The accepted job no longer matches its Room, agent and owner",
+                ));
+            }
+        }
     }
     let mut result = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
         profile.api_url.clone(),

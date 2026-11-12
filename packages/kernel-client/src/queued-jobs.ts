@@ -45,9 +45,9 @@ export function queuedJobWaitLabel(state: Waiting): string {
 export function queuedJobRate(estimate: NonNullable<SessionProcess["estimate"]>): { rate: string; rateDetail: string } {
   const money = (amount: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: estimate.currency, maximumSignificantDigits: 2 }).format(amount)
   const amount = estimate.amount_micros / 1_000_000
-  const rate = estimate.kind === "total" && amount < 0.01 ? `< ${money(0.01)}` : money(amount)
+  const rate = estimate.kind === "estimate" && amount < 0.01 ? `< ${money(0.01)}` : money(amount)
   const memory = `${Math.ceil(estimate.memory_mib / 1024)} GB`
-  return estimate.kind === "total"
+  return estimate.kind === "estimate"
     ? { rate: `≈ ${rate}`, rateDetail: `About ${rate} on a VM (${memory}${estimate.minutes !== undefined ? `, about ${estimate.minutes} min` : ""})` }
     : { rate: `${rate}/min`, rateDetail: `No estimate yet: a ${memory} VM costs ${rate} a minute` }
 }
@@ -55,7 +55,12 @@ export function queuedJobRate(estimate: NonNullable<SessionProcess["estimate"]>)
 /** Progress and rates come from the home kernel, including confirmed deletion. */
 export function remoteJobLinesForAgent(jobs: readonly JobView[] | undefined, agentId: string | null | undefined, now = Date.now()): string[] {
   return (jobs ?? []).filter(job => job.agent_id === agentId && job.placement === "remote").flatMap(job => {
-    const result = job.result, machine = job.machine_label ?? result?.ran_on.machine, address = job.address ?? result?.ran_on.ip
+    const result = job.result
+    if (result && !job.machine_label) {
+      const reason = result.output_tail.trim() || result.outcome.replaceAll("_", " ")
+      return [["Remote request refused", job.command, reason].join(" · ")]
+    }
+    const machine = job.machine_label ?? result?.ran_on.machine, address = job.address ?? result?.ran_on.ip
     const allocating = ["starting", "allocating", "queued"].includes(job.state)
     const parts = [allocating ? "Starting a remote machine" : `${result || job.state === "finished" ? "Ran" : "Running"} on ${machine ?? "a remote machine"}`, ...address ? [address] : [], job.command]
     if (!allocating || result) {
@@ -67,7 +72,8 @@ export function remoteJobLinesForAgent(jobs: readonly JobView[] | undefined, age
     if (job.rate_per_minute) {
       const estimate = { ...job.rate_per_minute, kind: "per_minute" as const, memory_mib: 0 }
       parts.push(queuedJobRate(estimate).rate)
-      if (job.estimate_micros !== null && job.estimate_micros !== undefined) parts.push(queuedJobRate({ ...estimate, kind: "total", amount_micros: job.estimate_micros }).rate)
+      if (job.estimate_micros !== null && job.estimate_micros !== undefined) parts.push(queuedJobRate({ ...estimate, kind: "estimate", amount_micros: job.estimate_micros }).rate)
+      else parts.push("No duration estimate yet")
     }
     return [parts.join(" · "), ...(job.deleted ? [`Deleted ${machine ?? "remote machine"}`] : [])]
   })

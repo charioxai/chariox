@@ -12,7 +12,7 @@ const row = (pid: number, agent: string, state: SessionProcessState): SessionPro
 
 test("OF-22/23 remote eligibility and estimates are kernel state, hidden without eligibility", () => {
   const process = row(1, "a", { kind: "held", reason: "memory", position: 2, need_bytes: GIB, free_bytes: 0, command_line: "build", since_ms: 1 })
-  const estimate = { amount_micros: 40000, currency: "USD", kind: "total" as const, memory_mib: 16384, minutes: 30 }
+  const estimate = { amount_micros: 40000, currency: "USD", kind: "estimate" as const, memory_mib: 16384, minutes: 30 }
   const [job] = queuedJobsForAgent([{ ...process, remote_available: true, estimate }], "a")
   assert.equal(job!.rate, "≈ $0.04")
   assert.match(job!.rateDetail!, /16 GB, about 30 min/)
@@ -46,4 +46,17 @@ test("an agent's waiting commands read as queued-job rows in line order", () => 
     ["waiting for memory, needs 9 GB", "Needs about 9 GB; 2 GB free"],
   ])
   assert.deepEqual(queuedJobsForAgent(processes, null), [])
+})
+
+test("remote job with a cold rate explains that duration is unknown", () => {
+  const job = { job_id: "j", agent_id: "a", command: "build", state: "running" as const, placement: "remote" as const, started_at_ms: 1000, rate_per_minute: { amount_micros: 1200, currency: "USD" }, estimate_micros: null, deleted: false }
+  assert.match(remoteJobLinesForAgent([job], "a", 1000)[0]!, /\$0\.0012\/min · No duration estimate yet/)
+})
+
+
+test("remote refusal with no allocated machine does not claim execution or deletion", () => {
+  const job = { job_id: "j", agent_id: "a", command: "build", state: "finished" as const, placement: "remote" as const, started_at_ms: 1000, machine_label: null, address: null, deleted: true, result: { exit_code: null, output_tail: "Daily budget reached", log: "job.log", files_back: [], conflicts: [], ran_on: { machine: "this machine", ip: null }, duration_ms: 0, outcome: "outside_end" as const } }
+  const lines = remoteJobLinesForAgent([job], "a", 1000)
+  assert.match(lines[0]!, /Remote request refused.*Daily budget reached/)
+  assert.doesNotMatch(lines.join("\n"), /Ran on|Deleted|this machine/)
 })

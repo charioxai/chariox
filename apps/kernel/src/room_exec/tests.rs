@@ -557,3 +557,56 @@ async fn offload_job_memory_stop_retains_typed_reason_after_process_and_pipes_se
     assert!(!service.has_running_work());
     service.close("room", &id).unwrap();
 }
+
+#[tokio::test]
+async fn offload_exec_close_stdin_after_fast_exit_still_drains_outcome() {
+    let service = RoomExecService::default();
+    let id = open(&service, "sleep 0.1; printf done; exit 7");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service
+            .list("room")
+            .iter()
+            .all(|row| row.state != ExecState::Running)
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Hold cleanup after the real child's stdin receiver closes, before finish
+    // removes its sender. This is the same interval a remote close can arrive in.
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        crate::runtime::process_resources::with_registry_held(|| {
+            held_tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(1500));
+        });
+    });
+    held_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let record = service.record("room", &id).unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if record
+                .input
+                .lock()
+                .unwrap()
+                .sender
+                .as_ref()
+                .is_some_and(|sender| sender.is_closed())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let closed = service.close_stdin("room", &id, 0);
+    holder.join().unwrap();
+    assert_eq!(closed.unwrap(), 0);
+    let (stdout, stderr, outcome) = collect(&service, &id).await;
+    assert_eq!(stdout, b"done");
+    assert!(stderr.is_empty());
+    assert_eq!(outcome, ExecOutcome::Exited { code: 7 });
+    service.close("room", &id).unwrap();
+}

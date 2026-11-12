@@ -240,7 +240,7 @@ export type SessionProcess = {
   state: SessionProcessState
   remote_available?: boolean
   remote_refusal?: "no_capacity"
-  estimate?: { amount_micros: number; currency: string; kind: "total" | "per_minute"; memory_mib: number; minutes?: number }
+  estimate?: { amount_micros: number; currency: string; kind: "estimate" | "per_minute"; memory_mib: number; minutes?: number }
   placement?: { machine_label: string; address: string | null }
 }
 

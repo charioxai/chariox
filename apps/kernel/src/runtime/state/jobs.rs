@@ -7,6 +7,8 @@ use crate::durable_state::agent_lifecycle::{
 use crate::local::{JobOutcome, JobPlacement, JobRanOn, JobResult, RunJobRequest};
 use tokio::sync::watch;
 
+#[cfg(test)]
+mod approval_tests;
 mod control;
 mod driver;
 mod execute;

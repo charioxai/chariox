@@ -469,7 +469,12 @@ impl RoomExecService {
             ));
         }
         if let Some(sender) = &input.sender {
-            sender.try_send(None).map_err(input_error)?;
+            // A reaped child may close its receiver before cleanup publishes
+            // the outcome. Closing is already satisfied; readers still drain it.
+            match sender.try_send(None) {
+                Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
+                Err(failure) => return Err(input_error(failure)),
+            }
             input.sender = None;
         }
         Ok(offset)

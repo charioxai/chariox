@@ -1,7 +1,7 @@
 use super::*;
 use crate::provider::*;
 
-async fn fixture() -> (
+pub(super) async fn fixture() -> (
     KernelRuntimeState,
     RuntimeProviderRun,
     AgentTaskExecution,
