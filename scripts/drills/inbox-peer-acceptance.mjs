@@ -3,7 +3,7 @@
 // does not make independent providers finish their final turns simultaneously.
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { createDrill, until } from "./orchestration-acceptance-support.mjs"
 
@@ -27,7 +27,6 @@ let verdict
 try {
   if ((flags.get("--scenario") ?? "inbox") === "inbox") {
     const release = join(work, "release-parent")
-    for (let i = 1; i <= 3; i++) mkdirSync(join(d.b.dir, "work", `w${i}`), { recursive: true })
     const localTarget = remote ? null : (await d.a.rpc({ CreateSession: { workspace_id: work, worktree_id: work, alias: "ao-local-workers", agent_defaults: { provider, account_profile: d.profile, model, effort: "low", permission_level: "yolo" } } })).SessionCreated
     const targetRoom = remote ? other.id : localTarget.session.id
     const scope = `--room ${targetRoom}${remote ? ` --kernel ${d.b.status.daemon_id}` : ""}`
@@ -39,7 +38,7 @@ try {
 3. Hold THIS initial turn in one shell command: until [ -e '${release}' ]; do sleep 1; done. The external driver releases this only after the three real completions are pending. Do not read or acknowledge any event during this initial turn. After the shell finishes, end with WAITING.
 First inbox wake:
 4. Read events_inbox ONCE, keep the full answer, then events_ack through the last sequence with handled=true. All three worker peer_event completions should be present. Write ${reportPath} as JSON with {"batch_events": <the complete events array>, "batch_ack": <ack result>}. Do not delete the workers.
-5. Unsubscribe the three worker peer follows using events_unsubscribe (events_subscriptions lists the earlier peer_follows). Then send w1 exactly one message using send_agent_message with room="${targetRoom}"${remote ? `, kernel="${d.b.status.daemon_id}"` : ""}, reply_requested=true, message="Reply with just the word FIVE as your final answer. Do not send a separate message. Do not subscribe or arm timers." Then ${yieldRule}
+5. Unsubscribe the three worker peer follows using events_unsubscribe (events_subscriptions lists the earlier peer_follows). Then send w1 exactly one message using send_agent_message with room="${targetRoom}"${remote ? `, kernel="${d.b.status.daemon_id}"` : ""}, reply_requested=true, message="Read and acknowledge this message with handled=true, then reply with just the word FIVE as your final answer. Do not send a separate message. Do not subscribe or arm timers." Then ${yieldRule}
 Second inbox wake:
 6. Read events_inbox ONCE. Record all events in the JSON as reply_events and their acknowledgment as reply_ack; preserve batch_events/batch_ack. Acknowledge them and end AOINDONE. The driver removes the private kernels and their peers. No further timers or subscriptions.
 `
@@ -51,6 +50,7 @@ Second inbox wake:
       const s = await d.state()
       assert(s.prompt_states?.[room.agent]?.active_prompt, "parent must still hold its initial turn")
       assert(rows.every(r => r.state === "pending"), "completions must be pending before release")
+      assert(rows.every(r => r.payload.event === "turn_ended" && r.payload.success === true), "all three real workers completed successfully")
       save("three-pending.json", rows); record("three-pending-before-release", { events: rows.map(r => ({ sequence: r.sequence, source: r.source_id, state: r.state })) })
       writeFileSync(release, "all three real workers finished\n"); return true
     }, "three real completions held in the inbox", 12 * 60000)
@@ -65,6 +65,7 @@ Second inbox wake:
     assert.equal(new Set(completions.map(e => e.source.id)).size, 3)
     const durable = rows.filter(r => completions.some(e => e.sequence === r.sequence))
     assert.equal(durable.length, 3); assert(durable.every(r => r.state === "handled"))
+    assert(durable.every(r => r.prompt_id), "every completion reached a wake")
     assert.equal(new Set(durable.map(r => r.prompt_id)).size, 1, "one kernel wake carries three completions")
     const wakes = new Set(rows.flatMap(r => r.prompt_id ? [r.prompt_id] : []))
     assert.equal(report.reply_events.filter(e => e.kind === "source_completed").length, 1, "one requested reply reaches the sender")
