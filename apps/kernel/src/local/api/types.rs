@@ -511,4 +511,8 @@ pub use workspace::*;
 /// reports `wait.deadline_ms` as `null`. A sub-agent tree node carries its `account_profile`,
 /// `workspace_id`, `worktree_id` and `worker_kernel_id`, and an agent's wait is a `provider_tool` row of its
 /// transcript.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1005;
+/// 1007 (provisional): agent triggers take the Workflows panel's trigger options: a schedule's cron or
+/// interval `trigger`, `overlap_policy` and `max_runs`; an HTTP trigger's `route`, `methods`,
+/// `parser`, `mode`, `sync_timeout_ms`, `poll_ms` and `input_schema`. `InvokeAgentTrigger` carries the
+/// parsed `input`; `ReadAgentTriggerHttpOptions` and `ReadAgentTriggerReply` serve the gateways.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1007;

@@ -394,7 +394,7 @@ fn local_daemon_protocol_agent_trigger_shape_is_versioned() {
     let hash = Sha256::digest(serde_json::to_string(&requests).unwrap().as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "d7be76173ad86e109c06608125a2c8f2cf3cb86570b989f7c760e174d2d59eb7"
+        "1517e485931f9224576b32a27e1ec9ae4689620f44617db9e7f32033b3e5fd02"
     );
 
     let mut session = crate::session::RuntimeSession::new(
@@ -1367,7 +1367,7 @@ fn local_daemon_protocol_http_agent_trigger_shape_is_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&shape).unwrap().as_bytes())
         ),
-        "f9419e3fcbadc4c17da27366023f63894597569187c6da123b425d755249596d"
+        "01a4c1b93e01b9302265c1bd41e3c930cbdd7f39dd64ca95bf26149289df7eb8"
     );
     let invoke = LocalDaemonRequest::InvokeAgentTrigger(crate::local::InvokeAgentTriggerRequest {
         session_id: "s1".into(),
