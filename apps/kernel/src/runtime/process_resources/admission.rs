@@ -136,9 +136,27 @@ impl Entry {
         self.wait = Some(wait);
     }
 
+    /// The job this entry followed is a command of its own from now on: it
+    /// takes the whole accounting, and the shell starts over as a launcher.
+    fn hand_job_over(&mut self, arrived: u64) -> Entry {
+        std::mem::replace(
+            self,
+            Entry {
+                arrived,
+                holdable: self.holdable,
+                ..Entry::default()
+            },
+        )
+    }
+
     /// It runs again.
     fn stop_waiting(&mut self) {
         self.wait = None;
+    }
+
+    #[cfg(test)]
+    pub(super) fn admitted_with_prediction(&self) -> (bool, bool) {
+        (self.admitted, self.expected.is_some())
     }
 
     #[cfg(test)]
@@ -462,6 +480,364 @@ impl Ledger {
                     },
                     light,
                 );
+            }
+        }
+    /// It runs again.
+    fn stop_waiting(&mut self) {
+        self.wait = None;
+    }
+
+    #[cfg(test)]
+    pub(super) fn admitted_with_prediction(&self) -> (bool, bool) {
+        (self.admitted, self.expected.is_some())
+    }
+
+    #[cfg(test)]
+    pub(super) fn predicted(pid: u32, peak: Peak, admitted: bool, cwd: &Path) -> Self {
+        Self {
+            admitted,
+            holdable: true,
+            expected: Some(peak),
+            seen: Some(Seen {
+                pid,
+                key: format!("test-{pid}"),
+                exact: 0,
+                line: "child".into(),
+                cwd: Some(cwd.into()),
+            }),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn holdable(&self) -> bool {
+        self.holdable
+    }
+
+    /// The volume its last run wrote most to: the one it waits for. Where the
+    /// output goes is unknown until a run showed it, and then it is not
+    /// held: a destructive disk stop requires observed growth anyway.
+    fn disk(&self, room: &Room) -> Option<Disk> {
+        self.predicted_disk(room.volume)
+    }
+
+    pub(super) fn predicted_disk(&self, volume: &Volume) -> Option<Disk> {
+        let expected = self.expected.as_ref()?;
+        // Numeric output paths can share the memory key. Only the exact
+        // command that wrote here tells us its receiving volume.
+        if self.seen.as_ref()?.exact != expected.exact {
+            return None;
+        }
+        expected.volume.as_ref()?.disk(volume)
+    }
+
+    /// Writes it still has ahead toward its expected peak on that volume;
+    /// only a heavy writer counts.
+    fn writes_ahead(&self, room: &Room) -> u64 {
+        self.expected
+            .as_ref()
+            .filter(|peak| peak.volume.is_some() && peak.volume_writes >= room.light)
+            .map_or(0, |peak| peak.volume_writes.saturating_sub(self.writes))
+    }
+
+    /// Memory it still has ahead toward its expected peak; only a heavy
+    /// command counts.
+    fn memory_ahead(&self, room: &Room) -> u64 {
+        self.expected
+            .as_ref()
+            .filter(|peak| peak.memory >= room.light)
+            .map_or(0, |peak| peak.memory.saturating_sub(self.resident))
+    }
+
+    /// Start now: the user admits it whatever the room.
+    pub(super) fn force(&mut self) -> bool {
+        if self.wait.is_none() {
+            return false;
+        }
+        self.stop_waiting();
+        self.forced = true;
+        self.admitted = true;
+        true
+    }
+}
+
+/// A command the previous kernel program's admission had stopped (or was
+/// resuming) when it handed its processes over, or that the person started
+/// now: the next program keeps it waiting and controllable, resumes it when
+/// room frees, and never makes a forced one wait again.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct HeldCommand {
+    pub(super) identity: crate::runtime::kernel_access::process::ProcessIdentity,
+    pub(super) wait: Option<Wait>,
+    pub(super) admitted: bool,
+    pub(super) forced: bool,
+    pub(super) stopped: bool,
+    pub(super) paused_rate: u64,
+    pub(super) peak: Peak,
+    pub(super) arrived: u64,
+    pub(super) since_ms: u64,
+}
+
+impl HeldCommand {
+    /// What a hot reload must carry for `pid`: a command admission has
+    /// stopped, or has resumed but not yet continued, or that Start now
+    /// admitted for good.
+    pub(super) fn of(pid: u32, entry: &Entry) -> Option<Self> {
+        if entry.wait.is_none() && !entry.stopped && !entry.forced {
+            return None;
+        }
+        Some(Self {
+            identity: inspect(pid).ok()?.0,
+            wait: entry.wait,
+            admitted: entry.admitted,
+            forced: entry.forced,
+            stopped: entry.stopped,
+            paused_rate: entry.paused_rate,
+            peak: entry.peak.clone(),
+            arrived: entry.arrived,
+            since_ms: entry.since_ms,
+        })
+    }
+
+    /// Admission's view of the command in the program that adopts it: as
+    /// stopped as it was, so that whatever resumes it also continues the
+    /// process.
+    fn into_entry(self) -> Entry {
+        Entry {
+            arrived: self.arrived,
+            wait: self.wait,
+            admitted: self.admitted,
+            forced: self.forced,
+            holdable: true,
+            stopped: self.stopped,
+            paused_rate: self.paused_rate,
+            peak: self.peak,
+            since_ms: self.since_ms,
+            ..Entry::default()
+        }
+    }
+}
+
+/// What the previous program handed over, until the watch of the adopted
+/// process registers the command it names.
+static ADOPTED: std::sync::Mutex<BTreeMap<u32, HeldCommand>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+/// Remembers the previous program's waiting commands and Start now overrides.
+/// Their watches start after this, for the processes the handover names.
+pub(crate) fn adopt_admission(held: Vec<HeldCommand>) {
+    ADOPTED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .extend(held.into_iter().map(|held| (held.identity.pid, held)));
+}
+
+/// The handed-over command at `pid`, unless the PID now names another process.
+fn take_adopted(pid: u32) -> Option<HeldCommand> {
+    let held = ADOPTED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&pid)?;
+    inspect(pid)
+        .is_ok_and(|(current, _)| sampling::same_birth(&current, &held.identity))
+        .then_some(held)
+}
+
+/// Whether the previous program handed over the command that is `identity`.
+/// Its parent shell ran several jobs, whoever is left of them now.
+pub(super) fn handed_over(identity: &ProcessIdentity) -> bool {
+    ADOPTED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&identity.pid)
+        .is_some_and(|held| sampling::same_birth(identity, &held.identity))
+}
+
+/// The machine-wide part of admission, under the pool.
+pub(super) struct Ledger {
+    arrivals: u64,
+    resumed_at: BTreeMap<u8, Instant>,
+    /// When a command was last stopped for filling the disk.
+    filler_at: Option<Instant>,
+    /// The owner whose command started last for each reason: the next one in
+    /// line is the following owner's.
+    served: BTreeMap<u8, String>,
+    pub(super) peaks: Peaks,
+}
+
+/// The volume holding a path: which one it is, its free bytes and its size.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Space {
+    pub id: u64,
+    pub free: u64,
+    pub total: u64,
+}
+pub(super) type Volume = dyn Fn(&Path) -> Option<Space> + Send + Sync;
+
+/// What one pass needs from the pool.
+pub(super) struct Room<'a> {
+    /// Memory left under the pressure line.
+    pub memory: u64,
+    /// The machine's free memory, not the pool's ceiling, set `memory`.
+    pub host_bound: bool,
+    /// Memory is short: pause the newest growing command.
+    pub tight: bool,
+    pub light: u64,
+    pub growth_room: u64,
+    /// The whole pool: what a command can never exceed, however long it waits.
+    pub capacity: u64,
+    pub volume: &'a Volume,
+    /// Remaining binary predictions cover the whole domain. Descendant entries
+    /// reserve only growth beyond them, independently for each resource.
+    pub launches: &'a BTreeMap<String, super::launch::Reservation>,
+    pub launch_memory: BTreeMap<String, u64>,
+}
+
+impl Ledger {
+    pub(super) fn new(file: Option<PathBuf>) -> Self {
+        Self {
+            arrivals: 0,
+            resumed_at: BTreeMap::new(),
+            filler_at: None,
+            served: BTreeMap::new(),
+            peaks: Peaks::load(file),
+        }
+    }
+
+    /// Growth beyond each domain's already-reserved binary prediction.
+    pub(super) fn reserved_memory(
+        &self,
+        members: &[Arc<Mutex<Observation>>],
+        light: u64,
+        launch_memory: &BTreeMap<String, u64>,
+    ) -> u64 {
+        let mut units = BTreeMap::<String, u64>::new();
+        for member in members {
+            let member = member.lock().unwrap_or_else(|e| e.into_inner());
+            let reserved = units.entry(member.unit.clone()).or_default();
+            for entry in member
+                .admission
+                .values()
+                .filter(|entry| entry.admitted && entry.wait.is_none())
+            {
+                *reserved = reserved.saturating_add(
+                    entry
+                        .expected
+                        .as_ref()
+                        .filter(|peak| peak.memory >= light)
+                        .map_or(0, |peak| peak.memory.saturating_sub(entry.resident)),
+                );
+            }
+        }
+        units
+            .iter()
+            .map(|(unit, reserved)| {
+                reserved.saturating_sub(launch_memory.get(unit).copied().unwrap_or(0))
+            })
+            .fold(0, u64::saturating_add)
+    }
+
+    /// Read consumed writes before the caller samples filesystem free space.
+    pub(super) fn reserved_disk(
+        &self,
+        members: &[Arc<Mutex<Observation>>],
+        light: u64,
+        launches: &BTreeMap<String, super::launch::Reservation>,
+        volume: &Volume,
+    ) -> BTreeMap<u64, u64> {
+        let mut units = BTreeMap::<(String, u64), u64>::new();
+        for member in members {
+            let member = member.lock().unwrap_or_else(|e| e.into_inner());
+            for entry in member
+                .admission
+                .values()
+                .filter(|entry| entry.admitted && entry.wait.is_none())
+            {
+                let writes = entry
+                    .expected
+                    .as_ref()
+                    .filter(|peak| peak.volume_writes >= light)
+                    .map_or(0, |peak| peak.volume_writes.saturating_sub(entry.writes));
+                if writes == 0 {
+                    continue;
+                }
+                if let Some(space) = entry.predicted_disk(volume) {
+                    let total = units.entry((member.unit.clone(), space.id)).or_default();
+                    *total = total.saturating_add(writes);
+                }
+            }
+        }
+        let mut reserved = BTreeMap::<u64, u64>::new();
+        for ((unit, volume), writes) in units {
+            let covered = launches
+                .get(&unit)
+                .filter(|launch| launch.volume == volume)
+                .map_or(0, |launch| launch.writes);
+            let total = reserved.entry(volume).or_default();
+            *total = total.saturating_add(writes.saturating_sub(covered));
+        }
+        reserved
+    }
+
+    /// Records the current workload's commands: new ones arrive, ended ones
+    /// leave their peak for the next run of the same command.
+    pub(super) fn register(&mut self, current: &Arc<Mutex<Observation>>, light: u64) {
+        let mut observation = current.lock().unwrap_or_else(|e| e.into_inner());
+        let observation = &mut *observation;
+        let submissions = &mut observation.submissions;
+        let now = std::time::Instant::now();
+        let live = observation
+            .commands
+            .iter()
+            .filter(|command| !command.root)
+            .map(|command| command.pid)
+            .collect::<std::collections::BTreeSet<_>>();
+        let ended = observation
+            .admission
+            .keys()
+            .filter(|pid| !live.contains(pid))
+            .copied()
+            .collect::<Vec<_>>();
+        for pid in ended {
+            if let Some(Entry {
+                seen: Some(seen),
+                peak,
+                ..
+            }) = observation.admission.remove(&pid)
+            {
+                self.peaks.record(
+                    &seen.key,
+                    Peak {
+                        exact: seen.exact,
+                        ..peak
+                    },
+                    light,
+                );
+            }
+        }
+        // A shell that was one job's command and now runs several has handed
+        // that job to a command of its own: the prediction and the admission
+        // go with the job, or both would be reserved for the same peak.
+        let handed = observation
+            .commands
+            .iter()
+            .filter(|command| !command.root && !observation.admission.contains_key(&command.pid))
+            .filter_map(|command| {
+                let (shell, _) = observation.admission.iter().find(|(pid, entry)| {
+                    **pid != command.pid
+                        && entry
+                            .seen
+                            .as_ref()
+                            .is_some_and(|seen| seen.pid == command.effective)
+                })?;
+                Some((*shell, command.pid))
+            })
+            .collect::<Vec<_>>();
+        for (shell, job) in handed {
+            self.arrivals += 1;
+            if let Some(entry) = observation.admission.get_mut(&shell) {
+                let handed = entry.hand_job_over(self.arrivals);
+                observation.admission.insert(job, handed);
             }
         }
         for command in observation.commands.iter().filter(|command| !command.root) {

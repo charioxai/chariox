@@ -427,3 +427,81 @@ fn a_wait_longer_than_two_minutes_does_not_emit_a_notice() {
         "the waiting row must remain available"
     );
 }
+
+/// A tool shell that runs one job whose peak (1000 MiB) is known and is now at
+/// 600 MiB, then a second one after a sampling barrier: the shell becomes a launcher and the first job a command
+/// of its own. Its admission came with it, so the job is not held for room
+/// the shell still reserves.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_known_heavy_job_keeps_its_admission_when_its_shell_runs_a_second_job() {
+    let pool = pool(1536);
+    let mut first = Workload::run(domain(&pool, "first", false), &[("job", heavy(1000, 0, 2))]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while first.alive("job") || first.root_alive() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "first run did not end"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    settle(1);
+    drop(first);
+
+    let mut shell = Workload::gated(
+        domain(&pool, "agent", false),
+        &[("jobs", "sh \"$0/jobs.sh\" \"$0\"".into())],
+    );
+    std::fs::write(
+        shell.dir.join("jobs.sh"),
+        format!(
+            "{} 2>\"$1/first.err\" &\necho $! > \"$1/first.pid\"\nwhile [ ! -e \"$1/second\" ]; do :; done\npython3 \"$1/alloc.py\" 300 0 0 2>\"$1/second.err\" &\necho $! > \"$1/second.pid\"\nwait\n",
+            heavy(600, 0, 8)
+        ),
+    )
+    .unwrap();
+    shell.go(&["jobs"]);
+    while !shell.dir.join("first.pid").exists() {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    settle(3);
+    {
+        let observation = shell.domain.state.lock().unwrap();
+        let entry = &observation.admission[&(shell.pid("jobs") as u32)];
+        assert_eq!(
+            entry.admitted_with_prediction(),
+            (true, true),
+            "the shell did not start as the heavy job's command"
+        );
+    }
+
+    // The sampling barrier is behind: the shell starts its second job.
+    std::fs::write(shell.dir.join("second"), "").unwrap();
+    while !shell.dir.join("second.pid").exists() {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    settle(3);
+    assert!(
+        !shell.waiting("first"),
+        "the first job was held for room its own shell still reserved"
+    );
+    {
+        let observation = shell.domain.state.lock().unwrap();
+        let shell_entry = &observation.admission[&(shell.pid("jobs") as u32)];
+        assert!(
+            !shell_entry.admitted_with_prediction().1,
+            "the shell still counts as the job it handed to its own command"
+        );
+        let job = &observation.admission[&(shell.pid("first") as u32)];
+        assert!(
+            job.admitted_with_prediction().0 && job.wait.is_none(),
+            "the job lost its admission"
+        );
+    }
+    settle(5);
+    assert!(
+        !shell.alive("first"),
+        "the first job did not run to its end without Start now"
+    );
+    assert!(shell.alive("second"));
+}
