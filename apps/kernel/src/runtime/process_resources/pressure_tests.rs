@@ -752,7 +752,15 @@ fn overdue_pauses_continue_when_room_returned_for_all_of_them() {
         settle(1);
     }
     // Together they could not have grown back: only the holder's room frees.
+    // The holder's watch is held at its last sample, which still counts `big`;
+    // it samples again two seconds after the kill.
+    holder.domain.bind_key("overdue-room-returned-holder");
+    let held = control::pause_sampling_for_key("overdue-room-returned-holder");
     unsafe { libc::kill(holder.pid("big"), libc::SIGKILL) };
+    std::thread::spawn(move || {
+        settle(2);
+        drop(held);
+    });
     {
         let mut observation = growers.domain.state.lock().unwrap();
         for entry in observation
