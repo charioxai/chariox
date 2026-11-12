@@ -3,6 +3,12 @@ pub use api::{
     GetProviderUsageSnapshotRequest, ProviderUsageAccount,
 };
 pub use api::{
+    AgentTranscriptEntryKind, AgentTranscriptEntryPage, AgentTranscriptEntryStatus,
+    AgentTranscriptPeek, AgentTranscriptTitle, PeekAgentTranscriptRequest,
+    ReadAgentTranscriptEntryRequest, DEFAULT_AGENT_PEEK_ENTRIES, DEFAULT_AGENT_PEEK_PAGE_CHARS,
+    MAX_AGENT_PEEK_ENTRIES, MAX_AGENT_PEEK_PAGE_CHARS,
+};
+pub use api::{
     AttachWorkflowNotificationRequest, DetachWorkflowNotificationRequest,
     ListWorkflowNotificationsRequest, NotificationSourceKind,
     RegisterWorkflowNotificationSourceRequest, WorkflowNotificationAck,

@@ -8,6 +8,7 @@ use super::*;
 mod agent_events;
 pub(super) mod agent_inbox_read;
 mod agent_messaging;
+mod agent_peek;
 pub(super) use agent_messaging::resolve_session_agent;
 mod agent_process_permission;
 pub(super) mod agent_wakes;
@@ -269,6 +270,7 @@ impl KernelRuntimeState {
                 specs.extend(crate::transport::runtime_tools::agent_event_tool_specs());
             }
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
+            specs.extend(crate::transport::runtime_tools::agent_peek_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::extension_runtime_tool_specs());
             if !self.room_agent_tools_enabled() {
@@ -463,6 +465,9 @@ impl KernelRuntimeState {
             let canonical_tool_name =
                 crate::transport::runtime_tools::canonical_agent_messaging_tool_name(tool_name)
                     .or_else(|| {
+                        crate::transport::runtime_tools::canonical_agent_peek_tool_name(tool_name)
+                    })
+                    .or_else(|| {
                         crate::transport::runtime_tools::canonical_workspace_live_sync_tool_name(
                             tool_name,
                         )
@@ -645,6 +650,8 @@ impl KernelRuntimeState {
                 canonical_tool_name,
                 crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
                     | crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
+                    | crate::transport::runtime_tools::PEEK_AGENT_TOOL
+                    | crate::transport::runtime_tools::READ_AGENT_ENTRY_TOOL
                     | crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
                     | crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL
                     | crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL

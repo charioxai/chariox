@@ -4197,3 +4197,40 @@ fn a02_a_registration_another_task_holds_is_never_rewritten() {
         .any(|reg| reg.id == "follow" && reg.task_id == "p"));
     assert!(f.store.agent_registrations("second").unwrap().is_empty());
 }
+#[test]
+fn a_wait_without_a_deadline_times_out_after_the_default_and_wakes() {
+    // MP-08 / MP-10 / MP-11 PEEK-07: every wait ends, so a stuck agent notices.
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.apply(Operation::Yield {
+        task: "p".into(),
+        prompt: "p".into(),
+        registrations: vec!["reg".into()],
+        cursor: 0,
+        deadline: None,
+        reason: "child result".into(),
+        now: 2,
+    });
+    f.settle("p", true);
+    assert_eq!(
+        f.task().wait.unwrap().deadline_ms,
+        Some(2 + DEFAULT_WAIT_TIMEOUT_MS)
+    );
+    let timed_out = |now| {
+        f.apply(Operation::Sweep {
+            now,
+            vault_wait_recipients: Vec::new(),
+            busy_recipients: Vec::new(),
+            held_work: Vec::new(),
+        });
+        f.store
+            .agent_inbox("room", "parent", 0)
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "deadline_reached")
+    };
+    assert!(!timed_out(1 + DEFAULT_WAIT_TIMEOUT_MS));
+    assert!(timed_out(2 + DEFAULT_WAIT_TIMEOUT_MS));
+}

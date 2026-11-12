@@ -16,8 +16,12 @@ use crate::provider::{
 };
 use crate::session::PromptOrigin;
 
+#[allow(dead_code)]
+mod peek;
 mod prefetch;
 mod projection;
+
+pub(crate) use peek::{execute_agent_transcript_entry_read, execute_agent_transcript_peek};
 
 #[cfg(test)]
 #[allow(unused_imports)]
@@ -160,6 +164,26 @@ fn load_blob_content_page(
     agent_import: Option<&ExternalProviderImportMetadata>,
 ) -> Result<SessionHistoryBlobContentPage, DaemonError> {
     let (sequence_start, sequence_end) = parse_blob_id(&blob_id)?;
+    let entries = load_blob_content_entries(
+        operational_history,
+        session_id,
+        agent_id,
+        sequence_start,
+        sequence_end,
+        agent_import,
+    )?;
+    Ok(SessionHistoryBlobContentPage { blob_id, entries })
+}
+
+/// What a row covering these sequences holds, as the pane shows it opened.
+fn load_blob_content_entries(
+    operational_history: &OperationalHistoryStore,
+    session_id: &str,
+    agent_id: &str,
+    sequence_start: u64,
+    sequence_end: u64,
+    agent_import: Option<&ExternalProviderImportMetadata>,
+) -> Result<Vec<crate::session_history_page::SessionHistoryPageEntry>, DaemonError> {
     let events = operational_history.load_session_events_for_agent_sequence_range(
         session_id,
         agent_id,
@@ -174,12 +198,11 @@ fn load_blob_content_page(
                 && !event.is_internal_dispatch_diagnostic()
         })
         .collect();
-    let entries = outline_blob_content_events(events)
+    Ok(outline_blob_content_events(events)
         .into_iter()
         .filter(|event| event_belongs_to_external_import(agent_import, event))
         .filter_map(page_entry_from_event)
-        .collect::<Vec<_>>();
-    Ok(SessionHistoryBlobContentPage { blob_id, entries })
+        .collect())
 }
 
 fn outline_agent_ids(

@@ -119,7 +119,7 @@ impl AgentObligation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentWait {
     pub registration_ids: Vec<String>,
-    /// Only a goal wait carries a deadline; any other wait ends with its sources.
+    /// Every wait has one: its own, or `DEFAULT_WAIT_TIMEOUT_MS` after it started.
     pub deadline_ms: Option<u64>,
     pub started_at_ms: u64,
     pub inbox_cursor: u64,

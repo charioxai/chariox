@@ -323,6 +323,8 @@ pub enum LocalDaemonRequest {
     GetSessionHistoryOutline(GetSessionHistoryOutlineRequest),
     GetSessionHistoryBlobContent(GetSessionHistoryBlobContentRequest),
     GetSessionHistoryBlobContents(GetSessionHistoryBlobContentsRequest),
+    PeekAgentTranscript(PeekAgentTranscriptRequest),
+    ReadAgentTranscriptEntry(ReadAgentTranscriptEntryRequest),
     GetPromptInputHistory(GetPromptInputHistoryRequest),
     ListPromptSettings(ListPromptSettingsRequest),
     GetPromptSetting(GetPromptSettingRequest),

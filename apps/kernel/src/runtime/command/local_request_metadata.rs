@@ -524,6 +524,16 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
+        LocalDaemonRequest::PeekAgentTranscript(request) => {
+            LocalRequestMetadata::new("agent.transcript.peek", Background)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
+        LocalDaemonRequest::ReadAgentTranscriptEntry(request) => {
+            LocalRequestMetadata::new("agent.transcript.entry", Background)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
         LocalDaemonRequest::GetPromptInputHistory(request) => {
             LocalRequestMetadata::new("prompt_input_history.get", Background)
                 .session(&request.session_id)
@@ -1197,6 +1207,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::GetSessionHistoryOutline(_)
         | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
         | LocalDaemonRequest::GetSessionHistoryBlobContents(_)
+        | LocalDaemonRequest::PeekAgentTranscript(_)
+        | LocalDaemonRequest::ReadAgentTranscriptEntry(_)
         | LocalDaemonRequest::GetProviderRun(_) => unreachable!("handled by metadata matcher"),
     }
 }

@@ -340,6 +340,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetSessionHistoryBlobContents(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::PeekAgentTranscript(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ReadAgentTranscriptEntry(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::GetPromptInputHistory(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
