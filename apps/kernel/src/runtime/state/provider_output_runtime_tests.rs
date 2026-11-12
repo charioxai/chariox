@@ -189,6 +189,7 @@ mod structured_output;
 mod subtree_cascade;
 #[cfg(unix)]
 mod visual_tools;
+mod agent_peek;
 
 #[test]
 fn claude_native_runs_never_use_quiet_pty_settlement() {
