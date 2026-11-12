@@ -23,11 +23,36 @@ fn wait_merge_key(task_id: &str, started_at_ms: u64) -> String {
 }
 
 impl KernelRuntimeOwnedState {
-    /// The task's committed wait, as a running row.
+    /// The task's committed wait, as a running row. The settlement that committed the wait is a
+    /// snapshot, so the row is written only for a wait that is still going on: a wake that landed
+    /// since has moved the task on, or ended the wait through an event that names no task.
     pub(super) fn record_wait_started(&self, task: &AgentTaskExecution) {
         let Some(wait) = task.wait.as_ref() else {
             return;
         };
+        let _rows = wait_rows_guard();
+        let still_waiting = self
+            .durable_state_store
+            .agent_task(&task.task_id)
+            .ok()
+            .flatten()
+            .is_some_and(|current| {
+                current.state == ExecutionState::Waiting
+                    && current.wait.as_ref().map(|w| w.started_at_ms) == Some(wait.started_at_ms)
+            });
+        if !still_waiting {
+            return;
+        }
+        let ended_by = self
+            .durable_state_store
+            .agent_work_inbox(&task.room_id, &task.agent_id, wait.inbox_cursor, None)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|event| {
+                event.attempted_at_ms.is_some()
+                    && event.state != "pending"
+                    && self.event_reports_wait_source(task, event)
+            });
         let key = wait_merge_key(&task.task_id, wait.started_at_ms);
         self.write_task_wait_row(
             task,
@@ -38,6 +63,9 @@ impl KernelRuntimeOwnedState {
                 "started_at_ms": wait.started_at_ms, "finished_at_ms": null,
             }),
         );
+        if let Some(event) = ended_by {
+            self.close_wait_row(task, &key, &event.kind, &event.source_id);
+        }
     }
 
     /// The delivery attempt of `event` (and the rows that share its prompt) ends the waits it ends:
