@@ -345,6 +345,7 @@ pub(super) async fn handle_relay_subscribe(
             &session_id,
             &attachment_id,
             resume_from_event_id,
+            subscription_scope.as_deref() != Some("session_metadata"),
         )
         .await
         {
@@ -624,7 +625,8 @@ pub(super) async fn run_relay_subscription_loop(
                 {
                     agent_turns.mark_changed(agent_id);
                 }
-                if !records.is_empty() {
+                if subscription_scope.as_deref() != Some("session_metadata") && !records.is_empty()
+                {
                     let mut terminal_output_failed = false;
                     for records in terminal_output_event_batches(records) {
                         if emit_relay_event(

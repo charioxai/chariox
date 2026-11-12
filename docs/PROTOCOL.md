@@ -5233,6 +5233,13 @@ subscription, so a client draws from events instead of reading again. Fixture: `
   `ListHomeExtensionAudit` once for each watched agent, replacing its cached list, then resumes applying
   appended rows (deduplicated by audit `event_id` or `sequence`). Unrelated durable-state events share
   the backlog, so their sequences cannot detect gaps in this audit feed.
+- `subscription_scope: "session_metadata"` (local protocol 1008, MP-08 / MP-09 / MP-10 / MP-11)
+  retains an attachment's Room events, notices, completions and heartbeat, while draining its terminal
+  records without sending their bytes. Replay also excludes terminal records. A browser page uses this
+  for view subscriptions and holds one ordinary session subscription per Room for terminal bytes,
+  distributing that stream locally to its Room consumers. Each view still retires its own attachment;
+  the page releases the byte attachment when its last consumer leaves. The relay forwards the scope
+  opaquely; its peer protocol does not change.
 - `heartbeat_interval_ms` on the subscribe frame of a Room-list (`waiting_room_inventory`) or session
   subscription: how often this subscription's `heartbeat` event arrives, at least 500. Left out, the interval
   is as before (5 s). Below 500 the subscribe is refused with the error code `invalid_heartbeat_interval`.

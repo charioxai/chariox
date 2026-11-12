@@ -95,6 +95,7 @@ pub(super) async fn replay_recent_relay_events(
     session_id: &str,
     attachment_id: &str,
     resume_from_event_id: Option<u64>,
+    terminal_output: bool,
 ) -> Result<(), DaemonError> {
     let Some(cursor) = resume_from_event_id else {
         return Ok(());
@@ -151,6 +152,9 @@ pub(super) async fn replay_recent_relay_events(
         }
     };
     for mut persisted in events {
+        if !terminal_output && matches!(&persisted.event, KernelEvent::TerminalOutput { .. }) {
+            continue;
+        }
         if persisted.event_id <= cursor {
             continue;
         }

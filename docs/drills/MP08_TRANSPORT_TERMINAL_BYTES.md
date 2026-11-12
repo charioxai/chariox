@@ -9,6 +9,14 @@ The native client negotiates the relay's existing binary capability and accepts
 raw encrypted events and replies, including chunked delivery. Otherwise base64
 JSON envelopes still exceed the terminal byte budget despite CXT1 plaintext.
 
+A browser page also shares one ordinary terminal subscription per Room. Its view,
+prompt, collaborator and tree attachments retain independent `session_metadata`
+subscriptions; these drain their queues without transmitting terminal bytes,
+including during replay. Only consumers that need terminal records hold the
+shared byte attachment. Releasing its last consumer detaches it while metadata
+observers remain subscribed. A view's attachment failure must not retire the
+shared byte attachment.
+
 Focused regression checks:
 
 ```sh
@@ -16,6 +24,7 @@ pnpm build:kernel-client
 node --test packages/kernel-client/dist/browser-relay-crypto.test.js
 node --test packages/kernel-client/dist/ipc-relay-binary.test.js
 RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test -p chariox-kernel --lib terminal_output_is_raw_on_live_and_replayed_encrypted_relay_events
+RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test -p chariox-kernel --lib metadata_subscriptions_drain_bytes_without_sending_them_and_keep_room_events
 RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test -p chariox-kernel --lib terminal_output_wire
 RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test -p chariox-kernel --lib terminal_events_restore_the_ordinary_record_shape_at_the_gateway
 ```
