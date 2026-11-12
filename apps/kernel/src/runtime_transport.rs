@@ -47,7 +47,9 @@ mod subscription_projection;
 mod subscriptions;
 pub(crate) use subscriptions::await_subscription_work_with_heartbeats;
 
-pub(crate) use subscription_projection::session_projection_events;
+pub(crate) use subscription_projection::{
+    session_projection_events, session_projection_events_for_scope,
+};
 
 pub(crate) use command_cache::COMMAND_RESULT_CACHE_LIMIT;
 use command_cache::{

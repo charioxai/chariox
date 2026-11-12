@@ -10,6 +10,19 @@ pub(crate) fn session_projection_events(
     previous: Option<&SessionSnapshotProjection>,
     has_terminal_workflow_update: bool,
 ) -> Vec<KernelEvent> {
+    let same_public = previous.is_some_and(|before| {
+        before.session == snapshot.session
+            && public_run(before) == public_run(snapshot)
+            && before.agent_activity == snapshot.agent_activity
+            && before.room_workflows == snapshot.room_workflows
+    });
+    if same_public
+        && previous.is_some_and(|before| {
+            before.processes == snapshot.processes && before.disk_usage == snapshot.disk_usage
+        })
+    {
+        return Vec::new();
+    }
     let mut events = session_projection_changed_events(snapshot, previous);
     let workflow_events = workflow_run_updated_events(snapshot, previous)
         .into_iter()
@@ -22,7 +35,7 @@ pub(crate) fn session_projection_events(
     // Room inventory alone still needs the full snapshot for canvas consumers.
     let processes_only_changed = previous.is_some_and(|previous| {
         previous.session == snapshot.session
-            && previous.provider_run == snapshot.provider_run
+            && public_run(previous) == public_run(snapshot)
             && previous.agent_activity == snapshot.agent_activity
             && previous.room_workflows == snapshot.room_workflows
     });
@@ -58,6 +71,63 @@ pub(crate) fn session_projection_events(
         }
     }
     events
+}
+
+fn public_run(snapshot: &SessionSnapshotProjection) -> Option<crate::provider::PublicProviderRun> {
+    snapshot
+        .provider_run
+        .as_ref()
+        .map(crate::provider::PublicProviderRun::from)
+}
+
+/// Ordinary views need admission waits; per-process samples belong to Health.
+pub(crate) fn session_projection_events_for_scope(
+    snapshot: &SessionSnapshotProjection,
+    previous: Option<&SessionSnapshotProjection>,
+    has_terminal_workflow_update: bool,
+    scope: Option<&str>,
+) -> Vec<KernelEvent> {
+    let events = session_projection_events(snapshot, previous, has_terminal_workflow_update);
+    if scope == Some("session_terminal") {
+        return Vec::new();
+    }
+    let same_waits =
+        previous.is_some_and(|before| waiting_processes(before).eq(waiting_processes(snapshot)));
+    events
+        .into_iter()
+        .filter(|event| {
+            !(scope == Some("session_metadata")
+                && same_waits
+                && matches!(event, KernelEvent::SessionProcessesChanged { .. }))
+        })
+        .collect()
+}
+
+fn waiting_processes(
+    snapshot: &SessionSnapshotProjection,
+) -> impl Iterator<
+    Item = (
+        &crate::runtime::process_resources::SessionProcessOwner,
+        &str,
+        &crate::runtime::process_resources::SessionProcessState,
+    ),
+> {
+    snapshot
+        .processes
+        .iter()
+        .filter(|process| {
+            !matches!(
+                process.state,
+                crate::runtime::process_resources::SessionProcessState::Running
+            )
+        })
+        .map(|process| {
+            (
+                &process.owner,
+                process.process.process_id.as_str(),
+                &process.state,
+            )
+        })
 }
 
 #[cfg(test)]
@@ -330,5 +400,87 @@ mod tests {
                 .any(|event| matches!(event, KernelEvent::SessionSnapshot { .. })),
             "an interaction delta cannot hide the newly opened sudo window"
         );
+    }
+    #[test]
+    fn private_provider_updates_do_not_repeat_public_state() {
+        let mut before = snapshot();
+        before.provider_run = Some(
+            crate::provider::RuntimeProviderRun::from_control_capability_inference(
+                "run",
+                before.session.id().into(),
+                Some("agent".into()),
+                "codex".into(),
+            ),
+        );
+        let mut after = before.clone();
+        after
+            .provider_run
+            .as_mut()
+            .unwrap()
+            .set_terminal_diagnostic("synthetic private diagnostic");
+        assert!(session_projection_events(&after, Some(&before), false).is_empty());
+    }
+
+    #[test]
+    fn metadata_keeps_admission_waits_while_health_keeps_samples() {
+        let before = snapshot();
+        let mut running = before.clone();
+        add_process(&mut running);
+        assert!(session_projection_events_for_scope(
+            &running,
+            Some(&before),
+            false,
+            Some("session_metadata")
+        )
+        .is_empty());
+        assert!(matches!(
+            session_projection_events_for_scope(
+                &running,
+                Some(&before),
+                false,
+                Some("session_metadata_processes")
+            )
+            .as_slice(),
+            [KernelEvent::SessionProcessesChanged { .. }]
+        ));
+        let mut held = running.clone();
+        held.processes[0].state = crate::runtime::process_resources::SessionProcessState::Held(
+            crate::runtime::process_resources::Waiting {
+                reason: crate::runtime::process_resources::WaitReason::Memory,
+                position: 1,
+                need_bytes: 100,
+                free_bytes: 10,
+                command_line: "build".into(),
+                cwd: None,
+                since_ms: 1,
+            },
+        );
+        assert!(matches!(
+            session_projection_events_for_scope(
+                &held,
+                Some(&running),
+                false,
+                Some("session_metadata")
+            )
+            .as_slice(),
+            [KernelEvent::SessionProcessesChanged { .. }]
+        ));
+        assert!(matches!(
+            session_projection_events_for_scope(
+                &running,
+                Some(&held),
+                false,
+                Some("session_metadata")
+            )
+            .as_slice(),
+            [KernelEvent::SessionProcessesChanged { .. }]
+        ));
+        assert!(session_projection_events_for_scope(
+            &held,
+            Some(&running),
+            false,
+            Some("session_terminal")
+        )
+        .is_empty());
     }
 }

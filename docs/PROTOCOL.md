@@ -7414,3 +7414,12 @@ carry `RoomTerminal.result` variants `output` and `snapshot`. The header replace
 in that order. ANSI/output fields are raw decoded base64 bytes; text fields are
 UTF-8. Clients and gateways reconstruct the ordinary response before handing it
 to their caller. Other Room Terminal result variants remain ordinary JSON.
+
+
+The same provisional 1008 subscription contract distinguishes view interests:
+`session_terminal` carries terminal data without session projection samples;
+`session_metadata` carries Room state and admission-wait changes without terminal
+bytes or periodic process samples; `session_metadata_processes` additionally keeps
+the process/disk sample feed used by Health. Ordinary `session` subscriptions keep
+their full feed. Private provider-run changes do not repeat an unchanged public
+projection. Admission holds, pauses and resumptions still reach ordinary views.
