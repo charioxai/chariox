@@ -6894,6 +6894,12 @@ with the browser state; the host refuses it for an agent. A person's typing, cli
 input to that same Tab until the person has been idle for two seconds. Each agent's native tab group is titled with
 its status dot, and with a spinner while the agent acts in one of its Tabs.
 
+Rendering follows use, so a kernel browser nobody watches costs next to nothing. An agent's Tab behind the shown one
+renders at full speed while the agent acts in it and for 30 seconds after its last action; then it stops scheduling
+frames until the agent's next action wakes it before acting. The shown Tab is frozen (hidden: no frames, no page tasks)
+once no viewer stream watches it and the host has had no request for 30 seconds; the next request wakes it before it
+runs. A parked state read and the kernel's park of an unwatched display are not requests in this sense.
+
 
 ### Owner cancellation of retained work — local 987
 
