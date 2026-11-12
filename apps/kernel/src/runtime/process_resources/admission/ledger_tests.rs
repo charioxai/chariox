@@ -2212,3 +2212,39 @@ fn numeric_output_paths_do_not_reuse_another_commands_receiving_volume() {
         "a different exact command's output destination is unknown"
     );
 }
+
+/// A paused command that only the room to keep growing holds back (the memory
+/// room covers what it needs, but everything running grows too fast for it to
+/// grow ahead) is ended with that reason, not with memory figures that say it
+/// fits.
+#[test]
+fn a_pause_only_the_room_to_continue_keeps_does_not_name_a_memory_shortage() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let launches = BTreeMap::from([(
+        "binary".to_string(),
+        super::super::launch::Reservation {
+            memory: GIB,
+            writes: 0,
+            volume: 1,
+        },
+    )]);
+    let room = Room {
+        margin: GIB,
+        growing: 512 * MIB,
+        launches: &launches,
+        ..room(3 * GIB, false, &volume)
+    };
+    let mut paused = entry(1, Peak::default());
+    paused.admitted = true;
+    paused.wait = Some(Wait::Paused(WaitReason::Memory));
+    paused.since_ms = crate::session::unix_epoch_ms() - 61_000;
+    paused.paused_rate = 600 * MIB;
+    let member = owner("a", true, vec![command(1, 600 * MIB, 0)], vec![(1, paused)]);
+    let (control, _heard) = std::sync::mpsc::channel();
+    member.lock().unwrap().control = Some(control);
+
+    let (_, blocked) = blocked_paused(&[member], 60_000, &room).expect("the pause cannot continue");
+    if let Blocked::Memory { left, need } = blocked {
+        assert!(left < need, "it needs {need} and {left} are left");
+    }
+}
