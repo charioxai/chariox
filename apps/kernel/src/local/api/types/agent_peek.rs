@@ -2,8 +2,7 @@
 //! time: its latest entries as titles, then one entry's content by pages.
 use super::*;
 
-/// The last `limit` entries of an agent's transcript before `before` (newest first when
-/// absent), titles only.
+/// The last `limit` entries of an agent's transcript before `before`, titles only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PeekAgentTranscriptRequest {

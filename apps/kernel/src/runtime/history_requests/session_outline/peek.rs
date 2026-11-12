@@ -126,8 +126,7 @@ fn peek(
                 .or(before_turn);
             let mut turn_entries = turn_rows(
                 operational_history,
-                &request.session_id,
-                &request.agent_id,
+                request,
                 agent_import,
                 turn,
                 now_ms,
@@ -174,8 +173,7 @@ fn peek(
 
 fn turn_rows(
     operational_history: &OperationalHistoryStore,
-    session_id: &str,
-    agent_id: &str,
+    request: &PeekAgentTranscriptRequest,
     agent_import: Option<&ExternalProviderImportMetadata>,
     turn: &SessionHistoryOutlineTurn,
     now_ms: u64,
@@ -203,8 +201,7 @@ fn turn_rows(
     for blob in &turn.blobs {
         rows.push(blob_row(
             operational_history,
-            session_id,
-            agent_id,
+            request,
             agent_import,
             blob,
             turn_status,
@@ -293,14 +290,15 @@ fn page_entry_kind(kind: SessionHistoryEntryKind) -> Kind {
 
 fn blob_row(
     operational_history: &OperationalHistoryStore,
-    session_id: &str,
-    agent_id: &str,
+    request: &PeekAgentTranscriptRequest,
     agent_import: Option<&ExternalProviderImportMetadata>,
     blob: &crate::local::SessionHistoryOutlineBlob,
     turn_status: Status,
     now_ms: u64,
     protect: &impl Fn(&str) -> String,
 ) -> Result<Row, DaemonError> {
+    let session_id = &request.session_id;
+    let agent_id = &request.agent_id;
     let mut kind = page_entry_kind(blob.kind);
     let mut status = Status::Completed;
     let mut at_ms = blob.timestamp_ms;
