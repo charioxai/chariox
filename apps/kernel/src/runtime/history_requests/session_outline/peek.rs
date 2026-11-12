@@ -218,7 +218,7 @@ fn turn_rows(
         .entries
         .iter()
         .chain(&turn.summary)
-        .filter(|e| !covered(*e))
+        .filter(|e| !covered(e))
     {
         let kind = page_entry_kind(entry.entry.kind);
         rows.push(entry_row(
@@ -315,7 +315,20 @@ fn blob_row(
             if status == Status::Running && !background && turn_status != Status::Running {
                 status = turn_status;
             }
-            let started = snapshot.get("started_at_ms").and_then(Value::as_u64);
+            let mut started = snapshot.get("started_at_ms").and_then(Value::as_u64);
+            if started.is_none() && (status == Status::Running || blob.entry_count > 1) {
+                // Some official harnesses publish pending/running/completed snapshots
+                // without clock fields. Their first history event is still the start.
+                started = operational_history
+                    .load_session_events_for_agent_sequence_range(
+                        session_id,
+                        agent_id,
+                        blob.sequence_start,
+                        blob.sequence_start,
+                    )?
+                    .first()
+                    .map(|event| event.timestamp_ms);
+            }
             let finished = snapshot.get("finished_at_ms").and_then(Value::as_u64);
             at_ms = started.unwrap_or(blob.timestamp_ms);
             duration_ms = match (status, finished) {

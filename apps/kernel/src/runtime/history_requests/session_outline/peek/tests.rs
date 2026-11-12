@@ -426,10 +426,28 @@ fn an_interleaved_tool_keeps_the_other_rows_and_its_final_state_when_paging() {
 fn tool_snapshots_without_clock_fields_keep_the_first_start_and_final_duration() {
     let store = Store::new("provider-clock-fields");
     store.prompt(10, 1, "run the command");
-    store.tool(11, 1, serde_json::json!({"id":"call","tool":"bash","status":"pending"}));
+    store.tool(
+        11,
+        1,
+        serde_json::json!({"id":"call","tool":"bash","status":"pending"}),
+    );
     store.tool(12, 1, serde_json::json!({"id":"call","tool":"bash","status":"running","input":{"command":"openssl speed"}}));
-    let active = store.peek(10, None, 1_020_000).entries.last().unwrap().clone();
+    let active = store
+        .peek(10, None, 1_020_000)
+        .entries
+        .last()
+        .unwrap()
+        .clone();
     store.tool(13, 1, serde_json::json!({"id":"call","tool":"bash","status":"completed","input":{"command":"openssl speed"},"output":"done"}));
-    let ended = store.peek(10, None, 2_000_000).entries.last().unwrap().clone();
-    assert_eq!((active.at_ms, active.duration_ms, ended.duration_ms), (1_011_000, Some(9_000), Some(2_000)), "providers without clock fields still have history timestamps");
+    let ended = store
+        .peek(10, None, 2_000_000)
+        .entries
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (active.at_ms, active.duration_ms, ended.duration_ms),
+        (1_011_000, Some(9_000), Some(2_000)),
+        "providers without clock fields still have history timestamps"
+    );
 }
