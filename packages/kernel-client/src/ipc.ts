@@ -53,7 +53,7 @@ import {
   type RelayClientIdentity,
 } from "./relay-crypto.js"
 import type { EncryptedRelayPayload } from "./kernel-transport-frames.js"
-import { decodeDisplayEvent } from "./browser-relay-crypto.js"
+import { decodeBinaryRelayEvent, decodeBinaryRelayResponse, decodeDisplayEvent } from "./browser-relay-crypto.js"
 import {
   buildRelayConnectFrame,
   buildRelaySubscribeFrame,
@@ -974,7 +974,7 @@ export class LocalIpcClient {
       return new WebSocket(`ws+unix:${socket}:/kernel`)
     }
     if (this.isRelayMode()) {
-      return new WebSocket(relayTransportUrl(this.socketPath))
+      return new WebSocket(relayTransportUrl(this.socketPath), ["chariox-relay-binary-v98"])
     }
     if (this.localAuthToken && this.localAuthEndpoint) {
       return new WebSocket(this.localAuthEndpoint, {
@@ -1064,11 +1064,28 @@ export class LocalIpcClient {
           this.setWebSocketConnectPromise(lane, null)
           this.setSuppressNextCloseEvent(lane, false)
           this.startKernelHeartbeat(socket, lane)
-          socket.on("message", (data: WebSocket.RawData) => {
+          socket.on("message", (data: WebSocket.RawData, isBinary: boolean) => {
             if (this.getWebSocket(lane) !== socket) {
               return
             }
             try {
+              if (this.isRelayMode() && isBinary) {
+                const raw = Buffer.isBuffer(data) ? data : Buffer.concat(Array.isArray(data) ? data : [Buffer.from(data)])
+                const bytes = relayFrames.receiveBinary(Uint8Array.from(raw).buffer, frame => {
+                  this.pendingRequests.noteTransportProgress(lane)
+                  socket.send(frame)
+                })
+                if (bytes === null) return
+                const wire = new Uint8Array(bytes)
+                const frame = wire[3] === 50 ? decodeBinaryRelayResponse(wire) : decodeBinaryRelayEvent(wire)
+                // Keep the native correlation/decryption path shared with JSON envelopes.
+                const key = frame.kind === "client_response" ? "encrypted_response" : "encrypted_event"
+                const payload = frame.kind === "client_response" ? frame.encrypted_response : frame.encrypted_event
+                this.handleWebSocketMessage(Buffer.from(JSON.stringify({ ...frame,
+                  [key]: { ...payload, ciphertext: Buffer.from(payload.ciphertext).toString("base64") },
+                })), lane)
+                return
+              }
               const text = this.isRelayMode() ? relayFrames.receive(String(data), frame => {
                 // A receipt is emitted only after bounded, contiguous chunk validation.
                 // This keeps a progressing response alive without extending authority.
