@@ -1,3 +1,4 @@
+import { RelayFrameReceiver } from "./relay-frame-transport.js"
 import WebSocket from "ws"
 import { createHash } from "node:crypto"
 import type { RelayConnectedFrame, RelayCloseFrame, RelayTarget } from "./kernel-transport-frames.js"
@@ -118,6 +119,7 @@ export class RelayAuthorizationRenewal {
 // acknowledge the new grant without replacing their sockets or subscriptions.
 export function reauthenticateRelaySocket(socket: WebSocket, token: string, target: RelayTarget, daemonKey: string, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
+    const frames = new RelayFrameReceiver()
     const finish = (error?: Error) => {
       clearTimeout(timer)
       socket.off("message", acknowledge)
@@ -125,9 +127,16 @@ export function reauthenticateRelaySocket(socket: WebSocket, token: string, targ
       signal.removeEventListener("abort", cancelled)
       error ? reject(error) : resolve()
     }
-    const acknowledge = (data: WebSocket.RawData) => {
+    const acknowledge = (data: WebSocket.RawData, isBinary = false) => {
+      if (isBinary) return
       let frame: RelayConnectedFrame | RelayCloseFrame
-      try { frame = JSON.parse(String(data)) } catch { return }
+      try {
+        // The active lane reader sends receipts. This waiter only assembles its
+        // acknowledgement; a second receipt would retire the same transfer twice.
+        const text = frames.receive(String(data), () => {})
+        if (text === null) return
+        frame = JSON.parse(text)
+      } catch { return }
       if (frame.kind === "close") finish(relayCloseError(frame.reason))
       if (frame.kind === "client_connected") {
         if ((frame.target?.daemon_id ?? null) !== (target.daemon_id ?? null) || (frame.target?.daemon_alias ?? null) !== (target.daemon_alias ?? null) || frame.daemon_public_key !== daemonKey) finish(new LocalIpcError("renew relay authorization", "Relay authorization renewal returned an invalid target or kernel key", "authorization_denied"))
