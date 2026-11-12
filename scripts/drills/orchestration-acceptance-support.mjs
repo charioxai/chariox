@@ -78,7 +78,8 @@ export async function createDrill(flags) {
     }
     const relayPort = await freePort()
     start(required("--relay-binary"), [], { CHARIOX_RELAY_HOST: "127.0.0.1", CHARIOX_RELAY_PORT: String(relayPort), CHARIOX_RELAY_SCOPED_ISSUER: realm, CHARIOX_RELAY_SCOPED_HMAC_SECRET: secret }, "relay")
-    const cloudEnv = await startOwnerCloud({ token, note: record, realm, relayPort, onServer: s => { cloud = s } })
+    const enrolled = new Map()
+    const cloudEnv = await startOwnerCloud({ token, note: record, realm, relayPort, onServer: s => { cloud = s }, onPresence: peer => enrolled.set(peer.kernelId, peer) })
     async function kernel(name) {
       const dir = join(root, name)
       for (const sub of ["chariox", "home", "tmp", "work", "logs", "history", "config", "cache", "state"]) mkdirSync(join(dir, sub), { recursive: true, mode: 0o700 })
@@ -116,13 +117,8 @@ export async function createDrill(flags) {
       const value = readFileSync(process.env.CLAUDE_TOKEN_FILE ?? "/root/.claude-lanes/oauth-token.chariox", "utf8").trim()
       await a.rpc({ SetProviderAccountCredential: { provider, account_profile: "default", value, overwrite: true } })
       profile = (await a.rpc({ GetProviderAccountProfile: { provider, account_profile: "default" } })).ProviderAccountProfile.profile.profile_id
-      const base = JSON.parse(cloudEnv.CHARIOX_CLOUD_RELAY_CONFIG_JSON).api_url
-      let target
-      await until(async () => {
-        const directory = await (await fetch(base + "/v1/owner-managed-context-tickets/peers")).json()
-        target = directory.peers.find(p => p.peer.kernelId === b.status.daemon_id)?.peer
-        return !!target
-      }, "target enrollment")
+      await until(() => enrolled.has(b.status.daemon_id), "target enrollment")
+      const target = enrolled.get(b.status.daemon_id)
       const result = await a.rpc({ CopyProviderAccountToKernel: { provider, account_profile: profile, operation_id: `ao-copy-${randomUUID()}`, target_kernel_id: target.kernelId, target_key_thumbprint: target.keyThumbprint, replace: false } })
       profileB = result.ProviderAccountCopied.receipt.account_profile
       assert(profileB)

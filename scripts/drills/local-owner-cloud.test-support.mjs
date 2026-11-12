@@ -4,7 +4,7 @@
 import http from "node:http"
 import { randomBytes } from "node:crypto"
 
-export async function startOwnerCloud({ token, note, realm, relayPort, onServer }) {
+export async function startOwnerCloud({ token, note, realm, relayPort, onServer, onPresence }) {
   const kernels = new Map()
   const answer = (res, body, code = 200) => res.writeHead(code, { "content-type": "application/json" }).end(JSON.stringify(body))
   const server = http.createServer((req, res) => {
@@ -22,6 +22,8 @@ export async function startOwnerCloud({ token, note, realm, relayPort, onServer 
         }
         if (url.pathname === "/kernels/presence") {
           kernels.set(ask.kernelId, { ...kernels.get(ask.kernelId), kernelId: ask.kernelId, machineId: ask.machineId, publicKey: ask.metadata?.relay_public_key, alias: ask.kernelAlias ?? null })
+          const kernel = kernels.get(ask.kernelId)
+          onPresence?.({ kernelId: kernel.kernelId, keyThumbprint: kernel.thumbprint })
           return answer(res, {})
         }
         if (req.method === "GET" && url.pathname === "/v1/owner-managed-context-tickets/peers") return answer(res, { peers: [...kernels.values()].filter(k => k.publicKey && k.thumbprint).map(k => ({ targetId: k.kernelId, peer: { relayRealmId: realm, machineId: k.machineId, kernelId: k.kernelId, relayPublicKey: k.publicKey, keyThumbprint: k.thumbprint } })) })
