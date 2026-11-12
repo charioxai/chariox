@@ -133,7 +133,7 @@ pub(crate) fn isolate_environment_test() -> bool {
 /// The isolated test has ended, passed or not: whatever it started and left
 /// running (provider servers, detached helpers) must not outlive it.
 #[cfg(unix)]
-fn end_claimed_descendants(claim: &str) {
+pub(crate) fn end_claimed_descendants(claim: &str) {
     use crate::runtime::owned_process_signals::OwnedProcessSignals;
     for _ in 0..REAP_ATTEMPTS {
         match OwnedProcessSignals::end_claimed_tree(claim, None) {
@@ -150,25 +150,11 @@ mod tests {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    use super::super::{detached_job, environment_test_isolated};
+    use super::super::{detached_job, detached_sleeper_running, environment_test_isolated};
 
     /// The job sleeps this many seconds, so the owner finds it by its arguments.
     fn sleep_seconds(owner: u32) -> u32 {
         200_000 + owner % 100_000
-    }
-
-    fn detached_sleeper_running(seconds: u32) -> bool {
-        let listing = Command::new("ps")
-            .args(["-eo", "stat=,args="])
-            .output()
-            .expect("ps should list processes");
-        String::from_utf8_lossy(&listing.stdout)
-            .lines()
-            .any(|line| {
-                let mut fields = line.split_whitespace();
-                fields.next().is_some_and(|stat| !stat.starts_with('Z'))
-                    && fields.eq(["sleep", seconds.to_string().as_str()])
-            })
     }
 
     #[test]
