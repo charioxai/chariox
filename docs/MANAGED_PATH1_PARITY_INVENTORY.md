@@ -1,5 +1,21 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 individual process signals (2026-11-12)
+
+Linux individual cleanup signals carry the retained process birth to the signal
+boundary, open a pidfd, and recheck that birth after opening it. Signals use the
+handle so exit and numeric PID reuse after verification cannot redirect them.
+The same pinning and sending helpers serve the existing retained process handles.
+Missing or exited processes need no signal; inspection and pinning failures
+remain explicit errors. Ordinary and managed kernels use this shared path.
+
+The focused regression exercises individual signaling, child termination and
+tree cleanup on real children from a disposable thread whose seccomp policy
+rejects numeric `kill`. Cleanup and reaping run outside that thread. A separate
+KVM process fixture cancels a Room command with a detached child while allowing
+group kills and process-handle signals. These checks cover this signal seam;
+they do not close the complete MP-10 matrix or the MP-11 security-anchor review.
+
 
 ## MP-08 / MP-09 / MP-10 / MP-11 disk maintenance isolation (2026-11-05)
 

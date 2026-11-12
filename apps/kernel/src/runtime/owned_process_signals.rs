@@ -142,7 +142,7 @@ impl OwnedProcessSignals {
     }
 
     pub(crate) fn kill_owned_processes(&mut self) -> io::Result<()> {
-        self.kill_owned_with(snapshot, send_signal)
+        self.kill_owned_with(snapshot, send_process_signal)
     }
 
     #[cfg(unix)]
@@ -150,11 +150,11 @@ impl OwnedProcessSignals {
         let rows = snapshot()?;
         self.refresh_from(&rows);
         for pid in self.parents_first(&rows) {
-            if snapshot()?
+            if let Some(row) = snapshot()?
                 .iter()
-                .any(|row| row.pid == pid && self.matches(row))
+                .find(|row| row.pid == pid && self.matches(row))
             {
-                send_signal_with(pid as i32, signal)?;
+                send_process_signal_with(row, signal)?;
             }
         }
         Ok(())
@@ -167,7 +167,7 @@ impl OwnedProcessSignals {
     fn kill_owned_with(
         &mut self,
         mut inspect: impl FnMut() -> io::Result<Vec<ProcessIdentity>>,
-        mut send: impl FnMut(i32, Signal) -> io::Result<()>,
+        mut send: impl FnMut(&ProcessIdentity, Signal) -> io::Result<()>,
     ) -> io::Result<()> {
         let mut stopped = std::collections::BTreeSet::new();
         loop {
@@ -224,23 +224,7 @@ impl OwnedProcessSignals {
             if !self.matches(row) || handles.0.contains_key(&row.pid) {
                 continue;
             }
-            if row.pid <= 1 || row.pid > i32::MAX as u32 {
-                return Err(io::Error::other("invalid child PID"));
-            }
-            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, row.pid, 0) };
-            if fd < 0 {
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() == Some(libc::ESRCH) {
-                    continue;
-                }
-                return Err(error);
-            }
-            use std::os::fd::FromRawFd;
-            let handle = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) };
-            if snapshot()?
-                .iter()
-                .any(|current| current.pid == row.pid && self.matches(current))
-            {
+            if let Some(handle) = pin_process(row)? {
                 // Publish each verified handle immediately. A subsequent pin
                 // failure must retain both old and newly acquired ownership.
                 handles.0.insert(row.pid, handle);
@@ -277,19 +261,19 @@ impl OwnedProcessSignals {
         order.into_iter().map(|(_, pid)| pid).collect()
     }
 
-    /// Rechecks the birth immediately before its individual signal.
+    /// Carries the verified birth to the signal seam, where Linux pins it before sending.
     fn signal_current(
         &self,
         pid: u32,
         signal: Signal,
         inspect: &mut impl FnMut() -> io::Result<Vec<ProcessIdentity>>,
-        send: &mut impl FnMut(i32, Signal) -> io::Result<()>,
+        send: &mut impl FnMut(&ProcessIdentity, Signal) -> io::Result<()>,
     ) -> io::Result<()> {
-        if inspect()?
+        if let Some(row) = inspect()?
             .iter()
-            .any(|row| row.pid == pid && self.matches(row))
+            .find(|row| row.pid == pid && self.matches(row))
         {
-            send(pid as i32, signal)?;
+            send(row, signal)?;
         }
         Ok(())
     }
@@ -306,7 +290,13 @@ impl OwnedProcessSignals {
     /// in its environment. Ok(true): nothing of it is left. Ok(false): its members were just
     /// signalled; ask again. An error means some member could not be inspected, so it may live.
     pub(crate) fn end_claimed_tree(claim: &str, leader: Option<(u32, &str)>) -> io::Result<bool> {
-        Self::end_claimed_tree_with(claim, leader, snapshot, read_environment, send_signal)
+        Self::end_claimed_tree_with(
+            claim,
+            leader,
+            snapshot,
+            read_environment,
+            send_process_signal,
+        )
     }
 
     fn end_claimed_tree_with(
@@ -314,7 +304,7 @@ impl OwnedProcessSignals {
         leader: Option<(u32, &str)>,
         mut inspect: impl FnMut() -> io::Result<Vec<ProcessIdentity>>,
         environment: impl Fn(u32) -> io::Result<Option<Vec<u8>>>,
-        send: impl FnMut(i32, Signal) -> io::Result<()>,
+        send: impl FnMut(&ProcessIdentity, Signal) -> io::Result<()>,
     ) -> io::Result<bool> {
         if claim.is_empty() {
             return Err(io::Error::other("the launch claim is missing"));
@@ -376,7 +366,7 @@ impl OwnedProcessSignals {
         if !self.matches(row) {
             return Err(io::Error::other("child PID was reused"));
         }
-        send_signal(self.root as i32, Signal::Kill)?;
+        send_process_signal(row, Signal::Kill)?;
         Ok(true)
     }
 }
@@ -393,21 +383,7 @@ impl OwnedProcessHandles {
             if *pid <= 1 {
                 return Err(io::Error::other("reserved child signal target"));
             }
-            let result = unsafe {
-                libc::syscall(
-                    libc::SYS_pidfd_send_signal,
-                    handle.as_raw_fd(),
-                    signal,
-                    std::ptr::null::<libc::siginfo_t>(),
-                    0,
-                )
-            };
-            if result < 0 {
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() != Some(libc::ESRCH) {
-                    return Err(error);
-                }
-            }
+            send_handle_signal(handle.as_raw_fd(), signal)?;
         }
         Ok(())
     }
@@ -422,6 +398,85 @@ impl OwnedProcessHandles {
             };
             unsafe { libc::poll(&mut fd, 1, 0) == 1 }
         })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn pin_process(row: &ProcessIdentity) -> io::Result<Option<std::os::fd::OwnedFd>> {
+    use std::os::fd::FromRawFd;
+    if row.pid <= 1 || row.pid > i32::MAX as u32 || row.start.is_empty() {
+        return Err(io::Error::other("invalid process birth witness"));
+    }
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, row.pid, 0) };
+    if fd < 0 {
+        let error = io::Error::last_os_error();
+        return if error.raw_os_error() == Some(libc::ESRCH) {
+            Ok(None)
+        } else {
+            Err(error)
+        };
+    }
+    let handle = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) };
+    // Match the birth after opening. The verified handle keeps this target
+    // stable if it exits and its numeric PID is reused before signal delivery.
+    if witnessed_exit(&row.start, witnessed_row(row.pid)?)? {
+        return Ok(None);
+    }
+    Ok(Some(handle))
+}
+
+#[cfg(target_os = "linux")]
+fn send_handle_signal(fd: std::os::fd::RawFd, signal: i32) -> io::Result<()> {
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            fd,
+            signal,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    if result >= 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+fn send_process_signal(row: &ProcessIdentity, signal: Signal) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        send_process_signal_with(
+            row,
+            match signal {
+                Signal::Stop => libc::SIGSTOP,
+                Signal::Kill => libc::SIGKILL,
+            },
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        send_signal(row.pid as i32, signal)
+    }
+}
+
+#[cfg(unix)]
+fn send_process_signal_with(row: &ProcessIdentity, signal: i32) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        if let Some(handle) = pin_process(row)? {
+            send_handle_signal(handle.as_raw_fd(), signal)?;
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        send_signal_with(row.pid as i32, signal)
     }
 }
 
@@ -975,7 +1030,7 @@ mod tests {
             .kill_owned_with(
                 || Ok(rows.clone()),
                 |pid, signal| {
-                    signalled.push((pid, signal));
+                    signalled.push((pid.pid as i32, signal));
                     Ok(())
                 },
             )
@@ -1006,7 +1061,7 @@ mod tests {
             || Ok(rows.clone()),
             environment,
             |pid, signal| {
-                sent.push((pid, signal));
+                sent.push((pid.pid as i32, signal));
                 Ok(())
             },
         )
@@ -1058,9 +1113,9 @@ mod tests {
                 || Ok(alive.borrow().clone()),
                 unreadable,
                 |pid, signal| {
-                    sent.borrow_mut().push((pid, signal));
+                    sent.borrow_mut().push((pid.pid as i32, signal));
                     if signal == Signal::Kill {
-                        alive.borrow_mut().retain(|row| row.pid as i32 != pid);
+                        alive.borrow_mut().retain(|row| row.pid != pid.pid);
                     }
                     Ok(())
                 },
@@ -1197,7 +1252,7 @@ mod tests {
             .kill_owned_with(
                 || Ok(rows.clone()),
                 |pid, signal| {
-                    sent.push((pid, signal));
+                    sent.push((pid.pid as i32, signal));
                     Ok(())
                 },
             )
