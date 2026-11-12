@@ -2872,3 +2872,39 @@ async fn a_wake_between_settlement_and_its_finish_leaves_no_running_wait_row() {
         .collect();
     assert!(running.is_empty(), "a wait that already ended: {running:?}");
 }
+
+#[tokio::test]
+async fn kwait_timer_fires_when_an_older_finished_wake_cannot_be_decoded() {
+    let f = fixture("kwait-old-wake-timer", false).await;
+    let old = f.begin("older-turn");
+    let old_wake = f.arm(&old, "old-wake").unwrap();
+    f.runtime
+        .wake_sink(KIND)
+        .occurred(f.occurrence(&old_wake.id, "old-ended", Some(WakeEnd::Succeeded)))
+        .unwrap();
+    let now = crate::session::unix_epoch_ms();
+    let task = f.begin("later-event-turn");
+    let mut timer = f.wake(&task, "timer-after-old-wake");
+    timer.kind = "timer".into();
+    timer.state = "scheduled".into();
+    timer.next_due_ms = Some(now + 1_000);
+    f.store()
+        .agent_lifecycle(Operation::CreateWake {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            wake: timer,
+        })
+        .unwrap();
+    // A prior driver's malformed terminal detail must not stop unrelated timers.
+    let db = rusqlite::Connection::open(f.store().path()).unwrap();
+    db.execute("UPDATE agent_wakes SET payload=json_set(payload,'$.fire_count','invalid') WHERE id='old-wake'", []).unwrap();
+    drop(db);
+    let _ = f.runtime.sweep_agent_wakes(now + 60_000).await;
+    let timer = f
+        .store()
+        .agent_wake("timer-after-old-wake")
+        .unwrap()
+        .unwrap();
+    assert_eq!(timer.state, "fired", "{timer:?}");
+    assert_eq!(timer.fire_count, 1);
+}
