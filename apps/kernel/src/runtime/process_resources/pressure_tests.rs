@@ -761,6 +761,25 @@ fn overdue_pauses_continue_when_room_returned_for_all_of_them() {
         settle(2);
         drop(held);
     });
+    // Age the pauses only once the pool has seen the room return: the
+    // growers' watches decide on the holder's last sample.
+    let big = holder.pid("big") as u32;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while holder
+        .domain
+        .state
+        .lock()
+        .unwrap()
+        .samples
+        .iter()
+        .any(|sample| sample.pid == big)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the holder's watch never saw its command go"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     {
         let mut observation = growers.domain.state.lock().unwrap();
         for entry in observation
