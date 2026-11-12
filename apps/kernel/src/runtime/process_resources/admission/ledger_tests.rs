@@ -335,6 +335,60 @@ fn a_paused_command_that_never_gets_room_to_grow_ends_after_the_stall_window() {
     assert_eq!(ended(), 1, "a pause with no way out was never ended");
 }
 
+/// A stopped command measures a growth that halves at every sample, but the
+/// rate it was paused at stays its own: the room to continue still counts it,
+/// so the pause does not end by continuing once the samples have fallen.
+#[test]
+fn a_stopped_command_whose_measured_growth_halves_stays_paused_and_ends_after_the_stall_window() {
+    let pool = pool::Pool::with_volume(8 * GIB, volume(&Arc::new(AtomicU64::new(100 * GIB))));
+    pool.ledger.lock().unwrap().stall_window = Duration::from_millis(50);
+    let command_of = |unit: &str, pid: u32, resident: u64, wait: Option<Wait>| {
+        let mut entry = entry(pid as u64, Peak::default());
+        entry.admitted = true;
+        entry.wait = wait;
+        entry.since_ms = crate::session::unix_epoch_ms();
+        entry.paused_rate = 2 * GIB;
+        let member = owner(
+            unit,
+            true,
+            vec![command(pid, resident, 0)],
+            vec![(pid, entry)],
+        );
+        let (control, heard) = std::sync::mpsc::channel();
+        {
+            let mut member = member.lock().unwrap();
+            member.samples = vec![sample(resident)];
+            member.control = Some(control);
+        }
+        pool.join(&member);
+        (member, heard)
+    };
+    let (running, _) = command_of("a", 1, 3 * GIB, None);
+    let (paused, heard) = command_of("b", 2, 600 * MIB, Some(Wait::Paused(WaitReason::Memory)));
+    let ended = || {
+        heard
+            .try_iter()
+            .filter(|command| matches!(command, WatchCommand::MemoryStop { .. }))
+            .count()
+    };
+
+    for measured in [2 * GIB, GIB, 512 * MIB, 256 * MIB, 128 * MIB, 64 * MIB] {
+        paused.lock().unwrap().commands[0].growth = measured;
+        pool.enforce(&running, None);
+        assert!(
+            matches!(
+                paused.lock().unwrap().admission[&2].wait,
+                Some(Wait::Paused(_))
+            ),
+            "the command continued once its measured growth fell to {measured}"
+        );
+    }
+    assert_eq!(ended(), 0, "it ended before the stall window passed");
+    std::thread::sleep(Duration::from_millis(80));
+    pool.enforce(&running, None);
+    assert_eq!(ended(), 1, "a pause with no way out was never ended");
+}
+
 /// Memory-paused commands keep their memory: when the one running command
 /// does not grow or finish either, nothing frees by itself. After the stall
 /// window the largest paused command ends, with its reason.
