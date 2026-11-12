@@ -1,4 +1,4 @@
-import { isSessionUnavailableError } from "./session-errors.js"
+import { isSessionUnavailableError, isSweptAttachmentError } from "./session-errors.js"
 import process from "node:process"
 
 import { createCliExitController } from "./cli-exit-controller.js"
@@ -182,6 +182,13 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
         error: deps.formatError(error),
       })
       deps.onKernelTransportClosed("Kernel event subscription failed")
+      // RR-07: a swept attachment (the kernel dropped this attachment id after a >30s
+      // relay outage) is re-attached for the same Room by the restart-recovery driven
+      // from onKernelTransportClosed above; it must not be torn down. Only a genuinely
+      // unavailable session — gone or grant revoked — returns to the unattached state.
+      if (isSweptAttachmentError(error)) {
+        return
+      }
       // A stale attachment never subscribes: re-attach and re-subscribe
       // (session-unavailable recovery) instead of retrying the same pair.
       if (isSessionUnavailableError(error)) {
