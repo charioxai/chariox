@@ -1,4 +1,7 @@
 //! Signals require a retained PID/start witness, including every group member.
+#[cfg(all(test, target_os = "linux"))]
+#[path = "owned_process_signals_pinned_tests.rs"]
+mod pinned_tests;
 #[cfg(target_os = "macos")]
 use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::{collections::BTreeMap, io, process::Child};
