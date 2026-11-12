@@ -578,7 +578,8 @@ impl AgentTrigger {
                 let threshold = earliest.max(now_ms.saturating_add(1));
                 let steps = threshold
                     .saturating_sub(*next_run_at_ms)
-                    .div_ceil(interval_ms);
+                    .div_ceil(interval_ms)
+                    .max(1);
                 next_run_at_ms.saturating_add(steps.saturating_mul(interval_ms))
             }
             // The trigger was validated at creation; a time beyond the calendar never comes.
