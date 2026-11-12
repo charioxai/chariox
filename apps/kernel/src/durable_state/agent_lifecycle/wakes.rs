@@ -154,12 +154,12 @@ pub(super) fn source_deadline(
 const MAX_QUESTION_WAIT_DEADLINE_MS: u64 = 253_402_300_799_999;
 
 /// Retain every unanswered question until the latest source deadline. A question
-/// without a timeout uses the client date bound, rather than spending provider
-/// turns on an unrelated periodic retention deadline.
+/// without a timeout waits the default wait timeout, like every wait.
 pub(super) fn question_deadline(
     tx: &Transaction<'_>,
     task: &AgentTaskExecution,
     registrations: &[Registration],
+    now: u64,
 ) -> Result<u64, DaemonError> {
     if registrations.is_empty() {
         return Err(error(
@@ -179,7 +179,10 @@ pub(super) fn question_deadline(
                 "registered question binding corrupt; quarantine required",
             ));
         }
-        deadline = deadline.max(wake.next_due_ms.unwrap_or(MAX_QUESTION_WAIT_DEADLINE_MS));
+        deadline = deadline.max(
+            wake.next_due_ms
+                .unwrap_or(now.saturating_add(super::DEFAULT_WAIT_TIMEOUT_MS)),
+        );
     }
     Ok(deadline.min(MAX_QUESTION_WAIT_DEADLINE_MS))
 }

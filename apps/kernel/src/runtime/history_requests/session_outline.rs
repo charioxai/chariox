@@ -16,7 +16,6 @@ use crate::provider::{
 };
 use crate::session::PromptOrigin;
 
-#[allow(dead_code)]
 mod peek;
 mod prefetch;
 mod projection;

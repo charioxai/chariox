@@ -74,12 +74,64 @@ fn peek(
     agent_import: Option<&ExternalProviderImportMetadata>,
     now_ms: u64,
 ) -> Result<AgentTranscriptPeek, DaemonError> {
-    let _ = (operational_history, agent_import, now_ms);
-    Ok(AgentTranscriptPeek {
-        agent_id: request.agent_id.clone(),
-        entries: Vec::new(),
-        before: None,
-    })
+    let limit = request
+        .limit
+        .unwrap_or(DEFAULT_AGENT_PEEK_ENTRIES)
+        .clamp(1, MAX_AGENT_PEEK_ENTRIES);
+    let before = request
+        .before
+        .as_deref()
+        .map(|cursor| {
+            cursor.parse::<u64>().map_err(|_| {
+                peek_error(format!(
+                    "invalid before cursor `{cursor}`: pass the `before` of an earlier peek"
+                ))
+            })
+        })
+        .transpose()?;
+    // Turns hold any number of rows: read more of them until the page is full.
+    let mut prompt_count = 2;
+    loop {
+        let outline = load_scoped_agent_outline(
+            operational_history,
+            &request.session_id,
+            &request.agent_id,
+            prompt_count,
+            before,
+            agent_import,
+        )?;
+        let older_turns = outline.next_cursor.as_ref().map(|c| c.before_sequence);
+        let mut rows = Vec::new();
+        for turn in &outline.turns {
+            rows.extend(turn_rows(
+                operational_history,
+                &request.session_id,
+                &request.agent_id,
+                agent_import,
+                turn,
+                now_ms,
+            )?);
+        }
+        if rows.len() < limit && older_turns.is_some() && prompt_count < MAX_LATEST_PROMPT_COUNT {
+            prompt_count = (prompt_count * 2).min(MAX_LATEST_PROMPT_COUNT);
+            continue;
+        }
+        rows.sort_by_key(|row| (row.sequence_start, row.sequence_end));
+        let older_rows = rows.len() > limit;
+        let rows = rows.split_off(rows.len().saturating_sub(limit));
+        let before = match rows.first() {
+            Some(oldest) if older_rows || older_turns.is_some() => {
+                Some(oldest.sequence_start.to_string())
+            }
+            None => older_turns.map(|sequence| sequence.to_string()),
+            _ => None,
+        };
+        return Ok(AgentTranscriptPeek {
+            agent_id: request.agent_id.clone(),
+            entries: rows.into_iter().map(|row| row.title).collect(),
+            before,
+        });
+    }
 }
 
 fn turn_rows(
@@ -131,7 +183,7 @@ fn turn_rows(
         .entries
         .iter()
         .chain(&turn.summary)
-        .filter(|e| !covered(e))
+        .filter(|e| !covered(*e))
     {
         let kind = page_entry_kind(entry.entry.kind);
         rows.push(entry_row(
@@ -295,11 +347,61 @@ fn read_entry(
     request: &ReadAgentTranscriptEntryRequest,
     agent_import: Option<&ExternalProviderImportMetadata>,
 ) -> Result<AgentTranscriptEntryPage, DaemonError> {
-    let _ = (operational_history, agent_import);
-    Err(peek_error(format!(
-        "entry `{}` is not read yet",
-        request.entry_id
-    )))
+    let (sequence_start, sequence_end) = parse_blob_id(&request.entry_id)?;
+    let entries = load_blob_content_entries(
+        operational_history,
+        &request.session_id,
+        &request.agent_id,
+        sequence_start,
+        sequence_end,
+        agent_import,
+    )?;
+    let Some(first) = entries.first() else {
+        return Err(peek_error(format!(
+            "entry `{}` is not in this agent's transcript: pass an entry_id from its peek",
+            request.entry_id
+        )));
+    };
+    let mut kind = page_entry_kind(first.entry.kind);
+    let (title, content) = if kind == Kind::ToolCall {
+        let snapshot = merged_tool_snapshot(&entries);
+        if snapshot.get("tool").and_then(Value::as_str) == Some(WAIT_TOOL) {
+            kind = Kind::Wait;
+        }
+        let running = tool_status(&snapshot) == Status::Running;
+        (
+            title::tool_title(&snapshot, running),
+            tool_content(&snapshot),
+        )
+    } else {
+        let text = entries
+            .iter()
+            .map(|entry| entry.entry.text.as_str())
+            .collect::<String>();
+        let title = if kind == Kind::Thinking {
+            title::thought_title(&text, false)
+        } else {
+            title::text_title(&text)
+        };
+        (title, text)
+    };
+    let limit = request
+        .limit
+        .unwrap_or(DEFAULT_AGENT_PEEK_PAGE_CHARS)
+        .clamp(1, MAX_AGENT_PEEK_PAGE_CHARS);
+    let total_chars = content.chars().count();
+    let offset = request.offset.min(total_chars);
+    let text = content.chars().skip(offset).take(limit).collect::<String>();
+    let end = offset + text.chars().count();
+    Ok(AgentTranscriptEntryPage {
+        entry_id: request.entry_id.clone(),
+        kind,
+        title,
+        offset,
+        text,
+        total_chars,
+        next_offset: (end < total_chars).then_some(end),
+    })
 }
 
 /// A call's snapshots, later fields winning; an imported result record keeps the call's tool.
