@@ -167,9 +167,54 @@ impl LaunchAdmission {
         )))
     }
 
+    pub(crate) fn expected_memory(&self, argv: &[String], cwd: &Path) -> Option<u64> {
+        let seen = admission::seen_argv(0, argv, Some(cwd.to_path_buf()));
+        self.0
+            .ledger
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .peaks
+            .get(&seen.key)
+            .map(|peak| peak.memory)
+            .filter(|memory| *memory > 0)
+    }
+
+    pub(crate) fn would_wait(
+        &self,
+        id: &str,
+        argv: &[String],
+        cwd: &Path,
+        minimum_memory: u64,
+    ) -> bool {
+        if self.reserve(id, argv, cwd, false).is_err() {
+            return true;
+        }
+        if minimum_memory == 0 {
+            return false;
+        }
+        let members = self.0.members();
+        let room = self.0.room(&members);
+        let ledger = self.0.ledger.lock().unwrap_or_else(|e| e.into_inner());
+        let launches = self.0.launches.lock().unwrap_or_else(|e| e.into_inner());
+        let launch_memory = room.remaining(&launches);
+        let reserved =
+            ledger.reserved_memory(&members, admission::light(self.0.ceiling), &launch_memory);
+        minimum_memory
+            > room
+                .memory
+                .saturating_sub(reserved)
+                .saturating_sub(launch_memory.values().copied().fold(0, u64::saturating_add))
+    }
+
     pub(crate) fn is_heavy(&self, argv: &[String], cwd: &Path) -> bool {
         let seen = admission::seen_argv(0, argv, Some(cwd.to_path_buf()));
-        self.0.ledger.lock().unwrap_or_else(|e| e.into_inner()).peaks.get(&seen.key).is_some_and(|peak| peak.memory >= admission::light(self.0.ceiling))
+        self.0
+            .ledger
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .peaks
+            .get(&seen.key)
+            .is_some_and(|peak| peak.memory >= admission::light(self.0.ceiling))
     }
 
     pub(crate) fn reserve(

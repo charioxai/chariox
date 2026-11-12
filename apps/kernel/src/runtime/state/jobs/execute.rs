@@ -195,6 +195,16 @@ impl KernelRuntimeState {
                 .await
             }
         };
+        if record.allocation_ref.is_none() {
+            if let Some(receipt) = self
+                .job_wake_driver
+                .as_ref()
+                .and_then(|driver| driver.read(&record.job_id).ok())
+            {
+                record.allocation_ref = receipt.allocation_ref;
+                record.capability_revision = receipt.capability_revision;
+            }
+        }
         let _ = output.push(self, &record.room_id, &[], true);
         let mut result = result.unwrap_or_else(|error| {
             let _ = output.push(self, &record.room_id, error.to_string().as_bytes(), true);
@@ -241,7 +251,8 @@ impl KernelRuntimeState {
             Ok(artifact) => artifact.operational_path.to_string_lossy().into_owned(),
             Err(_) => output.log,
         };
-        result.duration_ms = crate::session::unix_epoch_ms().saturating_sub(record.started_at_ms);
+        result.duration_ms = crate::session::unix_epoch_ms()
+            .saturating_sub(record.running_at_ms.unwrap_or(record.started_at_ms));
         self.finish_job(&wake, &mut record, result).await;
     }
 
@@ -257,14 +268,12 @@ impl KernelRuntimeState {
     ) -> Result<JobResult, DaemonError> {
         let command = validate(&record.request)?;
         let admission = crate::runtime::process_resources::LaunchAdmission::default();
-        let busy = admission
-            .reserve(
-                &format!("{}:probe", record.job_id),
-                &command,
-                &record.cwd,
-                false,
-            )
-            .is_err();
+        let busy = admission.would_wait(
+            &format!("{}:probe", record.job_id),
+            &command,
+            &record.cwd,
+            u64::from(record.request.needs.memory_gib.unwrap_or(0)) * 1024 * 1024 * 1024,
+        );
         let heavy = record.request.needs.memory_gib.is_some()
             || record.request.needs.cpus.is_some_and(|cpus| cpus > 1)
             || admission.is_heavy(&command, &record.cwd);
@@ -296,31 +305,31 @@ impl KernelRuntimeState {
             });
             let origin = match requested_origin {
                 Some(origin) => origin,
-                None => self
-                    .reach_for_id(&format!(
-                        "{}{}",
-                        super::super::reach::REACH_PREFIX,
-                        run.id()
-                    ))
-                    .ok_or_else(|| {
-                        ledger::error(
-                            "The job's originating build run ended before remote allocation",
-                        )
-                    })?
-                    .origin(),
+                None => {
+                    self.job_acquisition_subject(&record.job_id)?;
+                    crate::runtime::kernel_gateway::Origin {
+                        grant_id: format!("job:{}", record.job_id),
+                        harness: self
+                            .agent_harness_name(&record.room_id, &record.agent_id)
+                            .unwrap_or_else(|| "Chariox".into()),
+                    }
+                }
             };
             record.state = "allocating".into();
             record.placement = JobPlacement::Remote;
             save_record(self, record)?;
-            match self
-                .job_compute_acquire(
-                    &record.job_id,
-                    &record.request.needs,
-                    record.request.timeout_s,
-                    &origin,
-                )
-                .await
-            {
+            let needs = effective_needs(record);
+            let acquired = tokio::select! {
+                acquired = self.job_compute_acquire(&record.job_id, &needs, record.request.timeout_s, &origin) => acquired,
+                _ = cancelled.changed() => {
+                    // The service records a cancellation fence before looking up the allocation,
+                    // so a delayed acquire can never create a machine after this cleanup.
+                    self.job_compute_release_job_ref(&record.job_id).await?;
+                    record.deleted = true;
+                    return Ok(cancelled_result(record));
+                }
+            };
+            match acquired {
                 Ok(machine) => {
                     record.allocation_ref = Some(machine.allocation_ref.clone());
                     record.capability_revision = Some(machine.capability_revision.clone());
@@ -426,6 +435,11 @@ impl KernelRuntimeState {
                     "running"
                 };
                 if record.state != state {
+                    if state == "running" {
+                        record
+                            .running_at_ms
+                            .get_or_insert_with(crate::session::unix_epoch_ms);
+                    }
                     record.state = state.into();
                     save_record(self, record)?;
                 }
@@ -487,6 +501,7 @@ impl KernelRuntimeState {
         let next = remote.write(&exec_id, 0, input.as_bytes()).await?;
         remote.close_stdin(&exec_id, next).await?;
         self.job_compute_started(machine).await?;
+        record.running_at_ms = Some(crate::session::unix_epoch_ms());
         record.state = "running".into();
         save_record(self, record)?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(record.request.timeout_s);

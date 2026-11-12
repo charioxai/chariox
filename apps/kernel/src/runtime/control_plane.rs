@@ -30,8 +30,7 @@ pub(crate) async fn execute(
         state.authorize_external_request(grant, &request_shape)?;
     } else if let Some(reach) = command.reach_caller_id() {
         state.authorize_gateway_request(&reach, &request_shape)?;
-    } else if !crate::runtime::cloud_relay_authorization::kernel_cloud_owner(config, command)
-    {
+    } else if !crate::runtime::cloud_relay_authorization::kernel_cloud_owner(config, command) {
         return Err(unavailable(
             "control_plane_grant_required",
             "Use the owner's Chariox access grant for machine requests",
@@ -55,15 +54,29 @@ pub(crate) async fn execute(
             ))
         };
     };
-    if matches!(request, ControlPlaneRequest::Acquire { .. } | ControlPlaneRequest::AcquireJob { .. }) {
+    if matches!(
+        request,
+        ControlPlaneRequest::Acquire { .. } | ControlPlaneRequest::AcquireJob { .. }
+    ) {
         let offered = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
-            profile.api_url.clone(), "/control-plane",
-            cloud_request_body(&profile.account_id, credential, &ControlPlaneRequest::Capabilities {}),
-        ).await?;
+            profile.api_url.clone(),
+            "/control-plane",
+            cloud_request_body(
+                &profile.account_id,
+                credential,
+                &ControlPlaneRequest::Capabilities {},
+            ),
+        )
+        .await?;
         let ControlPlaneResponse::Capabilities { machine_allocation } = offered else {
-            return Err(unavailable("control_plane_binding_invalid", "The connected service did not return its machine offer"));
+            return Err(unavailable(
+                "control_plane_binding_invalid",
+                "The connected service did not return its machine offer",
+            ));
         };
-        state.approve_machine_acquisition(command, request, machine_allocation.as_ref()).await?;
+        state
+            .approve_machine_acquisition(command, request, machine_allocation.as_ref())
+            .await?;
         if let Some(grant) = &grant {
             state.authorize_external_request(grant, &request_shape)?;
         } else if let Some(reach) = command.reach_caller_id() {
@@ -90,6 +103,9 @@ pub(crate) async fn execute(
     let response_matches = matches!(
         (&result, request),
         (
+            ControlPlaneResponse::JobCancelled { .. },
+            ControlPlaneRequest::CancelJob { .. }
+        ) | (
             ControlPlaneResponse::Capabilities { .. },
             ControlPlaneRequest::Capabilities {}
         ) | (
@@ -99,7 +115,9 @@ pub(crate) async fn execute(
     ) || (matches!(result, ControlPlaneResponse::Machine { .. })
         && !matches!(
             request,
-            ControlPlaneRequest::Capabilities {} | ControlPlaneRequest::List {}
+            ControlPlaneRequest::Capabilities {}
+                | ControlPlaneRequest::List {}
+                | ControlPlaneRequest::CancelJob { .. }
         ));
     if !response_matches {
         return Err(unavailable(
@@ -113,6 +131,7 @@ pub(crate) async fn execute(
         access_state,
         access_reason,
         state: machine_state,
+        purpose,
         ..
     } = &mut result
     {
@@ -141,26 +160,39 @@ pub(crate) async fn execute(
         *access_state = "pending".into();
         *access_reason = None;
         if let Some(target) = kernel_target.as_ref().filter(|_| machine_state == "ready") {
-            let grant = grant.or_else(|| command.reach_caller_id()).or_else(|| {
-                crate::runtime::cloud_relay_authorization::kernel_cloud_owner(config, command)
-                    .then(|| format!("owner:{}", state.kernel_owner_user_id()))
-            }).ok_or_else(|| {
-                unavailable(
-                    "control_plane_grant_required",
-                    "Machine attachment requires the owner's Chariox access grant",
-                )
-            })?;
+            let grant = grant
+                .or_else(|| command.reach_caller_id())
+                .or_else(|| {
+                    crate::runtime::cloud_relay_authorization::kernel_cloud_owner(config, command)
+                        .then(|| format!("owner:{}", state.kernel_owner_user_id()))
+                })
+                .ok_or_else(|| {
+                    unavailable(
+                        "control_plane_grant_required",
+                        "Machine attachment requires the owner's Chariox access grant",
+                    )
+                })?;
             let origin = state.gateway_origin(&grant).ok_or_else(|| {
                 unavailable("kernel_access_ended", "The Chariox access grant ended")
             })?;
-            match gateway
-                .attach_machine(
-                    target,
-                    &origin,
-                    &format!("{}:machine-access", command.command_id),
-                )
-                .await
-            {
+            let attached = if purpose.as_deref() == Some("offload_job") {
+                gateway
+                    .attach_job_machine(
+                        target,
+                        &origin,
+                        &format!("{}:machine-access", command.command_id),
+                    )
+                    .await
+            } else {
+                gateway
+                    .attach_machine(
+                        target,
+                        &origin,
+                        &format!("{}:machine-access", command.command_id),
+                    )
+                    .await
+            };
+            match attached {
                 Ok(()) => *access_state = "available".into(),
                 Err(error) => *access_reason = Some(error.code().to_string()),
             }

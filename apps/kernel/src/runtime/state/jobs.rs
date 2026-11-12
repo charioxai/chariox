@@ -28,6 +28,8 @@ struct Record {
     cwd: PathBuf,
     placement: JobPlacement,
     started_at_ms: u64,
+    #[serde(default)]
+    running_at_ms: Option<u64>,
     state: String,
     allocation_ref: Option<String>,
     capability_revision: Option<String>,
@@ -48,6 +50,10 @@ struct Record {
     remote_available: bool,
     #[serde(default)]
     remote_refusal: Option<String>,
+    #[serde(default)]
+    estimated_minutes: Option<u64>,
+    #[serde(default)]
+    memory_mib: Option<u64>,
 }
 
 struct Pending {
@@ -298,6 +304,7 @@ impl KernelRuntimeState {
             cwd,
             placement: JobPlacement::Local,
             started_at_ms: crate::session::unix_epoch_ms(),
+            running_at_ms: None,
             state: "starting".into(),
             allocation_ref: None,
             capability_revision: None,
@@ -311,30 +318,37 @@ impl KernelRuntimeState {
             deleted: false,
             remote_available: false,
             remote_refusal: None,
+            estimated_minutes: None,
+            memory_mib: None,
         };
         if let Some(reach) =
             self.reach_for_id(&format!("{}{}", super::reach::REACH_PREFIX, run.id()))
         {
             if let Ok(Some(class)) = tokio::time::timeout(
                 Duration::from_secs(3),
-                self.job_compute_quote(&record.request.needs, &reach.origin()),
+                self.job_compute_quote(&effective_needs(&record), &reach.origin()),
             )
             .await
             {
+                record.estimated_minutes = self
+                    .job_duration_estimate(&record)
+                    .map(|duration| duration.saturating_add(59_999) / 60_000);
+                record.estimate_micros = record
+                    .estimated_minutes
+                    .map(|minutes| class.rate_per_minute.amount_micros.saturating_mul(minutes));
+                record.memory_mib = Some(class.usable_memory_mib);
                 record.class_id = Some(class.class_id);
                 record.rate_per_minute = Some(class.rate_per_minute);
                 record.remote_available = true;
             }
         }
         let admission = crate::runtime::process_resources::LaunchAdmission::default();
-        let busy = admission
-            .reserve(
-                &format!("{}:placement", id),
-                &wake.command,
-                &record.cwd,
-                false,
-            )
-            .is_err();
+        let busy = admission.would_wait(
+            &format!("{}:placement", id),
+            &wake.command,
+            &record.cwd,
+            u64::from(record.request.needs.memory_gib.unwrap_or(0)) * 1024 * 1024 * 1024,
+        );
         let heavy = record.request.needs.memory_gib.is_some()
             || record.request.needs.cpus.is_some_and(|cpus| cpus > 1)
             || admission.is_heavy(&wake.command, &record.cwd);
@@ -606,20 +620,22 @@ impl KernelRuntimeState {
         if record.room_id != room {
             return Err(ledger::error("This job belongs to another Room"));
         }
-        let request = crate::local::RoomTerminalRequest {
-            session_id: room.into(),
-            acting_agent: None,
-            host_agent: None,
-            operation: crate::local::RoomTerminalOperation::ExecPlace {
-                exec_id: String::new(),
-                kernel: String::new(),
-                directory: None,
-            },
-        };
-        let placer = self.authorize_exec_place(caller, &request)?;
-        if matches!(placer.requester, crate::room_exec::Requester::Agent(ref agent) if agent != &record.agent_id)
-        {
-            return Err(ledger::error("An agent controls only its own job"));
+        self.authorize_current_external_command()?;
+        if caller.caller_id.starts_with(super::reach::REACH_PREFIX) {
+            let reach = self
+                .reach_for_id(&caller.caller_id)
+                .ok_or_else(|| ledger::error("The agent's job-control authority ended"))?;
+            if reach.agent_id != record.agent_id {
+                return Err(ledger::error("An agent controls only its own job"));
+            }
+        } else {
+            self.ensure_room_control(
+                room,
+                caller
+                    .user_id
+                    .as_deref()
+                    .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID),
+            )?;
         }
         Ok(Some(record))
     }
@@ -738,16 +754,145 @@ impl KernelRuntimeState {
                 remote_refusal: record.remote_refusal,
                 estimate: record
                     .rate_per_minute
-                    .map(|price| crate::local::RemoteJobEstimate {
-                        amount_micros: price.amount_micros,
-                        currency: price.currency,
-                        kind: "per_minute".into(),
-                        memory_mib: u64::from(record.request.needs.memory_gib.unwrap_or(0)) * 1024,
-                        minutes: None,
+                    .map(|rate| crate::local::RemoteJobEstimate {
+                        amount_micros: record.estimate_micros.unwrap_or(rate.amount_micros),
+                        currency: rate.currency,
+                        kind: if record.estimate_micros.is_some() {
+                            "estimate"
+                        } else {
+                            "per_minute"
+                        }
+                        .into(),
+                        memory_mib: record.memory_mib.unwrap_or_else(|| {
+                            u64::from(record.request.needs.memory_gib.unwrap_or(0)) * 1024
+                        }),
+                        minutes: record.estimated_minutes,
                     }),
                 placement: None,
             });
         }
         rows
+    }
+}
+
+fn effective_needs(record: &Record) -> crate::local::JobNeeds {
+    let mut needs = record.request.needs.clone();
+    if needs.memory_gib.is_none() {
+        let command = validate(&record.request).unwrap_or_default();
+        needs.memory_gib = crate::runtime::process_resources::LaunchAdmission::default()
+            .expected_memory(&command, &record.cwd)
+            .map(|bytes| {
+                bytes
+                    .saturating_mul(5)
+                    .div_ceil(4 * 1024 * 1024 * 1024)
+                    .min(u64::from(u32::MAX)) as u32
+            });
+    }
+    needs
+}
+
+impl KernelRuntimeState {
+    fn job_duration_estimate(&self, record: &Record) -> Option<u64> {
+        let driver = self.job_wake_driver.as_ref()?;
+        let directory = self
+            .owned
+            .config_projection
+            .snapshot()
+            .private_runtime_state_root()
+            .join("jobs");
+        let mut durations: Vec<_> = std::fs::read_dir(directory)
+            .ok()?
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                entry
+                    .path()
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .and_then(|id| driver.read(id).ok())
+            })
+            .filter(|previous| {
+                previous.workspace == record.workspace
+                    && previous.cwd == record.cwd
+                    && previous.request.command == record.request.command
+            })
+            .filter_map(|previous| {
+                previous
+                    .result
+                    .filter(|result| {
+                        result.outcome == JobOutcome::Completed && result.exit_code == Some(0)
+                    })
+                    .map(|result| (previous.started_at_ms, result.duration_ms))
+            })
+            .collect();
+        if durations.len() < 2 {
+            return None;
+        }
+        durations.sort_unstable_by_key(|(started, _)| *started);
+        let previous = durations[durations.len() - 2].1;
+        let latest = durations[durations.len() - 1].1;
+        if previous.max(latest) > previous.min(latest).saturating_mul(3) / 2 {
+            return None;
+        }
+        Some(previous.saturating_add(latest) / 2)
+    }
+}
+
+impl KernelRuntimeState {
+    /// A submitted job keeps the admitted Room authority while its provider turn yields.
+    /// It cannot acquire after cancellation, archival or the end of its durable task.
+    pub(crate) fn job_acquisition_subject(
+        &self,
+        job_id: &str,
+    ) -> Result<(String, String, String), DaemonError> {
+        let driver = self
+            .job_wake_driver
+            .as_ref()
+            .ok_or_else(|| ledger::error("Job service unavailable"))?;
+        let record = driver.read(job_id)?;
+        if record.result.is_some() {
+            return Err(ledger::error("This job has already ended"));
+        }
+        let wake = self
+            .owned
+            .durable_state_store
+            .agent_wake(&record.wake_id)?
+            .ok_or_else(|| ledger::error("Job completion source missing"))?;
+        if !matches!(wake.state.as_str(), "starting" | "running")
+            || driver
+                .live
+                .lock()
+                .expect("job live")
+                .get(&record.wake_id)
+                .is_none_or(|cancel| *cancel.borrow())
+        {
+            return Err(ledger::error("This job has been cancelled"));
+        }
+        let task = self
+            .owned
+            .durable_state_store
+            .agent_task(&wake.task_id)?
+            .ok_or_else(|| ledger::error("Job task missing"))?;
+        if matches!(
+            task.state,
+            ledger::ExecutionState::Cancelled | ledger::ExecutionState::Done
+        ) {
+            return Err(ledger::error("This job's task ended"));
+        }
+        let agent = self.owned.agent_store.get_agent(&record.agent_id)?;
+        if agent.archived() || agent.session_id() != record.room_id {
+            return Err(ledger::error(
+                "The job's agent is no longer active in this Room",
+            ));
+        }
+        self.ensure_room_running(&record.room_id)?;
+        let session = self.owned.session_store.get_session(&record.room_id)?;
+        if session.owner_user_id() != task.owner_user_id {
+            return Err(ledger::error("The job's Room ownership changed"));
+        }
+        Ok((
+            record.room_id,
+            record.agent_id,
+            session.owner_user_id().to_owned(),
+        ))
     }
 }

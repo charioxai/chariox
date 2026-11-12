@@ -52,7 +52,7 @@ export function queuedJobRate(estimate: NonNullable<SessionProcess["estimate"]>)
     : { rate: `${rate}/min`, rateDetail: `No estimate yet: a ${memory} VM costs ${rate} a minute` }
 }
 
-/** Progress and pricing come from the home kernel, including confirmed deletion. */
+/** Progress and rates come from the home kernel, including confirmed deletion. */
 export function remoteJobLinesForAgent(jobs: readonly JobView[] | undefined, agentId: string | null | undefined, now = Date.now()): string[] {
   return (jobs ?? []).filter(job => job.agent_id === agentId && job.placement === "remote").flatMap(job => {
     const result = job.result, machine = job.machine_label ?? result?.ran_on.machine, address = job.address ?? result?.ran_on.ip

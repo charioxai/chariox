@@ -3,7 +3,7 @@ export type ControlPlaneRequest =
   | { action: "capabilities" }
   | { action: "acquire"; capability_revision: string; request_id: string }
   | { action: "acquire_job"; capability_revision: string; request_id: string; job_ref: string; needs: { memory_gib?: number; cpus?: number }; timeout_s: number }
-  | { action: "get_job"; job_ref: string }
+  | { action: "get_job" | "cancel_job"; job_ref: string }
   | { action: "job_started"; allocation_ref: string; capability_revision: string }
   | { action: "list" }
   | { action: "get"; allocation_ref: string }
@@ -11,6 +11,7 @@ export type ControlPlaneRequest =
   | { action: "start_saved_state" | "delete_saved_state"; allocation_ref: string; saved_state_ref: string; capability_revision: string; request_id: string; expected_revision: number }
 
 export type ControlPlaneResponse =
+  | { kind: "job_cancelled"; job_ref: string }
   | { kind: "capabilities"; machine_allocation: null | { revision: string; actions: string[]; offer: MachineAcquisitionOffer | null; job_offers: JobMachineOffer[]; job_default_class_id: string | null } }
   | { kind: "machines"; machines: ControlPlaneMachineRow[]; saved_states: ControlPlaneSavedStateRow[] }
   | { kind: "machine"; revision: number; available_actions: string[]; allocation_ref: string; state: string; access_state: string; access_reason: string | null; purpose?: string; machine_label?: string; address?: string | null; kernel_target: null | {

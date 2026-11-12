@@ -77,7 +77,10 @@ pub(crate) fn for_session(
             samples_for_key(&key)
                 .into_iter()
                 .map(|process| SessionProcess {
-                    remote_available: false, remote_refusal: None, estimate: None, placement: None,
+                    remote_available: false,
+                    remote_refusal: None,
+                    estimate: None,
+                    placement: None,
                     owner: owner.clone(),
                     state: states.get(&process.pid).cloned().unwrap_or_default(),
                     process,

@@ -93,7 +93,10 @@ pub(crate) fn redact_response_for_user(
                 agent_activity: redact_agent_activity_for_session(agent_activity, &session),
                 agent_activity_revision,
                 processes,
-                jobs: jobs.into_iter().filter(|job| session.agents().iter().any(|a| a.id() == job.agent_id)).collect(),
+                jobs: jobs
+                    .into_iter()
+                    .filter(|job| session.agents().iter().any(|a| a.id() == job.agent_id))
+                    .collect(),
                 disk_usage,
                 session,
             }

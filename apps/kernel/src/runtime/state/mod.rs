@@ -106,14 +106,14 @@ mod outside_events;
 use outside_events::InteractionPhase;
 pub(crate) use outside_events::{is_outside_event_request, source_not_available};
 mod environment_tools;
-mod jobs;
-mod job_compute;
-mod remote_jobs;
-mod machine_acquisition;
 mod file_copy_tool;
+mod job_compute;
+mod jobs;
 mod leased_agent_file_serve;
+mod machine_acquisition;
 mod machine_files_runtime;
 mod machine_files_tools;
+mod remote_jobs;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_browser;

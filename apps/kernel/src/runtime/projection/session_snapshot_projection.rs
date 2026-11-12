@@ -121,7 +121,14 @@ impl SessionSnapshotProjection {
                     session.can_view_tree_agent_owned_by(user_id, agent.owner_user_id())
                 })
         });
-        self.jobs.retain(|job| self.session.agents().iter().any(|agent| agent.id() == job.agent_id && self.session.can_view_tree_agent_owned_by(user_id, agent.owner_user_id())));
+        self.jobs.retain(|job| {
+            self.session.agents().iter().any(|agent| {
+                agent.id() == job.agent_id
+                    && self
+                        .session
+                        .can_view_tree_agent_owned_by(user_id, agent.owner_user_id())
+            })
+        });
         self.session = self
             .session
             .redacted_for_user_with_workflow_history(user_id, history)?;

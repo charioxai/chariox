@@ -18,7 +18,12 @@ pub enum ControlPlaneRequest {
         needs: super::JobNeeds,
         timeout_s: u64,
     },
-    GetJob { job_ref: String },
+    GetJob {
+        job_ref: String,
+    },
+    CancelJob {
+        job_ref: String,
+    },
     JobStarted {
         allocation_ref: String,
         capability_revision: String,
@@ -64,6 +69,9 @@ pub enum ControlPlaneRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlPlaneResponse {
+    JobCancelled {
+        job_ref: String,
+    },
     Capabilities {
         machine_allocation: Option<MachineAllocationCapability>,
     },
@@ -93,9 +101,9 @@ pub struct MachineAllocationCapability {
     pub revision: String,
     pub actions: Vec<String>,
     pub offer: Option<MachineAcquisitionOffer>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub job_offers: Vec<JobMachineOffer>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_default_class_id: Option<String>,
 }
 
@@ -134,6 +142,8 @@ pub struct ControlPlaneMachineTarget {
     pub machine_id: String,
     pub relay_realm_id: String,
     pub key_thumbprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence: Option<chariox_relay::protocol::RelayKernelPresence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

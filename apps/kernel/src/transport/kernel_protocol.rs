@@ -142,7 +142,10 @@ pub(crate) enum KernelEvent {
     RoomWorkflowsChanged {
         inventory: crate::runtime::projection::RoomWorkflowInventory,
     },
-    SessionJobsChanged { session_id: String, jobs: Vec<crate::local::JobView> },
+    SessionJobsChanged {
+        session_id: String,
+        jobs: Vec<crate::local::JobView>,
+    },
     SessionProcessesChanged {
         session_id: String,
         processes: Vec<crate::runtime::process_resources::SessionProcess>,
@@ -760,9 +763,12 @@ pub(crate) fn session_projection_changed_events(
             processes: snapshot.processes.clone(),
             disk_usage: snapshot.disk_usage.clone(),
         }),
-        previous.is_none_or(|p| p.jobs != snapshot.jobs).then(|| KernelEvent::SessionJobsChanged {
-            session_id: snapshot.session.id().to_string(), jobs: snapshot.jobs.clone(),
-        }),
+        previous
+            .is_none_or(|p| p.jobs != snapshot.jobs)
+            .then(|| KernelEvent::SessionJobsChanged {
+                session_id: snapshot.session.id().to_string(),
+                jobs: snapshot.jobs.clone(),
+            }),
         agent_activity_changed_event(snapshot, previous),
         provider_run_changed_event(snapshot, previous),
         session_metadata_changed_event(snapshot, previous),
@@ -960,7 +966,8 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::HomeExtensionAuditAppended { session_id, .. }
         | KernelEvent::HomeExtensionAuditLagged { session_id } => Some(session_id.as_str()),
         KernelEvent::RoomWorkflowsChanged { inventory } => Some(&inventory.session_id),
-        KernelEvent::SessionJobsChanged { session_id, .. } | KernelEvent::SessionProcessesChanged { session_id, .. } => Some(session_id.as_str()),
+        KernelEvent::SessionJobsChanged { session_id, .. }
+        | KernelEvent::SessionProcessesChanged { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::SessionSnapshot { session, .. } => Some(session.id()),
         KernelEvent::AgentTaskUpdated { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::AgentActivityChanged { session_id, .. } => Some(session_id.as_str()),

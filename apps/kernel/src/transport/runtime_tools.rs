@@ -2,10 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 mod agent_events;
-mod jobs;
 mod agent_messaging_tools;
 mod credential_tools;
 mod extension_tools;
+mod jobs;
 mod meta_tool_args;
 mod meta_tool_names;
 mod meta_tool_specs;

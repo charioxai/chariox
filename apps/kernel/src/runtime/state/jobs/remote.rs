@@ -329,6 +329,7 @@ impl Remote {
         );
         let mut pending = vec![String::new()];
         let mut remote = BTreeMap::new();
+        let mut modes = BTreeMap::new();
         let mut total = 0u64;
         while let Some(directory) = pending.pop() {
             let path = if directory.is_empty() {
@@ -406,6 +407,7 @@ impl Remote {
                             }
                         };
                         if let Some(hash) = stat.sha256 {
+                            modes.insert(relative.clone(), stat.mode.unwrap_or(entry.mode) & 0o777);
                             remote.insert(relative, hash);
                         }
                     }
@@ -466,13 +468,30 @@ impl Remote {
             } else {
                 None
             };
-            if crate::jobs::apply_return(
+            let applied = crate::jobs::apply_return(
                 &record.workspace,
                 &record.job_id,
                 &path,
                 base.get(&path).map(String::as_str),
                 bytes.as_deref(),
-            )? {
+            )?;
+            #[cfg(unix)]
+            if bytes.is_some() {
+                use std::os::unix::fs::PermissionsExt;
+                let target = if applied {
+                    record.workspace.join(&path)
+                } else {
+                    record
+                        .workspace
+                        .join(format!(".chariox/jobs/{}/conflicts/{path}", record.job_id))
+                };
+                std::fs::set_permissions(
+                    target,
+                    std::fs::Permissions::from_mode(modes.get(&path).copied().unwrap_or(0o644)),
+                )
+                .map_err(|e| ledger::error(format!("Cannot return job file permissions: {e}")))?;
+            }
+            if applied {
                 files.push(path);
             } else {
                 conflicts.push(path);
