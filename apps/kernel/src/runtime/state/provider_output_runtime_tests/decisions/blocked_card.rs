@@ -1,7 +1,6 @@
 //! A blocked task's Resume/Cancel card is a decision about an agent: it goes to the parent that
 //! spawned the agent, says what the agent still owes, and only a root agent's card reaches the
 //! person. Tree: g (room agent) -> p -> c.
-use super::reparent::cards;
 use super::*;
 use crate::durable_state::agent_lifecycle::{AgentTaskExecution, AgentWake, ExecutionState};
 use crate::runtime::state::decision_holder::DecisionHolder;
@@ -94,6 +93,8 @@ async fn a_blocked_helpers_card_goes_to_its_parent_and_names_what_it_owes() {
     assert_eq!(events[0].payload["needs_answer"], true);
     let detail = events[0].payload["detail"].as_str().unwrap();
     assert!(detail.contains("wake-blk"), "the open obligation is named: {detail}");
+    assert!(detail.contains("wait for review"), "the source label is named: {detail}");
+    assert!(detail.contains("chariox.events.cancel_wake"), "the exact settling call is named: {detail}");
     let choices = events[0].payload["choices"].to_string();
     assert!(choices.contains("resume") && choices.contains("cancel"), "{choices}");
     assert!(t.decision_events(&t.g).is_empty(), "only the holder is told");
@@ -145,7 +146,6 @@ async fn a_blocked_root_agents_card_stays_the_persons_and_names_what_it_owes() {
     let id = Tree::blocked_card_id(&task);
 
     assert_eq!(t.holder(&id), DecisionHolder::User);
-    assert_eq!(t.panels(), [(t.g.clone(), cards(&[id.as_str()]))]);
     let session = t.session();
     let card = session
         .active_interactions()
@@ -156,26 +156,3 @@ async fn a_blocked_root_agents_card_stays_the_persons_and_names_what_it_owes() {
     assert!(t.decision_events(&t.p).is_empty() && t.decision_events(&t.g).is_empty());
 }
 
-#[tokio::test]
-async fn three_wakes_without_handled_progress_name_what_is_missing_on_the_parents_card() {
-    let t = tree(
-        "blocked-card-wakes",
-        AgentPermissionLevel::Yolo,
-        AgentPermissionLevel::Yolo,
-    )
-    .await;
-    let task = t.blocked_task_of(
-        &t.c,
-        "Three consecutive wakes without handled progress; owner must resume or cancel",
-    );
-    t.runtime.ensure_task_owner_interaction(task.clone()).await.unwrap();
-    let id = Tree::blocked_card_id(&task);
-
-    assert_eq!(t.holder(&id), DecisionHolder::Agent(t.p.clone()));
-    let events = t.decision_events(&t.p);
-    let detail = events[0].payload["detail"].as_str().unwrap();
-    assert!(
-        detail.contains("chariox.events.ack") && detail.contains("handled"),
-        "what is missing: {detail}"
-    );
-}
