@@ -202,23 +202,36 @@ impl PendingTool {
     }
 }
 
-/// Claude's Bash tool keeps a command running after its launch result when
-/// the model asked for `run_in_background`.
+/// Claude's Bash and Agent tools keep a command or a helper agent running after
+/// their launch result when the model asked for `run_in_background`.
 pub(crate) fn launches_background_command(name: &str, input: Option<&Value>) -> bool {
-    name == "Bash"
+    matches!(name, "Bash" | "Agent" | "Task")
         && input
             .and_then(|input| input.get("run_in_background"))
             .and_then(Value::as_bool)
             == Some(true)
 }
 
+/// A helper agent Claude started in the background whatever the call asked for:
+/// the launch result of the Agent tool says `async_launched`.
+fn is_async_helper_launch(structured: Option<&Value>) -> bool {
+    structured.is_some_and(|result| {
+        result.get("status").and_then(Value::as_str) == Some("async_launched")
+            && result.get("agentId").and_then(Value::as_str).is_some()
+    })
+}
+
 /// The task id a background launch result names: the structured result's
-/// `backgroundTaskId` (the stream's `tool_use_result`, the transcript's
-/// `toolUseResult`), else the launch text
+/// `backgroundTaskId` or a helper agent's `agentId` (the stream's
+/// `tool_use_result`, the transcript's `toolUseResult`), else the launch text
 /// "Command running in background with ID: <id>. ...".
 pub(crate) fn launched_task_id(structured: Option<&Value>, output: &str) -> Option<String> {
     structured
-        .and_then(|result| result.get("backgroundTaskId"))
+        .and_then(|result| {
+            result
+                .get("backgroundTaskId")
+                .or_else(|| result.get("agentId"))
+        })
         .and_then(Value::as_str)
         .map(str::to_string)
         .or_else(|| {
@@ -339,7 +352,13 @@ impl ClaudeToolTranscript {
                     if omitted > 0 {
                         payload["images_omitted"] = json!(omitted);
                     }
-                    if pending.background {
+                    let background = pending.background
+                        || (!failed && is_async_helper_launch(value.get("tool_use_result")));
+                    if background && !pending.background {
+                        payload["background"] = json!(true);
+                        payload["finished_at_ms"] = Value::Null;
+                    }
+                    if background {
                         if failed {
                             // A launch that failed never left a command running.
                             payload["finished_at_ms"] = json!(now_ms);
@@ -607,6 +626,58 @@ mod tests {
             transcript.observe_at(&task_notification("br1ml3bl1", first, "completed"), 21_000);
         assert_eq!(first_ended[0]["id"], first);
         assert_eq!(first_ended[0]["finished_at_ms"], 21_000);
+    }
+
+    // Recorded from Claude Code (Agent tool with `run_in_background`): the launch result is
+    // `async_launched` with the helper's `agentId`, and the end arrives as a task notification.
+    fn helper_launch(id: &str, background_flag: bool) -> Value {
+        let mut input = json!({"description":"Map the display lifecycle","subagent_type":"Explore","prompt":"Read only"});
+        if background_flag {
+            input["run_in_background"] = json!(true);
+        }
+        json!({"type":"assistant","message":{"role":"assistant","content":[{
+            "type":"tool_use","id":id,"name":"Agent","input":input
+        }]}})
+    }
+
+    fn helper_launch_result(id: &str, agent_id: &str) -> Value {
+        json!({"type":"user","message":{"role":"user","content":[{
+            "tool_use_id":id,"type":"tool_result",
+            "content":[{"type":"text","text":format!("Async agent launched successfully.\nagentId: {agent_id} (internal ID)\nThe agent is working in the background. You will be notified automatically when it completes.")}]
+        }]},"tool_use_result":{"isAsync":true,"status":"async_launched","agentId":agent_id,
+            "description":"Map the display lifecycle","outputFile":format!("/tmp/claude-0/tasks/{agent_id}.output")}})
+    }
+
+    #[test]
+    fn a_background_helper_agent_runs_past_its_launch_until_its_task_notification() {
+        let mut transcript = ClaudeToolTranscript::default();
+        let id = "toolu_01T7cHLskcwCF9XiXUh2xNCy";
+        let launch = transcript.observe_at(&helper_launch(id, true), 1_000);
+        assert_eq!(launch[0]["background"], true, "{}", launch[0]);
+        let launched = transcript.observe_at(&helper_launch_result(id, "a578456522a670c66"), 1_200);
+        assert_eq!(launched[0]["status"], "completed");
+        assert_eq!(launched[0]["background"], true);
+        assert!(launched[0]["finished_at_ms"].is_null(), "{}", launched[0]);
+        let ended = transcript.observe_at(
+            &task_notification("a578456522a670c66", id, "completed"),
+            9_000,
+        );
+        assert_eq!(ended.len(), 1, "{ended:?}");
+        assert_eq!(ended[0]["id"], id);
+        assert_eq!(ended[0]["finished_at_ms"], 9_000);
+    }
+
+    #[test]
+    fn a_helper_agent_the_provider_launched_asynchronously_is_a_background_call_without_the_flag() {
+        let mut transcript = ClaudeToolTranscript::default();
+        let id = "toolu_auto";
+        transcript.observe_at(&helper_launch(id, false), 1_000);
+        let launched = transcript.observe_at(&helper_launch_result(id, "aauto1"), 1_200);
+        assert_eq!(launched[0]["background"], true, "{}", launched[0]);
+        assert!(launched[0]["finished_at_ms"].is_null(), "{}", launched[0]);
+        let ended = transcript.observe_at(&task_notification("aauto1", "other", "completed"), 3_000);
+        assert_eq!(ended[0]["id"], id);
+        assert_eq!(ended[0]["finished_at_ms"], 3_000);
     }
 
     #[test]
