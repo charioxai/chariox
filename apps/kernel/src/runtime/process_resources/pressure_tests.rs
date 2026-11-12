@@ -775,9 +775,30 @@ fn a_paused_job_resumes_in_the_watch_a_hot_reload_starts_after_its_sibling_ended
 fn overdue_pauses_continue_when_room_returned_for_all_of_them() {
     let pool = pool(1536);
     let holder = Workload::start(domain(&pool, "a", false), &[("big", 800, 0, 0)]);
+    // The oldest heavy command is never paused: the growers start only once
+    // the pool has seen the holder at its size, so the holder is that one.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !holder
+        .domain
+        .state
+        .lock()
+        .unwrap()
+        .commands
+        .iter()
+        .any(|command| command.resident >= 700 * MIB)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the holder never reached its size"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // They grow from nothing, so the rate a pause records is their steady
+    // one: a command that starts big reads as growing fast, and a pause
+    // continues only with room to keep that rate for two seconds.
     let mut growers = Workload::start(
         domain(&pool, "b", false),
-        &[("one", 200, 48, 1000), ("two", 200, 48, 1000)],
+        &[("one", 0, 48, 1000), ("two", 0, 48, 1000)],
     );
     let both_paused = |growers: &Workload| growers.waiting("one") && growers.waiting("two");
     let deadline = std::time::Instant::now() + Duration::from_secs(40);
