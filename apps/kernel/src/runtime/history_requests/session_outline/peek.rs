@@ -9,8 +9,8 @@ use crate::history::SessionHistoryEntryKind;
 use crate::local::{
     AgentTranscriptEntryKind as Kind, AgentTranscriptEntryPage,
     AgentTranscriptEntryStatus as Status, AgentTranscriptPeek, AgentTranscriptTitle,
-    PeekAgentTranscriptRequest, ReadAgentTranscriptEntryRequest, DEFAULT_AGENT_PEEK_ENTRIES,
-    DEFAULT_AGENT_PEEK_PAGE_CHARS, MAX_AGENT_PEEK_ENTRIES, MAX_AGENT_PEEK_PAGE_CHARS,
+    DEFAULT_AGENT_PEEK_ENTRIES, DEFAULT_AGENT_PEEK_PAGE_CHARS, MAX_AGENT_PEEK_ENTRIES,
+    MAX_AGENT_PEEK_PAGE_CHARS, PeekAgentTranscriptRequest, ReadAgentTranscriptEntryRequest,
 };
 use crate::session_history_page::SessionHistoryPageEntry;
 
@@ -160,7 +160,13 @@ fn peek(
         };
         return Ok(AgentTranscriptPeek {
             agent_id: request.agent_id.clone(),
-            entries: rows.into_iter().map(|row| row.title).collect(),
+            entries: rows
+                .into_iter()
+                .map(|mut row| {
+                    row.title.title = title::text_title(&row.title.title);
+                    row.title
+                })
+                .collect(),
             before,
         });
     }
@@ -453,7 +459,7 @@ fn read_entry(
     Ok(AgentTranscriptEntryPage {
         entry_id: request.entry_id.clone(),
         kind,
-        title,
+        title: title::text_title(&title),
         offset,
         text,
         total_chars,

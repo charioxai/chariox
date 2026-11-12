@@ -5,6 +5,8 @@
 use serde_json::{Map, Value};
 
 const TITLE_CHARS: usize = 80;
+// Ten rows, including their ids and counters, must fit in a 4 KB response.
+const TITLE_JSON_BYTES: usize = 160;
 
 /// A tool call's title from its merged snapshot (`tool`, `status`, `input`, ...).
 pub(super) fn tool_title(snapshot: &Map<String, Value>, running: bool) -> String {
@@ -217,7 +219,7 @@ fn shell_title(command: &str, running: bool) -> String {
                 "{} {}",
                 if running { "Reading" } else { "Read" },
                 operands.join(", ")
-            )
+            );
         }
         Some("ls" | "tree") if simple => {
             let what = if operands.is_empty() {
@@ -327,14 +329,26 @@ fn compact_tool_name(tool: &str) -> String {
 
 fn short(value: &str) -> String {
     let line = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    if line.chars().count() > TITLE_CHARS {
-        format!(
-            "{}…",
-            line.chars().take(TITLE_CHARS - 1).collect::<String>()
-        )
-    } else {
-        line
+    let json_bytes = |c: char| match c {
+        '"' | '\\' | '\u{0008}' | '\u{000C}' | '\n' | '\r' | '\t' => 2,
+        '\u{0000}'..='\u{001F}' => 6,
+        _ => c.len_utf8(),
+    };
+    if line.chars().count() <= TITLE_CHARS
+        && line.chars().map(json_bytes).sum::<usize>() <= TITLE_JSON_BYTES
+    {
+        return line;
     }
+    let mut bytes = 0;
+    let prefix = line
+        .chars()
+        .take(TITLE_CHARS - 1)
+        .take_while(|c| {
+            bytes += json_bytes(*c);
+            bytes <= TITLE_JSON_BYTES - '…'.len_utf8()
+        })
+        .collect::<String>();
+    format!("{prefix}…")
 }
 
 #[cfg(test)]

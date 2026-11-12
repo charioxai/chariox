@@ -468,5 +468,9 @@ fn ten_long_unicode_and_escaped_titles_stay_under_four_kilobytes() {
         assert_eq!(store.read(&row.entry_id, 0, 10).title, row.title);
     }
     let wire = serde_json::to_string(&LocalDaemonResponse::AgentTranscriptPeek { peek }).unwrap();
-    assert!(wire.len() < 4096, "ten Unicode title rows used {} bytes", wire.len());
+    assert!(
+        wire.len() < 4096,
+        "ten Unicode title rows used {} bytes",
+        wire.len()
+    );
 }
