@@ -90,11 +90,7 @@ async fn missing_terminal_output_attachment_uses_warmed_projection_without_app_l
     drop(app_guard);
 
     match error {
-        DaemonError::AttachmentNotInSession {
-            session_id: error_session_id,
-            attachment_id,
-        } => {
-            assert_eq!(error_session_id, session_id);
+        DaemonError::AttachmentNotFound { attachment_id } => {
             assert_eq!(attachment_id, "missing-attachment");
         }
         error => panic!("unexpected error: {error}"),
@@ -623,4 +619,51 @@ async fn assert_projected_idle_shortcut_tracks_live_run(native: bool) {
             .is_none(),
         "idle session mirror must not bypass its authoritative live provider output pump"
     );
+}
+
+// RR-07: expiry is recoverable; a real attachment owned by another Room is not.
+#[tokio::test]
+async fn terminal_output_refuses_an_attachment_from_another_room() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (room, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .unwrap();
+    let (other, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            other.id(),
+            "other-room",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    for warmed in [false, true] {
+        if warmed {
+            let request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+            let command =
+                KernelCommand::from_local_request("warm-foreign-room", None, None, &request);
+            router.dispatch(command, request).await.unwrap();
+        }
+        let request = LocalDaemonRequest::PumpTerminalOutput(PumpTerminalOutputRequest {
+            session_id: room.id().to_string(),
+            attachment_id: attachment.id().to_string(),
+        });
+        let command = KernelCommand::from_local_request(
+            if warmed {
+                "foreign-warm"
+            } else {
+                "foreign-cold"
+            },
+            None,
+            None,
+            &request,
+        );
+        let error = router.dispatch(command, request).await.unwrap_err();
+        assert!(
+            matches!(error, DaemonError::AttachmentNotInSession { .. }),
+            "wrong Room must not look expired: {error}"
+        );
+    }
 }

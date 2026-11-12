@@ -3,8 +3,8 @@ import { LocalIpcError } from "@chariox/kernel-client/ipc"
 // RR-07: a native-TUI attachment carried through the gateway is swept by the target
 // after ~30s without a heartbeat (a relay outage stops the origin's heartbeats). The
 // next attachment-bearing request then returns `attachment_not_found`. Attach mints a
-// fresh id, so the client re-attaches, adopts the new id, re-subscribes and replays the
-// screen from the fresh attachment's catch-up. A revoked grant or a gone session is
+// fresh id, so the client re-attaches, adopts the new id and renews its subscription.
+// Existing display content stays in place while new output resumes. A revoked grant or a gone session is
 // surfaced, never resurrected.
 
 export type RemoteAttachmentRef = { id: string }
@@ -58,8 +58,10 @@ export function createRemoteAttachmentRecovery(
   let inFlight: Promise<RemoteAttachmentRecoveryOutcome> | null = null
   let pendingSubscriptionId: string | null = null
   let settling = false
+  let refused = false
 
   const fatal = (error: unknown): RemoteAttachmentRecoveryOutcome => {
+    refused = true
     options.onFatal?.(error)
     return "fatal"
   }
@@ -80,7 +82,12 @@ export function createRemoteAttachmentRecovery(
         pendingSubscriptionId = null
         options.onRecovered?.(id)
       }
-    } catch {
+    } catch (error) {
+      if (classify(error) === "fatal") {
+        pendingSubscriptionId = null
+        fatal(error)
+        return
+      }
       // Keep it pending; the next pump tick retries it.
     } finally {
       settling = false
@@ -116,10 +123,11 @@ export function createRemoteAttachmentRecovery(
     options.attachment.id = nextAttachmentId
     pendingSubscriptionId = nextAttachmentId
     await settlePendingSubscription()
-    return "recovered"
+    return refused ? "fatal" : "recovered"
   }
 
   const recover = (error: unknown): Promise<RemoteAttachmentRecoveryOutcome> => {
+    if (refused) return Promise.resolve("fatal")
     if (inFlight) return inFlight
     const current = run(error).finally(() => {
       if (inFlight === current) inFlight = null
@@ -129,4 +137,19 @@ export function createRemoteAttachmentRecovery(
   }
 
   return { recover, settlePendingSubscription }
+}
+
+// The factory allocates a new command identity for a definitively refused request.
+// A timeout has an unknown outcome and must reach the caller without another send.
+export async function sendWithRecoveredAttachment<T>(
+  send: () => Promise<T>,
+  recovery?: RemoteAttachmentRecovery,
+): Promise<T> {
+  try {
+    return await send()
+  } catch (error) {
+    if (error instanceof LocalIpcError && error.code === ATTACHMENT_NOT_FOUND
+      && recovery && await recovery.recover(error) === "recovered") return await send()
+    throw error
+  }
 }

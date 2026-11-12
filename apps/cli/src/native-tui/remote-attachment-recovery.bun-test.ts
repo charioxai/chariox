@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
-import { createRemoteAttachmentRecovery, type RemoteAttachmentRecoveryOptions } from "./remote-attachment-recovery.js"
+import { createRemoteAttachmentRecovery, sendWithRecoveredAttachment, type RemoteAttachmentRecoveryOptions } from "./remote-attachment-recovery.js"
 
 function kernelError(code: string, retryable = false): LocalIpcError {
   return new LocalIpcError("handle kernel response", `${code} from the target`, code, retryable)
@@ -176,4 +176,43 @@ test("concurrent lapses share one in-flight re-attach", async () => {
   release()
   assert.deepEqual(await Promise.all([first, second]), ["recovered", "recovered"])
   assert.equal(reattachCalls, 1)
+})
+
+
+test("MP-08 RR-07 mutation factories use a fresh attachment only after a definite refusal", async () => {
+  const attachment = { id: "old" }
+  const ids: string[] = []
+  const controller = recovery({ attachment, reattach: async () => "new" })
+  const result = await sendWithRecoveredAttachment(async () => {
+    ids.push(attachment.id)
+    if (attachment.id === "old") throw kernelError("attachment_not_found")
+    return "accepted"
+  }, controller)
+  assert.equal(result, "accepted")
+  assert.deepEqual(ids, ["old", "new"])
+})
+
+test("MP-11 unknown mutation outcomes and ordinary refusals never recover or resend", async () => {
+  for (const error of [kernelError("request_timeout", true), kernelError("active_prompt_changed"), kernelError("access_denied")]) {
+    let sends = 0, recoveries = 0
+    await assert.rejects(sendWithRecoveredAttachment(async () => { sends++; throw error }, {
+      recover: async () => { recoveries++; return "recovered" },
+      settlePendingSubscription: async () => {},
+    }), value => value === error)
+    assert.equal(sends, 1)
+    assert.equal(recoveries, 0)
+  }
+})
+
+test("MP-11 a revoked pending subscription settles as fatal without another retry", async () => {
+  let calls = 0, fatals = 0
+  const controller = recovery({ attachment: { id: "old" },
+    resubscribe: async () => { calls++; throw kernelError("access_denied") },
+    onFatal: () => { fatals++ },
+  })
+  assert.equal(await controller.recover(kernelError("attachment_not_found")), "fatal")
+  await controller.settlePendingSubscription()
+  assert.equal(await controller.recover(kernelError("attachment_not_found")), "fatal")
+  assert.equal(fatals, 1)
+  assert.equal(calls, 1)
 })

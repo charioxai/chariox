@@ -5,6 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import {
   sendClaudeRemoteRenderedInputWithRecovery,
+  forwardClaudeRemoteRenderedStdin,
   startClaudeRemoteRenderedPumpLoop,
 } from "./claude-remote-rendered-io.js"
 import type { RemoteAttachmentRecovery, RemoteAttachmentRecoveryOutcome } from "./remote-attachment-recovery.js"
@@ -59,7 +60,7 @@ test("native remote pump re-attaches after attachment_not_found and resumes outp
 
   assert.equal(reattachCalls, 1, "re-attached exactly once on attachment_not_found")
   assert.equal(attachment.id, "att-2", "pump adopted the recovered attachment id")
-  assert.ok(delivered.length >= 1, "terminal output (screen catch-up) resumed after recovery")
+  assert.ok(delivered.length >= 1, "terminal output resumed after recovery")
 })
 
 test("native remote pump stops when recovery is fatal", async () => {
@@ -136,3 +137,25 @@ test("a refused keystroke is dropped, not replayed, on a transient or fatal outc
     assert.equal(sends.length, 1, `${outcome} drops the key; a mutation is never retried blindly`)
   }
 })
+
+
+test("MP-08 RR-07 stdin recovery never replays the accepted prefix of a pasted prompt", async () => {
+  const attachment = {id:"old"}, accepted: string[] = [];
+  let refused = false;
+  const client = {send: async (request: any) => {
+    const input = request.SendTerminalInput;
+    if (!input) return {};
+    const text = Buffer.from(input.data_base64,"base64").toString();
+    if (text === "\r" && !refused) {refused = true;throw attachmentNotFound("old")}
+    accepted.push(text);return {};
+  }} as unknown as Client;
+  const paused = process.stdin.isPaused();
+  const restore = forwardClaudeRemoteRenderedStdin({client, sessionId:"room", attachment,
+    agentId:"agent",providerRunId:"run",worktree:"/tmp",inlineLocalAttachments:false,
+    debug:()=>{},recover:async()=>{attachment.id="new";return "recovered"}});
+  try {
+    process.stdin.emit("data",Buffer.from("hello\r"));
+    for(let i=0;i<100 && !accepted.includes("\r");i++)await sleep(5);
+    assert.deepEqual(accepted,["hello","\r"],"only the refused Enter may be sent again");
+  } finally {restore();if(paused)process.stdin.pause()}
+});

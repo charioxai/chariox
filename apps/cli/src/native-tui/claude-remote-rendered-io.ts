@@ -4,7 +4,7 @@ import { StringDecoder } from "node:string_decoder"
 import { stripVTControlCharacters } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import type { LocalIpcClient } from "../ipc.js"
+import { LocalIpcError, type LocalIpcClient } from "../ipc.js"
 import {
   pumpTerminalOutputRequest,
   resizeTerminalRequest,
@@ -37,26 +37,14 @@ export function forwardClaudeRemoteRenderedStdin(options: {
   const onData = (chunk: Buffer) => {
     const generation = ++inputGeneration
     pending = pending
-      .then(() =>
-        sendClaudeRemoteRenderedInputWithRecovery(
-          () => forwardRemoteRenderedInputChunk({ ...options, attachmentId: options.attachment.id, composer, chunk }),
-          options.recover,
-        ),
-      )
+      .then(() => forwardRemoteRenderedInputChunk({ ...options, composer, chunk }))
       .then(async () => {
         if (composer.escapeState === "none") return
         await sleep(10)
         if (generation !== inputGeneration) return
         const data = takeClaudeRemoteRenderedPendingControl(composer)
         if (data) {
-          await sendRemoteRenderedInput(
-            options.client,
-            options.sessionId,
-            options.attachment.id,
-            options.providerRunId,
-            data,
-            options.agentId,
-          )
+          await sendRecoveredInput(options, data, options.agentId)
         }
       })
       .catch(() => {})
@@ -283,7 +271,8 @@ function takeClaudeRemoteRenderedPendingControl(composer: RemoteRenderedComposer
 async function forwardRemoteRenderedInputChunk(options: {
   client: LocalIpcClient
   sessionId: string
-  attachmentId: string
+  attachment: RemoteAttachmentRef
+  recover?: (error: unknown) => Promise<RemoteAttachmentRecoveryOutcome>
   agentId: string
   providerRunId: string
   worktree: string
@@ -298,21 +287,15 @@ async function forwardRemoteRenderedInputChunk(options: {
       await submitOrForwardRemoteRenderedEnter(options, action.prompt)
       continue
     }
-    await sendRemoteRenderedInput(
-      options.client,
-      options.sessionId,
-      options.attachmentId,
-      options.providerRunId,
-      action.data,
-      options.agentId,
-    )
+    await sendRecoveredInput(options, action.data, options.agentId)
   }
 }
 
 async function submitOrForwardRemoteRenderedEnter(options: {
   client: LocalIpcClient
   sessionId: string
-  attachmentId: string
+  attachment: RemoteAttachmentRef
+  recover?: (error: unknown) => Promise<RemoteAttachmentRecoveryOutcome>
   agentId: string
   providerRunId: string
   worktree: string
@@ -322,7 +305,7 @@ async function submitOrForwardRemoteRenderedEnter(options: {
 }, prompt: string) {
   const references = extractClaudeNativePromptAttachmentReferences(prompt, options.worktree)
   if (references.length === 0) {
-    await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, "\r")
+    await sendRecoveredInput(options, "\r")
     return
   }
   const attachments = await preparePromptAttachmentsForSubmit(
@@ -330,25 +313,40 @@ async function submitOrForwardRemoteRenderedEnter(options: {
     { inlineLocalFiles: options.inlineLocalAttachments },
   )
   if (attachments.length === 0) {
-    await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, "\r")
+    await sendRecoveredInput(options, "\r")
     return
   }
-  await sendRemoteRenderedInput(options.client, options.sessionId, options.attachmentId, options.providerRunId, "\u0015")
+  await sendRecoveredInput(options, "\u0015")
   const visiblePrompt = stripClaudeAttachmentMentions(prompt, references)
   options.debug("remote_rendered_attachments_intercepted", {
     attachmentCount: attachments.length,
     mimeTypes: attachments.map((attachment) => attachment.mime),
     inlinedCount: attachments.filter((attachment) => attachment.contents_base64).length,
   })
-  await options.client.send<Record<string, unknown>>(
-    submitPromptRequest(
-      options.sessionId,
-      options.attachmentId,
-      options.agentId,
-      visiblePrompt || "Please use the attached file.",
-      attachments,
-    ),
-  )
+  await sendClaudeRemoteRenderedInputWithRecovery(async () => {
+    await options.client.send<Record<string, unknown>>(
+      submitPromptRequest(
+        options.sessionId,
+        options.attachment.id,
+        options.agentId,
+        visiblePrompt || "Please use the attached file.",
+        attachments,
+      ),
+    )
+  }, options.recover)
+}
+
+// Plan the composer once; retry only a request the kernel definitively refused.
+async function sendRecoveredInput(options: {
+  client: LocalIpcClient
+  sessionId: string
+  attachment: RemoteAttachmentRef
+  providerRunId: string
+  recover?: (error: unknown) => Promise<RemoteAttachmentRecoveryOutcome>
+}, data: string, agentId?: string): Promise<void> {
+  await sendClaudeRemoteRenderedInputWithRecovery(() => sendRemoteRenderedInput(
+    options.client, options.sessionId, options.attachment.id, options.providerRunId, data, agentId,
+  ), options.recover)
 }
 
 export function installClaudeRemoteRenderedResizeForwarder(
@@ -400,7 +398,8 @@ export async function sendClaudeRemoteRenderedInputWithRecovery(
   try {
     await send()
   } catch (error) {
-    if (recover && (await recover(error)) === "recovered") await send()
+    if (error instanceof LocalIpcError && error.code === "attachment_not_found"
+      && recover && (await recover(error)) === "recovered") await send()
   }
 }
 
@@ -420,7 +419,7 @@ export function startClaudeRemoteRenderedPumpLoop(
       try {
         // RR-07: the pump reads the live attachment id each tick, so a recovery that
         // swaps the id (after the target swept the old attachment) is picked up here, and
-        // the fresh attachment's catch-up redraws the native screen.
+        // new output resumes on the existing display.
         response = await client.send<Record<string, unknown>>(
           pumpTerminalOutputRequest(sessionId, attachment.id),
         )
