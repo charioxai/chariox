@@ -263,7 +263,7 @@ async fn a_settling_obligation_names_its_exact_receipt_in_correction_and_resume(
         })
         .unwrap();
     let task = store.agent_task(&task.task_id).unwrap().unwrap();
-    let sequence: u64 = rusqlite::Connection::open(store.path())
+    let sequence: i64 = rusqlite::Connection::open(store.path())
         .unwrap()
         .query_row(
             "SELECT MAX(sequence) FROM agent_inbox WHERE source_id='wake-blk'",
