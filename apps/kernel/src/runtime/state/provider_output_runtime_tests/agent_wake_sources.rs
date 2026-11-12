@@ -2798,3 +2798,32 @@ async fn a_refused_wake_leaves_the_wait_row_running() {
     assert_eq!(rows[0].2["status"], "running", "{}", rows[0].2);
     assert!(rows[0].2["woken_by"].is_null(), "{}", rows[0].2);
 }
+
+// The source can end right after the yield: a wake that lands between the commit of Waiting and the
+// row of that wait moves the task on, and the row written afterwards must not stay running.
+#[tokio::test]
+async fn a_wake_between_settlement_and_its_finish_leaves_no_running_wait_row() {
+    let f = fixture("wait-row-raced", true).await;
+    let (task, settlement, prompt) = f.settle_a_yield().await;
+    let sequence = f.occur(
+        "wake-a",
+        "line-1",
+        "output_matched",
+        serde_json::json!({"task_id": task.task_id}),
+    );
+    f.runtime.sweep_agent_lifecycle_for_test().await.unwrap();
+    f.until_inbox_event(sequence, "accepted").await;
+    assert_eq!(f.task(&task.task_id).state, ExecutionState::Working);
+
+    f.runtime
+        .finish_agent_task_settlement(settlement, &prompt)
+        .await
+        .unwrap();
+
+    let running: Vec<_> = f
+        .wait_rows()
+        .into_iter()
+        .filter(|(_, _, row)| row["status"] == "running")
+        .collect();
+    assert!(running.is_empty(), "a wait that already ended: {running:?}");
+}
