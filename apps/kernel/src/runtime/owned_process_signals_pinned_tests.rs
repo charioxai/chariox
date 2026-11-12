@@ -33,8 +33,7 @@ fn reject_numeric_pid_signals() -> io::Result<()> {
         filter: filter.as_mut_ptr(),
     };
     if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0
-        || unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &program) }
-            != 0
+        || unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &program) } != 0
     {
         return Err(io::Error::last_os_error());
     }
@@ -44,7 +43,11 @@ fn reject_numeric_pid_signals() -> io::Result<()> {
 #[test]
 fn individual_owned_signals_do_not_use_reusable_numeric_pids() {
     let mut outcomes = Vec::new();
-    for operation in ["signal_owned_processes", "kill_child", "kill_owned_processes"] {
+    for operation in [
+        "signal_owned_processes",
+        "kill_child",
+        "kill_owned_processes",
+    ] {
         let mut child = crate::process_spawn::command("sleep")
             .arg("30")
             .spawn()
