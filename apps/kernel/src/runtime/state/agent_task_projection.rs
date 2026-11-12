@@ -258,6 +258,20 @@ pub(super) fn task_correction_text(task: &AgentTaskExecution) -> String {
     text
 }
 
+/// What a task that its owner resumed is told. Unchanged until the settle steps exist.
+pub(super) fn task_resume_text(_task: &AgentTaskExecution, _reason: &str) -> String {
+    "The owner has allowed this task to continue. Browser access, if requested, has been restored. Check the current page and continue the original task. If a previous verification card ended, take a fresh snapshot and raise a new card. Write card instructions for the person, and keep tool names and internal task bookkeeping out of your visible replies.".into()
+}
+
+/// The text of a blocked task's Resume/Cancel card.
+pub(super) fn blocked_card_message(alias: Option<&str>, task: &AgentTaskExecution) -> String {
+    let reason = crate::terminal::public_task_failure_reason(&task.reason);
+    match alias {
+        Some(alias) => format!("{alias}: {reason}"),
+        None => reason,
+    }
+}
+
 // Steering belongs to the current turn; an independent prompt closes its answer boundary.
 pub(super) fn task_public_outputs<'a>(
     entries: &'a [crate::history::SessionHistoryEntry],
@@ -419,6 +433,63 @@ mod tests {
         assert!(
             text.contains("chariox.events.yield") && text.contains("registration"),
             "{text}"
+        );
+    }
+    fn owing_task(obligations: serde_json::Value, reason: &str) -> AgentTaskExecution {
+        serde_json::from_value(serde_json::json!({"task_id":"t","room_id":"r","agent_id":"a","prompt_id":"t","provider_run_id":"run","revision":1,"state":"blocked","reason":reason,"obligations":obligations,"wait":null,"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":3,"correction_used":true,"pending_prompt_id":null})).unwrap()
+    }
+    fn timer_and_child() -> serde_json::Value {
+        serde_json::json!([
+            {"id":"wake-7","kind":"timer","resource_id":"wake-7","status":"open","dispatch_state":"accepted"},
+            {"id":"obligation-9","kind":"delegate","resource_id":"agent-9","status":"open","dispatch_state":"accepted"},
+            {"id":"wake-1","kind":"timer","resource_id":"wake-1","status":"satisfied","dispatch_state":"accepted"}
+        ])
+    }
+    // MP-08 / MP-10 / MP-11 (L10 item 4): the correction names what is owed and the call that settles it.
+    #[test]
+    fn correction_names_each_open_obligation_with_the_exact_call() {
+        let text = task_correction_text(&owing_task(timer_and_child(), ""));
+        assert!(text.contains("wake-7") && text.contains("obligation-9"), "{text}");
+        assert!(!text.contains("wake-1"), "{text}");
+        assert!(
+            text.contains(r#"chariox.events.yield with registration_ids ["completion-wake-7"]"#),
+            "{text}"
+        );
+        assert!(
+            text.contains(r#"chariox.events.cancel_wake with wake_id "wake-7""#),
+            "{text}"
+        );
+        assert!(
+            text.contains(r#"registration_ids ["completion-obligation-9"]"#),
+            "{text}"
+        );
+    }
+    #[test]
+    fn resume_text_carries_the_reason_and_the_exact_step() {
+        let text = task_resume_text(
+            &owing_task(timer_and_child(), ""),
+            "Repeated invalid turn end; owner must resume or cancel",
+        );
+        assert!(text.contains("Repeated invalid turn end"), "{text}");
+        assert!(text.contains("wake-7") && text.contains("chariox.events.yield"), "{text}");
+        let none = task_resume_text(&owing_task(serde_json::json!([]), ""), "blocked");
+        assert!(none.contains("final answer") && !none.contains("chariox.events.yield"), "{none}");
+    }
+    #[test]
+    fn the_blocked_card_names_what_is_owed_and_what_is_missing() {
+        let card = blocked_card_message(Some("c1"), &owing_task(timer_and_child(), "Repeated invalid turn end; owner must resume or cancel"));
+        assert!(card.starts_with("c1: Repeated invalid turn end"), "{card}");
+        assert!(card.contains("wake-7") && card.contains("obligation-9"), "{card}");
+        let wakes = blocked_card_message(
+            None,
+            &owing_task(
+                serde_json::json!([]),
+                "Three consecutive wakes without handled progress; owner must resume or cancel",
+            ),
+        );
+        assert!(
+            wakes.contains("chariox.events.inbox") && wakes.contains("chariox.events.ack"),
+            "{wakes}"
         );
     }
     #[test]

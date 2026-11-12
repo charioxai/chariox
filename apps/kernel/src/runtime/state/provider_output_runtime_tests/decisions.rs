@@ -876,6 +876,40 @@ fn every_user_only_kind_is_the_users() {
             permission("ok-1", "agent-1"),
             None,
         ),
+        // A blocked task's Resume/Cancel is a decision about an agent, which its parent may hold;
+        // allowing the user's browser again stays the user's.
+        (
+            "blocked task resume or cancel",
+            pending(),
+            RuntimeInteraction::for_kernel_operation(
+                "task-blocked-t1-3",
+                "task-blocked-t1-3",
+                "Agent needs your action",
+                "c: blocked",
+                vec![
+                    RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", None),
+                    RuntimeInteractionChoice::new("resume", "Resume", "resume", None),
+                ],
+            )
+            .with_related_agent_id("agent-1".to_owned()),
+            None,
+        ),
+        (
+            "blocked task browser access",
+            pending(),
+            RuntimeInteraction::for_kernel_operation(
+                "task-blocked-t1-4",
+                "task-blocked-t1-4",
+                "Allow browser access",
+                "c: Browser access ended",
+                vec![
+                    RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", None),
+                    RuntimeInteractionChoice::new("allow_browser", "Allow browser", "resume", None),
+                ],
+            )
+            .with_related_agent_id("agent-1".to_owned()),
+            Some(UserOnly::UserDomain),
+        ),
     ];
     for (name, pending, interaction, expected) in table {
         assert_eq!(user_only(&pending, &interaction), expected, "{name}");
@@ -1393,6 +1427,7 @@ async fn a_holder_that_yields_before_reading_the_decision_keeps_it() {
 
 mod answer_audit;
 mod asked_without_waiting;
+mod blocked_card;
 mod detail;
 mod holder_inbox_reads;
 mod reparent;
