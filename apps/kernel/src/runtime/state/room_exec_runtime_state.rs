@@ -36,23 +36,20 @@ impl KernelRuntimeState {
                 execs: service.list(session_id),
             },
             operation @ (RoomTerminalOperation::ExecOpen { .. } | RoomTerminalOperation::ExecOpenJob { .. }) => {
-                let job = matches!(&operation, RoomTerminalOperation::ExecOpenJob { .. });
-                let command = match operation { RoomTerminalOperation::ExecOpen { command } | RoomTerminalOperation::ExecOpenJob { command } => command, _ => unreachable!() };
+                let (command, needs) = match operation {
+                    RoomTerminalOperation::ExecOpen { command } => (command, None),
+                    RoomTerminalOperation::ExecOpenJob { command, needs } => (command, Some(needs)),
+                    _ => unreachable!(),
+                };
                 self.ensure_room_running(session_id)?;
                 self.authorize_current_external_command()?;
                 let session = self.owned.session_store.get_session(session_id)?;
-                let open = if job { crate::room_exec::RoomExecService::open_job_as } else { crate::room_exec::RoomExecService::open_as };
-                let exec_id = open(service,
-                    session_id,
-                    session.owner_user_id(),
-                    cwd,
-                    &command,
-                    Some(self.clone()),
-                    match actor {
-                        crate::room_terminal::TerminalActor::User => None,
-                        crate::room_terminal::TerminalActor::Agent(id) => Some(id),
-                    },
-                )?;
+                let agent = match actor { crate::room_terminal::TerminalActor::User => None, crate::room_terminal::TerminalActor::Agent(id) => Some(id) };
+                let exec_id = if let Some(needs) = needs {
+                    service.open_job_as(session_id, session.owner_user_id(), cwd, &command, &needs, Some(self.clone()), agent)?
+                } else {
+                    service.open_as(session_id, session.owner_user_id(), cwd, &command, Some(self.clone()), agent)?
+                };
                 if let Err(ended) = self.ensure_room_running(session_id) {
                     service.end_session(session_id);
                     return Err(ended);

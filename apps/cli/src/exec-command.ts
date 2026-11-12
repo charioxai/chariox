@@ -171,6 +171,7 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
     completed = true
     if (interrupted !== undefined) return 128 + interrupted
     if (outcome.kind === "failed") throw new Error(outcome.message)
+    if (outcome.kind === "memory_limit") throw new CommandFailure("memory_limit", `command stopped at its memory limit (${outcome.limit_bytes} bytes)`)
     return outcome.kind === "exited" ? outcome.code : 128 + outcome.signal
   } catch (error) {
     // A probed grant-ending loss can follow admission; it is not a server refusal.

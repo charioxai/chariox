@@ -437,3 +437,123 @@ async fn exec_old_long_poll_completion_does_not_extend_an_abandoned_reader() {
     .unwrap();
     assert!(service.list("room").is_empty());
 }
+
+#[tokio::test(start_paused = true)]
+async fn offload_job_reader_grace_is_ten_minutes_and_normal_exec_stays_five() {
+    let directory = crate::test_support::TestWorktree::new("offload-job-reader-grace");
+    let service = super::queue_tests::limited(0, u64::MAX / 2);
+    let normal = service
+        .open("room", directory.path(), &["/bin/true".into()])
+        .unwrap();
+    let job = service
+        .open_job_as(
+            "room",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            directory.path(),
+            &["/bin/true".into()],
+            &crate::local::JobNeeds {
+                memory_gib: Some(1),
+                cpus: None,
+            },
+            None,
+            Some("agent".into()),
+        )
+        .unwrap();
+    super::queue_tests::queued(&service, &normal).await;
+    super::queue_tests::queued(&service, &job).await;
+    tokio::time::advance(Duration::from_secs(301)).await;
+    tokio::task::yield_now().await;
+    assert!(!service
+        .list("room")
+        .iter()
+        .any(|record| record.exec_id == normal));
+    assert!(service
+        .list("room")
+        .iter()
+        .any(|record| record.exec_id == job));
+    tokio::time::advance(Duration::from_secs(300)).await;
+    tokio::task::yield_now().await;
+    assert!(!service
+        .list("room")
+        .iter()
+        .any(|record| record.exec_id == job));
+}
+
+#[tokio::test]
+async fn offload_job_declared_memory_queues_before_creating_a_process() {
+    let directory = crate::test_support::TestWorktree::new("offload-job-minimum-memory");
+    let marker = directory.path().join("started");
+    let service = super::queue_tests::limited(512 * 1024 * 1024, u64::MAX / 2);
+    let id = service
+        .open_job_as(
+            "room",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            directory.path(),
+            &[
+                "/bin/sh".into(),
+                "-c".into(),
+                format!("touch '{}'", marker.display()),
+            ],
+            &crate::local::JobNeeds {
+                memory_gib: Some(1),
+                cpus: None,
+            },
+            None,
+            Some("agent".into()),
+        )
+        .unwrap();
+    super::queue_tests::queued(&service, &id).await;
+    let queued = service
+        .list("room")
+        .into_iter()
+        .find(|record| record.exec_id == id)
+        .unwrap();
+    assert!(
+        matches!(queued.state, ExecState::Queued { wait } if wait.need_bytes == 1024 * 1024 * 1024)
+    );
+    assert!(!marker.exists());
+    service.cancel("room", &id).unwrap();
+    let (_, _, outcome) = collect(&service, &id).await;
+    assert!(matches!(outcome, ExecOutcome::Failed { .. }));
+    assert!(!marker.exists());
+}
+
+#[tokio::test]
+async fn offload_job_memory_stop_retains_typed_reason_after_process_and_pipes_settle() {
+    let directory = crate::test_support::TestWorktree::new("offload-job-memory-outcome");
+    let service = super::queue_tests::limited(96 * 1024 * 1024, u64::MAX / 2);
+    let id = service
+        .open_job_as(
+            "room",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            directory.path(),
+            &[
+                "python3".into(),
+                "-c".into(),
+                "import time; x=bytearray(512*1024*1024); time.sleep(30)".into(),
+            ],
+            &crate::local::JobNeeds::default(),
+            None,
+            Some("agent".into()),
+        )
+        .unwrap();
+    let input = serde_json::json!({"argv":["python3", "-c", "import time; x=bytearray(512*1024*1024); time.sleep(30)"], "env":{}, "job_id":"job-memory-outcome"}).to_string() + "\n";
+    let offset = service
+        .write(
+            "room",
+            &id,
+            0,
+            &base64::engine::general_purpose::STANDARD.encode(input.as_bytes()),
+        )
+        .unwrap();
+    service.close_stdin("room", &id, offset).unwrap();
+    let (_, _, outcome) = tokio::time::timeout(Duration::from_secs(15), collect(&service, &id))
+        .await
+        .unwrap();
+    assert!(
+        matches!(outcome, ExecOutcome::MemoryLimit { limit_bytes } if limit_bytes > 0),
+        "{outcome:?}"
+    );
+    assert!(!service.has_running_work());
+    service.close("room", &id).unwrap();
+}

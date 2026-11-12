@@ -267,6 +267,12 @@ pub(super) fn run(
                 }
             }
         };
+        let outcome = process
+            ._domain
+            .memory_limit_bytes()
+            .map_or(outcome, |limit_bytes| ExecOutcome::MemoryLimit {
+                limit_bytes,
+            });
         // Only the reaped process and settled pipes publish the final outcome.
         // Stop the resource watch outside the async executor: its Drop joins a thread.
         let _ = tokio::task::spawn_blocking(move || {

@@ -81,12 +81,19 @@ impl KernelRuntimeState {
             ) => {
                 let class = super::job_compute::select_job_class(capability, needs)?;
                 let minutes = timeout_s.saturating_add(59) / 60;
-                format!("Run this job on a VM ({}, {} CPUs, {} MiB) at {} {} per minute, up to {} {} for {minutes} minutes?", class.class_id, class.vcpu, class.usable_memory_mib, money(class.rate_per_minute.amount_micros), class.rate_per_minute.currency, money(class.rate_per_minute.amount_micros.saturating_mul(minutes)), class.rate_per_minute.currency)
+                format!("Run this job on a VM ({}, {} CPUs, {} MiB) at {} {} per minute? The command limit is {minutes} minutes; charges continue through startup and until deletion.", class.class_id, class.vcpu, class.usable_memory_mib, money(class.rate_per_minute.amount_micros), class.rate_per_minute.currency)
             }
             (_, Some(capability)) => capability
                 .offer
                 .as_ref()
                 .map(|offer| {
+                    if let Some(rate) = &offer.rate_per_minute {
+                        return format!(
+                            "Acquire {} ({} CPUs, {} GB) at {} {} per minute? The total depends on how long you keep it.",
+                            offer.machine_type, offer.vcpu, offer.ram_gb,
+                            money(rate.amount_micros), rate.currency
+                        );
+                    }
                     format!(
                         "Acquire {} ({} CPUs, {} GB) for {} {} per {:?}?",
                         offer.machine_type,
@@ -126,8 +133,7 @@ impl KernelRuntimeState {
                     Some(RuntimeInteractionChoiceStyle::Danger),
                 ),
             ],
-        )
-        .shown_in(agent.map(str::to_owned));
+        );
         if let Some(agent) = agent {
             interaction = interaction.with_related_agent_id(agent.into());
         }
@@ -260,7 +266,7 @@ impl KernelRuntimeState {
                         &format!("machine:{request_id}:acquire"),
                     )
                     .await?;
-                serde_json::json!({"allocation":result,"offer":capability.offer})
+                serde_json::json!({"allocation":result,"offer":capability.offer,"estimate":{"kind":"unknown","reason":"No duration was specified; the total depends on when the machine is deleted"}})
             }
             "chariox.machines.status" => {
                 let allocation_ref = args.allocation_ref.ok_or_else(|| {

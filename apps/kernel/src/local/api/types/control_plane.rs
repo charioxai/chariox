@@ -119,6 +119,8 @@ pub struct MachineAcquisitionOffer {
     /// Amount, currency and period exactly as the connected service offers them; the kernel
     /// never computes amounts.
     pub terms: MachineAcquisitionTerms,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_per_minute: Option<JobMachineRate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -205,6 +205,12 @@ impl KernelRuntimeOwnedState {
         ancestors(subject, &agents)
             .last()
             .map(|top| top.id().to_owned())
+            // A kernel decision has no agent subject for clients to fall back to.
+            .or_else(|| {
+                interaction
+                    .related_agent_id()
+                    .map(|_| subject.id().to_owned())
+            })
     }
 
     /// The decisions of `session_id` the agent `holder` holds now.

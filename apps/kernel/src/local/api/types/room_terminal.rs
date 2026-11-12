@@ -31,6 +31,8 @@ pub enum RoomTerminalOperation {
     /// Kernel job launch: its command receives only the explicitly selected project environment.
     ExecOpenJob {
         command: Vec<String>,
+        #[serde(default)]
+        needs: JobNeeds,
     },
     ExecStartNow {
         exec_id: String,

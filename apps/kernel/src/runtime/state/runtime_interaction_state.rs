@@ -344,7 +344,8 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         if connection_class
             .is_some_and(|class| class != crate::local::KernelConnectionClass::Terminal)
-            && interaction_id.starts_with("capability-request-")
+            && (interaction_id.starts_with("capability-request-")
+                || interaction_id.starts_with("machine-acquisition-"))
             && self
                 .owned
                 .pending_interactions

@@ -63,13 +63,12 @@ impl Remote {
     pub(super) async fn open(
         &self,
         command: Vec<String>,
-        job: bool,
+        needs: Option<JobNeeds>,
         suffix: &str,
     ) -> Result<String, DaemonError> {
-        let operation = if job {
-            RoomTerminalOperation::ExecOpenJob { command }
-        } else {
-            RoomTerminalOperation::ExecOpen { command }
+        let operation = match needs {
+            Some(needs) => RoomTerminalOperation::ExecOpenJob { command, needs },
+            None => RoomTerminalOperation::ExecOpen { command },
         };
         match self.operation(suffix, operation).await? {
             RoomTerminalResult::ExecOpened { exec_id } => Ok(exec_id),
@@ -158,7 +157,7 @@ impl Remote {
         .map(|_| ())
     }
     async fn utility(&self, command: Vec<String>, suffix: &str) -> Result<(), DaemonError> {
-        let id = self.open(command, false, suffix).await?;
+        let id = self.open(command, None, suffix).await?;
         self.close_stdin(&id, 0).await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         let mut cursor = 0;

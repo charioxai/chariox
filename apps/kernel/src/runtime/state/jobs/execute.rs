@@ -158,6 +158,9 @@ fn selected_environment(
                 ledger::error(format!("{name} is not a Project Environment entry"))
             })?
         };
+        if value.contains('\0') {
+            return Err(ledger::error(format!("Project Environment entry {name} contains a null byte; update it before running the job")));
+        }
         selected.insert(name.to_string(), Zeroizing::new(value));
     }
     Ok(selected)
@@ -168,7 +171,6 @@ impl KernelRuntimeState {
         &self,
         wake: AgentWake,
         mut record: Record,
-        run: crate::provider::RuntimeProviderRun,
         mut cancelled: watch::Receiver<bool>,
     ) {
         let environment = selected_environment(self, &record);
@@ -184,9 +186,7 @@ impl KernelRuntimeState {
             Err(error) => Err(error),
             Ok(environment) => {
                 self.run_job(
-                    &wake,
                     &mut record,
-                    &run,
                     &environment,
                     &mut output,
                     &mut cancelled,
@@ -258,9 +258,7 @@ impl KernelRuntimeState {
 
     async fn run_job(
         &self,
-        wake: &AgentWake,
         record: &mut Record,
-        run: &crate::provider::RuntimeProviderRun,
         environment: &BTreeMap<String, Zeroizing<String>>,
         output: &mut Output,
         cancelled: &mut watch::Receiver<bool>,
@@ -329,6 +327,15 @@ impl KernelRuntimeState {
                     return Ok(cancelled_result(record));
                 }
             };
+            if let Some(receipt) = self
+                .job_wake_driver
+                .as_ref()
+                .and_then(|driver| driver.read(&record.job_id).ok())
+            {
+                record.allocation_ref = receipt.allocation_ref;
+                record.capability_revision = receipt.capability_revision;
+                record.deleted |= receipt.deleted;
+            }
             match acquired {
                 Ok(machine) => {
                     record.allocation_ref = Some(machine.allocation_ref.clone());
@@ -352,7 +359,12 @@ impl KernelRuntimeState {
                     }
                     record.deleted = true;
                     save_record(self, record)?;
-                    return result;
+                    return match result {
+                        Err(_) if *cancelled.borrow() => {
+                            uncollected_stop(self, record, output, JobOutcome::Cancelled)
+                        }
+                        result => result,
+                    };
                 }
                 Err(error) if is_capacity_failure(&error) => {
                     record.placement = JobPlacement::Local;
@@ -372,12 +384,11 @@ impl KernelRuntimeState {
             }
         }
         match self
-            .run_local_job(wake, record, environment, output, cancelled)
+            .run_local_job(record, environment, output, cancelled)
             .await
         {
             Err(DaemonError::MachineRequest { code, .. }) if code == "job_move_remote" => {
-                Box::pin(self.run_job(wake, record, run, environment, output, cancelled, true))
-                    .await
+                Box::pin(self.run_job(record, environment, output, cancelled, true)).await
             }
             result => result,
         }
@@ -385,7 +396,6 @@ impl KernelRuntimeState {
 
     async fn run_local_job(
         &self,
-        _wake: &AgentWake,
         record: &mut Record,
         environment: &BTreeMap<String, Zeroizing<String>>,
         output: &mut Output,
@@ -400,9 +410,15 @@ impl KernelRuntimeState {
             session.owner_user_id(),
             &record.cwd,
             &validate(&record.request)?,
+            &record.request.needs,
             Some(self.clone()),
             Some(record.agent_id.clone()),
         )?;
+        let _owned = LocalExec {
+            service: execs.clone(),
+            room: record.room_id.clone(),
+            id: exec_id.clone(),
+        };
         record.exec_id = Some(exec_id.clone());
         save_record(self, record)?;
         let next = execs.write(
@@ -412,10 +428,12 @@ impl KernelRuntimeState {
             &base64::engine::general_purpose::STANDARD.encode(input.as_bytes()),
         )?;
         execs.close_stdin(&record.room_id, &exec_id, next)?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(record.request.timeout_s);
+        let mut deadline = None;
         let (mut cursor, mut stopped) = (0, None);
         loop {
-            if stopped.is_none() && (*cancelled.borrow() || tokio::time::Instant::now() >= deadline)
+            if stopped.is_none()
+                && (*cancelled.borrow()
+                    || deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline))
             {
                 stopped = Some(if *cancelled.borrow() {
                     JobOutcome::Cancelled
@@ -429,17 +447,22 @@ impl KernelRuntimeState {
                 .into_iter()
                 .find(|summary| summary.exec_id == exec_id)
             {
-                let state = if matches!(summary.state, crate::room_exec::ExecState::Queued { .. }) {
-                    "queued"
-                } else {
-                    "running"
-                };
-                if record.state != state {
-                    if state == "running" {
+                let state = match summary.state {
+                    crate::room_exec::ExecState::Queued { .. } => "queued",
+                    crate::room_exec::ExecState::Starting => "starting",
+                    crate::room_exec::ExecState::Running => {
+                        deadline.get_or_insert_with(|| {
+                            tokio::time::Instant::now()
+                                + Duration::from_secs(record.request.timeout_s)
+                        });
                         record
                             .running_at_ms
                             .get_or_insert_with(crate::session::unix_epoch_ms);
+                        "running"
                     }
+                    crate::room_exec::ExecState::Finished => record.state.as_str(),
+                };
+                if record.state != state {
                     record.state = state.into();
                     save_record(self, record)?;
                 }
@@ -495,7 +518,11 @@ impl KernelRuntimeState {
             return Ok(cancelled_result(record));
         }
         let exec_id = remote
-            .open(validate(&record.request)?, true, "command-open")
+            .open(
+                validate(&record.request)?,
+                Some(effective_needs(record)),
+                "command-open",
+            )
             .await?;
         let input = command_input(&record.request, environment, &record.job_id)?;
         let next = remote.write(&exec_id, 0, input.as_bytes()).await?;
@@ -516,7 +543,14 @@ impl KernelRuntimeState {
                 } else {
                     JobOutcome::TimeLimit
                 });
-                remote.cancel(&exec_id).await?;
+                if remote.cancel(&exec_id).await.is_err() {
+                    return uncollected_stop(
+                        self,
+                        record,
+                        output,
+                        stopped.expect("requested stop"),
+                    );
+                }
             }
             if last_samples.elapsed() >= Duration::from_secs(1) {
                 if let Ok(mut samples) = remote.samples().await {
@@ -547,7 +581,10 @@ impl KernelRuntimeState {
             }
             match remote.read(&exec_id, cursor).await {
                 Ok(page) => {
-                    disconnected = None;
+                    if disconnected.take().is_some() {
+                        record.state = "running".into();
+                        save_record(self, record)?;
+                    }
                     cursor = page.next_cursor;
                     output.page(self, &record.room_id, &page)?;
                     if let Some(outcome) = page.outcome {
@@ -555,6 +592,9 @@ impl KernelRuntimeState {
                     }
                 }
                 Err(error) => {
+                    if let Some(outcome) = stopped {
+                        return uncollected_stop(self, record, output, outcome);
+                    }
                     let since = disconnected.get_or_insert_with(tokio::time::Instant::now);
                     if since.elapsed() >= Duration::from_secs(600) {
                         return Err(error);
@@ -600,6 +640,7 @@ fn command_input(
 }
 fn is_capacity_failure(error: &DaemonError) -> bool {
     match error {
+        DaemonError::MachineRequest { code, .. } if code == "control_plane_unavailable" => true,
         DaemonError::RelayTransport { code, .. } | DaemonError::MachineRequest { code, .. } => {
             matches!(
                 code.as_str(),
@@ -629,21 +670,57 @@ fn failed(record: &Record, message: String) -> JobResult {
             ip: record.address.clone(),
         },
         duration_ms: 0,
-        outcome: JobOutcome::MachineLost,
+        outcome: if record.allocation_ref.is_some() {
+            JobOutcome::MachineLost
+        } else {
+            JobOutcome::OutsideEnd
+        },
     }
+}
+fn uncollected_stop(
+    state: &KernelRuntimeState,
+    record: &Record,
+    output: &mut Output,
+    outcome: JobOutcome,
+) -> Result<JobResult, DaemonError> {
+    let notice = if outcome == JobOutcome::TimeLimit {
+        "Time limit reached. Command output is partial and returned files are unavailable.\n"
+    } else {
+        "Job cancelled. Command output is partial and returned files are unavailable.\n"
+    };
+    output.push(state, &record.room_id, notice.as_bytes(), true)?;
+    let mut result = failed(record, String::new());
+    result.outcome = outcome;
+    Ok(result)
 }
 fn result_from_exit(record: &Record, exit: ExecOutcome, stopped: Option<JobOutcome>) -> JobResult {
     let mut result = failed(record, String::new());
     let signaled = matches!(&exit, ExecOutcome::Signaled { .. });
+    let memory_limited = matches!(&exit, ExecOutcome::MemoryLimit { .. });
     result.exit_code = match exit {
         ExecOutcome::Exited { code } => Some(code),
         ExecOutcome::Signaled { signal } => Some(128 + signal),
+        ExecOutcome::MemoryLimit { .. } => Some(137),
         ExecOutcome::Failed { .. } => None,
     };
-    result.outcome = stopped.unwrap_or(if result.exit_code.is_some() && !signaled {
+    result.outcome = stopped.unwrap_or(if memory_limited {
+        JobOutcome::MemoryLimit
+    } else if result.exit_code.is_some() && !signaled {
         JobOutcome::Completed
     } else {
         JobOutcome::OutsideEnd
     });
     result
+}
+
+/// An output or persistence failure must not abandon the command's physical ownership.
+struct LocalExec {
+    service: crate::room_exec::RoomExecService,
+    room: String,
+    id: String,
+}
+impl Drop for LocalExec {
+    fn drop(&mut self) {
+        let _ = self.service.close(&self.room, &self.id);
+    }
 }

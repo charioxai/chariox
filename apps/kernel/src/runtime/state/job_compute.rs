@@ -224,7 +224,7 @@ impl KernelRuntimeState {
         };
         let class = select_job_class(&capability, needs)?.clone();
         let revision = capability.revision.clone();
-        let first = self
+        let first = match self
             .job_control_plane(
                 origin,
                 &ControlPlaneRequest::AcquireJob {
@@ -236,15 +236,25 @@ impl KernelRuntimeState {
                 },
                 &format!("job:{job_id}:acquire"),
             )
-            .await?;
+            .await
+        {
+            Ok(first) => first,
+            Err(error) if matches!(&error, DaemonError::MachineRequest { code, .. } if matches!(code.as_str(), "acquisition_denied" | "approval_required" | "control_plane_unavailable")) => {
+                return Err(error)
+            }
+            Err(error) => return Err(self.reconcile_failed_job_acquisition(job_id, error).await),
+        };
         let ControlPlaneResponse::Machine { allocation_ref, .. } = &first else {
-            return Err(acquisition_error(
+            let error = acquisition_error(
                 "control_plane_binding_invalid",
                 "The connected service did not return a job allocation",
-            ));
+            );
+            return Err(self.reconcile_failed_job_acquisition(job_id, error).await);
         };
         let allocation_ref = allocation_ref.clone();
-        self.job_record_allocation(job_id, &allocation_ref, &revision)?;
+        if let Err(error) = self.job_record_allocation(job_id, &allocation_ref, &revision) {
+            return Err(self.reconcile_failed_job_acquisition(job_id, error).await);
+        }
         let result = self
             .wait_for_job_machine(
                 job_id,
@@ -256,11 +266,28 @@ impl KernelRuntimeState {
                 first,
             )
             .await;
-        if result.is_err() {
-            self.job_compute_release_ref(&allocation_ref, &revision)
-                .await?;
+        match result {
+            Ok(machine) => Ok(machine),
+            Err(error) => Err(self.reconcile_failed_job_acquisition(job_id, error).await),
         }
-        result
+    }
+    async fn reconcile_failed_job_acquisition(
+        &self,
+        job_id: &str,
+        error: DaemonError,
+    ) -> DaemonError {
+        // A missing HTTP receipt does not prove the service rejected the request.
+        // Fence the job before lookup so even a delayed acceptance cannot leak a worker.
+        match self.job_compute_release_job_ref(job_id).await {
+            Ok(()) => match self.job_record_deleted(job_id) {
+                Ok(()) => error,
+                Err(receipt) => acquisition_error("job_receipt_failed", &format!("{error}; remote machine cleanup was confirmed, but its receipt could not be saved: {receipt}")),
+            },
+            Err(cleanup) => acquisition_error(
+                "job_cleanup_pending",
+                &format!("{error}; remote machine cleanup could not be confirmed: {cleanup}"),
+            ),
+        }
     }
     async fn wait_for_job_machine(
         &self,

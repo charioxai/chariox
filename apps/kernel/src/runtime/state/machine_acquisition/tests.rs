@@ -112,6 +112,23 @@ async fn offload_automatic_setting_off_awaits_one_human_decision_before_returnin
         .unwrap()
         .owner_user_id()
         .to_owned();
+    let agent_answer = state
+        .answer_terminal_runtime_interaction(
+            &room,
+            &id,
+            "approve",
+            None,
+            Some(&owner),
+            None,
+            None,
+            Some(KernelConnectionClass::KernelAgent),
+        )
+        .await;
+    assert!(
+        agent_answer.is_err(),
+        "the agent cannot approve its own request"
+    );
+    assert!(!gate.is_finished());
     state
         .resolve_terminal_runtime_interaction(&room, &id, "deny", None, Some(&owner))
         .await
@@ -136,6 +153,45 @@ async fn offload_automatic_setting_on_has_no_decision_and_off_applies_to_next_re
         .unwrap()
         .active_interactions()
         .is_empty());
+    let mut config = state.owned.config_projection.snapshot();
+    config.user_config.agents.offload_without_asking = Some(false);
+    state.owned.config_projection.update(config);
+    let gate_state = state.clone();
+    let room = room.to_owned();
+    let gate = tokio::spawn(async move {
+        gate_state
+            .approve_machine_acquisition(&command, &request, Some(&caps))
+            .await
+    });
+    let id = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = state.owned.session_store.get_session(&room).unwrap();
+            if let Some(card) = snapshot.active_interactions().first() {
+                break card.id().to_owned();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!gate.is_finished());
+    let owner = state
+        .owned
+        .session_store
+        .get_session(&room)
+        .unwrap()
+        .owner_user_id()
+        .to_owned();
+    state
+        .resolve_terminal_runtime_interaction(&room, &id, "deny", None, Some(&owner))
+        .await
+        .unwrap();
+    assert!(gate
+        .await
+        .unwrap()
+        .unwrap_err()
+        .to_string()
+        .contains("denied"));
 }
 
 #[test]
@@ -153,4 +209,60 @@ fn offload_setting_persists_and_unset_restores_off() {
         .unset_user_config_value("agents.offload_without_asking")
         .unwrap();
     assert_ne!(config.user_config.agents.offload_without_asking, Some(true));
+}
+
+#[tokio::test]
+async fn offload_manual_machine_request_uses_the_same_owner_gate_and_service_minute_rate() {
+    let (state, command, _, mut caps, _workspace) = fixture(false);
+    caps.offer = Some(
+        serde_json::from_value(serde_json::json!({
+            "machine_type":"Standard", "vcpu":4, "ram_gb":8.0, "disk_gb":40,
+            "location":"Region", "terms":{"amount":"0.036","currency":"USD","period":"hour"},
+            "rate_per_minute":{"amount_micros":600,"currency":"USD"}
+        }))
+        .unwrap(),
+    );
+    let request = ControlPlaneRequest::Acquire {
+        capability_revision: "v1".into(),
+        request_id: "manual".into(),
+    };
+    let room = command.session_id.clone().unwrap();
+    let gate_state = state.clone();
+    let gate = tokio::spawn(async move {
+        gate_state
+            .approve_machine_acquisition(&command, &request, Some(&caps))
+            .await
+    });
+    let id = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = state.owned.session_store.get_session(&room).unwrap();
+            if let Some(card) = snapshot.active_interactions().first() {
+                assert_eq!(snapshot.active_interactions().len(), 1);
+                assert!(card.message().contains("0.0006 USD per minute"));
+                assert!(card.message().contains("total depends"));
+                break card.id().to_owned();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!gate.is_finished());
+    let owner = state
+        .owned
+        .session_store
+        .get_session(&room)
+        .unwrap()
+        .owner_user_id()
+        .to_owned();
+    state
+        .resolve_terminal_runtime_interaction(&room, &id, "deny", None, Some(&owner))
+        .await
+        .unwrap();
+    assert!(gate
+        .await
+        .unwrap()
+        .unwrap_err()
+        .to_string()
+        .contains("nothing was allocated or charged"));
 }

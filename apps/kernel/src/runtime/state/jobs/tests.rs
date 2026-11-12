@@ -37,7 +37,7 @@ async fn fixture() -> (
     let ledger::Outcome::Task(task) = app
         .durable_state_store()
         .agent_lifecycle(ledger::Operation::Begin {
-            owner: "owner".into(),
+            owner: session.owner_user_id().into(),
             room: session.id().into(),
             agent: agent.id().into(),
             prompt: "offload-test-turn".into(),
@@ -159,8 +159,16 @@ impl crate::room_exec::gateway_placement::GrantedSend for Worker {
                 })
                 .unwrap());
             }
-            let command =
+            let mut command =
                 crate::runtime::command::KernelCommand::from_local_request(id, None, None, request);
+            command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+            command.caller.user_id = Some(
+                self.router
+                    .runtime_state()
+                    .owned
+                    .config_projection
+                    .local_owner_user_id(),
+            );
             self.router
                 .dispatch(command, request.clone())
                 .await
@@ -202,7 +210,11 @@ async fn offload_job_remote_upload_exec_environment_artifact_and_conflict_return
         .unwrap();
     assert!(!Path::new(&root).join(".env").exists());
     let exec = remote
-        .open(validate(&record.request).unwrap(), true, "test-command")
+        .open(
+            validate(&record.request).unwrap(),
+            Some(JobNeeds::default()),
+            "test-command",
+        )
         .await
         .unwrap();
     let input = serde_json::json!({"argv":validate(&record.request).unwrap(),"env":{"NAMED":"selected-entry"},"job_id":record.job_id}).to_string() + "\n";
@@ -254,4 +266,190 @@ async fn offload_job_remote_upload_exec_environment_artifact_and_conflict_return
         std::fs::read(source.path().join("target/build.bin")).unwrap(),
         b"artifact"
     );
+}
+
+#[tokio::test]
+async fn offload_job_large_output_has_durable_completion_and_bounded_manifest_receipt() {
+    let (state, run, task, _worktree) = fixture().await;
+    let value = state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.run",
+            &serde_json::json!({
+                "command":["python3", "-c", "print('x' * 70000)"], "wait_s":10
+            }),
+            &task,
+        )
+        .await
+        .unwrap();
+    assert_eq!(value["result"]["exit_code"], 0);
+    assert_eq!(
+        value["result"]["output_tail"].as_str().unwrap().len(),
+        TAIL_BYTES
+    );
+    let record = state
+        .job_wake_driver
+        .as_ref()
+        .unwrap()
+        .read(value["job_id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(
+        state
+            .owned
+            .durable_state_store
+            .agent_wake(&record.wake_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        "exited"
+    );
+    let mut result = record.result.clone().unwrap();
+    result.files_back = (0..10000)
+        .map(|n| format!("artifacts/{n:08}/{}", "a".repeat(100)))
+        .collect();
+    let payload = completion_payload(&record, &result);
+    assert!(serde_json::to_vec(&payload).unwrap().len() <= 192 * 1024);
+    assert_eq!(payload["result_truncated"], true);
+    assert_eq!(payload["files_back_count"], 10000);
+    assert_eq!(payload["read_full_result"]["tool"], "chariox.jobs.status");
+    assert_eq!(
+        payload["result"]["output_tail"],
+        value["result"]["output_tail"]
+    );
+}
+
+#[tokio::test]
+async fn offload_job_acquisition_receipt_survives_yield_and_ended_native_turn_but_not_cancel() {
+    let (state, mut run, task, _worktree) = fixture().await;
+    let value = state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.run",
+            &serde_json::json!({
+                "command":["/bin/sleep", "30"]
+            }),
+            &task,
+        )
+        .await
+        .unwrap();
+    let id = value["job_id"].as_str().unwrap();
+    let record = state.job_wake_driver.as_ref().unwrap().read(id).unwrap();
+    state
+        .owned
+        .durable_state_store
+        .agent_lifecycle(ledger::Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec![record.registration_id.clone()],
+            cursor: 0,
+            deadline: None,
+            reason: "waiting for job".into(),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    state
+        .owned
+        .durable_state_store
+        .agent_lifecycle(ledger::Operation::Settle {
+            room: task.room_id.clone(),
+            agent: task.agent_id.clone(),
+            prompt: task.prompt_id.clone(),
+            run: run.id().into(),
+            has_answer: true,
+            cancelled: false,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    state
+        .owned
+        .provider_store
+        .mark_run_ended_provider_only(&task.room_id, run.id())
+        .unwrap();
+    run.mark_ended();
+    state.owned.provider_run_projection.update(run.clone());
+    assert!(state.watched_process_run(run.id()).is_err());
+    let subject = state.job_acquisition_subject(id).unwrap();
+    assert_eq!(
+        (&subject.0, &subject.1, &subject.2),
+        (&task.room_id, &task.agent_id, &task.owner_user_id)
+    );
+    let mut owner = crate::runtime::command::KernelCaller::default();
+    owner.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+    owner.user_id = Some(task.owner_user_id.clone());
+    assert!(state.cancel_session_job(&task.room_id, &owner, id).unwrap());
+    assert!(state.job_acquisition_subject(id).is_err());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while state
+            .job_wake_driver
+            .as_ref()
+            .unwrap()
+            .read(id)
+            .unwrap()
+            .result
+            .is_none()
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn offload_job_runtime_budget_starts_after_queue_admission() {
+    let (state, run, task, _worktree) = fixture().await;
+    state
+        .set_remote_job_policy(
+            &task.room_id,
+            Some(&task.agent_id),
+            &task.owner_user_id,
+            Some(crate::local::OffloadPolicy::WhenBusy),
+        )
+        .unwrap();
+    let value = state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.run",
+            &serde_json::json!({
+                "command":["/bin/true"], "needs":{"memory_gib":u32::MAX}, "timeout_s":1
+            }),
+            &task,
+        )
+        .await
+        .unwrap();
+    let id = value["job_id"].as_str().unwrap();
+    let driver = state.job_wake_driver.as_ref().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while driver.read(id).unwrap().state != "queued" {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(1250)).await;
+    let held = driver.read(id).unwrap();
+    assert!(
+        held.result.is_none(),
+        "queue wait must not consume command runtime"
+    );
+    assert_eq!(held.state, "queued");
+    assert!(held.running_at_ms.is_none());
+    let mut owner = crate::runtime::command::KernelCaller::default();
+    owner.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+    owner.user_id = Some(task.owner_user_id.clone());
+    assert!(state
+        .start_session_job_now(&task.room_id, &owner, id)
+        .unwrap());
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(result) = driver.read(id).unwrap().result {
+                break result;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.outcome, JobOutcome::Completed);
+    assert_eq!(result.exit_code, Some(0));
 }

@@ -42,6 +42,7 @@ const MAX_PER_KERNEL: usize = 64;
 pub enum ExecOutcome {
     Exited { code: i32 },
     Signaled { signal: i32 },
+    MemoryLimit { limit_bytes: u64 },
     Failed { message: String },
 }
 
@@ -121,11 +122,13 @@ pub(super) struct Record {
     intent: LaunchIntent,
     launch_command: Vec<String>,
     job: bool,
+    minimum_memory: u64,
     state: Mutex<ExecState>,
     force: watch::Sender<bool>,
     place: watch::Sender<Option<Arc<placement::Placed>>>,
     created_at: tokio::time::Instant,
     reader_deadline: watch::Sender<tokio::time::Instant>,
+    reader_lease: Duration,
     input: Mutex<Input>,
     output: Mutex<buffer::Output>,
     changed: Notify,
@@ -136,7 +139,7 @@ pub(super) struct Record {
 impl Record {
     fn renew_reader(&self) {
         self.reader_deadline
-            .send_replace(tokio::time::Instant::now() + lease::READER_LEASE);
+            .send_replace(tokio::time::Instant::now() + self.reader_lease);
     }
 }
 
@@ -209,15 +212,18 @@ impl RoomExecService {
             authority,
             acting_agent,
             false,
+            0,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn open_job_as(
         &self,
         session_id: &str,
         owner_user_id: &str,
         cwd: &Path,
         command: &[String],
+        needs: &crate::local::JobNeeds,
         authority: Option<crate::runtime::state::KernelRuntimeState>,
         acting_agent: Option<String>,
     ) -> Result<String, DaemonError> {
@@ -229,6 +235,7 @@ impl RoomExecService {
             authority,
             acting_agent,
             true,
+            u64::from(needs.memory_gib.unwrap_or(0)) * 1024 * 1024 * 1024,
         )
     }
 
@@ -242,6 +249,7 @@ impl RoomExecService {
         authority: Option<crate::runtime::state::KernelRuntimeState>,
         acting_agent: Option<String>,
         job: bool,
+        minimum_memory: u64,
     ) -> Result<String, DaemonError> {
         if command.is_empty()
             || command.len() > 64
@@ -288,12 +296,18 @@ impl RoomExecService {
         let (sender, receiver) = mpsc::channel(8);
         let (cancel, cancelled) = watch::channel(None);
         let created_at = tokio::time::Instant::now();
-        let (reader_deadline, deadline) = watch::channel(created_at + lease::READER_LEASE);
+        let reader_lease = if job {
+            lease::JOB_READER_LEASE
+        } else {
+            lease::READER_LEASE
+        };
+        let (reader_deadline, deadline) = watch::channel(created_at + reader_lease);
         let exec_id = format!("exec-{:032x}", rand::random::<u128>());
         let (force, forced) = watch::channel(false);
         let (place, placed) = watch::channel(None);
         let record = Arc::new(Record {
             job,
+            minimum_memory,
             launch_command: if job {
                 vec![
                     "python3".into(),
@@ -316,6 +330,7 @@ impl RoomExecService {
             place,
             created_at,
             reader_deadline,
+            reader_lease,
             input: Mutex::new(Input {
                 sender: Some(sender),
                 offset: 0,
