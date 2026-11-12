@@ -1,7 +1,7 @@
 //! One decision is one card: the interaction a sub-agent raises stays one object, and the
 //! kernel only moves its holder (the parent agent that may answer it, or the user). The
 //! holder is kernel state for routing and audit; clients never read it.
-use super::runtime_interaction_state::ParentAnswer;
+use super::runtime_interaction_state::AgentDecisionAnswer;
 use super::*;
 use crate::agent::authority_limit::{ancestors, descendants};
 use crate::durable_state::agent_lifecycle::{self as ledger, ExecutionState, Operation};
@@ -100,7 +100,7 @@ impl KernelRuntimeOwnedState {
     /// Whether `ancestor` may hold a decision now: it is alive, not stopped, not past its deadline,
     /// not itself waiting for the user, and would approve for itself (a `Required` agent would ask
     /// the user, and a parent passes on only the authority it holds).
-    fn ancestor_can_hold(
+    pub(super) fn ancestor_can_hold(
         &self,
         session: &crate::session::RuntimeSession,
         ancestor: &crate::agent::AgentInstance,
@@ -912,7 +912,7 @@ impl KernelRuntimeState {
             false,
             false,
             None,
-            Some(holder),
+            Some(AgentInteractionAnswer::Holder(holder)),
         ) {
             Ok(()) => {
                 self.audit_interaction_answered(
@@ -920,7 +920,7 @@ impl KernelRuntimeState {
                     interaction_id,
                     &choice_id,
                     None,
-                    Some(ParentAnswer {
+                    Some(AgentDecisionAnswer::Parent {
                         holder,
                         child: &child,
                     }),

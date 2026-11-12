@@ -67,21 +67,12 @@ impl KernelRuntimeState {
             .collect()
     }
 
-    /// A guest of a room is a member that is not its owner under any identity: it owns the
-    /// agent, or it started the agent's running turn. What a guest drives reaches only the agents
-    /// of that room.
     pub(crate) fn drives_as_room_guest(
         &self,
         session: &crate::session::RuntimeSession,
         agent: &crate::agent::AgentInstance,
     ) -> bool {
-        !self.acts_for_room_owner(session, agent.owner_user_id())
-            || self
-                .owned
-                .prompt_state_owner
-                .active_prompt_for_agent(session, agent.id())
-                .and_then(|prompt| prompt.source_user_id().map(str::to_owned))
-                .is_some_and(|user| !self.acts_for_room_owner(session, &user))
+        self.owned.drives_as_room_guest(session, agent)
     }
 
     /// An ordinary agent of a room of `owner`, the one address a peer has across rooms. Every
@@ -230,5 +221,28 @@ impl KernelRuntimeState {
             return Ok(());
         }
         Err(theirs)
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    /// A guest of a room is a member that is not its owner under any identity: it owns the
+    /// agent, or it started the agent's running turn. What a guest drives reaches only the agents
+    /// of that room.
+    pub(super) fn drives_as_room_guest(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+    ) -> bool {
+        !self.acts_for_owner_in(
+            session.owner_user_id(),
+            agent.owner_user_id(),
+            session.owner_user_id(),
+        ) || self
+            .prompt_state_owner
+            .active_prompt_for_agent(session, agent.id())
+            .and_then(|prompt| prompt.source_user_id().map(str::to_owned))
+            .is_some_and(|user| {
+                !self.acts_for_owner_in(session.owner_user_id(), &user, session.owner_user_id())
+            })
     }
 }

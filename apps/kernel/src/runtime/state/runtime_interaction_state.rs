@@ -2,10 +2,10 @@ use tokio::sync::oneshot;
 
 use super::*;
 
-/// The parent agent that answered a decision and the child agent that raised it.
-pub(super) struct ParentAnswer<'a> {
-    pub(super) holder: &'a str,
-    pub(super) child: &'a str,
+/// The agent that answered, with the relationship used for the audit record.
+pub(super) enum AgentDecisionAnswer<'a> {
+    Parent { holder: &'a str, child: &'a str },
+    RoomAgent { agent: &'a str, room: &'a str },
 }
 
 impl KernelRuntimeState {
@@ -439,9 +439,8 @@ impl KernelRuntimeState {
         self.schedule_question_answer_delivery(interaction_id)
     }
 
-    /// Who closed a decision and through which connection; never the reply text. A decision a
-    /// parent agent held names that agent in `answered_by_agent` and the child that raised it in
-    /// `child_agent_id`, because the audit row is keyed by the interaction alone.
+    /// Who closed a decision and through which connection; never the reply text. An agent
+    /// answer names its source room, or the child when it answered as the child's parent.
     /// The answer already took effect, so a failed record is logged, not returned.
     pub(super) fn audit_interaction_answered(
         &self,
@@ -449,7 +448,7 @@ impl KernelRuntimeState {
         interaction_id: &str,
         choice_id: &str,
         connection_class: Option<crate::local::KernelConnectionClass>,
-        parent_answer: Option<ParentAnswer<'_>>,
+        agent_answer: Option<AgentDecisionAnswer<'_>>,
     ) {
         let mut payload = serde_json::json!({
             "session_id": session_id,
@@ -457,9 +456,16 @@ impl KernelRuntimeState {
             "connection_class": connection_class,
             "at_ms": crate::session::unix_epoch_ms(),
         });
-        if let Some(parent) = parent_answer {
-            payload["answered_by_agent"] = parent.holder.into();
-            payload["child_agent_id"] = parent.child.into();
+        match agent_answer {
+            Some(AgentDecisionAnswer::Parent { holder, child }) => {
+                payload["answered_by_agent"] = holder.into();
+                payload["child_agent_id"] = child.into();
+            }
+            Some(AgentDecisionAnswer::RoomAgent { agent, room }) => {
+                payload["answered_by_agent"] = agent.into();
+                payload["answering_room_id"] = room.into();
+            }
+            None => {}
         }
         let recorded = self.owned.durable_state_store.append_event(
             "interaction.answered",

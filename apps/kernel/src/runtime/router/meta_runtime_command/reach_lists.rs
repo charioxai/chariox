@@ -18,6 +18,19 @@ impl CommandRouter {
             [first, second] if first == "room" && second == "list" => {
                 serde_json::json!({"rooms": self.runtime_state.reachable_rooms(session, caller)})
             }
+            [first, second, room]
+                if first == "room" && matches!(second.as_str(), "agents" | "cards") =>
+            {
+                match self
+                    .runtime_state
+                    .owner_room_state(caller.id(), room, second == "cards")
+                {
+                    Ok(response) => response,
+                    Err(error) => {
+                        return Some(super::result::meta_command_failure_result(command, error))
+                    }
+                }
+            }
             [first, second] if first == "slice" && matches!(second.as_str(), "list" | "ls") => {
                 let slices = self
                     .runtime_state

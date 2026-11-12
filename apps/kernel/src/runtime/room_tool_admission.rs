@@ -178,7 +178,14 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
         }
         Some("session") if tokens.get(1).map(String::as_str) == Some("overview") => Ok(()),
         // What `--room` and `--slice` accept for the caller; the slice lifecycle stays out.
-        Some("room") if tokens.len() == 2 && tokens[1] == "list" => Ok(()),
+        Some("room")
+            if matches!(
+                tokens.get(1).map(String::as_str),
+                Some("list" | "agents" | "cards")
+            ) =>
+        {
+            Ok(())
+        }
         Some("slice") if tokens.len() == 2 && matches!(tokens[1].as_str(), "list" | "ls") => Ok(()),
         _ => Err(denied("command is outside the regular room surface")),
     }
@@ -203,6 +210,9 @@ pub(crate) fn command_doc(mut value: serde_json::Value) -> serde_json::Value {
             } else if matches!(tokens.as_slice(), [a, b] if matches!((a.as_str(), b.as_str()), ("room", "list") | ("slice", "list")))
             {
                 "read-only; what --room and --slice accept for this agent"
+            } else if tokens.first().map(String::as_str) == Some("room")
+                || matches!(tokens.as_slice(), [a,b] if a == "agent" && b == "answer") {
+                "owner rooms on this kernel; current authority; secret cards are owner-only; guests cannot reach other rooms"
             } else if tokens.first().map(String::as_str) == Some("extension") {
                 "self on the user's request in this turn, or a direct child for an App you hold"
             } else {
