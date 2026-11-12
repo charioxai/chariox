@@ -52,7 +52,7 @@ impl KernelRuntimeOwnedState {
                 };
                 format!("{what} has an outcome: call chariox.events.inbox, handle its result or failure, then call {ack}")
             } else if let Some(wake) = wake {
-                format!("{what} is still open: call chariox.events.cancel_wake with wake_id {:?}; review and acknowledge its cancellation receipt. To keep it running, use the wait below", wake.id)
+                format!("{what} is still open: call chariox.events.cancel_wake with wake_id {:?}; review and acknowledge any unhandled cancellation receipt. To keep it running, use the wait below", wake.id)
             } else if registrations
                 .iter()
                 .any(|r| r.live && r.obligation_id.as_deref() == Some(&obligation.id))
@@ -123,9 +123,17 @@ impl KernelRuntimeOwnedState {
     ) -> Result<String, DaemonError> {
         let reason = crate::terminal::public_task_failure_reason(&task.reason);
         let mut text = alias.map_or_else(|| reason.clone(), |alias| format!("{alias}: {reason}"));
-        let steps = self.task_settle_steps(task)?;
-        if !steps.is_empty() {
-            text.push_str(&format!(" Open: {}.", steps.join("; ")));
+        match self.task_settle_steps(task) {
+            Ok(steps) if !steps.is_empty() => {
+                text.push_str(&format!(" Open: {}.", steps.join("; ")));
+            }
+            Ok(_) => {}
+            Err(error) => {
+                // Damaged registrations must not take away the task's Cancel choice.
+                let reason =
+                    crate::secret_redaction::redact_secrets(&error.to_string()).into_owned();
+                text.push_str(&format!(" Recovery instructions could not be read: {reason}. Cancel this task or restore its authoritative receipts before Resume."));
+            }
         }
         Ok(text)
     }

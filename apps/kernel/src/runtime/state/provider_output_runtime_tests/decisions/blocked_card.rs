@@ -234,7 +234,7 @@ async fn a_settling_obligation_names_its_exact_receipt_in_correction_and_resume(
         AgentPermissionLevel::Yolo,
     )
     .await;
-    let task = t.blocked_task_of(&t.c, INVALID_TURN_END);
+    let task = t.blocked_task_of(&t.c, "Review the timer outcome before continuing");
     let store = &t.runtime.owned.durable_state_store;
     let now = crate::session::unix_epoch_ms();
     store
