@@ -36,7 +36,7 @@ fn async_popup_returns_protocol_954_403_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "94d00efb26025e7f7d2fe9f07dc5163ef1e85935c3d8733934acdffd8516adc1"
+        "23e2fd228d63a4c4601254632e39ba6304ca3dc4a5b3d84f68ca034d246cfe0e"
     );
     // An old client ignores the additive ownership field; its answer uses
     // exactly the pre-existing request shape.
@@ -134,6 +134,40 @@ fn person_card_arguments_and_interaction_keep_their_shape() {
     );
 }
 
+// Person cards (protocol 1006): a sub-agent's card names the panel that shows it and its asker.
+#[test]
+fn a_sub_agent_card_carries_its_panel_and_asker_name() {
+    let interaction = serde_json::json!({
+        "shown_in_agent_id": "agent-room",
+        "asker_name": "worker-1",
+        "id": "interaction-2",
+        "agent_id": "agent-child",
+        "kind": "choice",
+        "level": "info",
+        "message": "Child asks: which fruit",
+        "choices": [
+            {
+                "id": "apple",
+                "label": "Apple",
+                "reply": "apple"
+            }
+        ],
+        "requested_at_ms": 1
+    });
+    let card: crate::session::RuntimeInteraction =
+        serde_json::from_value(interaction.clone()).unwrap();
+    assert_eq!(card.asker_name(), Some("worker-1"));
+    assert_eq!(card.shown_in_agent_id(), Some("agent-room"));
+    assert_eq!(serde_json::to_value(&card).unwrap(), interaction);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&interaction).unwrap())
+        ),
+        "445199b2803142f0936fb2a5d18d929e14995d9969c23f8f674395426106af24"
+    );
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: verification metadata never carries page values.
 #[test]
 fn browser_verification_protocol_992_431_snapshot_and_hash() {
@@ -155,6 +189,6 @@ fn browser_verification_protocol_992_431_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "13cef7c298f7a37344bff02a8fa3a47cd340ae0ec3c903923c4daebfd0abc7c5"
+        "e7a637392cfdc3d6b9a08e6e8f6b0210941b35a65780937c5cb1000e70cab8eb"
     );
 }

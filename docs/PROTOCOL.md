@@ -747,11 +747,12 @@ the home offline. A deadline only shortens: the worker refuses a later time with
 Local daemon protocol 1000 makes a
 sub-agent's decision one card with one holder. The kernel keeps the holder (the
 nearest parent that may answer, else the user) as state for routing and audit and
-does not project it. While the user holds a sub-agent's decision, the session
-interaction carries `shown_in_agent_id`, the room agent whose panel shows it, and
-an external agent following the room hears the same interaction id as an
-`interaction` event with `value.shown_in` set; a decision a parent agent holds is
-not listed to the user until it reaches the user. A holder agent gets an urgent
+does not project it. A sub-agent's decision carries `shown_in_agent_id`, the room agent
+whose panel shows it, from the moment it is raised (local 1006): the user sees it and may
+answer it while a parent agent holds it, and the first answer wins. An external agent
+following the room hears the same interaction id as an `interaction` event with
+`value.shown_in` set once the user holds it; a decision a parent agent holds is not
+listed to followers until it reaches the user. A holder agent gets an urgent
 `child_decision` inbox event (`interaction_id`, `child_agent_id`, `child_alias`,
 `question`, optional `detail` and `detail_truncated`, `choices`, `text_allowed`,
 `needs_answer`). `detail` is the card's own text beyond its title (the command a permission
@@ -7210,6 +7211,13 @@ Room setup (`CreateSession.setup`, `RuntimeSession.room_setup`, `RetryRoomSetup`
 `SuggestSessionAlias` and `git_available` on the launch target, and an agent's `wait.deadline_ms` that
 is `null` for a yield without a deadline (`protocol_shapes/agent_lifecycle.rs`). Relay peer 444 renames
 the leased agent file answers. Managed upgrades admit 1002 and 1003.
+
+Person cards carry local daemon protocol 1006 and relay peer 445 (provisional: the union restamps).
+An active interaction carries `asker_name`, the asking agent's alias (else its ref), projected with
+the session and never stored, so a client names who asks in the card's first paint. A sub-agent's
+card is shown in its top parent's panel (`shown_in_agent_id`) whoever holds it (above). Managed
+upgrades admit 1003 and 1005. Focused check: `cargo test -p chariox-kernel --lib --
+a_sub_agent_card_carries a_projected_card_names_its_asker the_user_answers_a_decision protocol_shapes`.
 
 ### MP-08 / MP-09 / MP-10 / MP-11: Files on the owner's machines — local 1005 / relay peer 444
 

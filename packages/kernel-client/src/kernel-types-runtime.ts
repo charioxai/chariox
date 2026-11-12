@@ -171,6 +171,8 @@ export type RuntimeInteraction = RuntimeInteractionSubject & {
   related_agent_id?: string | null
   /** A sub-agent's decision is listed with the room agent, whose panel shows it, whoever holds it. */
   shown_in_agent_id?: string | null
+  /** Protocol 1006: the asking agent's alias (else its ref), so a client names who asks in its first paint. */
+  asker_name?: string | null
   /** Person cards: the wake source whose occurrence closes this card by itself. */
   closes_with_wake?: string | null
   requester?: KernelAccessRequester | null

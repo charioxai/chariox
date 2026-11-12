@@ -511,4 +511,6 @@ pub use workspace::*;
 /// reports `wait.deadline_ms` as `null`. A sub-agent tree node carries its `account_profile`,
 /// `workspace_id`, `worktree_id` and `worker_kernel_id`, and an agent's wait is a `provider_tool` row of its
 /// transcript.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1005;
+/// 1006 (person cards, provisional): an active interaction carries `asker_name`, the asking agent's
+/// alias (else its ref), and a sub-agent's card is shown in its top parent's panel whoever holds it.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1006;

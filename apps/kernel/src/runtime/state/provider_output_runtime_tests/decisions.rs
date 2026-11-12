@@ -359,6 +359,28 @@ async fn the_user_answers_a_decision_a_parent_holds_from_the_top_panel() {
     );
 }
 
+/// UIQA-S4: a client named a sub-agent's card a moment after painting it, once a separate lookup
+/// answered. The projected card names its asker itself, by its alias.
+#[tokio::test]
+async fn a_projected_card_names_its_asker() {
+    let t = tree(
+        "decision-asker-name",
+        AgentPermissionLevel::Required,
+        AgentPermissionLevel::Required,
+    )
+    .await;
+    t.raise(permission("perm-asker", &t.c)).await;
+    let session = t.runtime.owned.session_snapshot(&t.room).unwrap();
+    let card = session
+        .active_interactions()
+        .iter()
+        .find(|i| i.id() == "perm-asker")
+        .unwrap();
+    let projected = serde_json::to_value(card).unwrap();
+    assert_eq!(projected["shown_in_agent_id"], t.g.as_str());
+    assert_eq!(projected["asker_name"], "c", "{projected}");
+}
+
 #[tokio::test]
 async fn a_required_parent_is_skipped() {
     let t = tree(
