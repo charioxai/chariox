@@ -1529,6 +1529,47 @@ fn writing(pid: u32, writes: u64, write_growth: u64) -> (u32, Entry, pool::Comma
     (pid, build, writer(pid, writes, write_growth))
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn a_growing_memfd_is_not_a_disk_filler() {
+    use std::io::Write;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::fs::MetadataExt;
+
+    // SAFETY: the name is NUL-terminated; a successful call returns an owned descriptor.
+    let fd = unsafe { libc::memfd_create(c"process-resource-memory".as_ptr(), libc::MFD_CLOEXEC) };
+    assert!(fd >= 0, "{}", std::io::Error::last_os_error());
+    // SAFETY: fd is a fresh descriptor and this File takes its sole ownership.
+    let mut memory = unsafe { std::fs::File::from_raw_fd(fd) };
+    let path = PathBuf::from(format!("/proc/self/fd/{}", memory.as_raw_fd()));
+    let space = statvfs(&path).unwrap();
+    assert_eq!((space.total, space.free), (0, 0));
+    let inode = memory.metadata().unwrap().ino();
+    let mut growth = disk_use::WriteGrowth::default();
+    let _ = growth.sample(&[std::process::id()], 1000);
+    memory.write_all(&[0; 65536]).unwrap();
+    let output = growth
+        .sample(&[std::process::id()], 1001)
+        .into_iter()
+        .find(|output| output.id == space.id && output.files.contains(&inode))
+        .expect("the real memory descriptor's allocated blocks grew");
+    assert!(output.rate >= GROWING);
+    let (_, build, build_use) = writing(2, 2 * MIB, 2 * MIB);
+    let current = owner("agent", true, vec![build_use], vec![(2, build)]);
+    current.lock().unwrap().disk_writes = [(2, vec![output])].into();
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &statvfs),
+    );
+    assert!(
+        ledger.take_fillers(&current).is_empty(),
+        "anonymous memory must not be stopped as a full disk"
+    );
+    assert_eq!(wait(&current, 2), None);
+}
+
 #[test]
 fn the_writer_filling_a_nearly_full_disk_is_stopped_never_paused() {
     // A 100 GiB volume has a 10 GiB floor: 4 GiB is below its half.
