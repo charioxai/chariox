@@ -660,6 +660,7 @@ fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
         remote_extension_sync_issue_count: 1,
         remote_extension_pending_revoke_count: 1,
         unread_idle_agent_count: 1,
+        waiting_agent_count: 2,
     };
 
     assert_eq!(
@@ -676,7 +677,8 @@ fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
             "home_proxy_agent_count": 2,
             "remote_extension_sync_issue_count": 1,
             "remote_extension_pending_revoke_count": 1,
-            "unread_idle_agent_count": 1
+            "unread_idle_agent_count": 1,
+            "waiting_agent_count": 2
         })
     );
 }
