@@ -38,8 +38,8 @@ try {
 3. Hold THIS initial turn in one shell command: until [ -e '${release}' ]; do sleep 1; done. The external driver releases this only after the three real completions are pending. Do not read or acknowledge any event during this initial turn. After the shell finishes, end with WAITING.
 First inbox wake:
 4. Read events_inbox ONCE, keep the full answer, then events_ack through the last sequence with handled=true. All three worker peer_event completions should be present. Write ${reportPath} as JSON with {"batch_events": <the complete events array>, "batch_ack": <ack result>}. Do not delete the workers.
-5. Unsubscribe the three worker peer follows using events_unsubscribe (events_subscriptions lists the earlier peer_follows). Then send w1 exactly one message using send_agent_message with room="${targetRoom}"${remote ? `, kernel="${d.b.status.daemon_id}"` : ""}, reply_requested=true, message="Read and acknowledge this message with handled=true, then reply with just the word FIVE as your final answer. Do not send a separate message. Do not subscribe or arm timers." Then ${yieldRule}
-Second inbox wake:
+5. Unsubscribe the three worker peer follows using events_unsubscribe (events_subscriptions lists the earlier peer_follows). Then send w1 exactly one message using send_agent_message with room="${targetRoom}"${remote ? `, kernel="${d.b.status.daemon_id}"` : ""}, reply_requested=true, message="Read and acknowledge this message with handled=true, then reply with just the word FIVE as your final answer. Do not send a separate message. Do not subscribe or arm timers." If the reply has already completed and events_subscriptions lists no live reply registration, go directly to step 6 in this same turn. Otherwise ${yieldRule}
+On the reply wake, or when the reply already completed:
 6. Read events_inbox ONCE. Record all events in the JSON as reply_events and their acknowledgment as reply_ack; preserve batch_events/batch_ack. Acknowledge them and end AOINDONE. The driver removes the private kernels and their peers. No further timers or subscriptions.
 `
     save("brief.json", { brief }); await d.submit(brief)
