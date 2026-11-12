@@ -89,6 +89,25 @@ impl KernelRuntimeState {
             tracing::warn!(%error, room_id=room, "task owner decision withdrawal failed; interaction admission will retry");
         }
     }
+    /// The person is alerted to a card they hold; a card an agent holds alerts them only when it is
+    /// handed up to them.
+    fn notify_owner_if_theirs(
+        &self,
+        task: &AgentTaskExecution,
+        id: &str,
+    ) -> Result<(), DaemonError> {
+        let theirs = self
+            .owned
+            .pending_interactions
+            .write()
+            .get(id)
+            .is_none_or(|pending| pending.holder == super::DecisionHolder::User);
+        if theirs {
+            self.owned.emit_task_owner_notification(task, id)?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn ensure_task_owner_interaction(
         &self,
         task: AgentTaskExecution,
@@ -166,7 +185,7 @@ impl KernelRuntimeState {
                         .terminal_stream
                         .notify_terminal_projection_change(&task.room_id);
                 }
-                self.owned.emit_task_owner_notification(&task, &id)?;
+                self.notify_owner_if_theirs(&task, &id)?;
                 return Ok(());
             }
             // Hot reload retains the task's decision, but an in-memory reply channel must be reattached.
@@ -211,7 +230,7 @@ impl KernelRuntimeState {
             .await?;
         // The agent that holds the card is told; a card nobody above can hold is the person's.
         self.announce_child_decision(&task.room_id, &id).await?;
-        let notification = self.owned.emit_task_owner_notification(&task, &id);
+        let notification = self.notify_owner_if_theirs(&task, &id);
         let state = self.as_kernel();
         tokio::spawn(async move {
             if let Ok(answer) = rx.await {
