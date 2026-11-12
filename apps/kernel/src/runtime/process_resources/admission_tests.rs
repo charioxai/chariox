@@ -408,13 +408,13 @@ fn a_launcher_chain_is_the_harness_and_only_its_later_commands_wait() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn a_wait_longer_than_two_minutes_does_not_emit_a_notice() {
+fn a_long_wait_inside_the_limit_does_not_emit_a_notice() {
     let (_a, writer, _pool) = held();
     take_wait_events();
     {
         let mut observation = writer.domain.state.lock().unwrap();
         for entry in observation.admission.values_mut() {
-            entry.since_ms = crate::session::unix_epoch_ms() - 130_000;
+            entry.since_ms = crate::session::unix_epoch_ms() - 50_000;
         }
     }
     settle(2);
@@ -504,4 +504,34 @@ fn a_known_heavy_job_keeps_its_admission_when_its_shell_runs_a_second_job() {
         "the first job did not run to its end without Start now"
     );
     assert!(shell.alive("second"));
+}
+
+/// A command held before it started has no outcome either while the room
+/// does not come: after the limit it ends naming what it needs.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_held_command_whose_room_does_not_come_ends_with_the_room_and_need() {
+    let (_a, mut b, _pool) = held();
+    assert!(b.waiting("job"), "the heavy command was not held");
+    {
+        let mut observation = b.domain.state.lock().unwrap();
+        for entry in observation
+            .admission
+            .values_mut()
+            .filter(|e| e.wait.is_some())
+        {
+            entry.since_ms = crate::session::unix_epoch_ms() - 61_000;
+        }
+    }
+    settle(3);
+    assert!(
+        !b.alive("job"),
+        "the held command stayed held with no outcome"
+    );
+    let notice = b.told("job");
+    assert!(
+        notice.contains("it still needs ") && notice.contains("are left"),
+        "the notice does not explain the block: {notice:?}"
+    );
+    assert!(b.root_alive());
 }
