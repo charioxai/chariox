@@ -261,7 +261,7 @@ fn owner_agent_cancellation_987_snapshot_and_hash() {
     let bytes = include_bytes!("owner-agent-cancellation-987.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "a4254b7c2ac9c83c1a0b49e1f03f9761489a6a85f816f0839a5eb574c34f76af"
+        "af4bc06e6410beb602c21468641e0592c05b33bcb31afac950364dacac9a5062"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -307,6 +307,28 @@ fn browser_owner_action_shape_is_bound_to_protocol993() {
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(fixture.to_string().as_bytes())),
-        "e8b4b67b8a675ff89d372f43f33f67b03a4cc487fcdb622409c9173aa2f93c48"
+        "4ab5d92ecd12f9d2bfeed961de83454f90683b6dc5d52a9de327c47aa78b50c3"
+    );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: idle Stop has an explicit successful wire result.
+#[test]
+fn nothing_to_stop_response_snapshot_and_hash() {
+    let response = LocalDaemonResponse::NothingToStop {
+        session_id: "room".into(),
+        agent_id: "agent".into(),
+    };
+    let wire = serde_json::to_value(response).unwrap();
+    assert_eq!(
+        wire,
+        serde_json::json!({"NothingToStop": {
+            "session_id": "room", "agent_id": "agent",
+        }})
+    );
+    let decoded: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), wire);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "8511d69685d01591f2a683023242cf342f23537afe6108c43149fb9cdf8b4892"
     );
 }

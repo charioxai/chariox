@@ -5587,15 +5587,22 @@ hidden agent comes back for every client; hiding an idle agent holds until
 There is no agent-level archive: `ArchiveAgent`, `ListArchivedAgents`, `AgentArchived` and the
 agent `archived` flag are removed (Rooms are still archived). Drill: `local::api::tests::agent_hide`.
 
-### MP-08 / MP-10 / MP-11: parked-task Stop reply (643 / peer 239)
+### MP-08 / MP-09 / MP-10 / MP-11: Stop replies (1010 / peer 448)
 
 `CancelActivePrompt` keeps its request shape. When the targeted agent has no active
-prompt but owns a parked task (a Waiting task whose provider turn has ended), the
-kernel cancels that task and answers `AgentTaskUpdated { session_id, task }` instead
+prompt but owns parked tasks (Waiting tasks whose provider turns have ended), the
+kernel cancels all those tasks and answers `AgentTaskUpdated { session_id, task }` instead
 of `PromptCancelled`. A request that names `expected_prompt_id` never cancels a
-parked task. Clients treat `AgentTaskUpdated` as a successful Stop only with
-protocol 643 or newer; older kernels keep answering `PromptCancelled` or an error.
-The relay peer protocol is unchanged.
+parked task. Shared clients accept `AgentTaskUpdated` as a successful Stop.
+An unconditional Stop with no active prompt and no unfinished task succeeds with `NothingToStop { session_id, agent_id }`. A Stop
+that names `expected_prompt_id` still returns `no_active_prompt` when that
+prompt is no longer active. Shared shell Stop and rendered Claude interruption
+accept the idle success, including when work finishes after an activity read.
+Focused drill: `node apps/cli/scripts/live-idle-stop-drill.mjs --kernel-url URL
+--session SESSION --evidence-dir DIR`, after building the real CLI and launching
+an idle Room with an authenticated provider on the kernel under test. It checks
+repeated Stop before and after a real provider turn and retains the terminal
+recording and request results outside the repository.
 
 ### Staging new UI union (599/205)
 

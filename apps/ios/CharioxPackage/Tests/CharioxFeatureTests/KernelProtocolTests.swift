@@ -603,3 +603,9 @@ import Testing
     #expect(payload["effort"] is NSNull)
     #expect(payload["clear_effort"] as? Bool == true)
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: idle Stop is a successful response.
+@Test func nothingToStopResponseMatchesKernelShape() throws {
+    let data = Data(#"{"NothingToStop":{"session_id":"room","agent_id":"agent"}}"#.utf8)
+    #expect(try JSONDecoder().decode(LocalDaemonResponse.self, from: data) == .nothingToStop)
+}

@@ -52,3 +52,13 @@ test("shared stop validates exact arguments and revision before sending requests
     assert.equal(result.message, "usage: stop [task <task-id> <revision> | timer <wake-id>]", command)
   }
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11: idle success cannot satisfy an exact task/timer cancellation.
+for (const command of ["stop task missing 1", "stop timer missing"]) {
+  test(`${command} still requires the exact cancellation result`, async () => {
+    const context = { ...createDefaultShellContext(), sessionId: "room", attachmentId: "terminal" }
+    await assert.rejects(executeShellCommand(parseShellCommand(command), context, {
+      client: { send: async () => ({ NothingToStop: { session_id: "room", agent_id: "agent" } }) },
+    }), /expected AgentTaskUpdated/)
+  })
+}

@@ -212,7 +212,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// `StartFileTransfer`, `GetFileTransfer` and `CancelFileTransfer` between kernels of one owner, and
 /// renames the answers `LeasedAgentFileRead` and `LeasedAgentFileRefused` to `FileSliceRead` and
 /// `FileRefused`, which both file services use.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 444;
+/// Peer 448 (Landing 10, provisional) pairs the idle Stop success contract with local 1010.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 448;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

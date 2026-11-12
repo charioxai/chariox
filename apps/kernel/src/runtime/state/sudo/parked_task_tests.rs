@@ -875,3 +875,46 @@ async fn unconditional_stop_of_an_idle_agent_succeeds_with_or_without_room_tools
         ));
     }
 }
+
+#[tokio::test]
+async fn idle_stop_still_rejects_an_invalid_attachment() {
+    let f = fixture_with_options(None, true);
+    let request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+        session_id: f.request.session_id.clone(),
+        attachment_id: "missing-terminal".into(),
+        target_agent_id: f.request.target_agent_id.clone(),
+        expected_prompt_id: None,
+    });
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "stop-idle-invalid-attachment",
+        None,
+        None,
+        &request,
+    );
+    assert!(f.router.dispatch(command, request).await.is_err());
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: idle success still requires the right Room.
+#[tokio::test]
+async fn idle_stop_rejects_an_agent_from_another_room() {
+    let f = fixture_with_options(None, true);
+    let worktree = crate::test_support::TestWorktree::new("stop-other-room");
+    let (_, other_agent) = crate::app::KernelSessionService::new(&mut *f.app.lock().await)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+        session_id: f.request.session_id.clone(),
+        attachment_id: f.request.attachment_id.clone(),
+        target_agent_id: Some(other_agent.id().into()),
+        expected_prompt_id: None,
+    });
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "stop-idle-wrong-room",
+        None,
+        None,
+        &request,
+    );
+    assert!(matches!(f.router.dispatch(command, request).await,
+        Err(DaemonError::AgentNotInSession { session_id, agent_id })
+            if session_id == f.request.session_id && agent_id == other_agent.id()));
+}

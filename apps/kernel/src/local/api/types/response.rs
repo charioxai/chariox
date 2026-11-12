@@ -419,6 +419,7 @@ pub enum LocalDaemonResponse {
     },
     PromptCompleted { completion: PromptCompletion, },
     PromptCancelled { cancellation: PromptCancellation, },
+    NothingToStop { session_id: String, agent_id: String, },
     ActivePromptSteered { prompt: PromptQueueItem, },
     QueuedPromptSteered {
         prompt: PromptQueueItem,
