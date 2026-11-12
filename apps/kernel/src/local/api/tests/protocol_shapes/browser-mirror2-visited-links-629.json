@@ -3,7 +3,7 @@
     "MP-08",
     "MP-10"
   ],
-  "local_protocol": 1005,
+  "local_protocol": 1006,
   "peer_protocol": 444,
   "allocation": "coordinator-allocated local 593, relay peer unchanged: additive visited_links (empty href for a link visited from the page's origin)",
   "subscribe": {

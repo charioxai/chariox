@@ -7234,6 +7234,12 @@ Room setup (`CreateSession.setup`, `RuntimeSession.room_setup`, `RetryRoomSetup`
 is `null` for a yield without a deadline (`protocol_shapes/agent_lifecycle.rs`). Relay peer 444 renames
 the leased agent file answers. Managed upgrades admit 1002 and 1003.
 
+The kernel resource feed carries local daemon protocol 1006 (provisional: the next free number after
+1005; relay peer stays 444 because the relay forwards the subscription scope unread). It adds the
+`kernel_resources` subscription scope, `WatchKernelResources` / `KernelResourcesWatched` and the
+`kernel_resource_changed` event (§4.1.1). Web clients require 1006. Focused check:
+`cargo test -p chariox-kernel --lib -- kernel_resource`.
+
 ### MP-08 / MP-09 / MP-10 / MP-11: Files on the owner's machines — local 1005 / relay peer 444
 
 The Kernel files requests above are the owner's Files service on a machine. Local 1005 adds a
