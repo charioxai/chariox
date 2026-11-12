@@ -128,6 +128,42 @@ async fn targetless_owner_stop_cancels_waiting_task_and_timer_without_active_pro
         .is_none());
 }
 
+/// An orchestrator that wakes on events leaves one parked task per wait. Stopping it is one
+/// request that ends them all, not an error that asks for the intended task.
+#[tokio::test]
+async fn stop_of_an_idle_agent_with_several_parked_tasks_cancels_them_all() {
+    let f = fixture_with_options(None, true);
+    let first = waiting_task(&f, "waiting-turn-1");
+    let second = waiting_task(&f, "waiting-turn-2");
+    let request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+        session_id: f.request.session_id.clone(),
+        attachment_id: f.request.attachment_id.clone(),
+        target_agent_id: None,
+        expected_prompt_id: None,
+    });
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "stop-several-waiting",
+        None,
+        None,
+        &request,
+    );
+    let response = f.router.dispatch(command, request).await.unwrap();
+    let LocalDaemonResponse::AgentTaskUpdated { task, .. } = response else {
+        panic!("expected task cancellation")
+    };
+    assert_eq!(task.state, ExecutionState::Cancelled);
+    let store = &f.state.owned.durable_state_store;
+    for original in [first, second] {
+        let stopped = store.agent_task(&original.task_id).unwrap().unwrap();
+        assert_eq!(stopped.state, ExecutionState::Cancelled, "{}", original.task_id);
+        let wake = store
+            .agent_wake(&format!("timer-{}", original.task_id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(wake.state, "cancelled", "{}", original.task_id);
+    }
+}
+
 #[tokio::test]
 async fn stop_cancels_parked_task_through_prompt_route() {
     let f = fixture_with_options(None, true);
