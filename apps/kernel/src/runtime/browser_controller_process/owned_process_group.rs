@@ -684,7 +684,7 @@ mod tests {
             &mut covered,
             Some(100),
             || Some(BTreeSet::from([1, 42, 90])),
-            &read,
+            read,
             |_| true,
         )
         .unwrap();
@@ -697,7 +697,7 @@ mod tests {
             &mut covered,
             Some(103),
             || panic!("a scan after the first one must not list /proc"),
-            &read,
+            read,
             |_| true,
         )
         .unwrap();
@@ -717,7 +717,7 @@ mod tests {
             &mut covered,
             Some(104),
             || panic!("a scan after the first one must not list /proc"),
-            &read,
+            read,
             |_| true,
         )
         .unwrap();
@@ -753,7 +753,7 @@ mod tests {
                     listed.set(true);
                     Some(BTreeSet::new())
                 },
-                &read,
+                read,
                 |_| true,
             )
             .unwrap();
