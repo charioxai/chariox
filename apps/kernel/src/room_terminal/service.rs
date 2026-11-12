@@ -526,16 +526,28 @@ impl RoomTerminalService {
     ) -> Result<RoomTerminalOutput, DaemonError> {
         let owner = self.find(session_id, terminal_id)?;
         let deadline = Instant::now() + output_wait(wait);
+        // Adjacent small PTY writes share one reply within a display frame.
+        // Replays and full pages stay immediate.
+        let mut gathered = wait.is_zero();
         loop {
             let changed = owner.output_changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
+            let mut gather = false;
             {
                 let mut state = owner.lock_open()?;
                 let TerminalState { pty, terminal, .. } = &mut *state;
                 let page = terminal.log.read(after_offset, MAX_OUTPUT_PAGE_BYTES);
                 let finished = !terminal.is_running() || Instant::now() >= deadline;
-                if !page.bytes.is_empty() || page.gap || finished {
+                if !page.bytes.is_empty()
+                    && !gathered
+                    && !page.gap
+                    && !finished
+                    && page.bytes.len() < MAX_OUTPUT_PAGE_BYTES
+                {
+                    gathered = true;
+                    gather = true;
+                } else if !page.bytes.is_empty() || page.gap || finished {
                     let driver = terminal.current_driver(pty);
                     return Ok(RoomTerminalOutput {
                         terminal: terminal.summary(driver),
@@ -544,6 +556,14 @@ impl RoomTerminalService {
                         gap: page.gap,
                     });
                 }
+            }
+            if gather {
+                tokio::time::sleep(
+                    Duration::from_millis(16)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                )
+                .await;
+                continue;
             }
             let _ = tokio::time::timeout_at(deadline.into(), changed).await;
         }
