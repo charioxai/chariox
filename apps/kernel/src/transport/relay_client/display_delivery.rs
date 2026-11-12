@@ -56,6 +56,7 @@ mod tests {
                 display_id: Some("lease".into()),
                 display_pump: Some(super::super::display_pump::DisplayPump::new(1, "test")),
                 _terminal_lease: None,
+                resource_watch: None,
                 handle: tokio::spawn(std::future::pending()),
             },
         );

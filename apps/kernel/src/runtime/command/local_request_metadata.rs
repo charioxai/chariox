@@ -809,6 +809,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetTerminalCommandCatalog(_) => "terminal.command_catalog.get",
         LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
         LocalDaemonRequest::GetClientCatalogSnapshot(_) => "client.catalog_snapshot.get",
+        LocalDaemonRequest::WatchKernelResources(_) => "kernel_resources.watch",
         LocalDaemonRequest::GetClientCatalogRevisions(_) => "client.catalog_revisions.get",
         LocalDaemonRequest::GetProviderCommandCatalogs(_) => "provider.command_catalogs.get",
         LocalDaemonRequest::GetProviderUsageSnapshot(_) => "provider_account.usage_snapshot.get",

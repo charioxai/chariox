@@ -204,6 +204,13 @@ pub(crate) enum KernelEvent {
     WaitingRoomInventoryChanged {
         inventory_version: String,
     },
+    /// Protocol 1006: one watched resource of a `kernel_resources` subscription.
+    KernelResourceChanged {
+        resource: String,
+        params: Value,
+        revision: String,
+        body: KernelResourceChange,
+    },
     WaitingRoomRowsChanged {
         #[serde(default)]
         sessions_total: usize,
@@ -291,6 +298,15 @@ impl SessionMetadataPatch {
 pub(crate) enum KernelSubscriptionScope {
     Session,
     WaitingRoomInventory,
+    KernelResources,
+}
+
+/// Protocol 1006: how a watched resource differs from the copy the client holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum KernelResourceChange {
+    Unchanged {},
+    Snapshot { data: Value },
 }
 
 pub(crate) const MIN_SUBSCRIPTION_HEARTBEAT_MS: u64 = 500;
@@ -318,6 +334,8 @@ pub(crate) fn requested_heartbeat_interval(
 pub(crate) fn kernel_subscription_scope(scope: Option<&str>) -> KernelSubscriptionScope {
     if scope == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE) {
         KernelSubscriptionScope::WaitingRoomInventory
+    } else if scope == Some(super::kernel_resource_feed::KERNEL_RESOURCES_SUBSCRIPTION_SCOPE) {
+        KernelSubscriptionScope::KernelResources
     } else {
         KernelSubscriptionScope::Session
     }
@@ -928,6 +946,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::RelayStatusChanged { .. } => "relay_status_changed",
         KernelEvent::RemoteMachinesChanged { .. } => "remote_machines_changed",
         KernelEvent::WaitingRoomInventoryChanged { .. } => "waiting_room_inventory_changed",
+        KernelEvent::KernelResourceChanged { .. } => "kernel_resource_changed",
         KernelEvent::WaitingRoomRowsChanged { .. } => "waiting_room_rows_changed",
         KernelEvent::ClientCatalogChanged { .. } => "client_catalog_changed",
         KernelEvent::ProviderCatalogChanged { .. } => "provider_catalog_changed",
@@ -967,6 +986,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::RelayStatusChanged { .. } => None,
         KernelEvent::RemoteMachinesChanged { .. } => None,
         KernelEvent::WaitingRoomInventoryChanged { .. } => None,
+        KernelEvent::KernelResourceChanged { .. } => None,
         KernelEvent::WaitingRoomRowsChanged { .. } => None,
         KernelEvent::ClientCatalogChanged { .. } => None,
         KernelEvent::ProviderCatalogChanged { .. } => None,
@@ -1036,6 +1056,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::RelayStatusChanged { .. }
         | KernelEvent::RemoteMachinesChanged { .. }
         | KernelEvent::WaitingRoomInventoryChanged { .. }
+        | KernelEvent::KernelResourceChanged { .. }
         | KernelEvent::WaitingRoomRowsChanged { .. }
         | KernelEvent::ClientCatalogChanged { .. }
         | KernelEvent::ProviderCatalogChanged { .. }

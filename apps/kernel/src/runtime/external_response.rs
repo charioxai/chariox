@@ -311,6 +311,7 @@ response_policies! {
         ProviderCatalog,
         ClientCatalogRevisions,
         ClientCatalogSnapshot,
+        KernelResourcesWatched,
         ProviderCommandCatalogs,
         McpServerUninstalled,
         EnvironmentRegistered,
