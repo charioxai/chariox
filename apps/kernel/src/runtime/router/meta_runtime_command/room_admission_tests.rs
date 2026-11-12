@@ -159,7 +159,7 @@ fn deadline_values_are_checked_by_both_commands_without_panicking() {
         super::request::meta_agent_request(
             &session(),
             &parent,
-            &["deadline".into(), "set".into(), "c".into(), value.into()],
+            &["deadline".into(), "c".into(), value.into()],
             &agents,
             true,
         )

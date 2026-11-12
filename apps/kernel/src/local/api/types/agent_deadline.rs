@@ -6,7 +6,9 @@ use super::*;
 pub struct SetAgentDeadlineRequest {
     pub session_id: String,
     pub agent_id: String,
-    pub deadline_ms: u64,
+    /// Absolute epoch milliseconds, or null to clear. Omission is invalid.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub deadline_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

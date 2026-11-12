@@ -121,6 +121,25 @@ impl KernelRuntimeState {
                 None => Err(denied("cancel names the agent whose turn it stops")),
             };
         }
+        if let LocalDaemonRequest::SetAgentDeadline(r) = request {
+            let target = self
+                .owned
+                .agent_store
+                .get_agent(&r.agent_id)
+                .ok()
+                .filter(|target| target.session_id() == r.session_id)
+                .ok_or_else(|| denied("agent is unavailable in that room"))?;
+            if target.id() == actor.id() {
+                return Err(denied(
+                    "only the owner or another authorized agent can change your deadline",
+                ));
+            }
+            return self.authorize_peer_control(
+                &actor,
+                &target,
+                super::peer_rooms::PeerControl::Cancel,
+            );
+        }
         if rooms_named(request)
             .iter()
             .any(|room| room != actor.session_id())
@@ -128,7 +147,6 @@ impl KernelRuntimeState {
             return Err(denied("request is outside the caller room"));
         }
         let (room, target_id, deleting) = match request {
-            LocalDaemonRequest::SetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::GetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::ListDescendants(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::AliasAgent(r) => (&r.session_id, &r.agent_id, false),

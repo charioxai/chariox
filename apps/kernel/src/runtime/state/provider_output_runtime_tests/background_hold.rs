@@ -418,7 +418,8 @@ async fn a_deadline_keeps_the_hold_until_it_fires_and_then_says_the_call_still_r
         .agent_lifecycle(Operation::SetDeadline {
             room: team.room.clone(),
             agent: team.child.clone(),
-            deadline: deadline_ms,
+            deadline: Some(deadline_ms),
+            inherited: Vec::new(),
         })
         .unwrap();
     team.runtime

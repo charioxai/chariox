@@ -125,7 +125,7 @@ export async function controlProbes(ctx) {
   if (g1) {
     await a.rpc(submitPromptRequest(R, attached, g1, `Run this shell command and wait for it: until [ -e ${ctx.work}/never-appears-g1 ]; do sleep 1; done`, [])).then(() => note("grandchild-busy-prompted", { g1 }), e => note("grandchild-prompt-refused", { message: e.message.slice(0, 160) }))
     await delay(15000)
-    await a.rpc(submitPromptRequest(R, attached, ctx.orch, `Run these room commands with the chariox room_run_command tool, one by one, and report each exact answer. Do not retry. (1) agent deadline set g1 10m (2) agent deadline get g1 (3) agent cancel g1 (4) agent children. End with GRANDDONE.`, [])).then(() => note("grandparent-probe-submitted", {}), e => note("grandparent-probe-refused", { message: e.message.slice(0, 160) }))
+    await a.rpc(submitPromptRequest(R, attached, ctx.orch, `Run these room commands with the chariox room_run_command tool, one by one, and report each exact answer. Do not retry. (1) agent deadline g1 10m (2) agent deadline get g1 (3) agent cancel g1 (4) agent children. End with GRANDDONE.`, [])).then(() => note("grandparent-probe-submitted", {}), e => note("grandparent-probe-refused", { message: e.message.slice(0, 160) }))
   }
   // Without any agent token: the runtime tool endpoint of this kernel must not run a room command.
   const rawResult = await rawToolCall(ctx.mcpPort).catch(e => `error ${String(e.message).slice(0, 120)}`)

@@ -12,7 +12,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             room,
             agent,
             deadline,
-        } => super::deadlines::set(tx, room, agent, deadline),
+            inherited,
+        } => super::deadlines::set(tx, room, agent, deadline, inherited),
         Operation::ReachDeadline {
             room,
             agent,

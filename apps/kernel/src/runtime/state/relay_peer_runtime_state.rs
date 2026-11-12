@@ -338,8 +338,9 @@ impl KernelRuntimeState {
     pub(crate) async fn set_relay_leased_agent_deadline(
         &self,
         leased_agent_id: &str,
-        deadline_ms: u64,
+        deadline_ms: Option<u64>,
     ) -> Result<(), DaemonError> {
+        let _deadline_edit = self.owned.agent_deadline_edit.lock().await;
         let leased_agent_id = leased_agent_id.to_string();
         let backing = self
             .with_app_side_effect(move |app| {
@@ -357,6 +358,7 @@ impl KernelRuntimeState {
                 room: backing.0,
                 agent: backing.1,
                 deadline: deadline_ms,
+                inherited: Vec::new(),
             },
         )?;
         Ok(())
