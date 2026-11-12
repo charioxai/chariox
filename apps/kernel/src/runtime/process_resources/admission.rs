@@ -103,8 +103,7 @@ pub(super) struct Entry {
     pub stopped: bool,
     pub seen: Option<Seen>,
     expected: Option<Peak>,
-    /// Bytes per second it grew when it was paused, falling with its measured
-    /// rate while it is stopped.
+    /// Bytes per second it grew (or wrote) when it was paused.
     paused_rate: u64,
     peak: Peak,
     resident: u64,
@@ -532,7 +531,6 @@ impl Ledger {
         current: &Arc<Mutex<Observation>>,
         room: &Room,
     ) -> bool {
-        decay_paused_rates(members);
         let mut state = State::read(members, room);
         let mut changed = Vec::new();
         self.hold(current, room, &mut state);
@@ -1061,23 +1059,6 @@ impl State {
             }
         }
         state
-    }
-}
-
-/// A stopped command does not grow, and the watch halves its measured rate at
-/// every sample: the rate recorded at the pause follows it down, so a burst at
-/// the start does not keep the command waiting for room it does not need.
-fn decay_paused_rates(members: &[Arc<Mutex<Observation>>]) {
-    for member in members {
-        let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
-        let observation = &mut *observation;
-        for command in &observation.commands {
-            if let Some(entry) = observation.admission.get_mut(&command.pid) {
-                if matches!(entry.wait, Some(Wait::Paused(_))) {
-                    entry.paused_rate = entry.paused_rate.min(command.growth);
-                }
-            }
-        }
     }
 }
 
