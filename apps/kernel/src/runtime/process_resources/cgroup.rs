@@ -6,10 +6,9 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-/// Every workload of a pool, under the shared ceiling.
+/// Accounting and ownership for every workload of a pool.
 pub(super) struct Budget {
     path: PathBuf,
-    ceiling: u64,
     units: Mutex<BTreeMap<String, Weak<Unit>>>,
 }
 impl Drop for Budget {
@@ -18,22 +17,20 @@ impl Drop for Budget {
     }
 }
 /// Everything one owner started, however many times its provider restarted, is
-/// one accounting unit: one cgroup that carries the owner's share and any
-/// owner-set cap, with a leaf per workload under it. A leaf only tells the
+/// one accounting unit, with a leaf per workload under it. A leaf only tells the
 /// workloads apart; its memory is charged to the unit.
 struct Unit {
     path: PathBuf,
-    budget: Arc<Budget>,
+    _budget: Arc<Budget>,
 }
 impl Drop for Unit {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir(&self.path);
-        self.budget.share();
     }
 }
 
 impl Budget {
-    pub fn create(ceiling: u64, margin: u64) -> Option<Arc<Self>> {
+    pub fn create() -> Option<Arc<Self>> {
         // A systemd scope has internal processes: use a sibling under its already
         // delegated parent. Do not change controllers on any existing directory.
         let parent = delegated_parent()?;
@@ -46,26 +43,15 @@ impl Budget {
         std::fs::create_dir(&path).ok()?;
         let budget = Arc::new(Self {
             path,
-            ceiling,
             units: Mutex::default(),
         });
         (|| -> std::io::Result<()> {
-            // The ceiling is a backstop; the controller stops one command
-            // before it. Above the pressure line every allocation is slowed.
-            std::fs::write(budget.path.join("memory.max"), ceiling.to_string())?;
-            let brake = ceiling.saturating_sub(margin / 2);
-            std::fs::write(budget.path.join("memory.high"), brake.to_string())?;
-            std::fs::write(budget.path.join("memory.swap.max"), "0")?;
+            // Accounting and ownership only. Ancestor limits and the OS OOM
+            // killer remain authoritative; no private throttle or memory cap.
             std::fs::write(budget.path.join("cgroup.subtree_control"), "+memory")?;
             Ok(())
         })()
         .ok()?;
-        // The kernel and the user's own apps keep the larger CPU weight.
-        if std::fs::read_to_string(parent.join("cgroup.subtree_control"))
-            .is_ok_and(|controllers| controllers.split_whitespace().any(|name| name == "cpu"))
-        {
-            let _ = std::fs::write(budget.path.join("cpu.weight"), "50");
-        }
         Some(budget)
     }
 
@@ -79,18 +65,7 @@ impl Budget {
         unreclaimable(&self.path).unwrap_or(0)
     }
 
-    /// Workloads stall on memory a tenth of the time or more.
-    pub fn stalled(&self) -> bool {
-        std::fs::read_to_string(self.path.join("memory.pressure")).is_ok_and(|text| {
-            text.lines()
-                .find_map(|line| line.strip_prefix("full avg10="))
-                .and_then(|value| value.split_whitespace().next())
-                .and_then(|value| value.parse::<f64>().ok())
-                .is_some_and(|share| share >= 10.0)
-        })
-    }
-
-    fn unit(self: &Arc<Self>, key: &str, cap: Option<u64>) -> Option<Arc<Unit>> {
+    fn unit(self: &Arc<Self>, key: &str) -> Option<Arc<Unit>> {
         let mut units = self.units.lock().ok()?;
         units.retain(|_, unit| unit.strong_count() > 0);
         if let Some(unit) = units.get(key).and_then(Weak::upgrade) {
@@ -100,35 +75,11 @@ impl Budget {
         std::fs::create_dir(&path).ok()?;
         let unit = Arc::new(Unit {
             path,
-            budget: self.clone(),
+            _budget: self.clone(),
         });
-        if let Some(cap) = cap {
-            // Throttle at the owner's cap so the controller stops one command
-            // there; the hard limit only catches bursts between observations.
-            let hard_limit = cap.checked_add((cap / 4).max(64 * 1024 * 1024))?;
-            (|| -> std::io::Result<()> {
-                std::fs::write(unit.path.join("memory.high"), cap.to_string())?;
-                std::fs::write(unit.path.join("memory.max"), hard_limit.to_string())
-            })()
-            .ok()?;
-        }
         units.insert(key.to_string(), Arc::downgrade(&unit));
         drop(units);
-        self.share();
         Some(unit)
-    }
-
-    /// Under pressure, reclaim takes from owners above their fair share first.
-    fn share(&self) {
-        // A unit dropping its last reference calls back here: never hold the lock then.
-        let live = match self.units.lock() {
-            Ok(units) => units.values().filter_map(Weak::upgrade).collect::<Vec<_>>(),
-            Err(_) => return,
-        };
-        let share = self.ceiling / live.len().max(1) as u64;
-        for unit in live {
-            let _ = std::fs::write(unit.path.join("memory.low"), share.to_string());
-        }
     }
 }
 
@@ -145,8 +96,8 @@ pub(super) struct Domain {
     members_outlive: AtomicBool,
 }
 impl Domain {
-    pub fn create(budget: &Arc<Budget>, unit_key: &str, cap: Option<u64>) -> Option<Self> {
-        let unit = budget.unit(unit_key, cap)?;
+    pub fn create(budget: &Arc<Budget>, unit_key: &str) -> Option<Self> {
+        let unit = budget.unit(unit_key)?;
         let path = unit
             .path
             .join(format!("process-{}", rand::random::<u128>()));

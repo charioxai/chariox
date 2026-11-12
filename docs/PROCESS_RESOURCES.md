@@ -3,20 +3,34 @@
 MP-08 / MP-09 / MP-10 / MP-11: providers and Room terminals share the kernel's
 process resource policy on ordinary and managed machines.
 
-All agents and terminals share **one memory ceiling**: the machine's memory (or
-the finite limit of the cgroup the kernel's workloads live in) minus a reserve of
-10% (at least 512 MiB) for the kernel, the OS and the user's own apps. There is no
-default per-agent limit: one agent alone can use nearly all of the ceiling, and
-nothing is stopped while it has room, however far one owner is above its fair
-share. Launching an agent never interrupts a running one. Everything one agent
-starts (its provider runs, the jobs they leave running and the processes it starts
-through `chariox.events.process`) is one owner; each Room terminal is another.
+Resource pauses and stops are a last resort near exhaustion. Each machine has
+independent memory, disk and CPU permissions in
+`kernel.resource_protection`, all on by default. Turning a resource off releases
+its existing waits and prevents proactive pauses/stops for it, including an
+explicit memory cap. OS OOM handling and explicit user Stop commands remain in
+effect. See [Kernel resource protection](RESOURCE_PROTECTION.md) for CLI commands.
 
-Only under real memory pressure does the kernel act: when less than a margin
-(5% of the ceiling, at least min(512 MiB, 10%)) is left under the ceiling, when
-the host's own available memory falls below that margin (user apps took it;
-macOS: critical memory pressure), or when workloads stall on memory (Linux PSI
-`full avg10` of 10% or more). It then stops ONE command: a command growing at
+All agents and terminals share memory accounting: the machine's memory (or its
+bounding cgroup limit) minus 10% (at least 512 MiB). This ceiling helps select
+work under real pressure; it is not a private allocation limit. Everything one
+agent starts is one owner; each Room terminal is another. Starting an owner or
+predicting a large command never interrupts healthy work.
+
+On Linux, memory intervention requires host `MemAvailable` or physical headroom
+in a bounding ancestor cgroup below the reserve: 1% of the accounting ceiling,
+bounded to 64–512 MiB and at most 10% on small machines. PSI alone and the
+kernel's own accounting total cannot create an emergency. On macOS, only critical
+system memory pressure permits intervention. Linux admission and resumption use
+physical headroom, so shared pages counted in multiple RSS totals cannot strand
+work. When physical memory recovers, memory waits are released.
+
+Under that pressure, a growing command pauses when remaining headroom is less
+than the larger of the margin and one second of current aggregate growth.
+After a successful pause, the latest measured growth of running work must
+still be positive before any pressure stop: a decaying startup rate is not
+ongoing allocation. When no command can pause and running work is still growing,
+it stops ONE
+command: a command growing at
 128 MiB/s or more (a runaway) first; otherwise the largest command of the owner
 furthest above its fair share (ceiling / owners, recomputed at every start and
 stop). A command is one subtree under the provider or terminal process, that
@@ -25,20 +39,23 @@ period in which a runaway keeps growing, and no second command is stopped for
 the same cause within one second. The owner keeps running.
 
 A command that admission paused (it grew toward a full pool) continues when its
-room frees. If it has waited 60 s and still cannot continue in the room there is
-(the pool stays full by accounting without ever stalling, as when an idle
-command keeps its memory), the paused command ends the same way a memory stop
-does, with the reason on its error stream. When memory keeps it: what it still
-needs to continue, the room that was left once what is in use and reserved is
+room frees. Its growth estimate is the median of samples over the last 60 s
+before the pause, so a short burst does not require room for repeated bursts.
+Samples while stopped never lower that estimate. A steady fast grower therefore
+stays paused until enough room returns, rather than cycling through resume and
+pause. If a paused command or a command held before growing has waited 60 s and
+still cannot continue in the room there is, the waiting command ends with the
+memory-stop outcome, with the reason on its error stream. When memory keeps it:
+what it still needs to continue, the room that was left once what is in use and reserved is
 counted, whether the pool's ceiling or the machine's free memory set that room,
 and the command's own size. When the memory room covers what it needs but not growing
 on (everything running, it included, grows so fast that the pool would be short of
 memory again within seconds): the rate everything grows by, what staying clear of
 short memory takes at that rate, and the room that was left. When the disk keeps it (the writes it is known to
 make do not fit above the floor): what it still needs of disk and what is free
-on the volume it writes to. A pause never lasts for ever. A command that could continue is never
-ended, however long it waited: the resume pass continues it. Jobs a tool shell
-ran at once stay separate commands across a hot reload, so a paused one is
+on the volume it writes to. A pause never lasts for ever. A command that could
+continue is never ended, however long it waited: the resume pass continues it.
+Jobs a tool shell ran at once stay separate commands across a hot reload, so a paused one is
 still found and continued.
 
 `CHARIOX_PROCESS_MEMORY_LIMIT_MIB` sets an optional owner-set hard cap per agent
@@ -47,21 +64,17 @@ with an explanation). Over its cap, one command of that owner is stopped the sam
 way. Unset, no cap applies.
 
 On Linux, when the existing cgroup-v2 hierarchy permits delegation, the kernel
-creates a budget cgroup `chariox-<pid>-<id>` beside its own: `memory.max` is the
-ceiling (a backstop the controller acts before), `memory.high` sits half a margin
-below it to slow allocations near the line, swap is disabled, and with a delegated
-`cpu` controller `cpu.weight` is 50 so the kernel and the user's apps keep more
-CPU (CPU is never a reason to stop anything). Each owner is a `unit-*` cgroup
-with `memory.low` set to its fair share; an owner-set cap adds `memory.high` (the
-cap) and `memory.max` (the cap plus the greater of 25% or 64 MiB). Each workload
-is a `process-*` leaf. There is no `memory.oom.group`. Workload children clear
-inherited OOM protection; the kernel stays outside the workload cgroups. A new
-budget removes the empty budgets of kernels whose process is gone, and a budget
-removes its empty descendants when its last workload ends.
+creates an accounting cgroup `chariox-<pid>-<id>` beside its own, an owner
+`unit-*` below it, and a `process-*` leaf per workload. These groups impose no
+`memory.max`, `memory.high`, swap prohibition, CPU weighting or per-owner memory
+reservation. Ancestor limits and OS OOM handling remain authoritative. Explicit
+owner caps use the same monitor as the portable watchdog. Workload children clear
+inherited OOM protection; the kernel stays outside workload cgroups. Empty owned
+cgroups are removed after their workloads end.
 
 A resident-memory watchdog covers Linux without delegation and macOS with the
-same decision on the sum of resident memory. It samples owned roots and
-descendants every 250 ms and can overshoot between samples. It retains process
+same physical-pressure prerequisite and command selection from resident memory.
+It samples owned roots and descendants every 250 ms and can overshoot between samples. It retains process
 start identities across exec and checks them before signalling, so a recycled
 PID does not authorize a signal. A single cached process-table sample is shared
 between watchdogs. App workers retain their existing 512 MiB sandbox resource
@@ -102,14 +115,11 @@ and kernel, with Project - Room - Agent/Terminal owners and expandable totals.
 Its collapse/expand state belongs to the viewer; process authority remains in
 the kernel.
 
-The process protocol lands in the union local **911**, peer **362**. Local **913**,
-peer **364** adds the same rows to the one-shot `SessionState` response (`processes`). Its shape
-fixture is `session-processes-800.json`; regenerate protocol consumers with
+The resource settings are versioned at local **1017**, peer **455**. The process
+shape fixture is `session-processes-954.json`; regenerate protocol consumers with
 `node scripts/generate-protocol-versions.mjs` when the coordinator renumbers it.
-The focused shape check is
-`cargo test -p chariox-kernel --lib local_daemon_protocol_session_process_memory_outcomes_are_versioned`.
-Run it through the lane's Cargo slot. `node --test scripts/protocol-versions.test.mjs`
-also checks the process-control fixture against both generated versions.
+Focused checks include `resource_protection_protocol_1017_455_snapshot_and_hash`
+and `local_daemon_protocol_session_process_memory_outcomes_are_versioned`.
 
 For the real control drill, start a kernel and client from the same combined
 head, check their advertised version pair, and run two agents with long-lived
@@ -163,11 +173,10 @@ joining its domain or executing bubblewrap. Failure to read or raise a negative
 adjustment refuses the launch. Bootstrap kernel
 replacement launches retain service policy; they are kernels, not workloads.
 
-An owner-set cap throttles at the cap using `memory.high`; the monitor observes
-the unit's charged memory and stops one command there. `memory.max` adds the
-greater of 25 percent or 64 MiB as a killable burst backstop. The kernel and its
-other domains stay outside that tree. The watchdog remains the enforcement path
-when cgroups are unavailable.
+An owner-set cap is enforced by the resource monitor while memory protection is
+on. Cgroup charge or portable resident-memory samples decide which owned command
+to stop. It does not install a private cgroup throttle or hard limit, and memory
+protection off disables this intervention too.
 
 Regressions:
 - `spawned_trees_are_killable_when_the_kernel_is_oom_protected` runs an isolated

@@ -25,6 +25,9 @@ fn room<'a>(memory: u64, tight: bool, volume: &'a Volume) -> Room<'a> {
         memory,
         margin: if tight { memory + 1 } else { 0 },
         growing: 0,
+        pressured: true,
+        memory_protection: true,
+        disk_protection: true,
         host_bound: false,
         light: 512 * MIB,
         growth_room: GIB,
@@ -42,6 +45,8 @@ fn command(pid: u32, resident: u64, growth: u64) -> pool::CommandUse {
         group: None,
         resident,
         growth,
+        steady_growth: growth,
+        measured_growth: growth,
         writes: 0,
         write_growth: 0,
         effective: pid,
@@ -191,7 +196,7 @@ fn paused_binary_descendant_resumes_with_actual_headroom_and_live_reservation() 
     for prediction in [9 * GIB, 9 * GIB + 256 * MIB, 9 * GIB + 512 * MIB] {
         let (pool, member) = reserved_binary(prediction);
         let pressure = owner("pressure", false, vec![], vec![]);
-        pressure.lock().unwrap().samples = vec![sample(7 * GIB + 256 * MIB)];
+        pressure.lock().unwrap().samples = vec![sample(8 * GIB - 32 * MIB)];
         pool.join(&pressure);
         pool.enforce(&member, None);
         assert_eq!(wait(&member, 1), None, "oldest descendant must progress");
@@ -459,8 +464,8 @@ fn paused_commands_that_free_nothing_end_the_largest_after_the_stall_window() {
 /// did not decide it, such as a memory room larger than the need.
 #[test]
 fn a_pause_the_disk_keeps_ends_naming_the_disk() {
-    // 2 GiB above the floor; the paused command writes 6 GiB.
-    let pool = pool::Pool::with_volume(1500 * MIB, volume(&Arc::new(AtomicU64::new(12 * GIB))));
+    // Below the last-resort disk reserve; the paused command writes 6 GiB.
+    let pool = pool::Pool::with_volume(1500 * MIB, volume(&Arc::new(AtomicU64::new(128 * MIB))));
     let command_of = |unit: &str, pid: u32, expected: Peak, wait: Option<Wait>, since_ms: u64| {
         let mut waiting = entry(pid as u64, expected);
         waiting.admitted = true;
@@ -504,7 +509,7 @@ fn a_pause_the_disk_keeps_ends_naming_the_disk() {
         .expect("the paused command was not ended");
     assert!(
         notice.contains("it still needs 6 GB of disk above the floor")
-            && notice.contains("only 2 GB are free on the volume"),
+            && notice.contains("only 0 GB are free on the volume"),
         "the disk kept it, but the notice names memory: {notice}"
     );
 }
@@ -567,8 +572,8 @@ fn a_pause_that_grew_fast_is_ended_when_the_room_does_not_return() {
 }
 
 #[test]
-fn two_writers_that_together_reach_the_floor_do_not_both_start() {
-    // 8 GiB above the floor; each job writes 6 GiB of scratch and deletes it.
+fn predicted_writes_do_not_serialize_work_on_a_healthy_volume() {
+    // Predictions may overlap; a healthy receiving volume is not pressure.
     let free = Arc::new(AtomicU64::new(18 * GIB));
     let volume = volume(&free);
     let current = owner(
@@ -589,8 +594,8 @@ fn two_writers_that_together_reach_the_floor_do_not_both_start() {
     assert_eq!(wait(&current, 1), None, "the first writer was held");
     assert_eq!(
         wait(&current, 2),
-        Some(Wait::Held(WaitReason::Disk)),
-        "the second writer started although both together reach the floor"
+        None,
+        "predictions held a writer on a healthy volume"
     );
     // The first ends: the second gets the room.
     current.lock().unwrap().admission.remove(&1);
@@ -603,7 +608,7 @@ fn two_writers_that_together_reach_the_floor_do_not_both_start() {
 }
 
 #[test]
-fn a_resumed_writer_keeps_its_room_from_the_next_to_resume() {
+fn a_recovered_volume_does_not_keep_writers_waiting_for_predictions() {
     let free = Arc::new(AtomicU64::new(18 * GIB));
     let volume = volume(&free);
     let held = |arrived| Entry {
@@ -624,18 +629,22 @@ fn a_resumed_writer_keeps_its_room_from_the_next_to_resume() {
     unsettle(&mut ledger);
     ledger.pass(members, &current, &room(GIB, false, &volume));
     assert!(
-        wait(&current, 2).is_some(),
-        "the second writer resumed onto room the first one needs"
+        wait(&current, 2).is_none(),
+        "the healthy volume left a writer waiting on predictions"
     );
 }
 
 #[test]
-fn writers_on_different_volumes_reserve_room_separately() {
-    // Each volume has 8 GiB above its floor; a path under /other is the second.
+fn disk_emergency_only_holds_writers_on_the_affected_volume() {
+    // One receiving volume is nearly full; /other is healthy.
     let volume: Box<Volume> = Box::new(|path| {
         Some(Space {
             id: if path.starts_with("/other") { 2 } else { 1 },
-            free: 18 * GIB,
+            free: if path.starts_with("/other") {
+                18 * GIB
+            } else {
+                128 * MIB
+            },
             total: 100 * GIB,
         })
     });
@@ -659,7 +668,7 @@ fn writers_on_different_volumes_reserve_room_separately() {
         &current,
         &room(GIB, false, &volume),
     );
-    assert_eq!(wait(&current, 1), None);
+    assert_eq!(wait(&current, 1), Some(Wait::Held(WaitReason::Disk)));
     assert_eq!(wait(&current, 2), Some(Wait::Held(WaitReason::Disk)));
     assert_eq!(
         wait(&current, 3),
@@ -720,8 +729,8 @@ fn a_disk_wait_does_not_resume_onto_memory_another_build_took() {
 
 #[test]
 fn a_memory_wait_does_not_resume_onto_a_disk_that_filled() {
-    // 2 GiB above the floor, while the command writes 6 GiB.
-    let free = Arc::new(AtomicU64::new(12 * GIB));
+    // The receiving volume is below its last-resort reserve.
+    let free = Arc::new(AtomicU64::new(128 * MIB));
     let volume = volume(&free);
     let waiting = Entry {
         wait: Some(Wait::Held(WaitReason::Memory)),
@@ -1407,9 +1416,9 @@ fn a_paused_and_a_held_command_are_one_row_apart_from_the_kind() {
 #[test]
 fn the_disk_never_fills_up_while_five_builds_write_and_the_filler_goes() {
     const BUILDS: u32 = 5;
-    const PEAK: u64 = 10 * GIB;
-    const START_FREE: u64 = 46 * GIB;
-    const STEP: u64 = GIB / 2;
+    const PEAK: u64 = GIB;
+    const START_FREE: u64 = 4600 * MIB;
+    const STEP: u64 = 8 * MIB;
     let written = Arc::new(Mutex::new(BTreeMap::<u32, u64>::new()));
     let least_free = Arc::new(AtomicU64::new(u64::MAX));
     let free = {
@@ -1509,6 +1518,8 @@ fn writer(pid: u32, writes: u64, write_growth: u64) -> pool::CommandUse {
         group: None,
         resident: 100 * MIB,
         growth: 0,
+        steady_growth: 0,
+        measured_growth: 0,
         writes,
         write_growth,
         effective: pid,
@@ -1526,8 +1537,8 @@ fn writing(pid: u32, writes: u64, write_growth: u64) -> (u32, Entry, pool::Comma
 
 #[test]
 fn the_writer_filling_a_nearly_full_disk_is_stopped_never_paused() {
-    // A 100 GiB volume has a 10 GiB floor: 4 GiB is below its half.
-    let free = Arc::new(AtomicU64::new(4 * GIB));
+    // 128 MiB is below half the bounded 512 MiB reserve.
+    let free = Arc::new(AtomicU64::new(128 * MIB));
     let volume = volume(&free);
     let (_, orphan, orphan_use) = writing(1, 6 * GIB, 8 * MIB);
     let (_, build, build_use) = writing(2, 100 * MIB, 50 * MIB);
@@ -1570,7 +1581,7 @@ fn the_writer_filling_a_nearly_full_disk_is_stopped_never_paused() {
 
 #[test]
 fn writers_above_half_the_floor_and_a_persons_command_are_left_alone() {
-    let free = Arc::new(AtomicU64::new(9 * GIB));
+    let free = Arc::new(AtomicU64::new(400 * MIB));
     let volume = volume(&free);
     let (_, build, build_use) = writing(1, 6 * GIB, 50 * MIB);
     let current = owner("agent", true, vec![build_use], vec![(1, build)]);
@@ -1584,7 +1595,7 @@ fn writers_above_half_the_floor_and_a_persons_command_are_left_alone() {
         ledger.take_fillers(&current).is_empty(),
         "stopped a writer above half the floor"
     );
-    free.store(2 * GIB, Ordering::SeqCst);
+    free.store(128 * MIB, Ordering::SeqCst);
     let (_, mut own, own_use) = writing(2, 6 * GIB, 50 * MIB);
     own.holdable = false;
     let person = owner("person", false, vec![own_use], vec![(2, own)]);
@@ -1687,12 +1698,12 @@ fn a_smaller_run_of_a_command_is_not_refused_for_the_peak_of_a_bigger_one() {
 
 #[test]
 fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
-    // Volume 1 has room; volume 2 (a 100 GiB volume with a 10 GiB floor) is below half its floor.
+    // Volume 1 has room; volume 2 has only 128 MiB left.
     let volume: Box<Volume> = Box::new(|path: &Path| {
         let (id, free) = if path.starts_with("/roomy") {
             (1, 50 * GIB)
         } else {
-            (2, 4 * GIB)
+            (2, 128 * MIB)
         };
         Some(Space {
             id,
@@ -1762,7 +1773,7 @@ fn crossed_volume_writer(cwd: &str, output: &str, id: u64, should_stop: bool) {
         let (id, free) = if path.starts_with("/roomy") {
             (1, 50 * GIB)
         } else {
-            (2, 4 * GIB)
+            (2, 128 * MIB)
         };
         Some(Space {
             id,
@@ -1798,7 +1809,7 @@ fn crossed_volume_writer(cwd: &str, output: &str, id: u64, should_stop: bool) {
 
 #[test]
 fn a_shared_growing_file_is_not_attributed_to_either_command() {
-    let free = Arc::new(AtomicU64::new(4 * GIB));
+    let free = Arc::new(AtomicU64::new(128 * MIB));
     let volume = volume(&free);
     let (_, first, first_use) = writing(1, 6 * GIB, 50 * MIB);
     let (_, second, second_use) = writing(2, 6 * GIB, 50 * MIB);
@@ -1825,7 +1836,7 @@ fn a_shared_growing_file_is_not_attributed_to_either_command() {
 
 #[test]
 fn unknown_or_reused_output_descriptors_cannot_justify_a_disk_stop() {
-    let free = Arc::new(AtomicU64::new(4 * GIB));
+    let free = Arc::new(AtomicU64::new(128 * MIB));
     let volume = volume(&free);
     for reused in [false, true] {
         let (_, build, usage) = writing(1, 6 * GIB, 50 * MIB);
@@ -1850,8 +1861,8 @@ fn unknown_or_reused_output_descriptors_cannot_justify_a_disk_stop() {
 
 #[test]
 fn a_later_disk_wait_resumes_when_only_its_volume_recovers() {
-    let recovered = Arc::new(AtomicU64::new(10 * GIB));
-    let first_free = Arc::new(AtomicU64::new(10 * GIB));
+    let recovered = Arc::new(AtomicU64::new(128 * MIB));
+    let first_free = Arc::new(AtomicU64::new(128 * MIB));
     let first_space = first_free.clone();
     let free = recovered.clone();
     let volume: Box<Volume> = Box::new(move |path| {
@@ -1908,7 +1919,7 @@ fn a_later_disk_wait_resumes_when_only_its_volume_recovers() {
 fn a_known_writer_waits_for_the_volume_its_output_goes_to_not_the_checkout_volume() {
     // The checkout (/scratch) is below its floor; the build wrote its 6 GiB
     // to a roomy volume under /data last time.
-    let checkout = Arc::new(AtomicU64::new(GIB));
+    let checkout = Arc::new(AtomicU64::new(128 * MIB));
     let output = Arc::new(AtomicU64::new(40 * GIB));
     let (checkout_space, output_space) = (checkout.clone(), output.clone());
     let volume: Box<Volume> = Box::new(move |path| {
@@ -2283,7 +2294,8 @@ fn a_pause_only_the_room_to_continue_keeps_does_not_name_a_memory_shortage() {
     let (control, _heard) = std::sync::mpsc::channel();
     member.lock().unwrap().control = Some(control);
 
-    let (_, blocked) = blocked_paused(&[member], 60_000, &room).expect("the pause cannot continue");
+    let (_, blocked) =
+        blocked_waiting(&[member], 60_000, &room).expect("the pause cannot continue");
     // 512 MiB/s running plus its own 600 MiB/s: 1 GiB margin or the rate, and two seconds ahead.
     let growing = 512 * MIB + 600 * MIB;
     let Blocked::Growth {
@@ -2301,4 +2313,270 @@ fn a_pause_only_the_room_to_continue_keeps_does_not_name_a_memory_shortage() {
         line.contains("no room to keep growing") && !line.contains("still needs"),
         "{line}"
     );
+}
+
+#[test]
+fn a_pause_uses_the_pre_pause_window_and_ignores_stopped_samples() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    let current = owner("grower", true, Vec::new(), Vec::new());
+    start(&mut ledger, &current, 4_100_002, 700 * MIB);
+    let mut window = super::super::growth_window::Window::default();
+    for (at, rate) in [4 * MIB, 4 * MIB, 4 * MIB, 1200 * MIB]
+        .into_iter()
+        .enumerate()
+    {
+        window.record(at as u64 * 250, rate);
+    }
+    {
+        let mut current = current.lock().unwrap();
+        current.commands[0].growth = 1200 * MIB;
+        current.commands[0].steady_growth = window.typical().unwrap();
+    }
+    let members = [other, current.clone()];
+    ledger.pass(&members, &current, &room(100 * MIB, true, &volume));
+    assert_eq!(
+        wait(&current, 4_100_002),
+        Some(Wait::Paused(WaitReason::Memory))
+    );
+    assert_eq!(
+        current.lock().unwrap().admission[&4_100_002].paused_rate,
+        4 * MIB
+    );
+    current.lock().unwrap().commands[0].growth = 0;
+    ledger.pass(&members, &current, &room(100 * MIB, false, &volume));
+    assert_eq!(
+        wait(&current, 4_100_002),
+        Some(Wait::Paused(WaitReason::Memory))
+    );
+    assert_eq!(
+        current.lock().unwrap().admission[&4_100_002].paused_rate,
+        4 * MIB
+    );
+    unsettle(&mut ledger);
+    ledger.pass(&members, &current, &room(2 * GIB, false, &volume));
+    assert_eq!(
+        wait(&current, 4_100_002),
+        None,
+        "the startup spike kept a slow grower waiting"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pause_resumes_when_physical_room_returns_despite_full_rss_accounting() {
+    let pool = pool::Pool::new(1536 * MIB, true).with_machine_pressure(Box::new(|| false));
+    let command_of = |unit: &str, pid: u32, resident: u64, paused: bool| {
+        let mut entry = entry(pid as u64, Peak::default());
+        entry.admitted = true;
+        entry.expected = None;
+        if paused {
+            entry.wait = Some(Wait::Paused(WaitReason::Memory));
+            entry.paused_rate = 700 * MIB;
+            entry.since_ms = crate::session::unix_epoch_ms() - 61_000;
+        }
+        let member = owner(
+            unit,
+            true,
+            vec![command(pid, resident, 0)],
+            vec![(pid, entry)],
+        );
+        let (control, heard) = std::sync::mpsc::channel();
+        {
+            let mut member = member.lock().unwrap();
+            member.samples = vec![sample(resident)];
+            member.control = Some(control);
+        }
+        pool.join(&member);
+        (member, heard)
+    };
+    let (running, _running_heard) = command_of("a", 1, 800 * MIB, false);
+    let (paused, heard) = command_of("b", 2, 700 * MIB, true);
+    pool.enforce(&running, None);
+    assert_eq!(
+        wait(&paused, 2),
+        None,
+        "RSS accounting stranded a pause after physical memory returned"
+    );
+    assert!(
+        !heard
+            .try_iter()
+            .any(|command| matches!(command, WatchCommand::MemoryStop { .. })),
+        "a healthy machine ended a paused command on RSS accounting alone"
+    );
+}
+
+#[test]
+fn an_old_allocation_rate_cannot_end_a_command_that_just_paused() {
+    let pool = pool::Pool::new(1536 * MIB, false);
+    let mut running = command(4_100_001, 800 * MIB, 16 * MIB);
+    running.measured_growth = 0;
+    let paused = command(4_100_002, 700 * MIB, 48 * MIB);
+    let entries = [(4_100_001, false), (4_100_002, true)]
+        .into_iter()
+        .map(|(pid, paused)| {
+            let mut entry = entry(pid as u64, Peak::default());
+            entry.admitted = true;
+            entry.expected = None;
+            if paused {
+                entry.wait_for(Wait::Paused(WaitReason::Memory));
+                entry.paused_rate = 48 * MIB;
+            }
+            (pid, entry)
+        })
+        .collect();
+    let member = owner("a", true, vec![running, paused], entries);
+    let (control, heard) = std::sync::mpsc::channel();
+    {
+        let mut observation = member.lock().unwrap();
+        observation.samples = vec![sample(1500 * MIB)];
+        observation.control = Some(control);
+    }
+    pool.join(&member);
+    pool.enforce(&member, None);
+    assert!(matches!(wait(&member, 4_100_002), Some(Wait::Paused(_))));
+    assert!(
+        !heard
+            .try_iter()
+            .any(|command| matches!(command, WatchCommand::MemoryStop { .. })),
+        "a decaying rate was counted as continued allocation after the pause"
+    );
+}
+
+#[test]
+fn resset_healthy_host_never_holds_or_refuses_predicted_memory() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, GIB, 0), command(2, 0, 0), command(3, 0, 0)],
+        vec![
+            (
+                1,
+                entry(
+                    1,
+                    Peak {
+                        memory: GIB,
+                        ..Peak::default()
+                    },
+                ),
+            ),
+            (
+                2,
+                entry(
+                    2,
+                    Peak {
+                        memory: 8 * GIB,
+                        ..Peak::default()
+                    },
+                ),
+            ),
+            (
+                3,
+                entry(
+                    3,
+                    Peak {
+                        memory: 80 * GIB,
+                        ..Peak::default()
+                    },
+                ),
+            ),
+        ],
+    );
+    let mut ledger = Ledger::new(None);
+    let mut healthy = room(GIB, false, &*volume);
+    healthy.pressured = false;
+    ledger.pass(std::slice::from_ref(&current), &current, &healthy);
+    assert_eq!(
+        wait(&current, 2),
+        None,
+        "predictions must not stop healthy work"
+    );
+    assert!(
+        ledger.take_refused(&current).is_empty(),
+        "predictions must not kill healthy work"
+    );
+}
+
+#[test]
+fn resset_disk_with_gibibytes_free_does_not_hold_a_predicted_writer() {
+    let volume = volume(&Arc::new(AtomicU64::new(4 * GIB)));
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 0, 0)],
+        vec![(1, entry(1, scratch(8 * GIB)))],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert_eq!(wait(&current, 1), None);
+}
+
+#[test]
+fn resset_memory_off_releases_all_waits_and_never_refuses_or_pauses() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let mut held = entry(
+        1,
+        Peak {
+            memory: 80 * GIB,
+            ..Peak::default()
+        },
+    );
+    held.wait = Some(Wait::Held(WaitReason::Memory));
+    let mut paused = entry(2, Peak::default());
+    paused.wait = Some(Wait::Paused(WaitReason::Memory));
+    let current = owner(
+        "agent",
+        true,
+        vec![
+            command(1, GIB, 0),
+            command(2, GIB, 128 * MIB),
+            command(3, GIB, 128 * MIB),
+        ],
+        vec![
+            (1, held),
+            (2, paused),
+            (
+                3,
+                entry(
+                    3,
+                    Peak {
+                        memory: 80 * GIB,
+                        ..Peak::default()
+                    },
+                ),
+            ),
+        ],
+    );
+    let mut room = room(0, true, &*volume);
+    room.memory_protection = false;
+    let mut ledger = Ledger::new(None);
+    for _ in 0..3 {
+        ledger.pass(std::slice::from_ref(&current), &current, &room);
+    }
+    for pid in 1..=3 {
+        assert_eq!(wait(&current, pid), None);
+    }
+    assert!(ledger.take_refused(&current).is_empty());
+}
+
+#[test]
+fn resset_disk_off_releases_waits_and_never_stops_a_filler() {
+    let volume = volume(&Arc::new(AtomicU64::new(1)));
+    let (_, mut build, usage) = writing(1, 6 * GIB, 50 * MIB);
+    build.wait = Some(Wait::Held(WaitReason::Disk));
+    let current = owner("agent", true, vec![usage], vec![(1, build)]);
+    let mut room = room(GIB, false, &*volume);
+    room.disk_protection = false;
+    let mut ledger = Ledger::new(None);
+    for _ in 0..3 {
+        ledger.pass(std::slice::from_ref(&current), &current, &room);
+    }
+    assert_eq!(wait(&current, 1), None);
+    assert!(ledger.take_fillers(&current).is_empty());
 }

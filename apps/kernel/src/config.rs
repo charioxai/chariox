@@ -33,7 +33,9 @@ mod socket_path;
 mod storage;
 pub(crate) use paths::{default_state_dir, kernel_state_roots};
 pub(crate) use socket_path::validate_local_socket_path;
+mod resource_protection;
 mod totp;
+pub use resource_protection::ResourceProtection;
 mod user_config_mutation;
 mod user_config_schema;
 mod validation;
@@ -635,6 +637,8 @@ pub struct UserRelayConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserKernelConfig {
+    #[serde(default)]
+    pub resource_protection: ResourceProtection,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub websocket_host: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

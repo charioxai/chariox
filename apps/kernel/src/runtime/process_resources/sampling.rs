@@ -662,7 +662,14 @@ impl ProcessTree {
         if self.harness.contains(&command) {
             return;
         }
-        for pid in self.subtree(command) {
+        // A promoted launcher has handed its jobs to their own admission entries.
+        // Continuing its old pause must leave those jobs waiting independently.
+        let selected = if self.launchers.contains_key(&command) {
+            std::collections::BTreeSet::from([command])
+        } else {
+            self.subtree(command)
+        };
+        for pid in selected {
             if let Some(identity) = self.owned.get(&pid) {
                 if pid > 1 && pid <= i32::MAX as u32 && same_process(pid, identity) {
                     let _ = unsafe { libc::kill(pid as i32, signal) };

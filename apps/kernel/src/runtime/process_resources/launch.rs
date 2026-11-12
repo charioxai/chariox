@@ -221,6 +221,7 @@ impl LaunchAdmission {
         minimum_memory: u64,
     ) -> Result<LaunchPermit, LaunchWait> {
         let pool = &self.0;
+        let protection = pool.protection();
         let seen = admission::seen_argv(0, argv, Some(cwd.to_path_buf()));
         loop {
             let generation = pool.launch_generation.load(Ordering::Acquire);
@@ -249,7 +250,13 @@ impl LaunchAdmission {
                 .memory
                 .saturating_sub(reserved)
                 .saturating_sub(launch_memory.values().copied().fold(0, u64::saturating_add));
-            if !force && memory > free {
+            // A declared job books capacity before it has a PID. Ordinary
+            // command predictions wait only when physical memory is short.
+            if !force
+                && protection.memory
+                && (minimum_memory > 0 || pool.memory_emergency())
+                && memory > free
+            {
                 return Err(LaunchWait {
                     reason: admission::WaitReason::Memory,
                     need_bytes: memory,
@@ -264,7 +271,7 @@ impl LaunchAdmission {
                         .fold(0u64, |sum, r| sum.saturating_add(r.writes))
                         .saturating_add(disk_reserved.get(&disk.id).copied().unwrap_or(0)),
                 );
-                if !force && expected_writes > free {
+                if !force && protection.disk && disk.below_floor() && expected_writes > free {
                     return Err(LaunchWait {
                         reason: admission::WaitReason::Disk,
                         need_bytes: expected_writes,

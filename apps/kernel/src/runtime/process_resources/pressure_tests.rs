@@ -408,7 +408,16 @@ fn pressure(
     rate: u64,
     seconds: u64,
 ) -> (Workload, Workload, Workload, Arc<pool::Pool>) {
-    let pool = pool(1536);
+    pressure_in(pool(1536), cgroup, start, rate, seconds)
+}
+
+fn pressure_in(
+    pool: Arc<pool::Pool>,
+    cgroup: bool,
+    start: u64,
+    rate: u64,
+    seconds: u64,
+) -> (Workload, Workload, Workload, Arc<pool::Pool>) {
     let a = Workload::start(
         domain(&pool, "a", cgroup),
         &[("big", 800, 0, 0), ("idle", 0, 0, 0)],
@@ -996,4 +1005,174 @@ fn an_owner_set_cap_stops_one_command_of_that_owner() {
 #[ignore = "requires a writable cgroup-v2 delegated parent"]
 fn an_owner_set_cap_stops_one_command_of_that_owner_in_its_cgroup() {
     owner_cap(true);
+}
+
+/// A slowly growing command takes a one-off 500 MiB burst after several
+/// samples: the pause it earned does not ask
+/// for room to keep growing at the spike's rate. It continues with the room
+/// there is and is not ended.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_startup_spike_does_not_keep_a_slow_grower_paused() {
+    let pool = pool(1536);
+    let mut holder = Workload::gated(
+        domain(&pool, "holder", false),
+        &[("hold", "python3 \"$0/hold.py\" \"$0/room\"".into())],
+    );
+    std::fs::write(holder.dir.join("hold.py"), format!(
+        "{DIE_WITH_PARENT}import os,time\na=bytearray(500*1048576); b=bytearray(300*1048576)\nwhile not os.path.exists(sys.argv[1]): time.sleep(0.05)\ndel a\ntime.sleep(60)"
+    )).unwrap();
+    holder.go(&["hold"]);
+    settle(1);
+    let mut grower = Workload::gated(
+        domain(&pool, "grower", false),
+        &[("grow", "python3 \"$0/grow.py\" \"$0/burst\"".into())],
+    );
+    std::fs::write(grower.dir.join("grow.py"), format!(
+        "{DIE_WITH_PARENT}import os,time\nb=[bytearray(100*1048576)]\nwhile not os.path.exists(sys.argv[1]):\n b.append(bytearray(1048576)); time.sleep(0.25)\nb.append(bytearray(500*1048576))\nfor _ in range(120):\n b.append(bytearray(1048576)); time.sleep(0.25)"
+    )).unwrap();
+    grower.go(&["grow"]);
+    settle(3);
+    std::fs::write(grower.dir.join("burst"), "").unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !grower.waiting("grow") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the burst never caused a pause"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Enough room for slow growth, but not for another burst every sample.
+    std::fs::write(holder.dir.join("room"), "").unwrap();
+    settle(3);
+    assert!(
+        holder.alive("hold") && grower.alive("grow"),
+        "a command was ended"
+    );
+    assert!(
+        !grower.waiting("grow"),
+        "the pause kept the burst's rate and never continued"
+    );
+}
+
+/// A command that grows fast all along keeps the rate it was paused at: it
+/// needs room for that growth, stays stopped (a stopped process measures none
+/// and is not paused again and again) and ends after 60 s naming what it needs.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_steady_fast_grower_stays_paused_once_and_ends_with_the_reason() {
+    take_wait_events();
+    let (_a, mut b, _c, _pool) = pressure(false, 100, 200, 9);
+    assert!(b.waiting("grow"), "the fast grower was not paused");
+    settle(3);
+    assert!(
+        b.waiting("grow"),
+        "the paused grower continued without room"
+    );
+    let began = take_wait_events()
+        .into_iter()
+        .filter(|event| matches!(event.change, WaitChange::Began))
+        .count();
+    assert_eq!(began, 1, "the grower was paused {began} times");
+    {
+        let mut observation = b.domain.state.lock().unwrap();
+        for entry in observation
+            .admission
+            .values_mut()
+            .filter(|e| e.wait.is_some())
+        {
+            entry.since_ms = crate::session::unix_epoch_ms() - 61_000;
+        }
+    }
+    settle(3);
+    assert!(
+        !b.alive("grow"),
+        "the paused grower stayed stopped for ever"
+    );
+    b.assert_told("grow", "it still needs ");
+}
+
+/// The kernel's own pool acts on what the machine reports, not on its own
+/// accounting of resident bytes: a pool full by that accounting while the
+/// machine has memory pauses and stops nothing.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pool_full_by_accounting_alone_pauses_nothing_while_the_machine_has_memory() {
+    let pool =
+        Arc::new(pool::Pool::new(1536 * MIB, true).with_machine_pressure(Box::new(|| false)));
+    let (mut a, mut b, mut c, _pool) = pressure_in(pool, false, 300, 48, 20);
+    assert!(
+        !b.waiting("grow"),
+        "a command was paused with no pressure on the machine"
+    );
+    assert!(
+        a.alive("big") && a.alive("idle") && b.alive("grow") && c.alive("small"),
+        "a command was stopped with no pressure on the machine"
+    );
+    assert!(a.root_alive() && b.root_alive() && c.root_alive());
+}
+
+/// Accounting cgroups must not manufacture pressure or throttles while the
+/// host has headroom, even when their observed charge exceeds the old pool.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires a writable cgroup-v2 delegated parent"]
+fn resset_accounting_cgroup_does_not_limit_a_healthy_host() {
+    let pool =
+        Arc::new(pool::Pool::new(1536 * MIB, true).with_machine_pressure(Box::new(|| false)));
+    let (mut a, mut b, mut c, pool) = pressure_in(pool, true, 300, 48, 10);
+    let budget = pool.budget().unwrap();
+    for name in ["memory.max", "memory.high", "memory.swap.max"] {
+        assert_eq!(
+            std::fs::read_to_string(budget.path().join(name))
+                .unwrap()
+                .trim(),
+            "max"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(budget.path().join("cpu.weight"))
+            .unwrap()
+            .trim(),
+        "100"
+    );
+    assert!(!b.waiting("grow"));
+    assert!(a.alive("big") && b.alive("grow") && c.alive("small"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn resset_memory_off_never_pauses_and_releases_a_live_paused_command() {
+    let pool = pool(1536);
+    let (mut a, mut b, mut c, pool) = pressure_in(pool, false, 300, 48, 10);
+    assert!(
+        b.waiting("grow"),
+        "fixture must reach real admission SIGSTOP"
+    );
+    pool.configure(crate::config::ResourceProtection {
+        memory: false,
+        ..Default::default()
+    });
+    settle(3);
+    assert!(!b.waiting("grow"), "memory off left a live command stopped");
+    settle(4);
+    assert!(!b.waiting("grow"), "memory off allowed a fresh SIGSTOP");
+    assert!(a.alive("big") && b.alive("grow") && c.alive("small"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn resset_memory_off_disables_an_explicit_owner_cap() {
+    let pool = pool(512);
+    pool.configure(crate::config::ResourceProtection {
+        memory: false,
+        ..Default::default()
+    });
+    let mut work = Workload::start(
+        PreparedDomain::watchdog("off-cap", Some(32 * MIB), pool),
+        &[("big", 128, 0, 0)],
+    );
+    settle(3);
+    assert!(work.alive("big"));
+    assert_eq!(work.domain.memory_limit_bytes(), None);
 }

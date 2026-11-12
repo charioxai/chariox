@@ -176,6 +176,8 @@ fn descendant(unit: &str, pid: u32, admitted: bool) -> Arc<Mutex<Observation>> {
             group: None,
             resident,
             growth: 0,
+            steady_growth: 0,
+            measured_growth: 0,
             writes: 0,
             write_growth: 0,
             effective: pid,
@@ -355,7 +357,7 @@ fn writer_entry(unit: &str, pid: u32, writes: u64, admitted: bool) -> Arc<Mutex<
 }
 
 #[test]
-fn binary_disk_prediction_is_enforced_for_observed_commands() {
+fn healthy_disk_predictions_do_not_hold_observed_commands() {
     let floor = 10 * 1024 * MIB;
     let admission = LaunchAdmission::limited(10 * 1024 * MIB, floor + 15 * 1024 * MIB);
     let argv = vec!["writer".into()];
@@ -381,13 +383,13 @@ fn binary_disk_prediction_is_enforced_for_observed_commands() {
     admission.0.join(&other);
     admission.0.enforce(&other, None);
     assert!(
-        other.lock().unwrap().admission[&84].wait.is_some(),
-        "binary disk reservation was absent from enforcement"
+        other.lock().unwrap().admission[&84].wait.is_none(),
+        "binary predictions held a command on a healthy disk"
     );
 }
 
 #[test]
-fn observed_disk_prediction_is_enforced_for_binary_launches() {
+fn healthy_observed_disk_predictions_do_not_hold_binary_launches() {
     let floor = 10 * 1024 * MIB;
     let admission = LaunchAdmission::limited(10 * 1024 * MIB, floor + 15 * 1024 * MIB);
     let argv = vec!["writer".into()];
@@ -411,8 +413,8 @@ fn observed_disk_prediction_is_enforced_for_binary_launches() {
     assert!(
         admission
             .reserve("binary", &argv, Path::new("/"), false)
-            .is_err(),
-        "observed disk reservation was absent from binary admission"
+            .is_ok(),
+        "observed predictions held a binary on a healthy disk"
     );
 }
 
@@ -511,19 +513,18 @@ fn waiting_descendant_can_use_its_binary_disk_reservation() {
         child.lock().unwrap().admission[&42].wait.is_none(),
         "descendant could not use its domain's reserved disk"
     );
-    assert!(admission.reserve("third", &argv, cwd, false).is_err());
+    assert!(admission.reserve("third", &argv, cwd, false).is_ok());
 }
 
 #[test]
 fn binary_prediction_waits_for_its_receiving_volume_instead_of_its_working_directory() {
-    let floor = 10 * 1024 * MIB;
     let admission = LaunchAdmission(Arc::new(Pool::with_volume(
         10 * 1024 * MIB,
         Box::new(move |path| {
             Some(admission::Space {
                 id: if path.starts_with("/output") { 2 } else { 1 },
                 free: if path.starts_with("/output") {
-                    floor + 1024 * MIB
+                    128 * MIB
                 } else {
                     100 * 1024 * MIB
                 },
@@ -553,7 +554,7 @@ fn binary_prediction_waits_for_its_receiving_volume_instead_of_its_working_direc
         .expect("the output volume cannot fit the remembered writes");
     assert_eq!(wait.reason, admission::WaitReason::Disk);
     assert_eq!(wait.need_bytes, 2 * 1024 * MIB);
-    assert_eq!(wait.free_bytes, 1024 * MIB);
+    assert_eq!(wait.free_bytes, 0);
 }
 
 #[test]
@@ -586,4 +587,45 @@ fn a_different_exact_binary_command_has_no_known_output_volume() {
             .is_ok(),
         "a normalized command key cannot identify the next command's output volume"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn declared_job_memory_waits_before_spawn_on_a_healthy_machine() {
+    let total = std::fs::read_to_string("/proc/meminfo")
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("MemTotal:"))
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap()
+        * 1024;
+    let pool = Arc::new(Pool::new(total, true).with_machine_pressure(Box::new(|| false)));
+    let admission = LaunchAdmission(pool.clone());
+    let argv = vec!["/bin/true".into()];
+    // An explicitly sized job can wait for a larger machine without either
+    // starting a PID or stopping healthy work to manufacture room.
+    let required = total.saturating_mul(2);
+    let wait = admission
+        .reserve_with_memory("declared", &argv, Path::new("/"), false, required)
+        .err()
+        .expect("declared memory needs must be admitted before a PID exists");
+    assert_eq!(wait.reason, admission::WaitReason::Memory);
+    assert_eq!(wait.need_bytes, required);
+    assert!(pool.launches.lock().unwrap().is_empty());
+    // Ordinary commands with no declared need remain governed by actual
+    // pressure, and the owner's memory-off decision also applies to jobs.
+    assert!(admission
+        .reserve("ordinary", &argv, Path::new("/"), false)
+        .is_ok());
+    pool.configure(crate::config::ResourceProtection {
+        memory: false,
+        ..Default::default()
+    });
+    assert!(admission
+        .reserve_with_memory("off", &argv, Path::new("/"), false, required)
+        .is_ok());
 }

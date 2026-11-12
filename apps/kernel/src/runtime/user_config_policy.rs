@@ -67,6 +67,15 @@ pub(crate) async fn user_config_mutation_effects(
         }]);
     }
 
+    if path.starts_with("kernel.resource_protection.") {
+        return Ok(vec![UserConfigMutationEffect {
+            kind: "runtime_config".into(),
+            path: path.into(),
+            message: "resource protection updated for this running kernel".into(),
+            provider_reload: None,
+        }]);
+    }
+
     if path == "agents.offload_without_asking" {
         return Ok(vec![UserConfigMutationEffect {
             kind: "runtime_config".to_string(),

@@ -559,3 +559,26 @@ fn handoff_brief_models_set_unset_persist_and_are_discoverable() {
     }
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn resset_resource_settings_default_on_and_change_independently() {
+    let mut config = CharioxUserConfig::default();
+    for resource in ["memory", "disk", "cpu"] {
+        assert_eq!(
+            serde_json::to_value(&config).unwrap()["kernel"]["resource_protection"][resource],
+            true
+        );
+        let path = format!("kernel.resource_protection.{resource}");
+        config.set_value(&path, "false".into()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&config).unwrap()["kernel"]["resource_protection"][resource],
+            false
+        );
+        config.unset_value(&path).unwrap();
+        assert_eq!(
+            serde_json::to_value(&config).unwrap()["kernel"]["resource_protection"][resource],
+            true
+        );
+        assert!(config.set_value(&path, "sometimes".into()).is_err());
+    }
+}
