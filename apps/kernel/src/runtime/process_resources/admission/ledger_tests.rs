@@ -25,6 +25,7 @@ fn room<'a>(memory: u64, tight: bool, volume: &'a Volume) -> Room<'a> {
         memory,
         margin: if tight { memory + 1 } else { 0 },
         growing: 0,
+        host_bound: false,
         light: 512 * MIB,
         growth_room: GIB,
         capacity: 64 * GIB,

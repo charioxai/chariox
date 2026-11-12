@@ -28,11 +28,13 @@ A command that admission paused (it grew toward a full pool) continues when its
 room frees. If it has waited 60 s and still cannot continue in the room there is
 (the pool stays full by accounting without ever stalling, as when an idle
 command keeps its memory), the paused command ends the same way a memory stop
-does, with the reason on its error stream (the pool's ceiling, what is in use and
-the command's own size): a pause never lasts for ever. A
-command that could continue is never ended, however long it waited: the resume
-pass continues it. Jobs a tool shell ran at once stay separate commands across
-a hot reload, so a paused one is still found and continued.
+does, with the reason on its error stream: what it still needs to continue, the
+room that was left once what is in use and reserved is counted, whether the
+pool's ceiling or the machine's free memory set that room, and the command's
+own size. A pause never lasts for ever. A command that could continue is never
+ended, however long it waited: the resume pass continues it. Jobs a tool shell
+ran at once stay separate commands across a hot reload, so a paused one is
+still found and continued.
 
 `CHARIOX_PROCESS_MEMORY_LIMIT_MIB` sets an optional owner-set hard cap per agent
 and per terminal (an integer of at least 16 MiB; invalid values refuse the launch

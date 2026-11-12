@@ -204,13 +204,17 @@ impl Workload {
     pub(super) fn root_alive(&mut self) -> bool {
         self.child.try_wait().unwrap().is_none()
     }
+    /// What the command was told on its own error stream.
+    #[cfg(target_os = "linux")]
+    pub(super) fn told(&self, name: &str) -> String {
+        std::fs::read_to_string(self.dir.join(format!("{name}.err"))).unwrap_or_default()
+    }
     /// The stopped command was told why on its own error stream. Only Linux
     /// can reopen another process's stream; elsewhere the stop is silent.
     pub(super) fn assert_told(&self, name: &str, reason: &str) {
         #[cfg(target_os = "linux")]
         {
-            let notice =
-                std::fs::read_to_string(self.dir.join(format!("{name}.err"))).unwrap_or_default();
+            let notice = self.told(name);
             assert!(
                 notice.contains(reason),
                 "{name} was not told why: {notice:?}"
@@ -601,10 +605,87 @@ fn a_command_paused_on_a_full_pool_that_never_stalls_ends_after_the_bounded_wait
         "the paused command stayed stopped with no outcome"
     );
     b.assert_told("grow", "stopped this waiting command");
-    // The failure names the pool, its limit and what is in use.
-    b.assert_told("grow", "of the 1536 MiB shared ceiling");
-    b.assert_told("grow", "MiB in use");
+    // The failure names the limit that bound it and the room it left.
+    b.assert_told("grow", "under the 1.5 GB shared ceiling");
     assert!(a.alive("big") && a.alive("idle") && a.root_alive() && b.root_alive());
+}
+
+/// The size in `notice` that follows `before`, in MB as the notice words it
+/// (`size`: "147 MB", "1.5 GB").
+#[cfg(target_os = "linux")]
+fn size_after(notice: &str, before: &str) -> f64 {
+    let mut words = notice
+        .split_once(before)
+        .unwrap_or_else(|| panic!("the notice has no {before:?}: {notice:?}"))
+        .1
+        .split_whitespace();
+    let number = words
+        .next()
+        .and_then(|number| number.parse::<f64>().ok())
+        .unwrap_or_else(|| panic!("no number after {before:?}: {notice:?}"));
+    match words.next() {
+        Some("GB") => number * 1024.0,
+        Some("MB") => number,
+        unit => panic!("no size unit after {before:?}: {unit:?} in {notice:?}"),
+    }
+}
+
+/// A launch reservation, not what runs, keeps the paused command from
+/// continuing: the pool is far from full by resident memory. The notice
+/// carries the figures the decision used (what the command needs, what room
+/// was left), so that a reader sees why it ended; resident memory against the
+/// ceiling would show a pool that is not full.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pause_held_by_a_launch_reservation_ends_with_the_room_and_need_that_decided() {
+    let (a, mut b, _c, pool) = pressure(false, 300, 48, 9);
+    assert!(
+        b.waiting("grow"),
+        "the newest growing command was not paused"
+    );
+    pool.launches.lock().unwrap().insert(
+        "binary".into(),
+        super::launch::Reservation {
+            memory: 1200 * MIB,
+            writes: 0,
+            volume: 1,
+        },
+    );
+    // The largest command ends: resident memory is now far below the ceiling.
+    unsafe { libc::kill(a.pid("big"), libc::SIGKILL) };
+    settle(3);
+    assert!(
+        b.alive("grow") && b.waiting("grow"),
+        "the reservation did not hold the paused command"
+    );
+    {
+        let mut observation = b.domain.state.lock().unwrap();
+        for entry in observation
+            .admission
+            .values_mut()
+            .filter(|e| e.wait.is_some())
+        {
+            entry.since_ms = crate::session::unix_epoch_ms() - 61_000;
+        }
+    }
+    settle(3);
+    assert!(
+        !b.alive("grow"),
+        "the paused command stayed stopped with no outcome"
+    );
+    let notice = b.told("grow");
+    let need = size_after(&notice, "it still needs ");
+    let left = size_after(&notice, "only ");
+    assert!(
+        left < need,
+        "the notice does not explain the block: {notice:?}"
+    );
+    assert!(
+        notice.contains("under the 1.5 GB shared ceiling"),
+        "{notice:?}"
+    );
+    assert!(!notice.contains("MiB in use"), "{notice:?}");
+    assert!(b.root_alive());
 }
 
 /// The same shell, after one of its two jobs ended while the other was

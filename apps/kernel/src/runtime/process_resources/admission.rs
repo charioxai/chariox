@@ -339,6 +339,8 @@ pub(super) struct Room<'a> {
     /// Bytes per second everything that runs grows by: memory below it is
     /// short too, since it would be gone in a second.
     pub growing: u64,
+    /// The machine's free memory, not the pool's ceiling, set `memory`.
+    pub host_bound: bool,
     pub light: u64,
     pub growth_room: u64,
     /// The whole pool: what a command can never exceed, however long it waits.
@@ -615,7 +617,7 @@ impl Ledger {
     /// grow, so it can wait with memory above the pressure line too. Starts
     /// over once it ends.
     pub(super) fn stalled(&mut self, members: &[Arc<Mutex<Observation>>], room: &Room) -> bool {
-        if youngest_paused(members, 0, None).is_none() {
+        if youngest_paused(members).is_none() {
             self.stall = None;
             return false;
         }
@@ -898,33 +900,57 @@ pub(super) struct PausedCommand {
     pub control: std::sync::mpsc::Sender<WatchCommand>,
 }
 
-/// The newest command paused on memory for at least `waited_ms`, and, when
-/// `blocked_in` is given, one that cannot continue in that room (a command
-/// that can is left to the next resume). When the pool is full and nothing
+/// What kept a paused command from continuing: the memory left for it, and
+/// what it needs to go on.
+pub(super) struct Blocked {
+    pub left: u64,
+    pub need: u64,
+}
+
+/// The newest command paused on memory. When the pool is full and nothing
 /// else can pause, it yields before a running command does: it has made the
 /// least progress, and the oldest running command can then finish.
-pub(super) fn youngest_paused(
+pub(super) fn youngest_paused(members: &[Arc<Mutex<Observation>>]) -> Option<PausedCommand> {
+    paused_by(members, 0, |paused| paused.arrived, |_, _| Some(())).map(|(command, ())| command)
+}
+
+/// The newest command paused on memory for at least `waited_ms` that cannot
+/// continue in `room` (a command that can is left to the next resume), with
+/// the figures that kept it.
+pub(super) fn blocked_paused(
     members: &[Arc<Mutex<Observation>>],
     waited_ms: u64,
-    blocked_in: Option<&Room>,
-) -> Option<PausedCommand> {
-    paused_by(members, waited_ms, blocked_in, |paused| paused.arrived)
+    room: &Room,
+) -> Option<(PausedCommand, Blocked)> {
+    let state = State::read(members, room);
+    paused_by(
+        members,
+        waited_ms,
+        |paused| paused.arrived,
+        |entry, unit| {
+            (!state.fits(entry, unit, WaitReason::Memory, room)).then(|| Blocked {
+                left: state.memory_room(unit, room),
+                need: need(entry, WaitReason::Memory, room),
+            })
+        },
+    )
 }
 
 /// The command paused on memory that holds the most: ending it frees the most.
 pub(super) fn largest_paused(members: &[Arc<Mutex<Observation>>]) -> Option<PausedCommand> {
-    paused_by(members, 0, None, |paused| paused.resident)
+    paused_by(members, 0, |paused| paused.resident, |_, _| Some(())).map(|(command, ())| command)
 }
 
-fn paused_by(
+/// The paused command that ranks highest, among those paused for at least
+/// `waited_ms` that `verdict` accepts, with what the verdict found.
+fn paused_by<T>(
     members: &[Arc<Mutex<Observation>>],
     waited_ms: u64,
-    blocked_in: Option<&Room>,
     rank: impl Fn(&PausedCommand) -> u64,
-) -> Option<PausedCommand> {
+    verdict: impl Fn(&Entry, &str) -> Option<T>,
+) -> Option<(PausedCommand, T)> {
     let now = crate::session::unix_epoch_ms();
-    let state = blocked_in.map(|room| State::read(members, room));
-    let mut best: Option<(u64, PausedCommand)> = None;
+    let mut best: Option<(u64, PausedCommand, T)> = None;
     for member in members {
         let observation = member.lock().unwrap_or_else(|e| e.into_inner());
         let Some(control) = observation.control.clone() else {
@@ -936,12 +962,12 @@ fn paused_by(
             };
             if !matches!(entry.wait, Some(Wait::Paused(WaitReason::Memory)))
                 || now.saturating_sub(entry.since_ms) < waited_ms
-                || blocked_in.zip(state.as_ref()).is_some_and(|(room, state)| {
-                    state.fits(entry, &observation.unit, WaitReason::Memory, room)
-                })
             {
                 continue;
             }
+            let Some(found) = verdict(entry, &observation.unit) else {
+                continue;
+            };
             let paused = PausedCommand {
                 pid: command.pid,
                 arrived: entry.arrived,
@@ -950,12 +976,12 @@ fn paused_by(
                 control: control.clone(),
             };
             let score = rank(&paused);
-            if best.as_ref().is_none_or(|(best, _)| score > *best) {
-                best = Some((score, paused));
+            if best.as_ref().is_none_or(|(best, ..)| score > *best) {
+                best = Some((score, paused, found));
             }
         }
     }
-    best.map(|(_, command)| command)
+    best.map(|(_, command, found)| (command, found))
 }
 
 /// Machine-wide facts one pass decides on.

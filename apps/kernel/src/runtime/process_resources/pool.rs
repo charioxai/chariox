@@ -68,6 +68,8 @@ pub(super) enum Cause {
 /// must not release memory that this headroom has not yet charged.
 pub(super) struct MemoryRoom {
     pub memory: u64,
+    /// The machine's free memory, not the ceiling, set `memory`.
+    pub host_bound: bool,
     pub growing: u64,
     observed: BTreeMap<String, u64>,
 }
@@ -219,6 +221,7 @@ impl Pool {
             memory: sampled.memory,
             margin: self.margin,
             growing,
+            host_bound: sampled.host_bound,
             light,
             growth_room: admission::growth_room(self.ceiling),
             capacity: self.ceiling.saturating_sub(self.margin),
@@ -382,13 +385,16 @@ impl Pool {
             .ceiling
             .saturating_sub(self.margin)
             .saturating_sub(charged.saturating_add(outside_cgroup));
+        let mut host_bound = false;
         if self.host {
-            if let Some(host) = host_room(self.margin) {
-                room = room.min(host);
+            if let Some(host) = host_room(self.margin).filter(|host| *host < room) {
+                room = host;
+                host_bound = true;
             }
         }
         MemoryRoom {
             memory: room,
+            host_bound,
             growing,
             observed,
         }
@@ -426,19 +432,19 @@ impl Pool {
         if stopped_at.get("").is_some_and(|at| at.elapsed() < SETTLE) {
             return;
         }
-        let Some(waiting) = admission::youngest_paused(members, PAUSE_LIMIT_MS, Some(room)) else {
+        let Some((waiting, blocked)) = admission::blocked_paused(members, PAUSE_LIMIT_MS, room)
+        else {
             return;
         };
-        let in_use: u64 = members
-            .iter()
-            .map(|member| member.lock().unwrap_or_else(|e| e.into_inner()).resident())
-            .sum();
-        let notice = format!(
-            "chariox: stopped this waiting command: the pool stayed full for {} s ({} MiB in use of the {} MiB shared ceiling) and it could not continue ({} MiB resident). Run it again; it starts when there is room.\n",
-            PAUSE_LIMIT_MS / 1000,
-            in_use / MIB,
-            self.ceiling / MIB,
-            waiting.resident / MIB
+        let notice = super::waits::overdue_line(
+            PAUSE_LIMIT_MS,
+            &blocked,
+            waiting.resident,
+            if room.host_bound {
+                None
+            } else {
+                Some(self.ceiling)
+            },
         );
         if self.end_waiting(waiting, notice, false) {
             stopped_at.insert(String::new(), Instant::now());
@@ -483,7 +489,7 @@ impl Pool {
         // before a running command does, the newest first. When waiting
         // freed nothing, the largest one yields.
         let paused = match cause {
-            Cause::Pressure => admission::youngest_paused(members, 0, None).map(|waiting| {
+            Cause::Pressure => admission::youngest_paused(members).map(|waiting| {
                 let notice = format!(
                     "chariox: stopped this waiting command under memory pressure: the pool is full, so the newest waiting command ends first ({} MiB resident) and the oldest running one can finish. Run it again; it starts when there is room.\n",
                     waiting.resident / MIB
