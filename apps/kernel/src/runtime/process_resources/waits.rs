@@ -136,29 +136,38 @@ pub(super) fn filling_line(filling: &super::admission::Filling) -> String {
 }
 
 /// Why a paused command that stayed blocked was ended, on its own error
-/// stream: the room that was left against what it needed. `ceiling` is the
-/// pool's limit when that bound the room, `None` when the machine's free
-/// memory did.
+/// stream: the room that was left against what it needed, for the resource
+/// that decided. `ceiling` is the pool's limit when that bound the memory
+/// room, `None` when the machine's free memory did.
 pub(super) fn overdue_line(
     waited_ms: u64,
     blocked: &super::admission::Blocked,
     resident: u64,
     ceiling: Option<u64>,
 ) -> String {
-    let bound = match ceiling {
-        Some(ceiling) => format!(
-            "under the {} shared ceiling once what is in use and reserved is counted",
-            size(ceiling)
+    let waited = waited_ms / 1000;
+    match *blocked {
+        super::admission::Blocked::Memory { left, need } => {
+            let bound = match ceiling {
+                Some(ceiling) => format!(
+                    "under the {} shared ceiling once what is in use and reserved is counted",
+                    size(ceiling)
+                ),
+                None => "of the machine's free memory".to_string(),
+            };
+            format!(
+                "chariox: stopped this waiting command: after waiting {waited} s it still needs {} to continue and only {} are left {bound} ({} resident). Run it again; it starts when there is room.\n",
+                size(need),
+                size(left),
+                size(resident),
+            )
+        }
+        super::admission::Blocked::Disk { spare, need } => format!(
+            "chariox: stopped this waiting command: after waiting {waited} s it still needs {} of disk above the floor to continue and only {} are free on the volume it writes to. Free space or move its output elsewhere, then run it again.\n",
+            size(need),
+            size(spare),
         ),
-        None => "of the machine's free memory".to_string(),
-    };
-    format!(
-        "chariox: stopped this waiting command: after waiting {} s it still needs {} to continue and only {} are left {bound} ({} resident). Run it again; it starts when there is room.\n",
-        waited_ms / 1000,
-        size(blocked.need),
-        size(blocked.left),
-        size(resident),
-    )
+    }
 }
 
 pub(super) fn resumed_line(waited_ms: u64) -> String {

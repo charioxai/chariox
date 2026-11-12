@@ -332,7 +332,8 @@ fn a_pause_the_disk_keeps_ends_naming_the_disk() {
         })
         .expect("the paused command was not ended");
     assert!(
-        notice.contains("of disk") && !notice.contains("still needs"),
+        notice.contains("it still needs 6 GB of disk above the floor")
+            && notice.contains("only 2 GB are free on the volume"),
         "the disk kept it, but the notice names memory: {notice}"
     );
 }
