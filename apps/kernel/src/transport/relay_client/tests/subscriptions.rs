@@ -2,6 +2,97 @@
 use super::support::*;
 use crate::transport::relay_client::subscriptions::run_relay_subscription_loop;
 
+#[tokio::test]
+async fn terminal_output_is_raw_on_live_and_replayed_encrypted_relay_events() {
+    let _guard = relay_client_test_guard().await;
+    let config = DaemonConfig::for_tests();
+    let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+    let session_id = create_test_session(&mut app, "workspace", "worktree");
+    let attachment_id = attach_test_client(
+        &mut app,
+        &session_id,
+        "terminal-wire",
+        ClientCapabilityLevel::MessageTransport,
+    );
+    let records = app.terminal_stream_store().fan_out_output(
+        &session_id,
+        "run-1",
+        None,
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        None,
+        vec![attachment_id.clone()],
+        &vec![b'x'; 65536],
+    );
+    let event = KernelEvent::TerminalOutput {
+        records: vec![records],
+    };
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        4,
+    ));
+    let runtime = Arc::new(RelayEventRuntime::for_tests(64));
+    let stream = subscription_event_stream_id(&session_id, &attachment_id);
+    let cursor = runtime
+        .event_log
+        .append(
+            stream.clone(),
+            KernelEvent::Heartbeat {
+                session_id: session_id.clone(),
+            },
+        )
+        .await
+        .unwrap()
+        .event_id;
+    let key = relay_crypto::generate_private_key_base64();
+    let public = relay_crypto::public_key_from_private_key_base64(&key).unwrap();
+    approve_test_terminal(&config, &public);
+    let (tx, _priority, mut rx) = RelayOutgoingSender::channel(64);
+    super::super::events::emit_relay_event(
+        &router,
+        &tx,
+        "terminal-wire",
+        &public,
+        &runtime,
+        &stream,
+        event,
+    )
+    .await
+    .unwrap();
+    async fn raw(rx: &mut mpsc::Receiver<RelayEnvelope>, key: &str) -> Vec<u8> {
+        let RelayEnvelope::DaemonEvent {
+            encrypted_event, ..
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("expected event")
+        };
+        let decrypted =
+            relay_crypto::decrypt_payload_for_private_key(key, &encrypted_event).unwrap();
+        assert!(
+            decrypted.plaintext.starts_with(b"CXT1"),
+            "terminal output is still a JSON byte array"
+        );
+        assert!(
+            decrypted.plaintext.len() < 65536 + 2048,
+            "terminal output expands on the wire"
+        );
+        decrypted.plaintext.to_vec()
+    }
+    let live = raw(&mut rx, &key).await;
+    replay_recent_relay_events(
+        &runtime,
+        &router,
+        &tx,
+        "terminal-wire",
+        &public,
+        &session_id,
+        &attachment_id,
+        Some(cursor),
+    )
+    .await
+    .unwrap();
+    assert_eq!(raw(&mut rx, &key).await, live);
+}
+
 // MP-08 / MP-10 A12-S02: encrypted relay delivery uses the same snapshot rule.
 #[tokio::test]
 async fn review971c_relay_subscription_keeps_mixed_task_changes() {

@@ -1,3 +1,4 @@
+import { decodeTerminalOutputEvent } from "./terminal-output-wire.js"
 import { RelayFrameReceiver, relayTransportUrl } from "./relay-frame-transport.js"
 import type { EncryptedRelayPayload as RelayPayload } from "./kernel-transport-frames.js"
 
@@ -128,18 +129,19 @@ export async function decryptRelayPayload(
   payload: EncryptedRelayPayload,
   expectedSenderPublicKey?: string,
 ): Promise<string> {
-  return new TextDecoder().decode(await decryptRelayBytes(privateKey, payload, expectedSenderPublicKey))
+  const bytes = await decryptRelayBytes(privateKey, payload, expectedSenderPublicKey)
+  const terminal = decodeTerminalOutputEvent(bytes)
+  return terminal ? JSON.stringify(terminal) : new TextDecoder().decode(bytes)
 }
 
-// MP-08/MP-10: protocol 466 display events are binary (`CXD1`, u32 header
-// length, JSON header, raw payload); every other event stays JSON text.
+// Display and terminal output events carry metadata followed by raw bytes.
 export async function decryptRelayEvent(
   privateKey: CryptoKey,
   payload: EncryptedRelayPayload,
   expectedSenderPublicKey?: string,
 ): Promise<unknown> {
   const bytes = await decryptRelayBytes(privateKey, payload, expectedSenderPublicKey)
-  return decodeDisplayEvent(bytes) ?? JSON.parse(new TextDecoder().decode(bytes))
+  return decodeDisplayEvent(bytes) ?? decodeTerminalOutputEvent(bytes) ?? JSON.parse(new TextDecoder().decode(bytes))
 }
 
 // Returns null for non-display plaintext. Each `data:[offset,length]` becomes a
