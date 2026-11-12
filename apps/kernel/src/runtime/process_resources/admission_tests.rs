@@ -170,6 +170,43 @@ fn a_command_filling_the_disk_is_stopped_with_its_reason_never_paused() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn an_anonymous_memory_writer_is_not_stopped_as_a_disk_filler() {
+    take_wait_events();
+    let pool = pool(1536);
+    let command = format!(
+        "python3 -c '{DIE_WITH_PARENT}import os,sys,time\nf=os.memfd_create(\"browser-frame\"); disk=open(sys.argv[1],\"wb\")\nfor _ in range(16):\n os.write(f,bytes(1048576)); disk.write(bytes(1048576)); disk.flush(); os.fsync(disk.fileno()); time.sleep(0.25)\ntime.sleep(6)' \"$0/out\""
+    );
+    let mut writer = Workload::run(domain(&pool, "memory-writer", false), &[("write", command)]);
+    settle(4);
+    assert!(
+        writer.alive("write"),
+        "memory-backed output was treated as a full disk"
+    );
+    assert!(
+        take_wait_events()
+            .iter()
+            .all(|event| !matches!(event.change, WaitChange::Stopped { .. })),
+        "memory-backed output triggered a disk stop"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_anonymous_memory_file_has_no_disk_capacity_observation() {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let name = std::ffi::CString::new("browser-frame").unwrap();
+    // SAFETY: the name is NUL-terminated; a successful descriptor is owned below.
+    let fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
+    assert!(fd >= 0, "{}", std::io::Error::last_os_error());
+    // SAFETY: memfd_create returned this fresh descriptor.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let path = std::path::PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
+    assert!(file.metadata().unwrap().is_file());
+    assert!(admission::statvfs(&path).is_none());
+}
+
 /// What the previous program's admission handed over for a held command.
 #[cfg(target_os = "linux")]
 fn reload(command: &Workload, handed_over: Vec<admission::HeldCommand>) {
