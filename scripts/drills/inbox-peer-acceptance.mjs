@@ -101,7 +101,7 @@ On the reply wake, or when the reply already completed:
     assert(peerAgent, "room agent creates peer"); assert(!peerAgent.parent_agent_id)
     const events = rows.filter(r => r.kind === "peer_event" && r.payload?.agent?.agent_id === peerAgent.id || r.kind === "peer_event" && JSON.stringify(r.payload).includes(peerAgent.id))
     assert(events.length >= 1, "automatic follow reports real peer completion")
-    assert(events.some(r => r.state === "handled"))
+    assert(events.some(r => r.state === "handled" && r.payload.event === "turn_ended" && r.payload.success === true), "the followed peer completed a real successful turn")
     assert(/not_permitted|only a room agent/i.test(JSON.stringify(report)))
     await d.a.rpc({ UpdateAgentConfig: { session_id: room.id, agent_id: room.agent, permission_level: "required" } })
     const before = readTasks().length
