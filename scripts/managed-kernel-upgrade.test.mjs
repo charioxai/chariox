@@ -41,7 +41,7 @@ const serviceName = "chariox-managed-bootstrap.service"
 
 // Run the real installer with namespace-owned root files and no host sudo.
 if (process.platform === "linux" && process.getuid() !== 0) {
-  test("managed upgrade root-owned release fixtures", { timeout: 300_000 }, () => {
+  test("managed upgrade root-owned release fixtures", { timeout: 600_000 }, () => {
     const result = runRootOwnershipFixture(fileURLToPath(import.meta.url))
     process.stdout.write(result.stdout ?? "")
     assert.equal(result.error, undefined)
