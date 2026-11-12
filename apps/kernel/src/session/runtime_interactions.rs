@@ -249,7 +249,7 @@ pub struct RuntimeInteraction {
     /// Person cards: the existing wake source whose occurrence closes this card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     closes_with_wake: Option<String>,
-    /// A sub-agent's decision the user holds is listed with the top parent, whose panel shows it.
+    /// A sub-agent's decision is listed with the top parent, whose panel shows it, whoever holds it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     shown_in_agent_id: Option<String>,
     /// MP-08 / MP-11 protocol 538: kernel-established sudo presentation.

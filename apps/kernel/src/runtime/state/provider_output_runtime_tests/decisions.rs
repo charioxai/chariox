@@ -1,5 +1,6 @@
 //! One decision is one card: a sub-agent's decision goes to the nearest parent that may answer
-//! it and otherwise reaches the user as the same interaction, listed with the top parent only.
+//! it and otherwise reaches the user as the same interaction. The user sees it in the top
+//! parent's panel from the start, whoever holds it, and the first answer wins.
 //! Tree: g (room agent) -> p -> c. Every test raises through `create_runtime_interaction`.
 use super::*;
 use crate::durable_state::agent_lifecycle::{InboxEvent, Operation, Outcome};
@@ -317,10 +318,45 @@ async fn a_delegable_permission_goes_to_the_nearest_parent_that_may_answer() {
         .unwrap();
     assert_eq!(
         card.shown_in_agent_id(),
-        None,
-        "no user card while an agent holds it"
+        Some(t.g.as_str()),
+        "the user sees it in the top panel while an agent holds it"
     );
     assert!(answer.try_recv().is_err(), "nobody has answered yet");
+}
+
+/// Live (pcdrive r3 F1): a parent parked in a wait held its child's decision, the person never saw
+/// it and the child waited. The person answers a decision a parent holds from the top panel; the
+/// holder's event is withdrawn and the holder hears that the user settled it.
+#[tokio::test]
+async fn the_user_answers_a_decision_a_parent_holds_from_the_top_panel() {
+    let t = tree(
+        "decision-user-answers-held",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let mut answer = t.raise(permission("perm-held-user", &t.c)).await;
+    assert_eq!(t.decision_events(&t.p).len(), 1, "p holds it and is told");
+    assert_eq!(
+        t.session().interactions_listed_for(&t.g)[0].id(),
+        "perm-held-user"
+    );
+    t.runtime
+        .owned
+        .resolve_runtime_interaction(&t.room, "perm-held-user", "deny", None, None, false)
+        .unwrap();
+    assert_eq!(
+        answer.try_recv().unwrap().choice_id.as_deref(),
+        Some("deny")
+    );
+    assert!(t.all_closed(&t.p), "the holder's event is withdrawn");
+    assert_eq!(
+        t.runtime
+            .answer_child_decision(&t.room, &t.p, "perm-held-user", "allow")
+            .await
+            .unwrap(),
+        ChildDecisionStatus::SettledByUser
+    );
 }
 
 #[tokio::test]
@@ -1340,7 +1376,11 @@ async fn a_holder_that_yields_without_answering_hands_the_decision_on() {
     t.end_turn_yielded(&t.p).await;
     assert!(t.all_closed(&t.p), "p's event is withdrawn");
     assert_eq!(t.decision_events(&t.g).len(), 1, "g holds it and is told");
-    assert!(t.session().interactions_listed_for(&t.g).is_empty());
+    assert_eq!(
+        t.session().interactions_listed_for(&t.g)[0].id(),
+        "perm-yield",
+        "the user sees it while g holds it"
+    );
 
     t.read_inbox(&t.g);
     t.end_turn_yielded(&t.g).await;

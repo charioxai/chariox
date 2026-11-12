@@ -169,7 +169,7 @@ export type NativeInteractionOrigin =
 export type RuntimeInteraction = RuntimeInteractionSubject & {
   asking_task_id?: string | null
   related_agent_id?: string | null
-  /** A sub-agent's decision the user holds is listed with the room agent, whose panel shows it. */
+  /** A sub-agent's decision is listed with the room agent, whose panel shows it, whoever holds it. */
   shown_in_agent_id?: string | null
   /** Person cards: the wake source whose occurrence closes this card by itself. */
   closes_with_wake?: string | null

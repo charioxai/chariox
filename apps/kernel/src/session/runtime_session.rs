@@ -1045,7 +1045,7 @@ impl RuntimeSession {
     }
 
     /// The pending interactions a client lists for `agent_id`: its own, except those it
-    /// does not show (a sub-agent's decision the user holds), plus the ones shown here.
+    /// does not show (a sub-agent's decision), plus the ones shown here.
     pub fn interactions_listed_for(&self, agent_id: &str) -> Vec<&RuntimeInteraction> {
         self.active_interactions
             .iter()
