@@ -247,6 +247,7 @@ pub(crate) fn submit_claude_prompt(
         .map_or(envelope.visible_user_prompt.as_str(), |p| p.as_str());
     let message = json!({
         "type": "user",
+        "uuid": new_claude_session_id(),
         "message": {
             "role": "user",
             "content": claude_user_content(input, &envelope.attachments)
@@ -2295,6 +2296,10 @@ done
             .contains("archive.bin"));
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "claude_runtime/tests/background_continuation.rs"]
+mod background_continuation;
 
 #[cfg(all(test, unix))]
 #[path = "claude_runtime/tests/cold_restart.rs"]

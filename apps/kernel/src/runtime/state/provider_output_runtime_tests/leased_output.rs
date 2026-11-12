@@ -224,7 +224,8 @@ if [[ "$1" == "auth" && "$2" == "status" && "$3" == "--json" ]]; then
 fi
 if IFS= read -r -t 10 line; then
     : > "$CHARIOX_TEST_RECEIVED"
-    printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"error":"Fixture Claude login required"}'
+    uuid=$(printf '%s' "$line" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
+    printf '{"type":"result","subtype":"error_during_execution","is_error":true,"error":"Fixture Claude login required","user_message_uuids":["%s"]}\n' "$uuid"
     IFS= read -r -t 10 ignored || true
 fi
 "#).unwrap();

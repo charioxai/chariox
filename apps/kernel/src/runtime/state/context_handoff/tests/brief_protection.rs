@@ -145,7 +145,7 @@ async fn assert_utility_input(recovered: bool) {
     let program = root.path().join("brief-fixture");
     let answer = serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":SAFE_BRIEF}]}}).to_string();
     std::fs::write(&program, format!(
-        "#!/bin/sh\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '{}'; printf '%s\\n' '{}' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done\n",
+        "#!/bin/sh\nwhile IFS= read -r line; do u=$(printf '%s' \"$line\" | sed -n 's/.*\"uuid\":\"\\([^\"]*\\)\".*/\\1/p'); printf '%s\\n' \"$line\" >> '{}'; printf '%s\\n' '{}' '{{\"type\":\"result\",\"subtype\":\"success\",\"user_message_uuids\":[\"'\"$u\"'\"]}}'; done\n",
         captured.display(), answer,
     )).unwrap();
     use std::os::unix::fs::PermissionsExt;

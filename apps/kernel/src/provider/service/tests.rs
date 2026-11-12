@@ -949,7 +949,7 @@ fn a_stop_after_submission_ends_that_fresh_utility_child_and_leaves_the_run_usab
     let marker = root.join("utility-pid");
     let request = LaunchProviderRequest::new("s", "claude", "claude", "default", "sonnet");
     let program = format!(
-        "import sys,time,pathlib,json,os\nfor line in sys.stdin:\n pathlib.Path({:?}).write_text(str(os.getpid()))\n time.sleep(1 if 'again' in line else 30)\n print(json.dumps({{'type':'assistant','message':{{'content':[{{'type':'text','text':'brief'}}]}}}}),flush=True)\n print(json.dumps({{'type':'result','subtype':'success'}}),flush=True)",
+        "import sys,time,pathlib,json,os\nfor line in sys.stdin:\n pathlib.Path({:?}).write_text(str(os.getpid()))\n time.sleep(1 if 'again' in line else 30)\n print(json.dumps({{'type':'assistant','message':{{'content':[{{'type':'text','text':'brief'}}]}}}}),flush=True)\n print(json.dumps({{'type':'result','subtype':'success','user_message_uuids':[json.loads(line)['uuid']]}}),flush=True)",
         marker.to_string_lossy(),
     );
     let mut run = RuntimeProviderRun::new(
@@ -1027,7 +1027,7 @@ fn a_long_utility_does_not_lock_other_provider_runs() {
     let mut utility = RuntimeProviderRun::new("utility", &request, ProviderLaunchResult {
         endpoint_mode: AgentEndpointMode::Managed, process_label: "fixture".into(),
         pty_target: None, pty_program: Some("/bin/sh".into()),
-        pty_args: vec!["-c".into(), format!("while IFS= read -r line; do touch '{}'; sleep 1; printf '%s\\n' '{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"brief\"}}]}}}}' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done", marker.display())],
+        pty_args: vec!["-c".into(), format!("while IFS= read -r line; do touch '{}'; sleep 1; uuid=$(printf '%s' \"$line\" | sed -n 's/.*\"uuid\":\"\\([^\"]*\\)\".*/\\1/p'); printf '%s\\n' '{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"brief\"}}]}}}}'; printf '{{\"type\":\"result\",\"subtype\":\"success\",\"user_message_uuids\":[\"%s\"]}}\\n' \"$uuid\"; done", marker.display())],
         pty_env: Default::default(), pty_env_remove: vec![], working_directory: None, structured_endpoint: None,
     });
     utility.set_execution_config(

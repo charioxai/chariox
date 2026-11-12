@@ -429,6 +429,9 @@ fn apply_result_message(
         batch.resolved_usage_tokens_total = usage.total_tokens;
         batch.resolved_usage = Some(usage);
     }
+    if !result_answers_active_prompt(state, value) {
+        return;
+    }
     let subtype = value
         .get("subtype")
         .and_then(Value::as_str)
@@ -449,6 +452,31 @@ fn apply_result_message(
         );
     }
     complete_claude_turn(state, batch);
+}
+
+/// Claude also runs turns no Chariox prompt asked for, such as the one that
+/// reports a finished background task. Its `result` names no user message and
+/// can arrive after the next prompt was written, which Claude answers in a
+/// later turn whose `result` names that prompt's `uuid`.
+fn result_answers_active_prompt(state: &ClaudeRuntimeState, value: &Value) -> bool {
+    let Some(uuid) = state
+        .active_prompt_message
+        .as_ref()
+        .and_then(|message| message.get("uuid"))
+        .and_then(Value::as_str)
+    else {
+        // A prompt without a uuid was handed over by the previous kernel program.
+        return true;
+    };
+    value
+        .get("user_message_uuids")
+        .and_then(Value::as_array)
+        .is_some_and(|named| {
+            named
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|named| named.eq_ignore_ascii_case(uuid))
+        })
 }
 
 pub(super) fn complete_claude_turn(
