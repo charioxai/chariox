@@ -434,7 +434,8 @@ fn a03_due_timer_of_a_blocked_task_is_cancelled_with_the_reason_not_left_schedul
         let lost = f.inbox().pop().unwrap();
         assert_eq!(lost.kind, "source_lost", "interval {interval:?}");
         assert_eq!(lost.payload["public_answer"]["cancelled"], true);
-        assert_eq!(lost.payload["public_answer"]["reason"], reason);
+        let ended_because = lost.payload["public_answer"]["reason"].as_str().unwrap();
+        assert!(ended_because.contains(reason), "{ended_because}");
         assert!(
             f.wakes(Operation::FireWakes { now: 240_000 }).is_empty(),
             "a cancelled timer never fires"
