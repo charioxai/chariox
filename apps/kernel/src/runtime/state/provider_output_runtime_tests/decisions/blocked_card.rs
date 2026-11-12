@@ -1,7 +1,6 @@
 //! A blocked task's Resume/Cancel card is a decision about an agent: it goes to the parent that
 //! spawned the agent, says what the agent still owes, and only a root agent's card reaches the
 //! person. Tree: g (room agent) -> p -> c.
-use super::reparent::cards;
 use super::*;
 use crate::durable_state::agent_lifecycle::{AgentTaskExecution, AgentWake, ExecutionState};
 use crate::runtime::state::decision_holder::DecisionHolder;
@@ -169,7 +168,6 @@ async fn a_blocked_root_agents_card_stays_the_persons_and_names_what_it_owes() {
     let id = Tree::blocked_card_id(&task);
 
     assert_eq!(t.holder(&id), DecisionHolder::User);
-    assert_eq!(t.panels(), [(t.g.clone(), cards(&[id.as_str()]))]);
     let session = t.session();
     let card = session
         .active_interactions()

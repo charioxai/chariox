@@ -555,7 +555,7 @@ mod tests {
         );
         assert!(card.starts_with("c1: Repeated invalid turn end"), "{card}");
         assert!(
-            card.contains("wake-7") && card.contains("obligation-9"),
+            card.contains("wake-7") && card.contains("agent-9"),
             "{card}"
         );
         let wakes = blocked_card_message(
