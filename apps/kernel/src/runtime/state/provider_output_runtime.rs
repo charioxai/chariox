@@ -36,7 +36,9 @@ impl KernelRuntimeState {
                 .take_and_stop_polling(provider_run_id));
         }
         if provider_run.state() == crate::provider::ProviderRunState::Parked {
-            if !owned.provider_run_has_active_prompt(session_id, &provider_run)? {
+            if !owned.provider_run_has_active_prompt(session_id, &provider_run)?
+                && !owned.background_holds.holds_run(provider_run_id)
+            {
                 return Ok(owned
                     .structured_output_records
                     .take_and_stop_polling(provider_run_id));
@@ -45,7 +47,7 @@ impl KernelRuntimeState {
             owned.provider_run_projection.update(provider_run.clone());
             crate::logging::warn_with_fields(
                 "daemon.provider",
-                "resumed parked provider run that still had an active prompt",
+                "resumed parked provider run with unfinished work",
                 serde_json::json!({
                     "session_id": session_id,
                     "provider_run_id": provider_run_id,
@@ -490,8 +492,7 @@ pub(super) fn provider_run_ids_for_owned_output_pump(
             .filter(|run| run.session_id() == session.id())
             .filter(|run| {
                 (!run.client_interface().is_chariox()
-                    || crate::provider::provider_run_uses_claude_native_bridge(run)
-                    || held_background_runs.contains(run.id()))
+                    || crate::provider::provider_run_uses_claude_native_bridge(run))
                     && matches!(
                         run.state(),
                         crate::provider::ProviderRunState::Starting
@@ -500,6 +501,7 @@ pub(super) fn provider_run_ids_for_owned_output_pump(
             })
             .map(|run| run.id().to_string()),
     );
+    provider_run_ids.extend(held_background_runs);
     provider_run_ids.extend(
         owned
             .git_turn_snapshots
