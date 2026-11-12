@@ -16,7 +16,29 @@ impl KernelRuntimeState {
             let id = args["job_id"]
                 .as_str()
                 .ok_or_else(|| ledger::error("job_id required"))?;
-            let record = driver.own(id, task)?;
+            let mut record = driver.own(id, task)?;
+            if record.state == "finished"
+                && record.placement == JobPlacement::Remote
+                && !record.deleted
+            {
+                if let (Some(allocation), Some(revision)) =
+                    (&record.allocation_ref, &record.capability_revision)
+                {
+                    // Status stays responsive while the service is unavailable;
+                    // repeated reads can reconcile a confirmed deletion later.
+                    if matches!(
+                        tokio::time::timeout(
+                            Duration::from_secs(3),
+                            self.job_compute_release_ref(allocation, revision)
+                        )
+                        .await,
+                        Ok(Ok(()))
+                    ) {
+                        record.deleted = true;
+                        driver.save(&record)?;
+                    }
+                }
+            }
             if name == "chariox.jobs.cancel" && record.result.is_none() {
                 let wake = self
                     .owned
@@ -154,7 +176,7 @@ impl KernelRuntimeState {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(request.wait_s);
         loop {
             let record = driver.read(&id)?;
-            if record.result.is_some() || tokio::time::Instant::now() >= deadline {
+            if record.state == "finished" || tokio::time::Instant::now() >= deadline {
                 return public_record(record);
             }
             tokio::time::sleep(Duration::from_millis(100)).await;

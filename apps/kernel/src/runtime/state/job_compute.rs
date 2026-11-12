@@ -369,6 +369,43 @@ impl KernelRuntimeState {
         allocation_ref: &str,
         capability_revision: &str,
     ) -> Result<(), DaemonError> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+        loop {
+            let result = tokio::time::timeout_at(
+                deadline,
+                self.job_compute_release_attempt(allocation_ref, capability_revision),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(acquisition_error(
+                    "job_cleanup_pending",
+                    "The job ended; the machine service has not yet confirmed deletion",
+                ))
+            });
+            match result {
+                Err(error)
+                    if matches!(error, DaemonError::LocalTransport { .. })
+                        && crate::runtime::cloud_api_client::cloud_error_is_retryable(&error)
+                        && tokio::time::Instant::now() < deadline =>
+                {
+                    // An uncertain release may have committed. Re-read its receipt
+                    // before deciding whether another release is needed.
+                    tracing::warn!(%error, "job machine cleanup retrying after service interruption");
+                    tokio::time::sleep_until(
+                        (tokio::time::Instant::now() + Duration::from_secs(2)).min(deadline),
+                    )
+                    .await;
+                }
+                result => return result,
+            }
+        }
+    }
+
+    async fn job_compute_release_attempt(
+        &self,
+        allocation_ref: &str,
+        capability_revision: &str,
+    ) -> Result<(), DaemonError> {
         let current = self
             .job_compute_cleanup_request(&ControlPlaneRequest::Get {
                 allocation_ref: allocation_ref.into(),
@@ -411,7 +448,6 @@ impl KernelRuntimeState {
             })
             .await?;
         }
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
         loop {
             let result = self
                 .job_compute_cleanup_request(&ControlPlaneRequest::Get {
@@ -444,22 +480,8 @@ impl KernelRuntimeState {
                     ))
                 }
             }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(acquisition_error(
-                    "job_cleanup_pending",
-                    "The job ended; the machine service has not yet confirmed deletion",
-                ));
-            }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
-    }
-    pub(super) async fn job_compute_release(
-        &self,
-        machine: &JobMachine,
-        _origin: &Origin,
-    ) -> Result<(), DaemonError> {
-        self.job_compute_release_ref(&machine.allocation_ref, &machine.capability_revision)
-            .await
     }
     pub(super) async fn job_compute_started(
         &self,
