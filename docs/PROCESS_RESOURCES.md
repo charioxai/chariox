@@ -27,7 +27,10 @@ paused command waiting after physical memory returns.
 
 Under that pressure, a growing command pauses when remaining headroom is less
 than the larger of the margin and one second of current aggregate growth.
-When no command can pause and running work is still growing, it stops ONE
+After a successful pause, the latest measured growth of running work must
+still be positive before any pressure stop: a decaying startup rate is not
+ongoing allocation. When no command can pause and running work is still growing,
+it stops ONE
 command: a command growing at
 128 MiB/s or more (a runaway) first; otherwise the largest command of the owner
 furthest above its fair share (ceiling / owners, recomputed at every start and

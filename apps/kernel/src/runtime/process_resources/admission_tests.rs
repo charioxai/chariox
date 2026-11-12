@@ -511,7 +511,7 @@ fn a_known_heavy_job_keeps_its_admission_when_its_shell_runs_a_second_job() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_held_command_whose_room_does_not_come_ends_with_the_room_and_need() {
-    let (_a, mut b, _pool) = held();
+    let (mut a, mut b, _pool) = held();
     assert!(b.waiting("job"), "the heavy command was not held");
     {
         let mut observation = b.domain.state.lock().unwrap();
@@ -533,5 +533,5 @@ fn a_held_command_whose_room_does_not_come_ends_with_the_room_and_need() {
         notice.contains("it still needs ") && notice.contains("are left"),
         "the notice does not explain the block: {notice:?}"
     );
-    assert!(b.root_alive());
+    assert!(a.root_alive(), "the other workload was stopped");
 }

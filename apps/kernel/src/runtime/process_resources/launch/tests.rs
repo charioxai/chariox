@@ -177,6 +177,7 @@ fn descendant(unit: &str, pid: u32, admitted: bool) -> Arc<Mutex<Observation>> {
             resident,
             growth: 0,
             steady_growth: 0,
+            measured_growth: 0,
             writes: 0,
             write_growth: 0,
             effective: pid,

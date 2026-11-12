@@ -53,6 +53,9 @@ pub(super) struct CommandUse {
     pub group: Option<u32>,
     pub resident: u64,
     pub growth: u64,
+    /// The latest measured rate, without the runaway detector's decay. Only
+    /// current growth can justify stopping work after a successful pause.
+    pub measured_growth: u64,
     /// The median of its growth over the last minute while it ran: what a
     /// pause is sized by, since one spike says little of how it goes on.
     pub steady_growth: u64,
@@ -367,7 +370,7 @@ impl Pool {
                                     .get(&command.pid)
                                     .is_none_or(|entry| entry.wait.is_none())
                             })
-                            .map(|command| command.growth)
+                            .map(|command| command.measured_growth)
                             .sum::<u64>(),
                 )
             });

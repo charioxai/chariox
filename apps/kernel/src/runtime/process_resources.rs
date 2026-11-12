@@ -414,6 +414,9 @@ impl PreparedDomain {
                             window.record(sampled_at, measured);
                         }
                         let steady_growth = window.typical().unwrap_or(growth);
+                        let measured_growth = measured.unwrap_or_else(|| {
+                            previous.get(&pid).map_or(0, |before| before.measured_growth)
+                        });
                         if write_growth >= admission::GROWING {
                             let volumes = write_growth_cache.entry(pid).or_default().sample(&pids, sampled_at);
                             disk_writes.insert(pid, volumes);
@@ -430,6 +433,7 @@ impl PreparedDomain {
                             resident,
                             growth,
                             steady_growth,
+                            measured_growth,
                             writes,
                             write_growth,
                             effective,
@@ -457,6 +461,7 @@ impl PreparedDomain {
                                 at: sampled_at,
                                 resident: command.resident,
                                 growth: command.growth,
+                                measured_growth: command.measured_growth,
                                 writes: command.writes,
                                 write_growth: command.write_growth,
                             });
@@ -610,6 +615,7 @@ struct Rates {
     at: u64,
     resident: u64,
     growth: u64,
+    measured_growth: u64,
     writes: u64,
     write_growth: u64,
 }

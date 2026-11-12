@@ -42,6 +42,7 @@ fn command(pid: u32, resident: u64, growth: u64) -> pool::CommandUse {
         resident,
         growth,
         steady_growth: growth,
+        measured_growth: growth,
         writes: 0,
         write_growth: 0,
         effective: pid,
@@ -1985,5 +1986,42 @@ fn a_pause_resumes_when_physical_room_returns_despite_full_rss_accounting() {
             .try_iter()
             .any(|command| matches!(command, WatchCommand::MemoryStop { .. })),
         "a healthy machine ended a paused command on RSS accounting alone"
+    );
+}
+
+#[test]
+fn an_old_allocation_rate_cannot_end_a_command_that_just_paused() {
+    let pool = pool::Pool::new(1536 * MIB, false);
+    let mut running = command(4_100_001, 800 * MIB, 16 * MIB);
+    running.measured_growth = 0;
+    let paused = command(4_100_002, 700 * MIB, 48 * MIB);
+    let entries = [(4_100_001, false), (4_100_002, true)]
+        .into_iter()
+        .map(|(pid, paused)| {
+            let mut entry = entry(pid as u64, Peak::default());
+            entry.admitted = true;
+            entry.expected = None;
+            if paused {
+                entry.wait_for(Wait::Paused(WaitReason::Memory));
+                entry.paused_rate = 48 * MIB;
+            }
+            (pid, entry)
+        })
+        .collect();
+    let member = owner("a", true, vec![running, paused], entries);
+    let (control, heard) = std::sync::mpsc::channel();
+    {
+        let mut observation = member.lock().unwrap();
+        observation.samples = vec![sample(1500 * MIB)];
+        observation.control = Some(control);
+    }
+    pool.join(&member);
+    pool.enforce(&member, None);
+    assert!(matches!(wait(&member, 4_100_002), Some(Wait::Paused(_))));
+    assert!(
+        !heard
+            .try_iter()
+            .any(|command| matches!(command, WatchCommand::MemoryStop { .. })),
+        "a decaying rate was counted as continued allocation after the pause"
     );
 }
