@@ -468,6 +468,11 @@ impl KernelRuntimeState {
         event: &ledger::InboxEvent,
         tasks: &[ledger::AgentTaskExecution],
     ) -> WakeDisposition {
+        // A peer event names the turn that created its persistent follow,
+        // not unfinished work whose wake expires when that turn ends.
+        if event.kind == "peer_event" {
+            return WakeDisposition::Deliver;
+        }
         let mut ids = Vec::new();
         if let Some(id) = event.payload["task_id"].as_str() {
             ids.push(id);
