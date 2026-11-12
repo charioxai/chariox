@@ -1548,3 +1548,26 @@ async fn l9_an_untrusted_existing_staging_directory_is_left_untouched() {
     assert!(!here.join("project").exists());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn l9_replacing_the_source_folder_through_a_parent_alias_is_refused() {
+    use std::os::unix::fs::symlink;
+    let root = scratch("same-folder");
+    let source = root.join("project");
+    let digest = plant(&source.join("keep.txt"), 20);
+    symlink("keep.txt", source.join("link.txt")).unwrap();
+    let alias = root.join("alias");
+    symlink(&root, &alias).unwrap();
+    let mut request = request(&source, &alias);
+    request.conflict = FileTransferConflict::Replace;
+    let jobs = Arc::new(TransferJobs::default());
+    let job = run(&jobs, FileSource::Local(machine()), request).await;
+    assert_eq!(job.state, FileTransferState::Failed, "{job:?}");
+    assert!(job.error.unwrap().contains("source"));
+    assert_eq!(digest_of(&source.join("keep.txt")), digest);
+    assert!(std::fs::symlink_metadata(source.join("link.txt"))
+        .unwrap()
+        .is_symlink());
+    assert!(!staging_left(&root));
+    std::fs::remove_dir_all(root).unwrap();
+}
