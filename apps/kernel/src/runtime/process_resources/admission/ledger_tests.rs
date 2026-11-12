@@ -1513,6 +1513,7 @@ fn writer(pid: u32, writes: u64, write_growth: u64) -> pool::CommandUse {
         resident: 100 * MIB,
         growth: 0,
         steady_growth: 0,
+        measured_growth: 0,
         writes,
         write_growth,
         effective: pid,
