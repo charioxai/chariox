@@ -813,6 +813,11 @@ async fn owner_wait_cancellation_ends_the_wait_without_waking_the_agent_and_the_
             .agent_is_waiting(&original.agent_id)
     };
     assert!(waiting(&f), "the agent is waiting before the owner ends it");
+    f.state
+        .owned
+        .session_store
+        .note_agent_output_sequence(&original.room_id, &original.agent_id, 41)
+        .unwrap();
     let request = serde_json::json!({"CancelAgentWait":{
         "session_id": f.request.session_id, "attachment_id": f.request.attachment_id,
         "task_id": original.task_id, "started_at_ms": wait.started_at_ms,
@@ -844,6 +849,57 @@ async fn owner_wait_cancellation_ends_the_wait_without_waking_the_agent_and_the_
         "nothing wakes the agent"
     );
     assert!(!waiting(&f), "the agent no longer has armed waits");
+    assert!(
+        !f.state
+            .owned
+            .session_snapshot(&original.room_id)
+            .unwrap()
+            .agent_has_unread_output("local", &original.agent_id),
+        "cancelling a wait does not turn the waiting turn into unread completion"
+    );
+    f.state
+        .owned
+        .session_store
+        .note_agent_output_sequence(&original.room_id, &original.agent_id, 42)
+        .unwrap();
+    assert!(
+        f.state
+            .owned
+            .session_snapshot(&original.room_id)
+            .unwrap()
+            .agent_has_unread_output("local", &original.agent_id),
+        "a later turn's output can become unread"
+    );
     let error = cancel_request(&f, request).await.unwrap_err();
     assert!(error.to_string().contains("already ended"), "{error}");
+}
+
+#[tokio::test]
+async fn waiting_projection_never_marks_a_waiting_turn_unread() {
+    let f = fixture_with_options(None, true);
+    let task = waiting_task(&f, "waiting-unread");
+    f.state
+        .owned
+        .session_store
+        .note_agent_output_sequence(&task.room_id, &task.agent_id, 41)
+        .unwrap();
+    let session = f.state.owned.session_snapshot(&task.room_id).unwrap();
+    let agent = session
+        .agents()
+        .iter()
+        .find(|a| a.id() == task.agent_id)
+        .unwrap();
+    let activity = crate::runtime::waiting_room_activity::waiting_room_agent_activity_summary(
+        &session, agent, "local",
+    );
+    assert!(activity.waiting);
+    assert!(
+        !activity.unread_idle_output,
+        "waiting replaces unread completion in the kernel"
+    );
+    let room = crate::runtime::waiting_room_activity::waiting_room_session_activity_summary(
+        &session, "local",
+    );
+    assert_eq!(room.unread_idle_agent_count, 0);
+    assert!(!session.agent_has_unread_output("local", &task.agent_id));
 }

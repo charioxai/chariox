@@ -730,7 +730,14 @@ impl RuntimeSession {
         })
     }
 
+    pub(crate) fn clear_agent_unread_output(&mut self, agent_id: &str) {
+        self.agent_output_read_state.remove(agent_id);
+    }
+
     pub fn agent_has_unread_output(&self, user_id: &str, agent_id: &str) -> bool {
+        if self.agent_is_waiting(agent_id) {
+            return false;
+        }
         let Some(state) = self.agent_output_read_state.get(agent_id) else {
             return false;
         };

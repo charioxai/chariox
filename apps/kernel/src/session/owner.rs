@@ -743,6 +743,14 @@ impl SessionStateStore {
             .note_prompt_sent(session_id, agent_id, timestamp_ms)
     }
 
+    pub(crate) fn clear_agent_unread_output(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.write().clear_agent_unread_output(session_id, agent_id)
+    }
+
     pub(crate) fn note_agent_output_sequence(
         &self,
         session_id: &str,

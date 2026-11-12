@@ -134,6 +134,9 @@ impl KernelRuntimeState {
         for wake in &stopped {
             self.stop_cancelled_wait_source(wake).await;
         }
+        self.owned
+            .session_store
+            .clear_agent_unread_output(&task.room_id, &task.agent_id)?;
         self.agent_cancellation_response(&request.session_id, &task.task_id)
     }
 
