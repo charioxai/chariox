@@ -7384,7 +7384,7 @@ While a step is pending or running, or `git_init` or `worktree` failed and was n
 Focused checks: `cargo test -p chariox-kernel --test kernel_websocket_runtime_integration room_setup`, `cargo test -p chariox-kernel --lib room_setup`.
 
 
-### Owner room cards through runtime commands
+### Owner room cards through runtime commands — local 1011 / peer 449
 
 `chariox.room.run_command` admits `room agents <room-id>` and `room cards <room-id>`
 for rooms returned by `room list`. The first returns public agent identity, state, processing,
