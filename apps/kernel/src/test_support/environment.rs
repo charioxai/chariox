@@ -116,3 +116,59 @@ pub(crate) fn isolate_environment_test() -> bool {
     }
     true
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    use super::super::{detached_job, environment_test_isolated};
+
+    /// The job sleeps this many seconds, so the owner finds it by its arguments.
+    fn sleep_seconds(owner: u32) -> u32 {
+        200_000 + owner % 100_000
+    }
+
+    fn detached_sleeper_running(seconds: u32) -> bool {
+        let listing = Command::new("ps")
+            .args(["-eo", "stat=,args="])
+            .output()
+            .expect("ps should list processes");
+        String::from_utf8_lossy(&listing.stdout)
+            .lines()
+            .any(|line| {
+                let mut fields = line.split_whitespace();
+                fields.next().is_some_and(|stat| !stat.starts_with('Z'))
+                    && fields.eq(["sleep", seconds.to_string().as_str()])
+            })
+    }
+
+    #[test]
+    fn an_isolated_test_leaves_no_detached_session_running() {
+        let isolated = environment_test_isolated();
+        let owner = if isolated {
+            std::os::unix::process::parent_id()
+        } else {
+            std::process::id()
+        };
+        let seconds = sleep_seconds(owner);
+        if super::isolate_environment_test() {
+            assert!(
+                !detached_sleeper_running(seconds),
+                "the isolated test left `sleep {seconds}` running in a session of its own"
+            );
+            return;
+        }
+        let started = Command::new("sh")
+            .arg("-c")
+            .arg(detached_job("/dev/null", seconds))
+            .status()
+            .expect("detached job should start");
+        assert!(started.success());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !detached_sleeper_running(seconds) {
+            assert!(Instant::now() < deadline, "the detached job should start");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
