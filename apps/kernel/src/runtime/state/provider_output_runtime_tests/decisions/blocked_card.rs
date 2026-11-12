@@ -236,6 +236,21 @@ async fn a_settling_obligation_names_its_exact_receipt_in_correction_and_resume(
     .await;
     let task = t.blocked_task_of(&t.c, "Review the timer outcome before continuing");
     let store = &t.runtime.owned.durable_state_store;
+    // The completion is beyond the first page of unrelated retained history.
+    for index in 0..(crate::durable_state::agent_lifecycle::INBOX_PAGE + 2) {
+        store
+            .agent_lifecycle(Operation::Occur(
+                crate::durable_state::agent_lifecycle::occurrence(
+                    &t.room,
+                    &t.c,
+                    "unrelated",
+                    &format!("old-{index}"),
+                    "message",
+                    serde_json::json!({}),
+                ),
+            ))
+            .unwrap();
+    }
     let now = crate::session::unix_epoch_ms();
     store
         .agent_lifecycle(Operation::SourceOutcome {
@@ -248,11 +263,13 @@ async fn a_settling_obligation_names_its_exact_receipt_in_correction_and_resume(
         })
         .unwrap();
     let task = store.agent_task(&task.task_id).unwrap().unwrap();
-    let event = store
-        .agent_inbox(&t.room, &t.c, 0)
+    let sequence: u64 = rusqlite::Connection::open(store.path())
         .unwrap()
-        .into_iter()
-        .find(|event| event.reports_source("wake-blk"))
+        .query_row(
+            "SELECT MAX(sequence) FROM agent_inbox WHERE source_id='wake-blk'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     for text in [
         t.runtime.owned.task_correction_text(&task).unwrap(),
@@ -268,7 +285,7 @@ async fn a_settling_obligation_names_its_exact_receipt_in_correction_and_resume(
         assert!(
             text.contains(&format!(
                 "chariox.events.ack with sequence {} and handled:true",
-                event.sequence
+                sequence
             )),
             "{text}"
         );
