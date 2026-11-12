@@ -451,3 +451,22 @@ fn tool_snapshots_without_clock_fields_keep_the_first_start_and_final_duration()
         "providers without clock fields still have history timestamps"
     );
 }
+
+#[test]
+fn ten_long_unicode_and_escaped_titles_stay_under_four_kilobytes() {
+    let store = Store::new("unicode-wire-size");
+    store.prompt(1, 1, "search the project");
+    for sequence in 2..=11 {
+        store.tool(sequence, 1, serde_json::json!({
+            "id":format!("call-{sequence}"),"tool":"grep","status":"completed",
+            "input":{"pattern":"🦀".repeat(100),"path":"\"\\\u{0000}".repeat(100)},"output":"found"
+        }));
+    }
+    let peek = store.peek(10, None, 2_000_000);
+    assert_eq!(peek.entries.len(), 10);
+    for row in &peek.entries {
+        assert_eq!(store.read(&row.entry_id, 0, 10).title, row.title);
+    }
+    let wire = serde_json::to_string(&LocalDaemonResponse::AgentTranscriptPeek { peek }).unwrap();
+    assert!(wire.len() < 4096, "ten Unicode title rows used {} bytes", wire.len());
+}
