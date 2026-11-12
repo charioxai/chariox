@@ -82,22 +82,43 @@ async fn a_blocked_helpers_card_goes_to_its_parent_and_names_what_it_owes() {
     )
     .await;
     let task = t.blocked_task_of(&t.c, INVALID_TURN_END);
-    t.runtime.ensure_task_owner_interaction(task.clone()).await.unwrap();
+    t.runtime
+        .ensure_task_owner_interaction(task.clone())
+        .await
+        .unwrap();
     let id = Tree::blocked_card_id(&task);
 
     assert_eq!(t.holder(&id), DecisionHolder::Agent(t.p.clone()));
-    assert!(t.panels().is_empty(), "no person card while the parent holds it");
+    assert!(
+        t.panels().is_empty(),
+        "no person card while the parent holds it"
+    );
     let events = t.decision_events(&t.p);
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0].payload["interaction_id"], id);
     assert_eq!(events[0].payload["needs_answer"], true);
     let detail = events[0].payload["detail"].as_str().unwrap();
-    assert!(detail.contains("wake-blk"), "the open obligation is named: {detail}");
-    assert!(detail.contains("wait for review"), "the source label is named: {detail}");
-    assert!(detail.contains("chariox.events.cancel_wake"), "the exact settling call is named: {detail}");
+    assert!(
+        detail.contains("wake-blk"),
+        "the open obligation is named: {detail}"
+    );
+    assert!(
+        detail.contains("wait for review"),
+        "the source label is named: {detail}"
+    );
+    assert!(
+        detail.contains("chariox.events.cancel_wake"),
+        "the exact settling call is named: {detail}"
+    );
     let choices = events[0].payload["choices"].to_string();
-    assert!(choices.contains("resume") && choices.contains("cancel"), "{choices}");
-    assert!(t.decision_events(&t.g).is_empty(), "only the holder is told");
+    assert!(
+        choices.contains("resume") && choices.contains("cancel"),
+        "{choices}"
+    );
+    assert!(
+        t.decision_events(&t.g).is_empty(),
+        "only the holder is told"
+    );
 }
 
 #[tokio::test]
@@ -109,7 +130,10 @@ async fn the_parent_cancelling_a_blocked_helper_ends_it_and_its_timer() {
     )
     .await;
     let task = t.blocked_task_of(&t.c, INVALID_TURN_END);
-    t.runtime.ensure_task_owner_interaction(task.clone()).await.unwrap();
+    t.runtime
+        .ensure_task_owner_interaction(task.clone())
+        .await
+        .unwrap();
     let id = Tree::blocked_card_id(&task);
 
     assert_eq!(
@@ -130,7 +154,10 @@ async fn the_parent_cancelling_a_blocked_helper_ends_it_and_its_timer() {
         store.agent_task(&task.task_id).unwrap().unwrap().state,
         ExecutionState::Cancelled
     );
-    assert_eq!(store.agent_wake("wake-blk").unwrap().unwrap().state, "cancelled");
+    assert_eq!(
+        store.agent_wake("wake-blk").unwrap().unwrap().state,
+        "cancelled"
+    );
 }
 
 #[tokio::test]
@@ -142,7 +169,10 @@ async fn a_blocked_root_agents_card_stays_the_persons_and_names_what_it_owes() {
     )
     .await;
     let task = t.blocked_task_of(&t.g, INVALID_TURN_END);
-    t.runtime.ensure_task_owner_interaction(task.clone()).await.unwrap();
+    t.runtime
+        .ensure_task_owner_interaction(task.clone())
+        .await
+        .unwrap();
     let id = Tree::blocked_card_id(&task);
 
     assert_eq!(t.holder(&id), DecisionHolder::User);
@@ -156,3 +186,92 @@ async fn a_blocked_root_agents_card_stays_the_persons_and_names_what_it_owes() {
     assert!(t.decision_events(&t.p).is_empty() && t.decision_events(&t.g).is_empty());
 }
 
+#[tokio::test]
+async fn correction_and_resume_name_the_obligation_label_and_actual_registration() {
+    let t = tree(
+        "blocked-instructions",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let task = t.blocked_task_of(&t.c, INVALID_TURN_END);
+    let owned = &t.runtime.owned;
+    for text in [
+        owned.task_correction_text(&task).unwrap(),
+        owned.task_resume_text(&task, &task.reason).unwrap(),
+    ] {
+        assert!(text.contains("obligation wake-blk"), "{text}");
+        assert!(text.contains("wait for review"), "{text}");
+        assert!(
+            text.contains(r#"chariox.events.cancel_wake with wake_id "wake-blk""#),
+            "{text}"
+        );
+        assert!(
+            text.contains(r#"registration_ids ["completion-wake-blk"]"#),
+            "{text}"
+        );
+        assert!(text.contains("task_id and origin_prompt_id"), "{text}");
+    }
+    let resumed = owned.task_resume_text(&task, &task.reason).unwrap();
+    assert!(
+        resumed.contains("Repeated invalid turn end") && resumed.contains("has now been resumed"),
+        "{resumed}"
+    );
+    let mut settled = task;
+    settled.obligations.clear();
+    let text = owned.task_resume_text(&settled, "blocked").unwrap();
+    assert!(
+        text.contains("final answer") && !text.contains("chariox.events.yield"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn a_settling_obligation_names_its_exact_receipt_in_correction_and_resume() {
+    let t = tree(
+        "blocked-receipt",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let task = t.blocked_task_of(&t.c, INVALID_TURN_END);
+    let store = &t.runtime.owned.durable_state_store;
+    let now = crate::session::unix_epoch_ms();
+    store
+        .agent_lifecycle(Operation::SourceOutcome {
+            room: t.room.clone(),
+            source: "wake-blk".into(),
+            occurrence: "timer-fired".into(),
+            success: true,
+            public_answer: None,
+            now,
+        })
+        .unwrap();
+    let task = store.agent_task(&task.task_id).unwrap().unwrap();
+    let event = store
+        .agent_inbox(&t.room, &t.c, 0)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.reports_source("wake-blk"))
+        .unwrap();
+    for text in [
+        t.runtime.owned.task_correction_text(&task).unwrap(),
+        t.runtime
+            .owned
+            .task_resume_text(&task, &task.reason)
+            .unwrap(),
+    ] {
+        assert!(
+            text.contains("wait for review") && text.contains("chariox.events.inbox"),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "chariox.events.ack with sequence {} and handled:true",
+                event.sequence
+            )),
+            "{text}"
+        );
+        assert!(!text.contains("chariox.events.yield"), "{text}");
+    }
+}
