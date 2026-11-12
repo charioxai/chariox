@@ -459,16 +459,16 @@ fn a_pause_the_disk_keeps_ends_naming_the_disk() {
 }
 
 /// A pool of 1536 MiB with one heavy command running (300 MiB) and one
-/// paused for memory 61 s ago (200 MiB resident, no expected peak) whose
-/// burst rate at the pause was `paused_rate`; `growth` is what the watch
-/// measures for it now. Returns what the paused command was told.
-fn overdue_pause_after_a_burst(paused_rate: u64, growth: u64) -> Vec<(u32, String)> {
+/// paused for memory 61 s ago (200 MiB resident, no expected peak) that grew
+/// at `paused_rate` when it was paused. The watch measures a stopped command
+/// at no growth. Returns what the paused command was told.
+fn overdue_pause_that_grew_at(paused_rate: u64) -> Vec<(u32, String)> {
     let pool = pool::Pool::with_volume(1536 * MIB, volume(&Arc::new(AtomicU64::new(100 * GIB))));
-    let command_of = |unit: &str, pid: u32, resident: u64, growth: u64, entry: Entry| {
+    let command_of = |unit: &str, pid: u32, resident: u64, entry: Entry| {
         let member = owner(
             unit,
             true,
-            vec![command(pid, resident, growth)],
+            vec![command(pid, resident, 0)],
             vec![(pid, entry)],
         );
         let (control, heard) = std::sync::mpsc::channel();
@@ -485,7 +485,7 @@ fn overdue_pause_after_a_burst(paused_rate: u64, growth: u64) -> Vec<(u32, Strin
         expected: None,
         ..entry(1, Peak::default())
     };
-    let (running, _running_heard) = command_of("a", 1, 300 * MIB, 0, running);
+    let (running, _running_heard) = command_of("a", 1, 300 * MIB, running);
     let paused = Entry {
         admitted: true,
         expected: None,
@@ -494,7 +494,7 @@ fn overdue_pause_after_a_burst(paused_rate: u64, growth: u64) -> Vec<(u32, Strin
         since_ms: crate::session::unix_epoch_ms() - 61_000,
         ..entry(2, Peak::default())
     };
-    let (_paused, paused_heard) = command_of("c", 2, 200 * MIB, growth, paused);
+    let (_paused, paused_heard) = command_of("c", 2, 200 * MIB, paused);
     pool.enforce(&running, None);
     paused_heard
         .try_iter()
@@ -505,23 +505,12 @@ fn overdue_pause_after_a_burst(paused_rate: u64, growth: u64) -> Vec<(u32, Strin
         .collect()
 }
 
-/// A command paused right after a startup burst keeps the burst's rate until
-/// the watch's rate for it has decayed; while it is stopped it does not grow,
-/// so the stale rate must not make it "need" more than its steady growth.
+/// A paused command keeps the rate it grew at when it was paused, although
+/// it is stopped and measures none: it needs room for that growth, and ends
+/// after 60 s when the room does not come back.
 #[test]
-fn a_pause_after_a_startup_burst_is_not_ended_for_the_stale_burst_rate() {
-    let stops = overdue_pause_after_a_burst(700 * MIB, 0);
-    assert!(
-        stops.is_empty(),
-        "ended for a rate it no longer has: {stops:?}"
-    );
-}
-
-/// A paused command that still grows (its rate has not decayed) needs room
-/// for that growth, and ends after 60 s when the room does not come back.
-#[test]
-fn a_pause_that_still_grows_is_ended_when_the_room_does_not_return() {
-    let stops = overdue_pause_after_a_burst(700 * MIB, 700 * MIB);
+fn a_pause_that_grew_fast_is_ended_when_the_room_does_not_return() {
+    let stops = overdue_pause_that_grew_at(700 * MIB);
     assert_eq!(stops.len(), 1, "the growing paused command was not ended");
     assert!(stops[0].1.contains("still needs"), "{}", stops[0].1);
 }

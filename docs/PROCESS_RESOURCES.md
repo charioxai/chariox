@@ -31,9 +31,7 @@ command keeps its memory), the paused command ends the same way a memory stop
 does, with the reason on its error stream. When memory keeps it: what it still
 needs to continue, the room that was left once what is in use and reserved is
 counted, whether the pool's ceiling or the machine's free memory set that room,
-and the command's own size. What it needs counts its growth rate, which falls
-while it is stopped, so a burst at its start does not keep it from continuing.
-When the memory room covers what it needs but not growing
+and the command's own size. When the memory room covers what it needs but not growing
 on (everything running, it included, grows so fast that the pool would be short of
 memory again within seconds): the rate everything grows by, what staying clear of
 short memory takes at that rate, and the room that was left. When the disk keeps it (the writes it is known to
