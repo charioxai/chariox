@@ -1,6 +1,6 @@
 use super::*;
 
-/// Protocol 1004: how a transfer treats a name that is already taken at the destination.
+/// Protocol 1005: how a transfer treats a name that is already taken at the destination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileTransferConflict {
@@ -26,7 +26,7 @@ pub struct FileTransferEndpoint {
     pub path: String,
 }
 
-/// Protocol 1004: copy or move a file or folder from one machine to a folder of another. The
+/// Protocol 1005: copy or move a file or folder from one machine to a folder of another. The
 /// kernel that receives the request is the destination: it pulls the bytes from the source over
 /// the relay, so no client carries them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

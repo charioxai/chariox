@@ -23,7 +23,7 @@ pub struct StatKernelFileRequest {
 #[serde(deny_unknown_fields)]
 pub struct ListKernelDirectoryRequest {
     pub path: String,
-    /// Protocol 1004: entries (sorted by name) to skip; a listing that says `truncated` continues
+    /// Protocol 1005: entries (sorted by name) to skip; a listing that says `truncated` continues
     /// at `offset` + its entries.
     #[serde(default)]
     pub offset: u64,
@@ -84,10 +84,10 @@ pub struct KernelFileStat {
     pub kind: Option<KernelFileKind>,
     pub size: Option<u64>,
     pub modified_ms: Option<u64>,
-    /// Protocol 1004: changes whenever the file is written or replaced.
+    /// Protocol 1005: changes whenever the file is written or replaced.
     #[serde(default)]
     pub revision: Option<String>,
-    /// Protocol 1004: the Unix permission bits.
+    /// Protocol 1005: the Unix permission bits.
     #[serde(default)]
     pub mode: Option<u32>,
     pub sha256: Option<String>,
@@ -101,8 +101,8 @@ pub struct KernelDirectoryEntry {
     pub kind: KernelFileKind,
     pub size: u64,
     pub modified_ms: Option<u64>,
-    /// Protocol 1004: changes whenever the file is written or replaced.
+    /// Protocol 1005: changes whenever the file is written or replaced.
     pub revision: String,
-    /// Protocol 1004: the Unix permission bits.
+    /// Protocol 1005: the Unix permission bits.
     pub mode: u32,
 }

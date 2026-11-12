@@ -1,4 +1,4 @@
-// MP-08 / MP-09 / MP-10 / MP-11, local 1004 and peer 443 (files r1): Files on a machine and the
+// MP-08 / MP-09 / MP-10 / MP-11, local 1005 and peer 444 (files r1): Files on a machine and the
 // kernel-owned transfers between the owner's machines.
 use crate::local::{
     FileTransferConflict, FileTransferEndpoint, FileTransferJob, FileTransferRef,
@@ -31,9 +31,9 @@ fn job() -> FileTransferJob {
 }
 
 #[test]
-fn mp11_machine_files_local_1004_and_peer_443_are_pinned() {
-    const { assert!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION >= 1004) };
-    const { assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 443) };
+fn mp11_machine_files_local_1005_and_peer_444_are_pinned() {
+    const { assert!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION >= 1005) };
+    const { assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 444) };
     let start = StartFileTransferRequest {
         source: FileTransferEndpoint {
             kernel: Some("b3".into()),

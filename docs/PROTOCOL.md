@@ -5332,7 +5332,7 @@ authority for its own sessions, agents, terminals and files.
   gateway acting for one): `StatKernelFile { path, with_sha256 }` -> `KernelFileStat { stat: {path, exists, kind,
   size, modified_ms, revision, mode, sha256, partial_size} }`; `ListKernelDirectory { path, offset }` ->
   `KernelDirectoryListed { path, entries: [{name, kind, size, modified_ms, revision, mode}], truncated }` (2000
-  entries a page, sorted by name; `truncated` means more follow at `offset` + the entries returned; local 1004); `ReadKernelFile { path, offset, length }` (length <= 64 KiB) ->
+  entries a page, sorted by name; `truncated` means more follow at `offset` + the entries returned; local 1005); `ReadKernelFile { path, offset, length }` (length <= 64 KiB) ->
   `KernelFileChunk { path, offset, data_base64, size, eof }`; `WriteKernelFile { path, offset, data_base64,
   total_size, sha256?, overwrite }` (chunk <= 64 KiB; chunks may be sent without waiting for each answer, and one that arrives ahead of the staged bytes waits up to 2 s for them) -> `KernelFileWritten { path, received, complete,
   sha256 }`. Paths are absolute or `~/`. An upload lives in `<path>.chariox-partial` and the file appears at `path`
@@ -6804,7 +6804,7 @@ and nothing else is needed, so a private relay works:
   home retries it for 30 s more and the failure names the leftover; the next copy to that path
   replaces it.
 
-Refusals are `file_refused { reason }` (peer 443 renamed the 442 answers `leased_agent_file_read` and `leased_agent_file_refused`, which the machine file requests share), final and phrased for the model. A receiving
+Refusals are `file_refused { reason }` (peer 444 renamed the 442 answers `leased_agent_file_read` and `leased_agent_file_refused`, which the machine file requests share), final and phrased for the model. A receiving
 workspace refuses absolute paths, `..`, any link on the way, a final link or folder, any write
 under `.git` (any case, any depth) or `.chariox*`, a plan-mode receiver, an existing file without
 `overwrite`, more than 256 MiB, and more than the volume's free space. Reads refuse the same path
@@ -7176,8 +7176,7 @@ pair's peer number for chunked kernel uploads. Managed upgrades admit 1000 and 1
 `fixtures/room-exec-protocol.json`, `fixtures/agent-tree-finished.json`. Focused check:
 `cargo test -p chariox-kernel --lib -- workflow_gate exec_place placeable_on agent_tree protocol_shapes`.
 
-Landing 9 sub-panes carries local daemon protocol 1005 and relay peer 444 (provisional: the Landing 9
-union restamps; 1004/443 are taken by #1346). It adds the optional `account_profile`, `workspace_id`,
+Landing 9 sub-agent panes (part of local 1005 and relay peer 444, below) add the optional `account_profile`, `workspace_id`,
 `worktree_id` and `worker_kernel_id` of an `AgentTreeNode` (omitted when the node has none, and for a
 viewer who may not see parameters), so a client shows a sub-agent's machine, workspace, worktree, provider,
 account, model, variant, mode and permissions without reading each agent. An agent's wait is a row of its
@@ -7204,16 +7203,17 @@ client (`landing8-protocol.test.ts`). Focused checks:
 `cargo test -p chariox-kernel --lib -- landing8 protocol_shapes client_protocol_conformance` and
 `node --test packages/kernel-client/dist/landing8-protocol.test.js`.
 
-Landing 9 carries local daemon protocol 1004 and relay peer 443. Local 1004: Files on the owner's
+Landing 9 carries local daemon protocol 1005 and relay peer 444. Local 1005: the sub-agent tree node fields and
+the wait row of the sub-agent panes (above), Files on the owner's
 machines (listings with `revision` and `mode`, `ListKernelDirectory.offset`, the file transfer jobs),
 Room setup (`CreateSession.setup`, `RuntimeSession.room_setup`, `RetryRoomSetup`, `DismissRoomSetup`),
 `SuggestSessionAlias` and `git_available` on the launch target, and an agent's `wait.deadline_ms` that
-is `null` for a yield without a deadline (`protocol_shapes/agent_lifecycle.rs`). Relay peer 443 renames
+is `null` for a yield without a deadline (`protocol_shapes/agent_lifecycle.rs`). Relay peer 444 renames
 the leased agent file answers. Managed upgrades admit 1002 and 1003.
 
-### MP-08 / MP-09 / MP-10 / MP-11: Files on the owner's machines — local 1004 / relay peer 443
+### MP-08 / MP-09 / MP-10 / MP-11: Files on the owner's machines — local 1005 / relay peer 444
 
-The Kernel files requests above are the owner's Files service on a machine. Local 1004 adds a
+The Kernel files requests above are the owner's Files service on a machine. Local 1005 adds a
 `revision` (device, inode, size, mtime, ctime) and the Unix `mode` to each entry and stat, and a
 page `offset` to `ListKernelDirectory`. **The kernel's own state is never listed, read or written**:
 its home (`CHARIOX_HOME`, `~/.chariox`), config, state and log folders and the Vault file (as
@@ -7264,7 +7264,7 @@ the client or agent that asked carries no bytes and may go away:
   `chariox.files.transfer { job_id, machine?, cancel?, wait_seconds? }`. A copy result is the job
   without its start time; no file content ever reaches the model.
 
-Peer 443 also renames the 442 answers `leased_agent_file_read` and `leased_agent_file_refused` to
+Peer 444 also renames the 442 answers `leased_agent_file_read` and `leased_agent_file_refused` to
 `file_slice_read` and `file_refused`, since both file services use them. Managed upgrades admit
 1002 and 1003. Focused checks: `cargo test -p chariox-kernel --lib -- machine_files kernel_files
 agent_file_copy file_copy_tool machine_file_requests protocol_shapes::machine_files`.
@@ -7369,7 +7369,7 @@ nobody had seen yet with `app_install_approval_expired`). The kernel-operation i
 clients that show it in the Room (`install:<installation>`, its message still lists the review).
 Focused checks: `cargo test -p chariox-kernel --lib app_install_control`, `app_install_prompt_shape_is_pinned`.
 
-### Room setup and Room name suggestion — local 1004
+### Room setup and Room name suggestion — local 1005
 
 `CreateSession` takes an optional `setup: { git_init?: bool, new_worktree?: bool, publish?: bool }`. The request still names the current checkout; the kernel creates the Room and its first agent at once, then runs the requested steps in the background, in this order: `git_init` (plain `git init` in the folder; refused when it is already a repository), `worktree` (a new worktree of the workspace, then the first agent's working directory moves to it the way `UpdateAgentConfig` moves it) and `publish` (the Room's own agent creates a private GitHub repository named after the folder with the machine's own CLI login, adds `origin` and pushes; its answer ends with `PUBLISHED <url>` or `FAILED <reason in plain words>`, and the last line is the verdict. It runs as a utility turn under the `RoomCommands` policy: its command approvals reach the person as one Room interaction, and the failure line never tells the person to run a command. There is no host-specific logic in Chariox). `setup` is refused with a `slice_ref` or `kernel_ref`.
 

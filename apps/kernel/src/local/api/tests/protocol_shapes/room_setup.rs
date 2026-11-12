@@ -1,4 +1,4 @@
-//! The wire shapes of Room setup and the Room name suggestion (local 1004).
+//! The wire shapes of Room setup and the Room name suggestion (local 1005).
 use super::*;
 use crate::session::{
     RoomSetupRequest, RoomSetupState, RoomSetupStep, RoomSetupStepId, RoomSetupStepState,
