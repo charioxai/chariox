@@ -747,3 +747,57 @@ async fn kwait_held_background_work_keeps_the_provider_in_the_output_pump() {
         .owned
         .is_held_for_background_calls(&team.task.task_id));
 }
+
+#[tokio::test]
+async fn kwait_parked_background_work_is_selected_and_resumed_by_both_output_pumps() {
+    for structured in [false, true] {
+        let team = child_with_a_call_running(&format!("kwait-parked-output-{structured}")).await;
+        let owned = &team.runtime.owned;
+        let parked = owned
+            .provider_store
+            .park_run_provider_only(&team.room, &team.child_run)
+            .unwrap()
+            .into_run();
+        owned.provider_run_projection.update(parked);
+        let session = owned.session_store.get_session(&team.room).unwrap();
+        let selected =
+            super::super::provider_output_runtime::provider_run_ids_for_owned_output_pump(
+                owned, &session,
+            );
+        assert!(selected.contains(&team.child_run));
+        if structured {
+            team.runtime
+                .pump_owned_structured_provider_output(&team.room, &team.child_run, Vec::new())
+                .await
+                .unwrap();
+        } else {
+            team.runtime
+                .pump_owned_provider_output(&team.room, &team.child_run, Vec::new(), false)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            owned
+                .provider_store
+                .get_run(&team.child_run)
+                .unwrap()
+                .state(),
+            crate::provider::ProviderRunState::Running,
+            "parked background work still needs output polling"
+        );
+        assert!(owned.is_held_for_background_calls(&team.task.task_id));
+        apply(
+            &team,
+            vec![
+                ended_at(crate::session::unix_epoch_ms()),
+                text_chunk("the parked background work completed"),
+            ],
+        )
+        .await;
+        team.runtime
+            .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, false)
+            .await
+            .unwrap();
+        assert!(!owned.is_held_for_background_calls(&team.task.task_id));
+    }
+}

@@ -65,6 +65,10 @@ impl BackgroundHolds {
             .collect()
     }
 
+    pub(super) fn holds_run(&self, run: &str) -> bool {
+        self.lock().values().any(|held| held.run == run)
+    }
+
     fn of_run(&self, room: &str, agent: &str, run: &str) -> Vec<(String, HeldTask)> {
         self.lock()
             .iter()
