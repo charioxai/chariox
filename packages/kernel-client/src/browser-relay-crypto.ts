@@ -1,4 +1,4 @@
-import { decodeTerminalOutputEvent } from "./terminal-output-wire.js"
+import { decodeTerminalOutput } from "./terminal-output-wire.js"
 import { RelayFrameReceiver, relayTransportUrl } from "./relay-frame-transport.js"
 import type { EncryptedRelayPayload as RelayPayload } from "./kernel-transport-frames.js"
 
@@ -130,7 +130,7 @@ export async function decryptRelayPayload(
   expectedSenderPublicKey?: string,
 ): Promise<string> {
   const bytes = await decryptRelayBytes(privateKey, payload, expectedSenderPublicKey)
-  const terminal = decodeTerminalOutputEvent(bytes)
+  const terminal = decodeTerminalOutput(bytes)
   return terminal ? JSON.stringify(terminal) : new TextDecoder().decode(bytes)
 }
 
@@ -141,7 +141,7 @@ export async function decryptRelayEvent(
   expectedSenderPublicKey?: string,
 ): Promise<unknown> {
   const bytes = await decryptRelayBytes(privateKey, payload, expectedSenderPublicKey)
-  return decodeDisplayEvent(bytes) ?? decodeTerminalOutputEvent(bytes) ?? JSON.parse(new TextDecoder().decode(bytes))
+  return decodeDisplayEvent(bytes) ?? decodeTerminalOutput(bytes) ?? JSON.parse(new TextDecoder().decode(bytes))
 }
 
 // Returns null for non-display plaintext. Each `data:[offset,length]` becomes a

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as browser from './browser-relay-crypto.js';
 import * as native from './relay-crypto.js';
-import { decodeTerminalOutputEvent } from './terminal-output-wire.js';
+import { decodeTerminalOutput } from './terminal-output-wire.js';
 
 test('terminal output rejects malformed ranges before exposing any records', () => {
   const frame = (header: unknown, payload = Buffer.alloc(3)) => {
@@ -17,7 +17,7 @@ test('terminal output rejects malformed ranges before exposing any records', () 
     ...[[1, 2], [0, -1], [0, 4], [0, 1.5], [0, 3, 0], [0, 2]].map(bytes =>
       frame({event: 'terminal_output', records: [{bytes}]})),
     frame({event: 'terminal_output', records: [{bytes: [0, 2]}, {bytes: [1, 1]}]}),
-  ]) assert.throws(() => decodeTerminalOutputEvent(bytes));
+  ]) assert.throws(() => decodeTerminalOutput(bytes));
 });
 
 test('terminal output crosses encrypted browser and native relay boundaries as raw bytes', async () => {
@@ -251,3 +251,18 @@ test('MP08 MP09 MP10 MP11 connection reassembles raw RPC response and decrypts i
  assert.equal(browser.decodeBinaryRelayResponse(wire).request_id,'request');
  for(const broken of [wire.subarray(0,wire.length-1),Buffer.from(wire)]) { if(broken.length===wire.length)broken[3]=49;assert.throws(()=>browser.decodeBinaryRelayResponse(broken)); }
  });
+
+
+test('MP-08 polled terminal replies also cross the native and browser decrypt boundaries as raw bytes', async () => {
+  const data = Buffer.from([0, 255, 27, 10]);
+  const header = Buffer.from(JSON.stringify({TerminalOutput: {records: [{bytes: [0, data.length]}]}}));
+  const length = Buffer.alloc(4); length.writeUInt32BE(header.length);
+  const wire = Buffer.concat([Buffer.from('CXT1'), length, header, data]);
+  const expected = {TerminalOutput: {records: [{bytes: Array.from(data)}]}};
+  const recipient = await browser.createRelayKeypair();
+  const encrypted = native.encryptRelayPayload(recipient.publicKeyBase64, wire);
+  assert.deepEqual(JSON.parse(await browser.decryptRelayPayload(recipient.privateKey, encrypted.payload)), expected);
+  const nativeRecipient = native.createRelayKeypair();
+  const sealed = native.encryptRelayPayload(nativeRecipient.publicKeyBase64, wire);
+  assert.deepEqual(JSON.parse(native.decryptRelayPayload(nativeRecipient.privateKey, sealed.payload)), expected);
+});

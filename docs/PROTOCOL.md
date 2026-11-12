@@ -1357,7 +1357,9 @@ u32 JSON header length, the JSON event header, and the terminal bytes. Each
 record's `bytes` field in the header is `[offset, length]` into that payload.
 Ranges are contiguous, in record order, and cover the payload exactly; empty
 records have a zero-length range. The header is at most 1 MiB. Live events and
-replayed events use the same encoding. Other ordinary events remain JSON.
+replayed events use the same encoding. Polled `TerminalOutput` replies use the
+same CXT1 framing, with the ordinary `{"TerminalOutput":{"records":…}}` header;
+they are not nested in CXF1 framing. Other ordinary events and replies remain JSON.
 Clients restore the existing byte-array record shape before delivery, and an
 origin gateway restores it before forwarding an event to its local caller.
 The relay continues carrying opaque encrypted frames; its peer protocol stays

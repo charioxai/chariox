@@ -634,7 +634,9 @@ fn settle(
         (None, Some(payload)) => {
             match relay_crypto::decrypt_payload_for_private_key(client_private_key, &payload) {
                 Ok(decrypted) if decrypted.sender_public_key == target_public_key => {
-                    Ok(decrypted.plaintext.to_vec())
+                    crate::transport::terminal_output_wire::open(&decrypted.plaintext)
+                        .map(|plaintext| plaintext.into_owned())
+                        .map_err(|reason| relay_failure("invalid_terminal_output", reason.into()))
                 }
                 Ok(_) => Err(LinkFailure::IdentityMismatch),
                 Err(error) => Err(relay_failure("decrypt_failed", error.to_string())),

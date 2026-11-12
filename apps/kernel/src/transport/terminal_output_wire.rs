@@ -23,8 +23,44 @@ pub(crate) fn encode(event: &mut KernelEvent) -> Result<Vec<u8>, serde_json::Err
         headers.push(header);
         payload.extend_from_slice(&record.bytes);
     }
-    let header =
-        serde_json::to_vec(&serde_json::json!({"event": "terminal_output", "records": headers}))?;
+    pack(
+        &serde_json::json!({"event": "terminal_output", "records": headers}),
+        &payload,
+    )
+}
+
+// Polled native renderers receive the same raw byte transport as push subscribers.
+pub(crate) fn encode_reply(response: &mut Value) -> Result<Vec<u8>, serde_json::Error> {
+    let Some(records) = response
+        .get_mut("TerminalOutput")
+        .and_then(|output| output.get_mut("records"))
+        .and_then(Value::as_array_mut)
+    else {
+        return serde_json::to_vec(response);
+    };
+    let mut payload = Vec::new();
+    for record in records {
+        let bytes = record["bytes"].take();
+        let bytes = bytes.as_array().ok_or_else(|| {
+            serde_json::Error::io(std::io::Error::other("invalid terminal reply bytes"))
+        })?;
+        let offset = payload.len();
+        for byte in bytes {
+            let byte = byte
+                .as_u64()
+                .and_then(|byte| u8::try_from(byte).ok())
+                .ok_or_else(|| {
+                    serde_json::Error::io(std::io::Error::other("invalid terminal reply byte"))
+                })?;
+            payload.push(byte);
+        }
+        record["bytes"] = serde_json::json!([offset, bytes.len()]);
+    }
+    pack(response, &payload)
+}
+
+fn pack(header: &Value, payload: &[u8]) -> Result<Vec<u8>, serde_json::Error> {
+    let header = serde_json::to_vec(header)?;
     if header.len() > MAX_HEADER {
         return Err(serde_json::Error::io(std::io::Error::other(
             "terminal output header exceeds 1 MiB",
@@ -34,7 +70,7 @@ pub(crate) fn encode(event: &mut KernelEvent) -> Result<Vec<u8>, serde_json::Err
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&(header.len() as u32).to_be_bytes());
     bytes.extend_from_slice(&header);
-    bytes.extend_from_slice(&payload);
+    bytes.extend_from_slice(payload);
     Ok(bytes)
 }
 
@@ -55,10 +91,14 @@ pub(crate) fn open(bytes: &[u8]) -> Result<Cow<'_, [u8]>, &'static str> {
     let header = bytes.get(8..8 + size).ok_or(invalid)?;
     let payload = &bytes[8 + size..];
     let mut event: Value = serde_json::from_slice(header).map_err(|_| invalid)?;
-    if event["event"] != "terminal_output" {
+    let output = if event["event"] == "terminal_output" {
+        &mut event
+    } else if event.as_object().is_some_and(|object| object.len() == 1) {
+        event.get_mut("TerminalOutput").ok_or(invalid)?
+    } else {
         return Err(invalid);
-    }
-    let records = event
+    };
+    let records = output
         .get_mut("records")
         .and_then(Value::as_array_mut)
         .ok_or(invalid)?;
@@ -140,6 +180,20 @@ mod tests {
         }
         assert!(open(b"CXT1").is_err());
         assert!(open(b"CXT1\0\0\xff\xff").is_err());
+    }
+
+    #[test]
+    fn polled_reply_bytes_roundtrip_without_json_array_expansion() {
+        let source = vec![255u8; 64 * 1024];
+        let mut response = serde_json::json!({"TerminalOutput":{"records":[
+            {"record_id":42,"bytes":source}, {"record_id":43,"bytes":[]}]}});
+        let original = response.clone();
+        let wire = encode_reply(&mut response).unwrap();
+        assert!(wire.len() < source.len() + 256);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&open(&wire).unwrap()).unwrap(),
+            original
+        );
     }
 
     #[test]
