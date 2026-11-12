@@ -79,6 +79,14 @@ pub(crate) fn user_only(
         Some(UserOnly::UserDomain)
     } else if interaction.level() == crate::session::RuntimeInteractionLevel::Critical {
         Some(UserOnly::Critical)
+    } else if super::agent_task_owner_interactions::is_blocked_task_decision(interaction.id()) {
+        // Resume or Cancel of a blocked task is a decision about an agent, so its parent may
+        // hold it. Allowing the person's browser again stays the person's.
+        if interaction.choice("allow_browser").is_some() {
+            Some(UserOnly::UserDomain)
+        } else {
+            None
+        }
     } else if interaction.agent_id().is_none()
         || pending.kernel_operation_owner.is_some()
         || pending.kernel_wide_interaction.is_some()
