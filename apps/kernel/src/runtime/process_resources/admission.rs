@@ -147,6 +147,8 @@ impl Entry {
             Entry {
                 arrived,
                 holdable: self.holdable,
+                // Admission must still continue the launcher after the job takes its wait.
+                stopped: self.stopped,
                 ..Entry::default()
             },
         )
@@ -1678,5 +1680,93 @@ mod display_tests {
             normalize("/tmp/claude-77aa01bc-cwd")
         );
         assert_ne!(normalize("cargo build"), normalize("cargo test"));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod launcher_pause_tests {
+    fn process_state(pid: u32) -> char {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .unwrap()
+            .rsplit_once(") ")
+            .unwrap()
+            .1
+            .chars()
+            .next()
+            .unwrap()
+    }
+    use super::super::pressure_tests::{domain, pool, settle, Workload};
+    use super::*;
+
+    #[test]
+    fn l9_a_launcher_paused_after_its_single_job_sample_completes() {
+        let pool = pool(4096);
+        let mut shell = Workload::gated(
+            domain(&pool, "promotion-race", false),
+            &[("jobs", "sh \"$0/jobs.sh\" \"$0\"".into())],
+        );
+        std::fs::write(shell.dir.join("jobs.sh"),
+            "sleep 3 &\necho $! > \"$1/first.pid\"\nwhile [ ! -e \"$1/second\" ]; do :; done\nsleep 4 &\necho $! > \"$1/second.pid\"\nwait\necho done > \"$1/done\"\n").unwrap();
+        shell.go(&["jobs"]);
+        settle(1);
+        let root = shell.domain.state.lock().unwrap().root;
+        let launcher = shell.pid("jobs") as u32;
+        let first = shell.pid("first") as u32;
+        let mut tree = sampling::ProcessTree::new(root);
+        let samples = tree.sample().unwrap();
+        assert_eq!(tree.effective(launcher, &samples), first);
+        let watched = Arc::new(Mutex::new(Observation::default()));
+        let mut entry = Entry::predicted(first, Peak::default(), true, &shell.dir);
+        entry.wait = Some(Wait::Paused(WaitReason::Memory));
+        watched.lock().unwrap().admission.insert(launcher, entry);
+        // The second fork happens after the table sample, before its pause is applied.
+        std::fs::write(shell.dir.join("second"), "").unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while !shell.dir.join("second.pid").exists() {
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        super::super::admit(&tree, &watched);
+        assert_eq!(process_state(launcher), 'T');
+        settle(1);
+        let samples = tree.sample().unwrap();
+        watched.lock().unwrap().commands = tree
+            .commands(&samples)
+            .into_iter()
+            .map(|(pid, (resident, _))| pool::CommandUse {
+                pid,
+                resident,
+                effective: tree.effective(pid, &samples),
+                root: pid == root,
+                deleted_open: 0,
+                group: None,
+                growth: 0,
+                measured_growth: 0,
+                steady_growth: 0,
+                writes: 0,
+                write_growth: 0,
+            })
+            .collect();
+        let mut admission = Ledger::new(None);
+        admission.register(&watched, 512 * MIB);
+        super::super::admit(&tree, &watched);
+        assert_eq!(process_state(first), 'T');
+        watched
+            .lock()
+            .unwrap()
+            .admission
+            .get_mut(&first)
+            .unwrap()
+            .force();
+        super::super::admit(&tree, &watched);
+        let until = Instant::now() + Duration::from_secs(6);
+        while !shell.dir.join("done").exists() {
+            assert!(
+                Instant::now() < until,
+                "the launcher stayed stopped after its jobs completed"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!shell.alive("first"));
     }
 }
