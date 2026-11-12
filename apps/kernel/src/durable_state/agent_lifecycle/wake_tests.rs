@@ -408,6 +408,40 @@ fn a03_timer_is_an_obligation_that_needs_scheduler_proof_of_life() {
     assert!(f.wakes(Operation::VerifyWakes { now: 50 }).is_empty());
 }
 
+/// A timer whose task is blocked until its owner decides must not stay scheduled past its
+/// due time with no outcome: it ends there, cancelled, and says why.
+#[test]
+fn a03_due_timer_of_a_blocked_task_is_cancelled_with_the_reason_not_left_scheduled() {
+    for interval in [None, Some(60_000)] {
+        let f = Fixture::new();
+        f.create("t1", "timer", Some(60_000), interval);
+        let reason = "Three consecutive wakes without handled progress; owner must resume or cancel";
+        f.apply(Operation::Block {
+            task: "p".into(),
+            prompt: "p".into(),
+            reason: reason.into(),
+        });
+        assert_eq!(f.task().state, ExecutionState::Blocked);
+        let ended = f.wakes(Operation::FireWakes { now: 120_000 });
+        assert_eq!(ended.len(), 1, "interval {interval:?}: the due timer ends");
+        let wake = f.wake("t1");
+        assert_eq!(wake.state, "cancelled", "interval {interval:?}");
+        assert_eq!(wake.next_due_ms, None);
+        assert!(
+            f.store.agent_armed_timers().unwrap().is_empty(),
+            "no timer stays scheduled"
+        );
+        let lost = f.inbox().pop().unwrap();
+        assert_eq!(lost.kind, "source_lost", "interval {interval:?}");
+        assert_eq!(lost.payload["public_answer"]["cancelled"], true);
+        assert_eq!(lost.payload["public_answer"]["reason"], reason);
+        assert!(
+            f.wakes(Operation::FireWakes { now: 240_000 }).is_empty(),
+            "a cancelled timer never fires"
+        );
+    }
+}
+
 #[test]
 fn a03_one_shot_timer_fires_once_wakes_the_wait_and_records_receipts() {
     let f = Fixture::new();
@@ -901,11 +935,12 @@ fn a03_recurring_timer_check_ins_require_owner_after_three_without_progress() {
             "a check-in with no useful progress consumes its bounded wake budget"
         );
     }
-    assert!(f.wakes(Operation::FireWakes { now: 240_000 }).is_empty());
+    f.wakes(Operation::FireWakes { now: 240_000 });
+    let wake = f.wake("t1");
+    assert_eq!(wake.fire_count, 3);
     assert_eq!(
-        f.wake("t1").fire_count,
-        3,
-        "blocked timers stay inert until owner action"
+        wake.state, "cancelled",
+        "a blocked task's timer ends at its due time instead of staying scheduled"
     );
 }
 
