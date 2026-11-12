@@ -55,6 +55,10 @@ echo "$*" >> "$HARNESS_STATE/native-apt"
 [ "\${HARNESS_NATIVE_APT_FAIL:-0}" = 0 ] || exit 42
 case "$1" in install) [ "\${HARNESS_NATIVE_STAYS_BROKEN:-0}" = 1 ] || { touch "$HARNESS_STATE/native-python-ready"; for b in ${DESKTOP.join(" ")}; do printf '#!/bin/sh\n' > "$HARNESS_ROOT/usr/bin/$b"; chmod 755 "$HARNESS_ROOT/usr/bin/$b"; done; } ;; esac
 `)
+  // This fixture owns the system dependency inventory; do not consult the
+  // runner's ldconfig cache or require its Chromium libraries to be installed.
+  const libraries = ["libasound.so.2", "libatk-1.0.so.0", "libatk-bridge-2.0.so.0", "libatspi.so.0", "libcups.so.2", "libgbm.so.1", "libnspr4.so", "libnss3.so", "libxkbcommon.so.0", "libXcomposite.so.1", "libXdamage.so.1", "libXrandr.so.2", "libX11.so.6", "libXext.so.6", "libXtst.so.6"]
+  await script(join(bin, "ldconfig"), `#!/bin/sh\nprintf '%s\\n' ${libraries.map(name => `'${name}'`).join(" ")}\n`)
   await script(join(bin, "id"), `#!/bin/sh
 case "$*" in
   -u) echo "\${HARNESS_UID:-0}" ;;
@@ -117,7 +121,7 @@ z.close()`, archive])
   const browserPin = (sha256 = createHash("sha256").update(archiveBytes).digest("hex")) => writeFile(browserLock, JSON.stringify({ schema: "chariox.kernel-browser-chromium.v1", distribution: "fixture", version: "1.2.3",
     linux64: { url: `file://${archive}`, sha256, size: archiveBytes.length, executable: "chrome-linux64/chrome" } }))
   await browserPin()
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CHARIOX_LOCAL_INSTALL_ROOT: root, HARNESS_ROOT: root, HARNESS_STATE: state, CHARIOX_LOCAL_INSTALL_BROWSER_LOCK: browserLock }
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CHARIOX_LOCAL_INSTALL_ROOT: root, HARNESS_ROOT: root, HARNESS_STATE: state, CHARIOX_LOCAL_INSTALL_LDCONFIG: join(bin, "ldconfig"), CHARIOX_LOCAL_INSTALL_BROWSER_LOCK: browserLock }
   const run = (args, extra = {}) => {
     const result = spawnSync("bash", [installer, ...args], { env: { ...env, ...extra }, encoding: "utf8" })
     return { ...result, out: result.stdout + result.stderr }

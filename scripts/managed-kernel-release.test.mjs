@@ -11,6 +11,8 @@ import { test } from "node:test"
 
 import { prepareSliceBuildContext } from "./package-managed-kernel-release.mjs"
 
+import { runRootOwnershipFixture } from "./lib/root-ownership-fixture.mjs"
+
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
 const managedBuildHistoryId = "blix8xemjjxks864hv4fmtwj0"
 const packager = join(repositoryRoot, "scripts/package-managed-kernel-release.mjs")
@@ -792,12 +794,8 @@ syncBuiltinESMExports()
 
 test("Path-1 bootstrap and data-volume artifacts are signed and selected by image install", async (context) => {
   if (process.platform === "linux" && process.getuid() !== 0) {
-    const result = spawnSync("sudo", ["--", process.execPath, "--test",
-      "--test-name-pattern=^Path-1 bootstrap and data-volume artifacts are signed and selected by image install$",
-      fileURLToPath(import.meta.url)], {
-      encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
-      env: { ...process.env, NODE_TEST_CONTEXT: undefined },
-    })
+    const result = runRootOwnershipFixture(fileURLToPath(import.meta.url),
+      "^Path-1 bootstrap and data-volume artifacts are signed and selected by image install$")
     process.stdout.write(result.stdout ?? "")
     assert.equal(result.error, undefined)
     assert.equal(result.signal, null)
@@ -2027,11 +2025,32 @@ const result = spawnSync("/usr/bin/install", filtered, { stdio: "inherit" })
 if (result.status === 0 && args.includes("-d") && args.includes("chariox-docker")) {
   const fs = require("node:fs")
   for (const path of filtered.filter(value => value.endsWith("/var/lib/chariox-docker/private-layout"))) {
-    fs.chownSync(path, 997, 997)
+    const uidMap = fs.readFileSync("/proc/self/uid_map", "utf8")
+    const serviceUidMapped = uidMap.trim().split("\\n").some(line => {
+      const [inside, , count] = line.trim().split(/\\s+/).map(Number)
+      return 997 >= inside && 997 < inside + count
+    })
+    if (serviceUidMapped) fs.chownSync(path, 997, 997)
   }
 }
 process.exit(result.status ?? 1)
 `)
+  // A single-user namespace has real root ownership but no synthetic service
+  // uid. Keep that service identity at the same command boundary as id/getent.
+  const uidMap = await readFile("/proc/self/uid_map", "utf8")
+  const serviceUidMapped = uidMap.trim().split("\n").some(line => {
+    const [inside, , count] = line.trim().split(/\s+/).map(Number)
+    return 997 >= inside && 997 < inside + count
+  })
+  if (!serviceUidMapped) {
+    await writeHarnessCommand(join(bin, "stat"), `#!/bin/sh
+if [ "$1" = -c ] && [ "$2" = %u ] && [ "$3" = "${installRoot}/var/lib/chariox-docker/private-layout" ]; then
+  echo 997
+else
+  exec /usr/bin/stat "$@"
+fi
+`)
+  }
   await writeHarnessCommand(join(bin, "mv"), `#!/bin/sh
 if [ "$1" = -Tf ]; then echo 'mv -T is not portable' >&2; exit 64; fi
 exec /bin/mv "$@"

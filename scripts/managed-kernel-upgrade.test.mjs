@@ -30,6 +30,8 @@ import {
   treeSnapshot,
 } from "./lib/managed-kernel-upgrade-fixture.mjs"
 
+import { runRootOwnershipFixture } from "./lib/root-ownership-fixture.mjs"
+
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
 const upgrade = join(repositoryRoot, "deploy/managed-kernel/upgrade-image.sh")
 const upgradeState = join(repositoryRoot, "deploy/managed-kernel/managed-kernel-upgrade-state.mjs")
@@ -37,14 +39,10 @@ const verifyRelease = join(repositoryRoot, "deploy/managed-kernel/verify-image-r
 const managedService = join(repositoryRoot, "deploy/managed-kernel/chariox-managed-bootstrap.service")
 const serviceName = "chariox-managed-bootstrap.service"
 
-// MP-07/MP-10: signed release ownership is a real root contract. Run the
-// unchanged fixture assertions as root rather than simulating root-owned files.
+// Run the real installer with namespace-owned root files and no host sudo.
 if (process.platform === "linux" && process.getuid() !== 0) {
-  test("managed upgrade root-owned release fixtures", () => {
-    const result = spawnSync("sudo", ["--", process.execPath, "--test", fileURLToPath(import.meta.url)], {
-      encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
-      env: { ...process.env, NODE_TEST_CONTEXT: undefined },
-    })
+  test("managed upgrade root-owned release fixtures", { timeout: 300_000 }, () => {
+    const result = runRootOwnershipFixture(fileURLToPath(import.meta.url))
     process.stdout.write(result.stdout ?? "")
     assert.equal(result.error, undefined)
     assert.equal(result.signal, null)
