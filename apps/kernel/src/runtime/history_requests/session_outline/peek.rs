@@ -9,8 +9,8 @@ use crate::history::SessionHistoryEntryKind;
 use crate::local::{
     AgentTranscriptEntryKind as Kind, AgentTranscriptEntryPage,
     AgentTranscriptEntryStatus as Status, AgentTranscriptPeek, AgentTranscriptTitle,
-    DEFAULT_AGENT_PEEK_ENTRIES, DEFAULT_AGENT_PEEK_PAGE_CHARS, MAX_AGENT_PEEK_ENTRIES,
-    MAX_AGENT_PEEK_PAGE_CHARS, PeekAgentTranscriptRequest, ReadAgentTranscriptEntryRequest,
+    PeekAgentTranscriptRequest, ReadAgentTranscriptEntryRequest, DEFAULT_AGENT_PEEK_ENTRIES,
+    DEFAULT_AGENT_PEEK_PAGE_CHARS, MAX_AGENT_PEEK_ENTRIES, MAX_AGENT_PEEK_PAGE_CHARS,
 };
 use crate::session_history_page::SessionHistoryPageEntry;
 
