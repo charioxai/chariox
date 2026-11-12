@@ -13,7 +13,13 @@ A browser page also shares one ordinary terminal subscription per Room. Its view
 prompt, collaborator and tree attachments retain independent `session_metadata`
 subscriptions; these drain their queues without transmitting terminal bytes,
 including during replay. Only consumers that need terminal records hold the
-shared byte attachment. Releasing its last consumer detaches it while metadata
+shared byte attachment.
+
+Native Room Terminal output uses the same CXT1 reply carrier, including ANSI
+snapshot bytes and UTF-8 screen/scrollback text. Clients restore the ordinary
+base64/string API in memory. Hidden terminal screens pause reads while retaining
+their emulator and output offset; showing a screen resumes from that offset.
+Quiet live reads wait up to ten seconds, returning as soon as output arrives. Releasing its last consumer detaches it while metadata
 observers remain subscribed. A view's attachment failure must not retire the
 shared byte attachment.
 

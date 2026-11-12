@@ -1,6 +1,7 @@
 //! Terminal output keeps its record metadata, with raw bytes after the JSON header.
 use std::borrow::Cow;
 
+use base64::Engine as _;
 use serde_json::Value;
 
 use super::kernel_protocol::KernelEvent;
@@ -31,6 +32,25 @@ pub(crate) fn encode(event: &mut KernelEvent) -> Result<Vec<u8>, serde_json::Err
 
 // Polled native renderers receive the same raw byte transport as push subscribers.
 pub(crate) fn encode_reply(response: &mut Value) -> Result<Vec<u8>, serde_json::Error> {
+    let fields = room_terminal_fields(response);
+    if !fields.is_empty() {
+        let mut payload = Vec::new();
+        for &(pointer, encoding) in fields {
+            let field = response
+                .pointer_mut(pointer)
+                .ok_or_else(invalid_room_reply)?;
+            let text = field.as_str().ok_or_else(invalid_room_reply)?;
+            let data = match encoding {
+                RoomByteEncoding::Base64 => base64::engine::general_purpose::STANDARD
+                    .decode(text)
+                    .map_err(|_| invalid_room_reply())?,
+                RoomByteEncoding::Text => text.as_bytes().to_vec(),
+            };
+            *field = serde_json::json!([payload.len(), data.len()]);
+            payload.extend_from_slice(&data);
+        }
+        return pack(response, &payload);
+    }
     let Some(records) = response
         .get_mut("TerminalOutput")
         .and_then(|output| output.get_mut("records"))
@@ -57,6 +77,43 @@ pub(crate) fn encode_reply(response: &mut Value) -> Result<Vec<u8>, serde_json::
         record["bytes"] = serde_json::json!([offset, bytes.len()]);
     }
     pack(response, &payload)
+}
+
+#[derive(Clone, Copy)]
+enum RoomByteEncoding {
+    Base64,
+    Text,
+}
+
+fn room_terminal_fields(value: &Value) -> &'static [(&'static str, RoomByteEncoding)] {
+    match value
+        .pointer("/RoomTerminal/result/result")
+        .and_then(Value::as_str)
+    {
+        Some("output") => &[(
+            "/RoomTerminal/result/output/data_base64",
+            RoomByteEncoding::Base64,
+        )],
+        Some("snapshot") => &[
+            (
+                "/RoomTerminal/result/snapshot/screen_ansi_base64",
+                RoomByteEncoding::Base64,
+            ),
+            (
+                "/RoomTerminal/result/snapshot/screen_text",
+                RoomByteEncoding::Text,
+            ),
+            (
+                "/RoomTerminal/result/snapshot/scrollback_text",
+                RoomByteEncoding::Text,
+            ),
+        ],
+        _ => &[],
+    }
+}
+
+fn invalid_room_reply() -> serde_json::Error {
+    serde_json::Error::io(std::io::Error::other("invalid Room terminal reply bytes"))
 }
 
 fn pack(header: &Value, payload: &[u8]) -> Result<Vec<u8>, serde_json::Error> {
@@ -91,6 +148,43 @@ pub(crate) fn open(bytes: &[u8]) -> Result<Cow<'_, [u8]>, &'static str> {
     let header = bytes.get(8..8 + size).ok_or(invalid)?;
     let payload = &bytes[8 + size..];
     let mut event: Value = serde_json::from_slice(header).map_err(|_| invalid)?;
+    let fields = room_terminal_fields(&event);
+    if !fields.is_empty() {
+        if event.as_object().is_none_or(|object| object.len() != 1) {
+            return Err(invalid);
+        }
+        let mut cursor = 0;
+        for &(pointer, encoding) in fields {
+            let field = event.pointer_mut(pointer).ok_or(invalid)?;
+            let range = field
+                .as_array()
+                .filter(|range| range.len() == 2)
+                .ok_or(invalid)?;
+            let offset = range[0]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or(invalid)?;
+            let length = range[1]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or(invalid)?;
+            if offset != cursor || length > payload.len() - cursor {
+                return Err(invalid);
+            }
+            let data = &payload[cursor..cursor + length];
+            *field = Value::String(match encoding {
+                RoomByteEncoding::Base64 => base64::engine::general_purpose::STANDARD.encode(data),
+                RoomByteEncoding::Text => {
+                    std::str::from_utf8(data).map_err(|_| invalid)?.to_owned()
+                }
+            });
+            cursor += length;
+        }
+        if cursor != payload.len() {
+            return Err(invalid);
+        }
+        return Ok(serde_json::to_vec(&event).map_err(|_| invalid)?.into());
+    }
     let output = if event["event"] == "terminal_output" {
         &mut event
     } else if event.as_object().is_some_and(|object| object.len() == 1) {
@@ -209,5 +303,39 @@ mod tests {
             serde_json::json!({
             "event":"terminal_output", "records":[{"bytes":[0,255,27],"record_id":42}, {"bytes":[],"record_id":43}]})
         );
+    }
+}
+
+#[cfg(test)]
+mod room_terminal_tests {
+    use super::*;
+
+    #[test]
+    fn room_terminal_replies_keep_output_and_snapshots_raw() {
+        let data = vec![0xff; 65536];
+        for original in [
+            serde_json::json!({"RoomTerminal":{"result":{"result":"output","output":{"data_base64":base64::engine::general_purpose::STANDARD.encode(&data),"next_offset":65536,"gap":false}}}}),
+            serde_json::json!({"RoomTerminal":{"result":{"result":"snapshot","snapshot":{"screen_ansi_base64":"G1szMW0=","screen_text":"你好","scrollback_text":"old🙂","output_offset":42}}}}),
+        ] {
+            let mut response = original.clone();
+            let wire = encode_reply(&mut response).unwrap();
+            assert!(wire.starts_with(b"CXT1"));
+            assert_eq!(
+                serde_json::from_slice::<Value>(&open(&wire).unwrap()).unwrap(),
+                original
+            );
+            if original["RoomTerminal"]["result"]["result"] == "output" {
+                assert!(
+                    wire.len() < data.len() + 1024,
+                    "native VT output still expands as base64"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_room_terminal_base64_is_an_error() {
+        let mut response = serde_json::json!({"RoomTerminal":{"result":{"result":"output","output":{"data_base64":"not base64!"}}}});
+        assert!(encode_reply(&mut response).is_err());
     }
 }

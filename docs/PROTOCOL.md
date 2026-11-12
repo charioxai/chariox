@@ -7405,3 +7405,12 @@ While a step is pending or running, or `git_init` or `worktree` failed and was n
 `WaitingRoomLaunchTarget.git_available` (always serialized, `false` for readers that lack it) reports whether a `git` executable runs on the kernel's machine; a client offers "Initialize Git" only when it is true.
 
 Focused checks: `cargo test -p chariox-kernel --test kernel_websocket_runtime_integration room_setup`, `cargo test -p chariox-kernel --lib room_setup`.
+
+
+MP-08 / MP-09 / MP-10 / MP-11, provisional local protocol 1008: CXT1 replies also
+carry `RoomTerminal.result` variants `output` and `snapshot`. The header replaces
+`output.data_base64`, or `snapshot.screen_ansi_base64`, `screen_text` and
+`scrollback_text`, with contiguous `[offset, length]` ranges into the raw suffix,
+in that order. ANSI/output fields are raw decoded base64 bytes; text fields are
+UTF-8. Clients and gateways reconstruct the ordinary response before handing it
+to their caller. Other Room Terminal result variants remain ordinary JSON.
