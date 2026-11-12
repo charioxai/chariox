@@ -285,20 +285,8 @@ impl ClaudeToolTranscript {
     fn observe_at(&mut self, value: &Value, now_ms: u64) -> Vec<Value> {
         self.unsupported_results.clear();
         let kind = value.get("type").and_then(Value::as_str);
-        if kind == Some("system")
-            && value.get("subtype").and_then(Value::as_str) == Some("task_notification")
-        {
-            if !matches!(
-                value.get("status").and_then(Value::as_str),
-                Some("completed" | "failed" | "killed" | "stopped")
-            ) {
-                return Vec::new();
-            }
-            return self.finish_background_task(
-                value.get("tool_use_id").and_then(Value::as_str),
-                value.get("task_id").and_then(Value::as_str),
-                now_ms,
-            );
+        if let Some(end) = super::task_notification::finished_background_task(value) {
+            return self.finish_background_task(end.tool_use_id, end.task_id, now_ms);
         }
         let message = value.get("message").unwrap_or(value);
         let Some(content) = message.get("content").and_then(Value::as_array) else {
@@ -545,6 +533,50 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn kwait_nested_background_command_ends_on_replayed_task_notification() {
+        for wrapped in [false, true] {
+            let mut transcript = ClaudeToolTranscript::default();
+            let mut agent = background_launch("agent-call", "ignored");
+            agent["message"]["content"][0]["name"] = json!("Agent");
+            transcript.observe_at(&agent, 1_000);
+            let mut launched = background_launch_result("agent-call", "agent-task");
+            launched["tool_use_result"] = json!({"agentId":"agent-task","isAsync":true});
+            transcript.observe_at(&launched, 1_100);
+            let mut nested = background_launch("nested-bash", "sleep 45; echo done");
+            nested["parent_tool_use_id"] = json!("agent-call");
+            transcript.observe_at(&nested, 1_200);
+            let mut nested_result = background_launch_result("nested-bash", "bash-task");
+            nested_result["parent_tool_use_id"] = json!("agent-call");
+            transcript.observe_at(&nested_result, 1_300);
+            // Claude reports the Agent's interim answer before its background Bash ends.
+            transcript.observe_at(
+                &task_notification("agent-task", "agent-call", "completed"),
+                1_400,
+            );
+            let notification = "<task-notification><task-id>bash-task</task-id><tool-use-id>nested-bash</tool-use-id><status>completed</status></task-notification>";
+            let text = if wrapped {
+                format!("[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event.\n{notification}")
+            } else {
+                notification.to_string()
+            };
+            let content = if wrapped {
+                json!([{"type":"text","text":text}])
+            } else {
+                json!(text)
+            };
+            let ended = transcript.observe_at(&json!({"type":"user", "parent_tool_use_id":"agent-call", "message":{"role":"user","content":content}}), 2_000);
+            assert_eq!(
+                ended.len(),
+                1,
+                "wrapped={wrapped}: the nested command must not stay open"
+            );
+            assert_eq!(ended[0]["id"], "nested-bash");
+            assert_eq!(ended[0]["finished_at_ms"], 2_000);
+            assert!(transcript.background.is_empty());
+        }
     }
 
     fn task_stop(id: &str, task_id: &str) -> [Value; 2] {
