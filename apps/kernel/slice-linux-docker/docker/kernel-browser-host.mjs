@@ -88,6 +88,9 @@ const SHOW_TAB_WAIT_MS = 1000;
 const SHOW_TAB_OBSERVE_MS = 500;
 // How often the focus emulation of the Tabs agents work in behind the shown one is asserted again.
 const BACKGROUND_KEEP_MS = 1500;
+// An agent Tab renders at full speed behind the shown one only this long after the agent's last action in it; an idle
+// one stops scheduling frames, and the agent's next action wakes it before acting.
+export const BACKGROUND_IDLE_MS = 30_000;
 // A group's mark: a dot at rest, a spinner while the agent acts, and "needs you" while a card asks the person to act in one of its Tabs.
 const SPINNER = ['◐', '◓', '◑', '◒'], IDLE_MARK = '●', NEEDS_MARK = '▲';
 // How long a spinner stays after an agent's last action in a Tab, so a short action is still seen.
@@ -117,9 +120,9 @@ export function navigationUrl(raw) {
 }
 
 export class KernelBrowserHost {
-  constructor(root, { appStorageRoot, chromium = new HostChromium(root, { appStorageRoot }), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }), personIdleMs = PERSON_IDLE_MS } = {}) {
+  constructor(root, { appStorageRoot, chromium = new HostChromium(root, { appStorageRoot }), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }), personIdleMs = PERSON_IDLE_MS, backgroundIdleMs = BACKGROUND_IDLE_MS } = {}) {
     this.root = root;
-    this.personIdleMs = personIdleMs;
+    this.personIdleMs = personIdleMs; this.backgroundIdleMs = backgroundIdleMs;
     this.timing = displayTiming(root);
     this.visitedLinks = new VisitedLinks();
     // r55: a Node event loop that stalls delays every request behind it without any step to name: mark the stall itself.
@@ -981,10 +984,20 @@ export class KernelBrowserHost {
   // An independent CDP enable is undone when a display releases its last capture.
   async holdBackground(tab) {
     if (!this.backgroundHolds.has(tab.target_id)) {
-      this.backgroundHolds.set(tab.target_id, { pending: null, lease: null });
-      if (!this.keepTimer) { this.keepTimer = setInterval(() => void this.assertBackground(), BACKGROUND_KEEP_MS); this.keepTimer.unref?.(); }
+      this.backgroundHolds.set(tab.target_id, { pending: null, lease: null, tabId: tab.tab_id, usedAt: 0 });
+      if (!this.keepTimer) { this.keepTimer = setInterval(() => void this.keepBackground(), BACKGROUND_KEEP_MS); this.keepTimer.unref?.(); }
     }
+    this.backgroundHolds.get(tab.target_id).usedAt = Date.now();
     await this.assertBackground(tab.target_id);
+  }
+  // Releases the holds of agent Tabs idle past the linger and asserts the rest; no timer runs without a hold.
+  async keepBackground() {
+    for (const [target, hold] of this.backgroundHolds) {
+      if (this.agentBusy.has(hold.tabId)) hold.usedAt = Date.now();
+      else if (Date.now() - hold.usedAt > this.backgroundIdleMs) await this.releaseBackground(target);
+    }
+    if (!this.backgroundHolds.size) { clearInterval(this.keepTimer); this.keepTimer = null; }
+    await this.assertBackground();
   }
   async assertBackground(only) {
     for (const [target, hold] of this.backgroundHolds) {

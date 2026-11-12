@@ -33,7 +33,7 @@ test('MP-08 / MP-11: Chromium temporary sockets use the held private directory t
   for (const pid of [0, 1, -1, NaN]) assert.throws(() => chromiumTemporaryEnvironment(environment, 5, pid));
 });
 
-function fixture(root, { realCdp = false, personIdleMs } = {}) {
+function fixture(root, { realCdp = false, personIdleMs, backgroundIdleMs } = {}) {
   fixture.popups = [];
   const pages = new Map();
   let next = 0;
@@ -82,7 +82,7 @@ function fixture(root, { realCdp = false, personIdleMs } = {}) {
     clearViewport: async target => connection.send('Emulation.clearDeviceMetricsOverride', {}, `session-${target}`),
     inputCapture: { hold: async()=>async()=>{}, run: async (_connection, _session, operation) => operation() },
   });
-  return { host: new KernelBrowserHost(root, { chromium, ...(personIdleMs ? { personIdleMs } : {}), browserFactory: realCdp
+  return { host: new KernelBrowserHost(root, { chromium, ...(personIdleMs ? { personIdleMs } : {}), ...(backgroundIdleMs ? { backgroundIdleMs } : {}), browserFactory: realCdp
     ? () => new BrowserCdpClient({ connectionFactory: async () => connection }) : browserFactory }), chromium, handlers, sent, pages, connection };
 }
 
@@ -3338,6 +3338,27 @@ test('an agent opening a background Tab starts its renderer before any later age
   assert.ok(host.backgroundHolds.has(target), 'open itself holds the background renderer');
   assert.ok(sent.some(call => call.method === 'Page.startScreencast'), 'the new renderer is already scheduling frames');
 }));
+
+// brperf: an agent Tab nobody acts in stops rendering; the agent's next action wakes it before it acts.
+test('an idle agent Tab releases its background capture and its next agent action takes it again', () => using(async ({ host, sent }) => {
+  const shown = await host.request({ op: 'open', url: 'https://example.com/person' });
+  const front = host.tabs.get(shown.tab_id).target_id;
+  host.tabGroups = { active: async () => front, sync: async () => true, close() {}, keepalive: async () => {}, viewport: () => null };
+  host.browser.inputCapture = new BrowserInputCapture();
+  const opened = await host.request({ op: 'open', url: 'https://example.com/agent', focused_agent: true });
+  const target = host.tabs.get(opened.tab_id).target_id;
+  const starts = () => sent.filter(call => call.method === 'Page.startScreencast').length;
+  assert.equal(starts(), 1, 'open holds the background renderer');
+  await new Promise(resolve => setTimeout(resolve, 2500));
+  await host.keepBackground();
+  assert.ok(!host.backgroundHolds.has(target), 'an agent Tab idle past the linger keeps no capture');
+  assert.ok(sent.some(call => call.method === 'Page.stopScreencast'), 'the idle capture stopped');
+  assert.equal(host.keepTimer, null, 'no keep timer runs without a background hold');
+  const tab = host.tabs.get(opened.tab_id);
+  await host.request({ op: 'input', focused_agent: true, _person_idle_checked: true, tab_id: tab.tab_id, generation: host.generation, document_id: tab.document_id, input: { kind: 'key', key: 'a' } });
+  assert.equal(starts(), 2, 'the agent action woke the renderer again');
+  assert.ok(host.backgroundHolds.has(target));
+}, { backgroundIdleMs: 2000 }));
 
 test("MP-08/MP-10/MP-11 the host snapshot boundary preserves schema words and identifiers", () => using(async ({host}) => {
   const tab = await host.request({op: "open", url: "https://example.com"});
