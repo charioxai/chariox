@@ -1688,6 +1688,7 @@ mod agent_task_human_control_wait;
 mod agent_task_owner_interactions;
 mod agent_task_owner_resolution;
 mod agent_task_projection;
+mod agent_task_settlement;
 mod agent_trigger_firings;
 #[cfg(test)]
 mod agent_turn_task_tests;
