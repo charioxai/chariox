@@ -517,4 +517,5 @@ pub use workspace::*;
 /// transcript.
 /// 1011: durable jobs, job-only command admission and outcomes, placement policies,
 /// process estimates, session job feeds and the owner's global offload decision.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1011;
+/// 1021: shared machine-local memory, disk and CPU resource-protection settings.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1021;

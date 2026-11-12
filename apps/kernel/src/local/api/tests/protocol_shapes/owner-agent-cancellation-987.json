@@ -1,5 +1,5 @@
 {
-  "local_protocol": 1011,
+  "local_protocol": 1021,
   "task": {
     "CancelAgentTask": {
       "session_id": "room",

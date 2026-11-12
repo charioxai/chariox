@@ -1,6 +1,6 @@
 {
-  "local_protocol": 1011,
-  "peer_protocol": 449,
+  "local_protocol": 1021,
+  "peer_protocol": 459,
   "stored_tool_call": {
     "id": "call-chart",
     "tool": "render_chart",

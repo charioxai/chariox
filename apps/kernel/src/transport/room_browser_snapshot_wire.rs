@@ -205,7 +205,7 @@ mod tests {
                 "{:x}",
                 Sha256::digest(serde_json::to_vec(&fixture).unwrap())
             ),
-            "8ced55a1e105ccd66959bf6730457da50e52afac30d4b43bdf6bc61ef5822971"
+            "829c0c55b74b35fe189ab2821d554e2dc5da540c013f48a8702b8003bd732c11"
         );
         let response: RelayPeerResponse =
             serde_json::from_value(fixture["response"].clone()).unwrap();

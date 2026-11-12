@@ -2,10 +2,19 @@
 
 MP-08 / MP-09 / MP-10 / MP-11: Chariox is in development; backward compatibility
 with older kernels is not a goal. The managed-upgrade policy admits only the
-current release and the previous release (636 and 629), plus the new target
-910 while it is being prepared. Older kernels are
+current release and the previous release (1011 and 1005), plus the new target
+1021 while it is being prepared. Older kernels are
 discontinued and re-provisioned when that simplifies the code, regardless of
 whether an older protocol shipped.
+
+### Machine resource protection (local1021 / peer459)
+
+`UserConfig.config.kernel.resource_protection` and the corresponding
+`UserConfigUpdated` configuration contain independent `memory`, `disk` and `cpu`
+booleans, all true by default. `SetUserConfigValue` and `UnsetUserConfigValue`
+apply these machine-local settings immediately through the kernel. Runtime
+clients and forwarded requests read the same values. See
+[Resource protection](RESOURCE_PROTECTION.md) for their behavior and public drill.
 
 ### MP-08 / MP-09 / MP-10 / MP-11 artifact read pages (local993 / peer432)
 
