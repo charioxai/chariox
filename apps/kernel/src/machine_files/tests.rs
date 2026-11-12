@@ -1007,11 +1007,12 @@ async fn a_file_transfer_stopped_by_a_kernel_restart_is_listed_again_and_finishe
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     recorded(&state, &started.job_id, "\"copying\"").await;
-    // The process dies: nothing of the transfer runs again, no cleanup either. A write already
-    // handed to the blocking pool still ends.
-    jobs.kill_runs();
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    life.shutdown_background();
+    // The kernel stops without removing staged bytes. The shutdown barrier
+    // joins the transfer and drains its records before a new life attaches.
+    jobs.shutdown().await.unwrap();
+    tokio::task::spawn_blocking(move || life.shutdown_timeout(Duration::from_secs(1)))
+        .await
+        .unwrap();
     drop(jobs);
     assert!(!here.join("big.bin").exists());
     assert!(
@@ -1075,11 +1076,12 @@ async fn a_folder_transfer_stopped_by_a_kernel_restart_finishes_as_the_same_tree
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     recorded(&state, &started.job_id, "\"copying\"").await;
-    // The process dies: nothing of the transfer runs again, no cleanup either. A write already
-    // handed to the blocking pool still ends.
-    jobs.kill_runs();
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    life.shutdown_background();
+    // The kernel stops without removing staged bytes. The shutdown barrier
+    // joins the transfer and drains its records before a new life attaches.
+    jobs.shutdown().await.unwrap();
+    tokio::task::spawn_blocking(move || life.shutdown_timeout(Duration::from_secs(1)))
+        .await
+        .unwrap();
     drop(jobs);
     assert!(!here.join("project").exists());
 
@@ -1468,7 +1470,8 @@ async fn a_startup_snapshot_written_late_never_overwrites_a_newer_outcome() {
     let done = finished(&jobs, id).await;
     assert_eq!(done.state, FileTransferState::Done, "{done:?}");
     assert_eq!(digest_of(&here.join("f.bin")), sha256);
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    // A visible terminal outcome must already survive a restart, even when
+    // the writer was delayed. Do not give the writer time to catch up here.
     let text = std::fs::read_to_string(state.join(format!("{id}.json"))).unwrap();
     assert!(text.contains("\"done\""), "{text}");
 
@@ -1614,4 +1617,33 @@ async fn l9_home_source_replacement_with_a_current_directory_is_refused() {
 #[tokio::test]
 async fn l9_home_source_replacement_with_a_parent_directory_is_refused() {
     home_source_replacement_is_refused("~/project/../project", "must not contain").await;
+}
+
+#[tokio::test]
+async fn a_failed_outcome_write_never_reports_a_successful_transfer() {
+    let (source_side, here, state) = (
+        scratch("outcome-write-source"),
+        scratch("outcome-write-here"),
+        scratch("outcome-write-state"),
+    );
+    let sha256 = plant(&source_side.join("f.bin"), 1000);
+    let not_a_folder = state.join("not-a-folder");
+    std::fs::write(&not_a_folder, b"cannot store records here").unwrap();
+    let jobs = Arc::new(TransferJobs::default());
+    assert!(jobs.attach(not_a_folder).is_empty());
+    let done = run(
+        &jobs,
+        Link::new(machine()).source(),
+        request(&source_side.join("f.bin"), &here),
+    )
+    .await;
+    assert_eq!(done.state, FileTransferState::Failed, "{done:?}");
+    assert!(
+        done.error
+            .as_deref()
+            .unwrap()
+            .contains("could not be recorded"),
+        "{done:?}"
+    );
+    assert_eq!(digest_of(&here.join("f.bin")), sha256);
 }

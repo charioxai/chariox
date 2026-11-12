@@ -62,9 +62,8 @@ pub(crate) struct TransferJobs {
     store: Arc<OnceLock<Recorder>>,
     /// The destinations transfers are writing to, so no two write to one.
     reserved: Arc<Mutex<BTreeSet<PathBuf>>>,
-    /// The running transfers, which a test stops the way a dying process does.
-    #[cfg(test)]
-    runs: Mutex<Vec<tokio::task::AbortHandle>>,
+    /// Running transfers remain owned until shutdown has stopped them.
+    runs: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl TransferJobs {
@@ -254,8 +253,10 @@ impl TransferJobs {
                     }
                 }
             };
-            let recorded = {
-                let mut job = job.lock().expect("job state");
+            let (mut outcome, recorded) = {
+                let current = job.lock().expect("job state");
+                let mut snapshot = current.clone();
+                let job = &mut snapshot;
                 job.current = None;
                 job.finished_ms = Some(crate::session::unix_epoch_ms());
                 match outcome {
@@ -269,27 +270,47 @@ impl TransferJobs {
                         job.error = Some(reason);
                     }
                 }
-                store.get().map(|recorder| {
+                let recorded = store.get().map(|recorder| {
                     recorder.save(Record {
                         job: job.clone(),
                         request: request.clone(),
                     })
-                })
+                });
+                (snapshot, recorded)
             };
             if let Some(recorded) = recorded {
-                let _ = recorded.recorded().await;
+                if let Err(reason) = recorded.recorded().await {
+                    outcome.state = FileTransferState::Failed;
+                    outcome.error = Some(format!("The transfer outcome could not be recorded ({reason}); check the destination before retrying"));
+                }
             }
+            // A caller may restart the kernel immediately after seeing Done.
+            // Keep the running snapshot visible until its outcome is durable.
+            *job.lock().expect("job state") = outcome;
         });
-        #[cfg(test)]
-        self.runs
-            .lock()
-            .expect("running transfers")
-            .push(run.abort_handle());
-        #[cfg(not(test))]
-        drop(run);
+        let mut runs = self.runs.lock().expect("running transfers");
+        runs.retain(|run| !run.is_finished());
+        runs.push(run);
     }
 
-    /// Stops every running transfer where it is, without any of its cleanup: a process that dies.
+    /// Stop before another slice or delete starts; keep staged bytes and the
+    /// last running snapshot so a restart can continue the same transfer.
+    pub(crate) async fn shutdown(&self) -> Result<(), String> {
+        let runs = std::mem::take(&mut *self.runs.lock().expect("running transfers"));
+        for run in &runs {
+            run.abort();
+        }
+        for run in runs {
+            let _ = run.await;
+        }
+        if let Some(recorder) = self.store.get() {
+            recorder.flush().recorded().await?;
+        }
+        Ok(())
+    }
+
+    /// Crash injection cannot await the shutdown barrier from inside the run
+    /// it is aborting (for example, midway through deleting a moved source).
     #[cfg(test)]
     pub(crate) fn kill_runs(&self) {
         for run in self.runs.lock().expect("running transfers").drain(..) {

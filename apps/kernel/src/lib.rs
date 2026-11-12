@@ -62,6 +62,7 @@ pub mod secret;
 pub(crate) mod secret_redaction;
 pub mod session;
 pub mod session_history_page;
+pub mod shutdown;
 pub mod skill;
 pub mod slice;
 pub mod slice_provider_auth;

@@ -779,6 +779,7 @@ where
                 wake_scheduler_task.abort();
                 created_peer_release_task.abort();
                 pump_task.abort();
+                crate::shutdown::stage("provider output pump");
                 // Output already taken from a provider must reach history:
                 // a hot-reloaded turn continues after it in the new program.
                 let _ = stop_provider_output_pump.send(());
@@ -798,7 +799,13 @@ where
                 }
                 mcp_task.abort();
                 let _ = router.runtime_state().end_kernel_access_for_shutdown();
-                let _ = router.shutdown_cleanup().await;
+                if let Err(error) = router.shutdown_cleanup().await {
+                    crate::logging::error_with_fields(
+                        "daemon.shutdown",
+                        "kernel subsystem cleanup failed",
+                        serde_json::json!({"error": error.to_string()}),
+                    );
+                }
                 return Ok(());
             },
             (stream, _) = crate::transport::listener_admission::accept_unix_with_backoff(
