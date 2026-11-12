@@ -77,6 +77,7 @@ export async function buildAgentTriggerServer(client: Pick<AgentTriggerClient, "
     tokens--
     return true
   }
+  const limit = { admit, refund: () => { tokens = Math.min(3, tokens + 1) } }
   const failure = (request: FastifyRequest, reply: FastifyReply, status: number, error: string, hint?: string) => {
     reply.code(status).header("Cache-Control", "no-store")
     if (String(request.headers.accept).includes("text/html")) return reply.type("text/html; charset=utf-8").send(agentTriggerErrorPage(error, base, hint))
@@ -98,7 +99,7 @@ export async function buildAgentTriggerServer(client: Pick<AgentTriggerClient, "
     const raw = Buffer.from((request.raw as { charioxRawBody?: string }).charioxRawBody ?? "", "utf8")
     return respond(request, reply, await invokeHttpTrigger({ method: request.method, path: url.pathname.slice(base.length - 1), search: url.search,
       query: request.query as Record<string, unknown>, headers: request.headers, body: request.body ?? null, raw,
-      contentType: String(request.headers["content-type"] ?? "text/plain") }, kernel, base, admit))
+      contentType: String(request.headers["content-type"] ?? "text/plain") }, kernel, base, limit))
   }
   app.addHook("onRequest", async (request, reply) => {
     const reason = options.localOriginGuard === false ? null : foreignRequestReason(request, base)
@@ -134,7 +135,9 @@ export async function buildAgentTriggerServer(client: Pick<AgentTriggerClient, "
     const prompt = (request.body as { prompt?: unknown } | null)?.prompt
     if (typeof prompt !== "string" || !prompt.trim()) return failure(request, reply, 400, "invalid request body")
     if (!admit()) { reply.header("Retry-After", "10"); return failure(request, reply, 429, "too many requests; retry shortly") }
-    return respond(request, reply, await sendPageMessage(prompt, kernel))
+    const result = await sendPageMessage(prompt, kernel)
+    if (result.status === 503) limit.refund()
+    return respond(request, reply, result)
   })
   app.post(base + "resend", async (request, reply) => {
     const promptId = (request.body as { prompt_id?: unknown } | null)?.prompt_id

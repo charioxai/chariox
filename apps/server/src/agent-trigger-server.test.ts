@@ -255,3 +255,17 @@ test("the trigger page's message box sends its text whatever the route and parse
     assert.equal((await f.app.inject({ method: "POST", url: "/local-test/send", payload: {} })).statusCode, 400)
   } finally { await f.app.close() }
 })
+
+test("an offline agent does not use up the gateway's rate limit: every retry is a 503, never a 429", async () => {
+  const f = await fixture()
+  try {
+    f.offline()
+    for (let n = 0; n < 6; n++) {
+      const response = await f.app.inject({ method: "POST", url: "/local-test/", payload: { prompt: "later" } })
+      assert.equal(response.statusCode, 503, `retry ${n}`)
+      assert.equal(response.headers["retry-after"], "5")
+    }
+    for (let n = 0; n < 4; n++) assert.equal((await f.app.inject({ method: "POST", url: "/local-test/send", payload: { prompt: "page" } })).statusCode, 503)
+    assert.equal(f.invocations.length, 0)
+  } finally { await f.app.close() }
+})

@@ -53,8 +53,11 @@ const json = (status: number, body: unknown, headers: Record<string, string> = {
 const refusals = { offline: [503, "agent offline"], disabled: [403, "trigger disabled"], busy: [429, "agent busy; retry shortly"], payload_too_large: [413, "payload too large"] } as const
 
 /** One HTTP firing: method, route and parser as configured, then an async or sync response. */
-/** `admit` is the gateway's rate limit: it counts requests that reach the kernel, not refused ones. */
-export async function invokeHttpTrigger(request: HttpTriggerRequest, kernel: HttpTriggerKernel, base: string, admit: () => boolean = () => true,
+/** A gateway's rate limit. It counts requests that reach the kernel; an offline agent gives the request back. */
+export type RateLimit = { admit(): boolean; refund(): void }
+const unlimited: RateLimit = { admit: () => true, refund: () => {} }
+
+export async function invokeHttpTrigger(request: HttpTriggerRequest, kernel: HttpTriggerKernel, base: string, limit: RateLimit = unlimited,
   sleep: (ms: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms))): Promise<HttpTriggerResponse> {
   const { enabled, options } = await kernel.options()
   if (!matchesInvocationPath(request.path, options)) return json(404, { error: "trigger not found" })
@@ -66,9 +69,11 @@ export async function invokeHttpTrigger(request: HttpTriggerRequest, kernel: Htt
   } catch (error) {
     return json(400, { error: error instanceof Error ? error.message : "invalid request" })
   }
-  if (!admit()) return json(429, { error: "too many requests; retry shortly" }, { "retry-after": "10" })
+  if (!limit.admit()) return json(429, { error: "too many requests; retry shortly" }, { "retry-after": "10" })
   const http = request.method === "POST" ? { body_base64: request.raw.toString("base64"), content_type: request.contentType } : null
-  return answer(await kernel.invoke(input, http), options, kernel, request, base, sleep)
+  const result = await kernel.invoke(input, http)
+  if (result.status === "offline") limit.refund()
+  return answer(result, options, kernel, request, base, sleep)
 }
 
 /** The body of a request as the parsers read it: JSON, form or plain text; GET has none. */
