@@ -106,6 +106,7 @@ impl Store {
             },
             None,
             now_ms,
+            &str::to_owned,
         )
         .expect("peek should succeed")
     }
@@ -121,6 +122,7 @@ impl Store {
                 limit: Some(limit),
             },
             None,
+            &str::to_owned,
         )
         .expect("read should succeed")
     }
@@ -358,6 +360,7 @@ fn an_unknown_entry_or_cursor_says_what_to_pass() {
             limit: None,
         },
         None,
+        &str::to_owned,
     )
     .unwrap_err();
     assert!(error.to_string().contains("pass an entry_id from its peek"));
@@ -371,6 +374,7 @@ fn an_unknown_entry_or_cursor_says_what_to_pass() {
         },
         None,
         0,
+        &str::to_owned,
     )
     .unwrap_err();
     assert!(error.to_string().contains("invalid before cursor"));
@@ -381,11 +385,27 @@ fn an_interleaved_tool_keeps_the_other_rows_and_its_final_state_when_paging() {
     let store = Store::new("interleaved");
     store.prompt(10, 1, "do the work");
     store.tool(11, 1, serde_json::json!({"id":"call","tool":"bash","status":"running", "input":{"command":"sleep 30"}, "started_at_ms":1000}));
-    store.output(12, 1, TerminalOutputKind::ProviderOutput, "message", "Still working".into());
+    store.output(
+        12,
+        1,
+        TerminalOutputKind::ProviderOutput,
+        "message",
+        "Still working".into(),
+    );
     store.tool(13, 1, serde_json::json!({"id":"call","tool":"bash","status":"completed", "input":{"command":"sleep 30"}, "started_at_ms":1000, "finished_at_ms":31000}));
-    store.output(14, 1, TerminalOutputKind::ProviderOutput, "answer", "Done".into());
+    store.output(
+        14,
+        1,
+        TerminalOutputKind::ProviderOutput,
+        "answer",
+        "Done".into(),
+    );
     let whole = store.peek(10, None, 2_000_000);
-    assert_eq!(whole.entries.len(), 4, "a tool's range must not hide the message between its snapshots");
+    assert_eq!(
+        whole.entries.len(),
+        4,
+        "a tool's range must not hide the message between its snapshots"
+    );
     let mut before = None;
     let mut paged = Vec::new();
     loop {
@@ -396,5 +416,8 @@ fn an_interleaved_tool_keeps_the_other_rows_and_its_final_state_when_paging() {
             None => break,
         }
     }
-    assert_eq!(paged, whole.entries, "page boundaries must not split a completed tool into a running snapshot");
+    assert_eq!(
+        paged, whole.entries,
+        "page boundaries must not split a completed tool into a running snapshot"
+    );
 }

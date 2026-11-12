@@ -61,7 +61,7 @@ impl KernelRuntimeState {
         let import = target.external_provider_import().cloned();
         let payload = match call {
             PeekCall::List(args) => {
-                let mut peek = crate::runtime::history_requests::execute_agent_transcript_peek(
+                let peek = crate::runtime::history_requests::execute_agent_transcript_peek(
                     store,
                     PeekAgentTranscriptRequest {
                         session_id: session.id().into(),
@@ -71,26 +71,27 @@ impl KernelRuntimeState {
                     },
                     import,
                     crate::session::unix_epoch_ms(),
+                    self.agent_peek_text_protector(session.id()),
                 )
                 .await?;
-                self.protect_agent_peek(session.id(), &mut peek);
+
                 serde_json::to_value(peek)
             }
             PeekCall::Read(args) => {
-                let mut page =
-                    crate::runtime::history_requests::execute_agent_transcript_entry_read(
-                        store,
-                        ReadAgentTranscriptEntryRequest {
-                            session_id: session.id().into(),
-                            agent_id: target.id().into(),
-                            entry_id: args.entry_id,
-                            offset: args.offset,
-                            limit: args.limit,
-                        },
-                        import,
-                    )
-                    .await?;
-                self.protect_agent_peek_page(session.id(), &mut page);
+                let page = crate::runtime::history_requests::execute_agent_transcript_entry_read(
+                    store,
+                    ReadAgentTranscriptEntryRequest {
+                        session_id: session.id().into(),
+                        agent_id: target.id().into(),
+                        entry_id: args.entry_id,
+                        offset: args.offset,
+                        limit: args.limit,
+                    },
+                    import,
+                    self.agent_peek_text_protector(session.id()),
+                )
+                .await?;
+
                 serde_json::to_value(page)
             }
         };
@@ -103,25 +104,12 @@ impl KernelRuntimeState {
         })
     }
 
-    /// Peeks reach agents: Vault values a row holds never leave in its titles or pages.
-    pub(crate) fn protect_agent_peek(
+    pub(crate) fn agent_peek_text_protector(
         &self,
         room: &str,
-        peek: &mut crate::local::AgentTranscriptPeek,
-    ) {
-        let observations = &self.owned.room_secret_observations;
-        for entry in &mut peek.entries {
-            entry.title = observations.scrub_text_or_withhold(room, &entry.title);
-        }
-    }
-
-    pub(crate) fn protect_agent_peek_page(
-        &self,
-        room: &str,
-        page: &mut crate::local::AgentTranscriptEntryPage,
-    ) {
-        let observations = &self.owned.room_secret_observations;
-        page.title = observations.scrub_text_or_withhold(room, &page.title);
-        page.text = observations.scrub_text_or_withhold(room, &page.text);
+    ) -> impl Fn(&str) -> String + Send + 'static {
+        let observations = self.owned.room_secret_observations.clone();
+        let room = room.to_owned();
+        move |text| observations.scrub_text_or_withhold(&room, text)
     }
 }

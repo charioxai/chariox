@@ -147,6 +147,7 @@ fn assert_external_active_prompt_and_queued_chariox_prompt(
     );
 }
 
+mod agent_peek;
 mod agent_tree_state;
 mod agent_wake_sources;
 mod app_quiet_tool_guard;
@@ -189,7 +190,6 @@ mod structured_output;
 mod subtree_cascade;
 #[cfg(unix)]
 mod visual_tools;
-mod agent_peek;
 
 #[test]
 fn claude_native_runs_never_use_quiet_pty_settlement() {

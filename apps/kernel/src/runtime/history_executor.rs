@@ -202,14 +202,15 @@ pub(crate) async fn execute_history_request(
                 agent_external_import(runtime_state, &request.session_id, &request.agent_id)
                     .await?;
             let room = request.session_id.clone();
-            let mut peek = execute_agent_transcript_peek(
+            let peek = execute_agent_transcript_peek(
                 operational_history_store,
                 request,
                 agent_import,
                 crate::session::unix_epoch_ms(),
+                runtime_state.agent_peek_text_protector(&room),
             )
             .await?;
-            runtime_state.protect_agent_peek(&room, &mut peek);
+
             Ok(LocalDaemonResponse::AgentTranscriptPeek { peek })
         }
         LocalDaemonRequest::ReadAgentTranscriptEntry(request) => {
@@ -220,13 +221,14 @@ pub(crate) async fn execute_history_request(
                 agent_external_import(runtime_state, &request.session_id, &request.agent_id)
                     .await?;
             let room = request.session_id.clone();
-            let mut page = execute_agent_transcript_entry_read(
+            let page = execute_agent_transcript_entry_read(
                 operational_history_store,
                 request,
                 agent_import,
+                runtime_state.agent_peek_text_protector(&room),
             )
             .await?;
-            runtime_state.protect_agent_peek_page(&room, &mut page);
+
             Ok(LocalDaemonResponse::AgentTranscriptEntryPage { page })
         }
         LocalDaemonRequest::QueryRecall(request) => {

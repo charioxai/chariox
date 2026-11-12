@@ -23,6 +23,7 @@ pub(crate) async fn execute_agent_transcript_peek(
     request: PeekAgentTranscriptRequest,
     agent_import: Option<ExternalProviderImportMetadata>,
     now_ms: u64,
+    protect: impl Fn(&str) -> String + Send + 'static,
 ) -> Result<AgentTranscriptPeek, DaemonError> {
     tokio::task::spawn_blocking(move || {
         peek(
@@ -30,6 +31,7 @@ pub(crate) async fn execute_agent_transcript_peek(
             &request,
             agent_import.as_ref(),
             now_ms,
+            &protect,
         )
     })
     .await
@@ -43,9 +45,15 @@ pub(crate) async fn execute_agent_transcript_entry_read(
     operational_history: OperationalHistoryStore,
     request: ReadAgentTranscriptEntryRequest,
     agent_import: Option<ExternalProviderImportMetadata>,
+    protect: impl Fn(&str) -> String + Send + 'static,
 ) -> Result<AgentTranscriptEntryPage, DaemonError> {
     tokio::task::spawn_blocking(move || {
-        read_entry(&operational_history, &request, agent_import.as_ref())
+        read_entry(
+            &operational_history,
+            &request,
+            agent_import.as_ref(),
+            &protect,
+        )
     })
     .await
     .map_err(|error| DaemonError::LocalTransport {
@@ -66,6 +74,7 @@ struct Row {
     sequence_start: u64,
     sequence_end: u64,
     title: AgentTranscriptTitle,
+    before_turn: Option<u64>,
 }
 
 fn peek(
@@ -73,22 +82,29 @@ fn peek(
     request: &PeekAgentTranscriptRequest,
     agent_import: Option<&ExternalProviderImportMetadata>,
     now_ms: u64,
+    protect: &impl Fn(&str) -> String,
 ) -> Result<AgentTranscriptPeek, DaemonError> {
     let limit = request
         .limit
         .unwrap_or(DEFAULT_AGENT_PEEK_ENTRIES)
         .clamp(1, MAX_AGENT_PEEK_ENTRIES);
-    let before = request
+    // Keep the containing turn complete: cutting its events at a row cursor can turn a
+    // completed tool into its earlier running snapshot when another row lies between them.
+    let cursor = request
         .before
         .as_deref()
         .map(|cursor| {
-            cursor.parse::<u64>().map_err(|_| {
+            let parsed = cursor.split_once('/').and_then(|(row, turn)| {
+                Some((row.parse::<u64>().ok()?, turn.parse::<u64>().ok()?))
+            });
+            parsed.ok_or_else(|| {
                 peek_error(format!(
                     "invalid before cursor `{cursor}`: pass the `before` of an earlier peek"
                 ))
             })
         })
         .transpose()?;
+    let before_turn = cursor.and_then(|(_, turn)| (turn != 0).then_some(turn));
     // Turns hold any number of rows: read more of them until the page is full.
     let mut prompt_count = 2;
     loop {
@@ -97,20 +113,34 @@ fn peek(
             &request.session_id,
             &request.agent_id,
             prompt_count,
-            before,
+            before_turn,
             agent_import,
         )?;
         let older_turns = outline.next_cursor.as_ref().map(|c| c.before_sequence);
         let mut rows = Vec::new();
-        for turn in &outline.turns {
-            rows.extend(turn_rows(
+        for (index, turn) in outline.turns.iter().enumerate() {
+            let upper = outline
+                .turns
+                .get(index + 1)
+                .map(|next| next.user_prompt.entry_index as u64)
+                .or(before_turn);
+            let mut turn_entries = turn_rows(
                 operational_history,
                 &request.session_id,
                 &request.agent_id,
                 agent_import,
                 turn,
                 now_ms,
-            )?);
+                protect,
+            )?;
+            for row in &mut turn_entries {
+                row.before_turn = upper;
+            }
+            rows.extend(
+                turn_entries
+                    .into_iter()
+                    .filter(|row| cursor.is_none_or(|(before, _)| row.sequence_start < before)),
+            );
         }
         if rows.len() < limit && older_turns.is_some() && prompt_count < MAX_LATEST_PROMPT_COUNT {
             prompt_count = (prompt_count * 2).min(MAX_LATEST_PROMPT_COUNT);
@@ -120,10 +150,12 @@ fn peek(
         let older_rows = rows.len() > limit;
         let rows = rows.split_off(rows.len().saturating_sub(limit));
         let before = match rows.first() {
-            Some(oldest) if older_rows || older_turns.is_some() => {
-                Some(oldest.sequence_start.to_string())
-            }
-            None => older_turns.map(|sequence| sequence.to_string()),
+            Some(oldest) if older_rows || older_turns.is_some() => Some(format!(
+                "{}/{}",
+                oldest.sequence_start,
+                oldest.before_turn.unwrap_or(0)
+            )),
+            None => older_turns.map(|sequence| format!("{sequence}/{sequence}")),
             _ => None,
         };
         return Ok(AgentTranscriptPeek {
@@ -141,6 +173,7 @@ fn turn_rows(
     agent_import: Option<&ExternalProviderImportMetadata>,
     turn: &SessionHistoryOutlineTurn,
     now_ms: u64,
+    protect: &impl Fn(&str) -> String,
 ) -> Result<Vec<Row>, DaemonError> {
     let open = turn.lifecycle == SessionHistoryOutlineTurnLifecycle::Open;
     let turn_status = match turn.lifecycle {
@@ -155,7 +188,7 @@ fn turn_rows(
         rows.push(entry_row(
             &turn.user_prompt,
             Kind::Prompt,
-            title::text_title(&turn.user_prompt.entry.text),
+            title::text_title(&protect(&turn.user_prompt.entry.text)),
             turn_status,
             turn.started_at_ms,
             Some(ended.saturating_sub(turn.started_at_ms)),
@@ -170,14 +203,16 @@ fn turn_rows(
             blob,
             turn_status,
             now_ms,
+            protect,
         )?);
     }
     // A long message is both a blob and its truncated inline entry: the blob is the row.
     let covered = |entry: &SessionHistoryPageEntry| {
         let sequence = entry.entry_index as u64;
-        turn.blobs
-            .iter()
-            .any(|blob| (blob.sequence_start..=blob.sequence_end).contains(&sequence))
+        turn.blobs.iter().any(|blob| {
+            blob.kind == entry.entry.kind
+                && (blob.sequence_start..=blob.sequence_end).contains(&sequence)
+        })
     };
     for entry in turn
         .entries
@@ -189,7 +224,7 @@ fn turn_rows(
         rows.push(entry_row(
             entry,
             kind,
-            title::text_title(&entry.entry.text),
+            title::text_title(&protect(&entry.entry.text)),
             Status::Completed,
             entry.entry.timestamp_ms,
             None,
@@ -226,6 +261,7 @@ fn entry_row(
     Row {
         sequence_start,
         sequence_end,
+        before_turn: None,
         title: AgentTranscriptTitle {
             entry_id: blob_id(sequence_start, sequence_end),
             kind,
@@ -257,6 +293,7 @@ fn blob_row(
     blob: &crate::local::SessionHistoryOutlineBlob,
     turn_status: Status,
     now_ms: u64,
+    protect: &impl Fn(&str) -> String,
 ) -> Result<Row, DaemonError> {
     let mut kind = page_entry_kind(blob.kind);
     let mut status = Status::Completed;
@@ -286,9 +323,14 @@ fn blob_row(
                 (_, Some(finished)) => Some(finished.saturating_sub(at_ms)),
                 _ => started.map(|started| blob.timestamp_ms.saturating_sub(started)),
             };
-            title::tool_title(&snapshot, status == Status::Running)
+            title::tool_title(
+                &protected_tool_snapshot(snapshot, protect),
+                status == Status::Running,
+            )
         }
-        Kind::Thinking => title::thought_title(blob.preview.as_deref().unwrap_or_default(), false),
+        Kind::Thinking => {
+            title::thought_title(&protect(blob.preview.as_deref().unwrap_or_default()), false)
+        }
         _ => {
             // A grouped message's summary counts its fragments: title it by its words.
             let entries = load_blob_content_entries(
@@ -302,14 +344,14 @@ fn blob_row(
             let text = entries
                 .iter()
                 .map(|entry| entry.entry.text.as_str())
-                .take(8)
                 .collect::<String>();
-            title::text_title(&text)
+            title::text_title(&protect(&text))
         }
     };
     Ok(Row {
         sequence_start: blob.sequence_start,
         sequence_end: blob.sequence_end,
+        before_turn: None,
         title: AgentTranscriptTitle {
             entry_id: blob.blob_id.clone(),
             kind,
@@ -346,6 +388,7 @@ fn read_entry(
     operational_history: &OperationalHistoryStore,
     request: &ReadAgentTranscriptEntryRequest,
     agent_import: Option<&ExternalProviderImportMetadata>,
+    protect: &impl Fn(&str) -> String,
 ) -> Result<AgentTranscriptEntryPage, DaemonError> {
     let (sequence_start, sequence_end) = parse_blob_id(&request.entry_id)?;
     let entries = load_blob_content_entries(
@@ -364,7 +407,7 @@ fn read_entry(
     };
     let mut kind = page_entry_kind(first.entry.kind);
     let (title, content) = if kind == Kind::ToolCall {
-        let snapshot = merged_tool_snapshot(&entries);
+        let snapshot = protected_tool_snapshot(merged_tool_snapshot(&entries), protect);
         if snapshot.get("tool").and_then(Value::as_str) == Some(WAIT_TOOL) {
             kind = Kind::Wait;
         }
@@ -378,10 +421,11 @@ fn read_entry(
             .iter()
             .map(|entry| entry.entry.text.as_str())
             .collect::<String>();
+        let text = protect(&text);
         let title = if kind == Kind::Thinking {
             title::thought_title(&text, false)
         } else {
-            title::text_title(&text)
+            title::text_title(&protect(&text))
         };
         (title, text)
     };
@@ -402,6 +446,28 @@ fn read_entry(
         total_chars,
         next_offset: (end < total_chars).then_some(end),
     })
+}
+
+/// Sanitize fields before title shortening or page slicing, so boundaries never reveal
+/// a fragment of a Vault value that the complete-field scrub would otherwise remove.
+fn protected_tool_snapshot(
+    snapshot: Map<String, Value>,
+    protect: &impl Fn(&str) -> String,
+) -> Map<String, Value> {
+    fn visit(value: &mut Value, protect: &impl Fn(&str) -> String) {
+        match value {
+            Value::String(text) => *text = protect(text),
+            Value::Array(items) => items.iter_mut().for_each(|item| visit(item, protect)),
+            Value::Object(fields) => fields.values_mut().for_each(|value| visit(value, protect)),
+            _ => {}
+        }
+    }
+    let mut value = Value::Object(snapshot);
+    visit(&mut value, protect);
+    match value {
+        Value::Object(snapshot) => snapshot,
+        _ => unreachable!("snapshot stays an object"),
+    }
 }
 
 /// A call's snapshots, later fields winning; an imported result record keeps the call's tool.
