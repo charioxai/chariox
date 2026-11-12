@@ -313,6 +313,14 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("agent_trigger.transcript", Background)
                 .session(&request.session_id)
         }
+        LocalDaemonRequest::ReadAgentTriggerReply(request) => {
+            LocalRequestMetadata::new("agent_trigger.reply", Background)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::ReadAgentTriggerHttpOptions(request) => {
+            LocalRequestMetadata::new("agent_trigger.http_options", Background)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::CancelActivePrompt(request) => {
             let mut metadata = LocalRequestMetadata::new("prompt.cancel", Interactive)
                 .session(&request.session_id)
@@ -988,6 +996,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::InvokeAgentTrigger(_) => "agent_trigger.invoke",
         LocalDaemonRequest::ResendTriggerDelivery(_) => "agent_trigger.resend_delivery",
         LocalDaemonRequest::ReadAgentTriggerTranscript(_) => "agent_trigger.transcript",
+        LocalDaemonRequest::ReadAgentTriggerReply(_) => "agent_trigger.reply",
+        LocalDaemonRequest::ReadAgentTriggerHttpOptions(_) => "agent_trigger.http_options",
         LocalDaemonRequest::UpdateSessionConfig(_) => "session.config.update",
         LocalDaemonRequest::UpdateAgentConfig(_) => "agent.config.update",
         LocalDaemonRequest::UpdateAgentSubstitutes(_) => "agent.substitutes.update",

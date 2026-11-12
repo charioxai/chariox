@@ -166,6 +166,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ReadAgentTriggerTranscript(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::ReadAgentTriggerReply(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ReadAgentTriggerHttpOptions(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::CompletePrompt(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

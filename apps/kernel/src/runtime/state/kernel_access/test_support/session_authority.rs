@@ -270,10 +270,10 @@ async fn kernel_access_grants_allow_local_invites_and_scheduled_prompts() {
         LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
             session_id: session.id().into(),
             agent_id: agent.id().into(),
-            source: crate::local::AgentTriggerSourceRequest::Schedule {
-                interval_seconds: 60,
-                repeat: crate::session::AgentTriggerRepeat::Every,
-            },
+            source: crate::local::AgentTriggerSourceRequest::interval(
+                60,
+                crate::session::AgentTriggerRepeat::Every,
+            ),
             busy_policy: Some(crate::session::AgentTriggerBusyPolicy::Queue),
             prompt: Some("run after grant expires".into()),
         }),

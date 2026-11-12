@@ -240,7 +240,7 @@ function renderAgentTriggerStrip(
   triggers: readonly AgentTriggerStripItem[],
 ): void {
   for (const trigger of triggers) {
-    const state = trigger.enabled
+    const state = trigger.done ? "done" : trigger.enabled
       ? trigger.localUrl ?? (trigger.offline ? "offline" : `next ${new Date(trigger.nextRunAtMs ?? 0).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`)
       : "off"
     container.add(new TextRenderable(options.renderer, {

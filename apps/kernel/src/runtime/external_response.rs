@@ -417,6 +417,8 @@ response_policies! {
         PromptSettingsReset,
         AgentTriggerInvoked,
         AgentTriggerTranscript,
+        AgentTriggerReplyRead,
+        AgentTriggerHttpOptionsRead,
         AgentTriggerCreated,
         AgentTriggerUpdated,
         AgentTriggerDeleted,

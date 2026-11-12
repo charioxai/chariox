@@ -136,16 +136,29 @@ impl KernelRuntimeState {
         request: crate::local::CreateAgentTriggerRequest,
         caller_user_id: &str,
     ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
-        let (interval_seconds, repeat) = match &request.source {
-            crate::local::AgentTriggerSourceRequest::Http => {
+        let schedule = match request.source {
+            crate::local::AgentTriggerSourceRequest::Http { .. } => {
                 return self
                     .create_http_agent_trigger(request, caller_user_id)
                     .await
             }
             crate::local::AgentTriggerSourceRequest::Schedule {
-                interval_seconds,
+                ref trigger,
                 repeat,
-            } => (*interval_seconds, *repeat),
+                overlap_policy,
+                max_runs,
+            } => crate::session::AgentSchedule {
+                trigger: trigger.clone(),
+                repeat,
+                overlap_policy: overlap_policy
+                    .unwrap_or(crate::session::WorkflowScheduleOverlapPolicy::Skip),
+                max_runs: match (repeat, max_runs) {
+                    (AgentTriggerRepeat::Every, None) => {
+                        Some(crate::session::DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS)
+                    }
+                    (_, max_runs) => max_runs.flatten(),
+                },
+            },
             crate::local::AgentTriggerSourceRequest::Notification { .. } => {
                 return self
                     .create_notification_agent_trigger(request, caller_user_id)
@@ -156,8 +169,7 @@ impl KernelRuntimeState {
             &request.session_id,
             &request.agent_id,
             caller_user_id,
-            interval_seconds,
-            repeat,
+            schedule,
             request.busy_policy.unwrap_or(AgentTriggerBusyPolicy::Queue),
             request.prompt,
         )?;
@@ -296,17 +308,12 @@ impl KernelRuntimeState {
         Ok(crate::local::LocalDaemonResponse::TriggerDeliveryResent { session })
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "A schedule trigger is created from distinct request fields and the caller identity."
-    )]
     fn create_agent_schedule_trigger(
         &self,
         session_id: &str,
         agent_id: &str,
         caller_user_id: &str,
-        interval_seconds: u64,
-        repeat: AgentTriggerRepeat,
+        schedule: crate::session::AgentSchedule,
         busy_policy: AgentTriggerBusyPolicy,
         prompt: Option<String>,
     ) -> Result<(AgentTrigger, crate::session::RuntimeSession), DaemonError> {
@@ -329,8 +336,7 @@ impl KernelRuntimeState {
                 session_id,
                 agent_id,
                 caller_user_id,
-                interval_seconds,
-                repeat,
+                schedule,
                 busy_policy,
                 prompt,
             )?;
@@ -527,25 +533,31 @@ impl KernelRuntimeState {
             result => result.map(|_| ())?,
         }
         let session = self.owned.session_store.get_session(&dispatch.session_id)?;
-        if !session.agent_triggers().iter().any(|trigger| {
+        let Some(trigger) = session.agent_triggers().iter().find(|trigger| {
             trigger.id() == dispatch.trigger_id
                 && trigger.matches_dispatch_claim(dispatch.claim_generation)
-        }) {
+        }) else {
             return Ok(AgentTriggerFiring::Skipped);
-        }
+        };
         let (active, queued) = self
             .owned
             .prompt_state_owner
             .state_parts(&session, &dispatch.agent_id);
-        // A schedule represents one outstanding request, whether queued or
-        // already running. The dispatch claim prevents overlapping ticks from
+        // Skip when running: one outstanding firing, queued or running. Queue
+        // one pending run: a firing may wait behind its running predecessor,
+        // but never two. The dispatch claim keeps overlapping ticks from
         // admitting another occurrence before this submission settles.
-        if dispatch.payload.is_none()
-            && active
-                .iter()
-                .chain(queued.iter())
-                .any(|prompt| prompt.agent_trigger_id() == Some(dispatch.trigger_id.as_str()))
-        {
+        let own = |prompt: &crate::session::PromptQueueItem| {
+            prompt.agent_trigger_id() == Some(dispatch.trigger_id.as_str())
+        };
+        let pending = match trigger.overlap_policy() {
+            Some(crate::session::WorkflowScheduleOverlapPolicy::Skip) => {
+                active.iter().chain(queued.iter()).any(own)
+            }
+            Some(crate::session::WorkflowScheduleOverlapPolicy::Queue) => queued.iter().any(own),
+            None => false,
+        };
+        if dispatch.payload.is_none() && pending {
             return Ok(AgentTriggerFiring::Coalesced);
         }
         let origin = if dispatch.payload.is_some() {
@@ -934,10 +946,7 @@ pub(super) mod tests {
                 crate::local::CreateAgentTriggerRequest {
                     session_id: session_id.into(),
                     agent_id: agent_id.into(),
-                    source: crate::local::AgentTriggerSourceRequest::Schedule {
-                        interval_seconds: 60,
-                        repeat,
-                    },
+                    source: crate::local::AgentTriggerSourceRequest::interval(60, repeat),
                     busy_policy: Some(AgentTriggerBusyPolicy::Steer),
                     prompt: Some("Keep this firing".into()),
                 },

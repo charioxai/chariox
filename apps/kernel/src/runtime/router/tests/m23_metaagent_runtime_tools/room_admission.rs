@@ -1440,8 +1440,7 @@ async fn room_notification_subscription() {
             session.id(),
             peer.id(),
             &owner,
-            60,
-            crate::session::AgentTriggerRepeat::Every,
+            crate::session::AgentSchedule::interval(60, crate::session::AgentTriggerRepeat::Every),
             crate::session::AgentTriggerBusyPolicy::Queue,
             None,
         )

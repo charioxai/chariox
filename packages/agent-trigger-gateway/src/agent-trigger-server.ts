@@ -8,13 +8,14 @@ import { AgentTriggerClient } from "./agent-trigger-client.js"
 import { installRawBodyParsers } from "./publication-raw-body-parsers.js"
 import { agentTriggerPage, agentTriggerErrorPage } from "./agent-trigger-page.js"
 import { foreignRequestReason } from "./agent-trigger-origin-guard.js"
+import { invocationPath, invokeHttpTrigger, sendPageMessage, type HttpTriggerKernel, type HttpTriggerResponse } from "./agent-trigger-http.js"
 
 export function loopbackHost(value: string): string {
   if (value !== "127.0.0.1" && value !== "::1") throw Error("agent HTTP triggers bind to loopback only")
   return value
 }
 
-export async function buildAgentTriggerServer(client: Pick<AgentTriggerClient, "metadata" | "subscribe" | "invoke" | "resend" | "conversation" | "workspaceImage" | "onChange" | "close">, host: string, options: { base?: string; localOriginGuard?: boolean; csrfToken?: string } = {}) {
+export async function buildAgentTriggerServer(client: Pick<AgentTriggerClient, "metadata" | "options" | "subscribe" | "invoke" | "reply" | "resend" | "conversation" | "workspaceImage" | "onChange" | "close">, host: string, options: { base?: string; localOriginGuard?: boolean; csrfToken?: string } = {}) {
   loopbackHost(host)
   const meta = await client.metadata()
   if (meta.trigger.source.kind !== "http") throw Error("only an HTTP trigger has a gateway")
@@ -81,23 +82,23 @@ export async function buildAgentTriggerServer(client: Pick<AgentTriggerClient, "
     if (String(request.headers.accept).includes("text/html")) return reply.type("text/html; charset=utf-8").send(agentTriggerErrorPage(error, base, hint))
     return { error }
   }
-  const invoke = async (request: FastifyRequest, reply: FastifyReply) => {
-    const current = await client.metadata()
-    if (!current.trigger.enabled) return failure(request, reply, 403, "trigger disabled")
-    if (!current.online) { reply.header("Retry-After", "5"); return failure(request, reply, 503, "agent offline") }
-    if (!admit()) { reply.header("Retry-After", "10"); return failure(request, reply, 429, "too many requests; retry shortly") }
-    const query = request.query as Record<string, unknown>
-    const body = request.body
-    const prompt = typeof body === "string" ? body : body && typeof body === "object" ? (body as Record<string, unknown>).prompt : query.prompt
-    const result = await client.invoke({ ...(prompt !== undefined ? { prompt } : {}), query, body: body ?? null })
-    if (result.status !== "accepted") {
-      const statuses = { offline: 503, disabled: 403, busy: 429, payload_too_large: 413 } as const
-      if (result.status === "busy") reply.header("Retry-After", "10")
-      return failure(request, reply, statuses[result.status], result.status === "offline" ? "agent offline" : result.status.replaceAll("_", " "))
+  const kernel: HttpTriggerKernel = { options: () => client.options(), invoke: (input, http) => client.invoke(input, http), reply: id => client.reply(id) }
+  const respond = (request: FastifyRequest, reply: FastifyReply, result: HttpTriggerResponse) => {
+    if (result.status >= 400) {
+      for (const [name, value] of Object.entries(result.headers)) reply.header(name, value)
+      return failure(request, reply, result.status, (result.body as { error: string }).error)
     }
-    reply.header("Cache-Control", "no-store")
-    if (String(request.headers.accept).includes("text/html")) return reply.code(303).header("Location", `${base}#firing-${encodeURIComponent(result.prompt_id)}`).send()
-    return reply.code(202).send({ firing_id: result.prompt_id, prompt_id: result.prompt_id, outcome: result.outcome, status_url: base })
+    reply.code(result.status)
+    for (const [name, value] of Object.entries(result.headers)) reply.header(name, value)
+    return reply.send(result.body)
+  }
+  // The route, methods and parser are the trigger's; the rate limit is this gateway's.
+  const invoke = async (request: FastifyRequest, reply: FastifyReply) => {
+    const url = new URL(request.url, "http://127.0.0.1")
+    const raw = Buffer.from((request.raw as { charioxRawBody?: string }).charioxRawBody ?? "", "utf8")
+    return respond(request, reply, await invokeHttpTrigger({ method: request.method, path: url.pathname.slice(base.length - 1), search: url.search,
+      query: request.query as Record<string, unknown>, headers: request.headers, body: request.body ?? null, raw,
+      contentType: String(request.headers["content-type"] ?? "text/plain") }, kernel, base, admit))
   }
   app.addHook("onRequest", async (request, reply) => {
     const reason = options.localOriginGuard === false ? null : foreignRequestReason(request, base)
@@ -113,16 +114,28 @@ export async function buildAgentTriggerServer(client: Pick<AgentTriggerClient, "
     const type = name.endsWith(".css") ? "text/css" : name.endsWith(".woff2") ? "font/woff2" : name.endsWith(".woff") ? "font/woff" : name.endsWith(".ttf") ? "font/ttf" : "text/javascript"
     return reply.type(type).send(bytes)
   })
-  app.get(base, async (request, reply) => {
-    const query = request.query as Record<string, unknown>
-    const prefetch = String(request.headers["sec-purpose"] ?? request.headers.purpose ?? "").toLowerCase().includes("prefetch")
-    if (request.method !== "HEAD" && !prefetch && Object.hasOwn(query, "prompt")) return invoke(request, reply)
+  const viewer = async (request: FastifyRequest, reply: FastifyReply) => {
     const conversation = await client.conversation()
     if (!conversation.online) reply.header("Retry-After", "5")
     reply.code(!conversation.enabled ? 403 : !conversation.online ? 503 : 200).header("Cache-Control", "no-store").type("text/html; charset=utf-8")
     return agentTriggerPage(conversation, base, options.csrfToken)
+  }
+  const every = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+  const path = invocationPath((await client.options()).options)
+  // The page lives at the base; a request with a query there, or any request at another route, is a firing.
+  app.route({ method: every, url: base, exposeHeadRoute: false, handler: async (request, reply) => {
+    const prefetch = String(request.headers["sec-purpose"] ?? request.headers.purpose ?? "").toLowerCase().includes("prefetch")
+    const read = request.method === "HEAD" || (request.method === "GET" && (prefetch || !request.url.includes("?")))
+    if (read || path !== "/") return read ? viewer(request, reply) : failure(request, reply, 404, "trigger not found")
+    return invoke(request, reply)
+  } })
+  if (path !== "/") app.route({ method: every, url: base + path.slice(1), exposeHeadRoute: false, handler: invoke })
+  app.post(base + "send", async (request, reply) => {
+    const prompt = (request.body as { prompt?: unknown } | null)?.prompt
+    if (typeof prompt !== "string" || !prompt.trim()) return failure(request, reply, 400, "invalid request body")
+    if (!admit()) { reply.header("Retry-After", "10"); return failure(request, reply, 429, "too many requests; retry shortly") }
+    return respond(request, reply, await sendPageMessage(prompt, kernel))
   })
-  app.post(base, invoke)
   app.post(base + "resend", async (request, reply) => {
     const promptId = (request.body as { prompt_id?: unknown } | null)?.prompt_id
     if (typeof promptId !== "string" || !promptId) return failure(request, reply, 400, "invalid request body")
