@@ -2479,6 +2479,54 @@ async fn a_yield_writes_one_wait_row_and_the_wake_updates_it_in_place() {
 }
 
 // A wait the owner stops does not stay a running row in the transcript: the same row says it was cancelled.
+// #1338 lets a yield carry no deadline; the wait row of that wait reports it as `null`, not as a missing key.
+#[tokio::test]
+async fn a_yield_without_a_deadline_writes_a_wait_row_with_a_null_deadline() {
+    let f = fixture("wait-row-no-deadline", true).await;
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    let prompt = f
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &f.agent)
+        .unwrap();
+    let task = f.begin(&f.prompt_id);
+    let wake = f.arm(&task, "wake-a").unwrap();
+    f.store()
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec![wake.registration_id.clone()],
+            cursor: 0,
+            deadline: None,
+            reason: "Wait with no deadline".into(),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    f.runtime
+        .owned
+        .complete_local_prompt_without_advance(&f.room, &f.agent, Some(&f.run))
+        .unwrap();
+    let settlement = f
+        .runtime
+        .owned
+        .settle_agent_task(&f.room, &f.agent, &prompt, &f.run, false)
+        .unwrap();
+    f.runtime
+        .finish_agent_task_settlement(settlement, &prompt)
+        .await
+        .unwrap();
+
+    let waiting = f.wait_rows();
+    assert_eq!(waiting.len(), 1, "one wait, one row: {waiting:?}");
+    let row = &waiting[0].2;
+    assert_eq!(row["status"], "running", "{row}");
+    assert!(
+        row["input"].get("deadline_ms").is_some_and(|d| d.is_null()),
+        "the row names a null deadline: {row}"
+    );
+}
+
 #[tokio::test]
 async fn stopping_a_waiting_task_closes_its_wait_row_in_place() {
     let f = fixture("wait-row-cancelled", true).await;
