@@ -19,8 +19,8 @@ pub(super) use receiving_volume::ReceivingVolume;
 const MAX_LIGHT: u64 = 512 * MIB;
 /// Room a paused command of unknown peak needs before it continues.
 const MAX_GROWTH_ROOM: u64 = 1024 * MIB;
-/// Disk floor: max(5 %, 10 GiB) of the volume (OF-05).
-const DISK_FLOOR: u64 = 10 * 1024 * MIB;
+/// Last-resort disk reserve; large volumes must not stop work gigabytes early.
+const DISK_FLOOR: u64 = 512 * MIB;
 /// Slower than this a command is not growing (or writing).
 pub(super) const GROWING: u64 = MIB;
 /// A start needs a moment to show in the samples.
@@ -190,7 +190,10 @@ impl Entry {
     /// output goes is unknown until a run showed it, and then it is not
     /// held: a destructive disk stop requires observed growth anyway.
     fn disk(&self, room: &Room) -> Option<Disk> {
-        self.predicted_disk(room.volume)
+        room.disk_protection
+            .then(|| self.predicted_disk(room.volume))
+            .flatten()
+            .filter(|disk| disk.below_floor())
     }
 
     pub(super) fn predicted_disk(&self, volume: &Volume) -> Option<Disk> {
@@ -354,6 +357,8 @@ pub(super) type Volume = dyn Fn(&Path) -> Option<Space> + Send + Sync;
 pub(super) struct Room<'a> {
     /// Memory left under the pressure line.
     pub memory: u64,
+    pub memory_protection: bool,
+    pub disk_protection: bool,
     /// What the pool keeps for the machine: memory below it is short.
     pub margin: u64,
     /// Bytes per second everything that runs grows by: memory below it is
@@ -377,7 +382,7 @@ pub(super) struct Room<'a> {
 impl Room<'_> {
     /// Memory is short: pause the newest growing command.
     pub(super) fn tight(&self) -> bool {
-        self.pressured && self.memory < self.margin.max(self.growing)
+        self.memory_protection && self.pressured && self.memory < self.margin.max(self.growing)
     }
 
     /// A paused command that grows at `rate` continues only if the pool then
@@ -392,6 +397,39 @@ impl Room<'_> {
             .saturating_add(growing.saturating_mul(AHEAD));
         (needed, growing)
     }
+}
+
+/// Release every wait whose resource is disabled or whose memory emergency
+/// ended. Disabling a resource must not leave a stopped command stranded.
+pub(super) fn release_unprotected(
+    members: &[Arc<Mutex<Observation>>],
+    memory: bool,
+    disk: bool,
+) -> Vec<Arc<Mutex<Observation>>> {
+    let mut changed = Vec::new();
+    for member in members {
+        let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
+        let mut released = false;
+        for entry in observation.admission.values_mut() {
+            if !memory {
+                entry.refused = None;
+            }
+            if !disk {
+                entry.filling = None;
+            }
+            if entry.wait.is_some_and(|wait| match wait.reason() {
+                WaitReason::Memory => !memory,
+                WaitReason::Disk => !disk,
+            }) {
+                entry.stop_waiting();
+                released = true;
+            }
+        }
+        if released {
+            changed.push(member.clone());
+        }
+    }
+    changed
 }
 
 impl Ledger {
@@ -610,8 +648,12 @@ impl Ledger {
         current: &Arc<Mutex<Observation>>,
         room: &Room,
     ) -> bool {
+        let mut changed = release_unprotected(
+            members,
+            room.memory_protection && room.pressured,
+            room.disk_protection,
+        );
         let mut state = State::read(members, room);
-        let mut changed = Vec::new();
         self.hold(current, room, &mut state);
         let mut may_stop = false;
         if room.tight() {
@@ -636,7 +678,11 @@ impl Ledger {
         // A paused writer keeps its space, so nothing pauses for a full disk:
         // below half the floor the process filling it is stopped, with its
         // reason, and the others carry on.
-        if let Some(owner) = self.stop_filler(members, room) {
+        if let Some(owner) = room
+            .disk_protection
+            .then(|| self.stop_filler(members, room))
+            .flatten()
+        {
             changed.push(owner);
         }
         if let Some(owner) = self.resume(members, WaitReason::Disk, &mut state, room) {
@@ -809,7 +855,11 @@ impl Ledger {
                 entry.admitted = entry.resident >= room.light;
                 continue;
             };
-            if entry.holdable && expected.memory > room.capacity {
+            if room.memory_protection
+                && room.pressured
+                && entry.holdable
+                && expected.memory > room.capacity
+            {
                 // Only the line that reached the peak is refused for it: another
                 // line with the same normalized key (-j1 for -j16) starts as an
                 // unknown command and is judged by what it uses.
@@ -830,12 +880,16 @@ impl Ledger {
             let ahead = entry.writes_ahead(room);
             let held = if !entry.holdable {
                 None
-            } else if expected.memory >= room.light
+            } else if room.memory_protection
+                && room.pressured
+                && expected.memory >= room.light
                 && need > state.memory_room(&unit, room)
                 && state.heavy_running
             {
                 Some(Wait::Held(WaitReason::Memory))
-            } else if disk.is_some_and(|disk| ahead > state.spare(disk, &unit, room)) {
+            } else if room.disk_protection
+                && disk.is_some_and(|disk| ahead > state.spare(disk, &unit, room))
+            {
                 Some(Wait::Held(WaitReason::Disk))
             } else {
                 None
@@ -1094,10 +1148,10 @@ impl State {
         let left = self.memory_room(unit, room);
         let paused_memory =
             reason == WaitReason::Memory && matches!(entry.wait, Some(Wait::Paused(_)));
-        if self.heavy_running && memory > left {
+        if room.memory_protection && room.pressured && self.heavy_running && memory > left {
             return Some(Blocked::Memory { left, need: memory });
         }
-        if self.heavy_running && paused_memory {
+        if room.memory_protection && room.pressured && self.heavy_running && paused_memory {
             let (need, growing) = room.growth_room_needed(entry.paused_rate);
             if room.memory < need {
                 return Some(Blocked::Growth {
@@ -1329,6 +1383,10 @@ pub(super) struct Disk {
     floor: u64,
 }
 impl Disk {
+    pub(super) fn below_floor(self) -> bool {
+        self.free < self.floor
+    }
+
     pub(super) fn above_floor(self) -> u64 {
         self.free.saturating_sub(self.floor)
     }
@@ -1340,7 +1398,7 @@ fn disk_room(volume: &Volume, path: &Path) -> Option<Disk> {
     Some(Disk {
         id: space.id,
         free: space.free,
-        floor: (space.total / 20).max(DISK_FLOOR),
+        floor: (space.total / 100).clamp(64 * MIB, DISK_FLOOR),
     })
 }
 

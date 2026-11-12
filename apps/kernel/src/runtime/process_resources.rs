@@ -30,6 +30,11 @@ pub use launch::LaunchWait;
 pub(crate) use launch::{LaunchAdmission, LaunchPermit};
 mod handover;
 mod pool;
+
+pub(crate) fn configure(settings: crate::config::ResourceProtection) {
+    pool::Pool::shared().configure(settings);
+}
+
 mod projection;
 mod sampling;
 mod session_sweep;
@@ -127,7 +132,7 @@ impl PreparedDomain {
         #[cfg(target_os = "linux")]
         let cgroup = pool
             .budget()
-            .and_then(|budget| cgroup::Domain::create(&budget, unit, cap))
+            .and_then(|budget| cgroup::Domain::create(&budget, unit))
             .map(Arc::new);
         #[cfg(target_os = "linux")]
         if cgroup.is_none() {
@@ -476,7 +481,11 @@ impl PreparedDomain {
                 #[cfg(not(target_os = "linux"))]
                 let unit_charged = None;
                 self.pool.enforce(&watched, unit_charged);
-                        admit(&tree, &watched);
+                        {
+                            let protection = self.pool.protection();
+                            drop(admission::release_unprotected(std::slice::from_ref(&watched), protection.memory, protection.disk));
+                            admit(&tree, &watched);
+                        }
                         ended
                     }
                     // The kernel is short of descriptors or memory for a
@@ -522,6 +531,8 @@ impl PreparedDomain {
                         limit_bytes,
                         notice,
                     }) => {
+                        let protection = self.pool.protection();
+                        if !protection.memory { continue; }
                         if tree.is_root(pid) {
                             // The workload itself is the command: its owner
                             // reports the typed memory outcome.
@@ -543,6 +554,8 @@ impl PreparedDomain {
                         tree.kill(pid);
                     }
                     Ok(WatchCommand::DiskStop { pid, notice }) => {
+                        let protection = self.pool.protection();
+                        if !protection.disk { continue; }
                         announce(pid, &notice);
                         tell_stopped(&watched, pid, notice);
                         tree.kill(pid);
@@ -574,14 +587,23 @@ impl PreparedDomain {
                                 .get_mut(&command)
                                 .is_some_and(admission::Entry::force)
                         });
-                        admit(&tree, &watched);
+                        {
+                            let protection = self.pool.protection();
+                            drop(admission::release_unprotected(std::slice::from_ref(&watched), protection.memory, protection.disk));
+                            admit(&tree, &watched);
+                        }
                         let _ = reply.send(if started {
                             Ok(vec![process_id])
                         } else {
                             Err("the process is not waiting; refresh Health".into())
                         });
                     }
-                    Ok(WatchCommand::Apply) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Ok(WatchCommand::Apply) => {
+                        let protection = self.pool.protection();
+                        drop(admission::release_unprotected(std::slice::from_ref(&watched), protection.memory, protection.disk));
+                        admit(&tree, &watched);
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
                     _ => {
                         tree.terminate();
                         break;

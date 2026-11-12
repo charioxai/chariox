@@ -97,6 +97,7 @@ mod workflow_run_control;
 mod workspace_capabilities;
 
 mod provider_login_input;
+mod resource_protection;
 mod usage_snapshot;
 
 mod agent_hide;

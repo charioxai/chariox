@@ -144,7 +144,7 @@ fn volume_with(free: u64) -> Arc<pool::Pool> {
 #[test]
 fn a_command_filling_the_disk_is_stopped_with_its_reason_never_paused() {
     take_wait_events();
-    let pool = volume_with(4 * GIB);
+    let pool = volume_with(128 * MIB);
     let mut writer = Workload::run(
         domain(&pool, "writer", false),
         &[("write", writer_command())],
@@ -285,7 +285,7 @@ fn stopped_after_a_hot_reload(launch: Launch) -> bool {
     let handed_over: Submissions =
         serde_json::from_slice(&serde_json::to_vec(&writer.domain.submissions()).unwrap()).unwrap();
     let _next = writer
-        .watched_again(domain(&volume_with(4 * GIB), "writer", false).launched_by(handed_over));
+        .watched_again(domain(&volume_with(128 * MIB), "writer", false).launched_by(handed_over));
     settle(4);
     writer.domain.unbind_key(&key);
     !writer.alive("write")
@@ -331,7 +331,7 @@ fn an_agents_command_is_still_stopped_when_it_fills_the_disk_after_a_hot_reload(
 #[test]
 fn a_persons_own_terminal_command_never_waits() {
     let pool = pool(1536);
-    let _a = Workload::start(domain(&pool, "a", false), &[("big", 800, 0, 0)]);
+    let _a = Workload::start(domain(&pool, "a", false), &[("big", 1100, 0, 0)]);
     settle(1);
     let prepared = domain(&pool, "person", false);
     let person = Workload::gated(
@@ -358,7 +358,7 @@ fn a_persons_own_terminal_command_never_waits() {
 #[test]
 fn an_agents_command_stays_pausable_when_a_person_submits_before_its_first_sample() {
     let pool = pool(1536);
-    let _a = Workload::start(domain(&pool, "a", false), &[("big", 800, 0, 0)]);
+    let _a = Workload::start(domain(&pool, "a", false), &[("big", 1100, 0, 0)]);
     settle(1);
     let agent = Workload::gated(
         domain(&pool, "agent", false),

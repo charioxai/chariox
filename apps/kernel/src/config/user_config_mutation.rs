@@ -356,6 +356,18 @@ impl CharioxUserConfig {
                     true,
                 )?)
             }
+            "kernel.resource_protection.memory" => {
+                self.kernel.resource_protection.memory =
+                    parse_config_bool("kernel.resource_protection.memory", &value)?;
+            }
+            "kernel.resource_protection.disk" => {
+                self.kernel.resource_protection.disk =
+                    parse_config_bool("kernel.resource_protection.disk", &value)?;
+            }
+            "kernel.resource_protection.cpu" => {
+                self.kernel.resource_protection.cpu =
+                    parse_config_bool("kernel.resource_protection.cpu", &value)?;
+            }
             "kernel.websocket_host" => {
                 self.kernel.websocket_host =
                     Some(non_empty_config_string("kernel.websocket_host", value)?)
@@ -640,6 +652,9 @@ impl CharioxUserConfig {
             "slices.linux.idle_timeout_minutes" => self.slices.linux.idle_timeout_minutes = None,
             "slices.linux.screen_width" => self.slices.linux.screen_width = None,
             "slices.linux.screen_height" => self.slices.linux.screen_height = None,
+            "kernel.resource_protection.memory" => self.kernel.resource_protection.memory = true,
+            "kernel.resource_protection.disk" => self.kernel.resource_protection.disk = true,
+            "kernel.resource_protection.cpu" => self.kernel.resource_protection.cpu = true,
             "kernel.websocket_host" => self.kernel.websocket_host = None,
             "kernel.websocket_port" => self.kernel.websocket_port = None,
             "kernel.runtime_mcp_host" => self.kernel.runtime_mcp_host = None,
