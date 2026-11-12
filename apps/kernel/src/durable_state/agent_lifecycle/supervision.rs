@@ -291,7 +291,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                                 && !clock_rollback
                         });
                         if (dead && unread == 0)
-                            || w.deadline_ms <= now
+                            || w.deadline_ms.is_some_and(|deadline| deadline <= now)
                             || now < w.started_at_ms
                             || clock_rollback
                             || check_in.is_some()
@@ -543,7 +543,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Ok(Outcome::Task(t));
             }
             t.state = ExecutionState::Cancelled;
-            t.reason = "Restart failure superseded by a new owner turn".into();
+            t.reason = "Interrupted attempt superseded by a later turn".into();
             t.last_progress_at_ms = now;
             t.revision += 1;
             save(tx, &t)?;

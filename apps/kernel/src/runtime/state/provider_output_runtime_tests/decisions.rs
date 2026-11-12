@@ -239,7 +239,7 @@ impl Tree {
                 prompt: task.task_id.clone(),
                 registrations: ids,
                 cursor: 0,
-                deadline: now + 7_200_000,
+                deadline: Some(now + 7_200_000),
                 reason: "waiting for the child".into(),
                 now,
             })
@@ -1259,6 +1259,7 @@ async fn a_decision_the_holder_answered_can_be_acknowledged_by_sequence() {
             &serde_json::json!({"sequence": sequence, "handled": true}),
             1,
         )
+        .await
         .expect("an answered decision no longer needs an answer");
     assert_eq!(acked["acknowledged"], sequence);
 }

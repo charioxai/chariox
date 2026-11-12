@@ -484,6 +484,29 @@ Current implementation note:
 - the current CLI footer/chrome reflects that state, but transcript routing and provider execution are still effectively single-agent
 - the next implementation step is to make focused-agent changes affect both prompt routing and visible per-agent panes/history
 
+### 4.3 Client Copies and the Resource Feed
+
+Status: proposed for Landing 9 (Cloud `docs/CLIENT_DATA_PLANE.md`); not implemented.
+
+- The kernel is the authority for every value a client shows. A client keeps the
+  last copy it was given, with the kernel's revision, and shows that copy until
+  the kernel says otherwise; it never infers "offline" or "empty" on its own.
+- Changes reach clients through one revisioned subscription, the kernel resource
+  feed (`docs/PROTOCOL.md` §4.1.1): the client names the resources it shows and
+  the revision it holds, and the kernel answers `unchanged`, `changes` or
+  `snapshot`, then pushes every later change. Clients do not poll.
+- A resource provider in the kernel has a public read and a change signal. Changes
+  the kernel causes itself (a Vault lease that ends, an operation that finishes)
+  are signalled by the kernel, so no client needs a timer to notice them.
+- Revisions are content hashes of the public projection, so they survive a kernel
+  restart: a client that reconnects after a restart is told `unchanged` when
+  nothing it shows changed.
+- The session event stream with `resume_from_event_id` remains the feed for a
+  Room's live events; its first read is conditional on the Room's public history
+  revision in the same way.
+- The feed carries only the public projections the list requests return today;
+  secret values, tokens and credentials never travel on it.
+
 ## Workflow Console
 
 Kernel components now include a workflow-scoped shared console service.

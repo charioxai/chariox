@@ -135,6 +135,13 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
         RelayPeerRequest::ReadLeasedAgentFile { .. } => "read_leased_agent_file",
         RelayPeerRequest::WriteLeasedAgentFile { .. } => "write_leased_agent_file",
         RelayPeerRequest::DiscardLeasedAgentFile { .. } => "discard_leased_agent_file",
+        RelayPeerRequest::StatMachinePath { .. } => "stat_machine_path",
+        RelayPeerRequest::ListMachineDirectory { .. } => "list_machine_directory",
+        RelayPeerRequest::ReadMachineFile { .. } => "read_machine_file",
+        RelayPeerRequest::DeleteMachinePath { .. } => "delete_machine_path",
+        RelayPeerRequest::StartFileTransfer { .. } => "start_file_transfer",
+        RelayPeerRequest::GetFileTransfer { .. } => "get_file_transfer",
+        RelayPeerRequest::CancelFileTransfer { .. } => "cancel_file_transfer",
         RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest { .. } => {
             "update_leased_agent_remote_extension_manifest"
         }

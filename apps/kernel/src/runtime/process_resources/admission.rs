@@ -7,7 +7,7 @@
 use super::*;
 #[cfg(target_os = "macos")]
 use crate::runtime::bounded_process::BoundedCommandExt as _;
-use crate::runtime::kernel_access::process::inspect;
+use crate::runtime::kernel_access::process::{inspect, ProcessIdentity};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -25,7 +25,7 @@ const DISK_FLOOR: u64 = 10 * 1024 * MIB;
 pub(super) const GROWING: u64 = MIB;
 /// A start needs a moment to show in the samples.
 const SETTLE: Duration = Duration::from_secs(1);
-/// A paused command continues with room for this long at its last rate.
+/// A paused command continues with room for this long at its pre-pause rate.
 const AHEAD: u64 = 2;
 /// A stopped filler needs a moment to give its space back before the next
 /// one is judged.
@@ -106,7 +106,7 @@ pub(super) struct Entry {
     pub stopped: bool,
     pub seen: Option<Seen>,
     expected: Option<Peak>,
-    /// Bytes per second it grew (or wrote) when it was paused.
+    /// Typical bytes per second before the pause; never sampled while stopped.
     paused_rate: u64,
     peak: Peak,
     resident: u64,
@@ -139,9 +139,29 @@ impl Entry {
         self.wait = Some(wait);
     }
 
+    /// The job this entry followed is a command of its own from now on: it
+    /// takes the whole accounting, and the shell starts over as a launcher.
+    fn hand_job_over(&mut self, arrived: u64) -> Entry {
+        std::mem::replace(
+            self,
+            Entry {
+                arrived,
+                holdable: self.holdable,
+                // Admission must still continue the launcher after the job takes its wait.
+                stopped: self.stopped,
+                ..Entry::default()
+            },
+        )
+    }
+
     /// It runs again.
     fn stop_waiting(&mut self) {
         self.wait = None;
+    }
+
+    #[cfg(test)]
+    pub(super) fn admitted_with_prediction(&self) -> (bool, bool) {
+        (self.admitted, self.expected.is_some())
     }
 
     #[cfg(test)]
@@ -295,6 +315,16 @@ fn take_adopted(pid: u32) -> Option<HeldCommand> {
         .then_some(held)
 }
 
+/// Whether the previous program handed over the command that is `identity`.
+/// Its parent shell ran several jobs, whoever is left of them now.
+pub(super) fn handed_over(identity: &ProcessIdentity) -> bool {
+    ADOPTED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&identity.pid)
+        .is_some_and(|held| sampling::same_birth(identity, &held.identity))
+}
+
 /// The machine-wide part of admission, under the pool.
 pub(super) struct Ledger {
     arrivals: u64,
@@ -329,6 +359,10 @@ pub(super) struct Room<'a> {
     /// Bytes per second everything that runs grows by: memory below it is
     /// short too, since it would be gone in a second.
     pub growing: u64,
+    /// The machine or its bounding cgroup is short of physical memory.
+    pub pressured: bool,
+    /// The machine's free memory, not the pool's ceiling, set `memory`.
+    pub host_bound: bool,
     pub light: u64,
     pub growth_room: u64,
     /// The whole pool: what a command can never exceed, however long it waits.
@@ -343,19 +377,20 @@ pub(super) struct Room<'a> {
 impl Room<'_> {
     /// Memory is short: pause the newest growing command.
     pub(super) fn tight(&self) -> bool {
-        self.memory < self.margin.max(self.growing)
+        self.pressured && self.memory < self.margin.max(self.growing)
     }
 
     /// A paused command that grows at `rate` continues only if the pool then
     /// stays out of short memory for `AHEAD` seconds at the rate of everything
-    /// that runs; otherwise the next sample would pause it again.
-    fn room_to_continue(&self, rate: u64) -> bool {
+    /// that runs; otherwise the next sample would pause it again. Returns the
+    /// memory that takes and that rate.
+    fn growth_room_needed(&self, rate: u64) -> (u64, u64) {
         let growing = self.growing.saturating_add(rate);
-        self.memory
-            >= self
-                .margin
-                .max(growing)
-                .saturating_add(growing.saturating_mul(AHEAD))
+        let needed = self
+            .margin
+            .max(growing)
+            .saturating_add(growing.saturating_mul(AHEAD));
+        (needed, growing)
     }
 }
 
@@ -483,6 +518,31 @@ impl Ledger {
                 );
             }
         }
+        // A shell that was one job's command and now runs several has handed
+        // that job to a command of its own: the prediction and the admission
+        // go with the job, or both would be reserved for the same peak.
+        let handed = observation
+            .commands
+            .iter()
+            .filter(|command| !command.root && !observation.admission.contains_key(&command.pid))
+            .filter_map(|command| {
+                let (shell, _) = observation.admission.iter().find(|(pid, entry)| {
+                    **pid != command.pid
+                        && entry
+                            .seen
+                            .as_ref()
+                            .is_some_and(|seen| seen.pid == command.effective)
+                })?;
+                Some((*shell, command.pid))
+            })
+            .collect::<Vec<_>>();
+        for (shell, job) in handed {
+            self.arrivals += 1;
+            if let Some(entry) = observation.admission.get_mut(&shell) {
+                let handed = entry.hand_job_over(self.arrivals);
+                observation.admission.insert(job, handed);
+            }
+        }
         for command in observation.commands.iter().filter(|command| !command.root) {
             let entry = match observation.admission.entry(command.pid) {
                 std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -559,7 +619,7 @@ impl Ledger {
                 (entry.resident >= room.light
                     && command.growth >= GROWING
                     && Some(entry.arrived) != state.oldest)
-                    .then_some(command.growth)
+                    .then_some(command.steady_growth)
             }) {
                 Some(owner) => changed.push(owner),
                 None => may_stop = true,
@@ -605,7 +665,7 @@ impl Ledger {
     /// grow, so it can wait with memory above the pressure line too. Starts
     /// over once it ends.
     pub(super) fn stalled(&mut self, members: &[Arc<Mutex<Observation>>], room: &Room) -> bool {
-        if youngest_paused(members).is_none() {
+        if !room.pressured || youngest_paused(members).is_none() {
             self.stall = None;
             return false;
         }
@@ -856,24 +916,10 @@ impl Ledger {
             let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
             let unit = observation.unit.clone();
             let entry = observation.admission.get_mut(&pid)?;
-            // Both resources must have room now: what it waited for, and the
-            // other one for the peak it is known to reach.
-            let (memory, disk) = match reason {
-                WaitReason::Memory => (need(entry, reason, room), entry.writes_ahead(room)),
-                WaitReason::Disk => (entry.memory_ahead(room), need(entry, reason, room)),
-            };
-            let volume = entry.disk(room);
-            let fits = (memory <= state.memory_room(&unit, room) || !state.heavy_running)
-                && volume.is_none_or(|volume| disk <= state.spare(volume, &unit, room));
-            let paused_memory =
-                reason == WaitReason::Memory && matches!(entry.wait, Some(Wait::Paused(_)));
-            let fits = fits
-                && (!paused_memory
-                    || !state.heavy_running
-                    || room.room_to_continue(entry.paused_rate));
-            if !fits {
+            if state.blocked_by(entry, &unit, reason, room).is_some() {
                 continue;
             }
+            let volume = entry.disk(room);
             state.reserve_memory(&unit, entry.memory_ahead(room), room);
             if let Some(volume) = volume {
                 state.reserve_disk(volume, entry.writes_ahead(room), &unit, room);
@@ -902,23 +948,79 @@ pub(super) struct PausedCommand {
     pub control: std::sync::mpsc::Sender<WatchCommand>,
 }
 
+/// What kept a paused command from continuing: the resource that had too
+/// little room, the room left for it and what it needs to go on.
+pub(super) enum Blocked {
+    Memory {
+        left: u64,
+        need: u64,
+    },
+    /// The memory room covers what it needs, but not growing on: `growing`
+    /// bytes per second is what everything running and it would grow by, and
+    /// staying out of short memory for that takes `need`.
+    Growth {
+        left: u64,
+        need: u64,
+        growing: u64,
+    },
+    Disk {
+        spare: u64,
+        need: u64,
+    },
+}
+
 /// The newest command paused on memory. When the pool is full and nothing
 /// else can pause, it yields before a running command does: it has made the
 /// least progress, and the oldest running command can then finish.
 pub(super) fn youngest_paused(members: &[Arc<Mutex<Observation>>]) -> Option<PausedCommand> {
-    paused_by(members, |paused| paused.arrived)
+    waiting_by(
+        members,
+        0,
+        |wait| matches!(wait, Wait::Paused(WaitReason::Memory)),
+        |waiting| waiting.arrived,
+        |_, _| Some(()),
+    )
+    .map(|(command, ())| command)
+}
+
+/// The newest command waiting on memory, including a held launcher, that
+/// cannot continue after `waited_ms`, with the resource and figures keeping it.
+pub(super) fn blocked_waiting(
+    members: &[Arc<Mutex<Observation>>],
+    waited_ms: u64,
+    room: &Room,
+) -> Option<(PausedCommand, Blocked)> {
+    let state = State::read(members, room);
+    waiting_by(
+        members,
+        waited_ms,
+        |wait| wait.reason() == WaitReason::Memory,
+        |waiting| waiting.arrived,
+        |entry, unit| state.blocked_by(entry, unit, WaitReason::Memory, room),
+    )
 }
 
 /// The command paused on memory that holds the most: ending it frees the most.
 pub(super) fn largest_paused(members: &[Arc<Mutex<Observation>>]) -> Option<PausedCommand> {
-    paused_by(members, |paused| paused.resident)
+    waiting_by(
+        members,
+        0,
+        |wait| matches!(wait, Wait::Paused(WaitReason::Memory)),
+        |waiting| waiting.resident,
+        |_, _| Some(()),
+    )
+    .map(|(command, ())| command)
 }
 
-fn paused_by(
+fn waiting_by<T>(
     members: &[Arc<Mutex<Observation>>],
+    waited_ms: u64,
+    waits: impl Fn(&Wait) -> bool,
     rank: impl Fn(&PausedCommand) -> u64,
-) -> Option<PausedCommand> {
-    let mut best: Option<(u64, PausedCommand)> = None;
+    verdict: impl Fn(&Entry, &str) -> Option<T>,
+) -> Option<(PausedCommand, T)> {
+    let now = crate::session::unix_epoch_ms();
+    let mut best: Option<(u64, PausedCommand, T)> = None;
     for member in members {
         let observation = member.lock().unwrap_or_else(|e| e.into_inner());
         let Some(control) = observation.control.clone() else {
@@ -928,9 +1030,14 @@ fn paused_by(
             let Some(entry) = observation.admission.get(&command.pid) else {
                 continue;
             };
-            if !matches!(entry.wait, Some(Wait::Paused(WaitReason::Memory))) {
+            if !entry.wait.as_ref().is_some_and(&waits)
+                || now.saturating_sub(entry.since_ms) < waited_ms
+            {
                 continue;
             }
+            let Some(found) = verdict(entry, &observation.unit) else {
+                continue;
+            };
             let paused = PausedCommand {
                 pid: command.pid,
                 arrived: entry.arrived,
@@ -939,12 +1046,12 @@ fn paused_by(
                 control: control.clone(),
             };
             let score = rank(&paused);
-            if best.as_ref().is_none_or(|(best, _)| score > *best) {
-                best = Some((score, paused));
+            if best.as_ref().is_none_or(|(best, ..)| score > *best) {
+                best = Some((score, paused, found));
             }
         }
     }
-    best.map(|(_, command)| command)
+    best.map(|(_, command, found)| (command, found))
 }
 
 /// Machine-wide facts one pass decides on.
@@ -967,6 +1074,41 @@ impl State {
             .copied()
             .unwrap_or(0)
             .saturating_sub(self.memory_by_unit.get(unit).copied().unwrap_or(0))
+    }
+
+    /// What keeps a waiting command from continuing now, `None` when it can.
+    /// Both resources must have room: what it waited for, and the other one
+    /// for the peak it is known to reach. Memory is named first when both
+    /// lack it.
+    fn blocked_by(
+        &self,
+        entry: &Entry,
+        unit: &str,
+        reason: WaitReason,
+        room: &Room,
+    ) -> Option<Blocked> {
+        let (memory, disk) = match reason {
+            WaitReason::Memory => (need(entry, reason, room), entry.writes_ahead(room)),
+            WaitReason::Disk => (entry.memory_ahead(room), need(entry, reason, room)),
+        };
+        let left = self.memory_room(unit, room);
+        let paused_memory =
+            reason == WaitReason::Memory && matches!(entry.wait, Some(Wait::Paused(_)));
+        if self.heavy_running && memory > left {
+            return Some(Blocked::Memory { left, need: memory });
+        }
+        if self.heavy_running && paused_memory {
+            let (need, growing) = room.growth_room_needed(entry.paused_rate);
+            if room.memory < need {
+                return Some(Blocked::Growth {
+                    left: room.memory,
+                    need,
+                    growing,
+                });
+            }
+        }
+        let spare = self.spare(entry.disk(room)?, unit, room);
+        (disk > spare).then_some(Blocked::Disk { spare, need: disk })
     }
 
     fn memory_room(&self, unit: &str, room: &Room) -> u64 {
@@ -1082,8 +1224,9 @@ fn need(entry: &Entry, reason: WaitReason, room: &Room) -> u64 {
     });
     match entry.wait {
         Some(Wait::Held(_)) => expected.unwrap_or(room.growth_room),
-        // It continues only with room to grow on for a while at its last
-        // rate, so it is not paused again at once.
+        // It continues only with room for its typical growth before the
+        // pause, so a burst does not strand it and a stopped sample cannot
+        // make a fast grower continue and pause again at once.
         _ => expected
             .filter(|need| *need > 0)
             .unwrap_or(room.growth_room)
@@ -1537,5 +1680,93 @@ mod display_tests {
             normalize("/tmp/claude-77aa01bc-cwd")
         );
         assert_ne!(normalize("cargo build"), normalize("cargo test"));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod launcher_pause_tests {
+    fn process_state(pid: u32) -> char {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .unwrap()
+            .rsplit_once(") ")
+            .unwrap()
+            .1
+            .chars()
+            .next()
+            .unwrap()
+    }
+    use super::super::pressure_tests::{domain, pool, settle, Workload};
+    use super::*;
+
+    #[test]
+    fn l9_a_launcher_paused_after_its_single_job_sample_completes() {
+        let pool = pool(4096);
+        let mut shell = Workload::gated(
+            domain(&pool, "promotion-race", false),
+            &[("jobs", "sh \"$0/jobs.sh\" \"$0\"".into())],
+        );
+        std::fs::write(shell.dir.join("jobs.sh"),
+            "sleep 3 &\necho $! > \"$1/first.pid\"\nwhile [ ! -e \"$1/second\" ]; do :; done\nsleep 4 &\necho $! > \"$1/second.pid\"\nwait\necho done > \"$1/done\"\n").unwrap();
+        shell.go(&["jobs"]);
+        settle(1);
+        let root = shell.domain.state.lock().unwrap().root;
+        let launcher = shell.pid("jobs") as u32;
+        let first = shell.pid("first") as u32;
+        let mut tree = sampling::ProcessTree::new(root);
+        let samples = tree.sample().unwrap();
+        assert_eq!(tree.effective(launcher, &samples), first);
+        let watched = Arc::new(Mutex::new(Observation::default()));
+        let mut entry = Entry::predicted(first, Peak::default(), true, &shell.dir);
+        entry.wait = Some(Wait::Paused(WaitReason::Memory));
+        watched.lock().unwrap().admission.insert(launcher, entry);
+        // The second fork happens after the table sample, before its pause is applied.
+        std::fs::write(shell.dir.join("second"), "").unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while !shell.dir.join("second.pid").exists() {
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        super::super::admit(&tree, &watched);
+        assert_eq!(process_state(launcher), 'T');
+        settle(1);
+        let samples = tree.sample().unwrap();
+        watched.lock().unwrap().commands = tree
+            .commands(&samples)
+            .into_iter()
+            .map(|(pid, (resident, _))| pool::CommandUse {
+                pid,
+                resident,
+                effective: tree.effective(pid, &samples),
+                root: pid == root,
+                deleted_open: 0,
+                group: None,
+                growth: 0,
+                measured_growth: 0,
+                steady_growth: 0,
+                writes: 0,
+                write_growth: 0,
+            })
+            .collect();
+        let mut admission = Ledger::new(None);
+        admission.register(&watched, 512 * MIB);
+        super::super::admit(&tree, &watched);
+        assert_eq!(process_state(first), 'T');
+        watched
+            .lock()
+            .unwrap()
+            .admission
+            .get_mut(&first)
+            .unwrap()
+            .force();
+        super::super::admit(&tree, &watched);
+        let until = Instant::now() + Duration::from_secs(6);
+        while !shell.dir.join("done").exists() {
+            assert!(
+                Instant::now() < until,
+                "the launcher stayed stopped after its jobs completed"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!shell.alive("first"));
     }
 }

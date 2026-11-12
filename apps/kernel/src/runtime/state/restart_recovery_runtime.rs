@@ -2662,7 +2662,7 @@ mod tests {
                     prompt: prompt_id.clone(),
                     registrations: vec!["completion-g13-timer".into()],
                     cursor: 0,
-                    deadline: now + 120_000,
+                    deadline: Some(now + 120_000),
                     reason: "Wait for the one-minute timer".into(),
                     now,
                 })
@@ -3015,6 +3015,37 @@ mod tests {
             .ensure_task_owner_interaction(old_task.clone())
             .await
             .unwrap();
+        // An attempt interrupted before it, which later turns have already moved past, is stranded
+        // the same way: it is not the latest turn, so only a rule over all of the agent's tasks finds it.
+        let stranded = {
+            let store = &runtime.owned.durable_state_store;
+            let task = format!("{prompt_id}-stranded");
+            store
+                .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Begin {
+                    owner: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+                    room: session_id.clone(),
+                    agent: agent_id.clone(),
+                    prompt: task.clone(),
+                    run: None,
+                    now: 1,
+                })
+                .unwrap();
+            let crate::durable_state::agent_lifecycle::Outcome::Task(blocked) = store
+                .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Block {
+                    task: task.clone(),
+                    prompt: task,
+                    reason: "Interrupted before it finished.".into(),
+                })
+                .unwrap()
+            else {
+                panic!()
+            };
+            blocked
+        };
+        runtime
+            .ensure_task_owner_interaction(stranded.clone())
+            .await
+            .unwrap();
         let attachment = runtime
             .with_app_side_effect(|app| {
                 KernelSessionService::new(app).attach(AttachRequest::new(
@@ -3117,6 +3148,29 @@ mod tests {
             crate::durable_state::agent_lifecycle::ExecutionState::Cancelled,
             "a superseded restart attempt must not keep the agent blocked"
         );
+        let older = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .unwrap()
+            .into_iter()
+            .find(|task| task.task_id == stranded.task_id)
+            .unwrap();
+        assert_eq!(
+            older.state,
+            crate::durable_state::agent_lifecycle::ExecutionState::Cancelled,
+            "an older interrupted attempt is superseded by the agent's later turn too"
+        );
+        assert!(!runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .any(|interaction| interaction
+                .id()
+                .starts_with(&format!("task-blocked-{}-", stranded.task_id))));
         assert!(!runtime
             .owned
             .session_store

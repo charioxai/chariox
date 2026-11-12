@@ -28,6 +28,21 @@ jobs:
       - name: Fetch MP-11 frozen inventory source
         run: git fetch --no-tags --depth=1 origin 9334141d420f8a32393f206102c5b8b4a1b0b609
 
+      - name: Fetch the commit the change branches from
+        # The OSS boundary guard compares its shrink-only lists with this commit and fails in CI
+        # without it. A pull request branches from its base tip, a push to main from the previous
+        # tip; a manual run or a new branch (all-zero "before") compares with the current main.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          case "$BASE_SHA" in
+            *[!0]*) ;;
+            *) BASE_SHA="$(git ls-remote origin refs/heads/main | cut -f1)" ;;
+          esac
+          test -n "$BASE_SHA"
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          echo "CHARIOX_BOUNDARY_BASE=$BASE_SHA" >> "$GITHUB_ENV"
+
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:

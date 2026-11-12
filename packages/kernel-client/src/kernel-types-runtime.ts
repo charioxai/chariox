@@ -660,6 +660,12 @@ export interface AgentTreeNode {
   execution_mode?: 'build' | 'plan'
   permission_level?: 'required' | 'yolo'
   effort?: string
+  /** What the prompt footer shows of the node besides these; each is absent when the node has none. */
+  account_profile?: string
+  workspace_id?: string
+  worktree_id?: string
+  /** The kernel that runs the node when it is not the Room's. */
+  worker_kernel_id?: string
   depth: number
   state: AgentTreeState
   outcome: TurnOutcomeKind | null

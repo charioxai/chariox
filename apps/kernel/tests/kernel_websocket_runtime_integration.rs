@@ -72,5 +72,7 @@ mod prompt_responsiveness;
 mod provider_launch;
 #[path = "kernel_websocket_runtime_integration/provider_processes.rs"]
 mod provider_processes;
+#[path = "kernel_websocket_runtime_integration/room_setup.rs"]
+mod room_setup;
 #[path = "kernel_websocket_runtime_integration/structured_io.rs"]
 mod structured_io;

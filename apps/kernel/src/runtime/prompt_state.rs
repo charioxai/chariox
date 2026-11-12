@@ -147,6 +147,7 @@ struct PromptStateOwnerState {
     states: BTreeMap<PromptStateKey, OwnedAgentPromptState>,
     profile_transitions: BTreeMap<PromptStateKey, Arc<()>>,
     agent_move_admission: Option<crate::agent_move::AgentMoveStore>,
+    room_setup: crate::session::RoomSetupStore,
     queue_promotions: BTreeSet<PromptStateKey>,
 }
 
@@ -3133,6 +3134,13 @@ mod tests {
 mod dispatch_intent_tests;
 
 impl PromptStateOwner {
+    pub(crate) fn set_room_setup(&self, store: crate::session::RoomSetupStore) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .room_setup = store;
+    }
+
     pub(crate) fn set_agent_move_admission(&self, store: crate::agent_move::AgentMoveStore) {
         self.state
             .lock()
@@ -3147,7 +3155,10 @@ impl PromptStateOwnerState {
             .is_some_and(|store| store.dispatch_fenced(&key.session_id, &key.agent_id))
     }
 
+    /// A Room's own setup (git init, worktree) holds every prompt to it until it ends.
     fn execution_transition_pending(&self, key: &PromptStateKey) -> bool {
-        self.profile_transitions.contains_key(key) || self.agent_move_pending(key)
+        self.profile_transitions.contains_key(key)
+            || self.agent_move_pending(key)
+            || self.room_setup.holds_prompts(&key.session_id)
     }
 }

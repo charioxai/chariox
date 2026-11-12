@@ -38,7 +38,7 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
         }],
         wait: Some(AgentWait {
             registration_ids: vec!["reg".into()],
-            deadline_ms: 60_000,
+            deadline_ms: Some(60_000),
             started_at_ms: 1,
             inbox_cursor: 3,
             long_wait_notified: false,
@@ -72,6 +72,33 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
     assert_eq!(
         format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
         "1200a129c1634205e402b26eed546a5418aca143b91457f416e67438959e96af"
+    );
+}
+
+/// A yield without a deadline waits for its registrations only: `deadline_ms` is `null`, not absent.
+#[test]
+fn agent_wait_without_a_deadline_reports_a_null_deadline() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let wait = AgentWait {
+        registration_ids: vec!["reg".into()],
+        deadline_ms: None,
+        started_at_ms: 1,
+        inbox_cursor: 3,
+        long_wait_notified: false,
+        last_checked_at_ms: 1,
+    };
+    let value = serde_json::to_value(wait).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"registration_ids": ["reg"], "deadline_ms": null, "started_at_ms": 1,
+            "inbox_cursor": 3, "long_wait_notified": false, "last_checked_at_ms": 1})
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
+        "40729d74583fd594c73484f308a96a58c80aa1c991016f7728a3bb41a11c59ae"
     );
 }
 
@@ -234,7 +261,7 @@ fn owner_agent_cancellation_987_snapshot_and_hash() {
     let bytes = include_bytes!("owner-agent-cancellation-987.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "d9669ac5656ce54935c15c6795ee696e89e0f8cce35be83219063929058a1d67"
+        "a4254b7c2ac9c83c1a0b49e1f03f9761489a6a85f816f0839a5eb574c34f76af"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -280,6 +307,6 @@ fn browser_owner_action_shape_is_bound_to_protocol993() {
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(fixture.to_string().as_bytes())),
-        "a3ca44b5000d2f099cf1fce6f2fc026d122284f6201c2228ef8d59d2592c7393"
+        "e8b4b67b8a675ff89d372f43f33f67b03a4cc487fcdb622409c9173aa2f93c48"
     );
 }

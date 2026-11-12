@@ -348,9 +348,13 @@ impl SessionRuntimeStore {
             }
             _ => create_request,
         };
-        let create_request = match idempotency_key {
-            Some(key) => create_request.with_spawn_key(key),
-            None => create_request,
+        // A parent's spawn always carries a key: it marks the child as the parent's own.
+        let create_request = match (idempotency_key, parent.as_ref()) {
+            (Some(key), _) => create_request.with_spawn_key(key),
+            (None, Some(_)) => {
+                create_request.with_spawn_key(format!("spawn-{:032x}", rand::random::<u128>()))
+            }
+            (None, None) => create_request,
         };
         let create_request = if let Some(alias) = request.alias {
             create_request.with_alias(alias)

@@ -7,6 +7,7 @@ use crate::transport::relay_peer::RelayPeerRequest;
 
 mod created_peers;
 mod follow;
+mod machine_files;
 
 const OWNER: &str = "owner-p5b";
 

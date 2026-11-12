@@ -229,6 +229,7 @@ impl KernelRuntimeState {
             if !seen.insert(task.task_id.clone()) {
                 continue;
             }
+            self.owned.record_wait_cancelled(&task);
             let session = self.owned.session_store.get_session(&task.room_id)?;
             let active = self
                 .owned

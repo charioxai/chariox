@@ -579,6 +579,16 @@ impl KernelRuntimeState {
                 .await
             }
             crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::HttpRequestWithCredentialArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_http_request_with_credential",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                // A refusal needs no Vault, so it comes before the unlock card.
+                self.home_runtime_secret_service()?
+                    .validate_http_request_target(&args.credential_id, &args.url)?;
                 let _vault_unlock = self
                     .ensure_vault_unlocked_for_agent(
                         &context.home_session_id,
@@ -588,13 +598,6 @@ impl KernelRuntimeState {
                     .await?;
                 self.authorize_home_credential_context(&context)?;
                 let service = self.home_runtime_secret_service()?;
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::HttpRequestWithCredentialArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_http_request_with_credential",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
                 let request = crate::secret::CredentialHttpRequest {
                     credential_id: args.credential_id,
                     method: args.method,

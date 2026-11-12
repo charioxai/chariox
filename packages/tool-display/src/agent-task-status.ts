@@ -34,14 +34,17 @@ export function agentTaskStatus(session: AgentTaskStatusSession | null | undefin
   const state = task.state as AgentTaskStatus["state"]
   const reason = typeof task.reason === "string" ? task.reason : "result"
   if (state === "waiting") {
-    const deadline = date(records([task.wait])[0]?.deadline_ms)
-    if (!deadline) return { state: "blocked", label: `BLOCKED: Invalid wait deadline${suffix}`, tone: "error" }
+    const wait = records([task.wait])[0]
+    const waitDeadline = wait?.deadline_ms
+    const deadline = waitDeadline == null ? null : date(waitDeadline)
+    if (!wait || (waitDeadline != null && !deadline)) return { state: "blocked", label: `BLOCKED: Invalid wait deadline${suffix}`, tone: "error" }
     const wakes = records(session?.agent_wakes).filter((wake) => wake.agent_id === agentId && ARMED.has(String(wake.state)))
     const timed = wakes.filter((wake) => date(wake.next_due_ms)).sort((a, b) => Number(a.next_due_ms) - Number(b.next_due_ms))
     const wake = timed[0] ?? wakes[0]
     const next = !wake ? "" : date(wake.next_due_ms)
       ? ` · NEXT WAKE ${wake.label} AT ${date(wake.next_due_ms)}` : ` · WATCHING ${wake.label}`
-    return { state, deadline_ms: Number(records([task.wait])[0]?.deadline_ms), label: `WAITING ON ${reason} UNTIL ${deadline}${next}${suffix}`, tone: "idle" }
+    const until = deadline ? ` UNTIL ${deadline}` : ""
+    return { state, ...(deadline ? { deadline_ms: Number(waitDeadline) } : {}), label: `WAITING ON ${reason}${until}${next}${suffix}`, tone: "idle" }
   }
   if (state === "blocked") return { state, label: `BLOCKED: ${reason}${suffix}`, tone: "error" }
   if (state === "working" && waitsForOwner(task)) return { state, label: `WORKING: ${reason}${suffix}`, tone: "working" }

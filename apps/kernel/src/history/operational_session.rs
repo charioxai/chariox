@@ -555,6 +555,41 @@ impl OperationalHistoryStore {
             })
     }
 
+    /// The newest transcript row of `agent_id` whose merge key starts with `prefix`.
+    pub fn latest_transcript_by_merge_key_prefix(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prefix: &str,
+    ) -> Result<Option<HistoryEvent>, DaemonError> {
+        let connection = self.lock_read_connection(Some(session_id))?;
+        let found = connection
+            .query_row(
+                "SELECT event_json FROM history_events
+                 WHERE session_id = ?1 AND agent_id = ?2 AND substr(merge_key, 1, length(?3)) = ?3
+                 ORDER BY sequence DESC LIMIT 1",
+                params![session_id, agent_id, prefix],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "load the newest row of a merge key prefix",
+                message: error.to_string(),
+            })?;
+        found
+            .map(|json| {
+                serde_json::from_str::<HistoryEvent>(&json).map_err(|error| {
+                    DaemonError::SessionHistoryFailed {
+                        session_id: Some(session_id.to_string()),
+                        operation: "decode the newest row of a merge key prefix",
+                        message: error.to_string(),
+                    }
+                })
+            })
+            .transpose()
+    }
+
     /// The provider runs, with their agents, that wrote a tool row which may
     /// mark a background command; the caller reads their rows to decide.
     pub fn provider_runs_with_background_tools(

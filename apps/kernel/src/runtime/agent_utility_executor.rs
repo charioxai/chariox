@@ -367,6 +367,10 @@ async fn run_utility(
             )
             .await;
     }
+    let native_interaction_bridge = policy
+        .asks_the_person_for_approvals()
+        .then(|| runtime_state.provider_native_interaction_bridge())
+        .flatten();
     tokio::task::spawn_blocking(move || {
         crate::provider::run_blocking_provider_utility_prompt_with_admission(
             &provider_run,
@@ -377,6 +381,7 @@ async fn run_utility(
             policy,
             admission,
             stop.as_ref(),
+            native_interaction_bridge,
         )
     })
     .await

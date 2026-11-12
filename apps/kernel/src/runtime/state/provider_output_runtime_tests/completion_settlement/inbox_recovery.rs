@@ -59,7 +59,7 @@ async fn a02_r8_blocked_subscriber_does_not_suppress_waiting_subscriber() {
                 prompt: id.into(),
                 registrations: vec![format!("reg-{id}")],
                 cursor: 0,
-                deadline: now + 60_000,
+                deadline: Some(now + 60_000),
                 reason: "Wait for independent review".into(),
                 now,
             })
@@ -224,7 +224,7 @@ async fn older_wait_after_newer_cancellation(deadline: bool) {
             prompt: id.into(),
             registrations: vec![format!("reg-{id}")],
             cursor: 0,
-            deadline: now + 60_000,
+            deadline: Some(now + 60_000),
             reason: "Wait for independent review".into(),
             now,
         })

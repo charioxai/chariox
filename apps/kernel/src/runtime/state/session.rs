@@ -114,6 +114,7 @@ impl KernelRuntimeOwnedState {
         call_counts::RUNTIME_VIEW_PROJECTIONS.with(|count| count.set(count.get() + 1));
         // MP-08/MP-10/MP-11: every ordinary refresh carries current window state.
         session.set_sudo_windows(self.sudo_windows_for_session(session.id()));
+        session.set_room_setup(self.room_setup.state(session.id()));
         self.prompt_state_owner.project_into_session(session);
         let prompt_session = session.clone();
         let active_prompt_agent_id = self.prompt_state_owner.active_prompt_agent_id(session);
@@ -204,6 +205,7 @@ impl KernelRuntimeOwnedState {
                 "has_agent_defaults": request.agent_defaults.is_some(),
             }),
         );
+        let setup = request.setup.clone();
         let mut session =
             SessionStateOwner::new(self.session_store.clone()).create_session(request)?;
         crate::logging::info_with_fields(
@@ -237,6 +239,11 @@ impl KernelRuntimeOwnedState {
         session = self.session_store.get_session(session.id())?;
         let agents = self.agent_store.get_session_agents(session.id());
         session.set_agents(agents);
+        // Registered before the first projection: no client sees the Room, or can prompt it,
+        // without its setup.
+        if let Some(setup) = &setup {
+            self.room_setup.begin(session.id(), agent.id(), setup);
+        }
         session = self.update_session_projection(session);
         self.runtime_projection_changes.record_change();
         crate::logging::info_with_fields(

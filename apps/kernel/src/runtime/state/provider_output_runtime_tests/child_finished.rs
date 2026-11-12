@@ -17,6 +17,8 @@ pub(super) struct Family {
     pub(super) parent: String,
     pub(super) parent_run: String,
     pub(super) kids: Vec<Kid>,
+    pub(super) config: crate::config::DaemonConfig,
+    pub(super) _worktree: crate::test_support::TestWorktree,
 }
 
 pub(super) struct Team {
@@ -67,14 +69,33 @@ pub(super) async fn team_with(
     }
 }
 
-/// A parent and `children` sub-agents, each with an active turn and a task.
+/// A parent and `children` sub-agents it spawned, each with an active turn and a task.
 pub(super) async fn family(
     label: &str,
     children: usize,
     settle_cancelled: Option<bool>,
     parent_running: bool,
 ) -> Family {
-    family_with_history_root(label, children, settle_cancelled, parent_running, None).await
+    family_of(label, children, settle_cancelled, parent_running, true).await
+}
+
+/// `with_spawn_key: false` makes the children agents a person moved under the parent: they have no spawn key.
+pub(super) async fn family_of(
+    label: &str,
+    children: usize,
+    settle_cancelled: Option<bool>,
+    parent_running: bool,
+    with_spawn_key: bool,
+) -> Family {
+    family_in(
+        label,
+        children,
+        settle_cancelled,
+        parent_running,
+        with_spawn_key,
+        None,
+    )
+    .await
 }
 
 /// `history_root` keeps the Room's history (and its public projection) on disk, so a test can
@@ -86,13 +107,32 @@ pub(super) async fn family_with_history_root(
     parent_running: bool,
     history_root: Option<std::path::PathBuf>,
 ) -> Family {
+    family_in(
+        label,
+        children,
+        settle_cancelled,
+        parent_running,
+        true,
+        history_root,
+    )
+    .await
+}
+
+async fn family_in(
+    label: &str,
+    children: usize,
+    settle_cancelled: Option<bool>,
+    parent_running: bool,
+    with_spawn_key: bool,
+    history_root: Option<std::path::PathBuf>,
+) -> Family {
     let worktree = crate::test_support::TestWorktree::new(label);
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
     if let Some(root) = history_root {
         config = config.with_session_history_root(root);
     }
-    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
     let (session, parent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .unwrap();
@@ -107,16 +147,18 @@ pub(super) async fn family_with_history_root(
         .unwrap();
     let mut spawned = Vec::new();
     for index in 0..children {
+        let mut request = crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+            .with_alias(if index == 0 {
+                "child".to_owned()
+            } else {
+                format!("child{}", index + 1)
+            })
+            .with_parent_agent_id(parent.id());
+        if with_spawn_key {
+            request = request.with_spawn_key(format!("spawn-{label}-{index}"));
+        }
         let child = crate::app::KernelSessionService::new(&mut app)
-            .spawn_agent(
-                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
-                    .with_alias(if index == 0 {
-                        "child".to_owned()
-                    } else {
-                        format!("child{}", index + 1)
-                    })
-                    .with_parent_agent_id(parent.id()),
-            )
+            .spawn_agent(request)
             .unwrap();
         let run = app
             .launch_provider(
@@ -211,6 +253,8 @@ pub(super) async fn family_with_history_root(
         parent_run: parent_run.id().into(),
         kids,
         runtime,
+        config,
+        _worktree: worktree,
     }
 }
 

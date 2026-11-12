@@ -153,7 +153,7 @@ impl KernelRuntimeOwnedState {
             return self.goal_continuation_context(&task);
         }
         let mut context = format!(
-            "<chariox-task-context>For chariox.events tools use task_id `{}` and origin_prompt_id `{prompt}`. Final answers are done candidates; finish tracked obligations or yield on live sources with a future deadline. If owner action is required call chariox.events.blocked. Message events request no courtesy reply unless explicitly opted in.</chariox-task-context>",
+            "<chariox-task-context>For chariox.events tools use task_id `{}` and origin_prompt_id `{prompt}`. Final answers are done candidates; finish tracked obligations or yield on live sources. If owner action is required call chariox.events.blocked. Message events request no courtesy reply unless explicitly opted in.</chariox-task-context>",
             task.task_id
         );
         // Unrelated inbox receipts remain deferred during task-bound sudo work.
@@ -847,6 +847,7 @@ impl KernelRuntimeState {
                     .await?;
             }
             ExecutionState::Waiting => {
+                self.owned.record_wait_started(&task);
                 self.move_seen_decisions_up(&task.room_id, &task.agent_id)
                     .await?;
             }

@@ -1,0 +1,182 @@
+[
+  {
+    "path": "apps/kernel/src/room_terminal/service.rs",
+    "fn": "input",
+    "call": "submit_line_for_key",
+    "reason": "known, tracked: submit_line_for_key marks a submitted terminal line under the registry mutex on the runtime thread when input is written"
+  },
+  {
+    "path": "apps/kernel/src/runtime/claude_setup_token_login.rs",
+    "fn": "reconcile",
+    "call": "remove_process",
+    "reason": "known, tracked (healthnext r2 gap): PtyManager::remove_process -> unbind_key takes the registry mutex inline in a with_app_side_effect closure on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/provider_auth_control.rs",
+    "fn": "reconcile_running_terminal_provider_auth",
+    "call": "remove_process",
+    "reason": "known, tracked (healthnext r2 gap): PtyManager::remove_process -> unbind_key takes the registry mutex inline in a with_app_side_effect closure on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/provider_auth_control.rs",
+    "fn": "execute_get_provider_login_status_request",
+    "call": "remove_process",
+    "reason": "known, tracked (healthnext r2 gap): PtyManager::remove_process -> unbind_key takes the registry mutex inline in a with_app_side_effect closure on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/provider_auth_control.rs",
+    "fn": "execute_cancel_provider_login_request",
+    "call": "remove_process",
+    "reason": "known, tracked (healthnext r2 gap): PtyManager::remove_process -> unbind_key takes the registry mutex inline in a with_app_side_effect closure on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/provider_login_terminal.rs",
+    "fn": "reconcile_failed_claude_login",
+    "call": "remove_process",
+    "reason": "known, tracked (healthnext r2 gap): PtyManager::remove_process -> unbind_key takes the registry mutex inline in a with_app_side_effect closure on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/agent_archive_runtime_state.rs",
+    "fn": "finish_agent_archive",
+    "call": "remove_run",
+    "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/agent_config_runtime_state.rs",
+    "fn": "remove_terminated_provider_processes",
+    "call": "remove_run",
+    "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/agent_config_runtime_state.rs",
+    "fn": "update_agent_profile",
+    "call": "remove_run",
+    "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/agent_deadline_runtime.rs",
+    "fn": "stop_one_deadline_agent",
+    "call": "remove_run",
+    "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/agent_move_source.rs",
+    "fn": "prepare_agent_move_source",
+    "call": "remove_run",
+    "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/agent_process_watch.rs",
+    "fn": "start_agent_process",
+    "call": "bind_key",
+    "reason": "known, tracked: bind_key takes the registry mutex once while a process watch starts, on the runtime thread"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/local_prompt_dispatch_runtime.rs",
+    "fn": "fail_prompt_dispatch",
+    "call": "remove_run",
+    "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/local_prompt_dispatch_runtime.rs",
+    "fn": "spawn_retired_workflow_provider_cleanup",
+    "call": "remove_run",
+    "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/local_prompt_dispatch_runtime.rs",
+    "fn": "spawn_detached_workflow_provider_launch_after_retiring",
+    "call": "remove_run",
+    "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/provider_launch_failure_runtime.rs",
+    "fn": "settle_provider_launch_failure_in_lane",
+    "call": "remove_run",
+    "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/provider_liveness_runtime.rs",
+    "fn": "reconcile_provider_run_exit_inner",
+    "call": "outside_ended_for_key",
+    "reason": "known, tracked: outside_ended_for_key reads the end mark under the registry mutex on the runtime thread before the run process is removed"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/provider_liveness_runtime.rs",
+    "fn": "reconcile_provider_run_exit_inner",
+    "call": "remove_run",
+    "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/provider_process_runtime_state.rs",
+    "fn": "teardown_provider_processes",
+    "call": "remove_run",
+    "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/provider_prompt_failure_runtime.rs",
+    "fn": "retire_owned_provider_run_after_terminal_failure",
+    "call": "remove_run",
+    "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/provider_prompt_settlement_runtime.rs",
+    "fn": "settle_owned_provider_prompt_once",
+    "call": "remove_run",
+    "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/provider_relaunch_runtime.rs",
+    "fn": "spawn_provider_relaunch",
+    "call": "remove_run",
+    "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/session_lifecycle_runtime_state.rs",
+    "fn": "end_session",
+    "call": "remove_run",
+    "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/session_lifecycle_runtime_state.rs",
+    "fn": "delete_session_id",
+    "call": "remove_run",
+    "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/session_process_control.rs",
+    "fn": "stop_session_processes",
+    "call": "has_key",
+    "reason": "known, tracked: has_key probes the registry under its mutex on the runtime thread for a session process stop request"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/session_process_control.rs",
+    "fn": "start_session_process_now",
+    "call": "samples_for_key",
+    "reason": "known, tracked: samples_for_key copies a watch snapshot under the registry mutex on the runtime thread for a session process stop or start-now request"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/session_process_control.rs",
+    "fn": "stop_session_processes",
+    "call": "samples_for_key",
+    "reason": "known, tracked: samples_for_key copies a watch snapshot under the registry mutex on the runtime thread for a session process stop or start-now request"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/slice_runtime_state.rs",
+    "fn": "park_slice_agent_provider_runs",
+    "call": "remove_run",
+    "reason": "known, tracked (healthnext r2 gap): remove_run -> remove_provider_pty_process -> PtyManager::remove_process -> unbind_key takes the registry mutex inline on the runtime thread; moving the removal to with_app_side_effect_blocking needs a Send + 'static closure, not a one-liner"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/session_process_control.rs",
+    "fn": "start_session_process_now",
+    "call": "keys_for_session",
+    "reason": "known, tracked: keys_for_session reaches the registry mutex through listed_keys inline in an async fn"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/session_process_control.rs",
+    "fn": "stop_session_processes",
+    "call": "keys_for_session",
+    "reason": "known, tracked: keys_for_session reaches the registry mutex through listed_keys inline in an async fn (two call sites)"
+  }
+]

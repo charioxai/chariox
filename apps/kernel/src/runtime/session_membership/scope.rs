@@ -325,6 +325,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::AliasSession(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::RetryRoomSetup(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::DismissRoomSetup(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::GetSessionHistoryOutline(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -694,6 +700,10 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListKernelDirectory(_)
         | LocalDaemonRequest::ReadKernelFile(_)
         | LocalDaemonRequest::WriteKernelFile(_)
+        | LocalDaemonRequest::StartFileTransfer(_)
+        | LocalDaemonRequest::GetFileTransfer(_)
+        | LocalDaemonRequest::ListFileTransfers
+        | LocalDaemonRequest::CancelFileTransfer(_)
         | LocalDaemonRequest::BeginAppPublisherEnrollment(_)
         | LocalDaemonRequest::GetAppPublisherEnrollment(_)
         | LocalDaemonRequest::CancelAppPublisherEnrollment(_)
@@ -728,6 +738,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::CreateSession(_)
         | LocalDaemonRequest::JoinSessionInvite(_)
         | LocalDaemonRequest::ListProjects(_)
+        | LocalDaemonRequest::SuggestSessionAlias(_)
         | LocalDaemonRequest::SetProjectPinned(_)
         | LocalDaemonRequest::RenameProject(_)
         | LocalDaemonRequest::UpdateProjectWorkspaces(_)

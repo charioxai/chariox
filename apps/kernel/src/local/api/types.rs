@@ -26,6 +26,7 @@ mod daemon;
 mod dictation;
 mod event_publication;
 mod external_provider_session;
+mod file_transfer;
 mod history;
 mod kernel_access;
 mod kernel_browser;
@@ -77,6 +78,7 @@ pub use daemon::*;
 pub use dictation::*;
 pub use event_publication::*;
 pub use external_provider_session::*;
+pub use file_transfer::*;
 pub use history::*;
 pub use kernel_access::*;
 pub use kernel_browser::*;
@@ -500,4 +502,13 @@ pub use workspace::*;
 /// install that waits for its owner is a passkey prompt (`app_install`); App summaries carry
 /// `display_name` and `icon`; the Vault reports `awaiting_passphrase`; a gateway request and its answer
 /// may carry bytes as bytes (`framed_plaintext_v1`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1003;
+/// 1005 (Landing 9): Files on a machine are listed with a revision and a mode per entry and in pages
+/// (`ListKernelDirectory.offset`), never reach the kernel's own state or Vault, and a file or folder is
+/// copied or moved between the owner's machines by a kernel-owned transfer job
+/// (`StartFileTransfer`, `GetFileTransfer`, `ListFileTransfers`, `CancelFileTransfer`). Room setup
+/// (`CreateSession.setup`, `RuntimeSession.room_setup`, `RetryRoomSetup`, `DismissRoomSetup`),
+/// `SuggestSessionAlias`, and `git_available` on the launch target. A yield without a deadline
+/// reports `wait.deadline_ms` as `null`. A sub-agent tree node carries its `account_profile`,
+/// `workspace_id`, `worktree_id` and `worker_kernel_id`, and an agent's wait is a `provider_tool` row of its
+/// transcript.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1005;

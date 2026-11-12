@@ -263,14 +263,19 @@ impl KernelRuntimeState {
                     })?;
                 serde_json::json!({"registration_id":id})
             }
-            "chariox.events.ack" => self.ack_agent_inbox(room, actor, &args, now)?,
+            "chariox.events.ack" => self.ack_agent_inbox(room, actor, &args, now).await?,
             "chariox.events.yield" => {
                 let ids: Vec<String> = serde_json::from_value(args["registration_ids"].clone())
                     .map_err(|_| ledger::error("registration_ids required"))?;
-                let deadline = args["deadline_ms"]
-                    .as_u64()
-                    .ok_or_else(|| ledger::error("finite deadline_ms required"))?;
-                if deadline <= now {
+                let deadline = match args.get("deadline_ms") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => Some(
+                        value
+                            .as_u64()
+                            .ok_or_else(|| ledger::error("deadline_ms must be an integer"))?,
+                    ),
+                };
+                if let Some(deadline) = deadline.filter(|deadline| *deadline <= now) {
                     return Err(ledger::error(format!("deadline_ms {deadline} is not in the future: it is an absolute Unix time in milliseconds, not a duration; now_ms is {now}, so a wait of N seconds is now_ms + N*1000")));
                 }
                 self.owned

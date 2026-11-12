@@ -233,7 +233,8 @@ pub struct AgentInstance {
     parent_agent_id: Option<AgentRef>,
     /// The parent's command id of the spawn that created this agent, or the
     /// peer spawn request of another kernel, so a retried spawn finds the same
-    /// agent instead of creating another.
+    /// agent instead of creating another. Every agent a parent spawned has one;
+    /// an agent a person created never does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     spawn_key: Option<String>,
     #[serde(default)]

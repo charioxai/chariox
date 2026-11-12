@@ -1673,3 +1673,80 @@ async fn owner_task_decision_has_no_person_deadline() {
         "an owner action stays answerable until its task resolves or the person cancels"
     );
 }
+
+// A blocked task's card is bound to the room owner of the moment it was raised. A restart can leave
+// it open after that owner is gone, so the room's current owner and the agent's owner answer it too.
+#[tokio::test]
+async fn a_blocked_task_card_is_answered_by_the_room_owner_and_the_agent_owner_not_by_a_stranger() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    for answerer in [DEFAULT_LOCAL_USER_ID, "agent-owner", "stranger"] {
+        let f = Fixture::with_room_tools();
+        let session = f.state.owned.session_store.get_session(&f.session).unwrap();
+        let agent = f
+            .state
+            .owned
+            .agent_store
+            .create_agent_for_session(
+                crate::agent::CreateAgentRequest::new(&f.session, "codex")
+                    .with_owner_user_id("agent-owner"),
+                &session,
+            )
+            .unwrap()
+            .id()
+            .to_string();
+        let store = &f.state.owned.durable_state_store;
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: DEFAULT_LOCAL_USER_ID.into(),
+                room: f.session.clone(),
+                agent: agent.clone(),
+                prompt: f.id("interrupted"),
+                run: None,
+                now: 1,
+            })
+            .unwrap();
+        let Outcome::Task(blocked) = store
+            .agent_lifecycle(Operation::Block {
+                task: f.id("interrupted"),
+                prompt: f.id("interrupted"),
+                reason: "Interrupted before it finished.".into(),
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        f.state
+            .ensure_task_owner_interaction(blocked.clone())
+            .await
+            .unwrap();
+        let card = format!(
+            "task-blocked-{}-{}",
+            blocked.task_id, blocked.blocked_revision
+        );
+        // The operation owner who raised it is gone.
+        f.state
+            .owned
+            .pending_interactions
+            .write()
+            .get_mut(&card)
+            .unwrap()
+            .kernel_operation_owner = Some("departed-owner".into());
+        let answered = f.state.owned.resolve_runtime_interaction(
+            &f.session,
+            &card,
+            "cancel",
+            None,
+            Some(answerer),
+            false,
+        );
+        if answerer == "stranger" {
+            let refused = answered.expect_err("a stranger does not answer");
+            assert!(
+                refused.to_string().contains("Only the operation owner"),
+                "{refused}"
+            );
+        } else {
+            answered.unwrap_or_else(|error| panic!("{answerer} must answer: {error}"));
+        }
+    }
+}

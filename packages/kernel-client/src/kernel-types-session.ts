@@ -95,6 +95,20 @@ export type RuntimeSession = {
   workspace_links?: WorkspaceLinkDefinition[]
   workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
   external_provider_imports?: ExternalProviderImportMetadata[]
+  // Setup steps of a new Room while any is unfinished or failed; absent once all are done.
+  room_setup?: RoomSetupState
+}
+
+export type RoomSetupRequest = {
+  git_init?: boolean
+  new_worktree?: boolean
+  publish?: boolean
+}
+
+export type RoomSetupStepId = "git_init" | "worktree" | "publish"
+export type RoomSetupStepState = "pending" | "running" | "done" | "failed"
+export type RoomSetupState = {
+  steps: { id: RoomSetupStepId; state: RoomSetupStepState; message?: string }[]
 }
 
 export type RuntimeProjectKind = "default" | "named"
@@ -441,7 +455,7 @@ export type AgentTaskExecution = {
   state: "working" | "waiting" | "blocked" | "done" | "cancelled"
   reason: string
   obligations: { id: string; kind: string; resource_id: string | null; completion_task_id: string | null; status: string; dispatch_state: string }[]
-  wait: { registration_ids: string[]; deadline_ms: number; started_at_ms: number; inbox_cursor: number; long_wait_notified: boolean; last_checked_at_ms: number } | null
+  wait: { registration_ids: string[]; deadline_ms: number | null; started_at_ms: number; inbox_cursor: number; long_wait_notified: boolean; last_checked_at_ms: number } | null
   last_progress_at_ms: number; progress_sequence: number; no_progress_wakes: number
   correction_used: boolean; pending_prompt_id: string | null
 }

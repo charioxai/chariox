@@ -479,6 +479,8 @@ fn local_response_kind(response: &LocalDaemonResponse) -> &'static str {
         LocalDaemonResponse::SessionDetached { .. } => "SessionDetached",
         LocalDaemonResponse::SessionConfigUpdated { .. } => "SessionConfigUpdated",
         LocalDaemonResponse::SessionAliased { .. } => "SessionAliased",
+        LocalDaemonResponse::SessionAliasSuggested { .. } => "SessionAliasSuggested",
+        LocalDaemonResponse::RoomSetupUpdated { .. } => "RoomSetupUpdated",
         LocalDaemonResponse::SessionEnded { .. } => "SessionEnded",
         LocalDaemonResponse::SessionDeleted { .. } => "SessionDeleted",
         LocalDaemonResponse::AgentSpawned { .. } => "AgentSpawned",

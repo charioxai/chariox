@@ -1463,6 +1463,7 @@ turn=0
 while IFS= read -r line; do
     [[ "$line" == *'"type":"user"'* ]] || continue
     turn=$((turn + 1))
+    uuid=$(printf '%s' "$line" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
     echo "prompt $turn" >> "$record/prompts"
     printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$session\",\"model\":\"claude-haiku-5-5\"}"
     # One message whose text block streams as deltas, as with --include-partial-messages.
@@ -1489,7 +1490,7 @@ while IFS= read -r line; do
     done
     printf '%s\n' "{\"type\":\"stream_event\",\"session_id\":\"$session\",\"event\":{\"type\":\"content_block_stop\",\"index\":0}}"
     printf '%s\n' "{\"type\":\"assistant\",\"session_id\":\"$session\",\"message\":{\"id\":\"msg-$turn\",\"role\":\"assistant\",\"model\":\"claude-haiku-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"$text\"}]}}"
-    printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"$session\",\"result\":\"turn-$turn-done\"}"
+    printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"$session\",\"result\":\"turn-$turn-done\",\"user_message_uuids\":[\"$uuid\"]}"
     echo "result $turn" >> "$record/parts"
     [[ $parts == 1 ]] && exit 0
 done

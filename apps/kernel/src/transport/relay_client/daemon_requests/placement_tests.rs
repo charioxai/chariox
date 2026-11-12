@@ -747,6 +747,7 @@ fn a_room_without_a_directory_needs_a_default_on_the_target() {
     use crate::room_exec::gateway_placement::room_location;
     let target = crate::local::WaitingRoomLaunchTarget {
         repository_state: None,
+        git_available: false,
         workspace_id: "/srv/work".into(),
         worktree_id: "/srv/work/wt".into(),
         workspace_label: None,

@@ -731,8 +731,10 @@ has a higher permission level or mode than its parent, and a retry with the
 same command id returns the same child. The end of a child's work reaches its
 parent as one urgent `child_finished` inbox event carrying `child_agent_id`,
 `success`, the typed turn `outcome` and `deadline_reached`; a turn that waited
-on a question when the kernel restarted ends as `interrupted_by_restart`. The
-relay peer protocol needs no change for it.
+on a question when the kernel restarted ends as `interrupted_by_restart`. When the
+parent acks that event with `handled: true`, the kernel deletes the sub-agent the
+parent spawned (an agent a person moved under the parent stays). The relay peer
+protocol needs no change for it.
 
 Relay peer 442 adds `SetLeasedAgentDeadline {leased_agent_id, deadline_ms}`, answered by
 `LeasedAgentDeadlineSet {leased_agent_id}`. The home sends it before it records the
@@ -985,7 +987,9 @@ Ordinary provider runs receive `chariox.events.subscribe`, `subscriptions`,
 `unsubscribe`, `inbox`, `ack`, `yield` and `blocked`. Each requires current
 `task_id` and `origin_prompt_id`; room/run/turn fences precede resource lookup
 or mutation. A valid yield names admitted completion registrations, covers all
-unresolved obligations and has a finite future deadline. Waiting commits only
+unresolved obligations. `deadline_ms` is optional (a goal task must give a future one):
+without it the wait ends when a registered source completes, with no timed wake
+(`wait.deadline_ms` is then null). Waiting commits only
 when the official provider turn settles. Source completion/loss and overdue
 waits wake the retained task; ACK and provider acceptance remain distinct.
 
@@ -2570,6 +2574,84 @@ Protocol v295 clients may render Actor colors and pointer presence and may publi
 - a client that needs takeover, Action history, stable Tabs, or canonical viewport requires the new minimum protocol version
 
 No minimum version changes for clients that do not use these Environment controls. A released client that invokes `environment.start`, `environment.stop`, or `environment.retry` must require protocol v270 or newer; one that updates the canonical viewport must require v271 or newer; one that requests or depends on human takeover state must require v272 or newer; one that releases input must require v273 or newer; one that renders Action ordering or queue state must require v274 or newer; one that replays Environment events must require v275 or newer; one that renders active cancellation state must require v276 or newer; one that cancels Actions must require v277 or newer; one that renders Action timing or terminal outcomes must require v278 or newer; one that lists Action history must require v279 or newer; one that submits human pointer clicks must require v294 or newer; one that renders or publishes pointer presence must require v295 or newer; one that captures a Room screenshot or reads its chunks must require v296 or newer; one that submits human pointer movement, drag, scroll, text, or key input must require v302 or newer; one that writes or reads the human clipboard contract must require v303 or newer.
+
+## 4.1.1 Kernel Resource Subscription (proposed)
+
+Status: proposed for Landing 9 (Cloud `docs/CLIENT_DATA_PLANE.md` section 6); not
+implemented. The protocol number is allocated when it lands; the relay peer
+protocol is unchanged because the relay forwards `subscription_scope` as an opaque
+string.
+
+One generic contract replaces request/response polling for every value a client
+shows: the client says which resources it shows and the revision it holds; the
+kernel answers each with `unchanged`, `changes` (since that revision) or
+`snapshot`, then pushes the same for every later change until the client stops
+watching.
+
+Frames:
+
+```text
+Subscribe { request_id, session_id: "__kernel_resources__", attachment_id,
+            subscription_scope: "kernel_resources", heartbeat_interval_ms? }
+
+Request  WatchKernelResources {
+           subscription_request_id: String,
+           watches: [ { resource: String, params: Object, known_revision: String? } ]
+         }                                  // replaces the whole watch set
+Response KernelResourcesWatched { refused: [ { resource, params, code, message } ] }
+
+Event    KernelResourceChanged {           // wire name kernel_resource_changed
+           resource, params, revision: String,
+           body: { "unchanged": {} }
+               | { "snapshot": { data } }
+               | { "changes": { base_revision, changes: [..] } }
+         }
+```
+
+Rules:
+
+- The scope and sentinel session id follow `waiting_room_inventory`
+  (`WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE`); heartbeat and reconnect are the
+  subscription's own.
+- Every newly watched key gets one answer right after `KernelResourcesWatched`, then
+  one event per change, in order per key. `changes` is sent only when the kernel
+  can produce it from the client's revision; otherwise `snapshot`. A client that
+  cannot apply `changes` re-watches the key with `known_revision: null`.
+- Revisions are opaque content hashes of the public projection (the
+  `ClientCatalogRevisions` approach), so they survive a kernel restart.
+- Each watch is authorised like the request it replaces; a refused key is listed in
+  `refused` and never answered with an empty snapshot.
+- A frame is at most 1 MiB. A larger resource with a cursor pages with it and
+  sends `changes`. A larger resource without one (`provider_catalog`,
+  `provider_commands`, `terminal_commands`) is sent as parts of one snapshot,
+  `snapshot: { chunk, part: { index, count } }`: the kernel serialises the whole projection once to JSON and cuts the bytes into chunks (on UTF-8 boundaries) sized so that each complete encoded event, envelope (`resource`, `params`, `revision`, `part`) plus the chunk as an escaped JSON string, stays within the 1 MiB frame; the kernel measures the encoded event, not the raw chunk, and the multi-part test includes a quote- and backslash-heavy catalog at the boundary; the client joins the chunks in order and parses the complete projection, so any shape (objects, maps, a provider whose `models` alone exceeds 1 MiB) is reconstructed exactly. Every part carries the same `revision` and comes from one
+  materialised snapshot; if the resource changes mid-send the kernel abandons the
+  send and restarts with the new revision. A client commits only when it holds
+  all `count` parts of one revision.
+- Only public projections travel: never secret values, tokens or credentials.
+
+Resources (v1): `vault_status`, `vault_entries`, `provider_accounts`,
+`provider_catalog`, `provider_commands`, `terminal_commands`, `app_installations`,
+`user_app_views`, `extensions`, `notification_sources`, `session_processes`,
+`room_terminals`, `slices`, `user_config`, `dictation_status`,
+`project_environment`. `provider_catalog` and `provider_commands` take the
+scope params `{ provider?, account_profiles?, execution_location? }` of
+`GetProviderCatalog`; the params are part of the watch key and of the revision; later `room_list`, which replaces the
+`waiting_room_inventory` scope and its `waiting_room_inventory_changed` /
+`waiting_room_rows_changed` events. The feed also replaces `client_catalog_changed`
+with the conditional `GetClientCatalogSnapshot.known`, `provider_catalog_changed`,
+`slices_changed` and the `SubscribeUserAppViews` long poll; each replaced event or
+request is removed in the change that moves its resource.
+
+`AttachSessionView` gains `known_revision`; a match answers the history as
+`unchanged`. The revision identifies the projection the attach returns, not the
+Room: the history outline covers one group of six agents chosen by
+`preferred_agent_id` (or the focused agent) and the effective
+`latest_prompt_count` (`runtime/router/session_view.rs`). The kernel hashes the
+public history revision, the state event id, the selected agent group ids and the
+turn count for the caller, so a client holding another group or turn count, or no
+history (`known_revision: null`), gets the full history. Live Room events stay on
+the session subscription with `resume_from_event_id`.
 
 ## 4.2 Planned Command-Dispatch Surface
 
@@ -4318,7 +4400,7 @@ from #885. The room agent tools surface publishes
 `chariox.events.subscribe/subscriptions/inbox/ack/yield/blocked`. Tools require the
 current task and prompt IDs; hidden turn context supplies both. Independent
 user prompts retain separate task records. Work can be working, waiting on
-admitted named sources with a future deadline, blocked on an explicit owner
+admitted named sources (a goal adds a future deadline), blocked on an explicit owner
 action, done, or owner-cancelled. Cancellation is never successful completion.
 
 Obligation/registration, wait intent, event admission and delivery intent commit
@@ -5248,8 +5330,9 @@ authority for its own sessions, agents, terminals and files.
   target keeps running.
 - Kernel files (kernel API requests, any kernel, owner only: a Chariox terminal or a local grant holder, or the
   gateway acting for one): `StatKernelFile { path, with_sha256 }` -> `KernelFileStat { stat: {path, exists, kind,
-  size, modified_ms, sha256, partial_size} }`; `ListKernelDirectory { path }` -> `KernelDirectoryListed { path,
-  entries, truncated }` (2000 entries); `ReadKernelFile { path, offset, length }` (length <= 64 KiB) ->
+  size, modified_ms, revision, mode, sha256, partial_size} }`; `ListKernelDirectory { path, offset }` ->
+  `KernelDirectoryListed { path, entries: [{name, kind, size, modified_ms, revision, mode}], truncated }` (2000
+  entries a page, sorted by name; `truncated` means more follow at `offset` + the entries returned; local 1005); `ReadKernelFile { path, offset, length }` (length <= 64 KiB) ->
   `KernelFileChunk { path, offset, data_base64, size, eof }`; `WriteKernelFile { path, offset, data_base64,
   total_size, sha256?, overwrite }` (chunk <= 64 KiB; chunks may be sent without waiting for each answer, and one that arrives ahead of the staged bytes waits up to 2 s for them) -> `KernelFileWritten { path, received, complete,
   sha256 }`. Paths are absolute or `~/`. An upload lives in `<path>.chariox-partial` and the file appears at `path`
@@ -6702,7 +6785,7 @@ lease admission (`lease_resource` → the leased agent's caller binding) admits 
 and nothing else is needed, so a private relay works:
 
 - `read_leased_agent_file { leased_agent_id, path, offset }` →
-  `leased_agent_file_read { size_bytes, sha256?, revision, content }`: one slice of at most
+  `file_slice_read { size_bytes, sha256?, revision, content }`: one slice of at most
   4 MiB (the Environment import's slice). The slice at offset 0 carries the whole file's SHA-256;
   every slice carries the file's `revision` (device, inode, size, mtime, ctime), and the home
   refuses a slice of another revision.
@@ -6721,7 +6804,7 @@ and nothing else is needed, so a private relay works:
   home retries it for 30 s more and the failure names the leftover; the next copy to that path
   replaces it.
 
-Refusals are `leased_agent_file_refused { reason }`, final and phrased for the model. A receiving
+Refusals are `file_refused { reason }` (peer 444 renamed the 442 answers `leased_agent_file_read` and `leased_agent_file_refused`, which the machine file requests share), final and phrased for the model. A receiving
 workspace refuses absolute paths, `..`, any link on the way, a final link or folder, any write
 under `.git` (any case, any depth) or `.chariox*`, a plan-mode receiver, an existing file without
 `overwrite`, more than 256 MiB, and more than the volume's free space. Reads refuse the same path
@@ -7093,6 +7176,19 @@ pair's peer number for chunked kernel uploads. Managed upgrades admit 1000 and 1
 `fixtures/room-exec-protocol.json`, `fixtures/agent-tree-finished.json`. Focused check:
 `cargo test -p chariox-kernel --lib -- workflow_gate exec_place placeable_on agent_tree protocol_shapes`.
 
+Landing 9 sub-agent panes (part of local 1005 and relay peer 444, below) add the optional `account_profile`, `workspace_id`,
+`worktree_id` and `worker_kernel_id` of an `AgentTreeNode` (omitted when the node has none, and for a
+viewer who may not see parameters), so a client shows a sub-agent's machine, workspace, worktree, provider,
+account, model, variant, mode and permissions without reading each agent. An agent's wait is a row of its
+own transcript: when a wait commits at the end of a turn the kernel writes a `provider_tool` row
+`{"tool":"chariox.wait","id":"wait:<task>:<started_at_ms>","status":"running","input":{"reason","deadline_ms"},
+"started_at_ms","finished_at_ms":null}` under the merge key `wait:<task>:<started_at_ms>`; when the agent wakes (or the
+owner stops the task) the kernel rewrites that same row in place (same history sequence) as `"status":"completed"` with
+`finished_at_ms` and `woken_by {kind, source_id}` (`kind` is the inbox event kind that woke it, or `cancelled`). Only a wake that
+ends the wait closes the row: a message, or an event that steers another turn, leaves it running, and a wake the provider
+refuses rewrites it back to running. Focused
+check: `cargo test -p chariox-kernel --lib -- a_yield_writes_one_wait_row stopping_a_waiting_task a_node_reports protocol_shapes`.
+
 Landing 8 carries local daemon protocol 1003 and relay peer 442. Local 1003: `HideAgent` /
 `AgentHidden` and the agents' `hidden` flag replace the agent archive (`ArchiveAgent`,
 `ListArchivedAgents` and `AgentArchived` are gone); machines carry no aliases and
@@ -7106,6 +7202,72 @@ request frames, `SetLeasedAgentDeadline`, `DeleteRoomPeer` and the leased agent 
 client (`landing8-protocol.test.ts`). Focused checks:
 `cargo test -p chariox-kernel --lib -- landing8 protocol_shapes client_protocol_conformance` and
 `node --test packages/kernel-client/dist/landing8-protocol.test.js`.
+
+Landing 9 carries local daemon protocol 1005 and relay peer 444. Local 1005: the sub-agent tree node fields and
+the wait row of the sub-agent panes (above), Files on the owner's
+machines (listings with `revision` and `mode`, `ListKernelDirectory.offset`, the file transfer jobs),
+Room setup (`CreateSession.setup`, `RuntimeSession.room_setup`, `RetryRoomSetup`, `DismissRoomSetup`),
+`SuggestSessionAlias` and `git_available` on the launch target, and an agent's `wait.deadline_ms` that
+is `null` for a yield without a deadline (`protocol_shapes/agent_lifecycle.rs`). Relay peer 444 renames
+the leased agent file answers. Managed upgrades admit 1002 and 1003.
+
+### MP-08 / MP-09 / MP-10 / MP-11: Files on the owner's machines — local 1005 / relay peer 444
+
+The Kernel files requests above are the owner's Files service on a machine. Local 1005 adds a
+`revision` (device, inode, size, mtime, ctime) and the Unix `mode` to each entry and stat, and a
+page `offset` to `ListKernelDirectory`. **The kernel's own state is never listed, read or written**:
+its home (`CHARIOX_HOME`, `~/.chariox`), config, state and log folders and the Vault file (as
+configured) answer `file_state_protected`; a listing omits them, links are resolved first, and
+`..` cannot reach them. The same refusal holds for the peer requests and for the agent tools.
+
+A file or folder is copied or moved between two machines of the owner by a kernel-owned transfer
+job. The kernel that is to hold the copy (the destination) pulls from the source, over the relay;
+the client or agent that asked carries no bytes and may go away:
+
+- Local requests (owner only, like the file requests): `StartFileTransfer { source: { kernel?,
+  path }, destination_folder, name?, conflict, move }` → `FileTransfer { job }`;
+  `GetFileTransfer { job_id }` → `FileTransfer { job }`; `ListFileTransfers` → `FileTransfers
+  { jobs }` (newest first; 64 finished jobs are kept); `CancelFileTransfer { job_id }`. `kernel`
+  names a kernel of the same owner (id, name or machine name); absent means this machine.
+  `conflict` is `fail` (default; the error names the choices), `replace`, `keep_both`
+  (`name (2).ext`, `name (3).ext`, ...) or `skip` (done, nothing copied, `skipped` counts it).
+  `move` deletes the source only after the destination holds the verified copy. A job reads
+  `state` (`scanning`, `copying`, `finishing`, `done`, `failed`, `canceled`), `destination`,
+  `bytes_done` / `bytes_total`, `files_done` / `files_total`, `skipped`, `current`, `sha256` (a
+  single file), `error` and times. It survives the client and a kernel restart: each job is recorded in
+  `<state>/file-transfers/`, and one the kernel stopped under continues from its staged bytes
+  once the machine it reads from can be reached (15 minutes; then it ends as failed and says so).
+  A move interrupted while the source was being deleted ends as failed with the copy kept, since
+  repeating the deletes blindly could remove what was not copied.
+- Peer requests between kernels of the same Cloud owner (the same admission as the peer agent
+  requests: a key-bound identity of the same realm and user): `stat_machine_path { path }` →
+  `machine_path_stat { stat }`; `list_machine_directory { path, offset }` → `machine_directory
+  { entries, truncated }`; `read_machine_file { path, offset }` → `file_slice_read` (4 MiB slices; the
+  slice at offset 0 carries the file's SHA-256); `delete_machine_path { path, expect_revision? }` →
+  `machine_path_deleted` (a file only while its revision is still `expect_revision`; a folder only
+  when empty); `start_file_transfer { request }`, `get_file_transfer { job_id }`,
+  `cancel_file_transfer { job_id }` → `file_transfer { job }`. A refusal is `file_refused { reason }`.
+- A file is read in 4 MiB slices, each bound to the source's revision, staged beside the destination
+  in a hidden `.chariox-copy-*` file and published when the assembled file has the source's digest;
+  its permissions are those of the source. A folder is copied file by file (four at once) into a
+  hidden staging folder (private, named by source machine, path and destination) and renamed into
+  place when whole, with the source's folder modes: a failed or canceled folder transfer publishes
+  nothing and leaves no staging; a retry keeps only what the source still has; `replace` swaps an
+  existing folder whole and is refused for a folder that holds the kernel's state; two transfers
+  never write to one destination at the same time (`keep_both` takes the next free name). Links and
+  special files are skipped and counted. A dropped link is waited out for 15 minutes; a copy that
+  gave up for a link keeps its staged bytes, and the same transfer started again continues from them.
+  There is no size cap.
+- Agent tools (the owner's reach, like the peer agent tools): `chariox.files.list`,
+  `chariox.files.read` (a page of at most 64 KiB), `chariox.files.copy { source: { machine?, path },
+  destination: { machine?, folder, name? }, conflict?, move?, wait_seconds? }` and
+  `chariox.files.transfer { job_id, machine?, cancel?, wait_seconds? }`. A copy result is the job
+  without its start time; no file content ever reaches the model.
+
+Peer 444 also renames the 442 answers `leased_agent_file_read` and `leased_agent_file_refused` to
+`file_slice_read` and `file_refused`, since both file services use them. Managed upgrades admit
+1002 and 1003. Focused checks: `cargo test -p chariox-kernel --lib -- machine_files kernel_files
+agent_file_copy file_copy_tool machine_file_requests protocol_shapes::machine_files`.
 
 ### Source availability of a notification trigger — local 1003
 
@@ -7206,3 +7368,17 @@ starts at the owner's answer (it used to be the first five minutes from the prom
 nobody had seen yet with `app_install_approval_expired`). The kernel-operation interaction is unchanged for
 clients that show it in the Room (`install:<installation>`, its message still lists the review).
 Focused checks: `cargo test -p chariox-kernel --lib app_install_control`, `app_install_prompt_shape_is_pinned`.
+
+### Room setup and Room name suggestion — local 1005
+
+`CreateSession` takes an optional `setup: { git_init?: bool, new_worktree?: bool, publish?: bool }`. The request still names the current checkout; the kernel creates the Room and its first agent at once, then runs the requested steps in the background, in this order: `git_init` (plain `git init` in the folder; refused when it is already a repository), `worktree` (a new worktree of the workspace, then the first agent's working directory moves to it the way `UpdateAgentConfig` moves it) and `publish` (the Room's own agent creates a private GitHub repository named after the folder with the machine's own CLI login, adds `origin` and pushes; its answer ends with `PUBLISHED <url>` or `FAILED <reason in plain words>`, and the last line is the verdict. It runs as a utility turn under the `RoomCommands` policy: its command approvals reach the person as one Room interaction, and the failure line never tells the person to run a command. There is no host-specific logic in Chariox). `setup` is refused with a `slice_ref` or `kernel_ref`.
+
+Every client sees the progress in the session projection as `room_setup: { steps: [{ id: "git_init" | "worktree" | "publish", state: "pending" | "running" | "done" | "failed", message?: string }] }`. The field is absent when there is no setup or every step is done, and it is not stored: a restart drops a running setup. A failed step stays, with a short `message` that says what to do next, until `DismissRoomSetup` or (for `publish`) `RetryRoomSetup`; a failed `git_init` or `worktree` drops the steps after it.
+
+While a step is pending or running, or `git_init` or `worktree` failed and was not dismissed, a `SubmitPrompt` to an agent of that Room is queued (`Queued`) and starts by itself when the hold lifts. A failed `publish` never holds prompts. `RetryRoomSetup { session_id }` runs a failed `publish` again (an error when nothing failed); `DismissRoomSetup { session_id }` clears the failed steps (for `worktree`: continue in the current checkout) and is a no-op when nothing failed. Both answer `RoomSetupUpdated { session }` and follow the authorization of `AliasSession`.
+
+`SuggestSessionAlias { workspace_id }` answers `SessionAliasSuggested { workspace_id, alias }`: the name `CreateSession` would give a new Room in that workspace now. It changes nothing and any connected client may ask.
+
+`WaitingRoomLaunchTarget.git_available` (always serialized, `false` for readers that lack it) reports whether a `git` executable runs on the kernel's machine; a client offers "Initialize Git" only when it is true.
+
+Focused checks: `cargo test -p chariox-kernel --test kernel_websocket_runtime_integration room_setup`, `cargo test -p chariox-kernel --lib room_setup`.

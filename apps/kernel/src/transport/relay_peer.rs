@@ -207,7 +207,12 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// answers `x-chariox-relay-requests: binary-v1`, and sizes binary chunks to the link. It adds
 /// `SetLeasedAgentDeadline`, `DeleteRoomPeer` and the `chariox.file.copy` requests
 /// `ReadLeasedAgentFile`, `WriteLeasedAgentFile` and `DiscardLeasedAgentFile`.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 442;
+/// MP-08 / MP-09 / MP-10 / MP-11: peer 444 (files and sub-agent panes) adds the machine file requests `StatMachinePath`,
+/// `ListMachineDirectory`, `ReadMachineFile` and `DeleteMachinePath` and the transfer requests
+/// `StartFileTransfer`, `GetFileTransfer` and `CancelFileTransfer` between kernels of one owner, and
+/// renames the answers `LeasedAgentFileRead` and `LeasedAgentFileRefused` to `FileSliceRead` and
+/// `FileRefused`, which both file services use.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 444;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -1063,6 +1068,37 @@ pub enum RelayPeerRequest {
         overwrite: bool,
         content: RemoteFileBytes,
     },
+    /// Files on this machine for another kernel of the same owner. What it is, by absolute path.
+    StatMachinePath {
+        path: String,
+    },
+    /// A page of a folder's entries, sorted by name, starting at entry `offset`.
+    ListMachineDirectory {
+        path: String,
+        offset: u64,
+    },
+    /// One slice of a file, starting at `offset`; the answer is `FileSliceRead`.
+    ReadMachineFile {
+        path: String,
+        offset: u64,
+    },
+    /// Deletes a file (only while its revision is still `expect_revision`) or an empty folder: the
+    /// source of a move, once the destination holds a verified copy.
+    DeleteMachinePath {
+        path: String,
+        #[serde(default)]
+        expect_revision: Option<String>,
+    },
+    /// A file transfer whose destination is this machine, started by another kernel of the owner.
+    StartFileTransfer {
+        request: crate::local::StartFileTransferRequest,
+    },
+    GetFileTransfer {
+        job_id: String,
+    },
+    CancelFileTransfer {
+        job_id: String,
+    },
     /// Drops what an unfinished `WriteLeasedAgentFile` staged for `path`.
     DiscardLeasedAgentFile {
         leased_agent_id: String,
@@ -1534,7 +1570,7 @@ pub enum RelayPeerResponse {
     LeasedAgentMetaModeUpdated {
         leased_agent: LeasedAgent,
     },
-    LeasedAgentFileRead {
+    FileSliceRead {
         /// The whole file's size, so the home knows when it has everything.
         size_bytes: u64,
         /// SHA-256 of the whole file; sent with the slice at offset 0.
@@ -1553,8 +1589,20 @@ pub enum RelayPeerResponse {
         sha256: Option<String>,
     },
     LeasedAgentFileDiscarded,
-    /// The worker will not read or write that file; repeating the request cannot change it.
-    LeasedAgentFileRefused {
+    MachinePathStat {
+        stat: crate::local::KernelFileStat,
+    },
+    MachineDirectory {
+        entries: Vec<crate::local::KernelDirectoryEntry>,
+        /// More entries follow at `offset` + `entries.len()`.
+        truncated: bool,
+    },
+    MachinePathDeleted,
+    FileTransfer {
+        job: crate::local::FileTransferJob,
+    },
+    /// The other kernel will not do that to that path; repeating the request cannot change it.
+    FileRefused {
         reason: String,
     },
     LeasedAgentRemoteExtensionManifestUpdated {

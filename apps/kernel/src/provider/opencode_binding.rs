@@ -556,6 +556,9 @@ pub(crate) fn run_opencode_utility_prompt(
     timeout: Duration,
     policy: ProviderUtilityExecutionPolicy,
     stop: Option<&crate::provider::UtilityStop>,
+    native_interaction_bridge: Option<
+        std::sync::Arc<dyn crate::provider::ProviderNativeInteractionBridge>,
+    >,
 ) -> Result<String, DaemonError> {
     let base_url = run
         .structured_endpoint()
@@ -600,15 +603,21 @@ pub(crate) fn run_opencode_utility_prompt(
         state.stop();
         return Err(error);
     }
+    // A turn that may run commands asks the person like any agent does.
+    state.native_approval_origin = native_interaction_bridge
+        .as_deref()
+        .map(|bridge| crate::provider::setup_turn_origin(bridge, run));
 
     let deadline = Instant::now() + timeout;
     let mut output = String::new();
+    let mut last_message = None;
     let mut completed = false;
     while Instant::now() < deadline {
         if stop.is_some_and(|stop| stop.is_stopped()) {
             break;
         }
-        let drain = match drain_opencode_events(run, &mut state, None) {
+        let drain = match drain_opencode_events(run, &mut state, native_interaction_bridge.clone())
+        {
             Ok(drain) => drain,
             Err(error) => {
                 state.stop();
@@ -617,6 +626,14 @@ pub(crate) fn run_opencode_utility_prompt(
         };
         for chunk in drain.chunks {
             if chunk.kind == TerminalOutputKind::ProviderOutput {
+                if policy.returns_whole_answer()
+                    && chunk.merge_key != last_message
+                    && !output.is_empty()
+                    && !output.ends_with('\n')
+                {
+                    output.push('\n');
+                }
+                last_message = chunk.merge_key;
                 output.push_str(&String::from_utf8_lossy(&chunk.bytes));
             }
         }
@@ -1327,6 +1344,108 @@ mod tests {
             .last()
             .unwrap()
             .contains("/session/session-original/prompt_async "));
+    }
+
+    #[test]
+    fn l9_opencode_publish_verdict_follows_a_progress_message_without_a_newline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let (stop, stopped) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let mut user = String::new();
+            let mut subscriptions = Vec::new();
+            while stopped.try_recv().is_err() {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("{error}"),
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let (path, body) = loop {
+                    let mut buffer = [0; 4096];
+                    let size = stream.read(&mut buffer).unwrap();
+                    assert!(size > 0);
+                    request.extend_from_slice(&buffer[..size]);
+                    let text = String::from_utf8_lossy(&request);
+                    if let Some((headers, body)) = text.split_once("\r\n\r\n") {
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                line.to_lowercase()
+                                    .strip_prefix("content-length: ")
+                                    .and_then(|n| n.parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        if body.len() >= length {
+                            break (headers.lines().next().unwrap().to_owned(), body.to_owned());
+                        }
+                    }
+                };
+                if path.starts_with("GET /event ") {
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n: ready\n\n").unwrap();
+                    subscriptions.push(stream);
+                    continue;
+                }
+                let response = if path.starts_with("GET /global/health ") {
+                    json!({"healthy":true})
+                } else if path.starts_with("POST /session ") {
+                    json!({"id":"session-1"})
+                } else if path.contains("/prompt_async ") {
+                    user = serde_json::from_str::<serde_json::Value>(&body).unwrap()["messageID"]
+                        .as_str()
+                        .unwrap()
+                        .into();
+                    json!({})
+                } else if path.starts_with("GET /session/status ") {
+                    json!({"session-1":{"type":"idle"}})
+                } else if path.contains("/message?limit=100 ") {
+                    if user.is_empty() {
+                        json!([])
+                    } else {
+                        serde_json::to_value([("progress", "Creating the repository."), ("final", "PUBLISHED https://github.com/me/project")]
+                            .map(|(id, text)| json!({
+                                "info":{"id":id,"sessionID":"session-1","role":"assistant","parentID":user,"finish":"stop","time":{"completed":1}},
+                                "parts":[{"id":format!("text-{id}"),"sessionID":"session-1","messageID":id,"type":"text","text":text}]
+                            }))).unwrap()
+                    }
+                } else {
+                    panic!("unexpected request {path}")
+                };
+                let body = if path.contains("/prompt_async ") {
+                    String::new()
+                } else {
+                    response.to_string()
+                };
+                write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            }
+        });
+        let run = test_run_with_endpoint(
+            LaunchProviderRequest::new("s", "opencode", "opencode", "default", "default"),
+            false,
+            &endpoint,
+        );
+        let result = super::run_opencode_utility_prompt(
+            &run,
+            "Publish",
+            "",
+            Duration::from_secs(5),
+            crate::provider::ProviderUtilityExecutionPolicy::RoomCommands,
+            None,
+            None,
+        );
+        stop.send(()).unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            result.unwrap().lines().last(),
+            Some("PUBLISHED https://github.com/me/project")
+        );
     }
 
     fn prompt_request_server() -> (String, thread::JoinHandle<serde_json::Value>) {

@@ -1,6 +1,6 @@
 {
-  "local": 1003,
-  "relayPeer": 442,
+  "local": 1005,
+  "relayPeer": 444,
   "hideAgent": {
     "HideAgent": {
       "session_id": "room-1",
@@ -56,7 +56,7 @@
     },
     {
       "kind": "delete_room_peer",
-      "protocol_version": 442,
+      "protocol_version": 443,
       "request_id": "spawn-1",
       "sender": {
         "kernel_id": "kernel-a",

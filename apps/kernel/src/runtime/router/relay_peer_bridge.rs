@@ -142,6 +142,13 @@ impl CommandRouter {
         self.runtime_state.serve_leased_agent_file(request).await
     }
 
+    pub(crate) async fn relay_machine_files(
+        &self,
+        request: crate::transport::relay_peer::RelayPeerRequest,
+    ) -> Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError> {
+        self.runtime_state.serve_machine_files(request).await
+    }
+
     pub(crate) async fn relay_room_browser_controller(
         &self,
         kernel_id: &str,

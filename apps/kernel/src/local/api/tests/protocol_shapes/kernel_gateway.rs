@@ -63,7 +63,7 @@ fn kernel_gateway_protocol_568_shapes_and_hash() {
     };
     let files = serde_json::json!({
         "stat": LocalDaemonRequest::StatKernelFile(StatKernelFileRequest { path: "/srv/b.bundle".into(), with_sha256: true }),
-        "list": LocalDaemonRequest::ListKernelDirectory(ListKernelDirectoryRequest { path: "~/".into() }),
+        "list": LocalDaemonRequest::ListKernelDirectory(ListKernelDirectoryRequest { path: "~/".into(), offset: 0 }),
         "read": LocalDaemonRequest::ReadKernelFile(ReadKernelFileRequest { path: "/srv/b.bundle".into(), offset: 0, length: 4 }),
         "write": LocalDaemonRequest::WriteKernelFile(WriteKernelFileRequest {
             path: "/srv/b.bundle".into(), offset: 0, data_base64: "AAEC".into(), total_size: 3,
@@ -71,10 +71,11 @@ fn kernel_gateway_protocol_568_shapes_and_hash() {
         }),
         "stat_answer": LocalDaemonResponse::KernelFileStat { stat: KernelFileStat {
             path: "/srv/b.bundle".into(), exists: true, kind: Some(KernelFileKind::File), size: Some(3),
-            modified_ms: Some(5), sha256: None, partial_size: None,
+            modified_ms: Some(5), revision: Some("2049:17:3:5.0:5.0".into()), mode: Some(0o644), sha256: None, partial_size: None,
         } },
         "listed": LocalDaemonResponse::KernelDirectoryListed { path: "/".into(), entries: vec![KernelDirectoryEntry {
             name: "a".into(), kind: KernelFileKind::Directory, size: 0, modified_ms: None,
+            revision: "2049:18:0:5.0:5.0".into(), mode: 0o755,
         }], truncated: false },
         "chunk": LocalDaemonResponse::KernelFileChunk { path: "/srv/b.bundle".into(), offset: 0, data_base64: "AAEC".into(), size: 3, eof: true },
         "written": LocalDaemonResponse::KernelFileWritten { path: "/srv/b.bundle".into(), received: 3, complete: true, sha256: None },
@@ -117,7 +118,7 @@ fn kernel_gateway_protocol_568_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "b646ae8a41e18035af4f08df2d8b209fa12fa8743c04366f5353e27fa5fec4f6"
+        "56070ffe67fe259ae7c2ecbe00c142eb74ab80a7ae1c34f2e61f5ad6ee13d47b"
     );
 }
 
@@ -228,7 +229,7 @@ fn outside_events_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "ea7ee0d63bb0cb6038c913c7da537b3b94cf588e92b7ca3957fe540d19da73ba"
+        "0bbf40dc32691d0e3ca58a65b27cdcb306c107e0a9712c5e8810852f38066b6a"
     );
 }
 

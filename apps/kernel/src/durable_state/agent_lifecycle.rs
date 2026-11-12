@@ -12,6 +12,8 @@ mod deadlines;
 mod delegation;
 mod delivery;
 mod leased_processes;
+#[cfg(test)]
+mod live_wait_tests;
 pub(crate) use leased_processes::LeasedProcessMutation;
 #[cfg(test)]
 mod inbox_lookup_tests;
@@ -276,6 +278,32 @@ impl DurableKernelStateStore {
         #[cfg(test)]
         TASK_QUERY_STEPS.with(|n| n.set(q.get_status(rusqlite::StatementStatus::VmStep)));
         tasks
+    }
+    /// The agents of `room` that still hold lifecycle work: a task that is working, waiting or
+    /// blocked, or a wake that can still fire. An agent that yielded on a wake, or whose turn
+    /// ended under a background hold, is idle in the roster but is not finished.
+    pub(crate) fn agents_with_unfinished_work(
+        &self,
+        room: &str,
+    ) -> Result<std::collections::HashSet<String>, DaemonError> {
+        let armed = wakes::ARMED
+            .iter()
+            .map(|state| format!("'{state}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let db = self.lock_connection("agent.lifecycle.unfinished_agents")?;
+        let mut q = db
+            .prepare(&format!(
+                "SELECT agent_id FROM agent_tasks WHERE room_id=?1 AND state IN ('working','waiting','blocked') \
+                 UNION SELECT agent_id FROM agent_wakes WHERE room_id=?1 AND json_extract(payload,'$.state') IN ({armed})"
+            ))
+            .map_err(sql)?;
+        let agents = q
+            .query_map([room], |row| row.get::<_, String>(0))
+            .map_err(sql)?
+            .collect::<Result<_, _>>()
+            .map_err(sql)?;
+        Ok(agents)
     }
     /// The room's unfinished tasks and its `finished` most recent finished ones, in ledger
     /// order. Older finished tasks are not read, so a long room costs a read no more.
@@ -863,8 +891,9 @@ fn decode_task(
     if t.state == ExecutionState::Waiting
         && t.wait.as_ref().is_none_or(|w| {
             w.registration_ids.is_empty()
-                || w.deadline_ms <= w.started_at_ms
-                || w.deadline_ms > i64::MAX as u64
+                || w.deadline_ms.is_some_and(|deadline| {
+                    deadline <= w.started_at_ms || deadline > i64::MAX as u64
+                })
         })
     {
         return Err(error("wait state corrupt; quarantine required"));
@@ -1488,6 +1517,8 @@ pub(crate) struct EventSubmitReceipt {
     pub stale: bool,
     /// Client-visible receipt, present only when this job recorded it.
     pub notice: Option<String>,
+    /// The event, when the provider refused it and it is pending again.
+    pub refused: Option<InboxEvent>,
 }
 
 pub(crate) fn finish_provider_event_submit(
@@ -1510,6 +1541,7 @@ pub(crate) fn finish_provider_event_submit(
             steered: event.target_prompt_id.is_some(),
             stale: true,
             notice: None,
+            refused: None,
         }));
     }
     let steered = event.target_prompt_id.is_some();
@@ -1518,6 +1550,7 @@ pub(crate) fn finish_provider_event_submit(
             steered,
             stale: false,
             notice: None,
+            refused: None,
         }));
     }
     let state = match &finished.result {
@@ -1536,6 +1569,7 @@ pub(crate) fn finish_provider_event_submit(
             steered,
             stale: false,
             notice: Some(receipt_notice(&settled)),
+            refused: (settled.state == "pending").then_some(settled),
         })),
         _ => Err(error("receipt outcome mismatch")),
     }

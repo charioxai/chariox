@@ -61,6 +61,7 @@ mod room_controller;
 mod room_environment;
 mod room_environment_placement;
 mod room_exec;
+mod room_setup;
 mod room_terminal;
 mod session_feed_596;
 mod session_view;
@@ -123,6 +124,7 @@ mod screenshot;
 mod waiting_room_workspace;
 
 mod leased_agent_file_copy;
+mod machine_files;
 mod payment_card;
 mod provider_tool_background_lifecycle;
 mod provider_tool_images;

@@ -626,6 +626,16 @@ impl KernelRuntimeState {
         })
     }
 
+    /// The Cloud owner whose kernels `sender` reaches, under the rules of its peer agent calls.
+    pub(super) fn peer_owner_of_agent(
+        &self,
+        sender: &crate::agent::AgentInstance,
+        kernel: &str,
+    ) -> Result<String, DaemonError> {
+        self.peer_agent_caller(sender, kernel)
+            .map(|caller| caller.owner)
+    }
+
     /// The one link to a kernel of the same owner. A kernel that is gone before it takes the
     /// request is unreachable, one gone or silent after it is uncertain; any answer it gave
     /// reaches the caller as it is.
@@ -648,13 +658,25 @@ impl KernelRuntimeState {
         kernel: &str,
         request: RelayPeerRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        self.peer_send(owner, kernel, request, PEER_AGENT_REQUEST_TIMEOUT)
+            .await
+    }
+
+    /// One request to a kernel of the same owner and its raw answer, waited for up to `timeout`.
+    pub(super) async fn peer_send(
+        &self,
+        owner: &str,
+        kernel: &str,
+        request: RelayPeerRequest,
+        timeout: std::time::Duration,
+    ) -> Result<RelayPeerResponse, DaemonError> {
         // The test link stands for the relay: its transport failures are the relay's.
         #[cfg(test)]
         if let Some(link) = peer_agent_link_for_tests::link(kernel) {
             let from = self.owned.config_projection.snapshot().daemon_id;
             return link(from, owner.to_string(), request).await;
         }
-        self.send_same_owner_peer_request(owner, kernel, request, PEER_AGENT_REQUEST_TIMEOUT)
+        self.send_same_owner_peer_request(owner, kernel, request, timeout)
             .await
     }
 }

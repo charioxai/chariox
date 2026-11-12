@@ -16,6 +16,11 @@ const RUNAWAY_BYTES_PER_SECOND: u64 = 128 * MIB;
 /// A stopped command's memory takes a moment to show as free; no second stop
 /// for the same cause before then.
 const SETTLE: Duration = Duration::from_secs(1);
+/// A paused command whose room does not come ends instead of waiting for
+/// ever. The kernel's stall signal averages ten seconds and judges a pool
+/// every pass; a pause that outlasts six such windows is waiting on a pool
+/// that is full by accounting but never stalls (an idle holder).
+const PAUSE_LIMIT_MS: u64 = 60_000;
 
 pub(super) struct Pool {
     pub(super) ceiling: u64,
@@ -23,6 +28,11 @@ pub(super) struct Pool {
     margin: u64,
     /// The host's own free memory counts too (the kernel's shared pool).
     host: bool,
+    /// Whether the machine itself reports memory pressure: little available
+    /// memory or tasks stalling on it. The pool's accounting of resident
+    /// bytes is not pressure (shared and file-backed pages count once per
+    /// process), so on the kernel's pool nothing yields to it alone.
+    machine_pressure: Box<dyn Fn() -> bool + Send + Sync>,
     #[cfg(target_os = "linux")]
     budget: Mutex<Weak<cgroup::Budget>>,
     members: Mutex<Vec<Weak<Mutex<Observation>>>>,
@@ -43,6 +53,12 @@ pub(super) struct CommandUse {
     pub group: Option<u32>,
     pub resident: u64,
     pub growth: u64,
+    /// The latest measured rate, without the runaway detector's decay. Only
+    /// current growth can justify stopping work after a successful pause.
+    pub measured_growth: u64,
+    /// The median of its growth over the last minute while it ran: what a
+    /// pause is sized by, since one spike says little of how it goes on.
+    pub steady_growth: u64,
     pub writes: u64,
     pub write_growth: u64,
     /// The process it runs past wrapping shells: what admission recognises.
@@ -63,6 +79,8 @@ pub(super) enum Cause {
 /// must not release memory that this headroom has not yet charged.
 pub(super) struct MemoryRoom {
     pub memory: u64,
+    /// The machine's free memory, not the ceiling, set `memory`.
+    pub host_bound: bool,
     pub growing: u64,
     observed: BTreeMap<String, u64>,
 }
@@ -98,10 +116,12 @@ impl Pool {
         peaks: Option<std::path::PathBuf>,
         volume: Box<admission::Volume>,
     ) -> Self {
+        let margin = (ceiling / 20).max((512 * MIB).min(ceiling / 10));
         Self {
             ceiling,
-            margin: (ceiling / 20).max((512 * MIB).min(ceiling / 10)),
+            margin,
             host,
+            machine_pressure: Box::new(move || host_short(margin) || machine_stalled()),
             #[cfg(target_os = "linux")]
             budget: Mutex::new(Weak::new()),
             members: Mutex::default(),
@@ -111,6 +131,16 @@ impl Pool {
             launch_generation: std::sync::atomic::AtomicU64::new(0),
             volume,
         }
+    }
+
+    /// The machine's pressure is the test's to set.
+    #[cfg(test)]
+    pub(super) fn with_machine_pressure(
+        mut self,
+        pressure: Box<dyn Fn() -> bool + Send + Sync>,
+    ) -> Self {
+        self.machine_pressure = pressure;
+        self
     }
 
     /// A pool whose volumes report `volume` (free, size) bytes.
@@ -214,6 +244,8 @@ impl Pool {
             memory: sampled.memory,
             margin: self.margin,
             growing,
+            host_bound: sampled.host_bound,
+            pressured: !self.host || self.under_pressure(),
             light,
             growth_room: admission::growth_room(self.ceiling),
             capacity: self.ceiling.saturating_sub(self.margin),
@@ -228,14 +260,16 @@ impl Pool {
         let refused = ledger.take_refused(current);
         let fillers = ledger.take_fillers(current);
         let capacity = room.capacity;
-        drop(launches);
         drop(ledger);
         self.end_oversized(current, refused, capacity);
         self.end_fillers(current, fillers);
+        self.end_overdue_wait(&members, &room);
         if let Some(window) = stalled {
+            drop(launches);
             self.stop_one(&members, None, Cause::Stalled(window));
             return;
         }
+        drop(launches);
         // Paused and held commands do not grow: with nothing growing the
         // pool waits rather than stops.
         if may_stop && growing > 0 && self.pressed(&members) {
@@ -347,17 +381,18 @@ impl Pool {
                                     .get(&command.pid)
                                     .is_none_or(|entry| entry.wait.is_none())
                             })
-                            .map(|command| command.growth)
+                            .map(|command| command.measured_growth)
                             .sum::<u64>(),
                 )
             });
         #[cfg(target_os = "linux")]
-        let charged = self
+        let budget = self
             .budget
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .upgrade()
-            .map_or(0, |budget| budget.used());
+            .upgrade();
+        #[cfg(target_os = "linux")]
+        let charged = budget.as_ref().map_or(0, |budget| budget.used());
         #[cfg(not(target_os = "linux"))]
         let charged: u64 = 0;
         // Never credit more domain charge than the aggregate headroom included.
@@ -375,13 +410,30 @@ impl Pool {
             .ceiling
             .saturating_sub(self.margin)
             .saturating_sub(charged.saturating_add(outside_cgroup));
+        let mut host_bound = false;
         if self.host {
             if let Some(host) = host_room(self.margin) {
-                room = room.min(host);
+                // RSS can charge the same shared pages many times. Physical
+                // headroom decides admission and resumption too, or a command
+                // paused during real pressure could stay stranded after it ends.
+                room = host;
+                host_bound = true;
+                #[cfg(target_os = "linux")]
+                if budget.is_some() {
+                    let budget_room = self
+                        .ceiling
+                        .saturating_sub(self.margin)
+                        .saturating_sub(charged);
+                    if budget_room < room {
+                        room = budget_room;
+                        host_bound = false;
+                    }
+                }
             }
         }
         MemoryRoom {
             memory: room,
+            host_bound,
             growing,
             observed,
         }
@@ -407,8 +459,82 @@ impl Pool {
         #[cfg(not(target_os = "linux"))]
         let (charged, stalled): (u64, bool) = (0, false);
         stalled
-            || charged.saturating_add(outside_cgroup) > self.ceiling.saturating_sub(self.margin)
-            || (self.host && host_short(self.margin))
+            || if self.host {
+                self.under_pressure()
+            } else {
+                charged.saturating_add(outside_cgroup) > self.ceiling.saturating_sub(self.margin)
+            }
+    }
+
+    /// The workload budget can be full while the host has plenty of memory.
+    /// Unlike RSS accounting, its hard limit is an actual allocation boundary.
+    fn under_pressure(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if self
+            .budget
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .upgrade()
+            .is_some_and(|budget| budget.pressured(self.margin))
+        {
+            return true;
+        }
+        (self.machine_pressure)()
+    }
+
+    /// A command paused or held for longer than `PAUSE_LIMIT_MS` ends with the
+    /// memory-stop outcome and its reason: room that did not come in that time
+    /// is not coming, and it must not stay stopped with no outcome.
+    fn end_overdue_wait(&self, members: &[Arc<Mutex<Observation>>], room: &admission::Room) {
+        let mut stopped_at = self.stopped_at.lock().unwrap_or_else(|e| e.into_inner());
+        if stopped_at.get("").is_some_and(|at| at.elapsed() < SETTLE) {
+            return;
+        }
+        let Some((waiting, blocked)) = admission::blocked_waiting(members, PAUSE_LIMIT_MS, room)
+        else {
+            return;
+        };
+        let notice = super::waits::overdue_line(
+            PAUSE_LIMIT_MS,
+            &blocked,
+            waiting.resident,
+            if room.host_bound {
+                None
+            } else {
+                Some(self.ceiling)
+            },
+        );
+        if self.end_waiting(waiting, notice, false) {
+            stopped_at.insert(String::new(), Instant::now());
+        }
+    }
+
+    /// Ends a paused command with the memory-stop outcome; whether it was sent.
+    fn end_waiting(
+        &self,
+        waiting: admission::PausedCommand,
+        notice: String,
+        stalled: bool,
+    ) -> bool {
+        crate::logging::warn_with_fields(
+            "process_resources.memory_stop",
+            notice.trim_end(),
+            serde_json::json!({
+                "pid": waiting.pid,
+                "resident_bytes": waiting.resident,
+                "ceiling_bytes": self.ceiling,
+                "waiting": true,
+                "stalled": stalled,
+            }),
+        );
+        waiting
+            .control
+            .send(WatchCommand::MemoryStop {
+                pid: waiting.pid,
+                limit_bytes: self.ceiling,
+                notice,
+            })
+            .is_ok()
     }
 
     fn stop_one(&self, members: &[Arc<Mutex<Observation>>], unit: Option<&str>, cause: Cause) {
@@ -441,26 +567,7 @@ impl Pool {
             Cause::Cap(_) => None,
         };
         if let Some((waiting, notice)) = paused {
-            crate::logging::warn_with_fields(
-                "process_resources.memory_stop",
-                notice.trim_end(),
-                serde_json::json!({
-                    "pid": waiting.pid,
-                    "resident_bytes": waiting.resident,
-                    "ceiling_bytes": self.ceiling,
-                    "waiting": true,
-                    "stalled": matches!(cause, Cause::Stalled(_)),
-                }),
-            );
-            if waiting
-                .control
-                .send(WatchCommand::MemoryStop {
-                    pid: waiting.pid,
-                    limit_bytes: self.ceiling,
-                    notice,
-                })
-                .is_ok()
-            {
+            if self.end_waiting(waiting, notice, matches!(cause, Cause::Stalled(_))) {
                 stopped_at.insert(key, Instant::now());
             }
             return;
@@ -619,6 +726,23 @@ fn host_short(margin: u64) -> bool {
         || cgroup::bounding()
             .iter()
             .any(|limited| cgroup::headroom(limited).is_some_and(|bytes| bytes < margin))
+}
+
+/// Tasks of the machine stall on memory a tenth of the time or more.
+#[cfg(target_os = "linux")]
+fn machine_stalled() -> bool {
+    std::fs::read_to_string("/proc/pressure/memory").is_ok_and(|text| {
+        text.lines()
+            .find_map(|line| line.strip_prefix("full avg10="))
+            .and_then(|value| value.split_whitespace().next())
+            .and_then(|value| value.parse::<f64>().ok())
+            .is_some_and(|share| share >= 10.0)
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn machine_stalled() -> bool {
+    false
 }
 
 /// Memory the host itself has left above `margin`: the user's apps or other

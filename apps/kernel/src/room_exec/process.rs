@@ -14,6 +14,9 @@ use super::{error, CancelReason, ExecOutcome, ExecStream, Record, RoomExecServic
 use crate::error::DaemonError;
 use crate::runtime::owned_process_signals::OwnedProcessSignals;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) struct Process {
     child: Child,
     signals: OwnedProcessSignals,
@@ -161,8 +164,9 @@ pub(super) fn run(
     mut input: mpsc::Receiver<Option<Vec<u8>>>,
     mut cancel: watch::Receiver<Option<CancelReason>>,
     service: RoomExecService,
-    mut permit: crate::runtime::process_resources::LaunchPermit,
+    permit: crate::runtime::process_resources::LaunchPermit,
 ) {
+    let mut permit = Some(permit);
     let mut stdin = process.child.stdin.take().expect("piped stdin");
     let stdout = process.child.stdout.take().expect("piped stdout");
     let stderr = process.child.stderr.take().expect("piped stderr");
@@ -228,7 +232,7 @@ pub(super) fn run(
 async fn supervise(
     process: &mut Process,
     cancel: &mut watch::Receiver<Option<CancelReason>>,
-    permit: &mut crate::runtime::process_resources::LaunchPermit,
+    permit: &mut Option<crate::runtime::process_resources::LaunchPermit>,
 ) -> ExecOutcome {
     // Observe exit without reaping first: the root's birth still witnesses its
     // complete private session when descendants must be cleaned up.
@@ -239,7 +243,20 @@ async fn supervise(
             _ = tokio::time::sleep(Duration::from_millis(25)) => {},
         }
         if sampled.elapsed() >= Duration::from_millis(250) {
-            permit.observe();
+            // Sampling takes the process-resources registry lock, which worker
+            // cleanup can hold: keep it off the runtime thread.
+            let Some(mut held) = permit.take() else {
+                break Some("the launch permit was lost".to_string());
+            };
+            match tokio::task::spawn_blocking(move || {
+                held.observe();
+                held
+            })
+            .await
+            {
+                Ok(held) => *permit = Some(held),
+                Err(failure) => break Some(format!("resource sampling failed: {failure}")),
+            }
             sampled = std::time::Instant::now();
         }
         match exited(&process.child) {

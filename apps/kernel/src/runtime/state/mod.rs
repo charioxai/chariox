@@ -108,6 +108,8 @@ pub(crate) use outside_events::{is_outside_event_request, source_not_available};
 mod environment_tools;
 mod file_copy_tool;
 mod leased_agent_file_serve;
+mod machine_files_runtime;
+mod machine_files_tools;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_browser;
@@ -196,6 +198,8 @@ mod room_exec_place_runtime_state;
 mod room_exec_runtime_state;
 mod room_screenshot;
 mod room_secret_observation;
+mod room_setup_publish;
+mod room_setup_runtime;
 mod room_shared_display;
 mod room_terminal_runtime_state;
 mod runtime_tool_call_activity;
@@ -238,6 +242,8 @@ pub(crate) struct KernelRuntimeState {
     unknown_peer_follows: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
     /// Peer spawns this kernel life is creating, by sending kernel and request id.
     peer_spawns_in_flight: peer_agent_inbound::PeerSpawnsInFlight,
+    /// File transfers whose destination is this kernel.
+    file_transfers: Arc<crate::machine_files::TransferJobs>,
     /// One pass at a time deletes the peers whose creator ended.
     created_peer_release: Arc<tokio::sync::Mutex<()>>,
     /// When Cloud's kernel directory was last read, and the kernels it listed as unlinked.
@@ -301,6 +307,7 @@ struct KernelRuntimeOwnedState {
     attachment_store: AttachmentServiceStore,
     provider_store: ProviderProcessServiceStore,
     agent_moves: crate::agent_move::AgentMoveStore,
+    room_setup: crate::session::RoomSetupStore,
     pending_provider_launch_credentials: Arc<
         std::sync::Mutex<
             BTreeMap<String, crate::provider::ProviderCredentialEnvironment>,
@@ -899,6 +906,7 @@ impl KernelRuntimeState {
             pending_agent_context_handoffs,
             room_terminals,
             agent_moves,
+            room_setup,
         ) = {
             let started = Instant::now();
             loop {
@@ -923,6 +931,7 @@ impl KernelRuntimeState {
                         app.pending_agent_context_handoff_store(),
                         app.room_terminals(),
                         app.agent_moves.clone(),
+                        app.room_setup.clone(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -1127,6 +1136,7 @@ impl KernelRuntimeState {
             restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             unknown_peer_follows: Default::default(),
             peer_spawns_in_flight: Default::default(),
+            file_transfers: Default::default(),
             created_peer_release: Default::default(),
             unlinked_kernels: Default::default(),
             lifecycle_sweeps: Default::default(),
@@ -1179,6 +1189,7 @@ impl KernelRuntimeState {
                 attachment_store,
                 provider_store,
                 agent_moves,
+                room_setup,
                 pending_provider_launch_credentials: Arc::new(std::sync::Mutex::new(
                     BTreeMap::new(),
                 )),
@@ -1680,6 +1691,7 @@ mod agent_task_projection;
 mod agent_trigger_firings;
 #[cfg(test)]
 mod agent_turn_task_tests;
+mod agent_wait_rows;
 mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod agent_workflow_tasks;

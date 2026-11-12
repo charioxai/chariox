@@ -354,7 +354,8 @@ pub(super) async fn handle_daemon_peer_request(
             | RelayPeerRequest::UnsubscribeWorkflowNotifications { .. }
             | RelayPeerRequest::DeliverWorkflowNotification { .. }
     ) || project_environment_request(&request)
-        || peer_agent_request(&request);
+        || peer_agent_request(&request)
+        || machine_file_request(&request);
     if same_owner_request {
         // The existing relay projects home-kernel claims to a bound Machine
         // identity for peer requests (the same seam used by execution leases).
@@ -449,6 +450,19 @@ pub(super) async fn handle_daemon_peer_request(
             stable_peer_daemon_id(from_daemon_id),
             requester_public_key.clone(),
         );
+        if machine_file_request(&request) {
+            let response = match router.relay_machine_files(request).await {
+                Ok(response) => response,
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            };
+            return encrypt_peer_response(&daemon_private_key, &requester_public_key, response);
+        }
         let outcome = if project_environment_request(&request) {
             router.relay_project_environment(&owner, request)
         } else {
@@ -580,6 +594,13 @@ pub(super) async fn handle_daemon_peer_request(
         | RelayPeerRequest::SpawnRoomPeer { .. }
         | RelayPeerRequest::DeleteRoomPeer { .. }
         | RelayPeerRequest::DeliverPeerAgentOutcome { .. }
+        | RelayPeerRequest::StatMachinePath { .. }
+        | RelayPeerRequest::ListMachineDirectory { .. }
+        | RelayPeerRequest::ReadMachineFile { .. }
+        | RelayPeerRequest::DeleteMachinePath { .. }
+        | RelayPeerRequest::StartFileTransfer { .. }
+        | RelayPeerRequest::GetFileTransfer { .. }
+        | RelayPeerRequest::CancelFileTransfer { .. }
         | RelayPeerRequest::ReadProjectEnvironment { .. }
         | RelayPeerRequest::PullProjectEnvironmentSecret { .. }
         | RelayPeerRequest::PullProjectEnvironmentFile { .. }
@@ -2603,6 +2624,20 @@ fn project_environment_setup_request(request: &RelayPeerRequest) -> bool {
     )
 }
 
+/// Files on this machine that another kernel of the same owner asks for.
+fn machine_file_request(request: &RelayPeerRequest) -> bool {
+    matches!(
+        request,
+        RelayPeerRequest::StatMachinePath { .. }
+            | RelayPeerRequest::ListMachineDirectory { .. }
+            | RelayPeerRequest::ReadMachineFile { .. }
+            | RelayPeerRequest::DeleteMachinePath { .. }
+            | RelayPeerRequest::StartFileTransfer { .. }
+            | RelayPeerRequest::GetFileTransfer { .. }
+            | RelayPeerRequest::CancelFileTransfer { .. }
+    )
+}
+
 fn peer_agent_request(request: &RelayPeerRequest) -> bool {
     matches!(
         request,
@@ -3022,6 +3057,124 @@ mod tests {
 
     /// MP-08 / MP-09 / MP-10 / MP-11: `chariox.file.copy` slices reach a leased agent's workspace
     /// only from the home that holds its lease, through the real encrypted peer handler.
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (files r1): the files of this machine answer a kernel of the
+    // same Cloud owner and nobody else, and never from the kernel's own state.
+    #[test]
+    fn machine_file_requests_serve_only_a_kernel_of_the_same_owner() {
+        std::thread::Builder::new()
+            .name("machine file admission test".to_string())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("machine file test runtime")
+                    .block_on(machine_file_requests_serve_only_a_kernel_of_the_same_owner_inner());
+            })
+            .expect("machine file test thread")
+            .join()
+            .unwrap_or_else(|error| std::panic::resume_unwind(error));
+    }
+
+    async fn machine_file_requests_serve_only_a_kernel_of_the_same_owner_inner() {
+        let _env = crate::env_lock::lock();
+        let folder = crate::test_support::TestWorktree::new("machine-file-admission");
+        std::fs::write(folder.path().join("notes.txt"), b"for my other machine").unwrap();
+        let state_home = folder.path().join("kernel-home");
+        std::fs::create_dir_all(state_home.join("vault")).unwrap();
+        std::fs::write(state_home.join("vault/vault.json"), b"secret").unwrap();
+        let previous = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &state_home);
+
+        let peer_private_key = relay_crypto::generate_private_key_base64();
+        let peer_public_key = relay_crypto::public_key_from_private_key_base64(&peer_private_key)
+            .expect("peer public key");
+        let thumbprint = public_key_thumbprint(&peer_public_key);
+        let mut config = lease_worker_config();
+        config.kernel_runtime_role = crate::config::KernelRuntimeRole::General;
+        config.remote_lease_capacity = None;
+        let app = DaemonApp::bootstrap(config).expect("kernel should boot");
+        let target_public_key = app.config().relay_public_key.clone();
+        let router = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            2,
+        ));
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let ask = |identity: RelayCallerIdentity, request: RelayPeerRequest| {
+            let (router, state) = (router.clone(), state.clone());
+            let (private_key, target) = (peer_private_key.clone(), target_public_key.clone());
+            async move {
+                send_authenticated_peer_request_for_test(
+                    &router,
+                    &state,
+                    "kernel-other",
+                    identity,
+                    &private_key,
+                    &target,
+                    request,
+                )
+                .await
+            }
+        };
+        let read = |path: std::path::PathBuf| RelayPeerRequest::ReadMachineFile {
+            path: path.display().to_string(),
+            offset: 0,
+        };
+        let notes = folder.path().join("notes.txt");
+
+        // The same owner reads the file...
+        let same_owner = scoped_machine_identity("machine-other", Some(thumbprint.clone()));
+        let RelayPeerResponse::FileSliceRead { content, .. } =
+            ask(same_owner.clone(), read(notes.clone()))
+                .await
+                .expect("a kernel of the same owner is served")
+        else {
+            panic!("a slice")
+        };
+        assert_eq!(&**content.decode().unwrap(), b"for my other machine");
+        // ...but not the kernel's own state, and cannot write through a read.
+        let RelayPeerResponse::FileRefused { reason } = ask(
+            same_owner.clone(),
+            read(state_home.join("vault/vault.json")),
+        )
+        .await
+        .unwrap() else {
+            panic!("a refusal")
+        };
+        assert!(reason.contains("own state or Vault"), "{reason}");
+        // Another owner, an identity without the key binding, and a service are refused.
+        let mut other_owner = same_owner.clone();
+        other_owner.user_id = Some("someone-else".to_string());
+        let mut other_realm = same_owner.clone();
+        other_realm.realm_id = "realm-2".to_string();
+        let unbound = scoped_machine_identity("machine-other", None);
+        for identity in [other_owner, other_realm, unbound] {
+            for request in [
+                read(notes.clone()),
+                RelayPeerRequest::ListMachineDirectory {
+                    path: folder.path().display().to_string(),
+                    offset: 0,
+                },
+                RelayPeerRequest::DeleteMachinePath {
+                    path: notes.display().to_string(),
+                    expect_revision: None,
+                },
+            ] {
+                let refused = ask(identity.clone(), request).await;
+                assert!(
+                    matches!(&refused, Err(error) if error.code == "unauthorized"),
+                    "{refused:?}"
+                );
+            }
+        }
+        assert!(notes.exists());
+        match previous {
+            Some(value) => std::env::set_var("CHARIOX_HOME", value),
+            None => std::env::remove_var("CHARIOX_HOME"),
+        }
+    }
+
     #[test]
     fn leased_agent_file_slices_serve_only_the_home_that_holds_the_lease() {
         std::thread::Builder::new()
@@ -3133,7 +3286,7 @@ mod tests {
             offset: 0,
         })
         .await;
-        let RelayPeerResponse::LeasedAgentFileRead {
+        let RelayPeerResponse::FileSliceRead {
             size_bytes,
             sha256: read_sha256,
             content,
@@ -3149,7 +3302,7 @@ mod tests {
         let hook = send(write(".git/hooks/pre-commit")).await;
         assert!(matches!(
             decode_lease_worker_response(&source_private_key, hook),
-            RelayPeerResponse::LeasedAgentFileRefused { reason } if reason.contains(".git")
+            RelayPeerResponse::FileRefused { reason } if reason.contains(".git")
         ));
         assert!(!workspace.root.join(".git/hooks/pre-commit").exists());
 

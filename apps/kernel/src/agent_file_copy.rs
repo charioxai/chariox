@@ -4,6 +4,7 @@
 //! SHA-256. The file travels in the Environment import's slices, every slice bound to the
 //! source's revision, and lands through the Kernel Files staging engine, which publishes it only
 //! when the assembled file has the source's digest.
+mod place;
 mod transfer;
 mod workspace_path;
 mod workspace_slices;
@@ -11,9 +12,16 @@ mod workspace_slices;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use transfer::{pull, push, Copied, CopyOptions, LinkError, RemoteWorkspace};
+pub(crate) use place::Place;
+pub(crate) use transfer::{
+    patiently, pull, push, CancelToken, Control, Copied, CopyOptions, LinkError, RemoteSource,
+    RemoteWorkspace, CANCELED, UNREACHABLE_ADVICE,
+};
+pub(crate) use workspace_path::Access;
+#[cfg(test)]
+pub(crate) use workspace_slices::SLICE_BYTES;
 pub(crate) use workspace_slices::{
-    discard, read_slice, write_slice, SourceSlice, WriteSlice, MAX_FILE_BYTES,
+    discard, read_slice, revision, staging_of, write_slice, SourceSlice, WriteSlice,
 };
 
 use std::path::PathBuf;

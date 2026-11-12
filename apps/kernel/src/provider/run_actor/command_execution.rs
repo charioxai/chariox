@@ -204,7 +204,7 @@ pub(super) fn execute_utility_command(
                 &mut utility,
                 &envelope,
                 timeout,
-                true,
+                policy,
                 cancellation.as_ref(),
                 admission.as_ref(),
             );
@@ -214,13 +214,12 @@ pub(super) fn execute_utility_command(
         runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
         return result;
     }
-    let expects_text = policy != ProviderUtilityExecutionPolicy::SessionCommand;
     let result = run_claude_utility_prompt_on_runtime(
         &run,
         &mut state,
         &envelope,
         timeout,
-        expects_text,
+        policy,
         None,
         admission.as_ref(),
     );
@@ -233,7 +232,7 @@ fn run_claude_utility_prompt_on_runtime(
     state: &mut super::super::ClaudeRuntimeState,
     envelope: &PromptEnvelope,
     timeout: Duration,
-    expects_text: bool,
+    policy: ProviderUtilityExecutionPolicy,
     cancellation: Option<&super::utility_cancellation::MetadataUtilityCancellation>,
     admission: Option<&crate::provider::ProviderUtilityAdmission>,
 ) -> Result<String, DaemonError> {
@@ -245,6 +244,7 @@ fn run_claude_utility_prompt_on_runtime(
     drop(guard);
     let deadline = std::time::Instant::now() + timeout;
     let mut output = String::new();
+    let mut last_message = None;
     while std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(100));
         if cancellation.is_some_and(|c| c.is_cancelled()) {
@@ -253,6 +253,14 @@ fn run_claude_utility_prompt_on_runtime(
         let batch = drain_claude_events(run, state)?;
         for chunk in batch.chunks {
             if chunk.kind == crate::terminal::TerminalOutputKind::ProviderOutput {
+                if policy.returns_whole_answer()
+                    && chunk.merge_key != last_message
+                    && !output.is_empty()
+                    && !output.ends_with('\n')
+                {
+                    output.push('\n');
+                }
+                last_message = chunk.merge_key;
                 output.push_str(&String::from_utf8_lossy(&chunk.bytes));
             }
         }
@@ -265,7 +273,7 @@ fn run_claude_utility_prompt_on_runtime(
         }
         if batch.prompt_completed {
             let output = output.trim().to_string();
-            if output.is_empty() && expects_text {
+            if output.is_empty() && policy != ProviderUtilityExecutionPolicy::SessionCommand {
                 return Err(DaemonError::ProviderProtocol {
                     provider_run_id: run.id().to_string(),
                     operation: "claude_utility_empty_output",

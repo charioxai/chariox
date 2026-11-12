@@ -1067,7 +1067,7 @@ mod tests {
                 prompt: "child-turn".into(),
                 registrations: vec![wake.registration_id.clone()],
                 cursor: 0,
-                deadline: now + 60_000,
+                deadline: Some(now + 60_000),
                 reason: "watch".into(),
                 now,
             })
@@ -1274,7 +1274,7 @@ mod tests {
                 prompt: "memory-turn".into(),
                 registrations: vec![wake.registration_id.clone()],
                 cursor: 0,
-                deadline: now + 60_000,
+                deadline: Some(now + 60_000),
                 reason: "watch".into(),
                 now,
             })

@@ -37,7 +37,7 @@ fn yield_on(f: &Fixture, ids: &[&str]) -> Result<Outcome, DaemonError> {
         prompt: "p".into(),
         registrations: ids.iter().map(|id| (*id).into()).collect(),
         cursor: 0,
-        deadline: 60_000,
+        deadline: Some(60_000),
         reason: "worker result".into(),
         now: 2,
     })

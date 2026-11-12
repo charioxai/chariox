@@ -473,7 +473,7 @@ mod tests {
         let mut task = task(agent, id, "waiting");
         task.wait = Some(crate::durable_state::agent_lifecycle::AgentWait {
             registration_ids: registration_ids.iter().map(|id| id.to_string()).collect(),
-            deadline_ms: started + 60 * MINUTE,
+            deadline_ms: Some(started + 60 * MINUTE),
             started_at_ms: started,
             inbox_cursor: 0,
             long_wait_notified: false,

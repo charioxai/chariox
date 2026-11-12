@@ -49,22 +49,48 @@ pub(crate) fn cloud_relay_token_refresh_due(config: &DaemonConfig, now_ms: u64) 
     // Selected transport: only a missing URL or a non-canonical spelling differ.
     config.relay_url.as_deref() != Some(profile.relay_url.as_str())
         || config.relay_token.is_none()
-        || !cloud_relay_token_matches_runtime_key(config)
+        || !cloud_relay_token_matches_runtime_identity(config)
         || profile
             .token_expires_at_ms
             .is_none_or(|expires_at| expires_at <= now_ms + CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS)
 }
 
-/// A token past its expiry that the kernel could renew with its credentials;
-/// the relay refuses it, so connecting with it only loops.
-pub(crate) fn cloud_relay_token_is_expired(config: &DaemonConfig, now_ms: u64) -> bool {
-    config.cloud_relay.as_ref().is_some_and(|profile| {
-        cloud_relay_transport_selected(config)
-            && cloud_relay_profile_has_runtime_credentials(profile)
-            && profile
-                .token_expires_at_ms
-                .is_some_and(|expires_at| expires_at <= now_ms)
-    })
+/// Why the kernel must not connect with its Cloud token yet, though it could renew it
+/// with its credentials. The relay refuses both cases, so connecting only loops.
+pub(crate) fn cloud_relay_token_unusable(
+    config: &DaemonConfig,
+    now_ms: u64,
+) -> Option<CloudRelayTokenProblem> {
+    let profile = config.cloud_relay.as_ref()?;
+    if !cloud_relay_transport_selected(config)
+        || !cloud_relay_profile_has_runtime_credentials(profile)
+    {
+        return None;
+    }
+    if profile
+        .token_expires_at_ms
+        .is_some_and(|expires_at| expires_at <= now_ms)
+    {
+        return Some(CloudRelayTokenProblem::Expired);
+    }
+    (config.relay_token.is_some() && !cloud_relay_token_matches_runtime_identity(config))
+        .then_some(CloudRelayTokenProblem::ForAnotherIdentity)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloudRelayTokenProblem {
+    Expired,
+    /// Issued for another key or machine than this kernel registers with.
+    ForAnotherIdentity,
+}
+
+impl CloudRelayTokenProblem {
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Self::Expired => "cloud relay token expired",
+            Self::ForAnotherIdentity => "cloud relay token is for another machine or key",
+        }
+    }
 }
 
 pub(crate) fn cloud_relay_runtime_token_is_fresh(
@@ -74,25 +100,25 @@ pub(crate) fn cloud_relay_runtime_token_is_fresh(
 ) -> bool {
     config.relay_url.as_deref() == Some(profile.relay_url.as_str())
         && config.relay_token.is_some()
-        && cloud_relay_token_matches_runtime_key(config)
+        && cloud_relay_token_matches_runtime_identity(config)
         && profile
             .token_expires_at_ms
             .is_some_and(|expires_at| expires_at > now_ms + CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS)
 }
 
-fn cloud_relay_token_matches_runtime_key(config: &DaemonConfig) -> bool {
-    let Some(token) = config.relay_token.as_deref() else {
+/// The relay refuses a registration whose key or machine differs from its token's,
+/// so a token is usable only for the key and machine this kernel registers with.
+fn cloud_relay_token_matches_runtime_identity(config: &DaemonConfig) -> bool {
+    let Some(claims) = config.relay_token.as_deref().and_then(relay_token_payload) else {
         return false;
     };
-    let Some(thumbprint) = relay_token_payload(token).and_then(|claims| {
-        claims
-            .get("public_key_thumbprint")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-    }) else {
-        return false;
-    };
-    thumbprint == crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key)
+    let claimed = |name: &str| claims.get(name).and_then(serde_json::Value::as_str);
+    claimed("public_key_thumbprint")
+        == Some(
+            crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key)
+                .as_str(),
+        )
+        && claimed("machine_id").is_none_or(|machine_id| machine_id == config.host_machine_id)
 }
 
 pub(crate) fn relay_token_payload(token: &str) -> Option<serde_json::Value> {
@@ -308,6 +334,36 @@ mod tests {
     }
 
     #[test]
+    fn a_token_for_another_machine_is_neither_fresh_nor_usable() {
+        let fresh = profile();
+        let mut config = config(Some(fresh.clone()));
+        let token_for = |machine_id: &str| {
+            let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+                serde_json::json!({
+                    "public_key_thumbprint": crate::runtime::terminal_pairings::public_key_thumbprint("public"),
+                    "machine_id": machine_id,
+                    "exp": 300,
+                })
+                .to_string(),
+            );
+            format!("header.{payload}.signature")
+        };
+        config.relay_token = Some(token_for(&config.host_machine_id));
+        assert!(cloud_relay_runtime_token_is_fresh(&config, &fresh, 100_000));
+        assert_eq!(cloud_relay_token_unusable(&config, 100_000), None);
+
+        config.relay_token = Some(token_for("machine-enrolled-before"));
+        assert!(cloud_relay_token_refresh_due(&config, 100_000));
+        assert!(!cloud_relay_runtime_token_is_fresh(
+            &config, &fresh, 100_000
+        ));
+        assert_eq!(
+            cloud_relay_token_unusable(&config, 100_000),
+            Some(CloudRelayTokenProblem::ForAnotherIdentity)
+        );
+    }
+
+    #[test]
     fn retained_cloud_private_relay_does_not_refresh_or_publish_online() {
         let profile = profile();
         let mut config = config(Some(profile.clone()));
@@ -325,9 +381,12 @@ mod tests {
         // The retained profile's expired Cloud token must not hold back the private connection.
         let mut expired = config.clone();
         expired.cloud_relay.as_mut().unwrap().token_expires_at_ms = Some(1);
-        assert!(!cloud_relay_token_is_expired(&expired, 100_000));
+        assert_eq!(cloud_relay_token_unusable(&expired, 100_000), None);
         expired.relay_url = None;
-        assert!(cloud_relay_token_is_expired(&expired, 100_000));
+        assert_eq!(
+            cloud_relay_token_unusable(&expired, 100_000),
+            Some(CloudRelayTokenProblem::Expired)
+        );
     }
 
     #[test]

@@ -204,13 +204,17 @@ impl Workload {
     pub(super) fn root_alive(&mut self) -> bool {
         self.child.try_wait().unwrap().is_none()
     }
+    /// What the command was told on its own error stream.
+    #[cfg(target_os = "linux")]
+    pub(super) fn told(&self, name: &str) -> String {
+        std::fs::read_to_string(self.dir.join(format!("{name}.err"))).unwrap_or_default()
+    }
     /// The stopped command was told why on its own error stream. Only Linux
     /// can reopen another process's stream; elsewhere the stop is silent.
     pub(super) fn assert_told(&self, name: &str, reason: &str) {
         #[cfg(target_os = "linux")]
         {
-            let notice =
-                std::fs::read_to_string(self.dir.join(format!("{name}.err"))).unwrap_or_default();
+            let notice = self.told(name);
             assert!(
                 notice.contains(reason),
                 "{name} was not told why: {notice:?}"
@@ -404,7 +408,16 @@ fn pressure(
     rate: u64,
     seconds: u64,
 ) -> (Workload, Workload, Workload, Arc<pool::Pool>) {
-    let pool = pool(1536);
+    pressure_in(pool(1536), cgroup, start, rate, seconds)
+}
+
+fn pressure_in(
+    pool: Arc<pool::Pool>,
+    cgroup: bool,
+    start: u64,
+    rate: u64,
+    seconds: u64,
+) -> (Workload, Workload, Workload, Arc<pool::Pool>) {
     let a = Workload::start(
         domain(&pool, "a", cgroup),
         &[("big", 800, 0, 0), ("idle", 0, 0, 0)],
@@ -491,6 +504,432 @@ fn a_pause_that_frees_nothing_ends_the_paused_command_after_the_stall_window() {
     );
 }
 
+/// The program of an agent's tool call starts a grower and ends: the grower is
+/// then a command of its own, seen for the first time. It must read as the
+/// grower it is, or a pass that finds the pool full cannot pause it and ends
+/// the idle command beside it instead.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_command_a_shell_leaves_behind_keeps_the_growth_it_had_inside_it() {
+    let pool = pool(4096);
+    let wrapper = "sh -c 'sed 2d \"$1/alloc.py\" > \"$1/grow.py\"; python3 \"$1/grow.py\" 300 100 3000 & echo $! > \"$1/grow.pid\"; exec sleep 2' sh \"$0\"";
+    let workload = Workload::run(
+        domain(&pool, "agent", false),
+        &[("wrapper", wrapper.into())],
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !workload.dir.join("grow.pid").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the grower did not start"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    let grower = std::fs::read_to_string(workload.dir.join("grow.pid"))
+        .unwrap()
+        .trim()
+        .parse::<u32>()
+        .unwrap();
+    // Its parent ends two seconds after starting it: the first time the grower
+    // is a command of its own, it has been growing all along.
+    let first = loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the grower never became a command of its own"
+        );
+        let seen = pool
+            .members()
+            .iter()
+            .flat_map(|member| member.lock().unwrap().commands.clone())
+            .find(|command| command.pid == grower);
+        if let Some(command) = seen {
+            break command;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(
+        first.growth >= admission::GROWING,
+        "a growing command read as idle on its first sample: {} bytes/s",
+        first.growth
+    );
+}
+
+/// One shell command of an agent starts an idle holder and a grower and
+/// waits for them: they are two commands, so the grower (the newest) is paused
+/// where the pool is full, and the holder and the shell go on. Were the shell
+/// one command it would be the oldest, never paused, and ended with both.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_jobs_of_one_shell_command_are_paused_one_by_one() {
+    let pool = pool(1536);
+    let jobs = "sh -c 'python3 \"$1/alloc.py\" 800 0 0 & echo $! > \"$1/big.pid\"; python3 \"$1/alloc.py\" 300 48 1000 & echo $! > \"$1/grow.pid\"; wait' sh \"$0\"";
+    let mut workload = Workload::run(domain(&pool, "agent", false), &[("jobs", jobs.into())]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !workload.dir.join("grow.pid").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the jobs did not start"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    settle(11);
+    assert!(
+        workload.alive("big") && workload.alive("grow") && workload.alive("jobs"),
+        "a job or its shell was ended where the growing job could wait"
+    );
+    assert!(workload.waiting("grow"), "the growing job was not paused");
+    assert!(!workload.waiting("big"), "the idle holder was paused");
+}
+
+/// A command paused on a pool that is full by accounting but never stalls
+/// (an idle holder keeps its memory) is not left waiting for ever: after the
+/// bounded wait it ends with the memory-stop reason, and the holder goes on.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_command_paused_on_a_full_pool_that_never_stalls_ends_after_the_bounded_wait() {
+    let (mut a, mut b, _c, _pool) = pressure(false, 300, 48, 9);
+    assert!(
+        b.waiting("grow"),
+        "the newest growing command was not paused"
+    );
+    settle(3);
+    assert!(
+        b.alive("grow") && b.waiting("grow"),
+        "the pause ended before its bounded wait"
+    );
+    {
+        let mut observation = b.domain.state.lock().unwrap();
+        for entry in observation
+            .admission
+            .values_mut()
+            .filter(|e| e.wait.is_some())
+        {
+            entry.since_ms = crate::session::unix_epoch_ms() - 61_000;
+        }
+    }
+    settle(3);
+    assert!(
+        !b.alive("grow"),
+        "the paused command stayed stopped with no outcome"
+    );
+    b.assert_told("grow", "stopped this waiting command");
+    // The failure names the limit that bound it and the room it left.
+    b.assert_told("grow", "under the 1.5 GB shared ceiling");
+    assert!(a.alive("big") && a.alive("idle") && a.root_alive() && b.root_alive());
+}
+
+/// The size in `notice` that follows `before`, in MB as the notice words it
+/// (`size`: "147 MB", "1.5 GB").
+#[cfg(target_os = "linux")]
+fn size_after(notice: &str, before: &str) -> f64 {
+    let mut words = notice
+        .split_once(before)
+        .unwrap_or_else(|| panic!("the notice has no {before:?}: {notice:?}"))
+        .1
+        .split_whitespace();
+    let number = words
+        .next()
+        .and_then(|number| number.parse::<f64>().ok())
+        .unwrap_or_else(|| panic!("no number after {before:?}: {notice:?}"));
+    match words.next() {
+        Some("GB") => number * 1024.0,
+        Some("MB") => number,
+        unit => panic!("no size unit after {before:?}: {unit:?} in {notice:?}"),
+    }
+}
+
+/// A launch reservation, not what runs, keeps the paused command from
+/// continuing: the pool is far from full by resident memory. The notice
+/// carries the figures the decision used (what the command needs, what room
+/// was left), so that a reader sees why it ended; resident memory against the
+/// ceiling would show a pool that is not full.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pause_held_by_a_launch_reservation_ends_with_the_room_and_need_that_decided() {
+    let (a, mut b, _c, pool) = pressure(false, 300, 48, 9);
+    assert!(
+        b.waiting("grow"),
+        "the newest growing command was not paused"
+    );
+    pool.launches.lock().unwrap().insert(
+        "binary".into(),
+        super::launch::Reservation {
+            memory: 1200 * MIB,
+            writes: 0,
+            volume: 1,
+        },
+    );
+    // The largest command ends: resident memory is now far below the ceiling.
+    unsafe { libc::kill(a.pid("big"), libc::SIGKILL) };
+    settle(3);
+    assert!(
+        b.alive("grow") && b.waiting("grow"),
+        "the reservation did not hold the paused command"
+    );
+    {
+        let mut observation = b.domain.state.lock().unwrap();
+        for entry in observation
+            .admission
+            .values_mut()
+            .filter(|e| e.wait.is_some())
+        {
+            entry.since_ms = crate::session::unix_epoch_ms() - 61_000;
+        }
+    }
+    settle(3);
+    assert!(
+        !b.alive("grow"),
+        "the paused command stayed stopped with no outcome"
+    );
+    let notice = b.told("grow");
+    let need = size_after(&notice, "it still needs ");
+    let left = size_after(&notice, "only ");
+    assert!(
+        left < need,
+        "the notice does not explain the block: {notice:?}"
+    );
+    assert!(
+        notice.contains("under the 1.5 GB shared ceiling"),
+        "{notice:?}"
+    );
+    assert!(!notice.contains("MiB in use"), "{notice:?}");
+    assert!(b.root_alive());
+}
+
+/// The same shell, after one of its two jobs ended while the other was
+/// paused: the shell runs one job now, but that job stays a command of its
+/// own, with its wait. Were it folded back into the shell, its entry would
+/// vanish stopped, nothing would ever continue it, and the shell's `wait`
+/// would hang.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_paused_job_resumes_when_its_sibling_job_ends() {
+    let pool = pool(1536);
+    let jobs = "sh -c 'python3 \"$1/alloc.py\" 800 0 0 & echo $! > \"$1/big.pid\"; python3 \"$1/alloc.py\" 300 48 1000 & echo $! > \"$1/grow.pid\"; wait' sh \"$0\"";
+    let mut workload = Workload::run(domain(&pool, "agent", false), &[("jobs", jobs.into())]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !workload.dir.join("grow.pid").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the jobs did not start"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    settle(11);
+    assert!(workload.waiting("grow"), "the growing job was not paused");
+    unsafe { libc::kill(workload.pid("big"), libc::SIGKILL) };
+    settle(4);
+    assert!(
+        workload.alive("grow") && workload.alive("jobs"),
+        "the job or its shell was ended where room had freed"
+    );
+    assert!(
+        !workload.waiting("grow"),
+        "the paused job stayed stopped after its sibling ended, so its shell waits for ever"
+    );
+}
+
+/// The same shell when a hot reload comes after the sibling ended: the next
+/// program watches the shell with one job left and learns the boundary only
+/// from the paused command it was handed. Without it the job folds into the
+/// shell, and nothing continues the stopped process.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_paused_job_resumes_in_the_watch_a_hot_reload_starts_after_its_sibling_ended() {
+    let pool = pool(1536);
+    let jobs = "sh -c 'python3 \"$1/alloc.py\" 800 0 0 & echo $! > \"$1/big.pid\"; python3 \"$1/alloc.py\" 300 48 1000 & echo $! > \"$1/grow.pid\"; wait' sh \"$0\"";
+    let mut workload = Workload::run(domain(&pool, "agent", false), &[("jobs", jobs.into())]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !workload.dir.join("grow.pid").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the jobs did not start"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    settle(11);
+    assert!(workload.waiting("grow"), "the growing job was not paused");
+    // The previous program's end: what it hands over crosses as JSON, and its
+    // watch does nothing from here, so nothing continues the job when its
+    // sibling ends.
+    let held: Vec<HeldCommand> =
+        serde_json::from_slice(&serde_json::to_vec(&pool.held_commands()).unwrap()).unwrap();
+    workload.domain.bind_key("hot-reload-previous");
+    let _previous_program = control::pause_sampling_for_key("hot-reload-previous");
+    unsafe { libc::kill(workload.pid("big"), libc::SIGKILL) };
+    settle(2);
+    assert!(workload.waiting("grow"), "nothing watched, yet it moved");
+
+    // The next program: its own pool, and a watch of the same shell that sees
+    // one job left.
+    adopt_admission(held);
+    let _next_program = workload.watched_again(domain(&self::pool(1536), "agent", false));
+    settle(5);
+    assert!(
+        workload.alive("grow") && workload.alive("jobs"),
+        "the job or its shell was ended where room had freed"
+    );
+    assert!(
+        !workload.waiting("grow"),
+        "the paused job stayed stopped in the watch started after its sibling ended"
+    );
+}
+
+/// Pauses that outlived the bounded wait are ended only while room is still
+/// missing for them: when a holder leaves and there is room for all of them,
+/// the resume pass continues each, and none ends.
+#[cfg(target_os = "linux")]
+#[test]
+fn overdue_pauses_continue_when_room_returned_for_all_of_them() {
+    let pool = pool(1536);
+    let holder = Workload::start(domain(&pool, "a", false), &[("big", 800, 0, 0)]);
+    // The oldest heavy command is never paused: the growers start only once
+    // the pool has seen the holder at its size, so the holder is that one.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !holder
+        .domain
+        .state
+        .lock()
+        .unwrap()
+        .commands
+        .iter()
+        .any(|command| command.resident >= 700 * MIB)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the holder never reached its size"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // They grow from nothing, so the rate a pause records is their steady
+    // one: a command that starts big reads as growing fast, and a pause
+    // continues only with room to keep that rate for two seconds.
+    let mut growers = Workload::start(
+        domain(&pool, "b", false),
+        &[("one", 0, 48, 1000), ("two", 0, 48, 1000)],
+    );
+    let both_paused = |growers: &Workload| growers.waiting("one") && growers.waiting("two");
+    let deadline = std::time::Instant::now() + Duration::from_secs(40);
+    while !both_paused(&growers) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the two growers were not both paused"
+        );
+        settle(1);
+    }
+    // Together they could not have grown back: only the holder's room frees.
+    // The holder's watch is held at its last sample, which still counts `big`;
+    // it samples again two seconds after the kill.
+    holder.domain.bind_key("overdue-room-returned-holder");
+    let held = control::pause_sampling_for_key("overdue-room-returned-holder");
+    unsafe { libc::kill(holder.pid("big"), libc::SIGKILL) };
+    std::thread::spawn(move || {
+        settle(2);
+        drop(held);
+    });
+    // Age the pauses only once the pool has seen the room return: the
+    // growers' watches decide on the holder's last sample.
+    let big = holder.pid("big") as u32;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while holder
+        .domain
+        .state
+        .lock()
+        .unwrap()
+        .samples
+        .iter()
+        .any(|sample| sample.pid == big)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the holder's watch never saw its command go"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    {
+        let mut observation = growers.domain.state.lock().unwrap();
+        for entry in observation
+            .admission
+            .values_mut()
+            .filter(|e| e.wait.is_some())
+        {
+            entry.since_ms = crate::session::unix_epoch_ms() - 61_000;
+        }
+    }
+    settle(6);
+    assert!(
+        growers.alive("one") && growers.alive("two"),
+        "a paused command was ended where the room had returned for all of them"
+    );
+    assert!(
+        !growers.waiting("one") && !growers.waiting("two"),
+        "a paused command did not continue"
+    );
+    assert!(growers.root_alive());
+}
+
+/// A released workload whose root ended: the tool shell that survived it is no
+/// longer under the harness, yet the next program learns its job boundary from
+/// the paused command it was handed, and continues that command with room.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_paused_job_of_a_released_workload_resumes_after_its_root_ended() {
+    let pool = pool(1536);
+    let jobs = "sh -c 'python3 \"$1/alloc.py\" 800 0 0 & echo $! > \"$1/big.pid\"; python3 \"$1/alloc.py\" 300 48 1000 & echo $! > \"$1/grow.pid\"; wait' sh \"$0\"";
+    let mut workload = Workload::run(domain(&pool, "agent", false), &[("jobs", jobs.into())]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !workload.dir.join("grow.pid").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the jobs did not start"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    settle(11);
+    assert!(workload.waiting("grow"), "the growing job was not paused");
+    let held: Vec<HeldCommand> =
+        serde_json::from_slice(&serde_json::to_vec(&pool.held_commands()).unwrap()).unwrap();
+
+    // The previous program releases the workload and ends; the provider's
+    // root exits and its tool shell is reparented outside the harness.
+    let grow = workload.pid("grow");
+    let session = "released-paused-room";
+    let owner = SessionProcessOwner::Agent("released-paused-agent".into());
+    workload.domain.bind_key("released-previous");
+    let _previous_program = control::pause_sampling_for_key("released-previous");
+    workload.domain.release(session, owner.clone(), None);
+    workload.child.kill().unwrap();
+    workload.child.wait().unwrap();
+    unsafe { libc::kill(workload.pid("big"), libc::SIGKILL) };
+    settle(2);
+    assert!(workload.waiting("grow"), "nothing watched, yet it moved");
+    let handed = serde_json::to_vec(&handover::hand_over_released())
+        .and_then(|body| serde_json::from_slice::<Vec<handover::ReleasedJobs>>(&body))
+        .unwrap()
+        .into_iter()
+        .filter(|jobs| jobs.pids().contains(&(grow as u32)))
+        .collect::<Vec<_>>();
+    assert_eq!(handed.len(), 1, "the released workload is handed over");
+    registry()
+        .lock()
+        .unwrap()
+        .retain(|_, state| !state.ptr_eq(&Arc::downgrade(&workload.domain.state)));
+
+    adopt_admission(held);
+    handover::adopt_released(handed);
+    settle(5);
+    assert!(
+        workload.alive("grow") && workload.alive("jobs"),
+        "the job or its shell was ended where room had freed"
+    );
+    assert!(
+        !workload.waiting("grow"),
+        "the paused job of the released workload stayed stopped"
+    );
+    stop_released(Some(session), Some(&owner));
+}
+
 fn runaway_is_paused_before_the_line(cgroup: bool) {
     // 512 MiB/s: the PC-06 runaway.
     let (mut a, mut b, mut c, pool) = pressure(cgroup, 0, 512, 4);
@@ -566,4 +1005,126 @@ fn an_owner_set_cap_stops_one_command_of_that_owner() {
 #[ignore = "requires a writable cgroup-v2 delegated parent"]
 fn an_owner_set_cap_stops_one_command_of_that_owner_in_its_cgroup() {
     owner_cap(true);
+}
+
+/// A slowly growing command takes a one-off 500 MiB burst after several
+/// samples: the pause it earned does not ask
+/// for room to keep growing at the spike's rate. It continues with the room
+/// there is and is not ended.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_startup_spike_does_not_keep_a_slow_grower_paused() {
+    let pool = pool(1536);
+    let mut holder = Workload::gated(
+        domain(&pool, "holder", false),
+        &[("hold", "python3 \"$0/hold.py\" \"$0/room\"".into())],
+    );
+    std::fs::write(holder.dir.join("hold.py"), format!(
+        "{DIE_WITH_PARENT}import os,time\na=bytearray(500*1048576); b=bytearray(300*1048576)\nwhile not os.path.exists(sys.argv[1]): time.sleep(0.05)\ndel a\ntime.sleep(60)"
+    )).unwrap();
+    holder.go(&["hold"]);
+    settle(1);
+    let mut grower = Workload::gated(
+        domain(&pool, "grower", false),
+        &[("grow", "python3 \"$0/grow.py\" \"$0/burst\"".into())],
+    );
+    std::fs::write(grower.dir.join("grow.py"), format!(
+        "{DIE_WITH_PARENT}import os,time\nb=[bytearray(100*1048576)]\nwhile not os.path.exists(sys.argv[1]):\n b.append(bytearray(1048576)); time.sleep(0.25)\nb.append(bytearray(500*1048576))\nfor _ in range(120):\n b.append(bytearray(1048576)); time.sleep(0.25)"
+    )).unwrap();
+    grower.go(&["grow"]);
+    settle(3);
+    std::fs::write(grower.dir.join("burst"), "").unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !grower.waiting("grow") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the burst never caused a pause"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Enough room for slow growth, but not for another burst every sample.
+    std::fs::write(holder.dir.join("room"), "").unwrap();
+    settle(3);
+    assert!(
+        holder.alive("hold") && grower.alive("grow"),
+        "a command was ended"
+    );
+    assert!(
+        !grower.waiting("grow"),
+        "the pause kept the burst's rate and never continued"
+    );
+}
+
+/// A command that grows fast all along keeps the rate it was paused at: it
+/// needs room for that growth, stays stopped (a stopped process measures none
+/// and is not paused again and again) and ends after 60 s naming what it needs.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_steady_fast_grower_stays_paused_once_and_ends_with_the_reason() {
+    take_wait_events();
+    let (_a, mut b, _c, _pool) = pressure(false, 100, 200, 9);
+    assert!(b.waiting("grow"), "the fast grower was not paused");
+    settle(3);
+    assert!(
+        b.waiting("grow"),
+        "the paused grower continued without room"
+    );
+    let began = take_wait_events()
+        .into_iter()
+        .filter(|event| matches!(event.change, WaitChange::Began))
+        .count();
+    assert_eq!(began, 1, "the grower was paused {began} times");
+    {
+        let mut observation = b.domain.state.lock().unwrap();
+        for entry in observation
+            .admission
+            .values_mut()
+            .filter(|e| e.wait.is_some())
+        {
+            entry.since_ms = crate::session::unix_epoch_ms() - 61_000;
+        }
+    }
+    settle(3);
+    assert!(
+        !b.alive("grow"),
+        "the paused grower stayed stopped for ever"
+    );
+    b.assert_told("grow", "it still needs ");
+}
+
+/// The kernel's own pool acts on what the machine reports, not on its own
+/// accounting of resident bytes: a pool full by that accounting while the
+/// machine has memory pauses and stops nothing.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pool_full_by_accounting_alone_pauses_nothing_while_the_machine_has_memory() {
+    let pool =
+        Arc::new(pool::Pool::new(1536 * MIB, true).with_machine_pressure(Box::new(|| false)));
+    let (mut a, mut b, mut c, _pool) = pressure_in(pool, false, 300, 48, 20);
+    assert!(
+        !b.waiting("grow"),
+        "a command was paused with no pressure on the machine"
+    );
+    assert!(
+        a.alive("big") && a.alive("idle") && b.alive("grow") && c.alive("small"),
+        "a command was stopped with no pressure on the machine"
+    );
+    assert!(a.root_alive() && b.root_alive() && c.root_alive());
+}
+
+/// Plenty of host memory does not hide the workloads' own finite allocation
+/// boundary. The kernel must pause before that cgroup reaches memory.max.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires a writable cgroup-v2 delegated parent"]
+fn a_full_budget_pauses_even_when_the_host_reports_no_pressure() {
+    let pool =
+        Arc::new(pool::Pool::new(1536 * MIB, true).with_machine_pressure(Box::new(|| false)));
+    let (mut a, mut b, mut c, _pool) = pressure_in(pool, true, 300, 48, 10);
+    assert!(
+        b.waiting("grow"),
+        "the finite cgroup's pressure was ignored"
+    );
+    assert!(a.alive("big") && b.alive("grow") && c.alive("small"));
+    assert!(a.root_alive() && b.root_alive() && c.root_alive());
 }

@@ -182,6 +182,10 @@ impl CommandRouter {
                 | LocalDaemonRequest::ListKernelDirectory(_)
                 | LocalDaemonRequest::ReadKernelFile(_)
                 | LocalDaemonRequest::WriteKernelFile(_)
+                | LocalDaemonRequest::StartFileTransfer(_)
+                | LocalDaemonRequest::GetFileTransfer(_)
+                | LocalDaemonRequest::ListFileTransfers
+                | LocalDaemonRequest::CancelFileTransfer(_)
         ) {
             return None;
         }
@@ -289,16 +293,42 @@ impl CommandRouter {
                 "only the kernel's owner at a Chariox terminal or as a local grant holder can use kernel files",
             ));
         }
-        let operation = self.runtime_state.begin_file_operation()?;
+        let state = &self.runtime_state;
+        match request {
+            LocalDaemonRequest::StartFileTransfer(r) => {
+                return state
+                    .start_file_transfer(r.clone())
+                    .await
+                    .map(|job| LocalDaemonResponse::FileTransfer { job });
+            }
+            LocalDaemonRequest::GetFileTransfer(r) => {
+                return state
+                    .get_file_transfer(r)
+                    .map(|job| LocalDaemonResponse::FileTransfer { job });
+            }
+            LocalDaemonRequest::ListFileTransfers => {
+                return Ok(LocalDaemonResponse::FileTransfers {
+                    jobs: state.list_file_transfers(),
+                });
+            }
+            LocalDaemonRequest::CancelFileTransfer(r) => {
+                return state
+                    .cancel_file_transfer(r)
+                    .map(|job| LocalDaemonResponse::FileTransfer { job });
+            }
+            _ => {}
+        }
+        let operation = state.begin_file_operation()?;
+        let guard = state.machine_state_guard();
         let request = request.clone();
         // Hashing and copying a large file must not stall the request loop.
         let outcome = tokio::task::spawn_blocking(move || {
             let _operation = operation;
             match &request {
-                LocalDaemonRequest::StatKernelFile(r) => files::stat(r),
-                LocalDaemonRequest::ListKernelDirectory(r) => files::list(r),
-                LocalDaemonRequest::ReadKernelFile(r) => files::read(r),
-                LocalDaemonRequest::WriteKernelFile(r) => files::write(r),
+                LocalDaemonRequest::StatKernelFile(r) => files::stat(r, &guard),
+                LocalDaemonRequest::ListKernelDirectory(r) => files::list(r, &guard),
+                LocalDaemonRequest::ReadKernelFile(r) => files::read(r, &guard),
+                LocalDaemonRequest::WriteKernelFile(r) => files::write(r, &guard),
                 _ => unreachable!("filtered above"),
             }
         })

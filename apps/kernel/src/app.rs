@@ -197,6 +197,7 @@ pub struct DaemonApp {
     worker_prompt_receipts: crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptStore,
     worker_steer_receipts: crate::durable_state::worker_steer_receipts::WorkerSteerReceiptStore,
     pub(crate) agent_moves: crate::agent_move::AgentMoveStore,
+    pub(crate) room_setup: crate::session::RoomSetupStore,
     managed_context_transfers: crate::managed_context::transfer::ManagedContextTransferStore,
     managed_context_outbound:
         crate::managed_context::outbound_service::ManagedContextOutboundOperationStore,
@@ -392,7 +393,7 @@ impl DaemonApp {
 
         let mut app = Self {
             agents: AgentServiceStore::new(
-                AgentService::new().with_worker_run_durability(durable_state.clone()),
+                AgentService::new().with_durable_state(durable_state.clone()),
             ),
             attachments: AttachmentServiceStore::new(AttachmentService::new()),
             pty: PtyManager::new(),
@@ -438,6 +439,7 @@ impl DaemonApp {
             worker_prompt_receipts,
             worker_steer_receipts,
             agent_moves,
+            room_setup: Default::default(),
             managed_context_transfers,
             managed_context_outbound,
             managed_kernel_registration,
@@ -511,6 +513,8 @@ impl DaemonApp {
             .set_agent_move_admission(app.agent_moves.clone());
         app.prompt_state_owner
             .set_agent_move_admission(app.agent_moves.clone());
+        app.prompt_state_owner
+            .set_room_setup(app.room_setup.clone());
         let restore_started = Instant::now();
         app.restore_durable_state()?;
         app.enroll_existing_local_state()?;
@@ -688,6 +692,7 @@ impl DaemonApp {
             self.sudo_window_projection
                 .windows_for_session(session.id()),
         );
+        session.set_room_setup(self.room_setup.state(session.id()));
         self.prompt_state_owner.project_into_session(&mut session);
         self.agent_runtime_projection.update_session(&session);
         self.session_projection.update(session);

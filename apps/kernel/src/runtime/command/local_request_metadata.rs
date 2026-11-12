@@ -439,6 +439,14 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::AliasSession(request) => {
             LocalRequestMetadata::new("session.alias", Interactive).session(&request.session_id)
         }
+        LocalDaemonRequest::RetryRoomSetup(request) => {
+            LocalRequestMetadata::new("session.setup.retry", Interactive)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::DismissRoomSetup(request) => {
+            LocalRequestMetadata::new("session.setup.dismiss", Interactive)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::FocusAgent(request) => {
             LocalRequestMetadata::new("agent.focus", Interactive)
                 .session(&request.session_id)
@@ -657,6 +665,10 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListKernelDirectory(_) => "machine_file.list",
         LocalDaemonRequest::ReadKernelFile(_) => "machine_file.read",
         LocalDaemonRequest::WriteKernelFile(_) => "machine_file.write",
+        LocalDaemonRequest::StartFileTransfer(_) => "machine_file.transfer_start",
+        LocalDaemonRequest::GetFileTransfer(_) => "machine_file.transfer_get",
+        LocalDaemonRequest::ListFileTransfers => "machine_file.transfer_list",
+        LocalDaemonRequest::CancelFileTransfer(_) => "machine_file.transfer_cancel",
         LocalDaemonRequest::KernelBrowser(_) => "kernel_browser",
         LocalDaemonRequest::Notes(_) => "notes",
         LocalDaemonRequest::Dictation(_) => "dictation",
@@ -992,6 +1004,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CaptureScreenshot(_) => "capability.screenshot.capture",
         LocalDaemonRequest::StoreTransferredFile(_) => "capability.file.store_transferred",
         LocalDaemonRequest::AliasSession(_) => "session.alias",
+        LocalDaemonRequest::SuggestSessionAlias(_) => "session.alias.suggest",
+        LocalDaemonRequest::RetryRoomSetup(_) => "session.setup.retry",
+        LocalDaemonRequest::DismissRoomSetup(_) => "session.setup.dismiss",
         LocalDaemonRequest::SetAgentDeadline(_) => "agent.deadline.set",
         LocalDaemonRequest::GetAgentDeadline(_) => "agent.deadline.get",
         LocalDaemonRequest::ListDescendants(_) => "agent.descendants.list",

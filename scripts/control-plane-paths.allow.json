@@ -1,13 +1,5 @@
 [
   {
-    "path": "/browser/agent-trigger-deployments/{}/admission",
-    "callers": [
-      "apps/server/src/hosted-agent-trigger-server.ts"
-    ],
-    "why": "hosted agent-trigger ingress asks the connected service to admit a deployment",
-    "slice": "B1"
-  },
-  {
     "path": "/browser/focusedElement/field_id",
     "callers": [
       "apps/kernel/src/runtime/state/tool_dispatch/slice/controller_browser.rs"
@@ -53,6 +45,14 @@
       "apps/cli/scripts/lib/live-hosted-cloud-relay-drill-helpers.mjs",
       "apps/cli/scripts/live-owner-context-transfer-drill.mjs",
       "apps/kernel/src/runtime/router/cloud_relay_bridge.rs"
+    ],
+    "why": "hosted relay sign-in, tokens and presence of the owner's connected service; the self-hosted control plane serves the same paths",
+    "seam": "hosted relay account (cloud_api_client)"
+  },
+  {
+    "path": "/kernels/rebind-machine",
+    "callers": [
+      "apps/kernel/src/runtime/cloud_machine_rebind.rs"
     ],
     "why": "hosted relay sign-in, tokens and presence of the owner's connected service; the self-hosted control plane serves the same paths",
     "seam": "hosted relay account (cloud_api_client)"

@@ -300,7 +300,7 @@ fn catalog_handoff_cannot_replace_a_wait_or_another_pending_intent() {
                 prompt: "p".into(),
                 registrations: vec!["reg".into()],
                 cursor: 0,
-                deadline: 60_000,
+                deadline: Some(60_000),
                 reason: "source result".into(),
                 now: 2,
             });

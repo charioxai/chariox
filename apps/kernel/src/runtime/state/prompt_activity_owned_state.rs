@@ -112,6 +112,9 @@ impl KernelRuntimeOwnedState {
                 &finished,
             ) {
                 Ok(Some(receipt)) => {
+                    if let Some(event) = &receipt.refused {
+                        self.record_wake_refused(event);
+                    }
                     if let Some(notice) = receipt.notice {
                         let recipients = self
                             .attachment_store
