@@ -209,6 +209,8 @@ impl KernelRuntimeState {
                 interaction,
             )
             .await?;
+        // The agent that holds the card is told; a card nobody above can hold is the person's.
+        self.announce_child_decision(&task.room_id, &id).await?;
         let notification = self.owned.emit_task_owner_notification(&task, &id);
         let state = self.as_kernel();
         tokio::spawn(async move {
