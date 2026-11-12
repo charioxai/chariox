@@ -6,6 +6,7 @@ use std::time::Duration;
 
 mod control;
 mod disk_use;
+mod growth_window;
 use control::WatchCommand;
 pub(crate) use control::{end_owner, outside_ended_for_key, start_now_for_key, stop_for_key};
 #[cfg(test)]
@@ -337,6 +338,8 @@ impl PreparedDomain {
         let mut last_resident = (0u64, std::collections::BTreeMap::<u32, u64>::new());
         let mut write_growth_cache =
             std::collections::BTreeMap::<u32, disk_use::WriteGrowth>::new();
+        // Per command: its growth over the last minute while it ran.
+        let mut windows = std::collections::BTreeMap::<u32, growth_window::Window>::new();
         let worker = std::thread::Builder::new()
             .name("chariox-process-resources".into())
             .spawn(move || loop {
@@ -362,6 +365,16 @@ impl PreparedDomain {
                     .map(|sample| (sample.pid, sample.deleted_open_bytes))
                     .collect::<std::collections::BTreeMap<_, _>>();
                 let mut disk_writes = std::collections::BTreeMap::new();
+                // A stopped command measures no growth: its minute is what it
+                // grew while it ran.
+                let stopped = watched
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .admission
+                    .iter()
+                    .filter(|(_, entry)| entry.wait.is_some())
+                    .map(|(pid, _)| *pid)
+                    .collect::<std::collections::BTreeSet<_>>();
                 let commands = tree
                     .commands(&samples)
                     .into_iter()
@@ -381,6 +394,25 @@ impl PreparedDomain {
                             Some(before) => (before.growth, before.write_growth),
                             None => (inherited_growth(&samples, &pids, &last_resident, sampled_at), 0),
                         };
+                        let measured = match previous.get(&pid) {
+                            Some(before) if sampled_at > before.at => Some(
+                                resident.saturating_sub(before.resident).saturating_mul(1000)
+                                    / (sampled_at - before.at),
+                            ),
+                            Some(_) => None,
+                            None => Some(growth),
+                        };
+                        // Keep the job's window when its wrapping shell
+                        // becomes a launcher and the job gets its own boundary.
+                        let effective = tree.effective(pid, &samples);
+                        let window = windows.entry(effective).or_default();
+                        if let Some(measured) = measured.filter(|_| !stopped.contains(&pid)) {
+                            window.record(sampled_at, measured);
+                        }
+                        let steady_growth = window.typical().unwrap_or(growth);
+                        let measured_growth = measured.unwrap_or_else(|| {
+                            previous.get(&pid).map_or(0, |before| before.measured_growth)
+                        });
                         if write_growth >= admission::GROWING {
                             let volumes = write_growth_cache.entry(pid).or_default().sample(&pids, sampled_at);
                             disk_writes.insert(pid, volumes);
@@ -396,14 +428,17 @@ impl PreparedDomain {
                             group: process_group(pid),
                             resident,
                             growth,
+                            steady_growth,
+                            measured_growth,
                             writes,
                             write_growth,
-                            effective: tree.effective(pid, &samples),
+                            effective,
                             root: tree.in_harness(pid),
                         }
                     })
                     .collect::<Vec<_>>();
                 write_growth_cache.retain(|pid, _| disk_writes.contains_key(pid));
+                windows.retain(|pid, _| commands.iter().any(|command| command.effective == *pid));
                 last_resident = (
                     sampled_at,
                     samples
@@ -422,6 +457,7 @@ impl PreparedDomain {
                                 at: sampled_at,
                                 resident: command.resident,
                                 growth: command.growth,
+                                measured_growth: command.measured_growth,
                                 writes: command.writes,
                                 write_growth: command.write_growth,
                             });
@@ -575,6 +611,7 @@ struct Rates {
     at: u64,
     resident: u64,
     growth: u64,
+    measured_growth: u64,
     writes: u64,
     write_growth: u64,
 }

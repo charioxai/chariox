@@ -12,11 +12,26 @@ share. Launching an agent never interrupts a running one. Everything one agent
 starts (its provider runs, the jobs they leave running and the processes it starts
 through `chariox.events.process`) is one owner; each Room terminal is another.
 
-Only under real memory pressure does the kernel act: when less than a margin
-(5% of the ceiling, at least min(512 MiB, 10%)) is left under the ceiling, when
-the host's own available memory falls below that margin (user apps took it;
-macOS: critical memory pressure), or when workloads stall on memory (Linux PSI
-`full avg10` of 10% or more). It then stops ONE command: a command growing at
+Memory pausing and pressure stops require a physical pressure signal. On Linux,
+that means host `MemAvailable` below the margin, headroom below the margin in a
+bounding cgroup or the workloads' own budget cgroup, or memory PSI `full avg10`
+of at least 10% on the host or workload budget. The margin is 5% of the ceiling,
+at least min(512 MiB, 10% of the ceiling). On macOS the signal is critical system
+memory pressure. A full pool by RSS accounting alone never triggers a pause or
+pressure stop: shared pages can appear in several processes' RSS while the
+machine has plenty of memory. A finite workload cgroup remains a real limit
+even when the host has free memory. On Linux, shared-pool admission and
+resumption use physical headroom as well: host/bounding-cgroup headroom, limited
+further by an actual workload budget when present. RSS accounting cannot keep a previously
+paused command waiting after physical memory returns.
+
+Under that pressure, a growing command pauses when remaining headroom is less
+than the larger of the margin and one second of current aggregate growth.
+After a successful pause, the latest measured growth of running work must
+still be positive before any pressure stop: a decaying startup rate is not
+ongoing allocation. When no command can pause and running work is still growing,
+it stops ONE
+command: a command growing at
 128 MiB/s or more (a runaway) first; otherwise the largest command of the owner
 furthest above its fair share (ceiling / owners, recomputed at every start and
 stop). A command is one subtree under the provider or terminal process, that
@@ -25,20 +40,23 @@ period in which a runaway keeps growing, and no second command is stopped for
 the same cause within one second. The owner keeps running.
 
 A command that admission paused (it grew toward a full pool) continues when its
-room frees. If it has waited 60 s and still cannot continue in the room there is
-(the pool stays full by accounting without ever stalling, as when an idle
-command keeps its memory), the paused command ends the same way a memory stop
-does, with the reason on its error stream. When memory keeps it: what it still
-needs to continue, the room that was left once what is in use and reserved is
+room frees. Its growth estimate is the median of samples over the last 60 s
+before the pause, so a short burst does not require room for repeated bursts.
+Samples while stopped never lower that estimate. A steady fast grower therefore
+stays paused until enough room returns, rather than cycling through resume and
+pause. If a paused command or a command held before growing has waited 60 s and
+still cannot continue in the room there is, the waiting command ends with the
+memory-stop outcome, with the reason on its error stream. When memory keeps it:
+what it still needs to continue, the room that was left once what is in use and reserved is
 counted, whether the pool's ceiling or the machine's free memory set that room,
 and the command's own size. When the memory room covers what it needs but not growing
 on (everything running, it included, grows so fast that the pool would be short of
 memory again within seconds): the rate everything grows by, what staying clear of
 short memory takes at that rate, and the room that was left. When the disk keeps it (the writes it is known to
 make do not fit above the floor): what it still needs of disk and what is free
-on the volume it writes to. A pause never lasts for ever. A command that could continue is never
-ended, however long it waited: the resume pass continues it. Jobs a tool shell
-ran at once stay separate commands across a hot reload, so a paused one is
+on the volume it writes to. A pause never lasts for ever. A command that could
+continue is never ended, however long it waited: the resume pass continues it.
+Jobs a tool shell ran at once stay separate commands across a hot reload, so a paused one is
 still found and continued.
 
 `CHARIOX_PROCESS_MEMORY_LIMIT_MIB` sets an optional owner-set hard cap per agent
@@ -60,8 +78,8 @@ budget removes the empty budgets of kernels whose process is gone, and a budget
 removes its empty descendants when its last workload ends.
 
 A resident-memory watchdog covers Linux without delegation and macOS with the
-same decision on the sum of resident memory. It samples owned roots and
-descendants every 250 ms and can overshoot between samples. It retains process
+same physical-pressure prerequisite and command selection from resident memory.
+It samples owned roots and descendants every 250 ms and can overshoot between samples. It retains process
 start identities across exec and checks them before signalling, so a recycled
 PID does not authorize a signal. A single cached process-table sample is shared
 between watchdogs. App workers retain their existing 512 MiB sandbox resource

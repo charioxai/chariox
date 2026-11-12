@@ -25,7 +25,7 @@ const DISK_FLOOR: u64 = 10 * 1024 * MIB;
 pub(super) const GROWING: u64 = MIB;
 /// A start needs a moment to show in the samples.
 const SETTLE: Duration = Duration::from_secs(1);
-/// A paused command continues with room for this long at its last rate.
+/// A paused command continues with room for this long at its pre-pause rate.
 const AHEAD: u64 = 2;
 /// A stopped filler needs a moment to give its space back before the next
 /// one is judged.
@@ -106,7 +106,7 @@ pub(super) struct Entry {
     pub stopped: bool,
     pub seen: Option<Seen>,
     expected: Option<Peak>,
-    /// Bytes per second it grew (or wrote) when it was paused.
+    /// Typical bytes per second before the pause; never sampled while stopped.
     paused_rate: u64,
     peak: Peak,
     resident: u64,
@@ -139,9 +139,27 @@ impl Entry {
         self.wait = Some(wait);
     }
 
+    /// The job this entry followed is a command of its own from now on: it
+    /// takes the whole accounting, and the shell starts over as a launcher.
+    fn hand_job_over(&mut self, arrived: u64) -> Entry {
+        std::mem::replace(
+            self,
+            Entry {
+                arrived,
+                holdable: self.holdable,
+                ..Entry::default()
+            },
+        )
+    }
+
     /// It runs again.
     fn stop_waiting(&mut self) {
         self.wait = None;
+    }
+
+    #[cfg(test)]
+    pub(super) fn admitted_with_prediction(&self) -> (bool, bool) {
+        (self.admitted, self.expected.is_some())
     }
 
     #[cfg(test)]
@@ -339,6 +357,8 @@ pub(super) struct Room<'a> {
     /// Bytes per second everything that runs grows by: memory below it is
     /// short too, since it would be gone in a second.
     pub growing: u64,
+    /// The machine or its bounding cgroup is short of physical memory.
+    pub pressured: bool,
     /// The machine's free memory, not the pool's ceiling, set `memory`.
     pub host_bound: bool,
     pub light: u64,
@@ -355,7 +375,7 @@ pub(super) struct Room<'a> {
 impl Room<'_> {
     /// Memory is short: pause the newest growing command.
     pub(super) fn tight(&self) -> bool {
-        self.memory < self.margin.max(self.growing)
+        self.pressured && self.memory < self.margin.max(self.growing)
     }
 
     /// A paused command that grows at `rate` continues only if the pool then
@@ -496,6 +516,31 @@ impl Ledger {
                 );
             }
         }
+        // A shell that was one job's command and now runs several has handed
+        // that job to a command of its own: the prediction and the admission
+        // go with the job, or both would be reserved for the same peak.
+        let handed = observation
+            .commands
+            .iter()
+            .filter(|command| !command.root && !observation.admission.contains_key(&command.pid))
+            .filter_map(|command| {
+                let (shell, _) = observation.admission.iter().find(|(pid, entry)| {
+                    **pid != command.pid
+                        && entry
+                            .seen
+                            .as_ref()
+                            .is_some_and(|seen| seen.pid == command.effective)
+                })?;
+                Some((*shell, command.pid))
+            })
+            .collect::<Vec<_>>();
+        for (shell, job) in handed {
+            self.arrivals += 1;
+            if let Some(entry) = observation.admission.get_mut(&shell) {
+                let handed = entry.hand_job_over(self.arrivals);
+                observation.admission.insert(job, handed);
+            }
+        }
         for command in observation.commands.iter().filter(|command| !command.root) {
             let entry = match observation.admission.entry(command.pid) {
                 std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -572,7 +617,7 @@ impl Ledger {
                 (entry.resident >= room.light
                     && command.growth >= GROWING
                     && Some(entry.arrived) != state.oldest)
-                    .then_some(command.growth)
+                    .then_some(command.steady_growth)
             }) {
                 Some(owner) => changed.push(owner),
                 None => may_stop = true,
@@ -618,7 +663,7 @@ impl Ledger {
     /// grow, so it can wait with memory above the pressure line too. Starts
     /// over once it ends.
     pub(super) fn stalled(&mut self, members: &[Arc<Mutex<Observation>>], room: &Room) -> bool {
-        if youngest_paused(members).is_none() {
+        if !room.pressured || youngest_paused(members).is_none() {
             self.stall = None;
             return false;
         }
@@ -926,36 +971,49 @@ pub(super) enum Blocked {
 /// else can pause, it yields before a running command does: it has made the
 /// least progress, and the oldest running command can then finish.
 pub(super) fn youngest_paused(members: &[Arc<Mutex<Observation>>]) -> Option<PausedCommand> {
-    paused_by(members, 0, |paused| paused.arrived, |_, _| Some(())).map(|(command, ())| command)
+    waiting_by(
+        members,
+        0,
+        |wait| matches!(wait, Wait::Paused(WaitReason::Memory)),
+        |waiting| waiting.arrived,
+        |_, _| Some(()),
+    )
+    .map(|(command, ())| command)
 }
 
-/// The newest command paused on memory for at least `waited_ms` that cannot
-/// continue in `room` (a command that can is left to the next resume), with
-/// the resource and figures that kept it.
-pub(super) fn blocked_paused(
+/// The newest command waiting on memory, including a held launcher, that
+/// cannot continue after `waited_ms`, with the resource and figures keeping it.
+pub(super) fn blocked_waiting(
     members: &[Arc<Mutex<Observation>>],
     waited_ms: u64,
     room: &Room,
 ) -> Option<(PausedCommand, Blocked)> {
     let state = State::read(members, room);
-    paused_by(
+    waiting_by(
         members,
         waited_ms,
-        |paused| paused.arrived,
+        |wait| wait.reason() == WaitReason::Memory,
+        |waiting| waiting.arrived,
         |entry, unit| state.blocked_by(entry, unit, WaitReason::Memory, room),
     )
 }
 
 /// The command paused on memory that holds the most: ending it frees the most.
 pub(super) fn largest_paused(members: &[Arc<Mutex<Observation>>]) -> Option<PausedCommand> {
-    paused_by(members, 0, |paused| paused.resident, |_, _| Some(())).map(|(command, ())| command)
+    waiting_by(
+        members,
+        0,
+        |wait| matches!(wait, Wait::Paused(WaitReason::Memory)),
+        |waiting| waiting.resident,
+        |_, _| Some(()),
+    )
+    .map(|(command, ())| command)
 }
 
-/// The paused command that ranks highest, among those paused for at least
-/// `waited_ms` that `verdict` accepts, with what the verdict found.
-fn paused_by<T>(
+fn waiting_by<T>(
     members: &[Arc<Mutex<Observation>>],
     waited_ms: u64,
+    waits: impl Fn(&Wait) -> bool,
     rank: impl Fn(&PausedCommand) -> u64,
     verdict: impl Fn(&Entry, &str) -> Option<T>,
 ) -> Option<(PausedCommand, T)> {
@@ -970,7 +1028,7 @@ fn paused_by<T>(
             let Some(entry) = observation.admission.get(&command.pid) else {
                 continue;
             };
-            if !matches!(entry.wait, Some(Wait::Paused(WaitReason::Memory)))
+            if !entry.wait.as_ref().is_some_and(&waits)
                 || now.saturating_sub(entry.since_ms) < waited_ms
             {
                 continue;
@@ -1164,8 +1222,9 @@ fn need(entry: &Entry, reason: WaitReason, room: &Room) -> u64 {
     });
     match entry.wait {
         Some(Wait::Held(_)) => expected.unwrap_or(room.growth_room),
-        // It continues only with room to grow on for a while at its last
-        // rate, so it is not paused again at once.
+        // It continues only with room for its typical growth before the
+        // pause, so a burst does not strand it and a stopped sample cannot
+        // make a fast grower continue and pause again at once.
         _ => expected
             .filter(|need| *need > 0)
             .unwrap_or(room.growth_room)
