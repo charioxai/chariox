@@ -312,3 +312,5 @@ mod remote_spawn_deadline;
 mod room_admission;
 mod room_prompt_dispatch;
 mod subtree;
+
+mod cross_room_cards;
