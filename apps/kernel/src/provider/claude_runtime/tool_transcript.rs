@@ -407,12 +407,17 @@ impl ClaudeToolTranscript {
                     self.truncated = true;
                     return None;
                 }
+                let top_level = value.get("parent_tool_use_id").is_none_or(Value::is_null);
                 let pending = PendingTool {
                     name: name.to_string(),
-                    top_level: value.get("parent_tool_use_id").is_none_or(Value::is_null),
+                    top_level,
                     input: bounded_input(block.get("input").unwrap_or(&Value::Null)),
                     started_at_ms: now_ms,
-                    background: launches_background_command(name, block.get("input")),
+                    // A helper agent's own background commands end with that helper, and the
+                    // provider reports their end to it, not to this agent: only a call made
+                    // at this agent's own level can be held for.
+                    background: top_level
+                        && launches_background_command(name, block.get("input")),
                 };
                 if pending.bytes(id) > PENDING_BYTES.saturating_sub(self.pending_bytes) {
                     self.truncated = true;
@@ -679,6 +684,27 @@ mod tests {
             transcript.observe_at(&task_notification("aauto1", "other", "completed"), 3_000);
         assert_eq!(ended[0]["id"], id);
         assert_eq!(ended[0]["finished_at_ms"], 3_000);
+    }
+
+    // Live (l10orch r1): a background helper ran its own `sleep` in the background. The provider
+    // reports that command's end to the helper, so a record of it left open would hold the agent
+    // for the whole hold limit after the helper had answered.
+    #[test]
+    fn a_background_command_of_a_helper_agent_is_not_held_for() {
+        let mut transcript = ClaudeToolTranscript::default();
+        let mut launch = background_launch("nested", "sleep 40");
+        launch["parent_tool_use_id"] = json!("toolu_helper");
+        let started = transcript.observe_at(&launch, 1_000);
+        assert!(started[0].get("background").is_none(), "{}", started[0]);
+        let mut result = background_launch_result("nested", "bnested1");
+        result["parent_tool_use_id"] = json!("toolu_helper");
+        let launched = transcript.observe_at(&result, 1_200);
+        assert!(launched[0].get("background").is_none(), "{}", launched[0]);
+        assert!(
+            launched[0].get("finished_at_ms").is_none(),
+            "{}",
+            launched[0]
+        );
     }
 
     #[test]
