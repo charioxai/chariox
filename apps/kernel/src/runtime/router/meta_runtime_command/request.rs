@@ -8,6 +8,19 @@ use crate::local::{
     SliceStateSaveRequest, SliceStateSaveScope, SliceStateStatusRequest,
 };
 
+pub(super) fn deadline_edit_time(value: &str) -> Result<Option<u64>, DaemonError> {
+    if value == "none" {
+        return Ok(None);
+    }
+    let after = parse_deadline_after(value)?;
+    let time = u64::try_from(after.as_millis())
+        .ok()
+        .and_then(|ms| crate::session::unix_epoch_ms().checked_add(ms))
+        .filter(|time| *time <= i64::MAX as u64)
+        .ok_or_else(|| meta_command_error("a deadline is a duration such as 90s, 30m, 2h or 1d"))?;
+    Ok(Some(time))
+}
+
 pub(super) fn meta_agent_request(
     session: &crate::session::RuntimeSession,
     metaagent: &crate::agent::AgentInstance,
@@ -105,33 +118,20 @@ pub(super) fn meta_agent_request(
             }))
         }
         Some("deadline") => {
-            let usage = || {
-                meta_command_error(
-                    "usage: agent deadline get <agent-ref> | agent deadline set <agent-ref> <90s|30m|2h|1d>",
-                )
-            };
-            match (args.get(1).map(String::as_str), args.get(2), args.get(3)) {
-                (Some("get"), Some(reference), None) => {
+            let usage = || meta_command_error("usage: agent deadline <agent-ref> <90s|30m|2h|1d|none> [--room <room>] | agent deadline get <agent-ref>");
+            match args.get(1..).unwrap_or_default() {
+                [verb, reference] if verb == "get" => {
                     let agent = room_command_agent(agents, metaagent, reference, room_tools)?;
-                    Ok(LocalDaemonRequest::GetAgentDeadline(
-                        crate::local::GetAgentDeadlineRequest {
-                            session_id: session.id().to_string(),
-                            agent_id: agent.id().to_string(),
-                        },
-                    ))
+                    Ok(LocalDaemonRequest::GetAgentDeadline(crate::local::GetAgentDeadlineRequest {
+                        session_id: session.id().to_string(), agent_id: agent.id().to_string(),
+                    }))
                 }
-                (Some("set"), Some(reference), Some(after)) if args.len() == 4 => {
-                    let after = parse_deadline_after(after)?;
+                [reference, after] => {
+                    let deadline_ms = deadline_edit_time(after)?;
                     let agent = room_command_agent(agents, metaagent, reference, room_tools)?;
-                    Ok(LocalDaemonRequest::SetAgentDeadline(
-                        crate::local::SetAgentDeadlineRequest {
-                            session_id: session.id().to_string(),
-                            agent_id: agent.id().to_string(),
-                            deadline_ms: crate::session::unix_epoch_ms().saturating_add(
-                                u64::try_from(after.as_millis()).unwrap_or(u64::MAX),
-                            ),
-                        },
-                    ))
+                    Ok(LocalDaemonRequest::SetAgentDeadline(crate::local::SetAgentDeadlineRequest {
+                        session_id: session.id().to_string(), agent_id: agent.id().to_string(), deadline_ms,
+                    }))
                 }
                 _ => Err(usage()),
             }

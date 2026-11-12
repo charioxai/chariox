@@ -1168,7 +1168,7 @@ async fn agent_deadline_stops_an_active_turn_and_fences_later_admission() {
             crate::local::SetAgentDeadlineRequest {
                 session_id: f.room.clone(),
                 agent_id: f.agent.clone(),
-                deadline_ms: now - 1,
+                deadline_ms: Some(now - 1),
             },
         )
         .await
@@ -1258,7 +1258,7 @@ async fn agent_deadline_is_not_stopped_while_an_owned_source_is_still_stopping()
             crate::local::SetAgentDeadlineRequest {
                 session_id: f.room.clone(),
                 agent_id: f.agent.clone(),
-                deadline_ms: now - 1,
+                deadline_ms: Some(now - 1),
             },
         )
         .await
@@ -1311,7 +1311,7 @@ async fn pending_deadline_cleanup_does_not_stop_the_sweep_for_other_wakes() {
             crate::local::SetAgentDeadlineRequest {
                 session_id: f.room.clone(),
                 agent_id: f.agent.clone(),
-                deadline_ms: now - 1,
+                deadline_ms: Some(now - 1),
             },
         )
         .await

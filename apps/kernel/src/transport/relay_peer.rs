@@ -1048,7 +1048,8 @@ pub enum RelayPeerRequest {
     /// The worker enforces the agent's deadline itself, so the run stops with the home offline.
     SetLeasedAgentDeadline {
         leased_agent_id: String,
-        deadline_ms: u64,
+        #[serde(deserialize_with = "Option::deserialize")]
+        deadline_ms: Option<u64>,
     },
     /// `chariox.file.copy` from the leased agent: one slice of a file in its workspace, starting
     /// at `offset`.
@@ -2316,6 +2317,17 @@ mod native_approval_protocol_tests {
 
 #[cfg(test)]
 mod leased_agent_deadline_shapes {
+    #[test]
+    fn deadline_clear_requires_an_explicit_null() {
+        let value = serde_json::json!({"kind":"set_leased_agent_deadline","leased_agent_id":"lease","deadline_ms":null});
+        let request: super::RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), value);
+        assert!(serde_json::from_value::<super::RelayPeerRequest>(
+            serde_json::json!({"kind":"set_leased_agent_deadline","leased_agent_id":"lease"})
+        )
+        .is_err());
+    }
+
     use super::*;
     use sha2::{Digest, Sha256};
 

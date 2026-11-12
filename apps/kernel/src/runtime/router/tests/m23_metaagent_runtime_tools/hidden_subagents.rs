@@ -32,7 +32,7 @@ async fn hidden_and_addressable() {
     expected.sort();
     assert_eq!(listed_ids, expected, "only the room agents are listed");
     // By-id requests keep working for a hidden sub-agent (the grandchild gets a deadline).
-    let armed = room_command(&world, "a", "agent deadline set d 30m").await;
+    let armed = room_command(&world, "a", "agent deadline d 30m").await;
     assert!(armed.ok, "{armed:?}");
     let LocalDaemonResponse::AgentDeadline { deadline } = dispatch(
         &world,

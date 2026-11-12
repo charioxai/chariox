@@ -36,6 +36,51 @@ impl CommandRouter {
         }
         let args = tokens.get(2..).unwrap_or_default();
         Ok(match tokens.get(1).map(String::as_str) {
+            Some("deadline") if args.iter().any(|arg| arg == "--room") => {
+                let result = async {
+                    let [reference, value, flag, room] = args else {
+                        return Err(meta_command_error(
+                            "usage: agent deadline <agent-ref> <duration|none> [--room <room>]",
+                        ));
+                    };
+                    if flag != "--room" {
+                        return Err(meta_command_error(
+                            "usage: agent deadline <agent-ref> <duration|none> [--room <room>]",
+                        ));
+                    }
+                    let room = self
+                        .runtime_state
+                        .resolve_session_ref_id(room, None)
+                        .await?;
+                    let target = self.runtime_state.resolve_message_target(
+                        session,
+                        caller,
+                        Some(&room),
+                        reference,
+                    )?;
+                    let request = LocalDaemonRequest::SetAgentDeadline(
+                        crate::local::SetAgentDeadlineRequest {
+                            session_id: target.session_id().into(),
+                            agent_id: target.id().into(),
+                            deadline_ms: super::request::deadline_edit_time(value)?,
+                        },
+                    );
+                    Box::pin(
+                        self.dispatch(meta_kernel_command(provider_run, caller, &request), request),
+                    )
+                    .await
+                }
+                .await;
+                Some(match result {
+                    Ok(response) => super::result::meta_command_success_result(
+                        command,
+                        &response,
+                        caller,
+                        self.runtime_state.room_agent_tools_enabled(),
+                    ),
+                    Err(error) => meta_command_failure_result(command, error),
+                })
+            }
             Some("cancel") => Some(
                 self.dispatch_meta_agent_cancel_command(
                     provider_run,
@@ -146,7 +191,7 @@ impl CommandRouter {
         {
             deadline_ms = deadline_ms.min(parent_deadline.deadline_ms);
         }
-        // A retried spawn finds its child already bounded; a deadline only ever shortens.
+        // A retried spawn finds its child already bounded; keep the earlier limit on a spawn retry.
         if let LocalDaemonResponse::AgentDeadline {
             deadline: Some(current),
         } = self
@@ -163,7 +208,7 @@ impl CommandRouter {
         let request = LocalDaemonRequest::SetAgentDeadline(crate::local::SetAgentDeadlineRequest {
             session_id: session.id().to_string(),
             agent_id: child.id().to_string(),
-            deadline_ms,
+            deadline_ms: Some(deadline_ms),
         });
         if let Err(error) =
             Box::pin(self.dispatch(meta_kernel_command(provider_run, parent, &request), request))

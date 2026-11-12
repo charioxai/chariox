@@ -282,6 +282,7 @@ type UncertainLeasedTasks = Arc<
 
 #[derive(Clone)]
 struct KernelRuntimeOwnedState {
+    agent_deadline_edit: Arc<tokio::sync::Mutex<()>>,
     app_control: crate::runtime::app_control::AppControlService,
     dev_app_bindings: Arc<app_dev_runtime::DevAppBindings>,
     critical_approval_passkeys: critical_approval_passkey::CriticalApprovalPasskeys,
@@ -1151,6 +1152,7 @@ impl KernelRuntimeState {
             interaction_wake_driver: None,
             managed_work_activity: None,
             owned: KernelRuntimeOwnedState {
+                agent_deadline_edit: Arc::new(tokio::sync::Mutex::new(())),
                 provider_usage_refresher:
                     crate::runtime::provider_usage_refresh::ProviderUsageRefresher::for_kernel(
                         provider_account_profiles.clone(),

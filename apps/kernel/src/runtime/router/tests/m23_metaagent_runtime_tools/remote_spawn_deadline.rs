@@ -34,7 +34,7 @@ async fn armed_on_worker() {
             .unwrap_or_else(|| panic!("the remote child carries its deadline: {agent}"));
         let asked = worker.deadlines.lock().unwrap().clone();
         assert_eq!(
-            asked.last().map(|(_, ms)| *ms),
+            asked.last().and_then(|(_, ms)| *ms),
             Some(deadline_ms),
             "the worker was asked for the deadline the home recorded: {asked:?}"
         );
