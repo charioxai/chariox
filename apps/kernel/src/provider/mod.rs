@@ -90,7 +90,10 @@ pub(crate) use claude::{
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
 pub(crate) use claude_runtime::ClaudeRuntimeState;
-pub(crate) use claude_runtime::{begin_claude_runtime_tool_wait, ClaudeRuntimeToolWait};
+pub(crate) use claude_runtime::{
+    begin_claude_runtime_tool_wait, finished_background_task, BackgroundTaskEnd,
+    ClaudeRuntimeToolWait,
+};
 pub(crate) use claude_runtime::{
     bounded_result, bounded_result_images, ended_task_of_result, ends_background_commands,
     launched_task_id, launches_background_task, RESULT_IMAGE_FILE_BYTES,
