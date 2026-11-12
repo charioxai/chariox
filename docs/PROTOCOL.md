@@ -7102,7 +7102,9 @@ own transcript: when a wait commits at the end of a turn the kernel writes a `pr
 `{"tool":"chariox.wait","id":"wait:<task>:<started_at_ms>","status":"running","input":{"reason","deadline_ms"},
 "started_at_ms","finished_at_ms":null}` under the merge key `wait:<task>:<started_at_ms>`; when the agent wakes (or the
 owner stops the task) the kernel rewrites that same row in place (same history sequence) as `"status":"completed"` with
-`finished_at_ms` and `woken_by {kind, source_id}` (`kind` is the inbox event kind that woke it, or `cancelled`). Focused
+`finished_at_ms` and `woken_by {kind, source_id}` (`kind` is the inbox event kind that woke it, or `cancelled`). Only a wake that
+ends the wait closes the row: a message, or an event that steers another turn, leaves it running, and a wake the provider
+refuses rewrites it back to running. Focused
 check: `cargo test -p chariox-kernel --lib -- a_yield_writes_one_wait_row stopping_a_waiting_task a_node_reports protocol_shapes`.
 
 Landing 8 carries local daemon protocol 1003 and relay peer 442. Local 1003: `HideAgent` /
