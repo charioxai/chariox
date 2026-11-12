@@ -61,6 +61,8 @@ export type SessionHistoryOutlineTurn = {
   turn_id: string
   prompt_id?: string | null
   prompt_origin?: "chariox" | "external" | string | null
+  /** The kernel started the turn itself (a wake or a trigger): its prompt is a system prompt. */
+  system_prompt?: boolean
   external_provider?: string | null
   external_provider_session_id?: string | null
   external_provider_turn_id?: string | null
