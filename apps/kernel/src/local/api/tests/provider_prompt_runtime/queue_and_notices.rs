@@ -269,7 +269,7 @@ fn local_request_api_can_cancel_an_active_prompt() {
 
     let prompt_agent = harness.spawn_workflow_test_agent(session.id(), "prompt-agent");
 
-    let _ = harness
+    match harness
         .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: attachment.id().to_string(),
@@ -277,7 +277,14 @@ fn local_request_api_can_cancel_an_active_prompt() {
             prompt: "first prompt\n".to_string(),
             attachments: Vec::new(),
         }))
-        .expect("first prompt should start");
+        .expect("first prompt should start")
+    {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { prompt },
+            ..
+        } => harness.wait_for_prompt_delivery(session.id(), prompt_agent.id(), prompt.id()),
+        other => panic!("unexpected local response: {other:?}"),
+    }
     let _ = harness
         .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
