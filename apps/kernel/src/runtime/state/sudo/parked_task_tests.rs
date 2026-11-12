@@ -155,7 +155,12 @@ async fn stop_of_an_idle_agent_with_several_parked_tasks_cancels_them_all() {
     let store = &f.state.owned.durable_state_store;
     for original in [first, second] {
         let stopped = store.agent_task(&original.task_id).unwrap().unwrap();
-        assert_eq!(stopped.state, ExecutionState::Cancelled, "{}", original.task_id);
+        assert_eq!(
+            stopped.state,
+            ExecutionState::Cancelled,
+            "{}",
+            original.task_id
+        );
         let wake = store
             .agent_wake(&format!("timer-{}", original.task_id))
             .unwrap()

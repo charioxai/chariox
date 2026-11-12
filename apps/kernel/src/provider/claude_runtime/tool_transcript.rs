@@ -675,7 +675,8 @@ mod tests {
         let launched = transcript.observe_at(&helper_launch_result(id, "aauto1"), 1_200);
         assert_eq!(launched[0]["background"], true, "{}", launched[0]);
         assert!(launched[0]["finished_at_ms"].is_null(), "{}", launched[0]);
-        let ended = transcript.observe_at(&task_notification("aauto1", "other", "completed"), 3_000);
+        let ended =
+            transcript.observe_at(&task_notification("aauto1", "other", "completed"), 3_000);
         assert_eq!(ended[0]["id"], id);
         assert_eq!(ended[0]["finished_at_ms"], 3_000);
     }

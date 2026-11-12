@@ -254,7 +254,10 @@ pub(super) fn task_correction_text(task: &AgentTaskExecution) -> String {
     if !failed.is_empty() {
         text.push_str(&format!(" These failed: {}. Handle the failure, or call chariox.events.blocked with the exact owner action.", serde_json::to_string(&failed).unwrap_or_default()));
     }
-    text.push_str(&format!(" Settle each by this exact call: {}.", task_settle_steps(task).join("; ")));
+    text.push_str(&format!(
+        " Settle each by this exact call: {}.",
+        task_settle_steps(task).join("; ")
+    ));
     text.push_str(" If everything has resolved by now, reply with the final answer instead. One correction is allowed.");
     text
 }
@@ -506,7 +509,10 @@ mod tests {
     #[test]
     fn correction_names_each_open_obligation_with_the_exact_call() {
         let text = task_correction_text(&owing_task(timer_and_child(), ""));
-        assert!(text.contains("wake-7") && text.contains("obligation-9"), "{text}");
+        assert!(
+            text.contains("wake-7") && text.contains("obligation-9"),
+            "{text}"
+        );
         assert!(!text.contains("wake-1"), "{text}");
         assert!(
             text.contains(r#"chariox.events.yield with registration_ids ["completion-wake-7"]"#),
@@ -528,15 +534,30 @@ mod tests {
             "Repeated invalid turn end; owner must resume or cancel",
         );
         assert!(text.contains("Repeated invalid turn end"), "{text}");
-        assert!(text.contains("wake-7") && text.contains("chariox.events.yield"), "{text}");
+        assert!(
+            text.contains("wake-7") && text.contains("chariox.events.yield"),
+            "{text}"
+        );
         let none = task_resume_text(&owing_task(serde_json::json!([]), ""), "blocked");
-        assert!(none.contains("final answer") && !none.contains("chariox.events.yield"), "{none}");
+        assert!(
+            none.contains("final answer") && !none.contains("chariox.events.yield"),
+            "{none}"
+        );
     }
     #[test]
     fn the_blocked_card_names_what_is_owed_and_what_is_missing() {
-        let card = blocked_card_message(Some("c1"), &owing_task(timer_and_child(), "Repeated invalid turn end; owner must resume or cancel"));
+        let card = blocked_card_message(
+            Some("c1"),
+            &owing_task(
+                timer_and_child(),
+                "Repeated invalid turn end; owner must resume or cancel",
+            ),
+        );
         assert!(card.starts_with("c1: Repeated invalid turn end"), "{card}");
-        assert!(card.contains("wake-7") && card.contains("obligation-9"), "{card}");
+        assert!(
+            card.contains("wake-7") && card.contains("obligation-9"),
+            "{card}"
+        );
         let wakes = blocked_card_message(
             None,
             &owing_task(
