@@ -2479,7 +2479,7 @@ async fn a_yield_writes_one_wait_row_and_the_wake_updates_it_in_place() {
 }
 
 // A wait the owner stops does not stay a running row in the transcript: the same row says it was cancelled.
-// #1338 lets a yield carry no deadline; the wait row of that wait reports it as `null`, not as a missing key.
+// A yield without an explicit deadline reports the kernel's default deadline in its wait row.
 #[tokio::test]
 async fn a_yield_without_a_deadline_writes_a_wait_row_with_the_default_deadline() {
     let f = fixture("wait-row-no-deadline", true).await;

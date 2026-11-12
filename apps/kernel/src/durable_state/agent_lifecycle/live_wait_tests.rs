@@ -1,5 +1,5 @@
-//! An orchestrator waiting on a running child is not stopped for it: with no deadline nothing wakes
-//! it by time, and a deadline that finds the child still running is not a no-progress strike.
+//! An orchestrator can give a long-running child an explicit long wait. A deadline that
+//! finds the child still running is not a no-progress strike.
 use super::tests::Fixture;
 use super::*;
 
@@ -32,9 +32,9 @@ fn wait_on_child(f: &Fixture, deadline: Option<u64>) {
 }
 
 #[test]
-fn a_wait_without_a_deadline_gets_no_timed_wake_however_long_the_child_runs() {
+fn an_explicit_long_wait_gets_no_early_timed_wake_while_the_child_runs() {
     let f = Fixture::new();
-    wait_on_child(&f, None);
+    wait_on_child(&f, Some(6 * 60 * 60_000));
     for round in 1..=4 {
         sweep(&f, 3 * OLD_DEADLINE_MS * round);
     }
