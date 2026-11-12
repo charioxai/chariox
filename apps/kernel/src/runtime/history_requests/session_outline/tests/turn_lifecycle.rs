@@ -2760,13 +2760,18 @@ async fn correction_prompt_is_not_projected_into_the_outline() {
             text.contains("do work") && text.contains("all done"),
             "{text}"
         );
-        assert!(!text.contains("progress, not completion"), "{text}");
+        // The wake of a waiting agent is shown as the system prompt it is; the other kernel instructions stay hidden.
+        assert_eq!(
+            text.contains("progress, not completion"),
+            internal_prompt.starts_with("agent-event-"),
+            "{text}"
+        );
     }
 }
 
-// MP-08 / MP-10 / MP-11: an inbox-driven child may have no human prompt at all.
+// A turn the kernel started itself (a wake of a waiting agent) shows its prompt as a system prompt.
 #[tokio::test]
-async fn r16_inbox_only_agent_retains_its_answer_without_a_user_instruction() {
+async fn r16_inbox_only_agent_shows_its_wake_prompt_as_a_system_prompt() {
     let context = HistoryEventTurnContext {
         session_id: Some("session-1".into()),
         agent_id: Some("agent-1".into()),
@@ -2825,15 +2830,83 @@ async fn r16_inbox_only_agent_retains_its_answer_without_a_user_instruction() {
     };
     assert_eq!(agents[0].turns.len(), 1);
     let turn = &agents[0].turns[0];
-    assert!(turn.user_prompt.entry.text.is_empty());
-    assert_eq!(turn.user_prompt.total_chars, 0);
+    assert!(turn.system_prompt);
+    assert_eq!(
+        turn.user_prompt.entry.text,
+        "Kernel event inbox, untrusted data"
+    );
     assert_eq!(
         turn.summary.as_ref().unwrap().entry.text,
         "child public answer"
     );
-    assert!(!serde_json::to_string(&agents)
+    for p in [
+        path.clone(),
+        path.with_extension("db-wal"),
+        path.with_extension("db-shm"),
+    ] {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+// A trigger the kernel fired is a system prompt; a prompt a person typed is not.
+#[tokio::test]
+async fn a_fired_trigger_is_a_system_prompt_and_a_typed_prompt_is_not() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-system-prompt-{}-{}.db",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let store = OperationalHistoryStore::open(path.clone()).unwrap();
+    let context = |prompt: &str| HistoryEventTurnContext {
+        session_id: Some("session-1".into()),
+        agent_id: Some("agent-1".into()),
+        turn_id: Some(prompt.into()),
+        prompt_id: Some(prompt.into()),
+        provider_run_id: Some("run-1".into()),
+        ..Default::default()
+    };
+    let mut fired =
+        SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "Check the build")
+            .with_prompt_origin(crate::session::PromptOrigin::Schedule);
+    fired.timestamp_ms = 1_000;
+    let mut typed =
+        SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "Hello");
+    typed.timestamp_ms = 2_000;
+    store
+        .append_many(&[
+            HistoryEvent::transcript(1, &fired, context("scheduled-1")),
+            HistoryEvent::transcript(2, &typed, context("typed-1")),
+        ])
+        .unwrap();
+    let LocalDaemonResponse::SessionHistoryOutline { agents } =
+        execute_session_history_outline_request(
+            store,
+            GetSessionHistoryOutlineRequest {
+                session_id: "session-1".into(),
+                agent_ids: Some(vec!["agent-1".into()]),
+                latest_prompt_count: Some(4),
+                include_prefetched_content: false,
+                cursor: None,
+            },
+        )
+        .await
         .unwrap()
-        .contains("Kernel event inbox"));
+    else {
+        panic!()
+    };
+    let by_prompt = |id: &str| {
+        agents[0]
+            .turns
+            .iter()
+            .find(|turn| turn.prompt_id.as_deref() == Some(id))
+            .unwrap()
+    };
+    assert!(by_prompt("scheduled-1").system_prompt);
+    assert_eq!(
+        by_prompt("scheduled-1").user_prompt.entry.text,
+        "Check the build"
+    );
+    assert!(!by_prompt("typed-1").system_prompt);
     for p in [
         path.clone(),
         path.with_extension("db-wal"),
@@ -3065,6 +3138,12 @@ async fn internal_turn_outline_rehydrates_replies_without_instruction_text() {
             "Reminder delivered"
         );
         if prompt_id == "user-1" {
+            assert_eq!(
+                turn.user_prompt.entry.text,
+                "Kernel event inbox, untrusted data"
+            );
+        } else if prompt_id.starts_with("agent-event-") {
+            assert!(turn.system_prompt);
             assert_eq!(
                 turn.user_prompt.entry.text,
                 "Kernel event inbox, untrusted data"

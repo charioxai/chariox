@@ -269,6 +269,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
                 turn_id: "turn-1".to_string(),
                 prompt_id: Some("prompt-1".to_string()),
                 prompt_origin: crate::session::PromptOrigin::External,
+                system_prompt: false,
                 external_provider: Some("codex".to_string()),
                 external_provider_session_id: Some("thread-1".to_string()),
                 external_provider_turn_id: Some("turn-1".to_string()),
