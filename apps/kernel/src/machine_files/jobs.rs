@@ -434,7 +434,7 @@ impl Run {
         if replacing {
             self.machine.guard().check_replace(&destination.path)?;
             if matches!(self.source, FileSource::Local(_))
-                && resolved(Path::new(&source_path)) == destination.path
+                && resolved(&Machine::absolute(&source_path)?) == destination.path
             {
                 return Err(
                     "The destination is the source itself; choose another folder or name"

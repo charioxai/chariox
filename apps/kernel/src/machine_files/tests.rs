@@ -1571,3 +1571,47 @@ async fn l9_replacing_the_source_folder_through_a_parent_alias_is_refused() {
     assert!(!staging_left(&root));
     std::fs::remove_dir_all(root).unwrap();
 }
+
+async fn home_source_replacement_is_refused(source_path: &str, reason: &str) {
+    use std::os::unix::fs::symlink;
+    let _env = crate::env_lock::lock();
+    let root = scratch("same-home-folder");
+    let _restore = EnvRestore::set(&[("HOME", &root)]);
+    let source = root.join("project");
+    let digest = plant(&source.join("keep.txt"), 20);
+    symlink("keep.txt", source.join("link.txt")).unwrap();
+    let mut request = request(Path::new(source_path), Path::new("~/"));
+    request.conflict = FileTransferConflict::Replace;
+    let jobs = Arc::new(TransferJobs::default());
+    let job = run(&jobs, FileSource::Local(machine()), request).await;
+    let file_preserved = digest_of(&source.join("keep.txt")) == digest;
+    let link_preserved = std::fs::symlink_metadata(source.join("link.txt"))
+        .is_ok_and(|metadata| metadata.is_symlink());
+    let staged = staging_left(&root);
+    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(job.state, FileTransferState::Failed, "{job:?}");
+    assert!(job.error.unwrap().contains(reason));
+    assert!(file_preserved);
+    assert!(link_preserved);
+    assert!(!staged);
+}
+
+#[tokio::test]
+async fn l9_home_source_replacement_is_refused() {
+    home_source_replacement_is_refused("~/project", "source itself").await;
+}
+
+#[tokio::test]
+async fn l9_home_source_replacement_with_a_trailing_slash_is_refused() {
+    home_source_replacement_is_refused("~/project/", "source itself").await;
+}
+
+#[tokio::test]
+async fn l9_home_source_replacement_with_a_current_directory_is_refused() {
+    home_source_replacement_is_refused("~/./project", "source itself").await;
+}
+
+#[tokio::test]
+async fn l9_home_source_replacement_with_a_parent_directory_is_refused() {
+    home_source_replacement_is_refused("~/project/../project", "must not contain").await;
+}
