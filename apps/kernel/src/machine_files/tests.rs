@@ -1505,3 +1505,46 @@ async fn a_keep_both_transfer_into_a_folder_another_transfer_is_creating_is_refu
     assert_eq!(a.state, FileTransferState::Done, "{a:?}");
     assert!(!here.join("proj/x.bin").exists());
 }
+
+// A deterministic resume name is untrusted until the staging root is opened and checked.
+#[tokio::test]
+async fn l9_a_preexisting_staging_root_link_never_prunes_its_target() {
+    use std::os::unix::fs::symlink;
+    let root = scratch("stage-link");
+    let source = root.join("source/project");
+    plant(&source.join("new.txt"), 10);
+    let here = root.join("destination");
+    std::fs::create_dir(&here).unwrap();
+    let victim = root.join("victim");
+    let digest = plant(&victim.join("keep.txt"), 20);
+    let request = request(&source, &here);
+    let stage = super::jobs::folder_stage(&request.source, &here.join("project"));
+    symlink(&victim, &stage).unwrap();
+    let jobs = Arc::new(TransferJobs::default());
+    let job = run(&jobs, FileSource::Local(machine()), request).await;
+    assert_eq!(job.state, FileTransferState::Failed, "{job:?}");
+    assert_eq!(digest_of(&victim.join("keep.txt")), digest);
+    assert!(!here.join("project").exists());
+    assert!(std::fs::symlink_metadata(stage).unwrap().is_symlink());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn l9_an_untrusted_existing_staging_directory_is_left_untouched() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = scratch("stage-permissions");
+    let source = root.join("source/project");
+    plant(&source.join("new.txt"), 10);
+    let here = root.join("destination");
+    std::fs::create_dir(&here).unwrap();
+    let request = request(&source, &here);
+    let stage = super::jobs::folder_stage(&request.source, &here.join("project"));
+    let digest = plant(&stage.join("keep.txt"), 20);
+    std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let jobs = Arc::new(TransferJobs::default());
+    let job = run(&jobs, FileSource::Local(machine()), request).await;
+    assert_eq!(job.state, FileTransferState::Failed, "{job:?}");
+    assert_eq!(digest_of(&stage.join("keep.txt")), digest);
+    assert!(!here.join("project").exists());
+    std::fs::remove_dir_all(root).unwrap();
+}

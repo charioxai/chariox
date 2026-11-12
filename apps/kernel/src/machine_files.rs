@@ -6,6 +6,7 @@ mod jobs;
 mod place;
 mod records;
 mod source;
+mod staging;
 mod state_guard;
 
 #[cfg(test)]

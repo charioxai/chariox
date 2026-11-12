@@ -14,6 +14,7 @@ use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
 
 use super::records::{read_records, Pending, Record, Recorder};
+use super::staging::Stage;
 use super::{FileSource, Machine};
 use crate::agent_file_copy::{
     patiently, pull, CancelToken, Control, Copied, CopyOptions, LinkError, RemoteSource, CANCELED,
@@ -613,6 +614,14 @@ impl Run {
     ) -> Result<(), String> {
         let (folders, files) = self.scan(source_path).await?;
         let stage = folder_stage(&request.source, destination);
+        self.machine.guard().check_replace(&stage)?;
+        let stage = Arc::new(
+            tokio::task::spawn_blocking(move || Stage::open(stage))
+                .await
+                .map_err(|_| {
+                    "The transfer stopped unexpectedly; nothing was published".to_owned()
+                })??,
+        );
         let outcome = self
             .copy_folder(
                 request,
@@ -629,7 +638,7 @@ impl Run {
             Err(reason) if reason.contains("stayed unreachable") => {}
             Err(_) => {
                 let stage = stage.clone();
-                let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(stage)).await;
+                let _ = tokio::task::spawn_blocking(move || stage.cleanup()).await;
             }
             Ok(()) => {}
         }
@@ -640,7 +649,7 @@ impl Run {
     async fn copy_folder(
         &self,
         request: &StartFileTransferRequest,
-        stage: &Path,
+        stage: &Arc<Stage>,
         destination: &Path,
         root_mode: Option<u32>,
         replacing: bool,
@@ -649,7 +658,7 @@ impl Run {
     ) -> Result<(), String> {
         let source_path = request.source.path.as_str();
         let (staged, wanted_folders, wanted_files) =
-            (stage.to_owned(), folders.to_vec(), files.to_vec());
+            (stage.clone(), folders.to_vec(), files.to_vec());
         tokio::task::spawn_blocking(move || prepare_stage(&staged, &wanted_folders, &wanted_files))
             .await
             .map_err(|_| "The transfer stopped unexpectedly; nothing was published".to_owned())??;
@@ -678,10 +687,10 @@ impl Run {
         let (staged, target) = (stage.to_owned(), destination.to_owned());
         tokio::task::spawn_blocking(move || {
             for item in &by_depth {
-                restore_mode(&staged.join(&item.relative), Some(item.mode))?;
+                staged.check()?;
+                restore_mode(&staged.path.join(&item.relative), Some(item.mode))?;
             }
-            restore_mode(&staged, root_mode)?;
-            publish_folder(&staged, &target, replacing)
+            publish_folder(&staged, &target, replacing, root_mode)
         })
         .await
         .map_err(|_| "The transfer stopped unexpectedly; nothing was published".to_owned())??;
@@ -715,12 +724,13 @@ impl Run {
     async fn copy_item(
         &self,
         source_path: &str,
-        stage: &Path,
+        stage: &Stage,
         item: &Item,
         done: &Arc<AtomicU64>,
     ) -> Result<(String, Copied), String> {
+        stage.check()?;
         let source = format!("{source_path}/{}", item.relative);
-        let target = stage.join(&item.relative).display().to_string();
+        let target = stage.path.join(&item.relative).display().to_string();
         self.update(|job| job.current = Some(source.clone()));
         let landed_before = Arc::new(AtomicU64::new(0));
         let (job, done_total, last) = (self.job.clone(), done.clone(), landed_before.clone());
@@ -743,6 +753,7 @@ impl Run {
             }
             other => other?,
         };
+        stage.check()?;
         restore_mode(Path::new(&target), Some(item.mode))?;
         let leftover = item
             .size
@@ -870,63 +881,34 @@ pub(super) fn folder_stage(source: &FileTransferEndpoint, destination: &Path) ->
 /// Makes the staging folder hold the source's tree of folders, private to the kernel's user, and
 /// nothing the source no longer has: a retried transfer finds what an earlier try staged, and a
 /// file or folder removed from the source meanwhile (or turned into the other kind) is dropped.
-fn prepare_stage(stage: &Path, folders: &[Item], files: &[Item]) -> Result<(), String> {
-    create_private_dirs(stage)?;
+fn prepare_stage(stage: &Stage, folders: &[Item], files: &[Item]) -> Result<(), String> {
     let wanted_folders: HashSet<&str> = folders.iter().map(|item| item.relative.as_str()).collect();
     let wanted_files: HashSet<&str> = files.iter().map(|item| item.relative.as_str()).collect();
-    let sidecars: HashSet<PathBuf> = files
+    let sidecars: HashSet<String> = files
         .iter()
-        .map(|item| crate::agent_file_copy::staging_of(&stage.join(&item.relative)))
+        .map(|item| {
+            crate::agent_file_copy::staging_of(Path::new(&item.relative))
+                .display()
+                .to_string()
+        })
         .collect();
-    drop_unwanted(stage, "", &wanted_folders, &wanted_files, &sidecars).map_err(|error| {
-        format!(
-            "The staged copy in `{}` could not be checked: {error}",
-            stage.display()
-        )
-    })?;
+    stage.prune(&wanted_folders, &wanted_files, &sidecars)?;
     for folder in folders {
-        create_private_dirs(&stage.join(&folder.relative))?;
+        stage.check()?;
+        create_private_dirs(&stage.path.join(&folder.relative))?;
     }
-    Ok(())
-}
-
-fn drop_unwanted(
-    directory: &Path,
-    relative: &str,
-    folders: &HashSet<&str>,
-    files: &HashSet<&str>,
-    sidecars: &HashSet<PathBuf>,
-) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(directory)? {
-        let entry = entry?;
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let below = if relative.is_empty() {
-            name.clone()
-        } else {
-            format!("{relative}/{name}")
-        };
-        let kind = std::fs::symlink_metadata(&path)?;
-        let wanted = if name.starts_with(STAGING_PREFIX) {
-            // The bytes of a file still being copied wait beside it for the next try.
-            sidecars.contains(&path)
-        } else if kind.is_dir() {
-            folders.contains(below.as_str())
-        } else {
-            kind.is_file() && files.contains(below.as_str())
-        };
-        if !wanted {
-            remove_any(&path)?;
-        } else if kind.is_dir() && !name.starts_with(STAGING_PREFIX) {
-            drop_unwanted(&path, &below, folders, files, sidecars)?;
-        }
-    }
-    Ok(())
+    stage.check()
 }
 
 /// Puts the finished staging folder where the item belongs; an item it replaces is set aside
 /// first and removed only once the new one is in place.
-fn publish_folder(stage: &Path, destination: &Path, replacing: bool) -> Result<(), String> {
+fn publish_folder(
+    stage: &Stage,
+    destination: &Path,
+    replacing: bool,
+    root_mode: Option<u32>,
+) -> Result<(), String> {
+    stage.check()?;
     let aside = replacing.then(|| {
         destination.with_file_name(format!(
             "{STAGING_PREFIX}old-{}",
@@ -939,7 +921,7 @@ fn publish_folder(stage: &Path, destination: &Path, replacing: bool) -> Result<(
             format!("`{}` could not be replaced: {error}", destination.display())
         })?;
     }
-    if let Err(error) = std::fs::rename(stage, destination) {
+    if let Err(error) = std::fs::rename(&stage.path, destination) {
         if let Some(aside) = &aside {
             let _ = std::fs::rename(aside, destination);
         }
@@ -947,6 +929,24 @@ fn publish_folder(stage: &Path, destination: &Path, replacing: bool) -> Result<(
             "`{}` could not be put in place: {error}",
             destination.display()
         ));
+    }
+    let published = if stage.is_published_at(destination) {
+        stage.restore_mode(root_mode).and_then(|()| {
+            if stage.is_published_at(destination) {
+                Ok(())
+            } else {
+                Err("The copied folder changed during publication".to_owned())
+            }
+        })
+    } else {
+        Err("The staging folder changed during publication".to_owned())
+    };
+    if let Err(reason) = published {
+        let _ = std::fs::rename(destination, &stage.path);
+        if let Some(aside) = &aside {
+            let _ = std::fs::rename(aside, destination);
+        }
+        return Err(reason);
     }
     if let Some(aside) = aside {
         let _ = remove_any(&aside);
@@ -1044,5 +1044,37 @@ fn resolved(path: &Path) -> PathBuf {
             }
             _ => return path.to_owned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod staging_publication_tests {
+    use super::*;
+
+    #[test]
+    fn l9_a_replaced_staging_root_cannot_replace_the_destination() {
+        let root = crate::test_support::TestWorktree::new("stage-publication-identity");
+        let path = root.path().join("stage");
+        let stage = Stage::open(path.clone()).unwrap();
+        std::fs::write(path.join("new"), b"copied bytes").unwrap();
+        let held = root.path().join("moved-stage");
+        std::fs::rename(&path, &held).unwrap();
+        let destination = root.path().join("destination");
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(destination.join("keep"), b"original bytes").unwrap();
+        let victim = root.path().join("victim");
+        std::fs::create_dir(&victim).unwrap();
+        std::fs::write(victim.join("keep"), b"untouched bytes").unwrap();
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+        assert!(publish_folder(&stage, &destination, true, Some(0o755)).is_err());
+        assert_eq!(
+            std::fs::read(destination.join("keep")).unwrap(),
+            b"original bytes"
+        );
+        assert_eq!(
+            std::fs::read(victim.join("keep")).unwrap(),
+            b"untouched bytes"
+        );
+        assert_eq!(std::fs::read(held.join("new")).unwrap(), b"copied bytes");
     }
 }
