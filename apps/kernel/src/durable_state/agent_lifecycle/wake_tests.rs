@@ -3,6 +3,7 @@ use super::*;
 mod assessment_sources;
 mod goal_waits;
 mod goal_yields;
+mod owner_wait;
 mod wakeable_agents;
 struct Fixture {
     root: std::path::PathBuf,

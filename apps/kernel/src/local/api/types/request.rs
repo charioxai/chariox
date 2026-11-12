@@ -352,6 +352,7 @@ pub enum LocalDaemonRequest {
     CancelActivePrompt(CancelActivePromptRequest),
     CancelAgentTask(CancelAgentTaskRequest),
     CancelAgentWake(CancelAgentWakeRequest),
+    CancelAgentWait(CancelAgentWaitRequest),
     SteerQueuedPrompt(SteerQueuedPromptRequest),
     SteerActivePrompt(SteerActivePromptRequest),
     CancelQueuedPrompt(CancelQueuedPromptRequest),

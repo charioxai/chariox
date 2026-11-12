@@ -96,6 +96,15 @@ pub struct CancelAgentWakeRequest {
     pub wake_id: String,
 }
 
+/// End the wait a task is in, without waking its agent or cancelling anything else it owns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelAgentWaitRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub task_id: String,
+    pub started_at_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SteerQueuedPromptRequest {
     pub session_id: String,
