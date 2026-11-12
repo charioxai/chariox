@@ -45,8 +45,6 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
             last_checked_at_ms: 1,
         }),
         last_progress_at_ms: 1,
-        progress_sequence: 0,
-        no_progress_wakes: 1,
         correction_used: false,
         pending_prompt_id: None,
     };
@@ -65,8 +63,7 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
             "completion_task_id": "child-task", "status": "open", "dispatch_state": "accepted"}],
         "wait": {"registration_ids": ["reg"], "deadline_ms": 60000, "started_at_ms": 1,
             "inbox_cursor": 3, "long_wait_notified": false, "last_checked_at_ms": 1},
-        "last_progress_at_ms": 1, "progress_sequence": 0, "no_progress_wakes": 1,
-        "correction_used": false, "pending_prompt_id": null,
+        "last_progress_at_ms": 1, "correction_used": false, "pending_prompt_id": null,
     });
     assert_eq!(value, expected);
     assert_eq!(
@@ -188,7 +185,7 @@ fn goal_projection_shape_is_bound_to_assigned_protocol493() {
 // MP-08 / MP-09 / MP-10 / MP-11 A12: precise additions for coordinator union493/102.
 #[test]
 fn compact_task_wire_shapes_are_bound_to_assigned_protocol493() {
-    let raw = serde_json::json!({"task_id":"task","room_id":"room","owner_user_id":"owner","agent_id":"agent","prompt_id":"prompt","provider_run_id":null,"revision":2,"blocked_revision":0,"state":"working","reason":"work","obligations":[],"wait":null,"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":0,"correction_used":false,"pending_prompt_id":null});
+    let raw = serde_json::json!({"task_id":"task","room_id":"room","owner_user_id":"owner","agent_id":"agent","prompt_id":"prompt","provider_run_id":null,"revision":2,"blocked_revision":0,"state":"working","reason":"work","obligations":[],"wait":null,"last_progress_at_ms":1,"correction_used":false,"pending_prompt_id":null});
     let task = serde_json::from_value(raw.clone()).unwrap();
     let response = serde_json::to_value(LocalDaemonResponse::AgentTaskUpdated {
         session_id: "room".into(),

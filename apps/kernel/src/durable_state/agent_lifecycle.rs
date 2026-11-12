@@ -80,7 +80,6 @@ pub(crate) use types::{
 pub(crate) const SWEEP_MS: u64 = 30_000;
 pub(crate) const DELIVERY_TIMEOUT_MS: u64 = 120_000;
 pub(crate) const LONG_WAIT_MS: u64 = 900_000;
-pub(crate) const NO_PROGRESS_LIMIT: u32 = 3;
 
 fn sql_integer(value: u64) -> Result<i64, DaemonError> {
     i64::try_from(value).map_err(|_| error("integer exceeds durable storage bound"))
@@ -1200,8 +1199,6 @@ fn new_task(
         obligations: vec![],
         wait: None,
         last_progress_at_ms: now,
-        progress_sequence: 0,
-        no_progress_wakes: 0,
         correction_used: false,
         pending_prompt_id: None,
     }

@@ -683,10 +683,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 if is_plain(tx, &t)? || (!open && has_answer && t.wait.is_none()) {
                     t.state = ExecutionState::Done;
                     t.reason.clear();
-                } else if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
-                    t.state = ExecutionState::Blocked;
-                    t.blocked_revision = t.revision + 1;
-                    t.reason="Three consecutive wakes without handled progress; owner must resume or cancel".into();
                 } else if valid_wait {
                     t.state = ExecutionState::Waiting;
                 } else if !t.correction_used {
@@ -946,7 +942,6 @@ fn retain_question_wait(
         .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
     if t.wait.is_none()
         && t.goal.is_none()
-        && t.no_progress_wakes < NO_PROGRESS_LIMIT
         && open
         && t.obligations
             .iter()

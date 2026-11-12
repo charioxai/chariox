@@ -495,14 +495,14 @@ fn a02_stale_owner_and_foreign_ack_are_denied() {
         .is_err());
 }
 #[test]
-fn a02_no_progress_blocks_on_third_wake_and_durable_counter_survives_reopen() {
+fn repeated_wait_wakes_remain_live_across_reopen() {
     let f = Fixture::new();
     f.begin("p");
     f.register();
     f.subscribe();
     f.yield_now();
     f.settle("p", true);
-    for n in 1..=3 {
+    for n in 1..=6 {
         let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
             "room",
             "parent",
@@ -543,15 +543,11 @@ fn a02_no_progress_blocks_on_third_wake_and_durable_counter_survives_reopen() {
             now: 20 + n,
         });
         f.settle(&prompt, true);
-        if n < 3 {
-            assert_eq!(f.task().state, ExecutionState::Waiting);
-        } else {
-            assert_eq!(f.task().state, ExecutionState::Blocked);
-        }
+        assert_eq!(f.task().state, ExecutionState::Waiting);
         let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
         assert_eq!(
-            reopened.agent_tasks(Some("room"), Some("parent")).unwrap()[0].no_progress_wakes,
-            n as u32
+            reopened.agent_tasks(Some("room"), Some("parent")).unwrap()[0],
+            f.task()
         );
     }
 }
@@ -830,9 +826,7 @@ fn a02_named_wake_keeps_independent_waits_separate() {
     });
     let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
     assert_eq!(tasks[0].state, ExecutionState::Waiting);
-    assert_eq!(tasks[0].no_progress_wakes, 0);
     assert_eq!(tasks[1].pending_prompt_id.as_deref(), Some("wake"));
-    assert_eq!(tasks[1].no_progress_wakes, 1);
 }
 #[test]
 fn a02_unsubscribe_wakes_retained_wait_and_stale_turn_is_denied() {
@@ -1060,7 +1054,6 @@ fn a02_default_message_does_not_replace_an_independent_wait() {
         through: 0,
     });
     assert_eq!(f.task().state, ExecutionState::Waiting);
-    assert_eq!(f.task().no_progress_wakes, 0);
 }
 
 #[test]
@@ -1108,7 +1101,7 @@ fn a02_one_source_occurrence_reaches_multiple_tasks_without_conflict() {
 }
 
 #[test]
-fn a02_artifact_receipt_resets_guard_once_and_survives_restart() {
+fn a02_artifact_receipt_advances_clock_once_and_survives_restart() {
     let f = Fixture::new();
     f.begin("p");
     f.register();
@@ -1144,7 +1137,6 @@ fn a02_artifact_receipt_resets_guard_once_and_survives_restart() {
         now: 11,
     });
     f.begin("wake");
-    assert_eq!(f.task().no_progress_wakes, 1);
     assert!(f
         .store
         .agent_lifecycle(Operation::Progress {
@@ -1161,7 +1153,6 @@ fn a02_artifact_receipt_resets_guard_once_and_survives_restart() {
         now: 12,
     });
     let recorded = f.task();
-    assert_eq!(recorded.no_progress_wakes, 0);
     assert_eq!(recorded.last_progress_at_ms, 12);
     let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
     reopened
@@ -1487,15 +1478,6 @@ fn a02_urgent_reply_tracks_corrected_task_and_late_exact_acceptance() {
     let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
     let sender = tasks.iter().find(|t| t.task_id == "p").unwrap();
     assert_eq!(sender.obligations[0].status, "satisfied");
-    assert_eq!(sender.progress_sequence, 1);
-    assert_eq!(
-        tasks
-            .iter()
-            .find(|t| t.task_id == "independent")
-            .unwrap()
-            .progress_sequence,
-        0
-    );
     f.apply(Operation::SourceOutcome {
         now: 6,
         room: "room".into(),
@@ -1661,10 +1643,6 @@ fn a02_review_rejected_wake_returns_the_task_to_its_wait() {
         assert_eq!(t.state, ExecutionState::Waiting, "admission={admission:?}");
         assert!(t.wait.is_some());
         assert_eq!(t.pending_prompt_id, None);
-        assert_eq!(
-            t.no_progress_wakes, 0,
-            "a refused wake is not a no-progress strike"
-        );
     }
 }
 
@@ -3189,7 +3167,6 @@ fn a02_g02_pre_io_failure_does_not_fabricate_uncertain_delivery() {
         "pending"
     );
     assert_eq!(f.task().state, ExecutionState::Waiting);
-    assert_eq!(f.task().no_progress_wakes, 0);
     assert_eq!(
         delivery_attempt_receipt_state(true, &failure, true),
         "uncertain",
@@ -3265,13 +3242,8 @@ fn a12_expired_completion_receipt_can_settle_matching_goal_after_pause() {
             "handling must not resume a paused/blocked goal"
         );
         assert_eq!(after.goal.as_ref().unwrap().paused, pause);
-        assert_eq!(
-            after.no_progress_wakes, before.no_progress_wakes,
-            "blocked guard is preserved"
-        );
         if pause {
             assert_eq!(after.blocked_revision, before.blocked_revision);
-            assert_eq!(after.progress_sequence, before.progress_sequence);
         }
         assert_eq!(
             f.store
@@ -3819,7 +3791,7 @@ fn visible_tasks_are_unfinished_and_recent_finished_ones_in_ledger_order() {
     let f = Fixture::new();
     let db = Connection::open(f.root.join("state.sqlite")).unwrap();
     let insert = |id: &str, room: &str, state: &str| {
-        let payload = serde_json::json!({"task_id":id,"room_id":room,"agent_id":"a","prompt_id":id,"provider_run_id":null,"revision":1,"state":state,"reason":"","obligations":[],"wait":null,"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":0,"correction_used":false,"pending_prompt_id":null});
+        let payload = serde_json::json!({"task_id":id,"room_id":room,"agent_id":"a","prompt_id":id,"provider_run_id":null,"revision":1,"state":state,"reason":"","obligations":[],"wait":null,"last_progress_at_ms":1,"correction_used":false,"pending_prompt_id":null});
         db.execute(
             "INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES(?1,?2,'a',?1,?3)",
             params![id, room, payload.to_string()],
@@ -3853,7 +3825,7 @@ fn visible_read_steps(done: usize) -> i32 {
     let f = Fixture::new();
     let db = Connection::open(f.root.join("state.sqlite")).unwrap();
     let insert = |id: &str, state: &str| {
-        let payload = serde_json::json!({"task_id":id,"room_id":"r","agent_id":"a","prompt_id":id,"provider_run_id":null,"revision":1,"state":state,"reason":"","obligations":[],"wait":null,"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":0,"correction_used":false,"pending_prompt_id":null});
+        let payload = serde_json::json!({"task_id":id,"room_id":"r","agent_id":"a","prompt_id":id,"provider_run_id":null,"revision":1,"state":state,"reason":"","obligations":[],"wait":null,"last_progress_at_ms":1,"correction_used":false,"pending_prompt_id":null});
         db.execute(
             "INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES(?1,'r','a',?1,?2)",
             params![id, payload.to_string()],

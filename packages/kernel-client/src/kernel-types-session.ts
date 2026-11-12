@@ -456,7 +456,7 @@ export type AgentTaskExecution = {
   reason: string
   obligations: { id: string; kind: string; resource_id: string | null; completion_task_id: string | null; status: string; dispatch_state: string }[]
   wait: { registration_ids: string[]; deadline_ms: number | null; started_at_ms: number; inbox_cursor: number; long_wait_notified: boolean; last_checked_at_ms: number } | null
-  last_progress_at_ms: number; progress_sequence: number; no_progress_wakes: number
+  last_progress_at_ms: number
   correction_used: boolean; pending_prompt_id: string | null
 }
 // MP-08 / MP-09 / MP-10 / MP-11 A03: one kernel-owned wake source with its receipts.

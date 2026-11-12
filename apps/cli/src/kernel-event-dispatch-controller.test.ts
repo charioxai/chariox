@@ -254,7 +254,7 @@ test("kernel event dispatch applies agent task updates and refuses malformed one
   const task: AgentTaskExecution = {
     task_id: "task-1", room_id: "session-1", owner_user_id: "owner", agent_id: "agent-1", prompt_id: "task-1",
     provider_run_id: null, revision: 3, blocked_revision: 0, state: "waiting", reason: "build", obligations: [],
-    wait: null, last_progress_at_ms: 1, progress_sequence: 0, no_progress_wakes: 0, correction_used: false,
+    wait: null, last_progress_at_ms: 1, correction_used: false,
     pending_prompt_id: null,
   }
 
