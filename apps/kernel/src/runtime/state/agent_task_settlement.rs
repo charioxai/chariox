@@ -13,9 +13,15 @@ impl KernelRuntimeOwnedState {
         let wakes = self
             .durable_state_store
             .agent_wakes(Some(&task.room_id), Some(&task.agent_id))?;
-        let inbox = self
-            .durable_state_store
-            .agent_inbox(&task.room_id, &task.agent_id, 0)?;
+        let inbox =
+            if task.obligations.iter().any(|o| {
+                o.requires_resolution() && matches!(o.status.as_str(), "settling" | "failed")
+            }) {
+                self.durable_state_store
+                    .agent_inbox(&task.room_id, &task.agent_id, 0)?
+            } else {
+                Vec::new()
+            };
         let mut steps = Vec::new();
         for obligation in task.obligations.iter().filter(|o| o.requires_resolution()) {
             let resource = obligation.resource_id.as_deref().unwrap_or(&obligation.id);
