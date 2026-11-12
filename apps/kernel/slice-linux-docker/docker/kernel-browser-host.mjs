@@ -91,6 +91,10 @@ const BACKGROUND_KEEP_MS = 1500;
 // An agent Tab renders at full speed behind the shown one only this long after the agent's last action in it; an idle
 // one stops scheduling frames, and the agent's next action wakes it before acting.
 export const BACKGROUND_IDLE_MS = 30_000;
+// The shown Tab renders into the owned window at full rate whether or not anyone watches it. With no viewer stream
+// and no request for this long it is frozen (hidden: no frames, no page tasks) until the next request wakes it.
+export const SHOWN_IDLE_MS = 30_000;
+const SHOWN_IDLE_CHECK_MS = 5_000;
 // A group's mark: a dot at rest, a spinner while the agent acts, and "needs you" while a card asks the person to act in one of its Tabs.
 const SPINNER = ['◐', '◓', '◑', '◒'], IDLE_MARK = '●', NEEDS_MARK = '▲';
 // How long a spinner stays after an agent's last action in a Tab, so a short action is still seen.
@@ -120,9 +124,12 @@ export function navigationUrl(raw) {
 }
 
 export class KernelBrowserHost {
-  constructor(root, { appStorageRoot, chromium = new HostChromium(root, { appStorageRoot }), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }), personIdleMs = PERSON_IDLE_MS, backgroundIdleMs = BACKGROUND_IDLE_MS } = {}) {
+  constructor(root, { appStorageRoot, chromium = new HostChromium(root, { appStorageRoot }), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }), personIdleMs = PERSON_IDLE_MS, backgroundIdleMs = BACKGROUND_IDLE_MS, shownIdleMs = SHOWN_IDLE_MS } = {}) {
     this.root = root;
     this.personIdleMs = personIdleMs; this.backgroundIdleMs = backgroundIdleMs;
+    this.shownIdleMs = shownIdleMs; this.usedAt = Date.now(); this.frozen = null; this.freezing = null;
+    this.shownTimer = setInterval(() => { this.freezing ??= this.freezeIdleShown().catch(() => {}).finally(() => { this.freezing = null; }); }, SHOWN_IDLE_CHECK_MS);
+    this.shownTimer.unref?.();
     this.timing = displayTiming(root);
     this.visitedLinks = new VisitedLinks();
     // r55: a Node event loop that stalls delays every request behind it without any step to name: mark the stall itself.
@@ -272,7 +279,7 @@ export class KernelBrowserHost {
     this.foreground.reset();
     this.sampleLanes.clear();this.inputChangedAt.clear();this.scrolling.clear();
 
-    clearInterval(this.keepTimer); this.keepTimer = null;
+    clearInterval(this.keepTimer); this.keepTimer = null; this.frozen = null;
     await Promise.all([...this.backgroundHolds.keys()].map(target => this.releaseBackground(target)));
     // MP-11: retire helpers on the old display before Chromium recovery can
     // replace it. A failed key release still requires owned desktop teardown.
@@ -288,7 +295,7 @@ export class KernelBrowserHost {
     this.browser = null;
     if(this.displayTeardownErrors.length)throw new AggregateError(this.displayTeardownErrors.splice(0),'MD-DISPLAY: owned display teardown failed');
     this.backgroundHolds.clear();this.personInputAt.clear();
-    clearInterval(this.spinner);this.spinner=null;this.agentBusy.clear();clearInterval(this.keepTimer);this.keepTimer=null;
+    clearInterval(this.spinner);this.spinner=null;this.agentBusy.clear();clearInterval(this.keepTimer);this.keepTimer=null;this.frozen=null;
     this.tabs.clear();this.header.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;this.resizeSettled=null;
     this.popupEvidence.clear();
     this.observed = ++this.observations;
@@ -1028,6 +1035,27 @@ export class KernelBrowserHost {
       await hold.pending;
     }
   }
+  // A viewer stream that is not parked watches the owned window.
+  watched() {
+    return this.mirror.streams.size > 0 || [...this.displays.values()].some(stream => !stream.parked);
+  }
+  async freezeIdleShown() {
+    const target = this.activeTarget;
+    if (this.frozen || !this.browser || !target || this.watched() || Date.now() - this.usedAt < this.shownIdleMs) return;
+    const { connection, sessionId } = await this.browser.resolvePageTarget(target);
+    await connection.send('Page.setWebLifecycleState', { state: 'frozen' }, sessionId);
+    this.frozen = { connection, sessionId };
+  }
+  // Every request but a parked state read or an unwatched park is a use: it wakes the shown Tab before it runs.
+  async wakeShown(request) {
+    if (request.method === 'health' || request.method === 'host.browser' && (request.params?.op === 'state_signal' || request.params?.op === 'display_park' && request.params.parked === true)) return;
+    this.usedAt = Date.now();
+    await this.freezing;
+    const frozen = this.frozen;
+    if (!frozen) return;
+    this.frozen = null;
+    await frozen.connection.send('Page.setWebLifecycleState', { state: 'active' }, frozen.sessionId).catch(() => {});
+  }
   async releaseBackground(targetId) {
     const hold = this.backgroundHolds.get(targetId);
     if (!hold) return;
@@ -1422,6 +1450,7 @@ export class KernelBrowserHost {
     const browserAtEntry = this.browser;
     try { assertNotCancelled(signal); } catch { return { id: request.id, ok: false, error: { code: "browser_action_cancelled", message: "MD-3: browser action cancelled" } }; }
     try {
+      await this.wakeShown(request);
       if (request.method === "health") return { id: request.id, ok: true, result: { state: "ready", process_id: process.pid, diagnostic_code: null } };
       if (request.method === "shutdown") return { id: request.id, ok: true, result: await this.stop() };
       if (request.method === "host.protect") return { id: request.id, ok: true, result: await this.protect(request.params) };

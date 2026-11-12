@@ -33,7 +33,7 @@ test('MP-08 / MP-11: Chromium temporary sockets use the held private directory t
   for (const pid of [0, 1, -1, NaN]) assert.throws(() => chromiumTemporaryEnvironment(environment, 5, pid));
 });
 
-function fixture(root, { realCdp = false, personIdleMs, backgroundIdleMs } = {}) {
+function fixture(root, { realCdp = false, personIdleMs, backgroundIdleMs, shownIdleMs } = {}) {
   fixture.popups = [];
   const pages = new Map();
   let next = 0;
@@ -82,7 +82,7 @@ function fixture(root, { realCdp = false, personIdleMs, backgroundIdleMs } = {})
     clearViewport: async target => connection.send('Emulation.clearDeviceMetricsOverride', {}, `session-${target}`),
     inputCapture: { hold: async()=>async()=>{}, run: async (_connection, _session, operation) => operation() },
   });
-  return { host: new KernelBrowserHost(root, { chromium, ...(personIdleMs ? { personIdleMs } : {}), ...(backgroundIdleMs ? { backgroundIdleMs } : {}), browserFactory: realCdp
+  return { host: new KernelBrowserHost(root, { chromium, ...(personIdleMs ? { personIdleMs } : {}), ...(backgroundIdleMs ? { backgroundIdleMs } : {}), ...(shownIdleMs ? { shownIdleMs } : {}), browserFactory: realCdp
     ? () => new BrowserCdpClient({ connectionFactory: async () => connection }) : browserFactory }), chromium, handlers, sent, pages, connection };
 }
 
@@ -3338,6 +3338,26 @@ test('an agent opening a background Tab starts its renderer before any later age
   assert.ok(host.backgroundHolds.has(target), 'open itself holds the background renderer');
   assert.ok(sent.some(call => call.method === 'Page.startScreencast'), 'the new renderer is already scheduling frames');
 }));
+
+// brperf: the shown Tab renders into the owned window at full rate even with the window closed in every client.
+test('the shown Tab freezes while nobody watches or acts, and the next request wakes it before anything else', () => using(async ({ host, sent }) => {
+  const shown = await host.request({ op: 'open', url: 'https://example.com/person' });
+  host.activeTarget = host.tabs.get(shown.tab_id).target_id;
+  const states = () => sent.filter(call => call.method === 'Page.setWebLifecycleState').map(call => call.params.state);
+  host.mirror.streams.set('viewer', { tab_id: shown.tab_id });
+  await new Promise(resolve => setTimeout(resolve, 80));
+  await host.freezeIdleShown();
+  assert.deepEqual(states(), [], 'a viewer keeps the shown Tab rendering');
+  host.mirror.streams.delete('viewer');
+  await host.freezeIdleShown();
+  assert.deepEqual(states(), ['frozen'], 'nobody watches and nobody acted for the linger');
+  await host.handle({ id: 7, method: 'host.browser', params: { op: 'state_signal', after: null, wait_ms: 0 } });
+  assert.deepEqual(states(), ['frozen'], 'a parked state read is not a use');
+  await host.handle({ id: 8, method: 'host.browser', params: { op: 'state' } });
+  assert.deepEqual(states(), ['frozen', 'active'], 'a request wakes the Tab before it is read');
+  await host.freezeIdleShown();
+  assert.deepEqual(states(), ['frozen', 'active'], 'a request starts the linger again');
+}, { shownIdleMs: 50 }));
 
 // brperf: an agent Tab nobody acts in stops rendering; the agent's next action wakes it before it acts.
 test('an idle agent Tab releases its background capture and its next agent action takes it again', () => using(async ({ host, sent }) => {
