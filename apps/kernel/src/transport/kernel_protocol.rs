@@ -711,8 +711,11 @@ pub(crate) fn provider_run_changed_event(
         || previous_snapshot
             .provider_run
             .as_ref()
-            .map(PublicProviderRun::from)
-            == snapshot.provider_run.as_ref().map(PublicProviderRun::from)
+            .map(|run| PublicProviderRun::from(run).without_activity_timestamp())
+            == snapshot
+                .provider_run
+                .as_ref()
+                .map(|run| PublicProviderRun::from(run).without_activity_timestamp())
     {
         return None;
     }

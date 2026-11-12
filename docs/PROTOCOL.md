@@ -7422,4 +7422,7 @@ The same provisional 1008 subscription contract distinguishes view interests:
 bytes or periodic process samples; `session_metadata_processes` additionally keeps
 the process/disk sample feed used by Health. Ordinary `session` subscriptions keep
 their full feed. Private provider-run changes do not repeat an unchanged public
-projection. Admission holds, pauses and resumptions still reach ordinary views.
+projection. Activity timestamps accompany the next state or usage update instead
+of resending the whole run on their own. Ordinary metadata sends only admission
+waits, including on its initial projection; full process and disk samples stay on
+Health. Admission holds, pauses and resumptions still reach ordinary views.

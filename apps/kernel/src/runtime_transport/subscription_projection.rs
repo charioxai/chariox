@@ -77,7 +77,7 @@ fn public_run(snapshot: &SessionSnapshotProjection) -> Option<crate::provider::P
     snapshot
         .provider_run
         .as_ref()
-        .map(crate::provider::PublicProviderRun::from)
+        .map(|run| crate::provider::PublicProviderRun::from(run).without_activity_timestamp())
 }
 
 /// Ordinary views need admission waits; per-process samples belong to Health.
@@ -99,6 +99,25 @@ pub(crate) fn session_projection_events_for_scope(
             !(scope == Some("session_metadata")
                 && same_waits
                 && matches!(event, KernelEvent::SessionProcessesChanged { .. }))
+        })
+        .map(|mut event| {
+            if scope == Some("session_metadata") {
+                if let KernelEvent::SessionProcessesChanged {
+                    processes,
+                    disk_usage,
+                    ..
+                } = &mut event
+                {
+                    processes.retain(|process| {
+                        !matches!(
+                            process.state,
+                            crate::runtime::process_resources::SessionProcessState::Running
+                        )
+                    });
+                    disk_usage.clear();
+                }
+            }
+            event
         })
         .collect()
 }
@@ -482,5 +501,45 @@ mod tests {
             Some("session_terminal")
         )
         .is_empty());
+    }
+
+    #[test]
+    fn provider_activity_timestamp_alone_does_not_resend_run_metadata() {
+        let mut before = snapshot();
+        before.provider_run = Some(
+            crate::provider::RuntimeProviderRun::from_control_capability_inference(
+                "run",
+                before.session.id().into(),
+                Some("agent".into()),
+                "codex".into(),
+            ),
+        );
+        let mut after = before.clone();
+        let mut value = serde_json::to_value(after.provider_run.take().unwrap()).unwrap();
+        value["last_activity_at_ms"] =
+            serde_json::json!(before.provider_run.as_ref().unwrap().last_activity_at_ms() + 1);
+        after.provider_run = Some(serde_json::from_value(value).unwrap());
+        assert!(session_projection_events(&after, Some(&before), false).is_empty());
+        after.provider_run.as_mut().unwrap().mark_running();
+        assert!(
+            !session_projection_events(&after, Some(&before), false).is_empty(),
+            "state changes still reach the view"
+        );
+    }
+
+    #[test]
+    fn ordinary_metadata_initial_samples_contain_only_admission_waits() {
+        let mut current = snapshot();
+        add_process(&mut current);
+        let events =
+            session_projection_events_for_scope(&current, None, false, Some("session_metadata"));
+        assert!(events.iter().all(|event| !matches!(event, KernelEvent::SessionProcessesChanged { processes, disk_usage, .. } if !processes.is_empty() || !disk_usage.is_empty())));
+        let health = session_projection_events_for_scope(
+            &current,
+            None,
+            false,
+            Some("session_metadata_processes"),
+        );
+        assert!(health.iter().any(|event| matches!(event, KernelEvent::SessionProcessesChanged { processes, .. } if !processes.is_empty())));
     }
 }
