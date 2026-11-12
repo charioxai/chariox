@@ -455,7 +455,7 @@ fn a_known_heavy_job_keeps_its_admission_when_its_shell_runs_a_second_job() {
     std::fs::write(
         shell.dir.join("jobs.sh"),
         format!(
-            "{} 2>\"$1/first.err\" &\necho $! > \"$1/first.pid\"\nwhile [ ! -e \"$1/second\" ]; do :; done\npython3 \"$1/alloc.py\" 300 0 0 2>\"$1/second.err\" &\necho $! > \"$1/second.pid\"\nwait\n",
+            "{} 2>\"$1/first.err\" &\necho $! > \"$1/first.pid\"\nwhile [ ! -e \"$1/second\" ]; do :; done\nsleep 1 2>\"$1/second.err\" &\necho $! > \"$1/second.pid\"\nwait\n",
             heavy(600, 0, 8)
         ),
     )
@@ -503,7 +503,7 @@ fn a_known_heavy_job_keeps_its_admission_when_its_shell_runs_a_second_job() {
         !shell.alive("first"),
         "the first job did not run to its end without Start now"
     );
-    assert!(shell.alive("second"));
+    assert!(!shell.alive("second"), "the short second job did not exit");
 }
 
 /// A command held before it started has no outcome either while the room

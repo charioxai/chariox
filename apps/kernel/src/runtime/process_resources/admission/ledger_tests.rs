@@ -41,6 +41,7 @@ fn command(pid: u32, resident: u64, growth: u64) -> pool::CommandUse {
         group: None,
         resident,
         growth,
+        steady_growth: growth,
         writes: 0,
         write_growth: 0,
         effective: pid,
@@ -1150,6 +1151,7 @@ fn writer(pid: u32, writes: u64, write_growth: u64) -> pool::CommandUse {
         group: None,
         resident: 100 * MIB,
         growth: 0,
+        steady_growth: 0,
         writes,
         write_growth,
         effective: pid,
@@ -1891,5 +1893,97 @@ fn numeric_output_paths_do_not_reuse_another_commands_receiving_volume() {
         wait(&current, 1),
         None,
         "a different exact command's output destination is unknown"
+    );
+}
+
+#[test]
+fn a_pause_uses_the_pre_pause_window_and_ignores_stopped_samples() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    let current = owner("grower", true, Vec::new(), Vec::new());
+    start(&mut ledger, &current, 4_100_002, 700 * MIB);
+    let mut window = super::super::growth_window::Window::default();
+    for (at, rate) in [4 * MIB, 4 * MIB, 4 * MIB, 1200 * MIB]
+        .into_iter()
+        .enumerate()
+    {
+        window.record(at as u64 * 250, rate);
+    }
+    {
+        let mut current = current.lock().unwrap();
+        current.commands[0].growth = 1200 * MIB;
+        current.commands[0].steady_growth = window.typical().unwrap();
+    }
+    let members = [other, current.clone()];
+    ledger.pass(&members, &current, &room(100 * MIB, true, &volume));
+    assert_eq!(
+        wait(&current, 4_100_002),
+        Some(Wait::Paused(WaitReason::Memory))
+    );
+    assert_eq!(
+        current.lock().unwrap().admission[&4_100_002].paused_rate,
+        4 * MIB
+    );
+    current.lock().unwrap().commands[0].growth = 0;
+    ledger.pass(&members, &current, &room(100 * MIB, false, &volume));
+    assert_eq!(
+        wait(&current, 4_100_002),
+        Some(Wait::Paused(WaitReason::Memory))
+    );
+    assert_eq!(
+        current.lock().unwrap().admission[&4_100_002].paused_rate,
+        4 * MIB
+    );
+    unsettle(&mut ledger);
+    ledger.pass(&members, &current, &room(2 * GIB, false, &volume));
+    assert_eq!(
+        wait(&current, 4_100_002),
+        None,
+        "the startup spike kept a slow grower waiting"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pause_resumes_when_physical_room_returns_despite_full_rss_accounting() {
+    let pool = pool::Pool::new(1536 * MIB, true).with_machine_pressure(Box::new(|| false));
+    let command_of = |unit: &str, pid: u32, resident: u64, paused: bool| {
+        let mut entry = entry(pid as u64, Peak::default());
+        entry.admitted = true;
+        entry.expected = None;
+        if paused {
+            entry.wait = Some(Wait::Paused(WaitReason::Memory));
+            entry.paused_rate = 700 * MIB;
+            entry.since_ms = crate::session::unix_epoch_ms() - 61_000;
+        }
+        let member = owner(
+            unit,
+            true,
+            vec![command(pid, resident, 0)],
+            vec![(pid, entry)],
+        );
+        let (control, heard) = std::sync::mpsc::channel();
+        {
+            let mut member = member.lock().unwrap();
+            member.samples = vec![sample(resident)];
+            member.control = Some(control);
+        }
+        pool.join(&member);
+        (member, heard)
+    };
+    let (running, _running_heard) = command_of("a", 1, 800 * MIB, false);
+    let (paused, heard) = command_of("b", 2, 700 * MIB, true);
+    pool.enforce(&running, None);
+    assert_eq!(
+        wait(&paused, 2),
+        None,
+        "RSS accounting stranded a pause after physical memory returned"
+    );
+    assert!(
+        !heard
+            .try_iter()
+            .any(|command| matches!(command, WatchCommand::MemoryStop { .. })),
+        "a healthy machine ended a paused command on RSS accounting alone"
     );
 }

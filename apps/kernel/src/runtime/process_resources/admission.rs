@@ -25,7 +25,7 @@ const DISK_FLOOR: u64 = 10 * 1024 * MIB;
 pub(super) const GROWING: u64 = MIB;
 /// A start needs a moment to show in the samples.
 const SETTLE: Duration = Duration::from_secs(1);
-/// A paused command continues with room for this long at its last rate.
+/// A paused command continues with room for this long at its pre-pause rate.
 const AHEAD: u64 = 2;
 /// A stopped filler needs a moment to give its space back before the next
 /// one is judged.
@@ -103,7 +103,7 @@ pub(super) struct Entry {
     pub stopped: bool,
     pub seen: Option<Seen>,
     expected: Option<Peak>,
-    /// Bytes per second it grew (or wrote) when it was paused.
+    /// Typical bytes per second before the pause; never sampled while stopped.
     paused_rate: u64,
     peak: Peak,
     resident: u64,
@@ -583,7 +583,7 @@ impl Ledger {
                 (entry.resident >= room.light
                     && command.growth >= GROWING
                     && Some(entry.arrived) != state.oldest)
-                    .then_some(command.growth)
+                    .then_some(command.steady_growth)
             }) {
                 Some(owner) => changed.push(owner),
                 None => may_stop = true,
@@ -898,26 +898,36 @@ pub(super) enum Blocked {
 /// else can pause, it yields before a running command does: it has made the
 /// least progress, and the oldest running command can then finish.
 pub(super) fn youngest_paused(members: &[Arc<Mutex<Observation>>]) -> Option<PausedCommand> {
-    newest_paused(members, 0, |_, _| Some(())).map(|(command, ())| command)
+    newest_waiting(
+        members,
+        0,
+        |wait| matches!(wait, Wait::Paused(WaitReason::Memory)),
+        |_, _| Some(()),
+    )
+    .map(|(command, ())| command)
 }
 
-/// The newest command paused on memory for at least `waited_ms` that cannot
-/// continue in `room` (a command that can is left to the next resume), with
-/// the resource and figures that kept it.
-pub(super) fn blocked_paused(
+/// The newest command waiting on memory (paused, or held before it started)
+/// for at least `waited_ms` that cannot continue in `room` (a command that can
+/// is left to the next resume), with the resource and figures that kept it.
+pub(super) fn blocked_waiting(
     members: &[Arc<Mutex<Observation>>],
     waited_ms: u64,
     room: &Room,
 ) -> Option<(PausedCommand, Blocked)> {
     let state = State::read(members, room);
-    newest_paused(members, waited_ms, |entry, unit| {
-        state.blocked_by(entry, unit, WaitReason::Memory, room)
-    })
+    newest_waiting(
+        members,
+        waited_ms,
+        |wait| wait.reason() == WaitReason::Memory,
+        |entry, unit| state.blocked_by(entry, unit, WaitReason::Memory, room),
+    )
 }
 
-fn newest_paused<T>(
+fn newest_waiting<T>(
     members: &[Arc<Mutex<Observation>>],
     waited_ms: u64,
+    waits: impl Fn(&Wait) -> bool,
     verdict: impl Fn(&Entry, &str) -> Option<T>,
 ) -> Option<(PausedCommand, T)> {
     let now = crate::session::unix_epoch_ms();
@@ -931,7 +941,7 @@ fn newest_paused<T>(
             let Some(entry) = observation.admission.get(&command.pid) else {
                 continue;
             };
-            if !matches!(entry.wait, Some(Wait::Paused(WaitReason::Memory)))
+            if !entry.wait.as_ref().is_some_and(&waits)
                 || now.saturating_sub(entry.since_ms) < waited_ms
                 || newest
                     .as_ref()
@@ -1113,8 +1123,9 @@ fn need(entry: &Entry, reason: WaitReason, room: &Room) -> u64 {
     });
     match entry.wait {
         Some(Wait::Held(_)) => expected.unwrap_or(room.growth_room),
-        // It continues only with room to grow on for a while at its last
-        // rate, so it is not paused again at once.
+        // It continues only with room for its typical growth before the
+        // pause, so a burst does not strand it and a stopped sample cannot
+        // make a fast grower continue and pause again at once.
         _ => expected
             .filter(|need| *need > 0)
             .unwrap_or(room.growth_room)

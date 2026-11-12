@@ -90,6 +90,10 @@ impl Budget {
         })
     }
 
+    pub fn pressured(&self, margin: u64) -> bool {
+        headroom(&self.path).is_some_and(|bytes| bytes < margin) || self.stalled()
+    }
+
     fn unit(self: &Arc<Self>, key: &str, cap: Option<u64>) -> Option<Arc<Unit>> {
         let mut units = self.units.lock().ok()?;
         units.retain(|_, unit| unit.strong_count() > 0);
@@ -389,6 +393,29 @@ fn remove_empty(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_budget_near_its_hard_limit_is_pressure_even_without_stalls() {
+        let (root, own) = service();
+        let budget = Budget {
+            path: own.clone(),
+            ceiling: 1024 * 1024 * 1024,
+            units: Mutex::default(),
+        };
+        std::fs::write(own.join("memory.stat"), "file 0\nshmem 0\n").unwrap();
+        std::fs::write(own.join("memory.pressure"), "full avg10=0.00 avg60=0.00\n").unwrap();
+        std::fs::write(own.join("memory.current"), "536870912\n").unwrap();
+        assert!(!budget.pressured(64 * 1024 * 1024));
+        std::fs::write(own.join("memory.current"), "1048576000\n").unwrap();
+        assert!(budget.pressured(64 * 1024 * 1024));
+        // Reclaimable page cache can make the same charge healthy.
+        std::fs::write(own.join("memory.stat"), "file 536870912\nshmem 0\n").unwrap();
+        assert!(!budget.pressured(64 * 1024 * 1024));
+        std::fs::write(own.join("memory.pressure"), "full avg10=10.00 avg60=1.00\n").unwrap();
+        assert!(budget.pressured(64 * 1024 * 1024));
+        drop(budget);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     /// root/service.slice/kernel.service, the slice delegating memory and the
     /// kernel's own cgroup limited to 1 GiB.
