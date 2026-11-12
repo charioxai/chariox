@@ -331,4 +331,45 @@ mod tests {
             "an interaction delta cannot hide the newly opened sudo window"
         );
     }
+    #[test]
+    fn notification_trigger_availability_survives_tree_delta() {
+        let mut before = snapshot();
+        let trigger = crate::session::AgentTrigger::notification(
+            "trigger".into(),
+            "agent",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::session::AgentTriggerNotificationSource::Workflow {
+                source_id: "source".into(),
+            },
+            "subscription".into(),
+            "source display".into(),
+            "review source".into(),
+            1,
+        );
+        before.session.add_agent_trigger(trigger);
+
+        let mut after = before.clone();
+        assert!(after.session.agent_triggers_mut()[0].set_notification_source_available(false));
+        after.agent_tree_revs.insert("root".into(), 2);
+
+        let events = session_projection_events(&after, Some(&before), false);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            KernelEvent::AgentTreeChanged { root, rev: 2, .. } if root == "root"
+        )));
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                KernelEvent::SessionSnapshot { session, .. }
+                    if session.agent_triggers().iter().any(|trigger| matches!(
+                        trigger.source(),
+                        crate::session::AgentTriggerSource::Notification {
+                            source_available: false,
+                            ..
+                        }
+                    ))
+            )),
+            "the tree delta cannot carry notification availability"
+        );
+    }
 }
