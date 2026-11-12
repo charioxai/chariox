@@ -433,3 +433,29 @@ test("nested sudo goal controls preserve elevation through the goal submission p
     ["/sudo /goal cancel goal:work 4", "agent-1"],
   ])
 })
+
+
+test("/trigger add passes cron and HTTP options to the focused agent's kernel trigger API", async () => {
+  const requests: Record<string, unknown>[] = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    sendAgentTriggerRequest: async (request: Record<string, unknown>) => {
+      requests.push(request)
+      return { session: makeSession() }
+    },
+  }))
+  for (const raw of [
+    "/trigger add schedule --cron '0 30 9 * * 1-5' --timezone Europe/Berlin --prompt 'Morning review'",
+    "/trigger add schedule --every 30m --prompt 'Check build'",
+    `/trigger add http --route /build --methods POST --parser json --mode sync --sync-timeout-ms 5000 --poll-ms 100 --input-schema '{"type":"object"}' --steer --prompt 'Review input'`,
+  ]) {
+    const command = parseSlashCommand(raw)
+    assert.equal(command?.kind, "trigger")
+    assert.equal((command as { error: string | null }).error, null)
+    await handlers.handleTriggerCommand(command as Extract<typeof command, { kind: "trigger" }>)
+  }
+  assert.deepEqual(requests, [
+    { CreateAgentTrigger: { session_id: "session-1", agent_id: "agent-1", source: { kind: "schedule", trigger: { kind: "cron", expression: "0 30 9 * * 1-5", timezone: "Europe/Berlin" }, repeat: "every", overlap_policy: "skip", max_runs: null }, busy_policy: "queue", prompt: "Morning review" } },
+    { CreateAgentTrigger: { session_id: "session-1", agent_id: "agent-1", source: { kind: "schedule", trigger: { kind: "interval", every_seconds: 1800 }, repeat: "every", overlap_policy: "skip", max_runs: null }, busy_policy: "queue", prompt: "Check build" } },
+    { CreateAgentTrigger: { session_id: "session-1", agent_id: "agent-1", source: { kind: "http", route: "/build", methods: ["POST"], parser: { kind: "json" }, mode: "sync", sync_timeout_ms: 5000, poll_ms: 100, input_schema: { type: "object" } }, busy_policy: "steer", prompt: "Review input" } },
+  ])
+})

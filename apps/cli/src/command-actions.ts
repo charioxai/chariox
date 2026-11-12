@@ -541,7 +541,9 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter("trigger on a notification", "info")
       return
     }
-    const request = action.type === "create"
+    const request = action.type === "add"
+      ? { CreateAgentTrigger: { session_id: sessionId, agent_id: agentId, source: action.source, busy_policy: action.busyPolicy, ...(action.prompt ? { prompt: action.prompt } : {}) } }
+      : action.type === "create"
       ? createAgentScheduleTriggerRequest({
         sessionId,
         agentId,
@@ -560,7 +562,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     deps.applySessionState(result.session)
     await deps.refreshAgentPanes(result.session)
     deps.flashFooter(
-      action.type === "create"
+      action.type === "add" ? `trigger ${action.source.kind} · ${action.busyPolicy}`
+        : action.type === "create"
         ? `trigger ${action.repeat === "every" ? "every" : "in"} ${action.minutes} ${action.minutes === 1 ? "minute" : "minutes"} · ${action.busyPolicy}`
         : action.type === "update" ? `trigger ${action.triggerId} ${action.change}`
         : action.type === "resend" ? `trigger firing ${action.promptId} sent again` : `trigger ${action.triggerId} removed`,
