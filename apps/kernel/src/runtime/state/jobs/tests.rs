@@ -373,9 +373,11 @@ async fn offload_job_acquisition_receipt_survives_yield_and_ended_native_turn_bu
         (&subject.0, &subject.1, &subject.2),
         (&task.room_id, &task.agent_id, &task.owner_user_id)
     );
-    let mut owner = crate::runtime::command::KernelCaller::default();
-    owner.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
-    owner.user_id = Some(task.owner_user_id.clone());
+    let owner = crate::runtime::command::KernelCaller {
+        connection_class: Some(crate::local::KernelConnectionClass::Terminal),
+        user_id: Some(task.owner_user_id.clone()),
+        ..crate::runtime::command::KernelCaller::default()
+    };
     assert!(state.cancel_session_job(&task.room_id, &owner, id).unwrap());
     assert!(state.job_acquisition_subject(id).is_err());
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -434,9 +436,11 @@ async fn offload_job_runtime_budget_starts_after_queue_admission() {
     );
     assert_eq!(held.state, "queued");
     assert!(held.running_at_ms.is_none());
-    let mut owner = crate::runtime::command::KernelCaller::default();
-    owner.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
-    owner.user_id = Some(task.owner_user_id.clone());
+    let owner = crate::runtime::command::KernelCaller {
+        connection_class: Some(crate::local::KernelConnectionClass::Terminal),
+        user_id: Some(task.owner_user_id.clone()),
+        ..crate::runtime::command::KernelCaller::default()
+    };
     assert!(state
         .start_session_job_now(&task.room_id, &owner, id)
         .unwrap());
@@ -452,4 +456,41 @@ async fn offload_job_runtime_budget_starts_after_queue_admission() {
     .unwrap();
     assert_eq!(result.outcome, JobOutcome::Completed);
     assert_eq!(result.exit_code, Some(0));
+}
+
+#[tokio::test]
+async fn offload_job_duration_estimate_counts_completed_records_once_not_artifact_directories() {
+    let (state, run, task, _workspace) = fixture().await;
+    let request = serde_json::json!({"command":["/bin/true"],"wait_s":5});
+    let first = state
+        .dispatch_job_tool(Some(&run), "chariox.jobs.run", &request, &task)
+        .await
+        .unwrap();
+    let driver = state.job_wake_driver.as_ref().unwrap();
+    let mut first = driver.read(first["job_id"].as_str().unwrap()).unwrap();
+    assert_eq!(first.result.as_ref().unwrap().exit_code, Some(0));
+    first.result.as_mut().unwrap().duration_ms = 1000;
+    driver.save(&first).unwrap();
+    assert!(driver
+        .path(&first.job_id)
+        .unwrap()
+        .with_extension("")
+        .is_dir());
+    let mut next = first.clone();
+    next.job_id = "job-next".into();
+    next.result = None;
+    assert_eq!(
+        state.job_duration_estimate(&next),
+        None,
+        "one successful record plus its output directory is only one run"
+    );
+    let second = state
+        .dispatch_job_tool(Some(&run), "chariox.jobs.run", &request, &task)
+        .await
+        .unwrap();
+    let mut second = driver.read(second["job_id"].as_str().unwrap()).unwrap();
+    second.started_at_ms = first.started_at_ms + 1;
+    second.result.as_mut().unwrap().duration_ms = 1200;
+    driver.save(&second).unwrap();
+    assert_eq!(state.job_duration_estimate(&next), Some(1100));
 }

@@ -143,6 +143,12 @@ impl KernelRuntimeState {
         let mut durations: Vec<_> = std::fs::read_dir(directory)
             .ok()?
             .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "json")
+            })
             .filter_map(|entry| {
                 entry
                     .path()

@@ -1,0 +1,734 @@
+{
+  "local": 1011,
+  "relayPeer": 449,
+  "shapes": [
+    {
+      "kind": "request",
+      "wire": {
+        "GetRemoteJobPolicy": {
+          "session_id": "room",
+          "agent_id": null
+        }
+      },
+      "sha256": "507c489006663edee7d89ef9b1b9f476aa67da2f58780d4c6368cbc1bf9fd88e"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "SetRemoteJobPolicy": {
+          "session_id": "room",
+          "agent_id": "agent",
+          "policy": "when_busy"
+        }
+      },
+      "sha256": "acfda5a964580245a36e86a03cc6ccd3b614f8c60f22ea5202449bbc8bbd2f43"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "SetRemoteJobPolicy": {
+          "session_id": "room",
+          "agent_id": "agent",
+          "policy": null
+        }
+      },
+      "sha256": "02075a6dc955e76c00f133461b82eb7e98490da8423a0bed8b0820fc20c082d2"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "RunSessionProcessRemotely": {
+          "session_id": "room",
+          "process_id": "job:build"
+        }
+      },
+      "sha256": "d137be8882ad89c6bcdeb3f24130c02441d1c20baccb3f3baa53ab6ef5d49301"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "ControlPlane": {
+          "action": "acquire_job",
+          "capability_revision": "offers-1",
+          "request_id": "request",
+          "job_ref": "job",
+          "needs": {
+            "cpus": 4,
+            "memory_gib": 8
+          },
+          "timeout_s": 600
+        }
+      },
+      "sha256": "6f8da710abdff0b967cdda2098b6f544545f001ed4b9d57777c6f52115f5bd2d"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "ControlPlane": {
+          "action": "get_job",
+          "job_ref": "job"
+        }
+      },
+      "sha256": "d3908e639aa5ad154239f08b0d1babb210bdb48b779d65e7202a28a2739183aa"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "ControlPlane": {
+          "action": "cancel_job",
+          "job_ref": "job"
+        }
+      },
+      "sha256": "c5c993f0ba5b605ea2843abf64211a1b248162b293f3117a6ad8a4af4624cbdf"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "ControlPlane": {
+          "action": "job_started",
+          "allocation_ref": "allocation",
+          "capability_revision": "offers-1"
+        }
+      },
+      "sha256": "cab18e20593be4aedb58a68c35c385006997173109f6e7681735f800ca487ca1"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "RoomTerminal": {
+          "session_id": "room",
+          "acting_agent": "agent",
+          "operation": {
+            "operation": "exec_open_job",
+            "command": [
+              "cargo",
+              "build"
+            ],
+            "needs": {
+              "memory_gib": 6
+            }
+          }
+        }
+      },
+      "sha256": "d445e121e49c6179391291d125bf820c7bde354752b4ce801cd7cdb41b85e775"
+    },
+    {
+      "kind": "response",
+      "wire": {
+        "RemoteJobPolicy": {
+          "result": {
+            "policy": null,
+            "effective_policy": "always_heavy",
+            "inherited_policy": "always_heavy",
+            "source": "session"
+          }
+        }
+      },
+      "sha256": "7a8de309227c46e8dd62ec4bc99ba4f59cd2a9e709b2344e975ab612624fcce3"
+    },
+    {
+      "kind": "response",
+      "wire": {
+        "ControlPlane": {
+          "result": {
+            "kind": "job_cancelled",
+            "job_ref": "job"
+          }
+        }
+      },
+      "sha256": "d9e8a3f67d7535f1528b31325a8372601b9518be30326c1cbf58a05c6e4185d4"
+    },
+    {
+      "kind": "response",
+      "wire": {
+        "ControlPlane": {
+          "result": {
+            "kind": "capabilities",
+            "machine_allocation": {
+              "revision": "offers-1",
+              "actions": [
+                "acquire_job",
+                "get_job",
+                "cancel_job",
+                "job_started"
+              ],
+              "offer": null,
+              "job_default_class_id": "build",
+              "job_offers": [
+                {
+                  "class_id": "build",
+                  "vcpu": 4,
+                  "usable_memory_mib": 7000,
+                  "disk_gib": 40,
+                  "rate_per_minute": {
+                    "amount_micros": 600,
+                    "currency": "USD"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "sha256": "6c47aac5b77352acc8920d01796635b1c6e30ee7be31ca3ce64e50f893cde7a0"
+    },
+    {
+      "kind": "response",
+      "wire": {
+        "ControlPlane": {
+          "result": {
+            "kind": "machine",
+            "allocation_ref": "allocation",
+            "revision": 3,
+            "available_actions": [
+              "release"
+            ],
+            "state": "ready",
+            "access_state": "available",
+            "access_reason": null,
+            "purpose": "offload_job",
+            "machine_label": "offload-abcd",
+            "address": "2001:db8::1",
+            "kernel_target": {
+              "kernel_id": "worker",
+              "machine_id": "machine",
+              "relay_realm_id": "realm",
+              "key_thumbprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "presence": {
+                "kernel_id": "worker",
+                "machine_id": "machine",
+                "machine_alias": null,
+                "relay_alias": null,
+                "kernel_alias": null,
+                "available_providers": [],
+                "provider_accounts": [],
+                "capabilities": [
+                  "kernel_gateway_v1",
+                  "room_terminal_v1",
+                  "room_exec_v1"
+                ],
+                "accepting_remote_leases": false,
+                "leased_agent_count": 0,
+                "local_session_count": 1,
+                "public_key": "public-worker-key"
+              }
+            }
+          }
+        }
+      },
+      "sha256": "3cdb0bb370b456fbdd8c7d6c2753f7c70bbb69e7377f9a6e2ae7334fd84fc10f"
+    },
+    {
+      "kind": "response",
+      "wire": {
+        "RoomTerminal": {
+          "result": {
+            "result": "exec_output",
+            "output": {
+              "chunks": [],
+              "next_cursor": 0,
+              "outcome": {
+                "kind": "memory_limit",
+                "limit_bytes": 100663296
+              }
+            }
+          }
+        }
+      },
+      "sha256": "4440c4fa6038df9c2491edded15c3f1079badfd3faa0939ad8fc1bf06fd99b1a"
+    },
+    {
+      "kind": "response",
+      "wire": {
+        "ControlPlane": {
+          "result": {
+            "kind": "capabilities",
+            "machine_allocation": {
+              "revision": "offers-1",
+              "actions": [
+                "acquire"
+              ],
+              "offer": {
+                "machine_type": "Standard",
+                "vcpu": 4,
+                "ram_gb": 8.0,
+                "disk_gb": 40,
+                "location": "Region",
+                "terms": {
+                  "amount": "0.036",
+                  "currency": "USD",
+                  "period": "hour"
+                },
+                "rate_per_minute": {
+                  "amount_micros": 600,
+                  "currency": "USD"
+                }
+              }
+            }
+          }
+        }
+      },
+      "sha256": "65bff6b2d8edf3317d551945d0d7c23d9b6bd9ab9158246ea317daf80f80c117"
+    },
+    {
+      "kind": "run_job",
+      "wire": {
+        "command": [
+          "cargo",
+          "build"
+        ],
+        "cwd": null,
+        "env": [
+          "BUILD_FLAG"
+        ],
+        "needs": {
+          "cpus": 4,
+          "memory_gib": 6
+        },
+        "timeout_s": 600,
+        "wait_s": 0,
+        "outputs": [
+          "target/release/build"
+        ]
+      },
+      "sha256": "273508d208b9af8c7c4443e12342b64442885a2ffd696962950349709b579eab"
+    },
+    {
+      "kind": "job_view",
+      "wire": {
+        "job_id": "job",
+        "agent_id": "agent",
+        "command": "cargo build",
+        "state": "finished",
+        "placement": "remote",
+        "started_at_ms": 10,
+        "machine_label": "offload-abcd",
+        "address": "2001:db8::1",
+        "class_id": "build",
+        "rate_per_minute": {
+          "amount_micros": 600,
+          "currency": "USD"
+        },
+        "estimate_micros": 1200,
+        "deleted": true,
+        "result": {
+          "exit_code": 0,
+          "output_tail": "done",
+          "log": "artifacts/job.log",
+          "files_back": [
+            "target/release/build"
+          ],
+          "conflicts": [],
+          "ran_on": {
+            "machine": "offload-abcd",
+            "ip": "2001:db8::1"
+          },
+          "duration_ms": 120000,
+          "outcome": "completed"
+        }
+      },
+      "sha256": "8751eda405df610132bffb5ab96bdf0f30857703b76eaece2c76a6051f2eb571"
+    },
+    {
+      "kind": "session_process",
+      "wire": {
+        "owner": {
+          "kind": "agent",
+          "id": "agent"
+        },
+        "process_id": "job:build",
+        "pid": 0,
+        "command": "cargo build",
+        "resident_set_bytes": 0,
+        "cpu_millis": 0,
+        "disk_io_bytes": null,
+        "disk_written_bytes": null,
+        "deleted_open_bytes": 0,
+        "outlived": false,
+        "sampled_at_ms": 10,
+        "age_ms": 0,
+        "state": {
+          "kind": "held",
+          "reason": "memory",
+          "position": 2,
+          "need_bytes": 6442450944,
+          "free_bytes": 1073741824,
+          "command_line": "cargo build",
+          "since_ms": 10
+        },
+        "remote_available": true,
+        "estimate": {
+          "amount_micros": 600,
+          "currency": "USD",
+          "kind": "per_minute",
+          "memory_mib": 6144
+        },
+        "placement": {
+          "machine_label": "offload-abcd",
+          "address": "2001:db8::1"
+        }
+      },
+      "sha256": "171975f165fb1a33378a5115b0777ec21560d7f06eecf240ead3227d60822d50"
+    },
+    {
+      "kind": "event",
+      "wire": {
+        "event": "session_jobs_changed",
+        "session_id": "room",
+        "jobs": [
+          {
+            "job_id": "job",
+            "agent_id": "agent",
+            "command": "cargo build",
+            "state": "finished",
+            "placement": "remote",
+            "started_at_ms": 10,
+            "machine_label": "offload-abcd",
+            "address": "2001:db8::1",
+            "class_id": "build",
+            "rate_per_minute": {
+              "amount_micros": 600,
+              "currency": "USD"
+            },
+            "estimate_micros": 1200,
+            "deleted": true,
+            "result": {
+              "exit_code": 0,
+              "output_tail": "done",
+              "log": "artifacts/job.log",
+              "files_back": [
+                "target/release/build"
+              ],
+              "conflicts": [],
+              "ran_on": {
+                "machine": "offload-abcd",
+                "ip": "2001:db8::1"
+              },
+              "duration_ms": 120000,
+              "outcome": "completed"
+            }
+          }
+        ]
+      },
+      "sha256": "b60f500a59f2b37622631558fcf29ddd38815d81feac8e8d70acdd0498defa87"
+    },
+    {
+      "kind": "agents_config",
+      "wire": {
+        "offload_without_asking": true
+      },
+      "sha256": "f7be90774846067f65faf5ff9ec77cd23ead520d9904a2539e7df9052b7cbc4f"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "SetUserConfigValue": {
+          "path": "agents.offload_without_asking",
+          "value": "true"
+        }
+      },
+      "sha256": "028041285f8b91dead95c4e3b5ca9e6ade02ee07a153f12e99c4ecbea1554878"
+    },
+    {
+      "kind": "agents_config",
+      "wire": {
+        "offload_without_asking": false
+      },
+      "sha256": "81536e5ccde97cc689d3b4051a3dd92e898643a25ddf33fd6303bd0ad84a7989"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "SetUserConfigValue": {
+          "path": "agents.offload_without_asking",
+          "value": "false"
+        }
+      },
+      "sha256": "4a02613b0bc0fa91139177db2fb7e0a427f89f06efe268376e386b97fd371337"
+    },
+    {
+      "kind": "agents_config",
+      "wire": {},
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "kind": "session_process",
+      "wire": {
+        "owner": {
+          "kind": "agent",
+          "id": "agent"
+        },
+        "process_id": "job:build",
+        "pid": 0,
+        "command": "cargo build",
+        "resident_set_bytes": 0,
+        "cpu_millis": 0,
+        "disk_io_bytes": null,
+        "disk_written_bytes": null,
+        "deleted_open_bytes": 0,
+        "outlived": false,
+        "sampled_at_ms": 10,
+        "age_ms": 0,
+        "state": {
+          "kind": "held",
+          "reason": "memory",
+          "position": 2,
+          "need_bytes": 6442450944,
+          "free_bytes": 1073741824,
+          "command_line": "cargo build",
+          "since_ms": 10
+        },
+        "estimate": {
+          "amount_micros": 600,
+          "currency": "USD",
+          "kind": "per_minute",
+          "memory_mib": 6144
+        },
+        "remote_refusal": "no_capacity"
+      },
+      "sha256": "1ed03544ccf867a3016a177ae0dde1b9130681c967b4591be3d4d97f53c8bf80"
+    },
+    {
+      "kind": "session_process",
+      "wire": {
+        "owner": {
+          "kind": "agent",
+          "id": "agent"
+        },
+        "process_id": "job:build",
+        "pid": 0,
+        "command": "cargo build",
+        "resident_set_bytes": 0,
+        "cpu_millis": 0,
+        "disk_io_bytes": null,
+        "disk_written_bytes": null,
+        "deleted_open_bytes": 0,
+        "outlived": false,
+        "sampled_at_ms": 10,
+        "age_ms": 0,
+        "state": {
+          "kind": "held",
+          "reason": "memory",
+          "position": 2,
+          "need_bytes": 6442450944,
+          "free_bytes": 1073741824,
+          "command_line": "cargo build",
+          "since_ms": 10
+        },
+        "remote_available": true,
+        "estimate": {
+          "amount_micros": 1200,
+          "currency": "USD",
+          "kind": "estimate",
+          "memory_mib": 6144,
+          "minutes": 2
+        },
+        "placement": {
+          "machine_label": "offload-abcd",
+          "address": "2001:db8::1"
+        }
+      },
+      "sha256": "d4dc3009953c7a4008997a4e0630c19ff1578041f6d4ab73a9599d92fa38d693"
+    },
+    {
+      "kind": "job_view",
+      "wire": {
+        "job_id": "job",
+        "agent_id": "agent",
+        "command": "cargo build",
+        "state": "finished",
+        "placement": "remote",
+        "started_at_ms": 10,
+        "machine_label": "offload-abcd",
+        "address": "2001:db8::1",
+        "class_id": "build",
+        "rate_per_minute": {
+          "amount_micros": 600,
+          "currency": "USD"
+        },
+        "estimate_micros": 1200,
+        "deleted": true,
+        "result": {
+          "exit_code": null,
+          "output_tail": "done",
+          "log": "artifacts/job.log",
+          "files_back": [],
+          "conflicts": [
+            "src/main.rs"
+          ],
+          "ran_on": {
+            "machine": "offload-abcd",
+            "ip": "2001:db8::1"
+          },
+          "duration_ms": 120000,
+          "outcome": "cancelled"
+        }
+      },
+      "sha256": "e31adc077bb9ecefede273f12527e1ba9590c9f98aa489d07feef12685cd320d"
+    },
+    {
+      "kind": "job_view",
+      "wire": {
+        "job_id": "job",
+        "agent_id": "agent",
+        "command": "cargo build",
+        "state": "finished",
+        "placement": "remote",
+        "started_at_ms": 10,
+        "machine_label": "offload-abcd",
+        "address": "2001:db8::1",
+        "class_id": "build",
+        "rate_per_minute": {
+          "amount_micros": 600,
+          "currency": "USD"
+        },
+        "estimate_micros": 1200,
+        "deleted": true,
+        "result": {
+          "exit_code": null,
+          "output_tail": "done",
+          "log": "artifacts/job.log",
+          "files_back": [],
+          "conflicts": [
+            "src/main.rs"
+          ],
+          "ran_on": {
+            "machine": "offload-abcd",
+            "ip": "2001:db8::1"
+          },
+          "duration_ms": 120000,
+          "outcome": "machine_lost"
+        }
+      },
+      "sha256": "7d5b3a7abd5e92f01436f28854cf33af784da7dfa88963e0c8de610523aea7cd"
+    },
+    {
+      "kind": "job_view",
+      "wire": {
+        "job_id": "job",
+        "agent_id": "agent",
+        "command": "cargo build",
+        "state": "finished",
+        "placement": "remote",
+        "started_at_ms": 10,
+        "machine_label": "offload-abcd",
+        "address": "2001:db8::1",
+        "class_id": "build",
+        "rate_per_minute": {
+          "amount_micros": 600,
+          "currency": "USD"
+        },
+        "estimate_micros": 1200,
+        "deleted": true,
+        "result": {
+          "exit_code": null,
+          "output_tail": "done",
+          "log": "artifacts/job.log",
+          "files_back": [],
+          "conflicts": [
+            "src/main.rs"
+          ],
+          "ran_on": {
+            "machine": "offload-abcd",
+            "ip": "2001:db8::1"
+          },
+          "duration_ms": 120000,
+          "outcome": "time_limit"
+        }
+      },
+      "sha256": "4065c59d07b42a9c01f6917c88e8fe12f181ebf879e73f170a44bd0dc6a0f34d"
+    },
+    {
+      "kind": "session_jobs",
+      "wire": {
+        "SessionState": {
+          "room_workflows": {
+            "session_id": "room",
+            "home_kernel_id": "home",
+            "revision": "snapshot",
+            "workflow_count": 0,
+            "workflows": []
+          },
+          "session": null,
+          "agent_activity": {},
+          "agent_activity_revision": 0,
+          "jobs": [
+            {
+              "job_id": "job",
+              "agent_id": "agent",
+              "command": "cargo build",
+              "state": "finished",
+              "placement": "remote",
+              "started_at_ms": 10,
+              "machine_label": "offload-abcd",
+              "address": "2001:db8::1",
+              "class_id": "build",
+              "rate_per_minute": {
+                "amount_micros": 600,
+                "currency": "USD"
+              },
+              "estimate_micros": 1200,
+              "deleted": true,
+              "result": {
+                "exit_code": 0,
+                "output_tail": "done",
+                "log": "artifacts/job.log",
+                "files_back": [
+                  "target/release/build"
+                ],
+                "conflicts": [],
+                "ran_on": {
+                  "machine": "offload-abcd",
+                  "ip": "2001:db8::1"
+                },
+                "duration_ms": 120000,
+                "outcome": "completed"
+              }
+            }
+          ],
+          "processes": [
+            {
+              "owner": {
+                "kind": "agent",
+                "id": "agent"
+              },
+              "process_id": "job:build",
+              "pid": 0,
+              "command": "cargo build",
+              "resident_set_bytes": 0,
+              "cpu_millis": 0,
+              "disk_io_bytes": null,
+              "disk_written_bytes": null,
+              "deleted_open_bytes": 0,
+              "outlived": false,
+              "sampled_at_ms": 10,
+              "age_ms": 0,
+              "state": {
+                "kind": "held",
+                "reason": "memory",
+                "position": 2,
+                "need_bytes": 6442450944,
+                "free_bytes": 1073741824,
+                "command_line": "cargo build",
+                "since_ms": 10
+              },
+              "remote_available": true,
+              "estimate": {
+                "amount_micros": 600,
+                "currency": "USD",
+                "kind": "per_minute",
+                "memory_mib": 6144
+              },
+              "placement": {
+                "machine_label": "offload-abcd",
+                "address": "2001:db8::1"
+              }
+            }
+          ],
+          "disk_usage": []
+        }
+      },
+      "sha256": "acb0f157cd6b38f3ba2a64cc531c7bc241581f05056611c4286cda376b0ee751"
+    }
+  ]
+}

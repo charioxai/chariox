@@ -515,4 +515,6 @@ pub use workspace::*;
 /// reports `wait.deadline_ms` as `null`. A sub-agent tree node carries its `account_profile`,
 /// `workspace_id`, `worktree_id` and `worker_kernel_id`, and an agent's wait is a `provider_tool` row of its
 /// transcript.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1005;
+/// 1011: durable jobs, job-only command admission and outcomes, placement policies,
+/// process estimates, session job feeds and the owner's global offload decision.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1011;

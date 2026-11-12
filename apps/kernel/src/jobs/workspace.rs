@@ -166,6 +166,16 @@ fn publish(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
     result.map_err(|e| error(format!("Cannot apply job file: {e}")))
 }
 
+pub(crate) fn hard_excluded(path: &str) -> bool {
+    path.split('/').any(|part| {
+        matches!(
+            part,
+            ".git" | ".chariox" | ".codex" | ".claude" | ".opencode" | ".cursor" | ".ssh"
+        )
+    }) || (crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(path)
+        && !crate::workspace_live_sync_ignore::workspace_runtime_excluded_path(path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,14 +233,4 @@ mod tests {
             );
         }
     }
-}
-
-pub(crate) fn hard_excluded(path: &str) -> bool {
-    path.split('/').any(|part| {
-        matches!(
-            part,
-            ".git" | ".chariox" | ".codex" | ".claude" | ".opencode" | ".cursor" | ".ssh"
-        )
-    }) || (crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(path)
-        && !crate::workspace_live_sync_ignore::workspace_runtime_excluded_path(path))
 }

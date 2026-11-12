@@ -32,7 +32,7 @@ test("MP-08/MP-10/MP-11 mirror read ordering has a floor above the unordered tar
 test("managed upgrades retain the signed current release and the target", () => {
   const pair = JSON.parse(readFileSync(new URL("fixtures/protocol-versions.json", repositoryRoot), "utf8"))
   const policy = JSON.parse(readFileSync(new URL("apps/kernel/managed-upgrade-protocol-transitions.json", repositoryRoot), "utf8"))
-  assert.deepEqual(admittedPredecessorProtocols, [1002, 1003])
+  assert.deepEqual(admittedPredecessorProtocols, [1003, 1005])
   assert.deepEqual(policy.upgradeFrom, [...admittedPredecessorProtocols, pair.local])
   assert.deepEqual(policy.rollbackTo, policy.upgradeFrom)
 })
@@ -52,4 +52,11 @@ test("process-control snapshot covers the generated protocol pair", () => {
   assert.ok(snapshot.shapes[0].processes.every(process => process.disk_io_bytes === 4096))
   assert.ok(snapshot.shapes.some(shape => shape.StopSessionProcesses))
   assert.ok(snapshot.shapes.some(shape => shape.SessionProcessesStopped))
+})
+
+test("offload jobs require their reviewed local and peer protocol floors", () => {
+  const fixture = JSON.parse(readFileSync(new URL("fixtures/remote-jobs-protocol.json", repositoryRoot), "utf8"))
+  const pair = JSON.parse(readFileSync(new URL("fixtures/protocol-versions.json", repositoryRoot), "utf8"))
+  assert.ok(pair.local >= fixture.local, "offload jobs require the reviewed local protocol")
+  assert.ok(pair.relayPeer >= fixture.relayPeer, "offload jobs require the reviewed peer protocol")
 })

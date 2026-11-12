@@ -256,15 +256,7 @@ impl KernelRuntimeState {
             return Err(self.reconcile_failed_job_acquisition(job_id, error).await);
         }
         let result = self
-            .wait_for_job_machine(
-                job_id,
-                &allocation_ref,
-                &revision,
-                class,
-                timeout_s,
-                origin,
-                first,
-            )
+            .wait_for_job_machine(job_id, &allocation_ref, &revision, class, origin, first)
             .await;
         match result {
             Ok(machine) => Ok(machine),
@@ -295,7 +287,6 @@ impl KernelRuntimeState {
         allocation_ref: &str,
         capability_revision: &str,
         class: JobMachineOffer,
-        _timeout_s: u64,
         origin: &Origin,
         mut response: ControlPlaneResponse,
     ) -> Result<JobMachine, DaemonError> {

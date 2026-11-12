@@ -84,7 +84,7 @@ pub enum ControlPlaneResponse {
         available_actions: Vec<String>,
         allocation_ref: String,
         state: String,
-        kernel_target: Option<ControlPlaneMachineTarget>,
+        kernel_target: Option<Box<ControlPlaneMachineTarget>>,
         access_state: String,
         access_reason: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
