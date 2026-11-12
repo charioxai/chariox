@@ -2,15 +2,23 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { startClaudeRemoteRenderedPumpLoop } from "./claude-remote-rendered-io.js"
-import { isSessionUnavailableError } from "../session-errors.js"
+import { LocalIpcError } from "@chariox/kernel-client/ipc"
+import {
+  sendClaudeRemoteRenderedInputWithRecovery,
+  startClaudeRemoteRenderedPumpLoop,
+} from "./claude-remote-rendered-io.js"
+import type { RemoteAttachmentRecovery, RemoteAttachmentRecoveryOutcome } from "./remote-attachment-recovery.js"
 
-type PumpOutcome = "recovered" | "transient" | "fatal"
+type Client = Parameters<typeof startClaudeRemoteRenderedPumpLoop>[0]
 
-// RR-07: a remote native-TUI attachment carried through the gateway lapses after
-// a >30s relay outage (the target sweeps it). The pump then polls a dead
-// attachment id forever and the terminal silently freezes. The pump must re-attach
-// on a definite attachment_not_found, adopt the new attachment id, and resume.
+function attachmentNotFound(id: string): LocalIpcError {
+  return new LocalIpcError("handle kernel response", `attachment ${id} gone`, "attachment_not_found", false)
+}
+
+// RR-07: a remote native-TUI attachment carried through the gateway lapses after a >30s
+// relay outage (the target sweeps it). The pump must re-attach on a definite
+// attachment_not_found, adopt the new id, and resume (the fresh attachment's catch-up
+// redraws the screen).
 test("native remote pump re-attaches after attachment_not_found and resumes output", async () => {
   const attachment = { id: "att-1" }
   const delivered: unknown[] = []
@@ -20,16 +28,17 @@ test("native remote pump re-attaches after attachment_not_found and resumes outp
     async send(request: Record<string, { attachment_id?: string }>) {
       const id = request?.PumpTerminalOutput?.attachment_id
       if (id === "att-2") return { TerminalOutput: { records: [{ marker: "after-recovery" }] } }
-      // att-1 (the swept attachment) and every unknown id are refused.
-      throw new Error(`attachment \`${String(id)}\` was not found`)
+      throw attachmentNotFound(String(id))
     },
-  } as unknown as Parameters<typeof startClaudeRemoteRenderedPumpLoop>[0]
+  } as unknown as Client
 
-  const recover = async (error: unknown): Promise<PumpOutcome> => {
-    if (!isSessionUnavailableError(error)) return "transient"
-    reattachCalls += 1
-    attachment.id = "att-2"
-    return "recovered"
+  const recovery: RemoteAttachmentRecovery = {
+    recover: async (): Promise<RemoteAttachmentRecoveryOutcome> => {
+      reattachCalls += 1
+      attachment.id = "att-2"
+      return "recovered"
+    },
+    settlePendingSubscription: async () => {},
   }
 
   const pump = startClaudeRemoteRenderedPumpLoop(
@@ -38,7 +47,7 @@ test("native remote pump re-attaches after attachment_not_found and resumes outp
     attachment,
     "run-1",
     "agent-1",
-    recover,
+    recovery,
     (records) => {
       if (Array.isArray(records) && records.length) delivered.push(...records)
     },
@@ -50,27 +59,80 @@ test("native remote pump re-attaches after attachment_not_found and resumes outp
 
   assert.equal(reattachCalls, 1, "re-attached exactly once on attachment_not_found")
   assert.equal(attachment.id, "att-2", "pump adopted the recovered attachment id")
-  assert.ok(delivered.length >= 1, "terminal output resumed after recovery")
+  assert.ok(delivered.length >= 1, "terminal output (screen catch-up) resumed after recovery")
 })
 
-// A definite grant refusal / session-gone must stop the pump: no silent resurrection,
-// the user's explicit detach or a revoked grant is honoured.
 test("native remote pump stops when recovery is fatal", async () => {
   const attachment = { id: "att-1" }
   let sends = 0
   const client = {
-    async send(_request: unknown) {
+    async send() {
       sends += 1
-      throw new Error("attachment `att-1` was not found")
+      throw attachmentNotFound("att-1")
     },
-  } as unknown as Parameters<typeof startClaudeRemoteRenderedPumpLoop>[0]
+  } as unknown as Client
 
-  const recover = async (): Promise<PumpOutcome> => "fatal"
+  const recovery: RemoteAttachmentRecovery = {
+    recover: async () => "fatal",
+    settlePendingSubscription: async () => {},
+  }
 
-  const pump = startClaudeRemoteRenderedPumpLoop(client, "sess-1", attachment, "run-1", "agent-1", recover)
+  const pump = startClaudeRemoteRenderedPumpLoop(client, "sess-1", attachment, "run-1", "agent-1", recovery)
   await sleep(600)
   const sendsAtFatal = sends
   await sleep(600)
   pump.stop()
   assert.equal(sends, sendsAtFatal, "the pump stopped sending after a fatal recovery outcome")
+})
+
+// Fix 1 (transactional subscription): a subscription deferred during recovery must be
+// re-established by the pump's per-tick settle even while polls keep succeeding.
+test("native remote pump settles a deferred subscription on later ticks", async () => {
+  const attachment = { id: "att-1" }
+  let settleCalls = 0
+  const client = {
+    async send() {
+      return { TerminalOutput: { records: [] } }
+    },
+  } as unknown as Client
+
+  const recovery: RemoteAttachmentRecovery = {
+    recover: async () => "recovered",
+    settlePendingSubscription: async () => {
+      settleCalls += 1
+    },
+  }
+
+  const pump = startClaudeRemoteRenderedPumpLoop(client, "sess-1", attachment, "run-1", "agent-1", recovery)
+  await sleep(700)
+  pump.stop()
+  assert.ok(settleCalls >= 2, "the pump settles the pending subscription every tick")
+})
+
+// Fix 2 (stdin): a key refused with attachment_not_found drives recovery and is replayed
+// exactly once under the new attachment id (a fresh send => a fresh command id).
+test("a refused keystroke recovers and replays once on the new attachment", async () => {
+  const attachment = { id: "att-1" }
+  const sends: string[] = []
+  const send = async () => {
+    sends.push(attachment.id)
+    if (attachment.id === "att-1") throw attachmentNotFound("att-1")
+  }
+  await sendClaudeRemoteRenderedInputWithRecovery(send, async () => {
+    attachment.id = "att-2"
+    return "recovered"
+  })
+  assert.deepEqual(sends, ["att-1", "att-2"], "replayed once on the recovered attachment")
+})
+
+test("a refused keystroke is dropped, not replayed, on a transient or fatal outcome", async () => {
+  for (const outcome of ["transient", "fatal"] as const) {
+    const sends: string[] = []
+    const send = async () => {
+      sends.push("x")
+      throw attachmentNotFound("att-1")
+    }
+    await sendClaudeRemoteRenderedInputWithRecovery(send, async () => outcome)
+    assert.equal(sends.length, 1, `${outcome} drops the key; a mutation is never retried blindly`)
+  }
 })

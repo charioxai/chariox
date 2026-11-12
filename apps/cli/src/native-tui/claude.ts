@@ -339,7 +339,7 @@ async function runClaudeRemoteRendered(
       attachment,
       run.id,
       agent.id,
-      recovery.recover,
+      recovery,
       (records) => readiness.observe(records, run.id, agent.id),
     )
     restoreStdin = forwardClaudeRemoteRenderedStdin({
@@ -351,6 +351,7 @@ async function runClaudeRemoteRendered(
       worktree,
       inlineLocalAttachments: Boolean(options.relayUrl) || Boolean(options.machineRef) || Boolean(options.sliceRef) || promptAttachmentTransferIsForced(),
       debug: debugNativeClaude,
+      recover: recovery.recover,
     })
     restoreResize = installClaudeRemoteRenderedResizeForwarder(client, session.id, run.id)
     if (options.initialPrompt) {

@@ -123,18 +123,36 @@ test("a new attachment opened after the surface is torn down is detached, not le
   assert.deepEqual(detached, ["att-2"], "the orphaned attachment is released")
 })
 
-test("a failed re-subscribe is reported transient, not a hidden partial recovery", async () => {
+test("a failed re-subscribe keeps the new id and is retried on the next pump tick", async () => {
   const attachment = { id: "att-1" }
-  const { recover } = recovery({
+  const recovered: string[] = []
+  let subscribeAttempts = 0
+  const { recover, settlePendingSubscription } = recovery({
     attachment,
     reattach: async () => "att-2",
-    resubscribe: async () => {
-      throw kernelError("connection_closed", true)
+    resubscribe: async (id) => {
+      subscribeAttempts += 1
+      if (subscribeAttempts === 1) throw kernelError("connection_closed", true)
+      assert.equal(id, "att-2")
     },
+    onRecovered: (id) => recovered.push(id),
   })
 
-  assert.equal(await recover(kernelError("attachment_not_found")), "transient")
-  assert.equal(attachment.id, "att-2", "the id is adopted; the pump already reads it")
+  // Recovery adopts the id (the pump already reads it) even though the subscription failed;
+  // it is tracked pending, not reported as fully settled.
+  assert.equal(await recover(kernelError("attachment_not_found")), "recovered")
+  assert.equal(attachment.id, "att-2")
+  assert.equal(subscribeAttempts, 1)
+  assert.deepEqual(recovered, [])
+
+  // The pump's next tick re-establishes the subscription: never left permanently dead.
+  await settlePendingSubscription()
+  assert.equal(subscribeAttempts, 2)
+  assert.deepEqual(recovered, ["att-2"])
+
+  // Nothing pending now.
+  await settlePendingSubscription()
+  assert.equal(subscribeAttempts, 2)
 })
 
 test("concurrent lapses share one in-flight re-attach", async () => {

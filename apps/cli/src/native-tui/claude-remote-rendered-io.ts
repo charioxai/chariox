@@ -11,7 +11,7 @@ import {
   submitPromptRequest,
 } from "../ipc-requests.js"
 import { preparePromptAttachmentsForSubmit } from "../prompt-attachment-transfer.js"
-import type { RemoteAttachmentRecoveryOutcome, RemoteAttachmentRef } from "./remote-attachment-recovery.js"
+import type { RemoteAttachmentRecovery, RemoteAttachmentRecoveryOutcome, RemoteAttachmentRef } from "./remote-attachment-recovery.js"
 import { PROVIDER_TERMINAL_OUTPUT_KIND } from "@chariox/kernel-client/terminal-record-transcript"
 import {
   extractClaudeNativePromptAttachmentReferences,
@@ -28,6 +28,7 @@ export function forwardClaudeRemoteRenderedStdin(options: {
   worktree: string
   inlineLocalAttachments: boolean
   debug: (label: string, payload: unknown) => void
+  recover?: (error: unknown) => Promise<RemoteAttachmentRecoveryOutcome>
 }): () => void {
   const wasRaw = Boolean(process.stdin.isTTY && process.stdin.isRaw)
   const composer = createClaudeRemoteRenderedComposerState()
@@ -36,7 +37,12 @@ export function forwardClaudeRemoteRenderedStdin(options: {
   const onData = (chunk: Buffer) => {
     const generation = ++inputGeneration
     pending = pending
-      .then(() => forwardRemoteRenderedInputChunk({ ...options, attachmentId: options.attachment.id, composer, chunk }))
+      .then(() =>
+        sendClaudeRemoteRenderedInputWithRecovery(
+          () => forwardRemoteRenderedInputChunk({ ...options, attachmentId: options.attachment.id, composer, chunk }),
+          options.recover,
+        ),
+      )
       .then(async () => {
         if (composer.escapeState === "none") return
         await sleep(10)
@@ -381,13 +387,30 @@ export function installClaudeRemoteRenderedResizeForwarder(
   }
 }
 
+// RR-07: send a keystroke, and if the target refused it with attachment_not_found, drive
+// recovery (serialised with the pump) and replay it exactly once under the new attachment
+// id — a fresh send, so a fresh command id (the kernel ledger would reject the old id for
+// a changed request). A transient or fatal outcome drops the key: a mutation is never
+// replayed on a generic failure. The original send was refused before dispatch, so the
+// replay cannot double-apply the input.
+export async function sendClaudeRemoteRenderedInputWithRecovery(
+  send: () => Promise<void>,
+  recover?: (error: unknown) => Promise<RemoteAttachmentRecoveryOutcome>,
+): Promise<void> {
+  try {
+    await send()
+  } catch (error) {
+    if (recover && (await recover(error)) === "recovered") await send()
+  }
+}
+
 export function startClaudeRemoteRenderedPumpLoop(
   client: LocalIpcClient,
   sessionId: string,
   attachment: RemoteAttachmentRef,
   providerRunId: string,
   agentId: string,
-  recover?: (error: unknown) => Promise<RemoteAttachmentRecoveryOutcome>,
+  recovery?: RemoteAttachmentRecovery,
   onRecords?: (records: unknown) => void,
 ): { stop: () => void } {
   let stopped = false
@@ -396,16 +419,20 @@ export function startClaudeRemoteRenderedPumpLoop(
       let response: Record<string, unknown> = {}
       try {
         // RR-07: the pump reads the live attachment id each tick, so a recovery that
-        // swaps the id (after the target swept the old attachment) is picked up here.
+        // swaps the id (after the target swept the old attachment) is picked up here, and
+        // the fresh attachment's catch-up redraws the native screen.
         response = await client.send<Record<string, unknown>>(
           pumpTerminalOutputRequest(sessionId, attachment.id),
         )
       } catch (error) {
-        if (recover && (await recover(error)) === "fatal") {
+        if (recovery && (await recovery.recover(error)) === "fatal") {
           stopped = true
           break
         }
       }
+      // A subscription that could not be renewed during recovery is retried here, so it is
+      // never left dead once polls start succeeding again on the new id.
+      if (recovery) await recovery.settlePendingSubscription()
       const records = "TerminalOutput" in response ? (response.TerminalOutput as { records?: unknown[] }).records : null
       onRecords?.(records)
       writeClaudeRemoteRenderedTerminalRecords(records, providerRunId, agentId)

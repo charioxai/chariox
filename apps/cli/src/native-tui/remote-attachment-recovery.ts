@@ -3,16 +3,18 @@ import { LocalIpcError } from "@chariox/kernel-client/ipc"
 // RR-07: a native-TUI attachment carried through the gateway is swept by the target
 // after ~30s without a heartbeat (a relay outage stops the origin's heartbeats). The
 // next attachment-bearing request then returns `attachment_not_found`. Attach mints a
-// fresh id, so the client re-attaches, adopts the new id and re-subscribes. A revoked
-// grant or a gone session is surfaced, never resurrected.
+// fresh id, so the client re-attaches, adopts the new id, re-subscribes and replays the
+// screen from the fresh attachment's catch-up. A revoked grant or a gone session is
+// surfaced, never resurrected.
 
 export type RemoteAttachmentRef = { id: string }
 
 export type RemoteAttachmentRecoveryOutcome =
-  // Re-attached: the holder carries a fresh id and the subscription was renewed.
+  // Re-attached: the holder carries a fresh id. The event subscription is live, or is
+  // pending and will be retried on the next pump tick (never silently left dead).
   | "recovered"
-  // The link is still down, or recovery is not yet complete: keep the current attachment
-  // and try again later. A state-changing request is never silently retried on this.
+  // The link is still down: keep the current attachment and try again later. A
+  // state-changing request is never silently retried on this outcome.
   | "transient"
   // Session gone / grant refused / client detached: surface it and stop. No resurrection.
   | "fatal"
@@ -41,16 +43,48 @@ export type RemoteAttachmentRecoveryOptions = {
   onFatal?: (error: unknown) => void
 }
 
-// Serialises concurrent lapses (the pump and a keystroke can both observe one) behind a
-// single in-flight re-attach.
+export type RemoteAttachmentRecovery = {
+  // Re-attaches on a definite attachment_not_found. Serialised: concurrent lapses (the
+  // pump and a keystroke) share one in-flight re-attach.
+  recover: (error: unknown) => Promise<RemoteAttachmentRecoveryOutcome>
+  // Retries a deferred re-subscription. The pump calls it every tick so a subscription
+  // that could not be renewed during recovery is re-established even while polls succeed.
+  settlePendingSubscription: () => Promise<void>
+}
+
 export function createRemoteAttachmentRecovery(
   options: RemoteAttachmentRecoveryOptions,
-): { recover: (error: unknown) => Promise<RemoteAttachmentRecoveryOutcome> } {
+): RemoteAttachmentRecovery {
   let inFlight: Promise<RemoteAttachmentRecoveryOutcome> | null = null
+  let pendingSubscriptionId: string | null = null
+  let settling = false
 
   const fatal = (error: unknown): RemoteAttachmentRecoveryOutcome => {
     options.onFatal?.(error)
     return "fatal"
+  }
+
+  const settlePendingSubscription = async (): Promise<void> => {
+    if (settling) return
+    const id = pendingSubscriptionId
+    if (id === null) return
+    settling = true
+    try {
+      if (!options.isActive()) {
+        pendingSubscriptionId = null
+        return
+      }
+      await options.resubscribe(id)
+      // A newer recovery may have superseded this id while we awaited.
+      if (pendingSubscriptionId === id) {
+        pendingSubscriptionId = null
+        options.onRecovered?.(id)
+      }
+    } catch {
+      // Keep it pending; the next pump tick retries it.
+    } finally {
+      settling = false
+    }
   }
 
   const run = async (error: unknown): Promise<RemoteAttachmentRecoveryOutcome> => {
@@ -63,9 +97,8 @@ export function createRemoteAttachmentRecovery(
     try {
       nextAttachmentId = await options.reattach()
     } catch (reattachError) {
-      const reattachKind = classify(reattachError)
       // The link is still flaky: keep the old attachment and let the caller retry.
-      if (reattachKind === "transient") return "transient"
+      if (classify(reattachError) === "transient") return "transient"
       // Re-attach refused (session gone / grant revoked): surface it.
       return fatal(reattachError)
     }
@@ -77,15 +110,12 @@ export function createRemoteAttachmentRecovery(
       return "fatal"
     }
 
+    // Adopt the id (the pump reads it immediately for the screen catch-up) and renew the
+    // subscription. If the renewal fails it is tracked as pending, not hidden: the pump's
+    // next settle retries it.
     options.attachment.id = nextAttachmentId
-    try {
-      await options.resubscribe(nextAttachmentId)
-    } catch {
-      // The id is adopted (the pump already reads it), but the event subscription is not
-      // live yet: report "transient" so recovery runs again rather than hiding it.
-      return "transient"
-    }
-    options.onRecovered?.(nextAttachmentId)
+    pendingSubscriptionId = nextAttachmentId
+    await settlePendingSubscription()
     return "recovered"
   }
 
@@ -98,5 +128,5 @@ export function createRemoteAttachmentRecovery(
     return current
   }
 
-  return { recover }
+  return { recover, settlePendingSubscription }
 }
