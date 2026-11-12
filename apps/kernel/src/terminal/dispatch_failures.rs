@@ -73,6 +73,16 @@ pub(crate) fn public_task_failure_reason(reason: &str) -> String {
     if lower.contains("retained instructions") {
         return "This task needs your help to continue.".into();
     }
+    if lower.contains("repeated invalid turn end") {
+        return "Its turn ended before its work was done. Resume to continue, or Cancel.".into();
+    }
+    if lower.contains("unconfirmed delivery") {
+        return "A message to it may not have arrived. Check its last turn, then Resume or Cancel."
+            .into();
+    }
+    if lower.contains("owner must reconcile") {
+        return "Its work was interrupted. Check its last turn, then Resume or Cancel.".into();
+    }
     if reason.contains("Provider prompt dispatch failed: provider protocol `") {
         if let Some((_, operation)) = reason.split_once("provider protocol `") {
             if let Some((operation, _)) = operation.split_once('`') {
@@ -104,6 +114,33 @@ mod tests {
             ),
             "Waiting for the result."
         );
+    }
+
+    /// Live (orch10-cards, PCD-01 F5): after a restart the person's card read "agent-1: Repeated
+    /// invalid turn end; owner must resume or cancel". A blocked task's card says in plain words
+    /// what happened and what Resume and Cancel do.
+    #[test]
+    fn a_blocked_task_card_reads_in_plain_words() {
+        for (reason, plain) in [
+            (
+                "Repeated invalid turn end; owner must resume or cancel",
+                "Its turn ended before its work was done. Resume to continue, or Cancel.",
+            ),
+            (
+                "Unconfirmed delivery 7 prevents this task's wake; owner must reconcile the original attempt or cancel, then explicitly resume",
+                "A message to it may not have arrived. Check its last turn, then Resume or Cancel.",
+            ),
+            (
+                "Unconfirmed delivery 7: owner must reconcile the original attempt",
+                "A message to it may not have arrived. Check its last turn, then Resume or Cancel.",
+            ),
+            (
+                "Recovered legacy dispatch obligation; owner must reconcile its exact resource and resume or cancel",
+                "Its work was interrupted. Check its last turn, then Resume or Cancel.",
+            ),
+        ] {
+            assert_eq!(public_task_failure_reason(reason), plain);
+        }
     }
 
     #[test]
