@@ -324,6 +324,12 @@ fn claude_task_notification(value: &Value) -> Option<ClaudeTaskEnd<'_>> {
         let rest = notification.split_once(open.as_str())?.1;
         Some(rest.split_once(close.as_str())?.0.trim())
     };
+    if !matches!(
+        tag("status"),
+        Some("completed" | "failed" | "killed" | "stopped")
+    ) {
+        return None;
+    }
     Some(ClaudeTaskEnd {
         tool_use_id: tag("tool-use-id"),
         task_id: tag("task-id"),
@@ -547,7 +553,7 @@ fn claude_assistant_transcript_chunks(
             "tool_use" => {
                 let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
                 let input = block.get("input").cloned().unwrap_or(Value::Null);
-                let background = crate::provider::launches_background_command(name, Some(&input));
+                let background = crate::provider::launches_background_task(name, Some(&input));
                 if let Some(id) = block.get("id").and_then(Value::as_str) {
                     track_pending_call(pending_tool_calls, id, name, &input, background, now_ms);
                 }

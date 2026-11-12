@@ -202,27 +202,31 @@ impl PendingTool {
     }
 }
 
-/// Claude's Bash tool keeps a command running after its launch result when
-/// the model asked for `run_in_background`.
-pub(crate) fn launches_background_command(name: &str, input: Option<&Value>) -> bool {
-    name == "Bash"
+/// Claude's shell commands and helpers can outlive the turn that launched them.
+pub(crate) fn launches_background_task(name: &str, input: Option<&Value>) -> bool {
+    matches!(name, "Bash" | "Agent")
         && input
             .and_then(|input| input.get("run_in_background"))
             .and_then(Value::as_bool)
             == Some(true)
 }
 
-/// The task id a background launch result names: the structured result's
-/// `backgroundTaskId` (the stream's `tool_use_result`, the transcript's
-/// `toolUseResult`), else the launch text
-/// "Command running in background with ID: <id>. ...".
+/// The task id from the structured launch result (`backgroundTaskId` for a
+/// command, `agentId` for a helper), or from the corresponding launch text.
 pub(crate) fn launched_task_id(structured: Option<&Value>, output: &str) -> Option<String> {
     structured
-        .and_then(|result| result.get("backgroundTaskId"))
+        .and_then(|result| {
+            result
+                .get("backgroundTaskId")
+                .or_else(|| result.get("agentId"))
+        })
         .and_then(Value::as_str)
         .map(str::to_string)
         .or_else(|| {
-            let rest = output.split_once("running in background with ID: ")?.1;
+            let rest = output
+                .split_once("running in background with ID: ")
+                .or_else(|| output.split_once("agentId: "))?
+                .1;
             let id = rest
                 .split(|c: char| c.is_whitespace() || c == '.')
                 .next()
@@ -284,6 +288,12 @@ impl ClaudeToolTranscript {
         if kind == Some("system")
             && value.get("subtype").and_then(Value::as_str) == Some("task_notification")
         {
+            if !matches!(
+                value.get("status").and_then(Value::as_str),
+                Some("completed" | "failed" | "killed" | "stopped")
+            ) {
+                return Vec::new();
+            }
             return self.finish_background_task(
                 value.get("tool_use_id").and_then(Value::as_str),
                 value.get("task_id").and_then(Value::as_str),
@@ -393,7 +403,7 @@ impl ClaudeToolTranscript {
                     top_level: value.get("parent_tool_use_id").is_none_or(Value::is_null),
                     input: bounded_input(block.get("input").unwrap_or(&Value::Null)),
                     started_at_ms: now_ms,
-                    background: launches_background_command(name, block.get("input")),
+                    background: launches_background_task(name, block.get("input")),
                 };
                 if pending.bytes(id) > PENDING_BYTES.saturating_sub(self.pending_bytes) {
                     self.truncated = true;
@@ -519,6 +529,22 @@ mod tests {
             "output_file":format!("/tmp/claude-0/tasks/{task_id}.output"),
             "summary":"Background command \"Real background command\" completed (exit code 0)",
             "session_id":"session-1","uuid":"uuid-1"})
+    }
+
+    #[test]
+    fn kwait_interim_task_notification_does_not_end_background_work() {
+        let mut transcript = ClaudeToolTranscript::default();
+        transcript.observe_at(&background_launch("bg", "sleep 20"), 1_000);
+        transcript.observe_at(&background_launch_result("bg", "task"), 1_100);
+        assert!(transcript
+            .observe_at(&task_notification("task", "bg", "running"), 2_000)
+            .is_empty());
+        assert_eq!(
+            transcript
+                .observe_at(&task_notification("task", "bg", "completed"), 3_000)
+                .len(),
+            1
+        );
     }
 
     fn task_stop(id: &str, task_id: &str) -> [Value; 2] {

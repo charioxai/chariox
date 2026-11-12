@@ -237,6 +237,13 @@ impl CommandRouter {
                 parent,
                 self.runtime_state.room_agent_tools_enabled(),
             )),
+            Err(DaemonError::NoActivePrompt { .. }) => Ok(RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({"command":command,"response":{
+                    "agent_id":target.id(),"already_idle":true,"cancelled":false,
+                    "message":"The agent is already idle; there is no active turn to cancel."
+                }}),
+            }),
             Err(error) => Ok(meta_command_failure_result(command, error)),
         }
     }
