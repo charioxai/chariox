@@ -146,7 +146,7 @@ impl KernelRuntimeState {
                     .as_ref()
                     .map(|agent| agent.alias().unwrap_or(agent.agent_ref())),
                 &task,
-            )?
+            )
         };
         if let Some(existing) = session.active_interactions().iter().find(|i| i.id() == id) {
             let live = self

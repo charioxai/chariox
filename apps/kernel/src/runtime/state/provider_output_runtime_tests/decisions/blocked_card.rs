@@ -275,3 +275,40 @@ async fn a_settling_obligation_names_its_exact_receipt_in_correction_and_resume(
         assert!(!text.contains("chariox.events.yield"), "{text}");
     }
 }
+
+#[tokio::test]
+async fn corrupt_completion_registrations_keep_the_parents_cancel_decision() {
+    let t = tree(
+        "blocked-corrupt",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let task = t.blocked_task_of(
+        &t.c,
+        "Source registration is corrupt; restore the exact receipt or cancel",
+    );
+    let connection =
+        rusqlite::Connection::open(t.runtime.owned.durable_state_store.path()).unwrap();
+    connection
+        .execute(
+            "UPDATE agent_registrations SET payload='broken' WHERE task_id=?1",
+            [&task.task_id],
+        )
+        .unwrap();
+    t.runtime
+        .ensure_task_owner_interaction(task.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        t.holder(&Tree::blocked_card_id(&task)),
+        DecisionHolder::Agent(t.p.clone())
+    );
+    let event = t.decision_events(&t.p).pop().unwrap();
+    let detail = event.payload["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("Recovery instructions could not be read")
+            && detail.contains("Cancel this task"),
+        "{detail}"
+    );
+}
