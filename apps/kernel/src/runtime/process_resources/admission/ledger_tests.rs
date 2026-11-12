@@ -2244,7 +2244,21 @@ fn a_pause_only_the_room_to_continue_keeps_does_not_name_a_memory_shortage() {
     member.lock().unwrap().control = Some(control);
 
     let (_, blocked) = blocked_paused(&[member], 60_000, &room).expect("the pause cannot continue");
-    if let Blocked::Memory { left, need } = blocked {
-        assert!(left < need, "it needs {need} and {left} are left");
-    }
+    // 512 MiB/s running plus its own 600 MiB/s: 1 GiB margin or the rate, and two seconds ahead.
+    let growing = 512 * MIB + 600 * MIB;
+    let Blocked::Growth {
+        left,
+        need,
+        growing: reported,
+    } = blocked
+    else {
+        panic!("the memory room covers its need; the growth is what it lacks");
+    };
+    assert_eq!((left, reported), (3 * GIB, growing));
+    assert_eq!(need, growing + 2 * growing);
+    let line = super::super::waits::overdue_line(60_000, &blocked, 600 * MIB, Some(64 * GIB));
+    assert!(
+        line.contains("no room to keep growing") && !line.contains("still needs"),
+        "{line}"
+    );
 }

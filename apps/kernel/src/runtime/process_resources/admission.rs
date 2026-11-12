@@ -361,14 +361,19 @@ impl Room<'_> {
 
     /// A paused command that grows at `rate` continues only if the pool then
     /// stays out of short memory for `AHEAD` seconds at the rate of everything
-    /// that runs; otherwise the next sample would pause it again.
-    fn room_to_continue(&self, rate: u64) -> bool {
+    /// that runs; otherwise the next sample would pause it again. Returns the
+    /// memory that takes and that rate.
+    fn growth_room_needed(&self, rate: u64) -> (u64, u64) {
         let growing = self.growing.saturating_add(rate);
-        self.memory
-            >= self
-                .margin
-                .max(growing)
-                .saturating_add(growing.saturating_mul(AHEAD))
+        let needed = self
+            .margin
+            .max(growing)
+            .saturating_add(growing.saturating_mul(AHEAD));
+        (needed, growing)
+    }
+
+    fn room_to_continue(&self, rate: u64) -> bool {
+        self.memory >= self.growth_room_needed(rate).0
     }
 }
 
@@ -905,8 +910,22 @@ pub(super) struct PausedCommand {
 /// What kept a paused command from continuing: the resource that had too
 /// little room, the room left for it and what it needs to go on.
 pub(super) enum Blocked {
-    Memory { left: u64, need: u64 },
-    Disk { spare: u64, need: u64 },
+    Memory {
+        left: u64,
+        need: u64,
+    },
+    /// The memory room covers what it needs, but not growing on: `growing`
+    /// bytes per second is what everything running and it would grow by, and
+    /// staying out of short memory for that takes `need`.
+    Growth {
+        left: u64,
+        need: u64,
+        growing: u64,
+    },
+    Disk {
+        spare: u64,
+        need: u64,
+    },
 }
 
 /// The newest command paused on memory. When the pool is full and nothing
@@ -1021,10 +1040,18 @@ impl State {
         let left = self.memory_room(unit, room);
         let paused_memory =
             reason == WaitReason::Memory && matches!(entry.wait, Some(Wait::Paused(_)));
-        if self.heavy_running
-            && (memory > left || (paused_memory && !room.room_to_continue(entry.paused_rate)))
-        {
+        if self.heavy_running && memory > left {
             return Some(Blocked::Memory { left, need: memory });
+        }
+        if self.heavy_running && paused_memory {
+            let (need, growing) = room.growth_room_needed(entry.paused_rate);
+            if room.memory < need {
+                return Some(Blocked::Growth {
+                    left: room.memory,
+                    need,
+                    growing,
+                });
+            }
         }
         let spare = self.spare(entry.disk(room)?, unit, room);
         (disk > spare).then_some(Blocked::Disk { spare, need: disk })

@@ -33,7 +33,10 @@ needs to continue, the room that was left once what is in use and reserved is
 counted, whether the pool's ceiling or the machine's free memory set that room,
 and the command's own size. What it needs counts its growth rate, which falls
 while it is stopped, so a burst at its start does not keep it from continuing.
-When the disk keeps it (the writes it is known to
+When the memory room covers what it needs but not growing
+on (everything running, it included, grows so fast that the pool would be short of
+memory again within seconds): the rate everything grows by, what staying clear of
+short memory takes at that rate, and the room that was left. When the disk keeps it (the writes it is known to
 make do not fit above the floor): what it still needs of disk and what is free
 on the volume it writes to. A pause never lasts for ever. A command that could continue is never
 ended, however long it waited: the resume pass continues it. Jobs a tool shell
