@@ -528,3 +528,49 @@ async fn kwait_native_helpers_keep_the_child_working_through_interim_notificatio
         .await;
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn kwait_held_background_work_keeps_the_provider_in_the_output_pump() {
+    let team = child_with_a_call_running("kwait-held-output-pump").await;
+    let owned = &team.runtime.owned;
+    let session = owned.session_store.get_session(&team.room).unwrap();
+    assert!(owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &team.child)
+        .is_none());
+    assert!(
+        !owned
+            .git_turn_snapshots
+            .provider_run_ids_for_session(&team.room)
+            .contains(&team.child_run),
+        "the fixture must exercise held work, not a pending snapshot"
+    );
+    let run = owned.provider_store.get_run(&team.child_run).unwrap();
+    assert!(run.client_interface().is_chariox());
+    assert!(!crate::provider::provider_run_uses_claude_native_bridge(
+        &run
+    ));
+    let selected = super::super::provider_output_runtime::provider_run_ids_for_owned_output_pump(
+        owned, &session,
+    );
+    assert!(
+        selected.contains(&team.child_run),
+        "the held child's completion frames must still be drained: {selected:?}"
+    );
+    apply(
+        &team,
+        vec![
+            ended_at(crate::session::unix_epoch_ms()),
+            text_chunk("the background work completed"),
+        ],
+    )
+    .await;
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, false)
+        .await
+        .unwrap();
+    assert!(!team
+        .runtime
+        .owned
+        .is_held_for_background_calls(&team.task.task_id));
+}
