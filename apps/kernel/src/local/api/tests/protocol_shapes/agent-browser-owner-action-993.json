@@ -1,6 +1,6 @@
 {
-  "local": 1005,
-  "peer": 444,
+  "local": 1012,
+  "peer": 450,
   "task": {
     "task_id": "browser-task",
     "room_id": "room",
