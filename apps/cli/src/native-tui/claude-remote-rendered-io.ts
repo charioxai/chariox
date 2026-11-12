@@ -11,6 +11,7 @@ import {
   submitPromptRequest,
 } from "../ipc-requests.js"
 import { preparePromptAttachmentsForSubmit } from "../prompt-attachment-transfer.js"
+import type { RemoteAttachmentRecoveryOutcome, RemoteAttachmentRef } from "./remote-attachment-recovery.js"
 import { PROVIDER_TERMINAL_OUTPUT_KIND } from "@chariox/kernel-client/terminal-record-transcript"
 import {
   extractClaudeNativePromptAttachmentReferences,
@@ -21,7 +22,7 @@ import {
 export function forwardClaudeRemoteRenderedStdin(options: {
   client: LocalIpcClient
   sessionId: string
-  attachmentId: string
+  attachment: RemoteAttachmentRef
   agentId: string
   providerRunId: string
   worktree: string
@@ -35,7 +36,7 @@ export function forwardClaudeRemoteRenderedStdin(options: {
   const onData = (chunk: Buffer) => {
     const generation = ++inputGeneration
     pending = pending
-      .then(() => forwardRemoteRenderedInputChunk({ ...options, composer, chunk }))
+      .then(() => forwardRemoteRenderedInputChunk({ ...options, attachmentId: options.attachment.id, composer, chunk }))
       .then(async () => {
         if (composer.escapeState === "none") return
         await sleep(10)
@@ -45,7 +46,7 @@ export function forwardClaudeRemoteRenderedStdin(options: {
           await sendRemoteRenderedInput(
             options.client,
             options.sessionId,
-            options.attachmentId,
+            options.attachment.id,
             options.providerRunId,
             data,
             options.agentId,
@@ -383,21 +384,32 @@ export function installClaudeRemoteRenderedResizeForwarder(
 export function startClaudeRemoteRenderedPumpLoop(
   client: LocalIpcClient,
   sessionId: string,
-  attachmentId: string,
+  attachment: RemoteAttachmentRef,
   providerRunId: string,
   agentId: string,
+  recover?: (error: unknown) => Promise<RemoteAttachmentRecoveryOutcome>,
   onRecords?: (records: unknown) => void,
 ): { stop: () => void } {
   let stopped = false
   const loop = async () => {
     while (!stopped) {
-      const response = await client
-        .send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
-        .catch(() => ({}))
+      let response: Record<string, unknown> = {}
+      try {
+        // RR-07: the pump reads the live attachment id each tick, so a recovery that
+        // swaps the id (after the target swept the old attachment) is picked up here.
+        response = await client.send<Record<string, unknown>>(
+          pumpTerminalOutputRequest(sessionId, attachment.id),
+        )
+      } catch (error) {
+        if (recover && (await recover(error)) === "fatal") {
+          stopped = true
+          break
+        }
+      }
       const records = "TerminalOutput" in response ? (response.TerminalOutput as { records?: unknown[] }).records : null
       onRecords?.(records)
       writeClaudeRemoteRenderedTerminalRecords(records, providerRunId, agentId)
-      await sleep(250)
+      if (!stopped) await sleep(250)
     }
   }
   void loop()
