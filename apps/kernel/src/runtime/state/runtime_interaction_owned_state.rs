@@ -397,8 +397,11 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error(super::decision_holder::HOLDER_CHANGED));
         }
-        let task_owner_answer =
-            self.may_answer_blocked_task_decision(session_id, interaction_id, caller_user_id);
+        // The parent that holds a blocked task's card answers it for the owner; the holder was
+        // checked above and its authority is checked again below.
+        let task_owner_answer = (as_holder.is_some()
+            && super::agent_task_owner_interactions::is_blocked_task_decision(interaction_id))
+            || self.may_answer_blocked_task_decision(session_id, interaction_id, caller_user_id);
         if pending
             .kernel_operation_owner
             .as_deref()
