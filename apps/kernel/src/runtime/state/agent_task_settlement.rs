@@ -4,6 +4,9 @@ use crate::durable_state::agent_lifecycle::AgentTaskExecution;
 
 impl KernelRuntimeOwnedState {
     fn task_settle_steps(&self, task: &AgentTaskExecution) -> Result<Vec<String>, DaemonError> {
+        if !task.obligations.iter().any(|o| o.requires_resolution()) {
+            return Ok(Vec::new());
+        }
         let registrations = self
             .durable_state_store
             .agent_registrations(&task.task_id)?;
@@ -120,7 +123,7 @@ impl KernelRuntimeOwnedState {
         &self,
         alias: Option<&str>,
         task: &AgentTaskExecution,
-    ) -> Result<String, DaemonError> {
+    ) -> String {
         let reason = crate::terminal::public_task_failure_reason(&task.reason);
         let mut text = alias.map_or_else(|| reason.clone(), |alias| format!("{alias}: {reason}"));
         match self.task_settle_steps(task) {
@@ -135,6 +138,6 @@ impl KernelRuntimeOwnedState {
                 text.push_str(&format!(" Recovery instructions could not be read: {reason}. Cancel this task or restore its authoritative receipts before Resume."));
             }
         }
-        Ok(text)
+        text
     }
 }
