@@ -3499,68 +3499,6 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    fn isolate_runtime_home_ancestor_test() -> bool {
-        const MARKER: &str = "CHARIOX_RUNTIME_HOME_PROBE_NAMESPACE";
-        if std::env::var(MARKER).as_deref() == Ok("1") {
-            return false;
-        }
-        let thread = std::thread::current();
-        let name = thread
-            .name()
-            .expect("runtime-home fixture needs its test name");
-        // Preserve the /home mount rules this probe tests. A temporary-directory
-        // fixture would instead exercise the private-temp workspace exception.
-        let output = crate::process_spawn::command(BWRAP_PATH)
-            .args([
-                "--unshare-user",
-                "--unshare-pid",
-                "--die-with-parent",
-                "--uid",
-                "0",
-                "--gid",
-                "0",
-                "--bind",
-                "/",
-                "/",
-                "--dev-bind",
-                "/dev",
-                "/dev",
-                "--proc",
-                "/proc",
-                "--tmpfs",
-                "/run",
-                "--ro-bind",
-            ])
-            .arg(std::env::current_exe().expect("test binary should resolve"))
-            .args([
-                "/run/kernel-home-test",
-                "--tmpfs",
-                "/home",
-                "--tmpfs",
-                "/tmp",
-                "--setenv",
-                "TMPDIR",
-                "/tmp",
-                "--chdir",
-                "/tmp",
-                "--",
-                "/run/kernel-home-test",
-            ])
-            .arg(name)
-            .args(["--exact", "--nocapture", "--test-threads=1"])
-            .env(MARKER, "1")
-            .output()
-            .expect("runtime-home fixture needs bubblewrap with unprivileged user namespaces");
-        assert!(
-            output.status.success(),
-            "runtime-home namespace test failed: {}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        true
-    }
-
-    #[cfg(target_os = "linux")]
     fn run_managed_runtime_home_ancestor_launch_probe(workspace_kind: &str) {
         use std::os::unix::fs::PermissionsExt;
 
@@ -3577,8 +3515,30 @@ mod tests {
             std::process::id(),
             crate::session::unix_epoch_ms()
         );
-        let home_root =
-            PathBuf::from("/home").join(format!("chariox-managed-runtime-home-ancestor-{nonce}"));
+        // HOME is replaced by isolated_env_test. Use the caller's account home
+        // to keep this fixture below /home, outside the private-temp exception.
+        let uid = unsafe { libc::geteuid() };
+        let home_parent = if uid == 0 {
+            PathBuf::from("/home")
+        } else {
+            let account = crate::process_spawn::command("getent")
+                .args(["passwd", &uid.to_string()])
+                .output()
+                .expect("test account home should resolve through getent");
+            assert!(account.status.success(), "test account should exist");
+            PathBuf::from(
+                String::from_utf8(account.stdout)
+                    .expect("test account should be UTF-8")
+                    .split(':')
+                    .nth(5)
+                    .expect("test account should have a home directory"),
+            )
+        };
+        assert!(
+            home_parent.starts_with("/home"),
+            "runtime-home fixture needs the test account's writable /home directory"
+        );
+        let home_root = home_parent.join(format!("chariox-managed-runtime-home-ancestor-{nonce}"));
         let scratch =
             std::env::temp_dir().join(format!("chariox-managed-runtime-home-ancestor-{nonce}"));
         let provider_home = scratch.join("provider-home");
@@ -3972,9 +3932,6 @@ mod tests {
     #[test]
     fn managed_collector_apply_protects_runtime_home_ancestor() {
         crate::test_support::isolated_env_test!();
-        if isolate_runtime_home_ancestor_test() {
-            return;
-        }
         run_managed_runtime_home_ancestor_launch_probe("home");
     }
 
@@ -3982,9 +3939,6 @@ mod tests {
     #[test]
     fn managed_collector_apply_protects_runtime_config_ancestor() {
         crate::test_support::isolated_env_test!();
-        if isolate_runtime_home_ancestor_test() {
-            return;
-        }
         run_managed_runtime_home_ancestor_launch_probe("config");
     }
 
@@ -3992,9 +3946,6 @@ mod tests {
     #[test]
     fn managed_collector_apply_rejects_exact_and_rebinds_nested_runtime_command_workspaces() {
         crate::test_support::isolated_env_test!();
-        if isolate_runtime_home_ancestor_test() {
-            return;
-        }
         run_managed_runtime_home_ancestor_launch_probe("openbox");
         run_managed_runtime_home_ancestor_launch_probe("nested-openbox");
     }
