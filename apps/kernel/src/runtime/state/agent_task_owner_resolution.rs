@@ -218,7 +218,7 @@ impl KernelRuntimeState {
                         self.owned.task_resume_text(&next, &task.reason)?
                     };
                     if let Some(goal) = self.owned.goal_continuation_context(&next)? {
-                        context.push_str("\n");
+                        context.push('\n');
                         context.push_str(&goal);
                     }
                     if browser_grant.is_some() { context.push_str(" Browser access has been approved. Take a fresh snapshot of the original tab and replace any retired verification card. Write the card's steps directly to the person. Do not narrate snapshots, browser grants, tool loading, scheduling instructions or task bookkeeping; tell the person only what they need to do or what result changed."); }
