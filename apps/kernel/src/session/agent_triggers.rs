@@ -209,10 +209,6 @@ pub struct AgentTrigger {
 }
 
 impl AgentTrigger {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Every field of a new schedule trigger is required and distinct."
-    )]
     pub fn schedule(
         id: impl Into<String>,
         agent_id: impl Into<String>,

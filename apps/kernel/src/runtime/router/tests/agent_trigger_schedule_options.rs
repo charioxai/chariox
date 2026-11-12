@@ -155,7 +155,7 @@ async fn every_schedule_mode_creates_a_cron_trigger_due_at_the_wall_clock_time_o
             field == "*"
                 || field
                     .strip_prefix("*/")
-                    .map(|step| value % step.parse::<u32>().unwrap() == 0)
+                    .map(|step| value.is_multiple_of(step.parse::<u32>().unwrap()))
                     .unwrap_or_else(|| {
                         field.split(',').any(|part| match part.split_once('-') {
                             Some((low, high)) => {
