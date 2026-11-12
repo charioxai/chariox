@@ -156,7 +156,7 @@ export const isCheckedPath = (path, allowedFiles = new Set()) => isProductPath(p
 
 const PATH_SCAN_ROOTS = [
   'apps/kernel/src/', 'apps/cli/src/', 'apps/cli/scripts/', 'packages/kernel-client/src/', 'apps/relay/src/',
-  'apps/server/src/', 'apps/setup/', 'deploy/', 'docker/', 'packages/aegs-sdk/src/', 'scripts/',
+  'apps/server/', 'apps/setup/', 'deploy/', 'docker/', 'packages/aegs-sdk/src/', 'scripts/',
 ]
 const PATH_SCAN_EXTENSION = /\.(?:rs|tsx?|mjs|cjs|js|sh)$|(?:^|\/)Dockerfile[^/]*$/
 // A string literal that starts with a control-plane path, optionally after a `{}`, `${..}` or `$NAME` base.

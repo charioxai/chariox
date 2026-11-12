@@ -456,3 +456,24 @@ test('a planted-violation commit turns the guard CLI red and removing it turns i
     assert.equal(green.status, 0, green.stderr)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+// Exercise the CLI on a tracked source outside src/: server entry points and helpers
+// are product code too. A vocabulary allowlist never authorizes an API call.
+test('server entry points and helpers cannot add an unlisted admission path', () => {
+  const repo = baselineRepo({}, [])
+  try {
+    repo.git('update-ref', 'refs/remotes/origin/main', repo.base)
+    for (const file of ['apps/server/admission.mjs', 'apps/server/lib/admission.ts', 'apps/server/src/admission.ts']) {
+      repo.write(file, 'await fetch(`${base}/browser/agent-trigger-deployments/${id}/admission`)\n')
+      repo.git('add', file)
+      repo.git('commit', '-q', '-m', 'plant server admission path')
+      const red = repo.guard({})
+      assert.equal(red.status, 1, `${file} escaped the path scan: ${red.stdout}${red.stderr}`)
+      assert.match(red.stderr, /unlisted control-plane path: \/browser\/agent-trigger-deployments\/\{\}\/admission/)
+      repo.git('rm', '-q', file)
+      repo.git('commit', '-q', '-m', 'remove server admission path')
+      const green = repo.guard({})
+      assert.equal(green.status, 0, green.stderr)
+    }
+  } finally { repo.done() }
+})
