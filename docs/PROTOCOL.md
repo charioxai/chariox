@@ -4392,6 +4392,9 @@ ungated invoke returns. The shared Landing 7 protocol pair carries the field.
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — transitional durable agent lifecycle (A02)
 
+Local 1013 / relay peer 451 removes the idle-wake counters from task snapshots.
+Repeated timer acknowledgements and continuations keep the task live.
+
 Local daemon protocol **452** adds `RuntimeSession.agent_tasks`; relay82 is inherited
 from #885. The room agent tools surface publishes
 `chariox.events.subscribe/subscriptions/inbox/ack/yield/blocked`. Tools require the

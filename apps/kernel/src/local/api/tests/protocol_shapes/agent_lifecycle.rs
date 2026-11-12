@@ -68,7 +68,7 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
     assert_eq!(value, expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
-        "1200a129c1634205e402b26eed546a5418aca143b91457f416e67438959e96af"
+        "4ffa08d93b9e27134e13df1e08cefa349e44d8918028a1cac241d2e97f16cb01"
     );
 }
 
@@ -211,11 +211,11 @@ fn compact_task_wire_shapes_are_bound_to_assigned_protocol493() {
     use sha2::{Digest, Sha256};
     assert_eq!(
         format!("{:x}", Sha256::digest(response.to_string().as_bytes())),
-        "4c0a03a004a412d708a4d60c1475b4838001ee1a9437501f64605a4e9c939869"
+        "ef230c68aab61dd3349bbbf3ad433bc80d9d30930863560b02d14530e7d2fc8a"
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(event.to_string().as_bytes())),
-        "8a4f8a22a07cd18fe4ca79ce9277dc9dd44bb73330c2a3f85bf0b6102ba2d4e4"
+        "738d4d50e462037fc0c2f8643f1681092cf4e5d881666ae08e6938e00cad4e38"
     );
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
@@ -246,7 +246,7 @@ fn parked_stop_response_semantics_are_versioned() {
     assert_eq!(value, expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
-        "5d4d7cab46a07c8f05fa4223b2853b66cb117a99a13ccd4c68446d87b2e4d731"
+        "59b2d8a67feda874a06bf870f180e673eaaa1ff4d8fb46393ae230f9cd5b17ab"
     );
 }
 
@@ -258,7 +258,7 @@ fn owner_agent_cancellation_987_snapshot_and_hash() {
     let bytes = include_bytes!("owner-agent-cancellation-987.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "a4254b7c2ac9c83c1a0b49e1f03f9761489a6a85f816f0839a5eb574c34f76af"
+        "b42ad8612213eb6a1e3d3c951303552930b5a69663c58d2cb4b4204c127a0fc1"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -304,6 +304,6 @@ fn browser_owner_action_shape_is_bound_to_protocol993() {
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(fixture.to_string().as_bytes())),
-        "e8b4b67b8a675ff89d372f43f33f67b03a4cc487fcdb622409c9173aa2f93c48"
+        "ce67fc8488ef55c7b60eecd9b1633b29c7e94c82dc3ac72672da56eda5875d95"
     );
 }
