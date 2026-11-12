@@ -513,4 +513,7 @@ pub use workspace::*;
 /// reports `wait.deadline_ms` as `null`. A sub-agent tree node carries its `account_profile`,
 /// `workspace_id`, `worktree_id` and `worker_kernel_id`, and an agent's wait is a `provider_tool` row of its
 /// transcript.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1005;
+/// 1009 (Landing 10 peek, provisional): `PeekAgentTranscript` lists an agent's latest transcript rows as
+/// titles (`AgentTranscriptPeek`) with a `before` cursor and `ReadAgentTranscriptEntry` reads one row by
+/// pages (`AgentTranscriptEntryPage`); a wait without a deadline gets `now + 30 min` as `deadline_ms`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1009;

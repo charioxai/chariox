@@ -8,6 +8,7 @@ use crate::local::{
 mod agent_deadline;
 mod agent_lifecycle;
 mod agent_liveness;
+mod agent_peek;
 mod agent_workflow;
 mod aggregate_agent_model;
 mod app_dev_push;

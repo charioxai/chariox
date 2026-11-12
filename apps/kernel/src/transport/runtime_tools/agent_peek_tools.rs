@@ -29,7 +29,7 @@ pub fn agent_peek_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
             name: PEEK_AGENT_TOOL.to_string(),
-            description: "See what another agent of this room is doing: its latest transcript entries as the pane titles them (prompt, assistant message, thinking, tool call, wait), each with its status, start time and duration (a running entry's duration is how long it has been running). Titles only; read one entry's content with chariox.read_agent_entry. Pass `before` from a result for older entries.".to_string(),
+            description: "See what another agent of this room is doing: its latest transcript entries as the pane titles them (prompt, assistant message, thinking, tool call, wait), each with its status, start time and duration (a running entry's duration is how long it has been running). Titles only; read one entry's content with chariox.read_agent_entry (a running entry's id changes as it grows: peek again once it has ended). Pass `before` from a result for older entries.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["agent"],

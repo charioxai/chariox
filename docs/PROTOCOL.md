@@ -7204,6 +7204,21 @@ client (`landing8-protocol.test.ts`). Focused checks:
 `cargo test -p chariox-kernel --lib -- landing8 protocol_shapes client_protocol_conformance` and
 `node --test packages/kernel-client/dist/landing8-protocol.test.js`.
 
+Landing 10 peek carries local daemon protocol 1009 and relay peer 447 (provisional: 1006-1008 and peer
+445-446 are taken by other Landing 10 lanes). `PeekAgentTranscript {session_id, agent_id, limit?, before?}`
+answers `AgentTranscriptPeek {peek: {agent_id, entries, before?}}`: an agent's latest transcript rows (at most
+50, 10 by default), oldest first, each `{entry_id, kind, title, status, at_ms, duration_ms?, chars}` with `kind`
+one of `prompt`, `assistant`, `thinking`, `tool_call`, `wait`, `error`, `notice` and `status` one of `running`,
+`completed`, `failed`, `cancelled`, `timed_out`; a running row's `duration_ms` is how long it has been running.
+`before` pages back. `ReadAgentTranscriptEntry {session_id, agent_id, entry_id, offset, limit?}` answers
+`AgentTranscriptEntryPage {page: {entry_id, kind, title, offset, text, total_chars, next_offset?}}` with at most
+`limit` characters (4000 by default, at most 16000); a tool call reads as `input: <json>` and then its output.
+Both read the outline the pane reads, under the history trace rule, and mask Vault values. Agents use
+`chariox.peek_agent` and `chariox.read_agent_entry`. A wait (`chariox.events.yield`, a retained question) without
+a deadline now gets `deadline_ms = now + 30 min`; the wait row it ends with names `woken_by.kind`
+`deadline_reached`. Focused check: `cargo test -p chariox-kernel --lib -- session_outline::peek
+a_wait_without_a_deadline protocol_shapes`.
+
 Landing 9 carries local daemon protocol 1005 and relay peer 444. Local 1005: the sub-agent tree node fields and
 the wait row of the sub-agent panes (above), Files on the owner's
 machines (listings with `revision` and `mode`, `ListKernelDirectory.offset`, the file transfer jobs),

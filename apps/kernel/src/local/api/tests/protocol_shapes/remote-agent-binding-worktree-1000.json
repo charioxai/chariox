@@ -1,6 +1,6 @@
 {
-  "local_protocol": 1005,
-  "peer_protocol": 444,
+  "local_protocol": 1009,
+  "peer_protocol": 447,
   "remote_execution": {
     "worker_kernel_id": "worker-kernel",
     "worker_machine_id": "worker-machine",
@@ -8,7 +8,7 @@
     "leased_agent_id": "leased-agent-1",
     "active_worker_provider_run_id": "worker-run-1",
     "relay_url": "wss://relay.example.test",
-    "relay_peer_protocol_version": 444,
+    "relay_peer_protocol_version": 447,
     "worker_worktree_id": "room-folder"
   }
 }

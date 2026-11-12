@@ -60,6 +60,8 @@ pub enum AgentTranscriptEntryStatus {
 /// An entry as a title row: what the pane shows before the row is opened.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTranscriptTitle {
+    /// Names the transcript sequences the row covers: a running row's id changes as it grows, so
+    /// peek again before reading it once it has ended.
     pub entry_id: String,
     pub kind: AgentTranscriptEntryKind,
     pub title: String,
