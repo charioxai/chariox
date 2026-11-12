@@ -164,7 +164,7 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
         Some("trigger")
             if matches!(
                 tokens.get(1).map(String::as_str),
-                Some("notification" | "remove")
+                Some("notification" | "add" | "list" | "remove")
             ) =>
         {
             Ok(())

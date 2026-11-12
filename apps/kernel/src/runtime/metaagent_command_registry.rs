@@ -306,9 +306,11 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
             }
         },
         "trigger" => match tokens.get(1).map(String::as_str) {
-            Some("notification" | "remove") => Some(MetaCommandExecutionPolicy::Routed),
+            Some("notification" | "add" | "list" | "remove") => {
+                Some(MetaCommandExecutionPolicy::Routed)
+            }
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "only `trigger notification` and `trigger remove` are routed for room agents"
+                message: "only `trigger notification`, `trigger add schedule`, `trigger list` and `trigger remove` are routed for room agents"
                     .to_string(),
             }),
         },
