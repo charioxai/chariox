@@ -371,10 +371,6 @@ impl Room<'_> {
             .saturating_add(growing.saturating_mul(AHEAD));
         (needed, growing)
     }
-
-    fn room_to_continue(&self, rate: u64) -> bool {
-        self.memory >= self.growth_room_needed(rate).0
-    }
 }
 
 impl Ledger {
