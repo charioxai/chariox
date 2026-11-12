@@ -167,6 +167,11 @@ impl LaunchAdmission {
         )))
     }
 
+    pub(crate) fn is_heavy(&self, argv: &[String], cwd: &Path) -> bool {
+        let seen = admission::seen_argv(0, argv, Some(cwd.to_path_buf()));
+        self.0.ledger.lock().unwrap_or_else(|e| e.into_inner()).peaks.get(&seen.key).is_some_and(|peak| peak.memory >= admission::light(self.0.ceiling))
+    }
+
     pub(crate) fn reserve(
         &self,
         id: &str,

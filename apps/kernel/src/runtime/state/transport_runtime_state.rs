@@ -539,11 +539,13 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
     ) -> Vec<crate::runtime::process_resources::SessionProcess> {
-        crate::runtime::process_resources::for_session(
+        let mut rows = crate::runtime::process_resources::for_session(
             session_id,
             &self.owned.provider_store,
             &self.owned.room_terminals,
-        )
+        );
+        rows.extend(self.queued_job_processes(session_id));
+        rows
     }
 
     fn session_snapshot_projection_for_user(
@@ -565,6 +567,7 @@ impl KernelRuntimeState {
         let agent_activity =
             self.agent_activity_for_session_with_unread(&session, unread_for_user_id);
         Ok(crate::runtime::projection::SessionSnapshotProjection {
+            jobs: self.session_jobs(session_id),
             disk_usage: self.session_disk_usage(session_id),
             processes: self.session_processes(session_id),
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(

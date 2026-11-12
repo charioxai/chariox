@@ -30,8 +30,7 @@ pub(crate) async fn execute(
         state.authorize_external_request(grant, &request_shape)?;
     } else if let Some(reach) = command.reach_caller_id() {
         state.authorize_gateway_request(&reach, &request_shape)?;
-    } else if !capabilities
-        || !crate::runtime::cloud_relay_authorization::kernel_cloud_owner(config, command)
+    } else if !crate::runtime::cloud_relay_authorization::kernel_cloud_owner(config, command)
     {
         return Err(unavailable(
             "control_plane_grant_required",
@@ -56,6 +55,21 @@ pub(crate) async fn execute(
             ))
         };
     };
+    if matches!(request, ControlPlaneRequest::Acquire { .. } | ControlPlaneRequest::AcquireJob { .. }) {
+        let offered = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
+            profile.api_url.clone(), "/control-plane",
+            cloud_request_body(&profile.account_id, credential, &ControlPlaneRequest::Capabilities {}),
+        ).await?;
+        let ControlPlaneResponse::Capabilities { machine_allocation } = offered else {
+            return Err(unavailable("control_plane_binding_invalid", "The connected service did not return its machine offer"));
+        };
+        state.approve_machine_acquisition(command, request, machine_allocation.as_ref()).await?;
+        if let Some(grant) = &grant {
+            state.authorize_external_request(grant, &request_shape)?;
+        } else if let Some(reach) = command.reach_caller_id() {
+            state.authorize_gateway_request(&reach, &request_shape)?;
+        }
+    }
     let mut result = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
         profile.api_url.clone(),
         "/control-plane",
@@ -104,6 +118,7 @@ pub(crate) async fn execute(
     {
         let expected = match request {
             ControlPlaneRequest::Get { allocation_ref }
+            | ControlPlaneRequest::JobStarted { allocation_ref, .. }
             | ControlPlaneRequest::Release { allocation_ref, .. }
             | ControlPlaneRequest::Start { allocation_ref, .. }
             | ControlPlaneRequest::Stop { allocation_ref, .. }
@@ -126,7 +141,10 @@ pub(crate) async fn execute(
         *access_state = "pending".into();
         *access_reason = None;
         if let Some(target) = kernel_target.as_ref().filter(|_| machine_state == "ready") {
-            let grant = grant.or_else(|| command.reach_caller_id()).ok_or_else(|| {
+            let grant = grant.or_else(|| command.reach_caller_id()).or_else(|| {
+                crate::runtime::cloud_relay_authorization::kernel_cloud_owner(config, command)
+                    .then(|| format!("owner:{}", state.kernel_owner_user_id()))
+            }).ok_or_else(|| {
                 unavailable(
                     "control_plane_grant_required",
                     "Machine attachment requires the owner's Chariox access grant",

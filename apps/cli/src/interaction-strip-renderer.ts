@@ -47,6 +47,8 @@ type InteractionStripRenderOptions = {
   subAgentStripeForAgent?: (agentId: string | null | undefined) => SubAgentStripeItem | null
   /** Commands of the agent waiting for room, in line order. */
   queuedJobsForAgent?: (agentId: string | null | undefined) => readonly QueuedJob[]
+  onQueuedJobAction?: (job: QueuedJob, action: "remote" | "stop") => void
+  remoteJobLinesForAgent?: (agentId: string | null | undefined) => readonly string[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
   agentTriggerStripItemsForAgent: (agentId: string | null | undefined) => readonly AgentTriggerStripItem[]
@@ -84,9 +86,10 @@ function renderInteractionStrip(
   const queuedPrompts = options.queuedPromptStripItemsForAgent(agent?.id ?? null)
   const subAgents = options.subAgentStripeForAgent?.(agent?.id ?? null) ?? null
   const queuedJobs = options.queuedJobsForAgent?.(agent?.id ?? null) ?? []
+  const remoteJobs = options.remoteJobLinesForAgent?.(agent?.id ?? null) ?? []
   const triggers = options.agentTriggerStripItemsForAgent(agent?.id ?? null)
   const deliveries = options.unconfirmedTriggerDeliveriesForAgent?.(agent?.id ?? null) ?? []
-  const visible = Boolean(interaction) || subAgents !== null || queuedPrompts.length > 0 || queuedJobs.length > 0 || triggers.length > 0 || deliveries.length > 0
+  const visible = Boolean(interaction) || subAgents !== null || queuedPrompts.length > 0 || queuedJobs.length > 0 || remoteJobs.length > 0 || triggers.length > 0 || deliveries.length > 0
   box.visible = visible
   box.flexDirection = "column"
   box.gap = 0
@@ -105,6 +108,8 @@ function renderInteractionStrip(
     ? options.selectedQueuedPromptIndexForAgent(agent?.id ?? null)
     : -1
   const providerLogin = interaction ? options.providerLoginState?.(interaction) ?? null : null
+  renderQueuedJobStrip(options, box, queuedJobs)
+  for (const line of remoteJobs) box.add(new TextRenderable(options.renderer, { content: line, fg: theme.textMuted, wrapMode: "word" }))
   if (interaction && providerLogin) {
     if (focused && providerLogin.view.takesCode) {
       options.focusCustomChoiceOnce?.(interaction.id, interaction.choices.length, interaction.requested_at_ms)
@@ -147,7 +152,6 @@ function renderInteractionStrip(
     renderInteractionChoices(options, box, interaction, focused)
   }
   if (subAgents) renderSubAgentStripe(options, box, subAgents)
-  renderQueuedJobStrip(options, box, queuedJobs)
   renderQueuedPromptStrip(options, box, queuedPrompts, focused, selectedQueuedPromptIndex)
   renderAgentTriggerStrip(options, box, triggers)
   for (const delivery of deliveries) {
@@ -199,8 +203,7 @@ function renderSubAgentStripe(
 }
 
 /** One row per command waiting for room, first in the stack: the kernel's
- * state, so every client shows the same rows. The wait leads so a long
- * command never clips the place in line. */
+ * state, so every client shows the same rows. */
 function renderQueuedJobStrip(
   options: InteractionStripRenderOptions,
   container: BoxRenderable,
@@ -222,7 +225,7 @@ function renderQueuedJobStrip(
     kind.flexShrink = 0
     row.add(kind)
     const copy = new TextRenderable(options.renderer, {
-      content: `${job.wait} · ${job.command}`,
+      content: `${job.command} · ${job.wait}`,
       fg: theme.text,
       wrapMode: "word",
     })
@@ -230,8 +233,26 @@ function renderQueuedJobStrip(
     copy.flexGrow = 1
     copy.flexShrink = 1
     row.add(copy)
+    if (job.remoteAvailable && job.rate) {
+      const rate = new TextRenderable(options.renderer, { content: job.rate, fg: theme.textMuted, wrapMode: "none" }); rate.flexShrink = 0; row.add(rate)
+    }
+    if (options.onQueuedJobAction) {
+      if (job.remoteAvailable) row.add(renderQueuedJobAction(options, job, "remote", "Run on a VM"))
+      row.add(renderQueuedJobAction(options, job, "stop", "Stop"))
+    }
     container.add(row)
   }
+}
+
+function renderQueuedJobAction(options: InteractionStripRenderOptions, job: QueuedJob, action: "remote" | "stop", label: string): TextRenderable {
+  const text = new TextRenderable(options.renderer, { content: `[${label}]`, fg: theme.primary, attributes: TextAttributes.BOLD, wrapMode: "none" })
+  text.flexShrink = 0
+  text.onMouseUp = event => {
+    if (event.button !== MouseButton.LEFT) return
+    event.stopPropagation()
+    startTimeout(() => options.onQueuedJobAction?.(job, action), 0)
+  }
+  return text
 }
 
 function renderAgentTriggerStrip(

@@ -43,6 +43,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::StartSessionProcessNow(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::GetRemoteJobPolicy(request) => Some(SessionMembershipScope::SessionId(request.session_id.clone())),
+        LocalDaemonRequest::SetRemoteJobPolicy(request) => Some(SessionMembershipScope::SessionId(request.session_id.clone())),
+        LocalDaemonRequest::RunSessionProcessRemotely(request) => Some(SessionMembershipScope::SessionId(request.session_id.clone())),
         LocalDaemonRequest::IssueOwnMachineEnrollment(_) => None,
         LocalDaemonRequest::PrepareBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.selection.session_id.clone()),

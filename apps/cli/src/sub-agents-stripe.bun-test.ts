@@ -33,10 +33,10 @@ async function frame(width: number, stripe: { text: string; needsYou: boolean } 
   return { rows, box, harness }
 }
 
-test("AO-UI-01 the stripe reads the plain counts and leads the stack, above the other work rows", async () => {
+test("AO-UI-01 the stripe reads plain counts after queued commands", async () => {
   const { rows, harness } = await frame(100, { text: "1 agent needs you · 5 running", needsYou: true }, [held()])
-  assert.match(rows[0]!, /^\s*Agents 1 agent needs you · 5 running$/, rows.join("\n"))
-  assert.match(rows[1]!, /Queued waiting for memory/, "the other stripes keep their order below")
+  assert.match(rows[1]!, /^\s*Agents 1 agent needs you · 5 running$/, rows.join("\n"))
+  assert.match(rows[0]!, /Queued cargo build · waiting for memory/, "held commands lead the work stack")
   harness.renderer.destroy()
 })
 

@@ -15,6 +15,14 @@ pub struct SessionProcess {
     pub process: ProcessSample,
     /// Set on a command's own process; what it started waits with it.
     pub state: SessionProcessState,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remote_available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_refusal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimate: Option<crate::local::RemoteJobEstimate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<crate::local::RemoteJobPlacement>,
 }
 
 /// Whether a command runs or waits for room (admission).
@@ -69,6 +77,7 @@ pub(crate) fn for_session(
             samples_for_key(&key)
                 .into_iter()
                 .map(|process| SessionProcess {
+                    remote_available: false, remote_refusal: None, estimate: None, placement: None,
                     owner: owner.clone(),
                     state: states.get(&process.pid).cloned().unwrap_or_default(),
                     process,

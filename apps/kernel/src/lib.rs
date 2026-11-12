@@ -32,6 +32,7 @@ pub mod history_archive;
 #[cfg(unix)]
 pub mod hot_reload;
 pub mod io;
+pub(crate) mod jobs;
 pub mod local;
 pub mod logging;
 pub(crate) mod machine_files;

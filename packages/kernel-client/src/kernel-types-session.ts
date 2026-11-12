@@ -37,6 +37,7 @@ export type SessionViewAttachedResponse = {
       agent_activity_revision: number
       room_workflows: RoomWorkflowInventory
       processes: SessionProcess[]
+      jobs?: import("./kernel-events.js").JobView[]
     } }
     history: { SessionHistoryOutline: SessionHistoryOutline }
   }

@@ -216,6 +216,7 @@ impl KernelRuntimeState {
             specs.push(super::agent_auth::spec());
             specs.push(super::file_copy_tool::file_copy_spec());
             specs.extend(super::machine_files_tools::files_tool_specs());
+            specs.extend(super::machine_acquisition::machine_tool_specs());
         }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             let room_tools = self.room_agent_tools_enabled();
@@ -369,6 +370,10 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if matches!(tool_name, "chariox.machines.acquire" | "chariox.machines.status" | "chariox.machines.release") {
+            return self.machine_tool(auth_token, tool_name, arguments).await;
+        }
+
         for run in self
             .owned
             .provider_store

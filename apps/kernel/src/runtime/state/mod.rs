@@ -106,6 +106,10 @@ mod outside_events;
 use outside_events::InteractionPhase;
 pub(crate) use outside_events::{is_outside_event_request, source_not_available};
 mod environment_tools;
+mod jobs;
+mod job_compute;
+mod remote_jobs;
+mod machine_acquisition;
 mod file_copy_tool;
 mod leased_agent_file_serve;
 mod machine_files_runtime;
@@ -224,6 +228,7 @@ pub(crate) struct KernelRuntimeState {
     relay_peer_authority: Option<crate::runtime::relay_peer_authority::RelayPeerAuthority>,
     forwarded_peer_binding: Option<forwarded_peer_authority::ForwardedPeerBinding>,
     gateway_requester: Option<gateway_requester::GatewayRequester>,
+    job_router: Option<Arc<crate::runtime::router::CommandRouter>>,
     #[cfg(test)]
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
     #[cfg(test)]
@@ -269,6 +274,7 @@ pub(crate) struct KernelRuntimeState {
     /// so dropping the runtime frees the kernel instead of leaving a cycle.
     terminal_wake_driver: Option<Arc<terminal_wake::TerminalWakeDriver>>,
     interaction_wake_driver: Option<Arc<interaction_wake::InteractionWakeDriver>>,
+    job_wake_driver: Option<Arc<jobs::JobDriver>>,
     /// MP-08 / MP-09 / MP-10 / MP-11: work services retain this callback weakly
     /// so it cannot own the runtime state that owns those services.
     managed_work_activity: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -1122,6 +1128,7 @@ impl KernelRuntimeState {
             relay_peer_authority: None,
             forwarded_peer_binding: None,
             gateway_requester: None,
+            job_router: None,
             #[cfg(test)]
             app_lock_wait_probe: None,
             #[cfg(test)]
@@ -1149,6 +1156,7 @@ impl KernelRuntimeState {
             terminal_input_grants: terminal_input_grants::TerminalInputGrants::default(),
             terminal_wake_driver: None,
             interaction_wake_driver: None,
+            job_wake_driver: None,
             managed_work_activity: None,
             owned: KernelRuntimeOwnedState {
                 provider_usage_refresher:
@@ -1340,6 +1348,7 @@ impl KernelRuntimeState {
         };
         runtime.link_work_to_managed_kernel();
         runtime.register_terminal_wake_driver();
+        runtime.register_job_wake_driver();
         runtime.register_interaction_wake_driver();
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();

@@ -10,6 +10,7 @@ import type {
 } from "./kernel-types.js"
 
 export type KernelEvent =
+  | { event: "session_jobs_changed"; session_id: string; jobs: JobView[] }
   | { event: "session_processes_changed"; session_id: string; processes: SessionProcess[] }
   | { event: "client_catalog_changed"; revision: number }
   | { event: "kernel_browser_frame"; subscription_id: string; frame: Record<string, unknown> }
@@ -237,4 +238,20 @@ export type SessionProcess = {
   age_ms: number
   sampled_at_ms: number
   state: SessionProcessState
+  remote_available?: boolean
+  remote_refusal?: "no_capacity"
+  estimate?: { amount_micros: number; currency: string; kind: "total" | "per_minute"; memory_mib: number; minutes?: number }
+  placement?: { machine_label: string; address: string | null }
+}
+
+export type JobView = {
+  job_id: string; agent_id: string; command: string; state: "starting" | "queued" | "allocating" | "running" | "deleting" | "finished";
+  placement: "local" | "remote"; started_at_ms: number; machine_label?: string | null; address?: string | null;
+  class_id?: string | null; rate_per_minute?: { amount_micros: number; currency: string } | null;
+  estimate_micros?: number | null; deleted: boolean; result?: JobResult | null;
+}
+export type JobResult = {
+  exit_code: number | null; output_tail: string; log: string; files_back: string[]; conflicts: string[];
+  ran_on: { machine: string; ip: string | null }; duration_ms: number;
+  outcome: "completed" | "time_limit" | "memory_limit" | "outside_end" | "machine_lost" | "capacity_unavailable" | "cancelled";
 }

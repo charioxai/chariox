@@ -74,6 +74,7 @@ mod tests {
             "kernel",
         );
         SessionSnapshotProjection {
+            jobs: Vec::new(),
             processes: Vec::new(),
             disk_usage: Vec::new(),
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
@@ -173,6 +174,7 @@ mod tests {
             ProcessSample, SessionProcess, SessionProcessOwner, SessionProcessState,
         };
         snapshot.processes.push(SessionProcess {
+            remote_available: false, remote_refusal: None, estimate: None, placement: None,
             owner: SessionProcessOwner::Agent("agent".into()),
             process: ProcessSample {
                 process_id: "process".into(),

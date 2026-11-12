@@ -119,6 +119,8 @@ enum CancelReason {
 
 pub(super) struct Record {
     intent: LaunchIntent,
+    launch_command: Vec<String>,
+    job: bool,
     state: Mutex<ExecState>,
     force: watch::Sender<bool>,
     place: watch::Sender<Option<Arc<placement::Placed>>>,
@@ -199,6 +201,48 @@ impl RoomExecService {
         authority: Option<crate::runtime::state::KernelRuntimeState>,
         acting_agent: Option<String>,
     ) -> Result<String, DaemonError> {
+        self.open_launch(
+            session_id,
+            owner_user_id,
+            cwd,
+            command,
+            authority,
+            acting_agent,
+            false,
+        )
+    }
+
+    pub(crate) fn open_job_as(
+        &self,
+        session_id: &str,
+        owner_user_id: &str,
+        cwd: &Path,
+        command: &[String],
+        authority: Option<crate::runtime::state::KernelRuntimeState>,
+        acting_agent: Option<String>,
+    ) -> Result<String, DaemonError> {
+        self.open_launch(
+            session_id,
+            owner_user_id,
+            cwd,
+            command,
+            authority,
+            acting_agent,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open_launch(
+        &self,
+        session_id: &str,
+        owner_user_id: &str,
+        cwd: &Path,
+        command: &[String],
+        authority: Option<crate::runtime::state::KernelRuntimeState>,
+        acting_agent: Option<String>,
+        job: bool,
+    ) -> Result<String, DaemonError> {
         if command.is_empty()
             || command.len() > 64
             || command[0].is_empty()
@@ -249,6 +293,16 @@ impl RoomExecService {
         let (force, forced) = watch::channel(false);
         let (place, placed) = watch::channel(None);
         let record = Arc::new(Record {
+            job,
+            launch_command: if job {
+                vec![
+                    "python3".into(),
+                    "-c".into(),
+                    crate::jobs::COMMAND_WRAPPER.into(),
+                ]
+            } else {
+                command.to_vec()
+            },
             intent: LaunchIntent {
                 exec_id: exec_id.clone(),
                 session_id: session_id.to_owned(),
@@ -500,6 +554,25 @@ impl RoomExecService {
                 .map(|agent| format!("{origin_kernel}/{agent}")),
         })));
         record.changed.notify_waiters();
+        Ok(())
+    }
+
+    pub(crate) fn cancel_queued(
+        &self,
+        session_id: &str,
+        exec_id: &str,
+        before_cancel: impl FnOnce(),
+    ) -> Result<(), DaemonError> {
+        let record = self.record(session_id, exec_id)?;
+        let state = record.state.lock().expect("exec state poisoned");
+        if !matches!(*state, ExecState::Queued { .. }) {
+            return Err(error(
+                "job_already_started",
+                "This command already started and cannot be moved safely",
+            ));
+        }
+        before_cancel();
+        record.cancel.send_replace(Some(CancelReason::Canceled));
         Ok(())
     }
 

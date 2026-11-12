@@ -3,6 +3,9 @@ use super::*;
 pub(crate) fn canonical_agent_event_tool_name(name: &str) -> Option<&'static str> {
     let name = name.strip_prefix("mcp__chariox__").unwrap_or(name);
     [
+        "chariox.jobs.run",
+        "chariox.jobs.status",
+        "chariox.jobs.cancel",
         "chariox.events.subscribe",
         "chariox.events.subscriptions",
         "chariox.events.unsubscribe",
@@ -36,9 +39,11 @@ pub(crate) fn agent_event_tool_specs() -> Vec<RuntimeToolSpec> {
         ("wakes","List your armed and recent wakes with next fire time, last fired, delivered and acknowledged times, plus per-fire receipts and scheduler health.",serde_json::json!({}),vec![]),
         ("blocked","Ask the owner for the exact missing action in plain words. Only when the owner revoked your browser access, use owner_action browser_access: the owner can allow browser tabs and continue in one click. This requests consent and never grants access by itself, and it is refused while you still hold access: a browser that fails to start is not a permission question (retry start once, then tell the owner in plain words). One kernel-owned interaction appears on all terminals; obligations remain supervised.",serde_json::json!({"reason":{"type":"string","minLength":1},"owner_action":{"type":"string","enum":["browser_access"]}}),vec!["reason"]),
     ];
-    specs.into_iter().map(|(name,description,extra,required)|{
+    let mut tools: Vec<_> = specs.into_iter().map(|(name,description,extra,required)|{
         let mut properties=common.as_object().unwrap().clone();properties.extend(extra.as_object().unwrap().clone());
         let mut fields=vec!["task_id","origin_prompt_id"];fields.extend(required);
         RuntimeToolSpec{name:format!("chariox.events.{name}"),description:description.into(),input_schema:serde_json::json!({"type":"object","properties":properties,"required":fields,"additionalProperties":false})}
-    }).collect()
+    }).collect();
+    tools.extend(super::jobs::job_tool_specs());
+    tools
 }

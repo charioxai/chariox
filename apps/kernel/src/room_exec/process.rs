@@ -37,6 +37,52 @@ pub(super) fn spawn(
     permit: &crate::runtime::process_resources::LaunchPermit,
     intent: &super::LaunchIntent,
 ) -> Result<Process, DaemonError> {
+    spawn_with_environment(cwd, argv, permit, intent, None)
+}
+
+pub(super) fn spawn_job(
+    cwd: &Path,
+    argv: &[String],
+    permit: &crate::runtime::process_resources::LaunchPermit,
+    intent: &super::LaunchIntent,
+) -> Result<Process, DaemonError> {
+    let environment = [
+        "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR",
+    ]
+    .into_iter()
+    .filter_map(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|value| (key.to_string(), value))
+    })
+    .collect();
+    let launch = crate::provider::managed_isolated_utility_launch(
+        argv[0].clone(),
+        argv[1..].to_vec(),
+        environment,
+        Some(cwd.to_path_buf()),
+        "agent-job",
+    )?;
+    let mut command = vec![launch
+        .pty_program
+        .ok_or_else(|| error("exec_spawn_failed", "Job isolation has no executable"))?];
+    command.extend(launch.pty_args);
+    spawn_with_environment(
+        launch.working_directory.as_deref().unwrap_or(cwd),
+        &command,
+        permit,
+        intent,
+        Some(&launch.pty_env),
+    )
+}
+
+fn spawn_with_environment(
+    cwd: &Path,
+    argv: &[String],
+    permit: &crate::runtime::process_resources::LaunchPermit,
+    intent: &super::LaunchIntent,
+    environment: Option<&std::collections::BTreeMap<String, String>>,
+) -> Result<Process, DaemonError> {
     let prepared = permit.prepare().map_err(|failure| {
         error(
             "exec_spawn_failed",
@@ -52,6 +98,9 @@ pub(super) fn spawn(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    if let Some(environment) = environment {
+        command.env_clear().envs(environment);
+    }
     for name in crate::room_terminal::KERNEL_SECRET_ENVIRONMENT {
         command.env_remove(name);
     }

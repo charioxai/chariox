@@ -28,6 +28,8 @@ pub enum RoomTerminalOperation {
     ExecOpen {
         command: Vec<String>,
     },
+    /// Kernel job launch: its command receives only the explicitly selected project environment.
+    ExecOpenJob { command: Vec<String> },
     ExecStartNow {
         exec_id: String,
     },
@@ -175,6 +177,7 @@ impl RoomTerminalOperation {
             self,
             Self::ExecList
                 | Self::ExecOpen { .. }
+                | Self::ExecOpenJob { .. }
                 | Self::ExecStartNow { .. }
                 | Self::ExecPlace { .. }
                 | Self::ExecWrite { .. }

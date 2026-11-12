@@ -1046,6 +1046,7 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             }],
             session_id: "room-1".into(),
             processes: vec![SessionProcess {
+                remote_available: false, remote_refusal: None, estimate: None, placement: None,
                 owner: SessionProcessOwner::Agent("agent-1".into()),
                 process: ProcessSample {
                     process_id: "process-issued-1".into(),
@@ -1062,6 +1063,7 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
                 },
                 state: SessionProcessState::Running,
             }, SessionProcess {
+                remote_available: false, remote_refusal: None, estimate: None, placement: None,
                 owner: SessionProcessOwner::Agent("agent-1".into()),
                 process: ProcessSample {
                     process_id: "process-issued-2".into(),
@@ -1086,6 +1088,7 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
                     since_ms: 9000,
                 }),
             }, SessionProcess {
+                remote_available: false, remote_refusal: None, estimate: None, placement: None,
                 owner: SessionProcessOwner::Agent("agent-2".into()),
                 process: ProcessSample {
                     process_id: "process-issued-3".into(),

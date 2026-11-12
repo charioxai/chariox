@@ -189,6 +189,7 @@ impl KernelRuntimeState {
             session: snapshot,
             agent_activity: self.agent_activity_for_session(&session),
             agent_activity_revision: self.owned.session_projection.change_sequence(),
+            jobs: self.session_jobs(session.id()),
             processes: self.session_processes(session.id()),
             disk_usage: self.session_disk_usage(session.id()),
         }))

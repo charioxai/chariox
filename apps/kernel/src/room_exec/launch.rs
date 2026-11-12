@@ -92,9 +92,14 @@ pub(super) fn start(
                                 "command canceled before start",
                             ));
                         }
-                        process::spawn(
+                        let spawn = if launch.job {
+                            process::spawn_job
+                        } else {
+                            process::spawn
+                        };
+                        spawn(
                             &launch.intent.cwd,
-                            &launch.intent.command,
+                            &launch.launch_command,
                             &permit,
                             &launch.intent,
                         )

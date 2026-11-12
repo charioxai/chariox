@@ -1,3 +1,4 @@
+pub use api::{JobCommand, JobNeeds, JobOutcome, JobPlacement, JobRanOn, JobResult, RunJobRequest, JobView, JobMachineOffer, JobMachineRate, OffloadPolicy, GetRemoteJobPolicyRequest, SetRemoteJobPolicyRequest, RemoteJobPolicy, RunSessionProcessRemotelyRequest, RemoteJobEstimate, RemoteJobPlacement};
 pub use api::{
     AgentContextUsage, AgentExecutionRoute, AgentUsageSnapshot, GetAgentUsageSnapshotRequest,
     GetProviderUsageSnapshotRequest, ProviderUsageAccount,

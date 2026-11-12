@@ -108,7 +108,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let _completion_observed_at_ms = now;
             if let Some(answer) = public_answer.as_mut() {
                 crate::secret_redaction::redact_json_secrets(answer);
-                if encode(answer)?.len() > 8_192 {
+                let job: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_wakes WHERE id=?1 AND room_id=?2 AND json_extract(payload,'$.kind')='job')", params![source, room], |row| row.get(0)).map_err(sql)?;
+                if encode(answer)?.len() > if job { 256 * 1024 } else { 8_192 } {
                     return Err(error("public answer excerpt limit"));
                 }
             }

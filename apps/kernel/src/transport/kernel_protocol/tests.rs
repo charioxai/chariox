@@ -711,6 +711,7 @@ fn session_snapshot_with_agent() -> SessionSnapshotProjection {
         },
     );
     SessionSnapshotProjection {
+        jobs: Vec::new(),
         processes: Vec::new(),
         disk_usage: Vec::new(),
         room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
@@ -747,6 +748,7 @@ fn session_snapshot_with_workflow_status(status: WorkflowRunStatus) -> SessionSn
     workflow_run.set_status(status);
     session.create_workflow_run(workflow_run);
     SessionSnapshotProjection {
+        jobs: Vec::new(),
         processes: Vec::new(),
         disk_usage: Vec::new(),
         room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(

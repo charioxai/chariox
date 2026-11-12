@@ -404,6 +404,8 @@ response_policies! {
         ProviderAccountPortabilityPreflightPassed,
         SessionProcessesStopped,
         SessionProcessStartedNow,
+        SessionProcessRemoteStarted,
+        RemoteJobPolicy,
         ProviderProcessesListed,
         ProviderProcessesTornDown,
         SessionHistoryOutline,

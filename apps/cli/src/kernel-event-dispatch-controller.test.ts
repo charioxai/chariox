@@ -600,6 +600,12 @@ test("kernel event dispatch reconciles durable history after assistant completio
   ])
 })
 
+test("OF-06 remote job events update their Room without reloading its history", async () => {
+  const harness = createHarness()
+  await harness.controller.handleKernelEvent({ event: "session_jobs_changed", session_id: "session-1", jobs: [] })
+  assert.deepEqual(harness.calls, ["apply-jobs:session-1:0"])
+})
+
 function createHarness(options: {
   refreshAssistantMessageHistory?: (agentId: string) => Promise<boolean>
 } = {}) {
@@ -634,6 +640,7 @@ function createHarness(options: {
       snapshots.push({ session: nextSession, providerRun: nextProviderRun })
       calls.push(`apply-session-snapshot:${nextSession.id}:${nextProviderRun?.id ?? "null"}`)
     },
+    applySessionJobs: (sessionId, jobs) => { calls.push(`apply-jobs:${sessionId}:${jobs.length}`) },
     applyAgentActivityChanged: (sessionId, agentActivity, agentActivityRevision) => {
       calls.push(`apply-agent-activity:${sessionId}:${Object.keys(agentActivity).sort().join(",")}:${agentActivityRevision ?? "none"}`)
     },
