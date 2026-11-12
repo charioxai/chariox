@@ -185,6 +185,15 @@ mod linux {
         stdout: &File,
         stderr: &File,
     ) -> Result<ExitStatus, DaemonError> {
+        run_helper_command(helper_command(helper), request, stdout, stderr)
+    }
+
+    fn run_helper_command(
+        mut command: Command,
+        request: &Request,
+        stdout: &File,
+        stderr: &File,
+    ) -> Result<ExitStatus, DaemonError> {
         let payload = serde_json::to_vec(request).map_err(|error| {
             failure(format!("failed to encode extension build request: {error}"))
         })?;
@@ -193,7 +202,7 @@ mod linux {
         }
         // Isolated Python startup is mandatory while privileged. Only the
         // caller Docker client environment is restored after dropping UID.
-        let mut child = helper_command(helper)
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::from(stdout.try_clone().map_err(|error| {
                 failure(format!("failed to attach extension build log: {error}"))
@@ -349,9 +358,16 @@ mod linux {
                 dockerfile: None,
                 basename: None,
             };
-            assert!(run_helper(&helper, &request, &stdout, &stderr)
-                .expect("active build must remain supervised")
-                .success());
+            // This exercises supervision, not installation of the signed sudo helper.
+            let mut command = crate::process_spawn::command("/usr/bin/python3");
+            command.args(["-I", "-S", "-B"]).arg(&helper);
+            let status = run_helper_command(command, &request, &stdout, &stderr)
+                .expect("active build must remain supervised");
+            assert!(
+                status.success(),
+                "build helper failed ({status}): {}",
+                std::fs::read_to_string(scratch.0.join("stderr")).unwrap()
+            );
             assert_eq!(
                 std::fs::read_to_string(scratch.0.join("stdout"))
                     .unwrap()
