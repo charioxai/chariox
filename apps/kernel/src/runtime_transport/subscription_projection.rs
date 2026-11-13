@@ -36,7 +36,9 @@ pub(crate) fn session_projection_events(
     // A full hot-session snapshot would immediately erase that archive in clients.
     // Room inventory alone still needs the full snapshot for canvas consumers.
     let processes_only_changed = previous.is_some_and(|previous| {
-        previous.session == snapshot.session
+        previous
+            .session
+            .equivalent_except_presence(&snapshot.session)
             && public_run(previous) == public_run(snapshot)
             && previous.agent_activity == snapshot.agent_activity
             && previous.room_workflows == snapshot.room_workflows
@@ -371,6 +373,22 @@ mod tests {
     fn process_delta_does_not_repeat_the_full_session() {
         let before = snapshot();
         let mut after = before.clone();
+        add_process(&mut after);
+        assert!(matches!(
+            session_projection_events(&after, Some(&before), false).as_slice(),
+            [KernelEvent::SessionProcessesChanged { .. }]
+        ));
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (transport4): a resource sample that lands in the same pass as a reaped
+    // attachment compared the whole session, presence included, and sent the full snapshot to each subscription.
+    #[test]
+    fn process_sample_beside_attachment_churn_sends_only_the_sample() {
+        let mut before = snapshot();
+        before.session.add_attachment("attachment-a");
+        let mut after = before.clone();
+        after.session.remove_attachment("attachment-a");
+        after.session.add_attachment("attachment-b");
         add_process(&mut after);
         assert!(matches!(
             session_projection_events(&after, Some(&before), false).as_slice(),
