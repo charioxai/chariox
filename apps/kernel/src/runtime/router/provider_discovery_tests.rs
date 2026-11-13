@@ -118,6 +118,59 @@ fn a_first_start_reuses_the_machine_login_and_warms_the_model_catalog() {
 }
 
 #[test]
+fn empty_native_defaults_start_servers_only_when_a_provider_is_requested() {
+    crate::test_support::isolated_env_test!();
+    let machine = Machine::new("empty-native-defaults");
+    let starts = machine.home.join("server-starts");
+    for (provider, variable) in [
+        ("codex", "CHARIOX_CODEX_BIN"),
+        ("opencode", "CHARIOX_OPENCODE_BIN"),
+    ] {
+        let executable = machine.home.join("fake-bin").join(provider);
+        std::fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'test version' ;;\n  auth) exit 0 ;;\n  app-server|serve) echo \"$1\" >> '{}' ; exit 1 ;;\n  *) exit 1 ;;\nesac\n",
+                starts.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var(variable, executable);
+    }
+    let harness = LocalRouterTestHarness::new();
+
+    harness.run_provider_discovery_pass();
+
+    assert!(harness.warmed_default_catalog().is_some());
+    assert!(
+        !starts.exists(),
+        "discovering and warming empty native defaults must not start provider servers"
+    );
+    for (provider, command) in [("codex", "app-server"), ("opencode", "serve")] {
+        let _ = harness.dispatch(request(serde_json::json!({"GetProviderCatalog": {
+            "provider": provider,
+        }})));
+        let launched = std::fs::read_to_string(&starts).unwrap();
+        assert!(
+            launched.lines().any(|line| line == command),
+            "an explicit {provider} catalog request still starts its native server"
+        );
+    }
+
+    std::fs::remove_file(&starts).unwrap();
+    std::fs::write(machine.home.join(".codex/auth.json"), "{}").unwrap();
+    harness.run_provider_discovery_pass();
+    assert!(
+        std::fs::read_to_string(&starts)
+            .unwrap()
+            .lines()
+            .any(|line| line == "app-server"),
+        "a native login appearing later is still checked by the official server"
+    );
+}
+
+#[test]
 fn a_second_kernel_on_the_machine_reuses_the_same_login_at_its_first_start() {
     crate::test_support::isolated_env_test!();
     let _machine = Machine::new("second-kernel");
