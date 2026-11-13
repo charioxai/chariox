@@ -415,7 +415,8 @@ fn a03_due_timer_of_a_blocked_task_is_cancelled_with_the_reason_not_left_schedul
     for interval in [None, Some(60_000)] {
         let f = Fixture::new();
         f.create("t1", "timer", Some(60_000), interval);
-        let reason = "Three consecutive wakes without handled progress; owner must resume or cancel";
+        let reason =
+            "Three consecutive wakes without handled progress; owner must resume or cancel";
         f.apply(Operation::Block {
             task: "p".into(),
             prompt: "p".into(),
