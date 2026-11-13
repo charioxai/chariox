@@ -83,6 +83,9 @@ const KERNEL_RECONNECT_MAX_DELAY_MS = 5_000
 const KERNEL_RECONNECT_JITTER_MS = 250
 // A link that stayed up this long was healthy; a shorter one does not reset the backoff.
 const KERNEL_RECONNECT_STABLE_LINK_MS = 60_000
+// The kernel already announces planned reloads on the relay close frame.
+const KERNEL_RELOAD_RECONNECT_WINDOW_MS = 10_000
+const KERNEL_RELOAD_RECONNECT_JITTER_MS = 50
 const KERNEL_CONTROL_REQUEST_RETRY_DEADLINE_MS = 60_000
 const KERNEL_CONTROL_RESPONSE_STALL_MS = 5_000
 // The kernel runs these again when they are replayed: they carry no request id
@@ -323,6 +326,7 @@ export class LocalIpcClient {
   private localHandshakeTimeoutMs = LOCAL_HANDSHAKE_TIMEOUT_MS
   private reconnectDelayMs = 250
   private linkResumedAt: number | null = null
+  private kernelReloadUntilMs = 0
   private lastReceivedEventId: number | null = null
   private lastKernelEventAtMs = 0
   private readonly relaySubscriptionSockets = new WeakMap<KernelSubscriptionState, WebSocket>()
@@ -1390,6 +1394,15 @@ export class LocalIpcClient {
     if ("kind" in frame && frame.kind === "client_connected") return // The renewal waiter validates this acknowledgement.
 
     if ("kind" in frame && frame.kind === "close") {
+      if (frame.kernel_reload === true) {
+        this.kernelReloadUntilMs = Date.now() + KERNEL_RELOAD_RECONNECT_WINDOW_MS
+        this.reconnectDelayMs = KERNEL_RECONNECT_BASE_DELAY_MS
+        if (this.reconnectTimeout) {
+          clearTimeout(this.reconnectTimeout)
+          this.reconnectTimeout = null
+          this.scheduleReconnect()
+        }
+      }
       const authorizationRefused = /^relay token (?:has been )?revoked$/i.test(frame.reason)
         || frame.reason === "client renewal reduced permissions"
         || frame.reason === "client renewal changed identity or key"
@@ -1476,6 +1489,7 @@ export class LocalIpcClient {
 
   /** The link came back; the delay only starts over once it has stayed up (a relay that drops us right after admitting us must not reset the backoff). */
   private noteLinkResumed() {
+    this.kernelReloadUntilMs = 0
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout)
       this.reconnectTimeout = null
@@ -1484,6 +1498,7 @@ export class LocalIpcClient {
   }
 
   private clearReconnectState() {
+    this.kernelReloadUntilMs = 0
     this.linkResumedAt = null
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout)
@@ -1601,15 +1616,17 @@ export class LocalIpcClient {
   }
 
   private reconnectDelayWithJitter(delayMs: number): number {
-    const boundedDelayMs = Math.max(delayMs, 0)
+    const reloading = Date.now() < this.kernelReloadUntilMs
+    const boundedDelayMs = Math.max(reloading ? Math.min(delayMs, KERNEL_RECONNECT_BASE_DELAY_MS) : delayMs, 0)
     if (boundedDelayMs < KERNEL_RECONNECT_BASE_DELAY_MS || this.reconnectJitterMs === 0) {
       return boundedDelayMs
     }
-    const jitterMs = Math.floor(clampRandom(this.reconnectRandom()) * this.reconnectJitterMs)
+    const jitterMs = Math.floor(clampRandom(this.reconnectRandom()) * (reloading ? Math.min(this.reconnectJitterMs, KERNEL_RELOAD_RECONNECT_JITTER_MS) : this.reconnectJitterMs))
     return Math.min(boundedDelayMs + jitterMs, KERNEL_RECONNECT_MAX_DELAY_MS + this.reconnectJitterMs)
   }
 
   private nextReconnectDelayMs(delayMs: number): number {
+    if (Date.now() < this.kernelReloadUntilMs) return KERNEL_RECONNECT_BASE_DELAY_MS
     return Math.min(
       Math.max(delayMs * 2, KERNEL_RECONNECT_BASE_DELAY_MS),
       KERNEL_RECONNECT_MAX_DELAY_MS,
