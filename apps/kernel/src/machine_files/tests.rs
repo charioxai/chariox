@@ -1043,7 +1043,8 @@ async fn a_file_transfer_stopped_by_a_kernel_restart_is_listed_again_and_finishe
     );
     assert!(!staging_left(&here));
 
-    // Another restart: the outcome is still there and nothing runs again.
+    // The next store reads the durable outcome after the old writer settles.
+    recorded(&state, &started.job_id, "\"done\"").await;
     let jobs = Arc::new(TransferJobs::default());
     assert!(jobs.attach(state).is_empty());
     let kept = jobs.get(&started.job_id).unwrap();
