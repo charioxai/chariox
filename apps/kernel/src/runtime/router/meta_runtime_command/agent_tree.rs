@@ -307,19 +307,20 @@ impl CommandRouter {
         match Box::pin(self.dispatch(meta_kernel_command(provider_run, parent, &request), request))
             .await
         {
-            Ok(response) => Ok(super::result::meta_command_success_result(
-                command,
-                &response,
-                parent,
-                self.runtime_state.room_agent_tools_enabled(),
-            )),
-            Err(DaemonError::NoActivePrompt { .. }) => Ok(RuntimeToolResult {
+            // An uncorrelated Stop of an idle agent succeeds with NothingToStop.
+            Ok(LocalDaemonResponse::NothingToStop { .. }) => Ok(RuntimeToolResult {
                 ok: true,
                 payload: serde_json::json!({"command":command,"response":{
                     "agent_id":target.id(),"already_idle":true,"cancelled":false,
                     "message":"The agent is already idle; there is no active turn to cancel."
                 }}),
             }),
+            Ok(response) => Ok(super::result::meta_command_success_result(
+                command,
+                &response,
+                parent,
+                self.runtime_state.room_agent_tools_enabled(),
+            )),
             Err(error) => Ok(meta_command_failure_result(command, error)),
         }
     }
