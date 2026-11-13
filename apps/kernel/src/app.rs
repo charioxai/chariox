@@ -268,6 +268,7 @@ impl DaemonApp {
         let bootstrap_started = Instant::now();
         let validate_started = Instant::now();
         config.validate()?;
+        crate::runtime::process_resources::configure(config.user_config.kernel.resource_protection);
         if config.user_config.credential_vault.backend
             == crate::config::CredentialVaultBackend::CharioxEncrypted
         {

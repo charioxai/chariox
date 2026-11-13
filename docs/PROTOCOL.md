@@ -7597,3 +7597,25 @@ reply and answering agent identity. The answer audit names `answered_by_agent` a
 Focused regressions: `cargo test -p chariox-kernel --lib cross_room_cards`.
 Real provider drill: `node apps/cli/scripts/live-cross-room-cards-drill.mjs` with isolated
 `XROOM_STATE`, `XROOM_WORKSPACE`, `XROOM_EVIDENCE`, `XROOM_BIN`, `XROOM_BUN` and a product-linked `XROOM_CODEX_PROFILE`.
+
+### Machine resource protection — local 1017 / relay peer 455
+
+`UserConfig.config.kernel.resource_protection` contains independent boolean
+`memory`, `disk` and `cpu` settings, all defaulting to `true`. Existing
+`GetUserConfig`, `GetUserConfigSchema`, `SetUserConfigValue` and
+`UnsetUserConfigValue` requests read and update these per-machine values. Setting
+`kernel.resource_protection.<resource>` applies immediately and persists; unset
+restores `true`. Disabling a resource releases its waits and prevents proactive
+pauses/stops for it. Memory protection off also disables owner-set process caps.
+
+Default memory intervention requires near-exhausted physical host or ancestor
+cgroup headroom. A private accounting pool, a predicted peak or PSI alone cannot
+hold, pause or stop healthy work. Accounting cgroups impose no private memory,
+swap or CPU throttle. Disk intervention requires the actual receiving volume to
+approach its bounded 64–512 MiB reserve; predictions alone cannot hold work while
+that volume is healthy. CPU permission is represented independently; no proactive
+CPU pause/stop controller currently runs. OS OOM handling and explicit user Stop
+commands retain their normal authority.
+
+The shared configuration response crosses peer connections, so both version
+numbers advance. `resource-protection-1017.json` and its SHA-256 test pin the shape.

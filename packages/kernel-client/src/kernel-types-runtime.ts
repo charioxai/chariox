@@ -437,7 +437,13 @@ export type CharioxUserConfig = {
   }
   ui?: Record<string, unknown>
   relay?: Record<string, unknown>
-  kernel?: Record<string, unknown>
+  kernel?: {
+    resource_protection: { memory: boolean; disk: boolean; cpu: boolean }
+    websocket_host?: string
+    websocket_port?: number
+    runtime_mcp_host?: string
+    runtime_mcp_port?: number
+  }
   kernel_access?: {
     grant_default_minutes: number
     grant_max_minutes: number

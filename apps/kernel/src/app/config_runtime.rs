@@ -54,6 +54,9 @@ impl DaemonApp {
     ) -> Result<(), DaemonError> {
         let path = path.as_ref().trim().to_string();
         self.config.set_user_config_value(&path, value)?;
+        crate::runtime::process_resources::configure(
+            self.config.user_config.kernel.resource_protection,
+        );
         if path == "history.operational.enabled" {
             self.operational_history
                 .set_capture_enabled(self.config.user_config.history.operational.enabled);
@@ -68,6 +71,9 @@ impl DaemonApp {
     ) -> Result<(), DaemonError> {
         let path = path.as_ref().trim().to_string();
         self.config.unset_user_config_value(&path)?;
+        crate::runtime::process_resources::configure(
+            self.config.user_config.kernel.resource_protection,
+        );
         if path == "history.operational.enabled" {
             self.operational_history
                 .set_capture_enabled(self.config.user_config.history.operational.enabled);

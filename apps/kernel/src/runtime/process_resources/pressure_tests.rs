@@ -1112,19 +1112,67 @@ fn a_pool_full_by_accounting_alone_pauses_nothing_while_the_machine_has_memory()
     assert!(a.root_alive() && b.root_alive() && c.root_alive());
 }
 
-/// Plenty of host memory does not hide the workloads' own finite allocation
-/// boundary. The kernel must pause before that cgroup reaches memory.max.
+/// Accounting cgroups must not manufacture pressure or throttles while the
+/// host has headroom, even when their observed charge exceeds the old pool.
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires a writable cgroup-v2 delegated parent"]
-fn a_full_budget_pauses_even_when_the_host_reports_no_pressure() {
+fn resset_accounting_cgroup_does_not_limit_a_healthy_host() {
     let pool =
         Arc::new(pool::Pool::new(1536 * MIB, true).with_machine_pressure(Box::new(|| false)));
-    let (mut a, mut b, mut c, _pool) = pressure_in(pool, true, 300, 48, 10);
+    let (mut a, mut b, mut c, pool) = pressure_in(pool, true, 300, 48, 10);
+    let budget = pool.budget().unwrap();
+    for name in ["memory.max", "memory.high", "memory.swap.max"] {
+        assert_eq!(
+            std::fs::read_to_string(budget.path().join(name))
+                .unwrap()
+                .trim(),
+            "max"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(budget.path().join("cpu.weight"))
+            .unwrap()
+            .trim(),
+        "100"
+    );
+    assert!(!b.waiting("grow"));
+    assert!(a.alive("big") && b.alive("grow") && c.alive("small"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn resset_memory_off_never_pauses_and_releases_a_live_paused_command() {
+    let pool = pool(1536);
+    let (mut a, mut b, mut c, pool) = pressure_in(pool, false, 300, 48, 10);
     assert!(
         b.waiting("grow"),
-        "the finite cgroup's pressure was ignored"
+        "fixture must reach real admission SIGSTOP"
     );
+    pool.configure(crate::config::ResourceProtection {
+        memory: false,
+        ..Default::default()
+    });
+    settle(3);
+    assert!(!b.waiting("grow"), "memory off left a live command stopped");
+    settle(4);
+    assert!(!b.waiting("grow"), "memory off allowed a fresh SIGSTOP");
     assert!(a.alive("big") && b.alive("grow") && c.alive("small"));
-    assert!(a.root_alive() && b.root_alive() && c.root_alive());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn resset_memory_off_disables_an_explicit_owner_cap() {
+    let pool = pool(512);
+    pool.configure(crate::config::ResourceProtection {
+        memory: false,
+        ..Default::default()
+    });
+    let mut work = Workload::start(
+        PreparedDomain::watchdog("off-cap", Some(32 * MIB), pool),
+        &[("big", 128, 0, 0)],
+    );
+    settle(3);
+    assert!(work.alive("big"));
+    assert_eq!(work.domain.memory_limit_bytes(), None);
 }
