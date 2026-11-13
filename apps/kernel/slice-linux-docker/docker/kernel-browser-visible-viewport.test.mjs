@@ -11,7 +11,7 @@ function fixture(){
  const connection={isOpen:()=>true,subscribe:()=>()=>{},send:async method=>{assert.equal(method,'Page.getLayoutMetrics');if(++reads>1)throw new Error('loading renderer must not be re-queried');return{cssLayoutViewport:{clientWidth:1265,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}};}};
  const state=new NativeTabState(connection);state.session='native';state.ready=true;frame={connection,sessionId:'page',frame:{loaderId:'doc'}};
  const tab={tab_id:'tab',target_id:'target',document_id:'doc'},window={role:'tabbed',xid:42,pid:42,scale:1,window_generation:1,browser_generation:1,bounds:{width:1280,height:800},page_rect:{left:0,top:87,width:1280,height:713},isCurrent:()=>true,isPageCurrent:async()=>active,isPageCurrentCached:()=>active};
- const browser={connection,viewportByTarget:new Map([['target',{key:'canonical',metrics:{}}]]),currentPageFrame:()=>frame};
+ const browser={inputCapture:{hold:async()=>async()=>{}},connection,viewportByTarget:new Map([['target',{key:'canonical',metrics:{}}]]),currentPageFrame:()=>frame};
  const host={browser,generation:1,protection:{unknown:false,targets:[],values:[]},tabs:new Map([['tab',tab]]),displays:new Map(),mirrorTarget:async()=>tab,tabGroups:{nativeStateGuard:()=>state.guard?.()??null},chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window}),inWindowOverNow:async()=>false},timing:()=>{},armDisplayExpiry:()=>{}};
  class Capture{constructor(options){this.options=options;this.region=visiblePageGeometry(options.window,options.viewport)}async start(){return this}async close(){}}
  const command={op:'display_subscribe',tab_id:'tab',generation:1,codecs:['png','avc1.420033'],bitrate:8000000,device_scale_factor:1};
