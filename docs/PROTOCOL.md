@@ -5772,8 +5772,9 @@ The relay subscription has `subscription_scope: "room_terminal"`, `session_id` t
 `attachment_id` the terminal as `<terminal_id>` or `<terminal_id>@<host_agent>` (a terminal on the
 machine of a Room agent), and `resume_from_event_id` the output offset the viewer has drawn
 (required). The kernel answers the subscription only after a first read with the same access check
-and routing as `read_output`; a refusal is the subscription's error. It then reads on its side, with
-the same 16 ms gathering, and pushes:
+and routing as `read_output`; a refusal is the subscription's error. It then reads on its side and
+pushes (a live read, polled or pushed, waits while the program keeps writing: one more 16 ms frame
+each time the output grew, at most four, so a burst is one page and an echo waits one frame):
 
 - `room_terminal_output` (CXT1: JSON header, raw bytes after it): `next_offset`, `bytes: [0, n]`,
   `gap: true` only when the offset is no longer retained (the viewer rebuilds from a snapshot and

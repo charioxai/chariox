@@ -42,6 +42,10 @@ pub use handover::TerminalHandover;
 const MAX_TERMINALS_PER_ROOM: usize = 16;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_PAGE_BYTES: usize = 256 * 1024;
+/// A live reply waits while the program keeps writing: one more display frame each time the
+/// output grew, up to four frames, so a burst is one page and an echo waits one frame.
+const GATHER_FRAME: Duration = Duration::from_millis(16);
+const GATHER_LIMIT: Duration = Duration::from_millis(64);
 const PUMP_INTERVAL: Duration = Duration::from_millis(100);
 /// While a person types or output flows, look at the PTY this often so an
 /// echo does not wait for a tick that only exists to notice quiet changes.
@@ -526,9 +530,9 @@ impl RoomTerminalService {
     ) -> Result<RoomTerminalOutput, DaemonError> {
         let owner = self.find(session_id, terminal_id)?;
         let deadline = Instant::now() + output_wait(wait);
-        // Adjacent small PTY writes share one reply within a display frame.
-        // Replays and full pages stay immediate.
-        let mut gathered = wait.is_zero();
+        // Replays and full pages stay immediate. `gathering`: when the first bytes were seen,
+        // and how many bytes the last look found.
+        let mut gathering: Option<(Instant, usize)> = None;
         loop {
             let changed = owner.output_changed.notified();
             tokio::pin!(changed);
@@ -539,13 +543,18 @@ impl RoomTerminalService {
                 let TerminalState { pty, terminal, .. } = &mut *state;
                 let page = terminal.log.read(after_offset, MAX_OUTPUT_PAGE_BYTES);
                 let finished = !terminal.is_running() || Instant::now() >= deadline;
-                if !page.bytes.is_empty()
-                    && !gathered
+                let writing = gathering.is_none_or(|(since, seen)| {
+                    page.bytes.len() > seen && since.elapsed() < GATHER_LIMIT
+                });
+                if !wait.is_zero()
+                    && !page.bytes.is_empty()
+                    && writing
                     && !page.gap
                     && !finished
                     && page.bytes.len() < MAX_OUTPUT_PAGE_BYTES
                 {
-                    gathered = true;
+                    let since = gathering.map_or_else(Instant::now, |(since, _)| since);
+                    gathering = Some((since, page.bytes.len()));
                     gather = true;
                 } else if !page.bytes.is_empty() || page.gap || finished {
                     let driver = terminal.current_driver(pty);
@@ -559,8 +568,7 @@ impl RoomTerminalService {
             }
             if gather {
                 tokio::time::sleep(
-                    Duration::from_millis(16)
-                        .min(deadline.saturating_duration_since(Instant::now())),
+                    GATHER_FRAME.min(deadline.saturating_duration_since(Instant::now())),
                 )
                 .await;
                 continue;

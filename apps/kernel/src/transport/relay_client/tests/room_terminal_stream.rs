@@ -139,7 +139,7 @@ async fn room_terminal_output_is_pushed_to_one_subscription_without_read_request
         RoomTerminalOperation::Input {
             terminal_id: opened.terminal_id.clone(),
             data_base64: base64::engine::general_purpose::STANDARD.encode(
-                "printf 'PUSHED_%s\\n' ONE TWO; seq 1 200000; sleep 2; printf 'PUSHED_THREE\\n'\r",
+                "printf 'PUSHED_%s\\n' ONE TWO; seq 1 200000; sleep 4; printf 'PUSHED_THREE\\n'\r",
             ),
         },
     )
