@@ -181,14 +181,23 @@ test('MP-08/MP-10 a Linux host with a usable VA-API render node launches the bro
  const gpu={'/dev/dri':['by-path','card0','renderD128'],'/usr/lib/x86_64-linux-gnu/dri':['iHD_drv_video.so']};
  const decode=videoDecodeArguments({},host(gpu));
  assert.deepEqual(decode,['--enable-features=AcceleratedVideoDecodeLinuxGL']);
- assert(launchArguments('/private',false,true,1,decode).includes('--enable-features=AcceleratedVideoDecodeLinuxGL'));
+ assert(launchArguments('/private',false,true,1,decode).includes('--enable-features=AcceleratedVideoDecodeLinuxGL,OverlayScrollbar'));
  for(const [files,denied,environment] of [
   [{'/dev/dri':['by-path','card0'],'/usr/lib/x86_64-linux-gnu/dri':['iHD_drv_video.so']},[],{}], // a display controller without a render node
   [gpu,['/dev/dri/renderD128'],{}], // a render node this user cannot open
   [{'/dev/dri':['renderD128']},[],{}], // no VA-API driver
   [gpu,[],{LIBVA_DRIVERS_PATH:'/opt/empty'}], // the configured driver path has none
  ])assert.deepEqual(videoDecodeArguments(environment,host(files,denied)),[]);
- assert(!launchArguments('/private',false,true).some(arg=>arg.startsWith('--enable-features')),'the default launch is unchanged');
+ assert.deepEqual(launchArguments('/private',false,true).filter(arg=>arg.startsWith('--enable-features')),['--enable-features=OverlayScrollbar'],'the default launch only adds overlay scrollbars');
+});
+// 2026-11-13 (elpais.com in the Room Browser view): classic Linux scrollbars take 15 px, so a banner or ad sized to 100vw overflowed the
+// window by a gutter: the page scrolled sideways with nothing there and the ad's close control sat under the vertical bar.
+test('MP-08/10/11 the browser launches with overlay scrollbars in one --enable-features flag, with or without hardware decode',async()=>{
+ const {launchArguments}=await import('./kernel-browser-process.mjs');
+ for(const headless of [false,true])for(const display of [false,true]){
+  assert.deepEqual(launchArguments('/p',headless,display).filter(arg=>arg.startsWith('--enable-features')),['--enable-features=OverlayScrollbar']);
+  assert.deepEqual(launchArguments('/p',headless,display,1,['--enable-features=AcceleratedVideoDecodeLinuxGL']).filter(arg=>arg.startsWith('--enable-features')),['--enable-features=AcceleratedVideoDecodeLinuxGL,OverlayScrollbar']);
+ }
 });
 // 2026-10-31: on a Mac the kernel browser was a headed Chrome window on the person's desktop (nothing captures it there).
 test('the kernel browser is headless on macOS whatever the environment says, and only the Linux owned desktop shows a window',async()=>{

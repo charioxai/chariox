@@ -52,7 +52,7 @@ export const launchFlagVisibility = {
   '--enable-unsafe-extension-debugging': 'none (the tab-groups component extension is not reachable from a page)',
   '--disable-blink-features': 'navigator.webdriver is false like a Chrome a person starts',
   '--enable-unsafe-swiftshader': 'WebGL exists on a host without a GPU (SwiftShader); a real GPU still wins (listed: webgl)',
-  '--enable-features': 'media capabilities: hardware video decode where VA-API exists',
+  '--enable-features': 'media capabilities: hardware video decode where VA-API exists; overlay scrollbars (a page sees no scrollbar gutter, as on a Mac)',
   '--window-size': 'window and screen geometry (listed: screen, window.size)',
   '--headless': 'headless Chrome: HeadlessChrome User-Agent and no pointer; countered by --user-agent and --blink-settings',
   '--user-agent': 'the User-Agent a headed Chrome of the same build and platform sends; drops high-entropy client hints (listed: uad.high)',
@@ -66,6 +66,10 @@ export const launchFlagVisibility = {
 // MP-08/MP-10: a private owned window renders at the viewer's device scale
 // natively (emulated view scaling renders text differently from CDP).
 export function launchArguments(profile, headless, display = false, scale = 1, videoDecode = [], identity = []) {
+  // Chrome takes the last --enable-features, so the decode features and the overlay scrollbars travel in one flag. Overlay scrollbars
+  // take no room: a page sized to 100vw (a banner, an ad) fits the window instead of scrolling sideways, as it does in the Chrome of
+  // a person on a Mac, and the viewer's mirror lays the page out without a gutter too (browser-mirror2-scrollbar.ts in the web app).
+  const features = [...videoDecode.flatMap(arg => arg.startsWith("--enable-features=") ? arg.slice("--enable-features=".length).split(",") : []), "OverlayScrollbar"];
   return [
     `--user-data-dir=${profile}`, "--remote-debugging-pipe",
     "--no-first-run", "--no-default-browser-check",
@@ -78,7 +82,7 @@ export function launchArguments(profile, headless, display = false, scale = 1, v
     // sign-in answer with "This browser or app may not be secure". The person drives this browser like any Chrome.
     "--disable-blink-features=AutomationControlled",
     // Without a usable GPU Chromium refuses WebGL unless software GL is opted in; real GPUs still win.
-    "--enable-unsafe-swiftshader", ...videoDecode,
+    "--enable-unsafe-swiftshader", `--enable-features=${features.join(",")}`,
     `--window-size=${geometry.width},${geometry.height+(display?chromeBandHeight:0)}`, ...(headless ? ["--headless=new"] : []),
     // MP-08/MP-10: remote panels have no shared physical LCD subpixel order.
     ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${scale}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
