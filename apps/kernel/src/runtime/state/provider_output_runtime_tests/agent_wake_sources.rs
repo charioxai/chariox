@@ -11,6 +11,8 @@ use crate::runtime::state::wake_driver::{
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
 
+mod assessment_inbox;
+
 const KIND: &str = "test-source";
 
 struct TestDriver {
