@@ -588,6 +588,19 @@ test("kernel event dispatch reconciles snapshots and shared history after transp
   ])
 })
 
+test("reconnected output waits for its durable history baseline before rendering", async () => {
+  let finish!: () => void
+  const baseline = new Promise<void>(resolve => { finish = resolve })
+  const harness = createHarness({ resync: () => baseline })
+  const resumed = harness.controller.handleKernelEvent({ event: "transport_resumed", session_id: "session-1", resumed_from_event_id: 42 })
+  const output = harness.controller.handleKernelEvent({ event: "terminal_output", records: [{ sequence: 50, bytes: [65] }] as TerminalOutputRecord[] })
+  await Promise.resolve()
+  assert.equal(harness.terminalRecords.length, 0)
+  finish()
+  await Promise.all([resumed, output])
+  assert.equal(harness.terminalRecords.length, 1)
+})
+
 test("kernel event dispatch reconciles durable history after assistant completion", async () => {
   const harness = createHarness()
 
@@ -610,6 +623,7 @@ test("kernel event dispatch reconciles durable history after assistant completio
 function createHarness(options: {
   refreshAssistantMessageHistory?: (agentId: string) => Promise<boolean>
   focusChanged?: boolean
+  resync?: () => Promise<void>
 } = {}) {
   const calls: string[] = []
   const snapshots: Array<{
@@ -693,6 +707,7 @@ function createHarness(options: {
     },
     resyncAttachedKernelState: (reason) => {
       calls.push(`resync:${reason}`)
+      return options.resync?.()
     },
     appendNotice: (message, tone) => {
       calls.push(`notice:${message}:${tone ?? "muted"}`)

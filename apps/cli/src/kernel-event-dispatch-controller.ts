@@ -99,6 +99,14 @@ export function createKernelEventDispatchController(
     turnId: string
     result: Promise<boolean>
   }>()
+  let resyncInFlight: Promise<unknown> | null = null
+  const resync = async (reason: string) => {
+    const pending = Promise.resolve(deps.resyncAttachedKernelState(reason))
+    resyncInFlight = pending
+    try { await pending } finally {
+      if (resyncInFlight === pending) resyncInFlight = null
+    }
+  }
 
   const applySessionSnapshot = async (event: KernelEventSessionSnapshot) => {
     deps.recordDaemonActivity("kernel_session_snapshot")
@@ -121,6 +129,9 @@ export function createKernelEventDispatchController(
     switch (event.event) {
       case "terminal_output":
         deps.recordDaemonActivity("kernel_terminal_output")
+        // The new event stream can lead the history read after a reload. Its
+        // deltas only make sense once that baseline fills the disconnected gap.
+        if (resyncInFlight) await resyncInFlight
         deps.queueTerminalOutputRecords(event.records as TerminalOutputRecord[])
         return
       case "runtime_notices":
@@ -232,13 +243,13 @@ export function createKernelEventDispatchController(
       case "transport_resumed":
         deps.applyTransportResumed()
         deps.scheduleSharedPromptInputHistoryRefresh()
-        await deps.resyncAttachedKernelState("transport_resumed")
+        await resync("transport_resumed")
         return
       case "replay_gap":
         deps.recordDaemonActivity("kernel_replay_gap")
         deps.appendNotice("Missed retained kernel events, refreshed session state.", "warning")
         deps.flashFooter("Missed retained kernel events, refreshed session state.", "info")
-        void deps.resyncAttachedKernelState("replay_gap")
+        void resync("replay_gap")
         return
       case "transport_closed":
         deps.applyTransportClosed(event.message)
@@ -332,7 +343,7 @@ export function createKernelEventDispatchController(
     }
     const focusChanged = await deps.applySessionMetadataChanged(event.session_id, event.metadata)
     if (focusChanged) {
-      await deps.resyncAttachedKernelState("focused_agent_changed")
+      await resync("focused_agent_changed")
     }
   }
 
