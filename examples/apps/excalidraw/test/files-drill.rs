@@ -84,6 +84,9 @@ impl<T: Send> host::HostWithStore<T> for HasSelf<Host> {
     async fn write_clipboard(_: &Accessor<T, Self>, _: String) -> Result<host::Offer, AppError> {
         panic!("unexpected clipboard")
     }
+    async fn pick_folder(_: &Accessor<T, Self>) -> Result<String, AppError> {
+        panic!("unexpected folder picker")
+    }
     async fn pick_file(_: &Accessor<T, Self>, _: host::Pick) -> Result<Vec<String>, AppError> {
         panic!("unexpected picker")
     }
