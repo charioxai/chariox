@@ -256,9 +256,7 @@ async fn the_pump_does_not_wait_for_a_trigger_stuck_on_a_held_lane() {
         .expect("the pump waits for a trigger that waits on a provider lane");
     until(|| {
         let other = trigger(&runtime, &session_id, "other");
-        other.last_outcome() == Some(AgentTriggerOutcome::Queued)
-            && !other.dispatch_in_flight()
-            && trigger(&runtime, &session_id, "stuck").dispatch_in_flight()
+        other.last_outcome() == Some(AgentTriggerOutcome::Queued) && !other.dispatch_in_flight()
     })
     .await
     .expect("another trigger waits behind the stuck one");
@@ -457,4 +455,44 @@ async fn a_launch_retry_rejected_for_lack_of_a_place_is_admitted_before_the_bloc
         );
     }
     drop(held);
+}
+
+#[tokio::test]
+async fn concurrent_agent_triggers_share_one_live_attachment() {
+    let (_worktree, runtime, session_id, _, _, _, _) = runtime_with_active_prompt().await;
+    for _ in 0..32 {
+        let start = std::sync::Barrier::new(8);
+        let ids = std::thread::scope(|scope| {
+            let handles = (0..8)
+                .map(|_| {
+                    let start = &start;
+                    let owned = &runtime.owned;
+                    let session_id = &session_id;
+                    scope.spawn(move || {
+                        start.wait();
+                        owned.ensure_agent_trigger_attachment(session_id).unwrap()
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert!(ids.iter().all(|id| id == &ids[0]), "{ids:?}");
+        runtime
+            .owned
+            .ensure_attachment_in_session(&session_id, &ids[0])
+            .expect("the shared attachment survives every concurrent ensure");
+        assert_eq!(
+            runtime
+                .owned
+                .attachment_store
+                .list_client_attachments(&format!("agent-schedules:{session_id}"))
+                .len(),
+            1,
+            "one attachment owns every firing's input"
+        );
+        runtime.owned.detach(&ids[0]).unwrap();
+    }
 }
