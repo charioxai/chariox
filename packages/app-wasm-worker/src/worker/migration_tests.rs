@@ -6,8 +6,14 @@ use serde_json::Value;
 async fn completion_race(cancelled: bool) {
     // Keep real component execution, but remove wall-clock epoch yields so
     // guest completion and the stop are ready in the same supervisor poll.
+    #[cfg(not(target_os = "macos"))]
+    let wasm_engine = crate::engine::engine().unwrap();
+    #[cfg(target_os = "macos")]
+    let (wasm_engine, code) = crate::macos_code::engine().unwrap();
     let engine = WorkerEngine {
-        engine: crate::engine::engine().unwrap(),
+        engine: wasm_engine,
+        #[cfg(target_os = "macos")]
+        code,
         stop: Arc::new(AtomicBool::new(false)),
         ticker: None,
         gate: false,
