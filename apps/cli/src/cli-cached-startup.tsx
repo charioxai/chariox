@@ -4,7 +4,7 @@ import {createSignal,onMount,onCleanup,Show} from "solid-js"
 import {useRenderer,useKeyboard} from "@opentui/solid"
 import type {BoxRenderable,ScrollBoxRenderable} from "@opentui/core"
 import type {TranscriptEntry} from "./cli-types.js"
-import {bindCliViewScope,readClientView,subscribeClientViewInvalidation,clearClientViews,type CliCachedView} from "./client-view-cache.js"
+import {bindCliViewScope,cliViewEndpoint,readClientView,readRememberedClientView,subscribeClientViewInvalidation,clearClientViews,type CliCachedView} from "./client-view-cache.js"
 import type {LocalIpcClient} from "./ipc.js"
 import type {CliRuntimeBootstrapOptions,CliRuntimeBootstrapResult} from "./cli-runtime-bootstrap.js"
 import {CharioxCliApp} from "./cli-app-root.js"
@@ -17,17 +17,24 @@ import {cliStartupFailureText} from "./cli-startup-failure.js"
 
 export function createCliCachedStartup(){
  const [cached,setCached]=createSignal<CliCachedView|null>(null)
+ // Until the remembered view was looked up (a few ms of file reading), "Connecting…" would flash in front of it.
+ const [looked,setLooked]=createSignal(false)
  let finished=false
  const unsubscribe=subscribeClientViewInvalidation(()=>setCached(null))
  const onClientReady:NonNullable<CliRuntimeBootstrapOptions['onClientReady']>=(client,options,preferences)=>{
-  if(!options.sessionId||options.createSession||options.deleteSessionRef||options.detached)return
+  if(!options.sessionId||options.createSession||options.deleteSessionRef||options.detached){setLooked(true);return}
+  // The view remembered for this address is drawn at once, before the kernel answers (it may be slow or down). Once it answers, the
+  // view of its own scope replaces it, or nothing when that person or kernel has none; a kernel that never answers leaves it drawn.
+  let checked=false
+  void readRememberedClientView(cliViewEndpoint(options),options.sessionId).then(view=>{if(!finished&&!checked)setCached(view)},()=>{}).finally(()=>setLooked(true))
   void bindCliViewScope(client,options,preferences).then(async scope=>{
    if(!scope)return
    const view=await readClientView(scope,options.sessionId!)
+   checked=true
    if(!finished)setCached(view)
   }).catch(()=>{})
  }
- return {cached,onClientReady,finish:()=>{finished=true;setCached(null);unsubscribe()}}
+ return {cached,looked,onClientReady,finish:()=>{finished=true;setCached(null);unsubscribe()}}
 }
 // Rows of the bundled kernel history drawn before the full app mounts; older rows scroll in with the app.
 const previewEntryLimit=40
@@ -71,7 +78,7 @@ export function CliCachedStartup(props:{pending:Promise<CliRuntimeBootstrapResul
  return <box width="100%" height="100%" flexDirection="column">
   <Show when={ready()}>{runtime=><CharioxCliApp bootstrap={runtime().bootstrap}/>}</Show>
   <Show when={!painted()}><box position="absolute" zIndex={100} top={0} left={0} width="100%" height="100%" backgroundColor={theme.background}>
-   <Show when={preview()} fallback={<Show when={props.view.cached()} fallback={<text content={failure()??'Connecting…'} />}>{view=><CachedTranscript view={view()} title="Reconnecting — previous view"/>}</Show>}>{value=><CachedTranscript view={value()} requests={value().requests}/>}</Show>
+   <Show when={preview()} fallback={<Show when={props.view.cached()} fallback={<Show when={failure()!==null||props.view.looked()}><text content={failure()??'Connecting…'} /></Show>}>{view=><CachedTranscript view={view()}/>}</Show>}>{value=><CachedTranscript view={value()} requests={value().requests}/>}</Show>
   </box></Show>
  </box>
 }
@@ -85,7 +92,7 @@ function nextFrame(renderer:ReturnType<typeof useRenderer>):Promise<void>{
   renderer.requestRender()
  })
 }
-function CachedTranscript(props:{view:Pick<CliCachedView,'alias'|'entries'|'frame'>;title?:string;requests?:Preview['requests']}){
+function CachedTranscript(props:{view:Pick<CliCachedView,'alias'|'entries'|'frame'>;requests?:Preview['requests']}){
  const renderer=useRenderer(),syntax=createTranscriptSyntaxStyle()
  let box:BoxRenderable|undefined,scrollbox:ScrollBoxRenderable|undefined,timer:ReturnType<typeof setTimeout>|undefined
  const removeTiming=recordPaneFirstFrame(renderer,()=>Boolean((props.view.frame || box?.getChildren().length) && box && box.width > 0 && box.height > 0),()=>props.view.entries,props.requests?"preview":true,undefined,undefined,props.requests)
@@ -100,8 +107,6 @@ function CachedTranscript(props:{view:Pick<CliCachedView,'alias'|'entries'|'fram
  })
  onCleanup(()=>{removeTiming();if(timer)clearTimeout(timer);syntax.destroy()})
  return <box width="100%" height="100%" flexDirection="column" backgroundColor={theme.background}>
-  {/* The live preview has no header, so the rows do not shift when the app replaces it. */}
-  <Show when={props.title}><text height={1} flexShrink={0} content={`${props.view.alias} · ${props.title}`} fg={theme.textMuted}/></Show>
   <Show when={props.view.frame} fallback={<scrollbox flexGrow={1} stickyScroll={true} stickyStart="bottom" viewportOptions={{paddingRight:0}} verticalScrollbarOptions={{visible:TUI_MOUSE_ENABLED,paddingLeft:0}} ref={value=>{scrollbox=value}}><box width="100%" flexDirection="column" ref={value=>{box=value}}/></scrollbox>}>{frame=><box flexGrow={1} width="100%" ref={value=>{box=value}} renderAfter={buffer=>{if(box)paintCachedTranscriptFrame(buffer,frame(),box)}}/>}</Show>
  </box>
 }

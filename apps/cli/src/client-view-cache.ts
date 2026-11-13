@@ -7,14 +7,18 @@ import type {CliOptions, TranscriptEntry} from "./cli-types.js"
 import type {LocalIpcClient} from "./ipc.js"
 import {getKernelCloudRelayProfile,getRelayStatus} from "./relay-api.js"
 export type CliViewScope = { owner: string; kernel: string }
-export type CliCachedView = { scope: CliViewScope; sessionId: string; agentId: string; alias: string; sequence: number; savedAt: number; entries: TranscriptEntry[]; frame?: import("./client-view-frame-types.js").CachedTranscriptFrame }
+export type CliCachedView = { scope: CliViewScope; sessionId: string; agentId: string; alias: string; sequence: number; savedAt: number; entries: TranscriptEntry[]; endpoint?: string; frame?: import("./client-view-frame-types.js").CachedTranscriptFrame }
 const destination=()=>join(dirname(preferencesPath()),"client-cache","views.json")
 const maxBytes=16*1024*1024
 let epoch=0,writes:Promise<void>=Promise.resolve()
 const invalidated=new Set<()=>void>()
 export const subscribeClientViewInvalidation=(listener:()=>void)=>{invalidated.add(listener);return()=>{invalidated.delete(listener)}}
 export const clientViewEpoch=()=>epoch
-const clientScopes=new WeakMap<LocalIpcClient,{generation:number;scope:Promise<CliViewScope|null>}>()
+const clientScopes=new WeakMap<LocalIpcClient,{generation:number;scope:Promise<CliViewScope|null>;endpoint:string}>()
+/** The address a view was read through: before the kernel answers, the view remembered for it is drawn, and the scope check follows once it answers. */
+export function cliViewEndpoint(options:Pick<CliOptions,"relayUrl"|"targetDaemonId"|"targetDaemonAlias"|"kernelUrl"|"socketPath">):string{
+ return options.relayUrl?`${options.relayUrl}#${options.targetDaemonId??options.targetDaemonAlias??""}`:options.kernelUrl??options.socketPath??"default"
+}
 export function cliViewOwner(profile: RelayCloudProfile|null|undefined): string {
  return profile ? JSON.stringify([profile.apiUrl,profile.userId,profile.accountId,profile.realmId]) : `local:${process.getuid?.() ?? "user"}`
 }
@@ -25,7 +29,11 @@ export function bindCliViewScope(client:LocalIpcClient,options:CliOptions,prefer
   const [profile,status]=await Promise.all([getKernelCloudRelayProfile(client),getRelayStatus(client)])
   return status.daemon_id?{owner:cliViewOwner(profile),kernel:status.daemon_id}:null
  })().then(value=>generation===epoch?value:null).catch(()=>null)
- clientScopes.set(client,{generation,scope});return scope
+ clientScopes.set(client,{generation,scope,endpoint:cliViewEndpoint(options)});return scope
+}
+export function cliViewClientEndpoint(client: LocalIpcClient): string | null {
+ const record = clientScopes.get(cliViewClient(client))
+ return record?.generation === epoch ? record.endpoint : null
 }
 export function cliViewClient(client: LocalIpcClient): LocalIpcClient {
  const current = (client as LocalIpcClient & { currentClient?: () => LocalIpcClient }).currentClient
@@ -43,6 +51,16 @@ export async function readClientView(scope:CliViewScope,sessionId:string,agentId
   const rows=JSON.parse(await readFile(destination(),"utf8")) as CliCachedView[]
   if(!Array.isArray(rows)||generation!==epoch)return null
   return rows.filter(row=>valid(row)&&row.scope.owner===scope.owner&&row.scope.kernel===scope.kernel&&row.sessionId===sessionId&&(!agentId||row.agentId===agentId)).sort((a,b)=>b.savedAt-a.savedAt)[0]??null
+ }catch{return null}
+}
+/** The newest view read through `endpoint` for the session, whoever's it was: drawn only until the kernel answers and its scope is checked. */
+export async function readRememberedClientView(endpoint:string,sessionId:string):Promise<CliCachedView|null>{
+ const generation=epoch
+ try{
+  const info=await stat(destination());if(info.size>maxBytes||(info.mode&0o077)!==0)return null
+  const rows=JSON.parse(await readFile(destination(),"utf8")) as CliCachedView[]
+  if(!Array.isArray(rows)||generation!==epoch)return null
+  return rows.filter(row=>valid(row)&&row.endpoint===endpoint&&row.sessionId===sessionId).sort((a,b)=>b.savedAt-a.savedAt)[0]??null
  }catch{return null}
 }
 export function writeClientView(view:CliCachedView):Promise<void>{
@@ -63,7 +81,7 @@ export function writeClientView(view:CliCachedView):Promise<void>{
 }
 function valid(row:CliCachedView):boolean{
  return Boolean(row&&row.scope&&[row.scope.owner,row.scope.kernel,row.sessionId,row.agentId].every(value=>typeof value==="string"&&value.length>0&&value.length<=4096)
-  &&typeof row.alias==="string"&&Number.isSafeInteger(row.sequence)&&row.sequence>=0&&Number.isFinite(row.savedAt)&&Array.isArray(row.entries)&&row.entries.length<=2000
+  &&typeof row.alias==="string"&&(row.endpoint===undefined||(typeof row.endpoint==="string"&&row.endpoint.length<=4096))&&Number.isSafeInteger(row.sequence)&&row.sequence>=0&&Number.isFinite(row.savedAt)&&Array.isArray(row.entries)&&row.entries.length<=2000
   &&(row.frame === undefined || validCachedTranscriptFrame(row.frame))
   &&row.entries.every(entry=>entry&&["user","assistant","tool","reasoning","turn_toggle"].includes(entry.role)&&typeof entry.text==="string"&&Number.isFinite(entry.id)))
 }

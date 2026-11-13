@@ -2631,7 +2631,9 @@ What 1006 implements:
   `ListCredentials`, `ListProviderAccountProfiles`, `ListAppInstallations` with every
   page) through the router, as that caller: the same collaborator gate and capability
   checks apply, and a refused read is listed in `refused`. `data` is the fields of
-  that request's response.
+  that request's response, except `last_validated_at_ms` of each provider account:
+  every account check (each kernel start runs one) moves it and no client draws it,
+  so a client's remembered accounts are answered `unchanged` after a restart.
 - Answers to a new watch may arrive before or after `KernelResourcesWatched`.
 - A request that changes Vault entries, the Vault lock, provider accounts or App
   installations signals the feed, which reads every watched resource again and sends

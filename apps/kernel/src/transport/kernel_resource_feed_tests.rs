@@ -332,3 +332,23 @@ fn only_resource_changing_commands_signal_the_feed() {
         assert!(!may_change_resources(unrelated), "{unrelated}");
     }
 }
+
+#[test]
+fn an_account_check_alone_does_not_change_the_accounts_revision() {
+    let checked_at = |at: u64| {
+        let mut accounts = serde_json::json!({ "profiles": [{ "provider": "codex", "profile_id": "work", "auth_state": "authenticated", "last_validated_at_ms": at }] });
+        without_validation_times(&mut accounts);
+        accounts
+    };
+    assert_eq!(revision_of(&checked_at(1)), revision_of(&checked_at(2)));
+    assert!(checked_at(1)["profiles"][0]
+        .get("last_validated_at_ms")
+        .is_none());
+    let mut signed_out = checked_at(1);
+    signed_out["profiles"][0]["auth_state"] = "not_configured".into();
+    assert_ne!(
+        revision_of(&checked_at(1)),
+        revision_of(&signed_out),
+        "what a client draws still changes the revision"
+    );
+}
