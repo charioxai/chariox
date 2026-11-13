@@ -8,6 +8,25 @@ import type {
 } from "./cli-types.js"
 import { createAgentPaneRefreshController } from "./agent-pane-refresh-controller.js"
 
+for (const targeted of [false, true]) {
+  test(`streaming output received during history I/O survives refresh, targeted=${targeted}`, async () => {
+    const entry = (text: string): TranscriptEntry => ({ id: 1, role: "assistant", turnId: 1, promptId: "p", text })
+    const current = { a: [entry("C0001 one END\nC0002")] }
+    const full = "C0001 one END\nC0002 two END\n"
+    const harness = createHarness({ split: true, currentEntries: current,
+      historyPages: { "a:null": { entries: [entry("C0001 one END\nC0002 tw")], nextCursor: null } },
+      beforeHistoryResult: async () => { current.a = [entry(full)] },
+    })
+    const running = session("a", { agent_activity: { a: {
+      status: "working", prompt_status: "running", busy: true, active_prompt_count: 1,
+      queued_prompt_count: 0, unread_idle_output: false,
+    } } })
+    if (targeted) await harness.controller.refreshAgentHistories(running, ["a"])
+    else await harness.controller.refresh(running)
+    assert.equal(harness.paneEntries.a?.find(row => row.role === "assistant")?.text, full)
+  })
+}
+
 test("agent pane refresh loads agent histories and replaces the visible split transcript", async () => {
   const harness = createHarness({ split: true })
 
