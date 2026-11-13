@@ -68,36 +68,43 @@ async function readSigned(kind, paths, pins) {
   return files
 }
 
-const options = parseArguments(process.argv.slice(2))
-const { kind } = options
-const tree = resolve(options.tree)
-const pins = { release: options["release-public-key"], builder: options["builder-public-key"] }
-const receipt = JSON.parse(await readFile(join(options.signed, "SIGNING_RECEIPT.json")))
-const signedRelease = receipt.releases?.[kind]
-if (!signedRelease) throw new Error(`the signer output has no ${kind} release`)
-const document = parseSigningRequest(await readFile(options.request), signedRelease.requestDigest)
-if (document.request.kind !== kind) throw new Error(`the signing request is a ${document.request.kind} request, not ${kind}`)
+async function main() {
+  const options = parseArguments(process.argv.slice(2))
+  const { kind } = options
+  const tree = resolve(options.tree)
+  const pins = { release: options["release-public-key"], builder: options["builder-public-key"] }
+  const receipt = JSON.parse(await readFile(join(options.signed, "SIGNING_RECEIPT.json")))
+  const signedRelease = receipt.releases?.[kind]
+  if (!signedRelease) throw new Error(`the signer output has no ${kind} release`)
+  const document = parseSigningRequest(await readFile(options.request), signedRelease.requestDigest)
+  if (document.request.kind !== kind) throw new Error(`the signing request is a ${document.request.kind} request, not ${kind}`)
 
-const signed = new Map()
-for (const name of SIGNED_FILES) signed.set(name, await readFile(join(options.signed, kind, name)))
-for (const [field, name] of [["attestationSignatureDigest", "attestation.sig"], ["builderPublicKeyDigest", "builder-public-key"], ["manifestDigest", "release-manifest.json"], ["manifestSignatureDigest", "release-manifest.sig"]]) {
-  if (sha(signed.get(name)) !== signedRelease[field]) throw new Error(`${kind} ${name} does not match the digest in SIGNING_RECEIPT.json`)
+  const signed = new Map()
+  for (const name of SIGNED_FILES) signed.set(name, await readFile(join(options.signed, kind, name)))
+  for (const [field, name] of [["attestationSignatureDigest", "attestation.sig"], ["builderPublicKeyDigest", "builder-public-key"], ["manifestDigest", "release-manifest.json"], ["manifestSignatureDigest", "release-manifest.sig"]]) {
+    if (sha(signed.get(name)) !== signedRelease[field]) throw new Error(`${kind} ${name} does not match the digest in SIGNING_RECEIPT.json`)
+  }
+  verifySignedFiles(document, signed, pins)
+  await checkArtifacts(kind, tree, document.request.entries.filter((entry) => entry.sha256))
+
+  const timestamp = new Date(Number(process.env.SOURCE_DATE_EPOCH ?? "0") * 1000)
+  const embedded = LAYOUTS[kind].embedded(tree)
+  for (const [name, path] of Object.entries(embedded)) {
+    await writeFile(path, signed.get(name), { flag: "wx", mode: 0o644 }).catch((error) => {
+      throw new Error(error.code === "EEXIST" ? `${path} already exists; assemble into a freshly staged release` : error.message)
+    })
+    await chmod(path, 0o644)
+    await utimes(path, timestamp, timestamp)
+  }
+  for (const directory of new Set(Object.values(embedded).map((path) => dirname(path)))) await utimes(directory, timestamp, timestamp)
+
+  // End to end, from what is now on disk.
+  const finalEntries = verifySignedFiles(document, await readSigned(kind, embedded, pins), pins)
+  await checkArtifacts(kind, tree, finalEntries)
+  process.stdout.write(`${JSON.stringify({ kind, manifestDigest: signedRelease.manifestDigest, artifacts: finalEntries.length, sourceCommit: document.request.sourceCommit })}\n`)
 }
-verifySignedFiles(document, signed, pins)
-await checkArtifacts(kind, tree, document.request.entries.filter((entry) => entry.sha256))
 
-const timestamp = new Date(Number(process.env.SOURCE_DATE_EPOCH ?? "0") * 1000)
-const embedded = LAYOUTS[kind].embedded(tree)
-for (const [name, path] of Object.entries(embedded)) {
-  await writeFile(path, signed.get(name), { flag: "wx", mode: 0o644 }).catch((error) => {
-    throw new Error(error.code === "EEXIST" ? `${path} already exists; assemble into a freshly staged release` : error.message)
-  })
-  await chmod(path, 0o644)
-  await utimes(path, timestamp, timestamp)
-}
-for (const directory of new Set(Object.values(embedded).map((path) => dirname(path)))) await utimes(directory, timestamp, timestamp)
-
-// End to end, from what is now on disk.
-const finalEntries = verifySignedFiles(document, await readSigned(kind, embedded, pins), pins)
-await checkArtifacts(kind, tree, finalEntries)
-process.stdout.write(`${JSON.stringify({ kind, manifestDigest: signedRelease.manifestDigest, artifacts: finalEntries.length, sourceCommit: document.request.sourceCommit })}\n`)
+main().catch((error) => {
+  process.stderr.write(`assemble-signed-release: ${error instanceof Error ? error.message : String(error)}\n`)
+  process.exitCode = 1
+})

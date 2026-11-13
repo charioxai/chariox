@@ -51,56 +51,63 @@ async function loadKey(path, label) {
   return key
 }
 
-const options = parseArguments(process.argv.slice(2))
-requireMacOrThrowawayTest(options)
+async function main() {
+  const options = parseArguments(process.argv.slice(2))
+  requireMacOrThrowawayTest(options)
 
-const parsed = []
-for (const spec of options.requests) {
-  const at = spec.lastIndexOf("@")
-  if (at < 1) throw new Error(`--request must be <file>@sha256:<digest>, got ${spec}`)
-  const request = parseSigningRequest(await readFile(spec.slice(0, at)), spec.slice(at + 1))
-  if (parsed.some((other) => other.request.kind === request.request.kind)) throw new Error(`two ${request.request.kind} requests given`)
-  parsed.push(request)
-}
-const identity = parsed[0].request
-for (const { request } of parsed) {
-  if (request.sourceCommit !== identity.sourceCommit || request.sourceTree !== identity.sourceTree) {
-    throw new Error("the signing requests are for different source commits")
+  const parsed = []
+  for (const spec of options.requests) {
+    const at = spec.lastIndexOf("@")
+    if (at < 1) throw new Error(`--request must be <file>@sha256:<digest>, got ${spec}`)
+    const request = parseSigningRequest(await readFile(spec.slice(0, at)), spec.slice(at + 1))
+    if (parsed.some((other) => other.request.kind === request.request.kind)) throw new Error(`two ${request.request.kind} requests given`)
+    parsed.push(request)
   }
-}
-const keys = { release: await loadKey(options.releaseKey, "release") }
-if (parsed.some(({ request }) => request.kind === "managed")) {
-  if (!options.builderKey) throw new Error("a managed request needs --builder-key (pass the release key path twice if one key holds both roles)")
-  keys.builder = await loadKey(options.builderKey, "builder")
+  const identity = parsed[0].request
+  for (const { request } of parsed) {
+    if (request.sourceCommit !== identity.sourceCommit || request.sourceTree !== identity.sourceTree) {
+      throw new Error("the signing requests are for different source commits")
+    }
+  }
+  const keys = { release: await loadKey(options.releaseKey, "release") }
+  if (parsed.some(({ request }) => request.kind === "managed")) {
+    if (!options.builderKey) throw new Error("a managed request needs --builder-key (pass the release key path twice if one key holds both roles)")
+    keys.builder = await loadKey(options.builderKey, "builder")
+  }
+
+  const output = resolve(options.output)
+  await mkdir(output, { recursive: false, mode: 0o755 })
+  const receipt = {
+    schemaVersion: 1,
+    signedAt: new Date().toISOString(),
+    testMode: options.testAllowNonMac,
+    sourceCommit: identity.sourceCommit,
+    sourceTree: identity.sourceTree,
+    keys: Object.fromEntries(
+      Object.entries(keys).map(([role, key]) => [role, { publicKey: rawPublicKey(key).toString("base64"), fingerprint: keyFingerprint(rawPublicKey(key)) }]),
+    ),
+    releases: {},
+  }
+  for (const document of parsed) {
+    const { request } = document
+    const directory = join(output, request.kind)
+    await mkdir(directory, { mode: 0o755 })
+    const files = signRequest(document, keys)
+    for (const [name, bytes] of files) await writeFile(join(directory, name), bytes, { flag: "wx", mode: 0o644 })
+    receipt.releases[request.kind] = {
+      requestDigest: sha(Buffer.from(JSON.stringify(request) + "\n")),
+      attestationDigest: request.attestation.sha256,
+      attestationSignatureDigest: sha(files.get("attestation.sig")),
+      builderPublicKeyDigest: sha(files.get("builder-public-key")),
+      manifestDigest: sha(files.get("release-manifest.json")),
+      manifestSignatureDigest: sha(files.get("release-manifest.sig")),
+    }
+  }
+  await writeFile(join(output, "SIGNING_RECEIPT.json"), JSON.stringify(receipt, null, 2) + "\n", { flag: "wx", mode: 0o644 })
+  process.stdout.write(JSON.stringify(receipt, null, 2) + "\n")
 }
 
-const output = resolve(options.output)
-await mkdir(output, { recursive: false, mode: 0o755 })
-const receipt = {
-  schemaVersion: 1,
-  signedAt: new Date().toISOString(),
-  testMode: options.testAllowNonMac,
-  sourceCommit: identity.sourceCommit,
-  sourceTree: identity.sourceTree,
-  keys: Object.fromEntries(
-    Object.entries(keys).map(([role, key]) => [role, { publicKey: rawPublicKey(key).toString("base64"), fingerprint: keyFingerprint(rawPublicKey(key)) }]),
-  ),
-  releases: {},
-}
-for (const document of parsed) {
-  const { request } = document
-  const directory = join(output, request.kind)
-  await mkdir(directory, { mode: 0o755 })
-  const files = signRequest(document, keys)
-  for (const [name, bytes] of files) await writeFile(join(directory, name), bytes, { flag: "wx", mode: 0o644 })
-  receipt.releases[request.kind] = {
-    requestDigest: sha(Buffer.from(JSON.stringify(request) + "\n")),
-    attestationDigest: request.attestation.sha256,
-    attestationSignatureDigest: sha(files.get("attestation.sig")),
-    builderPublicKeyDigest: sha(files.get("builder-public-key")),
-    manifestDigest: sha(files.get("release-manifest.json")),
-    manifestSignatureDigest: sha(files.get("release-manifest.sig")),
-  }
-}
-await writeFile(join(output, "SIGNING_RECEIPT.json"), JSON.stringify(receipt, null, 2) + "\n", { flag: "wx", mode: 0o644 })
-process.stdout.write(JSON.stringify(receipt, null, 2) + "\n")
+main().catch((error) => {
+  process.stderr.write(`sign-digests-on-mac: ${error instanceof Error ? error.message : String(error)}\n`)
+  process.exitCode = 1
+})
