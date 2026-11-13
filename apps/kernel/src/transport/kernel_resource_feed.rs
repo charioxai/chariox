@@ -297,10 +297,13 @@ impl Feed {
                     .await
             }
             FeedResource::ProviderAccounts => {
-                self.read_request(LocalDaemonRequest::ListProviderAccountProfiles(
-                    ListProviderAccountProfilesRequest { provider: None },
-                ))
-                .await
+                let mut accounts = self
+                    .read_request(LocalDaemonRequest::ListProviderAccountProfiles(
+                        ListProviderAccountProfilesRequest { provider: None },
+                    ))
+                    .await?;
+                without_validation_times(&mut accounts);
+                Ok(accounts)
             }
             FeedResource::AppInstallations { session_id } => {
                 self.read_app_installations(session_id.clone()).await
@@ -384,6 +387,16 @@ fn refusal(watch: KernelResourceWatch, code: String, message: String) -> KernelR
         params: watch.params,
         code,
         message,
+    }
+}
+
+/// When the kernel last checked an account is drawn by no client, and every check moves it (each kernel start runs one): left in the
+/// projection, a client's remembered accounts would never be answered `unchanged` after a restart.
+fn without_validation_times(accounts: &mut Value) {
+    if let Some(Value::Array(profiles)) = accounts.get_mut("profiles") {
+        for profile in profiles.iter_mut().filter_map(Value::as_object_mut) {
+            profile.remove("last_validated_at_ms");
+        }
     }
 }
 
