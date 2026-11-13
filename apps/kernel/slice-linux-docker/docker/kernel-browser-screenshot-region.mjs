@@ -1,8 +1,9 @@
 // MP-08/MP-10/MP-11: an agent's screenshot of one element, a viewport region or the whole page.
 // An element or region is cut from the same masked viewport capture a plain screenshot returns, so Vault masking is
-// unchanged. A whole page has no mask geometry, so it is refused while any protected target is on the page.
+// unchanged. A page that fits uses this same masked capture; taller pages cannot reuse viewport-clipped masks.
 import { assertCurrentDocument } from './browser-controller-actions.mjs';
-import { AgentToolRefusal, UserDomainRefusal } from './kernel-browser-refusal.mjs';
+import { measurePageProtection } from './browser-protection-regions.mjs';
+import { AgentToolRefusal } from './kernel-browser-refusal.mjs';
 import { topLevelNodeId, withLiveNode } from './kernel-browser-node-ref.mjs';
 
 export const REGION_KEYS = ['node_ref', 'clip', 'full_page'];
@@ -34,8 +35,21 @@ async function elementClip(host, tab, nodeRef, page) {
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
+async function assertFullPageProtection(host, tab, connection, sessionId) {
+  if (host.protection.unknown) throw new AgentToolRefusal('full_page_protected');
+  const targets = [...host.protection.targets, ...(host.browser.fillTargets?.values() ?? [])]
+    .filter(target => target.kind === 'browser' && target.target_id === tab.target_id);
+  if (!targets.length) return;
+  try {
+    // The shared collector visits every rendered field, including fields outside the viewport,
+    // before clipping its masks. Password dots and retired fills need no pixel protection.
+    await measurePageProtection(connection, sessionId, tab.target_id, { ...host.protection, targets }, {
+      includeHidden: true, onPlainField() { throw new AgentToolRefusal('full_page_protected'); },
+    });
+  } catch { throw new AgentToolRefusal('full_page_protected'); }
+}
+
 async function fullPage(host, tab) {
-  if (host.protection.targets.length || host.browser.fillTargets?.size) throw new UserDomainRefusal('not_granted');
   const { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
   await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
   const metrics = await connection.send('Page.getLayoutMetrics', {}, sessionId);
@@ -45,15 +59,24 @@ async function fullPage(host, tab) {
   const height = Math.min(MAX_SIDE, pageHeight);
   if (!Number.isFinite(width) || !Number.isFinite(pageHeight)) throw new AgentToolRefusal('image_too_large');
   const density = host.scales.get(tab.tab_id) ?? host.viewport().device_scale_factor;
+  const viewport = host.pageSize(tab.tab_id), visual = metrics.cssVisualViewport;
+  // At the document origin a whole page that fits the viewport already has complete trusted mask geometry.
+  if (width <= viewport.width && pageHeight <= viewport.height && visual?.pageX === 0 && visual?.pageY === 0) {
+    return { ...await host.displayScreenshot(tab, { x: 0, y: 0, width, height, scale: 1 / density }), page_height: pageHeight };
+  }
   // One image pixel per CSS pixel, whatever the page density. A page whose PNG does not fit gets smaller encodings.
   const shoot = ({ format, quality, factor }) => connection.send('Page.captureScreenshot', {
     format, ...(quality ? { quality } : {}), captureBeyondViewport: true, optimizeForSpeed: true,
     clip: { x: 0, y: 0, width, height, scale: factor / density },
   }, sessionId);
   const taken = await host.sampleLane(tab).run('capture', () => host.browser.inputCapture.run(connection, sessionId, async () => {
+    await assertFullPageProtection(host, tab, connection, sessionId);
     for (const attempt of FULL_PAGE_ATTEMPTS) {
       const shot = await shoot(attempt);
-      if (typeof shot.data === 'string' && shot.data.length <= IMAGE_LIMIT) return { ...attempt, data: shot.data };
+      if (typeof shot.data === 'string' && shot.data.length <= IMAGE_LIMIT) {
+        await assertFullPageProtection(host, tab, connection, sessionId);
+        return { ...attempt, data: shot.data };
+      }
     }
     return null;
   }, { resumeFocus: false }));

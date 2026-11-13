@@ -3541,8 +3541,10 @@ test('browsertools: full_page falls back to JPEG for a page whose PNG is too lar
   const small = await host.request(agentShot(opened, { full_page: true }));
   assert.deepEqual([small.mime_type, small.scale, small.width, small.height], ['image/jpeg', 0.6, 768, 3000]);
   const before = sent.length;
-  host.browser.fillTargets = new Map([['field', { kind: 'browser' }]]);
-  await assert.rejects(host.request(agentShot(opened, { full_page: true })), { code: 'user_domain_not_granted' });
+  host.protection.targets = [{ kind: 'browser', target_id: host.tabs.get(opened.tab_id).target_id, document_id: host.tabs.get(opened.tab_id).document_id, value_hash: 'unbound' }];
+  withCdp(connection, (method, params) => { if (method === 'Runtime.evaluate' && params.expression.includes('visibilityState')) throw Error('fill geometry unavailable'); });
+  await assert.rejects(host.request(agentShot(opened, { full_page: true })), error => error.code === 'kernel_browser_failed' && /viewport screenshot.*omit full_page.*access is still held/i.test(error.message));
+  assert.ok((await host.request({op:'state',focused_agent:true})).tabs.length, 'a protected full-page refusal retains browser access');
   assert.equal(sent.slice(before).filter(call => call.method === 'Page.captureScreenshot').length, 0, 'no unmasked pixels are captured');
 }));
 
