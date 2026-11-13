@@ -104,6 +104,8 @@ pub(super) struct Entry {
     holdable: bool,
     /// The watch has stopped its subtree (`SIGSTOP`).
     pub stopped: bool,
+    /// A continued command needs a sample interval before pressure judges its growth again.
+    resumed_at: Option<Instant>,
     pub seen: Option<Seen>,
     expected: Option<Peak>,
     /// Typical bytes per second before the pause; never sampled while stopped.
@@ -157,6 +159,16 @@ impl Entry {
     /// It runs again.
     fn stop_waiting(&mut self) {
         self.wait = None;
+    }
+
+    pub(super) fn continued(&mut self) {
+        self.stopped = false;
+        self.resumed_at = Some(Instant::now());
+    }
+
+    fn settling(&self) -> bool {
+        self.wait.is_none()
+            && (self.stopped || self.resumed_at.is_some_and(|at| at.elapsed() < SETTLE))
     }
 
     #[cfg(test)]
@@ -339,6 +351,12 @@ pub(super) struct Ledger {
     stall: Option<(Instant, u64)>,
     pub(super) stall_window: Duration,
     pub(super) peaks: Peaks,
+}
+
+enum PauseDecision {
+    Paused(Arc<Mutex<Observation>>),
+    Settling,
+    Unavailable,
 }
 
 /// The volume holding a path: which one it is, its free bytes and its size.
@@ -621,8 +639,9 @@ impl Ledger {
                     && Some(entry.arrived) != state.oldest)
                     .then_some(command.steady_growth)
             }) {
-                Some(owner) => changed.push(owner),
-                None => may_stop = true,
+                PauseDecision::Paused(owner) => changed.push(owner),
+                PauseDecision::Settling => {}
+                PauseDecision::Unavailable => may_stop = true,
             }
         }
         // Paused commands keep their memory, so a tight pool stays tight
@@ -860,8 +879,9 @@ impl Ledger {
         members: &[Arc<Mutex<Observation>>],
         reason: WaitReason,
         pausable: impl Fn(&Entry, &pool::CommandUse) -> Option<u64>,
-    ) -> Option<Arc<Mutex<Observation>>> {
+    ) -> PauseDecision {
         let mut newest: Option<(u64, u32, u64, &Arc<Mutex<Observation>>)> = None;
+        let mut settling = false;
         for member in members {
             let observation = member.lock().unwrap_or_else(|e| e.into_inner());
             for command in &observation.commands {
@@ -871,6 +891,10 @@ impl Ledger {
                 if !entry.holdable || entry.wait.is_some() || entry.forced {
                     continue;
                 }
+                if entry.settling() {
+                    settling = true;
+                    continue;
+                }
                 if let Some(rate) = pausable(entry, command) {
                     if newest.is_none_or(|(arrived, ..)| entry.arrived > arrived) {
                         newest = Some((entry.arrived, command.pid, rate, member));
@@ -878,7 +902,13 @@ impl Ledger {
                 }
             }
         }
-        let (_, pid, rate, member) = newest?;
+        let Some((_, pid, rate, member)) = newest else {
+            return if settling {
+                PauseDecision::Settling
+            } else {
+                PauseDecision::Unavailable
+            };
+        };
         if let Some(entry) = member
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -893,7 +923,7 @@ impl Ledger {
             "paused a growing command instead of stopping one",
             serde_json::json!({"pid": pid, "reason": reason, "rate_bytes_per_second": rate}),
         );
-        Some(member.clone())
+        PauseDecision::Paused(member.clone())
     }
 
     /// Starts the first eligible command in the owners' fair line. A full
