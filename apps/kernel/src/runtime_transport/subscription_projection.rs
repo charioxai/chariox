@@ -366,8 +366,7 @@ mod tests {
             "task_id":"task", "room_id":after.session.id(), "owner_user_id":"local",
             "agent_id":"agent", "prompt_id":"prompt", "provider_run_id":null,
             "revision":2, "blocked_revision":0, "state":"working", "reason":"work",
-            "obligations":[], "wait":null, "last_progress_at_ms":1, "progress_sequence":0,
-            "no_progress_wakes":0, "correction_used":false, "pending_prompt_id":null
+            "obligations":[], "wait":null, "last_progress_at_ms":1, "correction_used":false, "pending_prompt_id":null
         }))
         .unwrap();
         after.session.set_agent_tasks(vec![task]);

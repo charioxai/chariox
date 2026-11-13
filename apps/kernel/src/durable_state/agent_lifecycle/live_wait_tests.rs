@@ -1,5 +1,5 @@
 //! An orchestrator can give a long-running child an explicit long wait. A deadline that
-//! finds the child still running is not a no-progress strike.
+//! finds the child still running keeps the running child wait.
 use super::tests::Fixture;
 use super::*;
 
@@ -44,11 +44,10 @@ fn an_explicit_long_wait_gets_no_early_timed_wake_while_the_child_runs() {
     );
     let task = f.task();
     assert_eq!(task.state, ExecutionState::Waiting);
-    assert_eq!(task.no_progress_wakes, 0);
 }
 
 #[test]
-fn a_deadline_that_finds_the_child_running_is_not_a_no_progress_strike() {
+fn a_deadline_that_finds_the_child_running_keeps_work_live() {
     let f = Fixture::new();
     wait_on_child(&f, Some(OLD_DEADLINE_MS));
     sweep(&f, OLD_DEADLINE_MS + 1);
@@ -70,13 +69,12 @@ fn a_deadline_that_finds_the_child_running_is_not_a_no_progress_strike() {
         work: None,
         through: 0,
     });
-    assert_eq!(f.task().no_progress_wakes, 0, "the child is still running");
+    assert_eq!(f.task().state, ExecutionState::Working);
+    assert_eq!(f.task().wait.unwrap().registration_ids, vec!["reg"]);
 }
 
-// The orchestrator that waited on one long worker with 20-minute deadlines was blocked after the
-// third deadline wake ("three consecutive wakes without handled progress").
 #[test]
-fn three_deadline_wakes_on_a_running_child_never_block_the_orchestrator() {
+fn repeated_deadline_wakes_on_a_running_child_keep_the_orchestrator_live() {
     let f = Fixture::new();
     wait_on_child(&f, Some(OLD_DEADLINE_MS));
     for n in 1..=4u64 {
@@ -122,6 +120,5 @@ fn three_deadline_wakes_on_a_running_child_never_block_the_orchestrator() {
         f.settle(&prompt, true);
         let task = f.task();
         assert_eq!(task.state, ExecutionState::Waiting, "wake {n}: {task:?}");
-        assert_eq!(task.no_progress_wakes, 0, "wake {n}");
     }
 }

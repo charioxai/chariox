@@ -1007,7 +1007,6 @@ async fn refused_wake_after_dispatch_admission_is_retried_by_the_sweep() {
     assert_eq!(restored_wait.deadline_ms, expected_wait.deadline_ms);
     assert_eq!(restored_wait.inbox_cursor, expected_wait.inbox_cursor);
     assert_eq!(restored_wait.started_at_ms, expected_wait.started_at_ms);
-    assert_eq!(restored.no_progress_wakes, 0);
     assert!(restored.pending_prompt_id.is_none());
 
     spawn_inert_pty_for_run(&mut *f.app.lock().await, &f.run);
@@ -1018,7 +1017,6 @@ async fn refused_wake_after_dispatch_admission_is_retried_by_the_sweep() {
     assert!(events[0].submit_epoch.is_some());
     let retried = f.task(&task.task_id);
     assert_eq!(retried.state, ExecutionState::Working);
-    assert_eq!(retried.no_progress_wakes, 1);
     assert!(retried.pending_prompt_id.is_none());
     assert!(
         retried.wait.is_none(),

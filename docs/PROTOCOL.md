@@ -1027,10 +1027,8 @@ A final answer with unresolved obligations other than the async-question wait
 described above gets one persisted corrective turn,
 then blocks if still invalid. Unfinished work without a live wake source is
 corrected or shown as blocked, never silently left idle. The kernel sweeps every
-30 seconds. Three consecutive settled wake turns without real progress block
-further automatic wakes; the third turn may still handle progress. A handled
-result or verified public artifact resets the counter; repeated status, ACK,
-cursor or deadline changes do not. Fifteen minutes waiting without progress
+30 seconds. Timer acknowledgements and repeated continuations do not limit
+automatic wakes. Fifteen minutes waiting without progress
 produces a notice. Unconfirmed provider delivery blocks within two minutes and
 requires reconciliation of the original receipt; uncertainty never permits
 blind replay. Damaged ledger/source rows are retained and quarantined.
@@ -1089,8 +1087,7 @@ It cannot use sudo, recursively evaluate or count its assessment as progress. Th
 validates achieved/continue/waiting/blocked against current objective and ledger
 bindings. Achieved requires no open, settling or failed obligations. Valid
 continue retains sources and admits one durable continuation; valid waiting
-requires coverage and a deadline no later than the goal interval. Both immediate
-continuations and periodic wakes share the no-progress guard. Malformed/timeout
+requires coverage and a deadline no later than the goal interval. Malformed/timeout
 checks block once with explicit owner recovery. A plain turn (no goal, obligation
 or wait) only gets a task row and its task id in hidden context: it is never
 checked, corrected, held to a wait or blocked, and a failed plain turn is
@@ -4442,6 +4439,9 @@ ungated invoke returns. The shared Landing 7 protocol pair carries the field.
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — transitional durable agent lifecycle (A02)
 
+Local 1013 / relay peer 451 removes the idle-wake counters from task snapshots.
+Repeated timer acknowledgements and continuations keep the task live.
+
 Local daemon protocol **452** adds `RuntimeSession.agent_tasks`; relay82 is inherited
 from #885. The room agent tools surface publishes
 `chariox.events.subscribe/subscriptions/inbox/ack/yield/blocked`. Tools require the
@@ -4455,9 +4455,9 @@ through the shared SQLite writer. Native provider settlement commits the wait;
 a result racing it remains in the inbox. Done requires public output and no
 unresolved obligation. One persisted correction is permitted; another invalid
 end blocks on one kernel-owned interaction. Provider failures also block.
-The kernel sweeps every30 seconds; three consecutive wakes without handling a
-real result block;15 minutes without progress notifies attached/reconnecting
-clients; uncertain submission escalates after2 minutes without replay.
+The kernel sweeps every 30 seconds; 15 minutes without progress notifies
+attached/reconnecting clients; uncertain submission escalates after 2 minutes
+without replay.
 
 `send_agent_message` adds `urgent=false` and `reply_requested=false`. Default
 messages wait behind busy turns in the event inbox. Urgent delivery targets the

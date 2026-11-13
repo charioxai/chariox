@@ -45,8 +45,6 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
             last_checked_at_ms: 1,
         }),
         last_progress_at_ms: 1,
-        progress_sequence: 0,
-        no_progress_wakes: 1,
         correction_used: false,
         pending_prompt_id: None,
     };
@@ -65,13 +63,12 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
             "completion_task_id": "child-task", "status": "open", "dispatch_state": "accepted"}],
         "wait": {"registration_ids": ["reg"], "deadline_ms": 60000, "started_at_ms": 1,
             "inbox_cursor": 3, "long_wait_notified": false, "last_checked_at_ms": 1},
-        "last_progress_at_ms": 1, "progress_sequence": 0, "no_progress_wakes": 1,
-        "correction_used": false, "pending_prompt_id": null,
+        "last_progress_at_ms": 1, "correction_used": false, "pending_prompt_id": null,
     });
     assert_eq!(value, expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
-        "1200a129c1634205e402b26eed546a5418aca143b91457f416e67438959e96af"
+        "4ffa08d93b9e27134e13df1e08cefa349e44d8918028a1cac241d2e97f16cb01"
     );
 }
 
@@ -188,7 +185,7 @@ fn goal_projection_shape_is_bound_to_assigned_protocol493() {
 // MP-08 / MP-09 / MP-10 / MP-11 A12: precise additions for coordinator union493/102.
 #[test]
 fn compact_task_wire_shapes_are_bound_to_assigned_protocol493() {
-    let raw = serde_json::json!({"task_id":"task","room_id":"room","owner_user_id":"owner","agent_id":"agent","prompt_id":"prompt","provider_run_id":null,"revision":2,"blocked_revision":0,"state":"working","reason":"work","obligations":[],"wait":null,"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":0,"correction_used":false,"pending_prompt_id":null});
+    let raw = serde_json::json!({"task_id":"task","room_id":"room","owner_user_id":"owner","agent_id":"agent","prompt_id":"prompt","provider_run_id":null,"revision":2,"blocked_revision":0,"state":"working","reason":"work","obligations":[],"wait":null,"last_progress_at_ms":1,"correction_used":false,"pending_prompt_id":null});
     let task = serde_json::from_value(raw.clone()).unwrap();
     let response = serde_json::to_value(LocalDaemonResponse::AgentTaskUpdated {
         session_id: "room".into(),
@@ -214,11 +211,11 @@ fn compact_task_wire_shapes_are_bound_to_assigned_protocol493() {
     use sha2::{Digest, Sha256};
     assert_eq!(
         format!("{:x}", Sha256::digest(response.to_string().as_bytes())),
-        "4c0a03a004a412d708a4d60c1475b4838001ee1a9437501f64605a4e9c939869"
+        "ef230c68aab61dd3349bbbf3ad433bc80d9d30930863560b02d14530e7d2fc8a"
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(event.to_string().as_bytes())),
-        "8a4f8a22a07cd18fe4ca79ce9277dc9dd44bb73330c2a3f85bf0b6102ba2d4e4"
+        "738d4d50e462037fc0c2f8643f1681092cf4e5d881666ae08e6938e00cad4e38"
     );
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
@@ -249,7 +246,7 @@ fn parked_stop_response_semantics_are_versioned() {
     assert_eq!(value, expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
-        "5d4d7cab46a07c8f05fa4223b2853b66cb117a99a13ccd4c68446d87b2e4d731"
+        "59b2d8a67feda874a06bf870f180e673eaaa1ff4d8fb46393ae230f9cd5b17ab"
     );
 }
 

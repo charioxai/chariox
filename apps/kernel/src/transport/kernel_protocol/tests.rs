@@ -948,8 +948,7 @@ fn a12_task_change_is_a_compact_projection_event() {
         "task_id":"task", "room_id":current.session.id(), "owner_user_id":"local",
         "agent_id":"agent-a", "prompt_id":"prompt", "provider_run_id":null,
         "revision":2, "blocked_revision":0, "state":"working", "reason":"work",
-        "obligations":[], "wait":null, "last_progress_at_ms":1, "progress_sequence":0,
-        "no_progress_wakes":0, "correction_used":false, "pending_prompt_id":null
+        "obligations":[], "wait":null, "last_progress_at_ms":1, "correction_used":false, "pending_prompt_id":null
     }))
     .unwrap();
     current.session.set_agent_tasks(vec![task]);
@@ -975,8 +974,7 @@ fn review971c_task_snapshot() -> SessionSnapshotProjection {
         "task_id":"task-a", "room_id":"session-a", "owner_user_id":"local",
         "agent_id":"agent-a", "prompt_id":"prompt-a", "provider_run_id":null,
         "revision":1, "blocked_revision":0, "state":"working", "reason":"work",
-        "obligations":[], "wait":null, "last_progress_at_ms":1, "progress_sequence":0,
-        "no_progress_wakes":0, "correction_used":false, "pending_prompt_id":null
+        "obligations":[], "wait":null, "last_progress_at_ms":1, "correction_used":false, "pending_prompt_id":null
     }))
     .unwrap();
     snapshot.session.set_agent_tasks(vec![task]);
@@ -1218,8 +1216,7 @@ fn ledger_task(
     serde_json::from_value(serde_json::json!({
         "task_id": task_id, "room_id": "session-a", "agent_id": "agent-a", "prompt_id": task_id,
         "provider_run_id": null, "revision": revision, "state": state, "reason": "",
-        "obligations": [], "wait": null, "last_progress_at_ms": 1, "progress_sequence": 0,
-        "no_progress_wakes": 0, "correction_used": false, "pending_prompt_id": null,
+        "obligations": [], "wait": null, "last_progress_at_ms": 1, "correction_used": false, "pending_prompt_id": null,
     }))
     .unwrap()
 }

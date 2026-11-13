@@ -38,8 +38,6 @@ pub struct AgentTaskExecution {
     pub obligations: Vec<AgentObligation>,
     pub wait: Option<AgentWait>,
     pub last_progress_at_ms: u64,
-    pub progress_sequence: u64,
-    pub no_progress_wakes: u32,
     pub correction_used: bool,
     pub pending_prompt_id: Option<String>,
 }

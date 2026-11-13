@@ -145,8 +145,6 @@ trait WakeDriver: Send + Sync {
   `rejected`); a wake not delivered within 60 s raises a visible notice, and a
   wedged delivery blocks the task within 2 minutes with an owner interaction and
   no second provider turn.
-- Three handled wakes without progress block the task; Resume continues it,
-  Cancel retires its wakes.
 - A deadline that lapses with healthy sources is one `deadline_reached` wake; a
   new wait needs a fresh deadline. A lost source is one `source_lost` wake.
 - A helper's work that can no longer complete ends with a definitive outcome and

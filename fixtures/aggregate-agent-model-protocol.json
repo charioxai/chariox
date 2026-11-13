@@ -67,8 +67,6 @@
           "obligations": [],
           "wait": null,
           "last_progress_at_ms": 1,
-          "progress_sequence": 0,
-          "no_progress_wakes": 0,
           "correction_used": false,
           "pending_prompt_id": null
         }
@@ -144,8 +142,6 @@
         "obligations": [],
         "wait": null,
         "last_progress_at_ms": 1,
-        "progress_sequence": 0,
-        "no_progress_wakes": 0,
         "correction_used": false,
         "pending_prompt_id": null
       }

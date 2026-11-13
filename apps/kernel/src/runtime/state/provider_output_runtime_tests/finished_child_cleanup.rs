@@ -2,7 +2,7 @@
 //! the kernel ends a sub-agent the parent spawned once the parent acked its receipt as handled.
 use super::child_finished::{family_of, Family};
 use super::{owned_runtime_state, Arc, Mutex};
-use crate::durable_state::agent_lifecycle::Operation;
+use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
 
 /// Calls a runtime tool as the parent's running turn.
 async fn parent_tool(team: &Family, tool: &str, arguments: serde_json::Value) -> serde_json::Value {
@@ -96,7 +96,7 @@ async fn parent_waits_and_child_finishes(team: &Family) -> (String, u64) {
         "nothing wakes the parent while the child runs"
     );
     let still_waiting = store.agent_task(&parent_task.task_id).unwrap().unwrap();
-    assert_eq!(still_waiting.no_progress_wakes, 0);
+    assert_eq!(still_waiting.state, ExecutionState::Waiting);
     assert!(
         blocked_cards(team).is_empty(),
         "no owner card for a wait on a running child"

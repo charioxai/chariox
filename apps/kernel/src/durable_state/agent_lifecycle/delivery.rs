@@ -393,9 +393,7 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
             }
             // A loss handled while Blocked keeps its failed obligation until
             // owner Resume. A repeated ACK can then reconcile that disposition
-            // without replaying delivery or buying progress from the same receipt.
-            // A recurring check-in ACK is bookkeeping, not useful progress.
-            // The existing three-no-progress-wake guard requires owner action.
+            // without replaying delivery or advancing the same receipt's clock.
             if handled && e.is_source_outcome() {
                 for mut t in live_tasks(tx, &room, &agent)? {
                     if t.room_id != room
@@ -431,8 +429,6 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
                         // Closing a timer obligation is required bookkeeping,
                         // but even rearming one-shot timers cannot buy progress.
                         if !timer_outcome && t.state != ExecutionState::Blocked {
-                            t.no_progress_wakes = 0;
-                            t.progress_sequence += 1;
                             t.last_progress_at_ms = now;
                         }
                         t.revision += 1;
@@ -446,8 +442,8 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
     }
 }
 
-// A wake the provider never accepted did not run: the task keeps its wait and
-// the attempt is not a no-progress strike. The pending event retries later.
+// A wake the provider never accepted did not run: the task keeps its wait.
+// The pending event retries later.
 fn revert_refused_wake(
     tx: &Transaction<'_>,
     event: &InboxEvent,
@@ -462,9 +458,6 @@ fn revert_refused_wake(
         {
             t.state = ExecutionState::Waiting;
             t.pending_prompt_id = None;
-            if is_no_progress_wake(tx, &t, event)? {
-                t.no_progress_wakes = t.no_progress_wakes.saturating_sub(1);
-            }
             t.revision += 1;
             save(tx, &t)?;
         }
@@ -561,32 +554,6 @@ fn siblings(
         .collect()
 }
 
-/// Whether waking the waiting task with this event is a strike against it. A goal check-in
-/// is not, and neither is a deadline that finds every source it waits on still running: work
-/// in flight is progress, so an orchestrator waiting on a long child is not stopped for it.
-fn is_no_progress_wake(
-    tx: &Transaction<'_>,
-    task: &AgentTaskExecution,
-    event: &InboxEvent,
-) -> Result<bool, DaemonError> {
-    if super::goals::is_check_in_event(task, event) {
-        return Ok(false);
-    }
-    let Some(wait) = task
-        .wait
-        .as_ref()
-        .filter(|_| event.kind == "deadline_reached")
-    else {
-        return Ok(true);
-    };
-    let regs = registrations(tx, &task.task_id)?;
-    let all_live = wait
-        .registration_ids
-        .iter()
-        .all(|id| regs.iter().any(|r| &r.id == id && r.live));
-    Ok(!all_live)
-}
-
 /// Admits one pending row to the attempt: it takes the prompt, and the task
 /// whose wait it wakes keeps that wait until provider I/O.
 fn admit(
@@ -606,7 +573,7 @@ fn admit(
     e.attempted_at_ms = Some(now);
     save_event(tx, e)?;
     super::wakes::record_delivery(tx, e)?;
-    // Wake retains the original task. Progress is not an ACK/cursor or deadline edit.
+    // A wake retains the original task and its progress clock.
     for mut t in live_tasks(tx, &room, &agent)? {
         if t.room_id == room
             && t.agent_id == agent
@@ -618,14 +585,10 @@ fn admit(
                     ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
                 }))
         {
-            let strike = is_no_progress_wake(tx, &t, e)?;
             super::goals::clock(&mut t, now);
             if let Some(g) = &mut t.goal {
                 g.continuation_sequence += 1;
                 g.next_check_in_ms = None;
-            }
-            if strike {
-                t.no_progress_wakes += 1;
             }
             t.pending_prompt_id = Some(prompt.into());
             t.state = ExecutionState::Working;
