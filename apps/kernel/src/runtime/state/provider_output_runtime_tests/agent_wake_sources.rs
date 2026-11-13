@@ -1351,6 +1351,44 @@ async fn pending_deadline_cleanup_does_not_stop_the_sweep_for_other_wakes() {
     );
 }
 
+/// A kernel that starts with a scheduled timer gives its scheduler the fire tolerance to tick
+/// before the dead-man sweep calls it stalled; a scheduler that stays silent is still reported.
+#[tokio::test]
+async fn a_fresh_kernel_with_a_scheduled_timer_raises_no_false_stall_alert() {
+    let f = fixture("fresh-kernel-stall", false).await;
+    let task = f.begin("turn-1");
+    let mut timer = f.wake(&task, "wake-timer");
+    timer.kind = "timer".into();
+    timer.next_due_ms = Some(crate::session::unix_epoch_ms() + 600_000);
+    f.store()
+        .agent_lifecycle(Operation::CreateWake {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            wake: timer,
+        })
+        .unwrap();
+    let started = f.runtime.owned.agent_wakes.started_at_ms;
+
+    f.runtime.sweep_agent_wakes(started + 1_000).await.unwrap();
+    assert!(
+        !f.notices().contains("scheduler stalled"),
+        "a scheduler that has not had its first tick yet is not stalled: {}",
+        f.notices()
+    );
+    f.runtime
+        .sweep_agent_wakes(
+            started + crate::runtime::state::agent_wake_scheduler::WAKE_FIRE_TOLERANCE_MS + 1_000,
+        )
+        .await
+        .unwrap();
+    assert!(
+        f.notices()
+            .contains("scheduler stalled (no tick since kernel start)"),
+        "a scheduler silent past the tolerance is reported: {}",
+        f.notices()
+    );
+}
+
 #[tokio::test]
 async fn ev13_lost_source_raises_a_visible_alert_and_one_event() {
     let f = fixture("ev13-lost-source", false).await;
