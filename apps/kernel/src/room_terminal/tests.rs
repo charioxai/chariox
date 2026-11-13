@@ -3041,3 +3041,36 @@ async fn live_terminal_state_contention_remains_managed_work() {
     drop(state);
     service.end_session("room-1");
 }
+
+#[tokio::test]
+async fn small_live_writes_share_one_terminal_reply() {
+    use base64::Engine as _;
+    let root = TempDir::new();
+    let service = Arc::new(service(root.path()));
+    let terminal = service.open(OpenRoomTerminal {
+        project_environment: Default::default(), session_id: "room-1".into(), working_directory: root.path().into(), cols: 100, rows: 30, title: None, opened_by: TerminalActor::User,
+        command: Some(vec!["python3".into(), "-c".into(), "import os,time; time.sleep(.15); os.write(1,b'one'); time.sleep(.005); os.write(1,b'two'); time.sleep(1)".into()]),
+    }).unwrap();
+    let pumping = Arc::clone(&service);
+    let pump = tokio::spawn(async move {
+        loop {
+            pumping.pump_once();
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    });
+    let result = service
+        .read_output("room-1", &terminal.terminal_id, 0, Duration::from_secs(1))
+        .await;
+    pump.abort();
+    let _ = pump.await;
+    service
+        .close("room-1", &terminal.terminal_id, &TerminalActor::User)
+        .unwrap();
+    let output = result.unwrap();
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(output.data_base64)
+            .unwrap(),
+        b"onetwo"
+    );
+}

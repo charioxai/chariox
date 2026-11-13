@@ -46,3 +46,29 @@ test("MP-08 MP-10 current bound turn B interruption carries its exact prompt", a
   assert.equal(result.requests[0].CancelActivePrompt.expected_prompt_id, "prompt-B")
   assert.deepEqual(result.responses, [{ id: 1, result: {} }])
 })
+
+
+test("MP-08 RR-07 the native Codex interrupt renews a swept attachment and keeps its exact prompt", async () => {
+  const { LocalIpcError } = await import("@chariox/kernel-client/ipc")
+  const { createRemoteAttachmentRecovery } = await import("./remote-attachment-recovery.js")
+  const attachment = { id: "old" }
+  const requests: any[] = [], responses: any[] = []
+  const state: CodexNativeBindingState = { promise: null, run: null }
+  bindCodexDisplayTurn(state, "thread", "turn", "exact-prompt")
+  const recovery = createRemoteAttachmentRecovery({ attachment, isActive: () => true,
+    reattach: async () => "new", resubscribe: async () => {}, detach: async () => {},
+  })
+  const client = { send: async (request: any) => {
+    requests.push(request)
+    if (request.CancelActivePrompt.attachment_id === "old")
+      throw new LocalIpcError("response", "swept", "attachment_not_found", false)
+    return { PromptCancelled: {} }
+  } } as LocalIpcClient
+  await handleCodexNativeTurnInterrupt({ id: 1, method: "turn/interrupt", params: { threadId: "thread", turnId: "turn" } }, {
+    client, sessionId: "room", get attachmentId() { return attachment.id }, recovery,
+    agentId: "agent", bindState: state,
+  }, response => responses.push(response))
+  assert.deepEqual(requests.map(r => r.CancelActivePrompt.attachment_id), ["old", "new"])
+  assert.deepEqual(requests.map(r => r.CancelActivePrompt.expected_prompt_id), ["exact-prompt", "exact-prompt"])
+  assert.deepEqual(responses, [{ id: 1, result: {} }])
+})

@@ -726,7 +726,14 @@ pub(crate) fn provider_run_changed_event(
     let previous_snapshot = previous_snapshot?;
     if previous_snapshot.session != snapshot.session
         || previous_snapshot.agent_activity != snapshot.agent_activity
-        || previous_snapshot.provider_run == snapshot.provider_run
+        || previous_snapshot
+            .provider_run
+            .as_ref()
+            .map(|run| PublicProviderRun::from(run).without_activity_timestamp())
+            == snapshot
+                .provider_run
+                .as_ref()
+                .map(|run| PublicProviderRun::from(run).without_activity_timestamp())
     {
         return None;
     }

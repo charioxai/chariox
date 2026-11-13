@@ -528,7 +528,7 @@ pub(super) async fn handle_prepared_daemon_request(
                     response,
                 })
             } else {
-                serde_json::to_vec(&response)
+                crate::transport::terminal_output_wire::encode_reply(&mut response)
             };
             let plaintext = match serialized {
                 Ok(bytes) => bytes,
@@ -655,7 +655,7 @@ fn seal_reply(
             }),
         );
     }
-    let plaintext = if framed {
+    let plaintext = if framed && !plaintext.starts_with(b"CXT1") {
         crate::transport::framed_plaintext::frame(&plaintext)
     } else {
         plaintext

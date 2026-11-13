@@ -141,3 +141,67 @@ fn a_file_chunk_is_written_and_read_back_as_bytes_when_the_request_is_framed() {
         .join()
         .unwrap();
 }
+
+#[tokio::test]
+async fn polled_terminal_replies_are_raw_for_plain_and_framed_requests() {
+    for framed in [false, true] {
+        let mut app = crate::DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace",
+                "worktree",
+            ))
+            .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "native",
+                crate::attachment::ClientCapabilityLevel::MessageTransport,
+            ))
+            .unwrap();
+        let source = vec![255u8; 64 * 1024];
+        app.terminal_stream_store().fan_out_output(
+            session.id(),
+            "run",
+            None,
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            None,
+            vec![attachment.id().into()],
+            &source,
+        );
+        let router =
+            CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+        let kernel_public_key =
+            relay_crypto::public_key_from_private_key_base64(&router.relay_private_key()).unwrap();
+        let client = Client {
+            router,
+            cache: Arc::new(CommandResultCache::default()),
+            key: relay_crypto::generate_private_key_base64(),
+            kernel_public_key,
+        };
+        let wire = client
+            .ask(
+                LocalDaemonRequest::PumpTerminalOutput(crate::local::PumpTerminalOutputRequest {
+                    session_id: session.id().into(),
+                    attachment_id: attachment.id().into(),
+                }),
+                framed,
+            )
+            .await;
+        assert!(
+            wire.starts_with(b"CXT1"),
+            "a terminal poll still expands bytes as JSON"
+        );
+        assert!(
+            wire.len() < source.len() + 2048,
+            "a polled reply expands on the wire"
+        );
+        let json = crate::transport::terminal_output_wire::open(&wire).unwrap();
+        let response: LocalDaemonResponse = serde_json::from_slice(&json).unwrap();
+        let LocalDaemonResponse::TerminalOutput { records } = response else {
+            panic!("terminal reply")
+        };
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].bytes, source);
+    }
+}

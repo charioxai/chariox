@@ -1357,6 +1357,21 @@ Current pushed event contract:
 
 - all pushed events use the `KernelOutgoingFrame::Event` envelope with monotonic `event_id` plus an `event` payload tagged by its `event` string
 - `terminal_output` carries terminal records and should be used for terminal append/update rendering without forcing `session.state.get`
+
+MP-08 / MP-09 / MP-10 / MP-11, local protocol 1008 (provisional): the encrypted
+plaintext of a relayed `terminal_output` event starts with `CXT1`, a big-endian
+u32 JSON header length, the JSON event header, and the terminal bytes. Each
+record's `bytes` field in the header is `[offset, length]` into that payload.
+Ranges are contiguous, in record order, and cover the payload exactly; empty
+records have a zero-length range. The header is at most 1 MiB. Live events and
+replayed events use the same encoding. Polled `TerminalOutput` replies use the
+same CXT1 framing, with the ordinary `{"TerminalOutput":{"records":…}}` header;
+they are not nested in CXF1 framing. Other ordinary events and replies remain JSON.
+Clients restore the existing byte-array record shape before delivery, and an
+origin gateway restores it before forwarding an event to its local caller.
+The relay continues carrying opaque encrypted frames; its peer protocol stays
+444. Local socket events and persisted history retain their existing shapes.
+See [the terminal transport drill](drills/MP08_TRANSPORT_TERMINAL_BYTES.md).
 - Local daemon protocol v370 keeps recipient-scoped bounded output drains scheduled while records remain, even after the producer stops. Local and relay subscriptions preserve byte order and heartbeat scheduling; an empty drain does not schedule more work. Event shapes, relay peer protocol, and client minimum versions are unchanged (MP-08 / MP-10).
 - `runtime_notices` carries runtime notices for the subscribed attachment/session
 - `assistant_message_completed` carries `session_id`, `provider_run_id`, optional `agent_id`, `message_id`, and `completed_at_ms`
@@ -4663,8 +4678,9 @@ next and unsubscribe operations address these leases. This section adds no
 relay frame of its own; its events use the display encoding below. Peer 97
 remains unused.
 
-Display event encoding (local 466, peer 96). Only `kernel_browser_frame`
-events change; every other event stays JSON. On the local WebSocket they are
+Display event encoding (local 466, peer 96). This encoding applies to
+`kernel_browser_frame`; terminal output has its separate CXT1 encoding above.
+Other events stay JSON. On the local WebSocket display events are
 binary messages; over the relay they are the encrypted plaintext. The format is
 `CXD1`, a big-endian u32 header length, the JSON event header naming its
 segments, then the raw segment bytes in order. JSON plaintexts never start with
@@ -5247,6 +5263,13 @@ subscription, so a client draws from events instead of reading again. Fixture: `
   `ListHomeExtensionAudit` once for each watched agent, replacing its cached list, then resumes applying
   appended rows (deduplicated by audit `event_id` or `sequence`). Unrelated durable-state events share
   the backlog, so their sequences cannot detect gaps in this audit feed.
+- `subscription_scope: "session_metadata"` (local protocol 1008, MP-08 / MP-09 / MP-10 / MP-11)
+  retains an attachment's Room events, notices, completions and heartbeat, while draining its terminal
+  records without sending their bytes. Replay also excludes terminal records. A browser page uses this
+  for view subscriptions and holds one ordinary session subscription per Room for terminal bytes,
+  distributing that stream locally to its Room consumers. Each view still retires its own attachment;
+  the page releases the byte attachment when its last consumer leaves. The relay forwards the scope
+  opaquely; its peer protocol does not change.
 - `heartbeat_interval_ms` on the subscribe frame of a Room-list (`waiting_room_inventory`) or session
   subscription: how often this subscription's `heartbeat` event arrives, at least 500. Left out, the interval
   is as before (5 s). Below 500 the subscribe is refused with the error code `invalid_heartbeat_interval`.
@@ -7492,3 +7515,24 @@ Agents use `chariox.peek_agent` (`agent`, optional `limit`, `before`) and
 `chariox.read_agent_entry` (`agent`, `entry_id`, optional `offset`, `limit`).
 The reference resolves within the calling room, like other agent-read tools.
 External agents use the same kernel requests through their existing grants.
+
+
+MP-08 / MP-09 / MP-10 / MP-11, provisional local protocol 1008: CXT1 replies also
+carry `RoomTerminal.result` variants `output` and `snapshot`. The header replaces
+`output.data_base64`, or `snapshot.screen_ansi_base64`, `screen_text` and
+`scrollback_text`, with contiguous `[offset, length]` ranges into the raw suffix,
+in that order. ANSI/output fields are raw decoded base64 bytes; text fields are
+UTF-8. Clients and gateways reconstruct the ordinary response before handing it
+to their caller. Other Room Terminal result variants remain ordinary JSON.
+
+
+The same provisional 1008 subscription contract distinguishes view interests:
+`session_terminal` carries terminal data without session projection samples;
+`session_metadata` carries Room state and admission-wait changes without terminal
+bytes or periodic process samples; `session_metadata_processes` additionally keeps
+the process/disk sample feed used by Health. Ordinary `session` subscriptions keep
+their full feed. Private provider-run changes do not repeat an unchanged public
+projection. Activity timestamps accompany the next state or usage update instead
+of resending the whole run on their own. Ordinary metadata sends only admission
+waits, including on its initial projection; full process and disk samples stay on
+Health. Admission holds, pauses and resumptions still reach ordinary views.

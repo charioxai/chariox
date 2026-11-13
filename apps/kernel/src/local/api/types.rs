@@ -522,4 +522,6 @@ pub use workspace::*;
 /// titles (`AgentTranscriptPeek`) with a `before` cursor and `ReadAgentTranscriptEntry` reads one row by
 /// pages (`AgentTranscriptEntryPage`); a wait without a deadline gets `now + 30 min` as `deadline_ms`.
 /// 1010 (Landing 10, provisional): an unconditional idle Stop returns `NothingToStop`.
+/// 1008 (provisional): encrypted relay terminal output uses CXT1 metadata and raw byte segments,
+/// including replay. Clients and gateways restore the ordinary terminal record shape.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1027;

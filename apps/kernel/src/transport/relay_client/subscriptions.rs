@@ -365,6 +365,10 @@ pub(super) async fn handle_relay_subscribe(
             &session_id,
             &attachment_id,
             resume_from_event_id,
+            !matches!(
+                subscription_scope.as_deref(),
+                Some("session_metadata" | "session_metadata_processes")
+            ),
         )
         .await
         {
@@ -613,10 +617,11 @@ pub(super) async fn run_relay_subscription_loop(
                 // backlog. Publish its authoritative projection before that backlog.
                 let projection_events = (*snapshot)
                     .map(|snapshot| {
-                        let events = crate::runtime_transport::session_projection_events(
+                        let events = crate::runtime_transport::session_projection_events_for_scope(
                             &snapshot,
                             previous_snapshot.as_ref(),
                             !workflow_run_updates.is_empty(),
+                            subscription_scope.as_deref(),
                         );
                         agent_turns.observe_snapshot(&snapshot);
                         previous_snapshot = Some(snapshot);
@@ -645,7 +650,11 @@ pub(super) async fn run_relay_subscription_loop(
                 {
                     agent_turns.mark_changed(agent_id);
                 }
-                if !records.is_empty() {
+                if !matches!(
+                    subscription_scope.as_deref(),
+                    Some("session_metadata" | "session_metadata_processes")
+                ) && !records.is_empty()
+                {
                     let mut terminal_output_failed = false;
                     for records in terminal_output_event_batches(records) {
                         if emit_relay_event(

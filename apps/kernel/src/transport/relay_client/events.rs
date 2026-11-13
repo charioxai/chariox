@@ -48,15 +48,18 @@ pub(super) async fn emit_relay_event(
     client_public_key: &str,
     event_runtime: &Arc<RelayEventRuntime>,
     event_stream_id: &str,
-    event: KernelEvent,
+    mut event: KernelEvent,
 ) -> Result<(), DaemonError> {
     let prepared_at_ms = crate::session::unix_epoch_ms();
     router.admit_relay_stream(client_public_key)?;
     let daemon_private_key = router.relay_private_key();
-    let plaintext = serde_json::to_vec(&event).map_err(|error| DaemonError::LocalTransport {
-        operation: "serialize relay event",
-        message: error.to_string(),
-    })?;
+    let plaintext =
+        crate::transport::terminal_output_wire::encode(&mut event).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "serialize relay event",
+                message: error.to_string(),
+            }
+        })?;
     let encrypted_event =
         relay_crypto::encrypt_payload_for_peer(&daemon_private_key, client_public_key, &plaintext)?;
     let append_started = std::time::Instant::now();
@@ -92,6 +95,7 @@ pub(super) async fn replay_recent_relay_events(
     session_id: &str,
     attachment_id: &str,
     resume_from_event_id: Option<u64>,
+    terminal_output: bool,
 ) -> Result<(), DaemonError> {
     let Some(cursor) = resume_from_event_id else {
         return Ok(());
@@ -147,7 +151,10 @@ pub(super) async fn replay_recent_relay_events(
             return Ok(());
         }
     };
-    for persisted in events {
+    for mut persisted in events {
+        if !terminal_output && matches!(&persisted.event, KernelEvent::TerminalOutput { .. }) {
+            continue;
+        }
         if persisted.event_id <= cursor {
             continue;
         }
@@ -159,8 +166,8 @@ pub(super) async fn replay_recent_relay_events(
         }
         router.admit_relay_stream(client_public_key)?;
         let daemon_private_key = router.relay_private_key();
-        let plaintext =
-            serde_json::to_vec(&persisted.event).map_err(|error| DaemonError::LocalTransport {
+        let plaintext = crate::transport::terminal_output_wire::encode(&mut persisted.event)
+            .map_err(|error| DaemonError::LocalTransport {
                 operation: "serialize relay event",
                 message: error.to_string(),
             })?;

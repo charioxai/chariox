@@ -1374,6 +1374,11 @@ pub(super) fn statvfs(path: &Path) -> Option<Space> {
         stat.f_bavail as u64,
         stat.f_blocks as u64,
     );
+    // Anonymous memory files are regular writable files too, but Linux reports
+    // no filesystem capacity for them. That is not evidence of a full disk.
+    if block == 0 || blocks == 0 {
+        return None;
+    }
     Some(Space {
         id,
         free: available.saturating_mul(block),

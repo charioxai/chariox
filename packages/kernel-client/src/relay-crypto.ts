@@ -8,6 +8,7 @@ import {
 } from "node:crypto"
 
 import type { EncryptedRelayPayload } from "./kernel-transport-frames.js"
+import { decodeTerminalOutput } from "./terminal-output-wire.js"
 
 const RELAY_NONCE_LEN = 12
 const RELAY_TAG_LEN = 16
@@ -53,7 +54,8 @@ export function decryptRelayPayload(privateKey: Buffer, payload: EncryptedRelayP
   const decipher = createDecipheriv("aes-256-gcm", key, nonce)
   decipher.setAuthTag(tag)
   const plaintext = Buffer.concat([decipher.update(body), decipher.final()])
-  return plaintext.toString("utf8")
+  const terminal = decodeTerminalOutput(plaintext)
+  return terminal ? JSON.stringify(terminal) : plaintext.toString("utf8")
 }
 
 /**
