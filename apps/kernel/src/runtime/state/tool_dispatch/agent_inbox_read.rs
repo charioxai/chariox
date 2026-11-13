@@ -202,10 +202,12 @@ impl KernelRuntimeState {
         now: u64,
     ) -> Result<serde_json::Value, DaemonError> {
         let handled = args["handled"].as_bool().unwrap_or(false);
+        // A parent that still has work for a finished sub-agent keeps it explicitly.
+        let keep_children = args["keep_children"].as_bool().unwrap_or(false);
         let work = self.owned.sudo_work_task(room, actor);
         let mut finished_children = Vec::new();
         let mut ack = |event: &InboxEvent| {
-            let subtree = if handled && event.kind == "child_finished" {
+            let subtree = if handled && !keep_children && event.kind == "child_finished" {
                 self.finished_child_subtree(room, actor, &event.payload)?
             } else {
                 None
