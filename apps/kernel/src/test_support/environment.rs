@@ -166,7 +166,7 @@ mod tests {
             std::process::id()
         };
         let seconds = sleep_seconds(owner);
-        if super::isolate_environment_test() {
+        if super::isolate_environment_test(Duration::from_secs(180)) {
             assert!(
                 !detached_sleeper_running(seconds),
                 "the isolated test left `sleep {seconds}` running in a session of its own"
