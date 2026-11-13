@@ -345,7 +345,10 @@ fn an_agents_command_stays_pausable_when_a_person_submits_before_its_first_sampl
     line_finished_for_key(&key, &[build]);
     line_started_for_key(&key);
     line_finished_for_key(&key, &[build]);
-    settle(6);
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !agent.waiting("grow") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert!(
         agent.waiting("grow"),
         "the agent's build took the person's later line and ran unpaused"

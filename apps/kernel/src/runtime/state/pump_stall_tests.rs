@@ -256,7 +256,9 @@ async fn the_pump_does_not_wait_for_a_trigger_stuck_on_a_held_lane() {
         .expect("the pump waits for a trigger that waits on a provider lane");
     until(|| {
         let other = trigger(&runtime, &session_id, "other");
-        other.last_outcome() == Some(AgentTriggerOutcome::Queued) && !other.dispatch_in_flight()
+        other.last_outcome() == Some(AgentTriggerOutcome::Queued)
+            && !other.dispatch_in_flight()
+            && trigger(&runtime, &session_id, "stuck").dispatch_in_flight()
     })
     .await
     .expect("another trigger waits behind the stuck one");
