@@ -3415,3 +3415,23 @@ async fn a_withdrawn_payment_card_closes_the_popup(withdrawal: PaymentWithdrawal
         .is_err());
     assert!(inserted(&login).is_none());
 }
+
+// A fill must not bypass the checkout commit gate by submitting its native form.
+#[tokio::test]
+async fn vopen_a_card_fill_cannot_submit_a_payment() {
+    crate::test_support::isolated_env_test!();
+    let login = card_room(SITE).await;
+    let f = &login.f;
+    unlock(f);
+    let _turn = running(f);
+    saved_card(f);
+    let mut args = card_fill("number", Some(&payment()));
+    args["submit"] = json!(true);
+    let result = call(f, PASTE, args).await;
+    assert!(result.unwrap_err().to_string().contains("checkout button"));
+    assert!(
+        !card_pending(f),
+        "submitting a fill must not request approval"
+    );
+    assert!(inserted(&login).is_none());
+}

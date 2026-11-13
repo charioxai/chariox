@@ -1,3 +1,4 @@
+import { PaymentActions } from "./kernel-browser-payment.mjs";
 import { captureBackgroundRenderer } from './kernel-browser-background.mjs';
 import { AppTabs } from './browser-controller-apps.mjs';
 import { HostDownloads } from "./kernel-browser-downloads.mjs";
@@ -148,6 +149,7 @@ export class KernelBrowserHost {
     this.generation = 0;
     this.observations = 0; this.observed = 0;
     this.tabs = new Map();
+    this.paymentActions = new PaymentActions(root);
     this.webBotAuthRestoreUrls = new Map();
     this.webBotAuthProjects = new Map();
     this.popupEvidence = new BrowserPopupEvidence(TAB_LIMIT);
@@ -1359,6 +1361,7 @@ export class KernelBrowserHost {
         const deferred=await this.sampleLane(tab).run("input", async () => {
           if(timestamp()-laneAt>250)this.timing('input_wait sample_lane',laneAt);
           const dispatch = async (inputTimestamp, inputToken) => {
+            await this.paymentActions.beforeInput(this.browser, tab, command);
             if (command.input.kind !== "scroll") await this.tabGroups?.openingInput?.(tab.target_id, Boolean(agentRequest));
             return this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { uploadRoots: command._upload_roots, signal, inputTimestamp, inputToken, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, viewport:{css_width:this.pageSize(tab.tab_id).width,css_height:this.pageSize(tab.tab_id).height}, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
           };
@@ -1508,6 +1511,7 @@ export class KernelBrowserHost {
         // recorded before the field's input/change handlers can run.
         const app = this.appForInput(tab, params, true);
         if (app) this.browser.appTabs.noteActivity(tab.target_id);
+        if (params._vault_payment) this.paymentActions.register(tab, params._vault_payment);
         const action = { ...params.action, mask_code_input: codeInput, vault_factor_input: factorInput, plain_target: params.plain_target === true };
         const performed = await this.sampleLane(tab).run("input", () => this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
           node_ref: params.node_ref, action, timeout_ms: 10_000 }, { signal }));

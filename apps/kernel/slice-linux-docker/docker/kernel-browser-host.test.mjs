@@ -3758,3 +3758,35 @@ test('browsertools: a wait past its deadline still reports once the target can b
 test('browsertools: wait does not hold the host mutation lane', () => {
   assert.equal(scheduleHostRequest({ method: 'host.browser', params: { op: 'wait', text: 'a' } }, null, { device_scale_factor: 1 }).kind, 'bridge');
 });
+
+for (const authority of [[], [{ id: 'other-payment', origin: 'https://shop.test' }]]) {
+  test('MP-08 saved-card Pay click needs the same live owner approval', () => using(async ({host,sent}) => {
+    const opened=await host.request({op:'open',url:'https://shop.test/checkout'}),tab=opened.tabs[0];
+    host.browser.performAction=async()=>({});
+    host.browser.paymentInputTarget=async()=>({payment:true,origin:'https://shop.test',document_id:tab.document_id});
+    const filled=await host.handle({id:'fill',method:'host.secret',params:{tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,node_ref:'backend:7',observed_by:'agent:buyer',_vault_payment:{id:'approved-payment',origin:'https://shop.test',expires_at_ms:Date.now()+900000},action:{kind:'fill',text:'test-only',expected_document_url:tab.url}}});
+    assert.equal(filled.ok,true);
+    const before=sent.filter(r=>r.method==='Input.dispatchMouseEvent').length;
+    const click=await host.handle({id:'pay',method:'host.browser',params:{op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,observed_by:'agent:buyer',_agent_input:true,_vault_payment_approvals:authority,input:{kind:'click',x:20,y:20}}});
+    assert.equal(click.ok,false,'an expired, ended or different approval cannot pay');
+    assert.match(JSON.stringify(click),/payment.*approval/i);
+    assert.equal(sent.filter(r=>r.method==='Input.dispatchMouseEvent').length,before,'no physical click');
+  }));
+}
+
+test('MP-08 a payment commit is single use even after a lost acknowledgement',()=>using(async({host,sent},root)=>{
+  const opened=await host.request({op:'open',url:'https://shop.test/checkout'}),tab=opened.tabs[0];
+  host.browser.performAction=async()=>({});
+  host.browser.paymentInputTarget=async()=>({payment:true,origin:'https://shop.test',document_id:tab.document_id});
+  await host.handle({id:'fill',method:'host.secret',params:{tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,node_ref:'backend:7',observed_by:'agent:buyer',_vault_payment:{id:'approved-payment',origin:'https://shop.test',expires_at_ms:Date.now()+900000},action:{kind:'fill',text:'test-only',expected_document_url:tab.url}}});
+  const params={op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,observed_by:'agent:buyer',_agent_input:true,_vault_payment_approvals:[{id:'approved-payment',origin:'https://shop.test'}],input:{kind:'click',x:20,y:20}};
+  const first=await host.handle({id:'pay-1',method:'host.browser',params});
+  assert.equal(first.ok,true);
+  const before=sent.filter(r=>r.method==='Input.dispatchMouseEvent').length;
+  host.paymentActions=new host.paymentActions.constructor(root);
+  host.paymentActions.register(tab,{id:'approved-payment',origin:'https://shop.test',expires_at_ms:Date.now()+900000});
+  const again=await host.handle({id:'pay-2',method:'host.browser',params});
+  assert.equal(again.ok,false,'do not pay again when the first result is uncertain');
+  assert.match(JSON.stringify(again),/already.*sent|receipt/i);
+  assert.equal(sent.filter(r=>r.method==='Input.dispatchMouseEvent').length,before);
+}));
