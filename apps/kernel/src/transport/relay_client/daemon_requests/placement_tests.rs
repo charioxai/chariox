@@ -48,6 +48,7 @@ impl SecondKernel {
         let root = TempDir::new();
         let workspace = crate::test_support::TestWorktree::new("placement-second-kernel");
         let mut config = crate::DaemonConfig::for_tests();
+        config.user_config.providers.default = Some("dev-stub".into());
         config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
         config.user_config.history.operational.path =
             Some(root.path().join("history.db").display().to_string());
