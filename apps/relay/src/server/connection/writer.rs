@@ -557,14 +557,9 @@ where
                     };
                     transfer.id = id;
                 }
-                if let Some((message, end)) = transfer.next_chunk(
-                    if binary_requests {
-                        credit.drain.first_chunk_bytes()
-                    } else {
-                        credit.drain.chunk_bytes()
-                    },
-                    binary_requests,
-                ) {
+                if let Some((message, end)) =
+                    transfer.next_chunk(credit.drain.chunk_bytes(), binary_requests)
+                {
                     let small_binary = transfer
                         .binary
                         .as_ref()
