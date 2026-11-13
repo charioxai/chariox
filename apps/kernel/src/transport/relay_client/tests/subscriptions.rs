@@ -1942,3 +1942,66 @@ async fn metadata_subscriptions_drain_bytes_without_sending_them_and_keep_room_e
         );
     }
 }
+
+#[tokio::test]
+async fn shared_snapshot_encoding_still_encrypts_for_each_admitted_subscriber() {
+    let _guard = relay_client_test_guard().await;
+    let config = DaemonConfig::for_tests();
+    let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+    let session_id = create_test_session(&mut app, "workspace", "worktree");
+    let event = KernelEvent::SessionSnapshot {
+        room_workflows: crate::runtime::projection::RoomWorkflowInventory {
+            session_id: session_id.clone(),
+            home_kernel_id: "kernel".into(),
+            revision: "1".into(),
+            workflow_count: 0,
+            workflows: vec![],
+        },
+        session: Box::new(app.sessions().get_session(&session_id).unwrap()),
+        provider_run: Box::new(None),
+        agent_activity: Box::default(),
+        agent_activity_revision: 1,
+    };
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        4,
+    ));
+    let runtime = Arc::new(RelayEventRuntime::for_tests(8));
+    let (tx, _priority, mut rx) = RelayOutgoingSender::channel(8);
+    let mut earlier = None;
+    for n in 0..2 {
+        let private = relay_crypto::generate_private_key_base64();
+        let public = relay_crypto::public_key_from_private_key_base64(&private).unwrap();
+        approve_test_terminal(&config, &public);
+        super::super::events::emit_relay_event(
+            &router,
+            &tx,
+            &format!("subscriber-{n}"),
+            &public,
+            &runtime,
+            &format!("room:{n}"),
+            event.clone(),
+        )
+        .await
+        .unwrap();
+        let RelayEnvelope::DaemonEvent {
+            encrypted_event,
+            event_id,
+            ..
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("expected event")
+        };
+        let decoded =
+            relay_crypto::decrypt_payload_for_private_key(&private, &encrypted_event).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<KernelEvent>(&decoded.plaintext).unwrap(),
+            event
+        );
+        if let Some((last_id, last_ciphertext)) = earlier {
+            assert!(event_id > last_id);
+            assert!(encrypted_event.ciphertext != last_ciphertext);
+        }
+        earlier = Some((event_id, encrypted_event.ciphertext));
+    }
+}

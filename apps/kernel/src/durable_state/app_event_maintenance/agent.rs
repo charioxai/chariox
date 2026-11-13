@@ -52,9 +52,8 @@ fn settle(
 /// Promotion keeps the prompt id; only removal from both live queues settles it.
 pub(in crate::durable_state) fn record_prompt_state_in(
     tx: &Transaction<'_>,
-    payload: &str,
+    current: &DurablePromptStateEventPayload,
 ) -> rusqlite::Result<()> {
-    let current = decode(payload)?;
     let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM app_outbox WHERE state='queued' AND queued_session_id=?1 AND queued_agent_id=?2)", params![current.session_id,current.agent_id], |row| row.get(0))?;
     if !pending {
         return Ok(());
@@ -74,7 +73,7 @@ pub(in crate::durable_state) fn record_prompt_state_in(
         .map(|p| (p, true))
         .chain(previous.queued_prompts.iter().map(|p| (p, false)))
     {
-        if !contains(&current, prompt.id()) {
+        if !contains(current, prompt.id()) {
             settle(
                 tx,
                 &current.session_id,

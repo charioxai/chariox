@@ -146,10 +146,10 @@ impl DurableKernelStateStore {
 /// event. Private operation metadata is restored from the actual event payload.
 /// Prompt completion may remove live queues later; this immutable submission
 /// receipt prevents the entry from being replayed after that point.
-pub(super) fn record_prompt_state_in(tx: &Transaction<'_>, payload: &str) -> rusqlite::Result<()> {
-    let mut event: DurablePromptStateEventPayload =
-        serde_json::from_str(payload).map_err(|_| rusqlite::Error::InvalidQuery)?;
-    event.restore_private_states();
+pub(super) fn record_prompt_state_in(
+    tx: &Transaction<'_>,
+    event: &DurablePromptStateEventPayload,
+) -> rusqlite::Result<()> {
     for prompt in event
         .active_prompt
         .iter()

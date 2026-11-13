@@ -65,14 +65,8 @@ pub(super) fn reserve_in(
 /// settlement writes the same prompt id.
 pub(in crate::durable_state) fn record_prompt_state_in(
     tx: &Transaction<'_>,
-    payload: &str,
+    state: &DurablePromptStateEventPayload,
 ) -> rusqlite::Result<()> {
-    if !payload.contains(OPERATION_PREFIX) {
-        return Ok(());
-    }
-    let mut state: DurablePromptStateEventPayload =
-        serde_json::from_str(payload).map_err(|_| rusqlite::Error::InvalidQuery)?;
-    state.restore_private_states();
     for prompt in state
         .active_prompt
         .iter()

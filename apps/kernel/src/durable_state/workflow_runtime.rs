@@ -556,18 +556,18 @@ pub(super) fn write_workflow_runtime_transition(
                 prompt_state_json,
             ],
         )?;
+        let prompt_state =
+            crate::durable_prompt_state::DurablePromptStateEventPayload::decode(prompt_state_json)
+                .map_err(|_| rusqlite::Error::InvalidQuery)?;
         super::workflow_notifications::agent_lineage::record_prompt_state_in(
             transaction,
-            prompt_state_json,
+            &prompt_state,
         )?;
         super::workflow_notifications::agent_steer::record_prompt_state_in(
             transaction,
-            prompt_state_json,
+            &prompt_state,
         )?;
-        super::app_event_maintenance::agent::record_prompt_state_in(
-            transaction,
-            prompt_state_json,
-        )?;
+        super::app_event_maintenance::agent::record_prompt_state_in(transaction, &prompt_state)?;
         last_sequence = transaction.last_insert_rowid().max(0) as u64;
     }
     Ok(last_sequence)
