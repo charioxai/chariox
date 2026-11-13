@@ -83,7 +83,7 @@ try {
   await client.close?.()
   note(`room ${room.id} with 12 prompts`)
   const session = "tui"
-  const launch = (url) => tmux("new-session", "-d", "-s", session, "-x", "140", "-y", "40", `env ${Object.entries(env).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(" ")} bun ${path.join(repo, "apps/cli/dist/index.js")} --kernel-url ${url} --session ${room.id}`)
+  const launch = (url) => tmux("new-session", "-d", "-s", session, "-x", "140", "-y", "40", `env ${Object.entries(env).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(" ")} bun ${path.join(repo, "apps/cli/dist/index.js")} --kernel-url ${url} --session ${room.id}; echo "TUI exited with status $?"; sleep 60`)
   const screen = () => { try { return tmux("capture-pane", "-p", "-t", session) } catch { return "" } }
   const close = async () => { try { tmux("send-keys", "-t", session, "C-c") } catch {} await sleep(800); try { tmux("kill-session", "-t", session) } catch {} }
   // The first visit fills the TUI's view cache.
@@ -115,10 +115,11 @@ try {
       const before = frames.filter((frame) => content ? frame.t < content.t : true).filter((frame) => !blank(frame.text))
       let shown = 0, vanished = 0
       for (const frame of frames) { const lines = (frame.text.match(new RegExp(`${marker} \\d+`, "g")) ?? []).length; if (shown > 0 && lines === 0) vanished++; shown = Math.max(shown, lines) }
-      const run = { firstFrameMs: first?.t ?? null, contentMs: content ? content.t : null, contentAfterFirstMs: content && first ? content.t - first.t : null, framesBeforeContent: before.length, offlineFrames: frames.filter((frame) => offline.test(frame.text)).length, vanished, frames: frames.length }
+      const run = { firstFrameMs: first?.t ?? null, contentMs: content ? content.t : null, contentAfterFirstMs: content && first ? content.t - first.t : null, framesBeforeContent: before.length, offlineFrames: frames.filter((frame) => offline.test(frame.text)).length, vanished, exited: frames.find((frame) => frame.text.includes("TUI exited"))?.text.match(/TUI exited with status \d+/)?.[0] ?? null, frames: frames.length }
       runs.push(run)
-      if (index === 0) {
-        const dir = path.join(evidence, `frames-${fault}`)
+      // The first restart of each fault, and every restart that missed, keeps its screens as evidence.
+      if (index === 0 || run.contentMs === null || run.exited || run.framesBeforeContent > 0 || run.vanished > 0) {
+        const dir = path.join(evidence, `frames-${fault}${index === 0 ? "" : `-restart${index + 1}`}`)
         mkdirSync(dir, { recursive: true })
         frames.forEach((frame, number) => writeFileSync(path.join(dir, `${String(number).padStart(3, "0")}-${frame.t}ms.txt`), frame.text))
       }
@@ -130,6 +131,7 @@ try {
     if (fault !== "F7" && runs.some((run) => run.contentAfterFirstMs !== null && run.contentAfterFirstMs > 300)) failures.push(`remembered Room later than 300 ms after the first frame (max ${Math.max(...runs.map((run) => run.contentAfterFirstMs ?? 0))} ms)`)
     if (runs.some((run) => run.framesBeforeContent > 0)) failures.push(`${runs.reduce((sum, run) => sum + run.framesBeforeContent, 0)} frames drew something else before the remembered Room`)
     if (runs.some((run) => run.offlineFrames > 0) && fault !== "F7") failures.push(`${runs.reduce((sum, run) => sum + run.offlineFrames, 0)} frames say the kernel is offline without evidence`)
+    if (runs.some((run) => run.exited)) failures.push(`${runs.filter((run) => run.exited).length} restarts ended the TUI within ${observeMs} ms`)
     if (runs.some((run) => run.vanished > 0)) failures.push(`${runs.reduce((sum, run) => sum + run.vanished, 0)} frames lost the transcript after showing it`)
     cells.push({ fault, runs, failures })
     note(`${fault}: ${failures.length ? `FAIL ${failures.join("; ")}` : "PASS"}`)
