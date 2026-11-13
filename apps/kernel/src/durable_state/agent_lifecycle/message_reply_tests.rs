@@ -66,13 +66,11 @@ fn reply_obligation(f: &Fixture) -> AgentObligation {
 fn a_message_answering_a_question_read_in_turn_settles_the_askers_reply() {
     let f = Fixture::new();
     let question = ask(&f);
-    // Peer reads the question from its inbox inside its running task and handles it there.
-    f.apply(Operation::Ack {
+    // Peer reads the question from its inbox inside its running task and answers before it acks.
+    f.apply(Operation::MarkShown {
         room: "room".into(),
         agent: "peer".into(),
-        sequence: question.sequence,
-        handled: true,
-        now: 2,
+        sequences: vec![question.sequence],
     });
     let reply = answer(&f);
     assert_ne!(
@@ -95,6 +93,17 @@ fn a_message_answering_a_question_read_in_turn_settles_the_askers_reply() {
     assert_eq!(
         told.payload["public_answer"]["excerpt"],
         "Yes, both, with geometry samples."
+    );
+    let asked = f
+        .store
+        .agent_inbox("room", "peer", 0)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.sequence == question.sequence)
+        .unwrap();
+    assert_eq!(
+        asked.state, "handled",
+        "the answered question is not delivered again"
     );
 }
 
