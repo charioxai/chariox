@@ -319,7 +319,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const workspaceShellSubmitController = createWorkspaceShellSubmitController({
     client: deps.client,
     clientId: deps.options.clientId,
-    cloudAccountClient: cloudShellClient(deps.cloudClient),
+    cloudAccountClient: cloudShellClient(deps.cloudClient, deps.client),
     ...(deps.openRoomViewer ? { openRoomViewer: deps.openRoomViewer } : {}),
     ...(deps.readSecret ? { readSecret: deps.readSecret } : {}),
     workspaceShellContext: deps.workspaceShellContext,
