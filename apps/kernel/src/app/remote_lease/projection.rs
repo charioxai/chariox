@@ -2530,6 +2530,43 @@ mod explicit_completion_tests {
             .is_none());
     }
 
+    fn correlate_home_prompt(
+        app: &mut crate::app::DaemonApp,
+        leased: &crate::execution_lease::LeasedAgent,
+        run: &str,
+        home_prompt: &str,
+    ) {
+        let backing = app
+            .prompt_owner_active_prompt_for_agent_snapshot(
+                &leased.backing_session_id,
+                &leased.backing_agent_id,
+            )
+            .unwrap()
+            .unwrap();
+        RemoteLeaseRuntime::new(app)
+            .begin_leased_prompt_receipt(&leased.id, home_prompt)
+            .unwrap();
+        let mut receipt = app
+            .worker_prompt_receipts
+            .get(&leased.id, home_prompt)
+            .unwrap()
+            .clone();
+        receipt.backing_prompt_id = Some(backing.id().into());
+        app.worker_prompt_receipts.persist(receipt).unwrap();
+        RemoteLeaseRuntime::new(app)
+            .update_leased_prompt_receipt(
+                &leased.id,
+                home_prompt,
+                crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptPhase::Accepted,
+                Some(run),
+            )
+            .unwrap();
+        app.leased_agents
+            .get_mut(&leased.id)
+            .unwrap()
+            .active_home_prompt_id = Some(home_prompt.into());
+    }
+
     pub(super) fn reused_explicit_completion_run() -> (
         crate::app::DaemonApp,
         crate::execution_lease::LeasedAgent,
@@ -2573,10 +2610,7 @@ mod explicit_completion_tests {
             .get_mut(&leased_agent.id)
             .expect("leased agent should remain registered")
             .provider = "codex".to_string();
-        app.leased_agents
-            .get_mut(&leased_agent.id)
-            .unwrap()
-            .active_home_prompt_id = Some("home-prompt-a".to_string());
+        correlate_home_prompt(&mut app, &leased_agent, &provider_run_id, "home-prompt-a");
         let first_completed_at_ms = RemoteLeaseRuntime::new(&mut app)
             .leased_agent_snapshot_for_test(&leased_agent.id)
             .and_then(|agent| agent.active_home_prompt_started_at_ms)
@@ -2646,10 +2680,7 @@ mod explicit_completion_tests {
             .get_mut(&leased_agent.id)
             .unwrap()
             .provider = "codex".to_string();
-        app.leased_agents
-            .get_mut(&leased_agent.id)
-            .unwrap()
-            .active_home_prompt_id = Some("home-prompt-b".to_string());
+        correlate_home_prompt(&mut app, &leased_agent, &provider_run_id, "home-prompt-b");
         (app, leased_agent, provider_run_id)
     }
 
@@ -2773,9 +2804,8 @@ mod explicit_completion_tests {
             let PromptSubmissionOutcome::Started { prompt } = outcome else {
                 panic!("the leased prompt should start");
             };
-            let active = app.leased_agents.get_mut(&leased.id).unwrap();
-            active.provider = provider.into();
-            active.active_home_prompt_id = Some(prompt.id().into());
+            correlate_home_prompt(&mut app, &leased, &run, prompt.id());
+            app.leased_agents.get_mut(&leased.id).unwrap().provider = provider.into();
             app.prompt_owner_complete_active_prompt_only(
                 &leased.backing_session_id,
                 &leased.backing_agent_id,
