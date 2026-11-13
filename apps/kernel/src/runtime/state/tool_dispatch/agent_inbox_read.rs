@@ -80,6 +80,29 @@ impl KernelRuntimeState {
         }))
     }
 
+    /// A decision event needs an answer only while its card is open: pending in this kernel or
+    /// shown in its room. A card that ended without one (its asker stopped, or the kernel that
+    /// held it stopped) leaves nothing to answer, so its event can be acknowledged.
+    fn decision_open(&self, room: &str, event: &InboxEvent) -> bool {
+        if !ledger::needs_answer(event) {
+            return false;
+        }
+        let Some(card) = event.payload["interaction_id"].as_str() else {
+            return true;
+        };
+        self.owned.pending_interactions.write().contains_key(card)
+            || self
+                .owned
+                .session_store
+                .get_session(room)
+                .is_ok_and(|session| {
+                    session
+                        .active_interactions()
+                        .iter()
+                        .any(|open| open.id() == card)
+                })
+    }
+
     fn inbox_event_view(
         &self,
         room: &str,
@@ -150,7 +173,7 @@ impl KernelRuntimeState {
             "sequence": event.sequence,
             "kind": event.kind,
             "urgent": event.urgent,
-            "needs_answer": ledger::needs_answer(event),
+            "needs_answer": self.decision_open(room, event),
             "reply_requested": event.reply_requested,
             "source": {
                 "kind": source_kind,
@@ -237,7 +260,7 @@ impl KernelRuntimeState {
                         skipped.push(
                             serde_json::json!({"sequence": event.sequence, "reason": "not_read"}),
                         );
-                    } else if ledger::needs_answer(event) {
+                    } else if self.decision_open(room, event) {
                         skipped.push(serde_json::json!({"sequence": event.sequence, "reason": "needs_answer"}));
                     } else if matches!(event.state.as_str(), "submitting" | "uncertain" | "blocked")
                     {
@@ -271,7 +294,7 @@ impl KernelRuntimeState {
                     "event unavailable in this inbox"
                 })
             })?;
-        if ledger::needs_answer(&event) {
+        if self.decision_open(room, &event) {
             return Err(ledger::error(
                 "this event needs an answer: answer or pass the decision first, then it can be acknowledged",
             ));
