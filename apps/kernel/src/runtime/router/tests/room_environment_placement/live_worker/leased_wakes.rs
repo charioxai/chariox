@@ -948,7 +948,7 @@ async fn eventually_async<T, F: std::future::Future<Output = Option<T>>>(
 }
 
 async fn spawn_on_agent_worker(fixture: &mut LiveWorker, room: &str) -> String {
-    spawn_on_agent_worker_with_model(fixture, room, "terminal-echo-a").await
+    spawn_on_agent_worker_with_model(fixture, room, "native-tui-idle").await
 }
 
 async fn spawn_on_agent_worker_with_model(

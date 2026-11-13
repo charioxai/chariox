@@ -2724,6 +2724,118 @@ mod explicit_completion_tests {
     }
 
     #[test]
+    fn leased_completion_waits_for_the_scoped_settlement_record() {
+        for provider in ["managed-dev-stub", "codex"] {
+            let mut config = DaemonConfig::for_tests();
+            config.accept_remote_leases = true;
+            let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+            let lease = RemoteLeaseRuntime::new(&mut app)
+                .create_execution_lease("home", "room", "agent", false, "owner")
+                .unwrap();
+            let leased = RemoteLeaseRuntime::new(&mut app)
+                .create_leased_agent(
+                    &lease.id,
+                    "managed-dev-stub",
+                    "default",
+                    Some("default".into()),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            let (run, outcome) = RemoteLeaseRuntime::new(&mut app)
+                .submit_leased_prompt(&leased.id, "work that fails", Vec::new())
+                .unwrap();
+            let PromptSubmissionOutcome::Started { prompt } = outcome else {
+                panic!("the leased prompt should start");
+            };
+            let active = app.leased_agents.get_mut(&leased.id).unwrap();
+            active.provider = provider.into();
+            active.active_home_prompt_id = Some(prompt.id().into());
+            app.prompt_owner_complete_active_prompt_only(
+                &leased.backing_session_id,
+                &leased.backing_agent_id,
+            )
+            .unwrap();
+            let at = crate::session::unix_epoch_ms();
+            app.terminal_mut().record_assistant_message_completion(
+                &leased.backing_session_id,
+                &run,
+                Some(&leased.backing_agent_id),
+                vec![leased.backing_attachment_id.clone()],
+                &format!("prompt-complete:{}", prompt.id()),
+                at,
+            );
+
+            // A projection may have read its outcome snapshot before the settler
+            // published it, then drained the newly published completion record.
+            for _ in 0..2 {
+                let projection = RemoteLeaseRuntime::new(&mut app)
+                    .drain_leased_runtime_projection(&leased.id, &run, false)
+                    .unwrap();
+                if let Some((_, RelayPeerEvent::LeasedRuntimeProjection { completions, .. })) =
+                    projection
+                {
+                    assert!(
+                        completions.is_empty(),
+                        "unsettled turn became success: {completions:?}"
+                    );
+                }
+                assert_eq!(
+                    app.leased_agents
+                        .get(&leased.id)
+                        .unwrap()
+                        .active_home_prompt_id
+                        .as_deref(),
+                    Some(prompt.id()),
+                    "the exact home turn remains pending"
+                );
+            }
+            let termination = crate::provider::ProviderRunTermination::process_exit(137, at);
+            let failure = termination.failure.clone().unwrap();
+            app.completed_git_turn_snapshot_store()
+                .record_prompt_settlement_with_termination(
+                    &leased.backing_session_id,
+                    &leased.backing_agent_id,
+                    &run,
+                    &prompt,
+                    at,
+                    Some(prompt.created_at_ms()),
+                    crate::git_observer::CompletedTurnSettlementStatus::Failed,
+                    Some(termination),
+                    Some(failure),
+                );
+            let projection = RemoteLeaseRuntime::new(&mut app)
+                .drain_leased_runtime_projection(&leased.id, &run, false)
+                .unwrap()
+                .expect("the recorded failure should project");
+            let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = projection.1;
+            assert_eq!(completions.len(), 1);
+            assert_eq!(completions[0].home_prompt_id.as_deref(), Some(prompt.id()));
+            assert_eq!(
+                completions[0].failure.as_ref().unwrap().kind,
+                crate::provider::TurnOutcomeKind::ProviderCrashed
+            );
+            assert!(completions[0]
+                .provider_termination
+                .as_ref()
+                .unwrap()
+                .reason
+                .contains("137"));
+            let repeated = RemoteLeaseRuntime::new(&mut app)
+                .drain_leased_runtime_projection(&leased.id, &run, false)
+                .unwrap();
+            if let Some((_, RelayPeerEvent::LeasedRuntimeProjection { completions, .. })) = repeated
+            {
+                assert!(completions.is_empty(), "a recorded failure projects once");
+            }
+        }
+    }
+
+    #[test]
     fn provider_dispatch_failure_completes_a_leased_turn() {
         let mut config = DaemonConfig::for_tests();
         config.accept_remote_leases = true;
