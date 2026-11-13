@@ -703,3 +703,50 @@ async fn restart_orphan_outcome_replaces_the_normalized_active_workflow_run() {
         );
     }
 }
+
+#[test]
+fn failed_entry_preparation_releases_its_preclaimed_workspace() {
+    let (runtime, session, run, blocker, _root) = blocked_entry();
+    drop(blocker);
+    let db = rusqlite::Connection::open(runtime.owned.durable_state_store.path()).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER fail_entry_preparation BEFORE INSERT ON durable_state_events
+         WHEN NEW.kind = 'workflow.runtime.updated'
+         BEGIN SELECT RAISE(FAIL, 'injected entry preparation failure'); END;",
+    )
+    .unwrap();
+    let snapshot = runtime
+        .owned
+        .session_store
+        .read()
+        .resolve_workflow_run_ref(&session, &run)
+        .unwrap();
+    let node = &snapshot.node_runs()[0];
+    let claim = runtime
+        .owned
+        .workflow_dispatch_claim_id(&session, &run, node.id());
+    let error = runtime
+        .owned
+        .workflow_schedule_entry_node(&session, &snapshot)
+        .err()
+        .expect("preparation must fail");
+    assert!(error
+        .to_string()
+        .contains("injected entry preparation failure"));
+    assert!(
+        !runtime.owned.prompt_workspace_claims.contains(&claim),
+        "WFDELAY-02: failed preparation must release the preclaimed workspace"
+    );
+    let session = runtime.owned.session_store.get_session(&session).unwrap();
+    runtime
+        .owned
+        .workspace_coordinator
+        .acquire_worktree_write_claim(
+            session.workspace_id(),
+            session.worktree_id(),
+            session.id(),
+            None,
+            "next_node",
+        )
+        .expect("another node can use the worktree immediately");
+}
