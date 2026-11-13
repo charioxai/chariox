@@ -9,7 +9,7 @@ pub(crate) fn environment_test_isolated() -> bool {
     std::env::var_os(CHILD_TEST).is_some()
 }
 
-pub(crate) fn isolate_environment_test() -> bool {
+pub(crate) fn isolate_environment_test(timeout: Duration) -> bool {
     let thread = std::thread::current();
     let name = thread
         .name()
@@ -89,7 +89,7 @@ pub(crate) fn isolate_environment_test() -> bool {
     #[cfg(unix)]
     let mut signals =
         crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(&child).ok();
-    let status = child.wait_timeout(Duration::from_secs(180)).unwrap();
+    let status = child.wait_timeout(timeout).unwrap();
     if status.is_none() {
         let pid = i32::try_from(child.id()).expect("isolated child PID fits the signal API");
         assert!(pid > 1, "refusing to signal a reserved isolated child PID");

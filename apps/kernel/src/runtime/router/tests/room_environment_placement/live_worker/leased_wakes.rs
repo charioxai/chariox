@@ -328,18 +328,39 @@ async fn killed_worker_provider_wakes_the_delegator_with_the_exit_status() {
     .expect("submit the delegated turn through the real relay");
     leased_run(&fixture, &room, &child).await;
     let leased = binding(&fixture, &child).await.leased_agent_id;
-    let (backing_session, worker_run) = {
+    let (backing_session, backing_agent, worker_run) = {
         let mut worker = fixture.worker.app.lock().await;
         let leases = crate::app::RemoteLeaseRuntime::new(&mut worker);
-        let (backing_session, _) = leases
+        let (backing_session, backing_agent) = leases
             .leased_agent_backing(&leased)
             .expect("worker backing agent");
         let run = leases
             .leased_agent_provider_run_id(&leased)
             .unwrap()
             .expect("the worker runs the turn");
-        (backing_session, run)
+        (backing_session, backing_agent, run)
     };
+    timeout(Duration::from_secs(10), async {
+        loop {
+            let delivered = fixture
+                .worker
+                .app
+                .lock()
+                .await
+                .prompt_owner_active_prompt_for_agent_snapshot(&backing_session, &backing_agent)
+                .unwrap()
+                .is_some_and(|prompt| {
+                    prompt.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                });
+            if delivered {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("kill the provider only after the worker has delivered its turn");
     let killed =
         crate::provider::ProviderRunTermination::process_exit(137, crate::session::unix_epoch_ms());
     fixture

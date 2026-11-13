@@ -65,6 +65,8 @@ pub(crate) struct TransferJobs {
     /// The running transfers, which a test stops the way a dying process does.
     #[cfg(test)]
     runs: Mutex<Vec<tokio::task::AbortHandle>>,
+    #[cfg(test)]
+    startup_records: Mutex<Vec<Pending>>,
 }
 
 impl TransferJobs {
@@ -114,10 +116,26 @@ impl TransferJobs {
         // What ran before the folder was opened is written down too.
         let removed = trim(&mut entries);
         for entry in entries.iter() {
-            drop(entry.save(&recorder));
+            let recorded = entry.save(&recorder);
+            #[cfg(test)]
+            self.startup_records
+                .lock()
+                .expect("startup records")
+                .push(recorded);
+            #[cfg(not(test))]
+            drop(recorded);
         }
         recorder.forget(removed);
         interrupted
+    }
+
+    #[cfg(test)]
+    pub(super) async fn startup_recorded(&self) -> Result<(), String> {
+        let writes = std::mem::take(&mut *self.startup_records.lock().expect("startup records"));
+        for write in writes {
+            write.recorded().await?;
+        }
+        Ok(())
     }
 
     /// Continues a job the kernel stopped under, from what it had staged.

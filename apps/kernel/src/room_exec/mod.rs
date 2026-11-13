@@ -535,11 +535,14 @@ impl RoomExecService {
     }
 
     fn finish(&self, record: &Record, outcome: ExecOutcome) {
-        record.output.lock().expect("exec output poisoned").outcome = Some(outcome);
+        let mut output = record.output.lock().expect("exec output poisoned");
+        output.outcome = Some(outcome);
         *record.state.lock().expect("exec state poisoned") = ExecState::Finished;
         record.input.lock().expect("exec input poisoned").sender = None;
-        record.changed.notify_waiters();
         self.inner.running.fetch_sub(1, Ordering::AcqRel);
+        // A terminal page also promises the launch no longer counts as running work.
+        drop(output);
+        record.changed.notify_waiters();
         self.report_work();
     }
 

@@ -1468,7 +1468,11 @@ async fn a_startup_snapshot_written_late_never_overwrites_a_newer_outcome() {
     let done = finished(&jobs, id).await;
     assert_eq!(done.state, FileTransferState::Done, "{done:?}");
     assert_eq!(digest_of(&here.join("f.bin")), sha256);
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    tokio::time::timeout(Duration::from_secs(30), jobs.startup_recorded())
+        .await
+        .expect("the delayed startup snapshot should finish")
+        .expect("the startup snapshot should be durable");
+    recorded(&state, id, "\"done\"").await;
     let text = std::fs::read_to_string(state.join(format!("{id}.json"))).unwrap();
     assert!(text.contains("\"done\""), "{text}");
 
