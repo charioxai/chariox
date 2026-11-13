@@ -5203,6 +5203,11 @@ Vault insertion never waits on a parked viewer. `state` itself is unchanged.
 `mp08_mp10_browser_state_wait_556_snapshot`). Viewers feature-detect 556 and poll
 older kernels as before; no client floor moves.
 
+Provisional local 1055: a `state_wait` that reaches `wait_ms` without a change answers only
+`{"revision": ..., "unchanged": true}` (an idle Browser view re-read the whole state, Tabs with their
+icons, every two seconds). The viewer keeps the state it read last and waits after the same revision.
+`browser-state-wait-unchanged-1055.json` pins the reply (`mp08_browser_state_wait_unchanged_1055_snapshot`).
+
 MP-08 / MP-10 / MP-11: allocated 560/168 adds the `display_subscribe` target
 `{kind:"browser_window", window_generation}`: the owner's view of the Chrome window's page area. It
 is bound to the window epoch (the same `window_generation` as `chrome_window`), not to a Tab or
@@ -5845,7 +5850,7 @@ a home restart ends the wake as lost, and the terminal itself is not affected.
 - Peer 177 only re-binds the embedded local response union to local 569; no
   peer request is added.
 
-#### Pushed output stream — provisional local 1043
+#### Pushed output stream — provisional local 1055
 
 A viewer that shows a terminal live subscribes once instead of sending one `read_output` per page.
 The relay subscription has `subscription_scope: "room_terminal"`, `session_id` the Room,

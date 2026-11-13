@@ -535,4 +535,8 @@ pub use workspace::*;
 /// settings; durable jobs,
 /// job-only command admission and outcomes, placement policies, process estimates, session job feeds and
 /// the owner's global offload decision.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1006;
+/// 1055 (provisional, after Landing 10): a Room terminal's output and the Room's terminals are pushed on one
+/// `room_terminal` relay subscription (`room_terminal_output`, `room_terminals_listed`,
+/// `room_terminal_stream_ended`), and a `state_wait` that ended without a change answers only `revision`
+/// and `unchanged: true`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1055;

@@ -3,7 +3,7 @@
     "MP-08",
     "MP-10"
   ],
-  "local_protocol": 1006,
+  "local_protocol": 1055,
   "peer_protocol": 445,
   "allocation": "coordinator-allocated local 593, relay peer unchanged: additive viewport-first snapshot (viewport_first, deferred, snapshot_viewport_complete)",
   "subscribe": {
