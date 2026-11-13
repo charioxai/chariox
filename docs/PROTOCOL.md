@@ -728,7 +728,12 @@ set|get`, `agent children`, `agent steer`, `agent message` and `agent spawn`, an
 `agent profiles`. `agent spawn` takes `--account-profile`, `--permission
 required|yolo`, `--deadline 90s|30m|2h|1d` and `--command-id`; a child never
 has a higher permission level or mode than its parent, and a retry with the
-same command id returns the same child. The end of a child's work reaches its
+same command id returns the same child. A child's directory may be inside the
+parent's workspace or worktree, or in another Git worktree sharing the canonical
+Git common directory of the parent's worktree. `agent spawn --dir <path>` selects
+an existing directory; `--worktree <path> --branch <branch>` creates a worktree
+from the parent's repository, including outside the parent's folders. An unrelated
+existing directory or repository outside those folders is refused. The end of a child's work reaches its
 parent as one urgent `child_finished` inbox event carrying `child_agent_id`,
 `success`, the typed turn `outcome` and `deadline_reached`; a turn that waited
 on a question when the kernel restarted ends as `interrupted_by_restart`. When the

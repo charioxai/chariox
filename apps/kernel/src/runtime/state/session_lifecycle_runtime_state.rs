@@ -609,7 +609,7 @@ impl KernelRuntimeState {
         self.authorize_current_external_command()?;
         request.kernel_ref = self.settle_kernel_ref(request.kernel_ref.take()).await?;
         if request.kernel_ref.is_none() {
-            self.keep_child_folder_inside_parent(&request)?;
+            self.check_child_directory(&request)?;
             let (request, checkout) = self.prepare_local_agent_worktree_placement(request)?;
             #[cfg(test)]
             crate::agent::authority_limit::run_hook_before_spawn_commit(&request.session_id);
@@ -626,8 +626,8 @@ impl KernelRuntimeState {
         .await
     }
 
-    /// A sub-agent's explicit folder lies inside its parent's folders (A5).
-    fn keep_child_folder_inside_parent(
+    /// A sub-agent's explicit folder stays in its parent's folders or Git repository (A5).
+    fn check_child_directory(
         &self,
         request: &crate::agent::CreateAgentRequest,
     ) -> Result<(), DaemonError> {
@@ -696,7 +696,10 @@ impl KernelRuntimeState {
             "agent.spawn",
             |target| match &parent {
                 Some(parent) => crate::agent::authority_limit::check_directory_to_create(
-                    parent, &session, target,
+                    parent,
+                    &session,
+                    target,
+                    std::path::Path::new(base_worktree),
                 ),
                 None => Ok(()),
             },

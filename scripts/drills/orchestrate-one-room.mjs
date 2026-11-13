@@ -13,6 +13,7 @@ import { setTimeout as delay } from "node:timers/promises"
 import { LocalIpcClient } from "../../packages/kernel-client/dist/ipc.js"
 import { submitPromptRequest } from "../../packages/kernel-client/dist/ipc-requests.js"
 import { startOwnerCloud } from "./local-owner-cloud.test-support.mjs"
+import { runSiblingWorktrees } from "./sibling-worktree-scenario.mjs"
 import { hiddenBrief, runHidden } from "./hidden-subagents-scenario.mjs"
 import { kindsBrief, orchBrief, decisionsTwoBrief, kindsDriver, sudoProbe, lateParentAnswer, controlProbes } from "./subagents-landing5-scenarios.mjs"
 import { listDescendantsRequest } from "../../packages/kernel-client/dist/ipc-agent-requests.js"
@@ -235,6 +236,10 @@ async function main() {
 
   const deadline = Date.now() + 25 * 60 * 1000
   const scenario = flags.get("--scenario") ?? "team"
+  if (scenario === "spawnwt") {
+    await runSiblingWorktrees({ a, R, orch, attached, provider, profile, model, work, note, until, evidence })
+    return
+  }
   if (scenario === "hidden") {
     writeFileSync(join(work, "BRIEF.md"), hiddenBrief({ model, work }))
     const verdicts = await runHidden({ a, R, orch, attached, model, work, note, until, restart, evidence, kill: flags.get("--hidden-kill") !== "no" })
