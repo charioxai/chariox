@@ -145,7 +145,7 @@ pub(super) fn meta_agent_request(
             crate::local::ListProviderAccountProfilesRequest { provider: None },
         )),
         _ => Err(meta_command_error(
-            "usage: agent <list|spawn|focus|alias|delete|destroy|cancel|deadline|children|usage|profiles> ...",
+            "usage: agent <list|spawn|focus|alias|delete|destroy|cancel|deadline|children|revoke|usage|profiles> ...",
         )),
     }
 }
