@@ -106,6 +106,34 @@ fn workspace_release_submits_pending_entry_once_and_blocked_poll_does_not_rewrit
     assert_eq!(prompt_count(&runtime, &session), 1);
 }
 
+#[tokio::test]
+async fn released_blocker_starts_the_blocked_entry_without_another_trigger() {
+    let (runtime, session, run, blocker, _root) = blocked_entry();
+    let retries = tokio::spawn({
+        let runtime = runtime.clone();
+        async move { runtime.run_contended_claim_retries().await }
+    });
+    drop(blocker);
+    let started = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !runtime
+            .owned
+            .workflow_entry_intent(&session, &run)
+            .unwrap()
+            .unwrap()
+            .submitted
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    retries.abort();
+    assert!(
+        started.is_ok(),
+        "WFCLAIM-01: the blocked entry must start once the claim it waited for is released"
+    );
+    assert_eq!(prompt_count(&runtime, &session), 1);
+}
+
 #[test]
 fn user_resume_of_unsubmitted_entry_keeps_one_original_operation() {
     let (runtime, session, run, blocker, _root) = blocked_entry();

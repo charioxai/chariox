@@ -112,7 +112,13 @@ pub fn on_workflow_prompt_completed(
                     message: "provider run identity is required to settle a waiting task".into(),
                 });
             }
-            return persist_workflow_session_state(app, session_id, "workflow_task_waiting");
+            persist_workflow_session_state(app, session_id, "workflow_task_waiting")?;
+            // The ended turn held the node's worktree claim. A task that waits
+            // for its owner or a wake holds nothing; its next turn claims again.
+            if release_settled_workflow_claims(app, session_id, prompt, provider_run_id) {
+                let _ = retry_blocked_workflow_claims(app);
+            }
+            return Ok(());
         }
     }
     let completion_snapshot = build_workflow_completion_snapshot(

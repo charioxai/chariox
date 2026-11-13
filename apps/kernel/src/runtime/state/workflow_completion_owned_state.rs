@@ -290,7 +290,17 @@ impl KernelRuntimeOwnedState {
                 activity_mutation,
                 rollback_prompt.take().expect("prompt rollback"),
             )?;
-            return Ok(WorkflowPromptDispatches::default());
+            // The ended turn held the node's worktree claim. A task that waits
+            // for its owner or a wake holds nothing; its next turn claims again.
+            let mut dispatches = WorkflowPromptDispatches::default();
+            if self.release_workflow_node_workspace_claim(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            ) {
+                dispatches.extend(self.workflow_retry_blocked_claims());
+            }
+            return Ok(dispatches);
         }
         let workflow_run_before =
             match self
