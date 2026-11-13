@@ -535,4 +535,5 @@ pub use workspace::*;
 /// settings; durable jobs,
 /// job-only command admission and outcomes, placement policies, process estimates, session job feeds and
 /// the owner's global offload decision.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1006;
+/// 1053: durable owner-selected App folder grants and trusted folder controls.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1053;

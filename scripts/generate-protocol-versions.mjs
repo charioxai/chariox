@@ -44,7 +44,8 @@ const currentSnapshots = [
   "fixtures/historical-workflow-protocol.json",
   "fixtures/landing8-protocol.json",
   "fixtures/owner-vault-protocol.json",
-  "fixtures/totp-protocol.json"
+  "fixtures/totp-protocol.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/app-folder-grants-1053.json"
 ]
 const localKeys = new Set(["local", "local_protocol", "protocol_version"])
 for (const path of currentSnapshots) {

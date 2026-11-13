@@ -1,0 +1,53 @@
+{
+  "local": 1053,
+  "relayPeer": 491,
+  "requests": [
+    {
+      "GrantAppFolder": {
+        "session_id": "room-1",
+        "operation_id": "folder-pick-1",
+        "path": "/notes",
+        "access": "read_only"
+      }
+    },
+    {
+      "ListAppFolderGrants": {
+        "installation_id": "app-1"
+      }
+    },
+    {
+      "RevokeAppFolderGrant": {
+        "installation_id": "app-1",
+        "grant_id": "folder-1"
+      }
+    }
+  ],
+  "responses": [
+    {
+      "AppFolderGranted": {
+        "operation_id": "folder-pick-1",
+        "installation_id": "app-1",
+        "grant_id": "folder-1"
+      }
+    },
+    {
+      "AppFolderGrantsListed": {
+        "installation_id": "app-1",
+        "grants": [
+          {
+            "grant_id": "folder-1",
+            "path": "/notes",
+            "access": "read_only",
+            "written_bytes": 16
+          }
+        ]
+      }
+    },
+    {
+      "AppFolderGrantRevoked": {
+        "installation_id": "app-1",
+        "grant_id": "folder-1"
+      }
+    }
+  ]
+}

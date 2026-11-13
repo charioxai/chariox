@@ -15,6 +15,7 @@ mod app_dev_push;
 mod app_dev_register;
 mod app_events;
 mod app_fetch;
+mod app_folders;
 mod app_install;
 mod app_publisher;
 mod app_view_inspection;
