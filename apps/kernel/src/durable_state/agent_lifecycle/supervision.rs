@@ -187,7 +187,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         && !(success && super::delegation::unbound(&t, &reg))
                     {
                         peers_ended |= reg.peer;
-                        if !super::peer_follows::outlives(&reg, &id) {
+                        if !super::peer_follows::outlives(tx, &reg, &id)? {
                             reg.live = false;
                             tx.execute(
                                 "UPDATE agent_registrations SET payload=?2 WHERE id=?1",

@@ -42,6 +42,8 @@ pub(crate) mod peer_follows;
 #[cfg(test)]
 mod peer_room_reply_tests;
 #[cfg(test)]
+mod peer_task_follow_tests;
+#[cfg(test)]
 mod plain_tests;
 mod quarantine;
 mod replies;
