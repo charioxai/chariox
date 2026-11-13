@@ -583,6 +583,9 @@ where
                         } else {
                             credit.bytes == 0 || credit.bytes + bytes <= window
                         };
+                    if !fits && !transfer.small {
+                        credit.drain.blocked(Instant::now());
+                    }
                     if fits {
                         if starting {
                             next_id = transfer.id;

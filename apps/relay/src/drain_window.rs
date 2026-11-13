@@ -63,6 +63,15 @@ pub struct DrainWindow {
     full_rate: f64,
     flat_rounds: u8,
     filled: bool,
+    /// The largest bulk frame acknowledged: the window always holds two of them,
+    /// so a sender of whole chunks keeps one in flight while the next is answered.
+    frame: usize,
+    /// When a bulk frame last waited for the window. A frame sent before that
+    /// measured the link; one sent while the application had nothing more to
+    /// send measured the application.
+    blocked_at: Option<Instant>,
+    /// Whether a bulk frame waited for the window during the current round trip.
+    round_blocked: bool,
 }
 
 impl DrainWindow {
@@ -76,6 +85,9 @@ impl DrainWindow {
             full_rate: 0.0,
             flat_rounds: 0,
             filled: false,
+            frame: 0,
+            blocked_at: None,
+            round_blocked: false,
         }
     }
 
@@ -91,7 +103,7 @@ impl DrainWindow {
     /// The bulk bytes allowed unacknowledged now. A sender always may write one
     /// frame when nothing is unacknowledged, whatever its size.
     pub fn bytes(&self) -> usize {
-        let floor = 2 * self.chunk_bytes();
+        let floor = 2 * self.chunk_bytes().max(self.frame);
         let (Some(rtt), Some(rate)) = (self.min_rtt, self.max_rate()) else {
             return START_WINDOW_BYTES;
         };
@@ -101,6 +113,13 @@ impl DrainWindow {
             STARTUP_GAIN
         };
         ((rate * rtt.as_secs_f64() * gain).round() as usize).clamp(floor, CEILING_BYTES)
+    }
+
+    /// A bulk frame is waiting because the window is full: the rate measured
+    /// from here on is the link's, not what the application had to send.
+    pub fn blocked(&mut self, now: Instant) {
+        self.blocked_at = Some(now);
+        self.round_blocked = true;
     }
 
     /// Stamp a frame as it is written. `idle` is true when nothing was
@@ -120,6 +139,9 @@ impl DrainWindow {
     /// sample the rate: small frames alone never fill the pipe, so their rate
     /// is what the application sent, not what the link can carry.
     pub fn received(&mut self, now: Instant, bytes: usize, stamp: SendStamp, bulk: bool) {
+        if bulk {
+            self.frame = self.frame.max(bytes).min(CHUNK_BYTES);
+        }
         self.delivered += bytes as u64;
         self.delivered_at = now;
         let rtt = now.saturating_duration_since(stamp.sent_at);
@@ -129,6 +151,12 @@ impl DrainWindow {
         let interval = now.saturating_duration_since(stamp.delivered_at);
         if bulk && !interval.is_zero() {
             let rate = (self.delivered - stamp.delivered) as f64 / interval.as_secs_f64();
+            // A frame the application sent alone measured how little it had to
+            // send: it may raise the estimate but never replaces a measured link.
+            let window_limited = self.blocked_at.is_some_and(|at| at >= stamp.sent_at);
+            if !window_limited && self.max_rate().is_some_and(|max| rate < max) {
+                return self.end_round_after(stamp);
+            }
             while self
                 .rates
                 .front()
@@ -143,15 +171,24 @@ impl DrainWindow {
             }
             self.rates.push_back((now, rate));
         }
-        // A round trip ends when a frame sent after the previous end is acknowledged.
-        if bulk && stamp.delivered >= self.round_end {
+        if bulk {
+            self.end_round_after(stamp);
+        }
+    }
+
+    /// A round trip ends when a frame sent after the previous end is acknowledged.
+    fn end_round_after(&mut self, stamp: SendStamp) {
+        if stamp.delivered >= self.round_end {
             self.round_end = self.delivered;
             self.end_round();
         }
     }
 
     fn end_round(&mut self) {
-        let Some(rate) = self.max_rate().filter(|_| !self.filled) else {
+        // Only a round trip in which the window held frames back can show that
+        // the pipe is full; a quiet one shows only the application.
+        let blocked = std::mem::take(&mut self.round_blocked);
+        let Some(rate) = self.max_rate().filter(|_| !self.filled && blocked) else {
             return;
         };
         if rate >= self.full_rate * FULL_GROWTH {
@@ -198,17 +235,46 @@ mod tests {
     /// `rtt` for `seconds`, and returns (link use, mean wait of a small frame behind
     /// queued bulk at the bottleneck) over the second half.
     fn simulate(rate: f64, rtt: Duration, seconds: u64) -> (f64, Duration) {
+        simulate_link(rate, rtt, Duration::ZERO, None, Duration::ZERO, seconds)
+    }
+
+    /// `simulate`, where the receiver answers each frame `receipt_delay` after it
+    /// arrived, the sender writes frames of `frame` bytes (a receiver that takes
+    /// only whole chunks) instead of `chunk_bytes`, and for the first `quiet` the
+    /// application has only one frame every 400 ms to send (an idle page). The
+    /// second half of the time after `quiet` is measured.
+    fn simulate_link(
+        rate: f64,
+        rtt: Duration,
+        receipt_delay: Duration,
+        frame: Option<usize>,
+        quiet: Duration,
+        seconds: u64,
+    ) -> (f64, Duration) {
         let start = Instant::now();
         let mut window = DrainWindow::new(start);
-        let (mut now, mut link_free_at) = (start, start);
+        let mut now = start;
+        while now < start + quiet {
+            let frame = frame.unwrap_or_else(|| window.chunk_bytes());
+            // One small frame (its receipt sets the minimum round trip) and one bulk frame.
+            let small = window.sent(now, true);
+            window.received(now + rtt + receipt_delay, 64, small, false);
+            let stamp = window.sent(now, true);
+            let receipt = now + Duration::from_secs_f64(frame as f64 / rate) + rtt + receipt_delay;
+            window.received(receipt, frame, stamp, true);
+            now += Duration::from_millis(400);
+        }
+        let start = now;
+        let mut link_free_at = start;
         let mut in_flight: VecDeque<(Instant, usize, SendStamp)> = VecDeque::new();
         let measure_from = start + Duration::from_secs(seconds / 2);
         let (mut sent, mut waits, mut wait_total) = (0usize, 0u32, Duration::ZERO);
         while now < start + Duration::from_secs(seconds) {
             loop {
-                let frame = window.chunk_bytes();
+                let frame = frame.unwrap_or_else(|| window.chunk_bytes());
                 let unacknowledged: usize = in_flight.iter().map(|(_, bytes, _)| bytes).sum();
                 if unacknowledged > 0 && unacknowledged + frame > window.bytes() {
+                    window.blocked(now);
                     break;
                 }
                 let stamp = window.sent(now, in_flight.is_empty());
@@ -219,7 +285,7 @@ mod tests {
                     sent += frame;
                 }
                 link_free_at = link_free_at.max(now) + Duration::from_secs_f64(frame as f64 / rate);
-                in_flight.push_back((link_free_at + rtt, frame, stamp));
+                in_flight.push_back((link_free_at + rtt + receipt_delay, frame, stamp));
             }
             let (receipt_at, frame, stamp) = in_flight.pop_front().unwrap();
             now = receipt_at;
@@ -243,5 +309,48 @@ mod tests {
                 "{rate} B/s, {rtt:?}: a small frame waits {wait:?} behind bulk"
             );
         }
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (transport3): a browser viewer takes only whole 16 KiB
+    // binary chunks and answers each one after its own event loop turn. The window was sized
+    // from the round trip of the smallest frame, so it never held two whole chunks and the
+    // display reached the viewer at one chunk per round trip (1.6 Mbit/s of an 8 Mbit/s link).
+    #[tokio::test(start_paused = true)]
+    async fn whole_chunks_with_slow_receipts_fill_the_link() {
+        for (rate, rtt, delay) in [
+            (1_000_000.0, 60, 20),
+            (1_000_000.0, 60, 0),
+            (1_000_000.0, 150, 20),
+            (250_000.0, 60, 20),
+        ] {
+            let (rtt, delay) = (Duration::from_millis(rtt), Duration::from_millis(delay));
+            let (link_use, wait) =
+                simulate_link(rate, rtt, delay, Some(CHUNK_BYTES), Duration::from_secs(5), 30);
+            // Whole 16 KiB frames are 65 ms each at 2 Mbit/s: the last one of a round
+            // trip leaves the link idle a little longer than short frames do.
+            assert!(
+                link_use >= 0.85,
+                "{rate} B/s, {rtt:?} + {delay:?}: link use {link_use}"
+            );
+            assert!(
+                wait <= (rtt + delay) / 2 + Duration::from_secs_f64(2.0 * CHUNK_BYTES as f64 / rate),
+                "{rate} B/s, {rtt:?} + {delay:?}: a small frame waits {wait:?} behind bulk"
+            );
+        }
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (transport3): adaptive frames whose receipts come back later
+    // than the minimum round trip still fill the link.
+    #[tokio::test(start_paused = true)]
+    async fn short_frames_with_slow_receipts_fill_the_link() {
+        let (link_use, _) = simulate_link(
+            1_000_000.0,
+            Duration::from_millis(60),
+            Duration::from_millis(40),
+            None,
+            Duration::from_secs(5),
+            30,
+        );
+        assert!(link_use >= 0.9, "link use {link_use}");
     }
 }
