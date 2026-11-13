@@ -124,6 +124,7 @@ impl KernelRuntimeState {
                         )
                     )));
         let capture = method == "host.secret" && params["op"] == "capture";
+        let chosen_clipboard = method == "host.computer" && params["op"] == "clipboard_read";
         let tab = params["tab_id"].as_str().map(str::to_owned);
         if model_mutation && self.handoff_model_write_blocked(user, tab.as_deref()) {
             return Err(host_error("owner_step_pending: wait for the owner's hand-off completion before changing this tab".into()));
@@ -217,6 +218,11 @@ impl KernelRuntimeState {
         // The capture reply is the value itself, headed for the Vault and never for the model:
         // scrubbing it would store the redaction marker when the value is already protected.
         if !protect || capture {
+            return Ok(result);
+        }
+        // The agent explicitly chose to read its copied text. Field observations
+        // remain masked; masks do not follow the value into the clipboard.
+        if chosen_clipboard {
             return Ok(result);
         }
         if card_region {

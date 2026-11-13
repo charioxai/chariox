@@ -158,16 +158,15 @@ export class NativeComputer {
     if(!['screenshot','ocr','clipboard_read'].includes(command.op)) throw new Error('MP-08: unsupported native observation');
     // Vault (Miguel 2026-10-09): never black out the desktop. Kernel-browser
     // windows keep their CDP fill-target masks; native windows cover only the
-    // exact AT-SPI plain entry filled from the Vault. A clipboard
-    // read stays withheld while values or targets are registered.
+    // exact AT-SPI plain entry filled from the Vault. A deliberate clipboard
+    // read is the agent's chosen copy/read workflow, not a field observation.
     const values=policy?.values??[];
-    const mask=command.op==='clipboard_read'&&Boolean(values.length || policy?.targets?.length);
     const browser_processes=await binding.browserProcesses?.();
     const processes=await binding.ownedProcesses?.()??[];
     const browser=command.op==='clipboard_read'?null:binding.browser?.();
     // A tracked Vault fill: a browser window whose field cannot be measured is covered whole, never refused.
     const fill=browser&&hasBrowserFill(browser,policy);
-    const observe=browser_protection=>this.execute({op:command.op,mask,values,query:command.query,processes,...(fill?{fill:true}:{}),...(browser_processes?{browser_processes}:{}),...(browser_protection?{browser_protection}:{})},binding.environment,signal);
+    const observe=browser_protection=>this.execute({op:command.op,mask:false,values,query:command.query,processes,...(fill?{fill:true}:{}),...(browser_processes?{browser_processes}:{}),...(browser_protection?{browser_protection}:{})},binding.environment,signal);
     // MP-08/MP-11: kernel-browser windows reveal all but their protected regions
     // only for an unchanged, presented field measurement; uncertain placement retries.
     // AT-SPI may expose a just-navigated document a moment after CDP does:
@@ -179,8 +178,8 @@ export class NativeComputer {
       await delay(250);
     }
     delete result.browser_withheld;
-    if(typeof result.text==='string')result.text=redactObservation(result.text,values);
-    if(Array.isArray(result.targets))result.targets=result.targets.filter(target=>redactObservation(String(target?.text??''),values)===String(target?.text??''));
+    if(command.op==='ocr'&&typeof result.text==='string')result.text=redactObservation(result.text,values);
+    if(command.op==='ocr'&&Array.isArray(result.targets))result.targets=result.targets.filter(target=>redactObservation(String(target?.text??''),values)===String(target?.text??''));
     if(signal?.aborted || this.binding()!==binding) throw new Error('MP-11: stale native observation');
     return {...redactObservation(result,command.op==='ocr'?values:[]),surface_id:binding.surface_id,generation:binding.generation};
   }

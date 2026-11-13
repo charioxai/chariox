@@ -147,7 +147,7 @@ def main(request, connection=None):
         return {'released':True}
     if op == 'clipboard_read':
         accessibility=load('native-accessibility')
-        value=load('native-clipboard').public_clipboard(request.get('processes',[]),accessibility,request['mask'],request.get('browser_processes'))
+        value=load('native-clipboard').public_clipboard(request.get('processes',[]),accessibility,request.get('browser_processes'))
         return {'text':'[protected]' if value is None else value[0]}
     accessibility=load('native-accessibility')
     browser_protection=request.get('browser_protection')
