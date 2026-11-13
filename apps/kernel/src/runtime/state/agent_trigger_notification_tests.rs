@@ -3091,6 +3091,61 @@ async fn a_notification_trigger_follows_its_local_source_enabled_state() {
     assert!(rig.trigger_listening(&trigger), "the trigger recovers");
 }
 
+async fn notification_trigger_after_source_room_removal(delete: bool) {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    let receiver_worktree = crate::test_support::TestWorktree::new("notification-receiver");
+    let request = receiver_worktree.session_request();
+    let (receiver, agent) = rig
+        .runtime
+        .with_app_side_effect(move |app| {
+            crate::app::KernelSessionService::new(app).create_session(request)
+        })
+        .await
+        .unwrap();
+    let mut request = rig.request(&source);
+    request.session_id = receiver.id().into();
+    request.agent_id = agent.id().into();
+    let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = rig
+        .runtime
+        .create_agent_trigger(request, "local")
+        .await
+        .unwrap()
+    else {
+        panic!("notification trigger should be created")
+    };
+    let snapshot = || rig.runtime.owned.session_snapshot(receiver.id()).unwrap();
+    assert!(trigger_listening_in(&snapshot(), trigger.id()));
+
+    if delete {
+        rig.runtime
+            .delete_session_id(&rig.session_id)
+            .await
+            .unwrap();
+    } else {
+        rig.runtime.end_session(&rig.session_id).await.unwrap();
+    }
+
+    assert!(
+        !trigger_listening_in(&snapshot(), trigger.id()),
+        "a removed source Room must immediately mark another Room's trigger offline"
+    );
+    assert_eq!(snapshot().agent_triggers().len(), 1);
+    assert_eq!(rig.subscriptions().len(), 1);
+}
+
+// MP-08 / MP-10 / MP-11: source removal updates listeners in other local Rooms too.
+#[tokio::test]
+async fn a_notification_trigger_follows_its_ended_source_room() {
+    notification_trigger_after_source_room_removal(false).await;
+}
+
+#[tokio::test]
+async fn a_notification_trigger_follows_its_deleted_source_room() {
+    notification_trigger_after_source_room_removal(true).await;
+}
+
 // MP-08 / MP-10: a workflow whose exit stops completing runs no longer feeds its trigger.
 #[tokio::test]
 async fn a_notification_trigger_follows_the_removal_of_its_local_exit() {

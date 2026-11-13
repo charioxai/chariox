@@ -1109,6 +1109,8 @@ impl KernelRuntimeState {
         self.sweep_kernel_access();
         owned.clear_session_prompt_runtime_state(session_id);
         let session = owned.publish_session_after_durable_mutation(session);
+        // Listener refresh errors must not bypass the source Room's process cleanup.
+        let notification_availability = self.sync_agent_notification_trigger_availability();
         for provider_run_id in terminated_run_ids {
             let (_, process_key) = self
                 .with_app_side_effect(|app| {
@@ -1122,6 +1124,7 @@ impl KernelRuntimeState {
         self.detach_session_slices(&session).await?;
         owned.terminal_stream.remove_session(session_id);
         owned.session_store.retire_ended_session(session_id);
+        notification_availability?;
         Ok(session)
     }
 
@@ -1181,6 +1184,7 @@ impl KernelRuntimeState {
         );
         owned.clear_session_prompt_runtime_state(&session_id);
         owned.remove_session_projection_after_durable_mutation(&session_id);
+        let notification_availability = self.sync_agent_notification_trigger_availability();
         // MP-08/MP-10/MP-11: after commit, upgrade retirement to a worker wipe.
         // A missed write is reconstructed from the orphaned slice on start/reconnect.
         if let Some(slice) = owned.slice_store.environment_slice(&session_id) {
@@ -1219,6 +1223,7 @@ impl KernelRuntimeState {
                 "MP-08/MP-10/MP-11: Room deleted; observation cleanup remains fenced"
             ),
         }
+        notification_availability?;
         Ok(session)
     }
 
