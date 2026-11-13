@@ -24,7 +24,7 @@ pub const CEILING_BYTES: usize = 1024 * 1024;
 const STARTUP_GAIN: f64 = 2.0;
 /// Once the rate stops growing, half again the measured bandwidth-delay
 /// product keeps the pipe full although the window holds whole frames and the
-/// minimum round trip is measured on the smallest one (1.25 left a 16 KiB frame
+/// minimum round trip is measured on the smallest bulk one (1.25 left a 16 KiB frame
 /// of a 60 ms path unsent: 86 % link use), while the queue it builds ahead of a
 /// small frame stays under half a round trip (a gain of 2 kept a whole round
 /// trip queued: +150 ms at a 150 ms path).
@@ -52,9 +52,11 @@ pub struct SendStamp {
 pub struct DrainWindow {
     delivered: u64,
     delivered_at: Instant,
-    /// The lowest round trip of this connection. A windowed minimum would
-    /// expire into a sample that includes the queue the window itself builds,
-    /// and grow the window from its own queue.
+    /// The lowest round trip of a bulk frame on this connection: what the window must
+    /// cover, since a receiver answers a bulk frame only after its own work on it
+    /// (a browser decrypts a display chunk first). A windowed minimum would expire
+    /// into a sample that includes the queue the window itself builds, and grow the
+    /// window from its own queue.
     min_rtt: Option<Duration>,
     rates: VecDeque<(Instant, f64)>,
     /// Delivered bytes at which the current round trip ends.
@@ -145,7 +147,7 @@ impl DrainWindow {
         self.delivered += bytes as u64;
         self.delivered_at = now;
         let rtt = now.saturating_duration_since(stamp.sent_at);
-        if !rtt.is_zero() {
+        if bulk && !rtt.is_zero() {
             self.min_rtt = Some(self.min_rtt.map_or(rtt, |min| min.min(rtt)));
         }
         let interval = now.saturating_duration_since(stamp.delivered_at);
@@ -251,6 +253,28 @@ mod tests {
         quiet: Duration,
         seconds: u64,
     ) -> (f64, Duration) {
+        simulate_receiver(
+            rate,
+            rtt,
+            receipt_delay,
+            receipt_delay,
+            frame,
+            quiet,
+            seconds,
+        )
+    }
+
+    /// `simulate_link` where the receiver answers small frames `small_delay` and bulk frames
+    /// `receipt_delay` after they arrive (a browser decrypts and decodes a bulk chunk first).
+    fn simulate_receiver(
+        rate: f64,
+        rtt: Duration,
+        receipt_delay: Duration,
+        small_delay: Duration,
+        frame: Option<usize>,
+        quiet: Duration,
+        seconds: u64,
+    ) -> (f64, Duration) {
         let start = Instant::now();
         let mut window = DrainWindow::new(start);
         let mut now = start;
@@ -258,7 +282,7 @@ mod tests {
             let frame = frame.unwrap_or_else(|| window.chunk_bytes());
             // One small frame (its receipt sets the minimum round trip) and one bulk frame.
             let small = window.sent(now, true);
-            window.received(now + rtt + receipt_delay, 64, small, false);
+            window.received(now + rtt + small_delay, 64, small, false);
             let stamp = window.sent(now, true);
             let receipt = now + Duration::from_secs_f64(frame as f64 / rate) + rtt + receipt_delay;
             window.received(receipt, frame, stamp, true);
@@ -324,8 +348,14 @@ mod tests {
             (250_000.0, 60, 20),
         ] {
             let (rtt, delay) = (Duration::from_millis(rtt), Duration::from_millis(delay));
-            let (link_use, wait) =
-                simulate_link(rate, rtt, delay, Some(CHUNK_BYTES), Duration::from_secs(5), 30);
+            let (link_use, wait) = simulate_link(
+                rate,
+                rtt,
+                delay,
+                Some(CHUNK_BYTES),
+                Duration::from_secs(5),
+                30,
+            );
             // Whole 16 KiB frames are 65 ms each at 2 Mbit/s: the last one of a round
             // trip leaves the link idle a little longer than short frames do.
             assert!(
@@ -333,7 +363,8 @@ mod tests {
                 "{rate} B/s, {rtt:?} + {delay:?}: link use {link_use}"
             );
             assert!(
-                wait <= (rtt + delay) / 2 + Duration::from_secs_f64(2.0 * CHUNK_BYTES as f64 / rate),
+                wait <= (rtt + delay) / 2
+                    + Duration::from_secs_f64(2.0 * CHUNK_BYTES as f64 / rate),
                 "{rate} B/s, {rtt:?} + {delay:?}: a small frame waits {wait:?} behind bulk"
             );
         }
@@ -352,5 +383,27 @@ mod tests {
             30,
         );
         assert!(link_use >= 0.9, "link use {link_use}");
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (transport3): the viewer answers a small frame at once and a
+    // 16 KiB display chunk after decrypting it. A window sized from the small frames' round trip
+    // could not keep the link full and shrank with every rate sample (3-4 Mbit/s of 8).
+    #[tokio::test(start_paused = true)]
+    async fn bulk_receipts_slower_than_small_ones_keep_the_link_full() {
+        for delay in [30, 60] {
+            let (link_use, _) = simulate_receiver(
+                1_000_000.0,
+                Duration::from_millis(60),
+                Duration::from_millis(delay),
+                Duration::ZERO,
+                Some(CHUNK_BYTES),
+                Duration::from_secs(5),
+                30,
+            );
+            assert!(
+                link_use >= 0.85,
+                "bulk receipts +{delay} ms: link use {link_use}"
+            );
+        }
     }
 }
