@@ -207,6 +207,17 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
     isDisconnected: deps.daemonDisconnected,
     getSessionId: () => deps.sessionState().id,
     getSessionState: (sessionId) => getSessionState(deps.client, sessionId),
+    resumeAttachedSession: async () => {
+      const attachment = deps.attachmentState()
+      if (!attachment) return false
+      try {
+        await deps.client.subscribeToKernelEvents(deps.sessionState().id, attachment.id)
+        return true
+      } catch (error) {
+        if (isSessionUnavailableError(error)) return false
+        throw error
+      }
+    },
     attachToSession: (sessionId) => attachToSession(deps.client, sessionId, deps.options.clientId),
     projectSession: (session) => applyProviderRunProfileToSession(session, deps.providerRunState()),
     applyAttachment: deps.setAttachmentState,

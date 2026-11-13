@@ -531,6 +531,20 @@ test("kernel event dispatch recovers after transport close", async () => {
   ])
 })
 
+test("reconnected deltas and resync wait for the transferred attachment recovery baseline", async () => {
+  let release!: () => void
+  const recovery = new Promise<void>(resolve => { release = resolve })
+  const harness = createHarness({ recovery: () => recovery })
+  const closed = harness.controller.handleKernelEvent({ event: "transport_closed", message: "reload" })
+  const resumed = harness.controller.handleKernelEvent({ event: "transport_resumed", session_id: "session-1", resumed_from_event_id: null })
+  const output = harness.controller.handleKernelEvent({ event: "terminal_output", records: [{ timestamp_ms: 1, agent_id: "agent-1", kind: "provider_output", bytes: [65] }] })
+  try {
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+    assert.equal(harness.terminalRecords.length, 0, "deltas must wait for recovery history")
+    assert.ok(!harness.calls.includes("resync:transport_resumed"), "resync must not race attachment recovery")
+  } finally { release(); await Promise.all([closed, resumed, output]) }
+})
+
 test("kernel event dispatch routes terminal output records and heartbeats", async () => {
   const harness = createHarness()
   const record: TerminalOutputRecord = {
@@ -624,6 +638,7 @@ function createHarness(options: {
   refreshAssistantMessageHistory?: (agentId: string) => Promise<boolean>
   focusChanged?: boolean
   resync?: () => Promise<void>
+  recovery?: () => Promise<void>
 } = {}) {
   const calls: string[] = []
   const snapshots: Array<{
@@ -720,6 +735,7 @@ function createHarness(options: {
     },
     recoverAttachedSessionAfterKernelRestart: () => {
       calls.push("recover-after-restart")
+      return options.recovery?.()
     },
   })
 

@@ -100,13 +100,15 @@ export function createKernelEventDispatchController(
     result: Promise<boolean>
   }>()
   let resyncInFlight: Promise<unknown> | null = null
-  const resync = async (reason: string) => {
-    const pending = Promise.resolve(deps.resyncAttachedKernelState(reason))
+  const restoreBaseline = async (restore: () => unknown) => {
+    const pending = Promise.resolve().then(restore)
     resyncInFlight = pending
     try { await pending } finally {
       if (resyncInFlight === pending) resyncInFlight = null
     }
   }
+
+  const resync = (reason: string) => restoreBaseline(() => deps.resyncAttachedKernelState(reason))
 
   const applySessionSnapshot = async (event: KernelEventSessionSnapshot) => {
     deps.recordDaemonActivity("kernel_session_snapshot")
@@ -241,6 +243,7 @@ export function createKernelEventDispatchController(
         await applyWorkflowRunUpdated(event)
         return
       case "transport_resumed":
+        if (resyncInFlight) await resyncInFlight
         deps.applyTransportResumed()
         deps.scheduleSharedPromptInputHistoryRefresh()
         await resync("transport_resumed")
@@ -253,7 +256,7 @@ export function createKernelEventDispatchController(
         return
       case "transport_closed":
         deps.applyTransportClosed(event.message)
-        void deps.recoverAttachedSessionAfterKernelRestart()
+        await restoreBaseline(() => deps.recoverAttachedSessionAfterKernelRestart())
         return
     }
   }
