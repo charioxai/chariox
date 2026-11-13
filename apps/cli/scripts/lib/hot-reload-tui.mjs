@@ -2,7 +2,7 @@
 // screen as well as the existing automation view. Credentials never enter argv.
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { mkdir, writeFile, rm } from "node:fs/promises"
+import { mkdir, writeFile, readFile, rm } from "node:fs/promises"
 import net from "node:net"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -15,6 +15,9 @@ export async function startHotReloadTui({ rig, ossRoot, sessionId, carrier, evid
   const socket = path.join(runtimeDir, "tmux.sock")
   const automation = path.join(runtimeDir, "tui.sock")
   const bootstrap = path.join(runtimeDir, "bootstrap.mjs")
+  const pidPath = path.join(runtimeDir, "cli.pid")
+  const registry = path.join(runtimeDir, "remote-discovery")
+  await mkdir(registry, { recursive: true })
   const tmux = (...args) => exec("tmux", ["-S", socket, ...args], { maxBuffer: 2 ** 22 })
   // Issue a normal key-bound CLIENT grant through the local kernel. The native
   // client then uses hosted WSS for every Room request and event.
@@ -22,6 +25,7 @@ export async function startHotReloadTui({ rig, ossRoot, sessionId, carrier, evid
 import { LocalIpcClient } from ${JSON.stringify(path.join(ossRoot, "packages/kernel-client/dist/ipc.js"))}
 import { createCliRelayIdentityStore } from ${JSON.stringify(path.join(ossRoot, "apps/cli/dist/cli-relay-identity-store.js"))}
 import { saveUiPreferences } from ${JSON.stringify(path.join(ossRoot, "apps/cli/dist/preferences.js"))}
+import { writeFile } from "node:fs/promises"
 await saveUiPreferences({ multiAgentResponseLayout: "split", maxAgentsPerScreen: 2 })
 const rig = ${JSON.stringify(rig)}
 const endpoint = "ws://127.0.0.1:" + rig.ports.kernel + "/kernel"
@@ -39,13 +43,14 @@ if (${JSON.stringify(carrier)} === "relay") {
   } finally { await client.close() }
 } else args.push("--kernel-url", endpoint)
 const child = Bun.spawn(args, { env, stdin: "inherit", stdout: "inherit", stderr: "inherit" })
+await writeFile(${JSON.stringify(pidPath)}, String(child.pid))
 process.on("SIGTERM", () => child.kill("SIGTERM"))
 process.exit(await child.exited)
 `, { mode: 0o600 })
   let connection
   try {
     await tmux("-f", "/dev/null", "new-session", "-d", "-s", "reload", "-x", "240", "-y", "80",
-      `env CHARIOX_HOME=${quote(rig.charioxHome)} TERM=xterm-256color bun ${quote(bootstrap)} 2>${quote(path.join(evidence, "tui-stderr.log"))}`)
+      `env CHARIOX_HOME=${quote(rig.charioxHome)} CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR=${quote(registry)} TERM=xterm-256color bun ${quote(bootstrap)} 2>${quote(path.join(evidence, "tui-stderr.log"))}`)
     await tmux("set-option", "-g", "status", "off")
     await tmux("set-option", "-g", "remain-on-exit", "on")
     const deadline = Date.now() + 60000
@@ -74,6 +79,11 @@ process.exit(await child.exited)
       pending.set(key, { ok, fail, timer }); connection.write(JSON.stringify({ id: key, action }) + "\n")
     })
     return {
+      async transport() {
+        const pid = Number(await readFile(pidPath, "utf8"))
+        const sockets = (await exec("ss", ["-tpn"])).stdout.split("\n").filter(line => line.includes(`pid=${pid},`))
+        return { pid, carrier, sockets }
+      },
       async read() {
         const [snapshot, screen] = await Promise.all([send("snapshot"), tmux("capture-pane", "-p", "-t", "reload:0.0")])
         return { t: Date.now(), snapshot, screen: screen.stdout }
