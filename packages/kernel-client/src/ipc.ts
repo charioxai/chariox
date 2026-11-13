@@ -1067,7 +1067,12 @@ export class LocalIpcClient {
               return
             }
             try {
-              if (this.isRelayMode() && isBinary) {
+              if (!this.isRelayMode()) {
+                const bytes = Buffer.isBuffer(data) ? data : Buffer.concat(Array.isArray(data) ? data : [Buffer.from(data)])
+                this.handleWebSocketMessage(bytes, lane)
+                return
+              }
+              if (isBinary) {
                 const raw = Buffer.isBuffer(data) ? data : Buffer.concat(Array.isArray(data) ? data : [Buffer.from(data)])
                 const bytes = relayFrames.receiveBinary(Uint8Array.from(raw).buffer, frame => {
                   this.pendingRequests.noteTransportProgress(lane)
@@ -1084,12 +1089,12 @@ export class LocalIpcClient {
                 })), lane)
                 return
               }
-              const text = this.isRelayMode() ? relayFrames.receive(String(data), frame => {
+              const text = relayFrames.receive(String(data), frame => {
                 // A receipt is emitted only after bounded, contiguous chunk validation.
                 // This keeps a progressing response alive without extending authority.
                 this.pendingRequests.noteTransportProgress(lane)
                 socket.send(frame)
-              }) : String(data)
+              })
               if (text !== null) this.handleWebSocketMessage(Buffer.from(text), lane)
             } catch {
               this.rejectPending("invalid relay transport frame", lane)
