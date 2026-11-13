@@ -5192,7 +5192,7 @@ MP-08 / MP-10: allocated 556/164 adds the `KernelBrowser` command `state_wait {a
 viewer no longer polls `state` every 250 ms. Its reply is the `state` reply plus
 `revision`, an opaque string the viewer sends back as `after` (empty or invalid:
 read at once). The kernel answers when the state, as the caller sees it, differs
-from `after`, or after `wait_ms` (at most 2000), and re-reads Chromium once per
+from `after`, or after `wait_ms` (at most 2000; at most 10000 from provisional 1055), and re-reads Chromium once per
 wake, not per tick. The host raises a signal on Tab creation, destruction, retitle
 and navigation, loads, native window/active-Tab/zoom/resize events, popup and
 window changes, Tab or agent requests and a policy change; a person's keys and
@@ -5207,6 +5207,8 @@ Provisional local 1055: a `state_wait` that reaches `wait_ms` without a change a
 `{"revision": ..., "unchanged": true}` (an idle Browser view re-read the whole state, Tabs with their
 icons, every two seconds). The viewer keeps the state it read last and waits after the same revision.
 `browser-state-wait-unchanged-1055.json` pins the reply (`mp08_browser_state_wait_unchanged_1055_snapshot`).
+The same release lets an idle viewer park one `state_wait` and one `mirror_next` credit for up to 10000 ms (2000 before), so a quiet
+Browser view asks the kernel once per wait; a change still answers the parked request at once.
 
 MP-08 / MP-10 / MP-11: allocated 560/168 adds the `display_subscribe` target
 `{kind:"browser_window", window_generation}`: the owner's view of the Chrome window's page area. It
