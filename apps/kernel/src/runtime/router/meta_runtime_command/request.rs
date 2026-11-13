@@ -77,7 +77,7 @@ pub(super) fn meta_agent_request(
                 ));
             }
             let agent = room_command_agent(agents, metaagent, &args[1], room_tools)?;
-            crate::runtime::room_tool_admission::in_subtree(metaagent, &agent, agents)?;
+            crate::runtime::room_tool_admission::direct_child(metaagent, &agent)?;
             let alias = args[2..].join(" ");
             let alias = if matches!(alias.as_str(), "clear" | "none" | "-") {
                 String::new()
@@ -98,7 +98,7 @@ pub(super) fn meta_agent_request(
                 return Err(meta_command_error("usage: agent delete <owned-agent-ref>"));
             }
             let agent = room_command_agent(agents, metaagent, reference, room_tools)?;
-            crate::runtime::room_tool_admission::in_subtree(metaagent, &agent, agents)?;
+            crate::runtime::room_tool_admission::direct_child(metaagent, &agent)?;
             Ok(LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
                 session_id: session.id().to_string(),
                 agent_id: agent.id().to_string(),
