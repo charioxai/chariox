@@ -3,6 +3,8 @@
 use super::*;
 use crate::transport::runtime_tools::RuntimeToolResult;
 
+mod destructive_children;
+
 pub(super) struct World {
     pub(super) router: CommandRouter,
     pub(super) app: Arc<Mutex<DaemonApp>>,
