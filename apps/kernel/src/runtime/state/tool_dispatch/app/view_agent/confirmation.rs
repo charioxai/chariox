@@ -12,7 +12,7 @@ const CONFIRM: &str = "confirm";
 const CANCEL: &str = "cancel";
 
 /// The App's own Tab and origin: a preview is shown from there only.
-fn confirmation_tab(context: &ViewContext) -> Result<(String, String), ViewError> {
+fn confirmation_tab(context: &ViewContext) -> Result<(String, u64, String), ViewError> {
     let ViewHost::User { retained, .. } = &context.host else {
         return Err(failure(
             "confirmation_unavailable",
@@ -20,12 +20,15 @@ fn confirmation_tab(context: &ViewContext) -> Result<(String, String), ViewError
         ));
     };
     let view = &retained.1;
-    let tab_id = view
+    let browser = view
         .browser
         .as_ref()
-        .map(|browser| browser.tab_id.clone())
         .ok_or_else(|| failure("unknown_view", "The App view closed; reopen it"))?;
-    Ok((tab_id, view.origin.clone()))
+    Ok((
+        browser.tab_id.clone(),
+        browser.generation,
+        view.origin.clone(),
+    ))
 }
 
 /// An abandoned call (the turn ended while the card waited) still removes its preview, in
@@ -120,14 +123,14 @@ impl KernelRuntimeState {
         frame: AppConfirmationFrame,
         input: &Value,
     ) -> Result<(), ViewError> {
-        let (tab_id, origin) = confirmation_tab(context)?;
+        let (tab_id, generation, origin) = confirmation_tab(context)?;
         let (tab_id, origin) = (tab_id.as_str(), origin.as_str());
         let unavailable =
             |error: DaemonError| failure("confirmation_unavailable", error.to_string());
         let session_id = agent.session_id();
         let id = format!("app-confirm-{:032x}", rand::random::<u128>());
         let view = self
-            .resolve_app_confirmation_view(session_id, agent.id(), &id, tab_id)
+            .resolve_app_confirmation_view(session_id, agent.id(), &id, tab_id, generation)
             .await
             .map_err(unavailable)?;
         if view.browser_region.origin != origin.trim_end_matches('/') {

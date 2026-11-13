@@ -9,6 +9,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { KernelBrowserHost, scheduleHostRequest } from './kernel-browser-host.mjs';
 import { PassThrough } from 'node:stream';
+import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 import { BrowserControllerStdioServer } from './browser-controller.mjs';
 
 async function withHost(run) {
@@ -68,7 +69,13 @@ test('an App confirmation region is found by the host in the Tab document, never
     if (method === 'DOM.describeNode') return { node: { backendNodeId: 42 } };
     return base(method, params, session);
   };
-  const found = await region({ card_id: 'app-confirm-1', app_confirmation: true, ref: undefined });
+  // The real host resolves a Tab only under its current generation, as its display target does.
+  host.displayTarget = async command => {
+    if (command.generation !== host.generation) throw new UserDomainRefusal('stale_epoch');
+    return { tab_id: command.tab_id, target_id: 'target', document_id: 'doc', url: 'https://example.com/' };
+  };
+  await assert.rejects(region({ card_id: 'app-confirm-0', app_confirmation: true, ref: undefined }), { code: 'user_domain_stale_epoch' });
+  const found = await region({ card_id: 'app-confirm-1', app_confirmation: true, ref: undefined, generation: 1 });
   assert.equal(found.state, 'present');
   assert.equal(found.region.ref, 'backend:42');
   assert.deepEqual(sent.find(call => call.method === 'DOM.querySelectorAll').params, { nodeId: 1, selector: '[data-chariox-confirmation]' });
@@ -77,7 +84,7 @@ test('an App confirmation region is found by the host in the Tab document, never
   assert.equal(followed.state, 'present');
   // Two matching elements mean the page tampered with the preview: nothing is shown.
   matches = [7, 8];
-  await assert.rejects(region({ card_id: 'app-confirm-2', app_confirmation: true, ref: undefined }), { code: 'user_domain_stale_reference' });
+  await assert.rejects(region({ card_id: 'app-confirm-2', app_confirmation: true, ref: undefined, generation: 1 }), { code: 'user_domain_stale_reference' });
   assert.equal(calls.includes('DOM.getDocument'), false, 'the base fake never saw the confirmation query');
 }));
 

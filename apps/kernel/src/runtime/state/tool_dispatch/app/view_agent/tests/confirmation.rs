@@ -135,6 +135,10 @@ async fn the_card_carries_the_kernels_frame_and_the_hosts_own_preview_and_confir
         .find(|line| line.contains(r#""app_confirmation":true"#))
         .unwrap();
     assert!(
+        first.contains(r#""generation":1"#),
+        "the Tab is named under its generation: {first}"
+    );
+    assert!(
         !first.contains(r#""ref""#),
         "the App and the agent name no element: {first}"
     );

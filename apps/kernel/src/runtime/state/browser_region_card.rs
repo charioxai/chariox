@@ -102,6 +102,7 @@ impl KernelRuntimeState {
         agent_id: &str,
         card_id: &str,
         tab_id: &str,
+        generation: u64,
     ) -> Result<RuntimeInteractionView, DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
@@ -110,7 +111,7 @@ impl KernelRuntimeState {
             ));
         }
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
-        let params = serde_json::json!({"op":"popup_region", "card_id":card_id, "tab_id":tab_id, "app_confirmation":true});
+        let params = serde_json::json!({"op":"popup_region", "card_id":card_id, "tab_id":tab_id, "generation":generation, "app_confirmation":true});
         let result = self
             .kernel_browser_operation(&user, None, "host.browser", params)
             .await?;
