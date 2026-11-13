@@ -515,25 +515,24 @@ pub use workspace::*;
 /// reports `wait.deadline_ms` as `null`. A sub-agent tree node carries its `account_profile`,
 /// `workspace_id`, `worktree_id` and `worker_kernel_id`, and an agent's wait is a `provider_tool` row of its
 /// transcript.
-/// 1027: generic runtime identity observation and opaque enrollment authority evidence.
-/// 1006: the kernel resource feed (`kernel_resources` subscription, `WatchKernelResources`,
-/// `KernelResourcesWatched`, `kernel_resource_changed`) for the Vault, provider accounts and Apps.
-/// 1006 (Landing 10, provisional): the owner ends a wait with `CancelAgentWait` (the agent is not woken), an agent's
-/// `waiting` state is projected on its activity, and a turn the kernel started is marked `system_prompt` in the outline.
-/// 1006 (person cards, provisional): an active interaction carries `asker_name`, the asking agent's
-/// alias (else its ref), and a sub-agent's card is shown in its top parent's panel whoever holds it.
-/// 1009 (Landing 10 peek, provisional): `PeekAgentTranscript` lists an agent's latest transcript rows as
-/// titles (`AgentTranscriptPeek`) with a `before` cursor and `ReadAgentTranscriptEntry` reads one row by
-/// pages (`AgentTranscriptEntryPage`); a wait without a deadline gets `now + 30 min` as `deadline_ms`.
-/// 1010 (Landing 10, provisional): an unconditional idle Stop returns `NothingToStop`.
-/// 1008 (provisional): encrypted relay terminal output uses CXT1 metadata and raw byte segments,
-/// including replay. Clients and gateways restore the ordinary terminal record shape.
-/// 1007 (provisional): agent triggers take the Workflows panel's trigger options: a schedule's cron or
-/// interval `trigger`, `overlap_policy` and `max_runs`; an HTTP trigger's `route`, `methods`,
-/// `parser`, `mode`, `sync_timeout_ms`, `poll_ms` and `input_schema`. `InvokeAgentTrigger` carries the
-/// parsed `input`; `ReadAgentTriggerHttpOptions` and `ReadAgentTriggerReply` serve the gateways.
-/// Owner room agent and card commands, including non-secret cross-room answers (peer 449).
-/// 1011: durable jobs, job-only command admission and outcomes, placement policies,
-/// process estimates, session job feeds and the owner's global offload decision.
-/// 1021: shared machine-local memory, disk and CPU resource-protection settings.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1027;
+/// 1006 (Landing 10): generic runtime identity observation (`ObserveKernelRuntimeIdentity`) and opaque
+/// enrollment authority evidence; the kernel resource feed (`kernel_resources` subscription,
+/// `WatchKernelResources`, `KernelResourcesWatched`, `kernel_resource_changed`) for the Vault, provider
+/// accounts and Apps; the owner ends a wait with `CancelAgentWait` (the agent is not woken), an agent's
+/// `waiting` state is projected on its activity, and a turn the kernel started is marked `system_prompt` in
+/// the outline; an active interaction carries `asker_name` and a sub-agent's card is shown in its top
+/// parent's panel whoever holds it; `PeekAgentTranscript` lists an agent's latest transcript rows as titles
+/// (`AgentTranscriptPeek`) with a `before` cursor and `ReadAgentTranscriptEntry` reads one row by pages
+/// (`AgentTranscriptEntryPage`), and a wait without a deadline gets `now + 30 min` as `deadline_ms`; an
+/// unconditional idle Stop returns `NothingToStop`; encrypted relay terminal output uses CXT1 metadata and
+/// raw byte segments, including replay, and Room subscriptions name their view interests; agent triggers take
+/// the Workflows panel's trigger options (a schedule's cron or interval `trigger`, `overlap_policy` and
+/// `max_runs`; an HTTP trigger's `route`, `methods`, `parser`, `mode`, `sync_timeout_ms`, `poll_ms` and
+/// `input_schema`; `InvokeAgentTrigger` carries the parsed `input`; `ReadAgentTriggerHttpOptions` and
+/// `ReadAgentTriggerReply` serve the gateways); owner room agent and card commands, including non-secret
+/// cross-room answers; `SetAgentDeadline.deadline_ms` is required and nullable (extend, shorten or clear);
+/// task snapshots carry no idle-wake counters; shared machine-local memory, disk and CPU resource-protection
+/// settings; durable jobs,
+/// job-only command admission and outcomes, placement policies, process estimates, session job feeds and
+/// the owner's global offload decision.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1006;

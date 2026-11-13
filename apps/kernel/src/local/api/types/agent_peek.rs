@@ -1,4 +1,4 @@
-//! Protocol 1009: peek into an agent's transcript, the one the pane renders, a little at a
+//! Protocol 1006: peek into an agent's transcript, the one the pane renders, a little at a
 //! time: its latest entries as titles, then one entry's content by pages.
 use super::*;
 

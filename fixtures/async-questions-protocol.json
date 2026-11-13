@@ -1,6 +1,6 @@
 {
-  "local": 1027,
-  "relayPeer": 465,
+  "local": 1006,
+  "relayPeer": 445,
   "arguments": {
     "wait": false,
     "message": "Choose the next step",

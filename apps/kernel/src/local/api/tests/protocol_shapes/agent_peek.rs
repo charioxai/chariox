@@ -1,9 +1,9 @@
-//! MP-08 / MP-10 / MP-11 Landing 10 peek (local 1009, peer 447, provisional): an agent's transcript
+//! MP-08 / MP-10 / MP-11 Landing 10 peek (local 1006, peer 445): an agent's transcript
 //! as titled rows and one row by pages.
 use super::*;
 
 #[test]
-fn agent_peek_protocol_1009_shapes_and_hash() {
+fn agent_peek_protocol_1006_shapes_and_hash() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
@@ -30,6 +30,6 @@ fn agent_peek_protocol_1009_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&snapshot).unwrap().as_bytes())
         ),
-        "903a97e79c9fea5d28e4091c9e72364f1ddf6c3c2969e144ffa8b072fe8c2c1e"
+        "6db85f8fd2f6c2086efb63d7fb431e721b7d3dfe73e2012c5dd807ce51533cc2"
     );
 }

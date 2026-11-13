@@ -2,12 +2,12 @@
 
 MP-08 / MP-09 / MP-10 / MP-11: Chariox is in development; backward compatibility
 with older kernels is not a goal. The managed-upgrade policy admits only the
-current release and the previous release (1011 and 1005), plus the new target
-1021 while it is being prepared. Older kernels are
+current release and the previous release (636 and 629), plus the new target
+910 while it is being prepared. Older kernels are
 discontinued and re-provisioned when that simplifies the code, regardless of
 whether an older protocol shipped.
 
-### Machine resource protection (local1021 / peer459)
+### Machine resource protection (local1006 / peer445)
 
 `UserConfig.config.kernel.resource_protection` and the corresponding
 `UserConfigUpdated` configuration contain independent `memory`, `disk` and `cpu`
@@ -1372,7 +1372,7 @@ Current pushed event contract:
 - all pushed events use the `KernelOutgoingFrame::Event` envelope with monotonic `event_id` plus an `event` payload tagged by its `event` string
 - `terminal_output` carries terminal records and should be used for terminal append/update rendering without forcing `session.state.get`
 
-MP-08 / MP-09 / MP-10 / MP-11, local protocol 1008 (provisional): the encrypted
+MP-08 / MP-09 / MP-10 / MP-11, local protocol 1006: the encrypted
 plaintext of a relayed `terminal_output` event starts with `CXT1`, a big-endian
 u32 JSON header length, the JSON event header, and the terminal bytes. Each
 record's `bytes` field in the header is `[offset, length]` into that payload.
@@ -4454,7 +4454,7 @@ ungated invoke returns. The shared Landing 7 protocol pair carries the field.
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — transitional durable agent lifecycle (A02)
 
-Local 1013 / relay peer 451 removes the idle-wake counters from task snapshots.
+Local 1006 / relay peer 445 removes the idle-wake counters from task snapshots.
 Repeated timer acknowledgements and continuations keep the task live.
 
 Local daemon protocol **452** adds `RuntimeSession.agent_tasks`; relay82 is inherited
@@ -5280,7 +5280,7 @@ subscription, so a client draws from events instead of reading again. Fixture: `
   `ListHomeExtensionAudit` once for each watched agent, replacing its cached list, then resumes applying
   appended rows (deduplicated by audit `event_id` or `sequence`). Unrelated durable-state events share
   the backlog, so their sequences cannot detect gaps in this audit feed.
-- `subscription_scope: "session_metadata"` (local protocol 1008, MP-08 / MP-09 / MP-10 / MP-11)
+- `subscription_scope: "session_metadata"` (local protocol 1006, MP-08 / MP-09 / MP-10 / MP-11)
   retains an attachment's Room events, notices, completions and heartbeat, while draining its terminal
   records without sending their bytes. Replay also excludes terminal records. A browser page uses this
   for view subscriptions and holds one ordinary session subscription per Room for terminal bytes,
@@ -5453,7 +5453,7 @@ create request sends `{"kind": "http"}` and the kernel picks both), `InvokeAgent
 The `schedule`, `http` and `notification` prompt origins also travel in
 `SubmitLeasedPrompt.git_context.prompt_origin`: the home refuses a worker below peer 381 instead of sending one. `local_daemon_protocol_http_agent_trigger_shape_is_versioned` pins the shapes.
 
-Allocated 1007 (relay peer 446) gives agent triggers the Workflows panel's trigger options. A
+Allocated 1006 (relay peer 445) gives agent triggers the Workflows panel's trigger options. A
 `schedule` source is `{"kind": "schedule", "trigger": {"kind": "interval", "every_seconds"} |
 {"kind": "cron", "expression", "timezone"}, "repeat": "once"|"every", "overlap_policy"?:
 "skip"|"queue", "max_runs"?}`: the workflow schedule's trigger (six-field cron in an IANA timezone,
@@ -5474,7 +5474,7 @@ delivers nothing. `ReadAgentTriggerHttpOptions {session_id, trigger_id}` answers
 `AgentTriggerHttpOptionsRead {enabled, options}` for the local gateway and the hosted ingress, and
 `ReadAgentTriggerReply {session_id, trigger_id, prompt_id}` answers `AgentTriggerReplyRead {reply:
 pending | completed {text} | failed {message}}` for a sync response, only for the trigger's own
-recent firings. Create, update and invoke requests refuse unknown fields. Relay peer 446 follows
+recent firings. Create, update and invoke requests refuse unknown fields. Relay peer 445 follows
 the local allocation (the hosted ingress admits the two reads). The shapes are pinned by
 `local_daemon_protocol_agent_trigger_shape_is_versioned` and
 `local_daemon_protocol_http_agent_trigger_shape_is_versioned`.
@@ -5683,7 +5683,7 @@ hidden agent comes back for every client; hiding an idle agent holds until
 There is no agent-level archive: `ArchiveAgent`, `ListArchivedAgents`, `AgentArchived` and the
 agent `archived` flag are removed (Rooms are still archived). Drill: `local::api::tests::agent_hide`.
 
-### MP-08 / MP-09 / MP-10 / MP-11: Stop replies (1010 / peer 448)
+### MP-08 / MP-09 / MP-10 / MP-11: Stop replies (1006 / peer 445)
 
 `CancelActivePrompt` keeps its request shape. When the targeted agent has no active
 prompt but owns parked tasks (Waiting tasks whose provider turns have ended), the
@@ -7312,8 +7312,7 @@ client (`landing8-protocol.test.ts`). Focused checks:
 `cargo test -p chariox-kernel --lib -- landing8 protocol_shapes client_protocol_conformance` and
 `node --test packages/kernel-client/dist/landing8-protocol.test.js`.
 
-Landing 10 peek carries local daemon protocol 1009 and relay peer 447 (provisional: 1006-1008 and peer
-445-446 are taken by other Landing 10 lanes). `PeekAgentTranscript {session_id, agent_id, limit?, before?}`
+Landing 10 peek (local daemon protocol 1006, relay peer 445): `PeekAgentTranscript {session_id, agent_id, limit?, before?}`
 answers `AgentTranscriptPeek {peek: {agent_id, entries, before?}}`: an agent's latest transcript rows (at most
 50, 10 by default), oldest first, each `{entry_id, kind, title, status, at_ms, duration_ms?, chars}` with `kind`
 one of `prompt`, `assistant`, `thinking`, `tool_call`, `wait`, `error`, `notice` and `status` one of `running`,
@@ -7335,17 +7334,25 @@ Room setup (`CreateSession.setup`, `RuntimeSession.room_setup`, `RetryRoomSetup`
 is `null` for a yield without a deadline (`protocol_shapes/agent_lifecycle.rs`). Relay peer 444 renames
 the leased agent file answers. Managed upgrades admit 1002 and 1003.
 
-The kernel resource feed carries local daemon protocol 1006 (provisional: the next free number after
-1005; relay peer stays 444 because the relay forwards the subscription scope unread). It adds the
+Landing 10 carries local daemon protocol 1006 and relay peer 445, one number pair for all of its wire
+changes: generic runtime identity observation and enrollment evidence (machine acquisition through the
+kernel requires 1006), the kernel resource feed, owner wait cancel with the `waiting` state and
+`system_prompt` turns, `asker_name` on person cards, transcript peek and the default 30-minute wait
+deadline, the idle Stop result `NothingToStop`, CXT1 raw terminal bytes and Room view interests, agent
+trigger options, owner room card commands across Rooms, the required nullable deadline edit, task
+snapshots without idle-wake counters, machine resource protection settings and durable remote jobs. Each
+is described in its own section. The managed-upgrade policy lives in Cloud.
+
+The kernel resource feed is part of local daemon protocol 1006 (the relay forwards the subscription
+scope unread). It adds the
 `kernel_resources` subscription scope, `WatchKernelResources` / `KernelResourcesWatched` and the
 `kernel_resource_changed` event (§4.1.1). Web clients require 1006. Focused check:
 `cargo test -p chariox-kernel --lib -- kernel_resource`.
 
-Person cards carry local daemon protocol 1006 and relay peer 445 (provisional: the union restamps).
+Person cards carry local daemon protocol 1006 and relay peer 445.
 An active interaction carries `asker_name`, the asking agent's alias (else its ref), projected with
 the session and never stored, so a client names who asks in the card's first paint. A sub-agent's
-card is shown in its top parent's panel (`shown_in_agent_id`) whoever holds it (above). Managed
-upgrades admit 1003 and 1005. Focused check: `cargo test -p chariox-kernel --lib --
+card is shown in its top parent's panel (`shown_in_agent_id`) whoever holds it (above). Focused check: `cargo test -p chariox-kernel --lib --
 a_sub_agent_card_carries a_projected_card_names_its_asker the_user_answers_a_decision protocol_shapes`.
 
 ### MP-08 / MP-09 / MP-10 / MP-11: Files on the owner's machines — local 1005 / relay peer 444
@@ -7520,7 +7527,7 @@ While a step is pending or running, or `git_init` or `worktree` failed and was n
 
 Focused checks: `cargo test -p chariox-kernel --test kernel_websocket_runtime_integration room_setup`, `cargo test -p chariox-kernel --lib room_setup`.
 
-Landing 10 carries local daemon protocol 1006 and relay peer 445 (provisional: the Landing 10 union restamps). An agent's wait
+Landing 10 carries local daemon protocol 1006 and relay peer 445. An agent's wait
 can be ended by its owner: `CancelAgentWait { session_id, attachment_id, task_id, started_at_ms }` (the room owner's terminal,
 like `CancelAgentTask`) stops what the wait is on (its timers, watched processes and sources), ends the task and answers
 `AgentTaskUpdated`. The agent is not woken: nothing is delivered to its inbox, and on its next turn it simply is no longer
@@ -7534,7 +7541,7 @@ wake prompt, which it used to blank. Focused check: `cargo test -p chariox-kerne
 
 ### Agent transcript peek (MP-08 / MP-09 / MP-10 / MP-11)
 
-Local protocol 1009 / relay peer 447 adds `PeekAgentTranscript` and
+Local protocol 1006 / relay peer 445 adds `PeekAgentTranscript` and
 `ReadAgentTranscriptEntry`. Both use the kernel-owned history outline read by
 the pane, with its room membership, trace visibility and external-agent grant
 checks. No separate transcript state is stored.
@@ -7560,7 +7567,7 @@ The reference resolves within the calling room, like other agent-read tools.
 External agents use the same kernel requests through their existing grants.
 
 
-MP-08 / MP-09 / MP-10 / MP-11, provisional local protocol 1008: CXT1 replies also
+MP-08 / MP-09 / MP-10 / MP-11, local protocol 1006: CXT1 replies also
 carry `RoomTerminal.result` variants `output` and `snapshot`. The header replaces
 `output.data_base64`, or `snapshot.screen_ansi_base64`, `screen_text` and
 `scrollback_text`, with contiguous `[offset, length]` ranges into the raw suffix,
@@ -7569,7 +7576,7 @@ UTF-8. Clients and gateways reconstruct the ordinary response before handing it
 to their caller. Other Room Terminal result variants remain ordinary JSON.
 
 
-The same provisional 1008 subscription contract distinguishes view interests:
+The same 1006 subscription contract distinguishes view interests:
 `session_terminal` carries terminal data without session projection samples;
 `session_metadata` carries Room state and admission-wait changes without terminal
 bytes or periodic process samples; `session_metadata_processes` additionally keeps
@@ -7581,7 +7588,7 @@ waits, including on its initial projection; full process and disk samples stay o
 Health. Admission holds, pauses and resumptions still reach ordinary views.
 
 
-### Owner room cards through runtime commands — local 1011 / peer 449
+### Owner room cards through runtime commands — local 1006 / peer 445
 
 `chariox.room.run_command` admits `room agents <room-id>` and `room cards <room-id>`
 for rooms returned by `room list`. The first returns public agent identity, state, processing,
@@ -7607,7 +7614,7 @@ Focused regressions: `cargo test -p chariox-kernel --lib cross_room_cards`.
 Real provider drill: `node apps/cli/scripts/live-cross-room-cards-drill.mjs` with isolated
 `XROOM_STATE`, `XROOM_WORKSPACE`, `XROOM_EVIDENCE`, `XROOM_BIN`, `XROOM_BUN` and a product-linked `XROOM_CODEX_PROFILE`.
 
-### Machine resource protection — local 1017 / relay peer 455
+### Machine resource protection — local 1006 / relay peer 445
 
 `UserConfig.config.kernel.resource_protection` contains independent boolean
 `memory`, `disk` and `cpu` settings, all defaulting to `true`. Existing
@@ -7627,4 +7634,4 @@ CPU pause/stop controller currently runs. OS OOM handling and explicit user Stop
 commands retain their normal authority.
 
 The shared configuration response crosses peer connections, so both version
-numbers advance. `resource-protection-1017.json` and its SHA-256 test pin the shape.
+numbers advance. `resource-protection-1006.json` and its SHA-256 test pin the shape.

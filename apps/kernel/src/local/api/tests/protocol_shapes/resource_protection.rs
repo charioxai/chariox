@@ -3,7 +3,7 @@ use super::*;
 use sha2::{Digest, Sha256};
 
 #[test]
-fn resource_protection_protocol_1017_455_snapshot_and_hash() {
+fn resource_protection_protocol_1006_445_snapshot_and_hash() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
@@ -13,7 +13,7 @@ fn resource_protection_protocol_1017_455_snapshot_and_hash() {
         crate::test_support::expected_relay_peer_protocol_version()
     );
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("resource-protection-1017.json")).unwrap();
+        serde_json::from_str(include_str!("resource-protection-1006.json")).unwrap();
     let mut config = crate::config::CharioxUserConfig::default();
     let defaults = serde_json::to_value(config.kernel.resource_protection).unwrap();
     config.kernel.resource_protection.memory = false;

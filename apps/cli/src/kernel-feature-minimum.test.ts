@@ -145,7 +145,7 @@ test("machine acquisition requires the kernel's owner connection support", () =>
     { ControlPlane: { action: "acquire", capability_revision: "offer", request_id: "request" } },
     { ControlPlane: { action: "get", allocation_ref: "machine" } },
   ]) {
-    assert.throws(() => requireKernelFeatureProtocol(request, 1026), /Machine acquisition needs protocol ≥1027/)
-    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 1027))
+    assert.throws(() => requireKernelFeatureProtocol(request, 1005), /Machine acquisition needs protocol ≥1006/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 1006))
   }
 })

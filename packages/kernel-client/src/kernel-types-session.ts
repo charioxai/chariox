@@ -144,7 +144,7 @@ export type AgentTriggerNotificationSource =
   | { workflow: { source_id: string } }
   | { app: { installation_id: string; event_name: string } }
 
-/** Protocol 1007: the Workflows panel's HTTP trigger options. */
+/** Protocol 1006: the Workflows panel's HTTP trigger options. */
 export type AgentHttpTriggerOptions = {
   route: string
   methods: Array<"GET" | "POST">
@@ -157,7 +157,7 @@ export type AgentHttpTriggerOptions = {
 
 export type AgentTriggerSource = AgentHttpTriggerOptions & { kind: "http"; ingress_id: string; port: number; recent_firings?: string[] } | {
   kind: "schedule"
-  /** Protocol 1007: the Workflows panel's schedule: an interval, or a six-field cron in a timezone. */
+  /** Protocol 1006: the Workflows panel's schedule: an interval, or a six-field cron in a timezone. */
   trigger: { kind: "interval"; every_seconds: number } | { kind: "cron"; expression: string; timezone: string }
   repeat: "once" | "every"
   overlap_policy: "skip" | "queue"

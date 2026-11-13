@@ -1,8 +1,8 @@
 # MP-08 / MP-09 / MP-10 / MP-11: terminal bytes over the relay
 
 `transport/TR-11` previously encrypted JSON number arrays, multiplying terminal
-bytes even when the outer relay frame was binary. Local protocol 1008
-(provisional) uses CXT1 metadata and raw bytes for live and replayed terminal
+bytes even when the outer relay frame was binary. Local protocol 1006
+() uses CXT1 metadata and raw bytes for live and replayed terminal
 output. Record ids, history sequences, recipient filtering and encryption do
 not change. Kernel gateways restore the ordinary record shape for their caller.
 The native client negotiates the relay's existing binary capability and accepts

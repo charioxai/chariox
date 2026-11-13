@@ -6,7 +6,7 @@ use crate::session::{
     WorkflowScheduleOverlapPolicy, WorkflowScheduleTrigger,
 };
 
-/// Protocol 1007: what fires a new agent trigger. HTTP and schedule take the Workflows
+/// Protocol 1006: what fires a new agent trigger. HTTP and schedule take the Workflows
 /// panel's trigger options; anything left out takes the publication or schedule default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -162,7 +162,7 @@ pub enum AgentTriggerInvocation {
     },
 }
 
-/// Protocol 1007: what an HTTP gateway needs to route and parse a request, and nothing else.
+/// Protocol 1006: what an HTTP gateway needs to route and parse a request, and nothing else.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadAgentTriggerHttpOptionsRequest {
@@ -170,7 +170,7 @@ pub struct ReadAgentTriggerHttpOptionsRequest {
     pub trigger_id: String,
 }
 
-/// Protocol 1007: the reply of one HTTP firing, for a sync response.
+/// Protocol 1006: the reply of one HTTP firing, for a sync response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadAgentTriggerReplyRequest {

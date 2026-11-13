@@ -211,16 +211,13 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// `StartFileTransfer`, `GetFileTransfer` and `CancelFileTransfer` between kernels of one owner, and
 /// renames the answers `LeasedAgentFileRead` and `LeasedAgentFileRefused` to `FileSliceRead` and
 /// `FileRefused`, which both file services use.
-/// 465: carries the generic runtime identity observation local request and response.
-/// Peer 445 (person cards, provisional): an active interaction carries `asker_name`.
-/// Peer 447 (Landing 10 peek, provisional) carries local 1009: `PeekAgentTranscript` and
-/// `ReadAgentTranscriptEntry` between kernels of one owner.
-/// Peer 448 (Landing 10, provisional) pairs the idle Stop success contract with local 1010.
-/// Peer 449 pairs the owner room card command results with local 1011.
-/// Peer 449: job execution needs and memory-limit outcomes, private authenticated
-/// job targets and durable job operations between owner kernels.
-/// Peer 459 carries the machine resource-protection configuration in kernel responses.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 465;
+/// Peer 445 (Landing 10) carries local 1006 between kernels of one owner: the generic runtime identity
+/// observation request and response, `asker_name` on an active interaction, `PeekAgentTranscript` and
+/// `ReadAgentTranscriptEntry`, the idle Stop success contract, the agent trigger options, the owner room card
+/// command results, the required nullable deadline edit, and job execution needs, memory-limit outcomes,
+/// private authenticated job targets and durable job operations, and the machine resource-protection
+/// configuration in kernel responses.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 445;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

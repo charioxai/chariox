@@ -115,10 +115,10 @@ and kernel, with Project - Room - Agent/Terminal owners and expandable totals.
 Its collapse/expand state belongs to the viewer; process authority remains in
 the kernel.
 
-The resource settings are versioned at local **1017**, peer **455**. The process
+The resource settings are versioned at local **1006**, peer **445**. The process
 shape fixture is `session-processes-954.json`; regenerate protocol consumers with
 `node scripts/generate-protocol-versions.mjs` when the coordinator renumbers it.
-Focused checks include `resource_protection_protocol_1017_455_snapshot_and_hash`
+Focused checks include `resource_protection_protocol_1006_445_snapshot_and_hash`
 and `local_daemon_protocol_session_process_memory_outcomes_are_versioned`.
 
 For the real control drill, start a kernel and client from the same combined
