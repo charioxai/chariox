@@ -1940,7 +1940,7 @@ async fn typed_commands_report_finish_and_exit_code_even_when_instant() {
     for (line, expected) in [
         ("echo builtin-done\r", 0),
         ("false\r", 1),
-        ("/bin/true\r", 0),
+        ("/usr/bin/env true\r", 0),
         ("(exit 7)\r", 7),
         ("(:)&\r", 0),
     ] {
@@ -3006,7 +3006,7 @@ async fn exited_terminal_does_not_become_work_when_its_state_is_locked() {
             rows: 24,
             title: None,
             opened_by: TerminalActor::User,
-            command: Some(vec!["/bin/true".into()]),
+            command: Some(vec!["/usr/bin/env".into(), "true".into()]),
         })
         .unwrap();
     let owner = service.terminal_for_test(&terminal.terminal_id);
