@@ -159,7 +159,7 @@ these drill trust files into a production trust root.
 
 ## Static host and bootstrap contract for AV3–AV6
 
-`mountAppView(container, {hostUrl, bundle, trust, timeoutMs})` returns
+`mountAppView(container, {hostUrl, bundle, trust, call, timeoutMs})` returns
 `{ready, close}`. The host URL must be same-origin and contain no query or
 fragment. It contains only trusted build code, never conversation data or App
 HTML. Opening it directly provides no App entry or service authority.
@@ -173,7 +173,8 @@ The private lifecycle exchange is:
 3. The host accepts once, only from its exact parent and origin. It verifies
    bytes, constructs one sandboxed `srcdoc`, then sends
    `chariox.app-host.mounted` or `chariox.app-host.failed` on that private port.
-   The port closes after the result. `mounted` means verified document appended,
+   A failure closes the port; after `mounted` the port stays open and carries the
+   page's backend calls (below). `mounted` means verified document appended,
    not App state loaded or first paint complete.
 4. Client timeout/failure removes the host. `close` removes it and ends any
    pending readiness wait. A replacement uses a new host/window/port.
@@ -195,9 +196,28 @@ The host must be served with its generated CSP as an enforced response header,
 off. Cloud's exact static-asset response implements this, including removal of
 the general report-only policy. Other Cloud pages retain their own policies.
 
-AV1 implements only the host lifecycle port. There is **no live App service
-port, backend RPC, SDK admission, generation, state subscription or authority
-identifier** in this renderer. The frontend-only reference adapter is test-only.
+## Page-to-backend call (AV3-AV6 slice 1)
+
+`window.chariox.call(method, input)` is the page's only service surface, installed
+by the bootstrap before any App script as a frozen, non-configurable global. It
+returns a promise for the JSON result, or rejects with an `Error` carrying `code`.
+The call travels page -> host -> embedding client over two private MessagePorts:
+
+1. After the App frame loads, the host transfers one port to it (`chariox.app-view.port`,
+   accepted once, only from the host window). Calls made earlier wait for it.
+2. The page sends `{type:"chariox.app-view.call", id, method, input}` on that port.
+   The host reads it with `readCall` (method 1-256 characters, input JSON of at most
+   1 MiB, at most 16 calls in flight, else an `INVALID_CALL` or `TOO_MANY_CALLS`
+   answer), renumbers it and relays it to the client port from the attach message.
+3. The client's `call(method, input)` runs under the client's own authority and
+   answers `{type:"chariox.app-view.result", id, ok, result | error:{code,message}}`.
+   Only a code and a sentence the client names reach the page; any other failure
+   becomes `CALL_FAILED` without detail. Stopping the host answers `VIEW_CLOSED`.
+
+The client holds the connection and the view lease; the page never does. Declared
+methods, input schemas and admission stay the kernel's: Web sends `CallUserAppView`
+over its existing link and the kernel refuses an unknown method or a wrong input.
+There is still no generation fence, state subscription or `action`/`view` surface.
 AV3 must bind the single App service port to the admitted descriptor's view,
 owner/Room, generation and declared operations; App messages cannot choose them.
 AV4 must accept only that port in real conversation chrome. An App can emit raw

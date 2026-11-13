@@ -102,7 +102,7 @@ export async function browserServer({ evidence, webDist, build }) {
       });
       const button = document.querySelector('#av1-open');
       button.onclick = () => {
-        window.view = mountAppView(document.querySelector('#av1-mount'), { hostUrl: hostPath, ...packed });
+        window.view = mountAppView(document.querySelector('#av1-mount'), { hostUrl: hostPath, ...packed, call: async () => { throw Object.assign(new Error('The AV1 reference Apps have no backend'), { code: 'NO_BACKEND' }); } });
         window.viewReady = window.view.ready;
       };
     }, { packed, hostPath, clientPath });
