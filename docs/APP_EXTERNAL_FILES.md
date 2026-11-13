@@ -34,7 +34,7 @@ read-write. A remote browser's local upload chooser is not a folder grant.
 An agent or App cannot answer this prompt. A missing grant fails explicitly.
 
 Persist a random opaque grant ID, owner, installation identity, selected
-absolute kernel-local path, filesystem device/inode identity and access mode.
+absolute kernel-local path, filesystem device/inode plus stable creation/generation identity and access mode.
 The path is private kernel state and never part of an SDK result, event or
 trace. A worker gets no additional preopen, mount or host path. Settings list
 and revoke grants; uninstall removes them. A replacement installation cannot
@@ -55,9 +55,15 @@ hard-link aliases. Open directory components with no-follow semantics. Verify
 root device/inode identity on every call; a missing, moved or replaced selected
 folder ends access until a fresh selection. A path check followed by an ordinary
 open is insufficient: the operation must use the checked descriptor. Retain
-parent descriptors through final rename and verify the selected root still
-contains the target at publication. A directory moved out between check and use
-must fail, not write through an old descriptor into a now-unselected tree.
+parent descriptors through final rename. Admission authorizes the selected
+filesystem objects: a rename after admission cannot redirect that operation to
+a replacement pathname. An admitted operation may finish against its pinned
+object; subsequent calls resolve from the selected root again. Tests must
+separately assert that a moved root is refused on the next call and that an
+ancestor or symlink swap cannot redirect an admitted operation. Do not promise
+to undo an already admitted filesystem operation when another process renames
+its target. Across restart, refuse a root whose stable identity cannot be
+proved, rather than treating a reused inode number as the selected directory.
 
 Revocation and publication have a single ordered boundary: a write that has
 not crossed publication is cancelled; one already published returns its actual
