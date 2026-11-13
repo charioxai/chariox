@@ -350,9 +350,8 @@ impl CommandRouter {
 }
 
 impl CommandRouter {
-    /// `agent answer <interaction> <choice|text>` and `agent pass <interaction>`: only the
-    /// agent that holds a sub-agent's decision may settle or hand it on. The result carries a
-    /// typed status and no text.
+    /// The holder answers or passes a child decision; `answer --room` uses owner room reach.
+    /// Both routes settle the same kernel interaction.
     async fn dispatch_meta_child_decision_command(
         &self,
         session: &crate::session::RuntimeSession,
@@ -361,17 +360,38 @@ impl CommandRouter {
         tokens: &[String],
     ) -> Result<RuntimeToolResult, DaemonError> {
         use crate::runtime::state::ChildDecisionStatus;
-        if tokens
+        let mut args = tokens.get(2..).unwrap_or_default().to_vec();
+        let mut room = None;
+        if let Some(index) = args.iter().position(|arg| arg == "--room") {
+            if tokens.get(1).map(String::as_str) != Some("answer")
+                || index + 2 != args.len()
+                || index < 2
+            {
+                return Ok(meta_command_failure_result(command, meta_command_error("usage: agent answer <interaction> <choice|text> [--room <room-id>]; agent pass stays in this room")));
+            }
+            room = args.pop();
+            args.pop();
+        }
+        if args
             .iter()
-            .skip(2)
-            .any(|token| matches!(token.as_str(), "--room" | "--kernel" | "--machine"))
+            .any(|arg| matches!(arg.as_str(), "--room" | "--kernel" | "--machine"))
         {
-            return Ok(meta_command_failure_result(
-                command,
-                meta_command_error(
-                    "peer_decision_refused: a decision is answered or passed only by the agent that holds it in its own room; a peer never settles it, send the agent a message instead",
-                ),
-            ));
+            return Ok(meta_command_failure_result(command, meta_command_error("peer_decision_refused: cards on another kernel are unavailable; --room addresses rooms on this kernel")));
+        }
+        if let Some(room) = room {
+            let result = self.runtime_state.answer_owner_room_card(
+                caller.id(),
+                &room,
+                &args[0],
+                &args[1..].join(" "),
+            );
+            return Ok(match result {
+                Ok(status) => RuntimeToolResult {
+                    ok: status == ChildDecisionStatus::Answered,
+                    payload: serde_json::json!({"command":super::result::redacted_meta_command_for_payload(command),"response":{"type":"ChildDecision","status":status}}),
+                },
+                Err(error) => meta_command_failure_result(command, error),
+            });
         }
         let status = match (
             tokens.get(1).map(String::as_str),

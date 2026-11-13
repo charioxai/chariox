@@ -528,4 +528,5 @@ pub use workspace::*;
 /// interval `trigger`, `overlap_policy` and `max_runs`; an HTTP trigger's `route`, `methods`,
 /// `parser`, `mode`, `sync_timeout_ms`, `poll_ms` and `input_schema`. `InvokeAgentTrigger` carries the
 /// parsed `input`; `ReadAgentTriggerHttpOptions` and `ReadAgentTriggerReply` serve the gateways.
+/// Owner room agent and card commands, including non-secret cross-room answers (peer 449).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1027;

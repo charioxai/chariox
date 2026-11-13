@@ -65,7 +65,7 @@ pub(crate) fn room_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             spec.description = "Read a room peer's sanitized public turn events. Private reasoning, hidden context and unknown legacy provenance are excluded.".into();
             return Some(spec);
         }
-        spec.description = format!("{}: operate only in the current room. Read/message/prompt any peer; New workflow bindings require self or immutable direct children; existing public same-room workflows may execute their saved peer bindings. Spawn regular agents and create workflows without an agent quota or a task plan. Mutations require self-created workflow objects or immutable direct-child creators; agent rename/delete require a direct child. Use chariox.commands.docs for command syntax. No sudo or capability authority is inherited.", spec.name);
+        spec.description = format!("{}: operate in the current room and reach other rooms of the same owner on this kernel with room agents, room cards and agent answer --room, under current authority. Secret cards stay owner-only and guests cannot reach other rooms. Read/message/prompt any peer; New workflow bindings require self or immutable direct children; existing public same-room workflows may execute their saved peer bindings. Spawn regular agents and create workflows without an agent quota or a task plan. Mutations require self-created workflow objects or immutable direct-child creators; agent rename/delete require a direct child. Use chariox.commands.docs for command syntax. No sudo or capability authority is inherited.", spec.name);
         Some(spec)
     }).collect()
 }

@@ -7562,3 +7562,30 @@ projection. Activity timestamps accompany the next state or usage update instead
 of resending the whole run on their own. Ordinary metadata sends only admission
 waits, including on its initial projection; full process and disk samples stay on
 Health. Admission holds, pauses and resumptions still reach ordinary views.
+
+
+### Owner room cards through runtime commands — local 1011 / peer 449
+
+`chariox.room.run_command` admits `room agents <room-id>` and `room cards <room-id>`
+for rooms returned by `room list`. The first returns public agent identity, state, processing,
+active prompt id and the latest task's id, prompt id and execution state. Sub-agents stay inside
+their tree. The second returns pending card ids, complete question text, button ids and labels,
+text input metadata, and `answerable` with a refusal reason under the caller's current authority.
+No Vault value is returned.
+
+`agent answer <interaction> <choice-id|text> --room <room-id>` answers a non-secret card in
+any room of the same owner on this kernel, including the caller's own room. It requires no
+sudo beyond the authority needed at home. The kernel rechecks the live caller, the user who
+started its turn, its current inherited permissions and mode, and the card under the interaction
+lock. Secrets, Vault unlock, passkeys, payments and owner verification remain owner-only;
+guests' agents never gain this reach. The ordinary holder path without `--room` and
+`agent pass` still follow the child decision routing rule. Other kernels are outside this command.
+
+The answer uses shared interaction resolution: every attached client sees the same card close,
+only the first answer wins, and asynchronous questions wake their asking agent with the exact
+reply and answering agent identity. The answer audit names `answered_by_agent` and
+`answering_room_id`; it does not claim the peer is the asker's parent.
+
+Focused regressions: `cargo test -p chariox-kernel --lib cross_room_cards`.
+Real provider drill: `node apps/cli/scripts/live-cross-room-cards-drill.mjs` with isolated
+`XROOM_STATE`, `XROOM_WORKSPACE`, `XROOM_EVIDENCE`, `XROOM_BIN`, `XROOM_BUN` and a product-linked `XROOM_CODEX_PROFILE`.
