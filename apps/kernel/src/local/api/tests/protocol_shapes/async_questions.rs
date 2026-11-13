@@ -36,7 +36,7 @@ fn async_popup_returns_protocol_954_403_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "94d00efb26025e7f7d2fe9f07dc5163ef1e85935c3d8733934acdffd8516adc1"
+        "0e06dbc2891d4a0f3da436465c720b8a64a71cdfac8da06923dd589199b62b77"
     );
     // An old client ignores the additive ownership field; its answer uses
     // exactly the pre-existing request shape.
@@ -155,6 +155,6 @@ fn browser_verification_protocol_992_431_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "13cef7c298f7a37344bff02a8fa3a47cd340ae0ec3c903923c4daebfd0abc7c5"
+        "7e87af47107d7ef330c563dd24cd8aac7956d5f3eb466558e83b635a59142a92"
     );
 }
