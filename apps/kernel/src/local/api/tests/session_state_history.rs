@@ -104,7 +104,8 @@ fn room(harness: &LocalRouterTestHarness, label: &str) -> Room {
     }
 }
 
-/// Adds `count` finished turns like `task` to its agent, as a long-lived Room accumulates them.
+/// Adds `count` finished turns like `task` to its agent, as a long-lived Room accumulates them:
+/// each one's terminal outcome is recorded, as it is once a real turn has finished.
 fn add_finished_turns(harness: &LocalRouterTestHarness, task: &AgentTaskExecution, count: usize) {
     let path = harness.with_app(|app| app.durable_state_store().path().to_path_buf());
     let mut db = rusqlite::Connection::open(path).unwrap();
@@ -114,7 +115,8 @@ fn add_finished_turns(harness: &LocalRouterTestHarness, task: &AgentTaskExecutio
         finished.task_id = format!("{}-history-{turn}", task.task_id);
         finished.prompt_id = format!("{}-history-{turn}", task.prompt_id);
         tx.execute(
-            "INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES(?1,?2,?3,?4,?5)",
+            "INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload,terminal_outcome_recorded) \
+             VALUES(?1,?2,?3,?4,?5,1)",
             rusqlite::params![
                 finished.task_id,
                 finished.room_id,

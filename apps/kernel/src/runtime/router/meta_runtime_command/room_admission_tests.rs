@@ -35,21 +35,25 @@ fn room_admission_child_is_controlled_by_its_parent() {
 }
 
 #[test]
-fn room_admission_grandchild_is_controlled_through_the_subtree() {
+fn room_admission_only_the_direct_parent_deletes_a_grandchild() {
     let a = agent("a", None);
     let b = agent("b", Some("a"));
     let d = agent("d", Some("b"));
-    let result = super::request::meta_agent_request(
-        &session(),
-        &a,
-        &["delete".into(), "d".into()],
-        &[a.clone(), b, d],
-        true,
-    );
+    let agents = [a.clone(), b.clone(), d];
+    let delete = |actor: &crate::agent::AgentInstance| {
+        super::request::meta_agent_request(
+            &session(),
+            actor,
+            &["delete".into(), "d".into()],
+            &agents,
+            true,
+        )
+    };
     assert!(
-        result.is_ok(),
-        "A01-S03: control is membership at any depth, not a creator receipt"
+        delete(&a).is_err(),
+        "a rename or delete needs a direct child, not a deeper subtree member"
     );
+    assert!(delete(&b).is_ok(), "the direct parent deletes its child");
 }
 
 #[test]

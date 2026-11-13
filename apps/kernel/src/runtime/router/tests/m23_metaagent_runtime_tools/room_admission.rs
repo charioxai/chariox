@@ -411,21 +411,20 @@ async fn room_boundaries() {
     };
     let grandchild = room_command(&router, &auth_b, "agent spawn d --provider dev-stub").await;
     assert!(grandchild.ok, "grandchild admission: {grandchild:?}");
-    // A01-S03: control is subtree membership at any depth, so the grandparent
-    // may rename d; a peer outside the subtree stays out of reach.
-    for command in ["agent delete peer", "agent focus peer"] {
+    // A peer outside the subtree stays out of reach, and a rename or delete
+    // needs a direct child: the grandparent may not rename d, its parent may.
+    for command in [
+        "agent delete peer",
+        "agent focus peer",
+        "agent alias d by-grandparent",
+    ] {
         assert!(
             !room_command(&router, &auth_a, command).await.ok,
             "{command}"
         );
     }
     assert!(
-        room_command(&router, &auth_a, "agent alias d by-grandparent")
-            .await
-            .ok
-    );
-    assert!(
-        room_command(&router, &auth_b, "agent alias by-grandparent direct-child")
+        room_command(&router, &auth_b, "agent alias d direct-child")
             .await
             .ok
     );
