@@ -964,9 +964,8 @@ retains those registrations as a wait. Other unfinished work still requires
 normal completion or an explicit valid yield. The question survives native turn
 completion and kernel restart, including its original absolute deadline.
 The retained wait uses the latest outstanding question deadline, bounded by
-clients' four-digit ISO year range. If any such question has no timeout, the wait
-uses `9999-12-31T23:59:59.999Z` (`253_402_300_799_999` milliseconds since the Unix
-epoch), so an unrelated periodic retention cap cannot spend provider wake turns.
+clients' four-digit ISO year range. A question without a timeout contributes a
+deadline 30 minutes after settlement, using the same default as explicit waits.
 
 A failed provider turn keeps the task blocked with the provider failure reason
 and its pending questions intact. The owner must reconcile and resume or cancel;
@@ -993,9 +992,11 @@ Ordinary provider runs receive `chariox.events.subscribe`, `subscriptions`,
 `unsubscribe`, `inbox`, `ack`, `yield` and `blocked`. Each requires current
 `task_id` and `origin_prompt_id`; room/run/turn fences precede resource lookup
 or mutation. A valid yield names admitted completion registrations, covers all
-unresolved obligations. `deadline_ms` is optional (a goal task must give a future one):
-without it the wait ends when a registered source completes, with no timed wake
-(`wait.deadline_ms` is then null). Waiting commits only
+unresolved obligations. `deadline_ms` is optional for ordinary and goal tasks:
+without it the kernel sets `wait.deadline_ms` to 30 minutes after the yield.
+A source may wake the task earlier; reaching the deadline closes the transcript
+wait row as timed out and wakes the retained task with `deadline_reached`.
+Waiting commits only
 when the official provider turn settles. Source completion/loss and overdue
 waits wake the retained task; ACK and provider acceptance remain distinct.
 
@@ -7238,6 +7239,21 @@ client (`landing8-protocol.test.ts`). Focused checks:
 `cargo test -p chariox-kernel --lib -- landing8 protocol_shapes client_protocol_conformance` and
 `node --test packages/kernel-client/dist/landing8-protocol.test.js`.
 
+Landing 10 peek carries local daemon protocol 1009 and relay peer 447 (provisional: 1006-1008 and peer
+445-446 are taken by other Landing 10 lanes). `PeekAgentTranscript {session_id, agent_id, limit?, before?}`
+answers `AgentTranscriptPeek {peek: {agent_id, entries, before?}}`: an agent's latest transcript rows (at most
+50, 10 by default), oldest first, each `{entry_id, kind, title, status, at_ms, duration_ms?, chars}` with `kind`
+one of `prompt`, `assistant`, `thinking`, `tool_call`, `wait`, `error`, `notice` and `status` one of `running`,
+`completed`, `failed`, `cancelled`, `timed_out`; a running row's `duration_ms` is how long it has been running.
+`before` pages back. `ReadAgentTranscriptEntry {session_id, agent_id, entry_id, offset, limit?}` answers
+`AgentTranscriptEntryPage {page: {entry_id, kind, title, offset, text, total_chars, next_offset?}}` with at most
+`limit` characters (4000 by default, at most 16000); a tool call reads as `input: <json>` and then its output.
+Both read the outline the pane reads, under the history trace rule, and mask Vault values. Agents use
+`chariox.peek_agent` and `chariox.read_agent_entry`. A wait (`chariox.events.yield`, a retained question) without
+a deadline now gets `deadline_ms = now + 30 min`; the wait row it ends with names `woken_by.kind`
+`deadline_reached`. Focused check: `cargo test -p chariox-kernel --lib -- session_outline::peek
+a_wait_without_a_deadline protocol_shapes`.
+
 Landing 9 carries local daemon protocol 1005 and relay peer 444. Local 1005: the sub-agent tree node fields and
 the wait row of the sub-agent panes (above), Files on the owner's
 machines (listings with `revision` and `mode`, `ListKernelDirectory.offset`, the file transfer jobs),
@@ -7442,3 +7458,30 @@ an agent has armed waits or events (a task in a wait, or a scheduled, starting o
 carries the count as `waiting_agent_count`. A `SessionHistoryOutlineTurn` the kernel started itself (an inbox wake of a
 waiting agent, or a schedule, HTTP or notification trigger) carries `system_prompt: true`; the outline now keeps the text of a
 wake prompt, which it used to blank. Focused check: `cargo test -p chariox-kernel --lib -- owner_wait system_prompt r16_ protocol_shapes`.
+
+### Agent transcript peek (MP-08 / MP-09 / MP-10 / MP-11)
+
+Local protocol 1009 / relay peer 447 adds `PeekAgentTranscript` and
+`ReadAgentTranscriptEntry`. Both use the kernel-owned history outline read by
+the pane, with its room membership, trace visibility and external-agent grant
+checks. No separate transcript state is stored.
+
+`PeekAgentTranscript` takes `session_id`, `agent_id`, optional `limit` (10 by
+default, at most 50) and an opaque `before` cursor from a previous response.
+It returns `AgentTranscriptPeek.peek`: the latest titled entries oldest first,
+each with `entry_id`, `kind`, `title`, `status`, `at_ms`, optional `duration_ms`
+and source `chars`. Running entries report elapsed duration; tool calls finish
+with their final status and duration. A response's optional `before` retrieves
+older rows.
+
+`ReadAgentTranscriptEntry` takes that agent and `entry_id`, a character `offset`
+(default 0) and optional character `limit` (4000 by default, at most 16000).
+`AgentTranscriptEntryPage.page` contains `text`, `offset`, `total_chars` and
+optional `next_offset`. A tool entry reads as its input followed by its output.
+Registered Vault values are scrubbed before shortening titles or slicing pages;
+offsets refer to the resulting protected text.
+
+Agents use `chariox.peek_agent` (`agent`, optional `limit`, `before`) and
+`chariox.read_agent_entry` (`agent`, `entry_id`, optional `offset`, `limit`).
+The reference resolves within the calling room, like other agent-read tools.
+External agents use the same kernel requests through their existing grants.

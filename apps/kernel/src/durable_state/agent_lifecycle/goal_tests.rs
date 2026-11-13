@@ -1544,18 +1544,20 @@ fn yield_op(deadline: Option<u64>) -> Operation {
 }
 
 #[test]
-fn a_goal_yield_needs_a_deadline() {
+fn a_goal_yield_without_a_deadline_times_out_by_default() {
     let f = Fixture::new();
     goal(&f, 1);
     f.register();
     f.subscribe();
-    let error = f.store.agent_lifecycle(yield_op(None)).unwrap_err();
-    assert!(error.to_string().contains("goal yield requires"), "{error}");
-    f.apply(yield_op(Some(10_000)));
+    f.apply(yield_op(None));
+    assert_eq!(
+        f.task().wait.unwrap().deadline_ms,
+        Some(2 + super::DEFAULT_WAIT_TIMEOUT_MS)
+    );
 }
 
 #[test]
-fn a_plain_yield_without_a_deadline_waits_for_its_sources() {
+fn a_plain_yield_without_a_deadline_waits_the_default_timeout() {
     let f = Fixture::new();
     f.begin("p");
     f.register();
@@ -1564,5 +1566,8 @@ fn a_plain_yield_without_a_deadline_waits_for_its_sources() {
     f.settle("p", true);
     let task = f.task();
     assert_eq!(task.state, ExecutionState::Waiting);
-    assert_eq!(task.wait.unwrap().deadline_ms, None);
+    assert_eq!(
+        task.wait.unwrap().deadline_ms,
+        Some(2 + super::DEFAULT_WAIT_TIMEOUT_MS)
+    );
 }

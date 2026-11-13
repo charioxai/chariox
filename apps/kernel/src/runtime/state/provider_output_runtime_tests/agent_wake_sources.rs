@@ -2479,9 +2479,9 @@ async fn a_yield_writes_one_wait_row_and_the_wake_updates_it_in_place() {
 }
 
 // A wait the owner stops does not stay a running row in the transcript: the same row says it was cancelled.
-// #1338 lets a yield carry no deadline; the wait row of that wait reports it as `null`, not as a missing key.
+// A yield without an explicit deadline reports the kernel's default deadline in its wait row.
 #[tokio::test]
-async fn a_yield_without_a_deadline_writes_a_wait_row_with_a_null_deadline() {
+async fn a_yield_without_a_deadline_writes_a_wait_row_with_the_default_deadline() {
     let f = fixture("wait-row-no-deadline", true).await;
     let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
     let prompt = f
@@ -2522,8 +2522,12 @@ async fn a_yield_without_a_deadline_writes_a_wait_row_with_a_null_deadline() {
     let row = &waiting[0].2;
     assert_eq!(row["status"], "running", "{row}");
     assert!(
-        row["input"].get("deadline_ms").is_some_and(|d| d.is_null()),
-        "the row names a null deadline: {row}"
+        row["input"]["deadline_ms"]
+            .as_u64()
+            .is_some_and(|deadline| deadline
+                >= row["started_at_ms"].as_u64().unwrap()
+                    + crate::durable_state::agent_lifecycle::DEFAULT_WAIT_TIMEOUT_MS),
+        "the row names the default deadline: {row}"
     );
 }
 

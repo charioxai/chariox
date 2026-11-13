@@ -53,7 +53,7 @@ pub(crate) fn kind_label(kind: &str) -> String {
         "source_completed" => "finished",
         "peer_event" => "peer event",
         "source_lost" => "lost",
-        "deadline_reached" => "deadline",
+        "deadline_reached" => "wait timed out",
         "wait_recheck" => "recheck",
         "timer_fired" => "timer",
         other

@@ -147,6 +147,7 @@ fn assert_external_active_prompt_and_queued_chariox_prompt(
     );
 }
 
+mod agent_peek;
 mod agent_tree_state;
 mod agent_wake_sources;
 mod app_quiet_tool_guard;

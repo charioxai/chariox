@@ -366,6 +366,8 @@ pub enum LocalDaemonResponse {
     SessionHistoryOutline { agents: Vec<SessionHistoryOutlineAgent>, },
     SessionHistoryBlobContent { blob_id: String, entries: Vec<SessionHistoryPageEntry>, },
     SessionHistoryBlobContents { blobs: Vec<SessionHistoryBlobContentPage>, },
+    AgentTranscriptPeek { peek: AgentTranscriptPeek, },
+    AgentTranscriptEntryPage { page: AgentTranscriptEntryPage, },
     PromptInputHistory { entries: Vec<PromptInputHistoryEntry>, },
     PromptInputHistoryRecorded { entry: PromptInputHistoryEntry, },
     PromptSettingsListed { settings: Vec<crate::prompt_assembly::PromptSettingRecord>, },

@@ -410,6 +410,8 @@ response_policies! {
         SessionHistoryOutline,
         SessionHistoryBlobContent,
         SessionHistoryBlobContents,
+        AgentTranscriptPeek,
+        AgentTranscriptEntryPage,
         PromptInputHistory,
         PromptInputHistoryRecorded,
         PromptSettingsListed,

@@ -1,0 +1,526 @@
+//! MP-08 / MP-10 / MP-11 peek: an agent's transcript as the pane shows it, one title per row
+//! (the outline's prompt, inline entries and blobs), and one row's content by pages. It reads
+//! the outline the pane reads; nothing is stored for it.
+use serde_json::{Map, Value};
+
+use super::projection::{blob_id, provider_tool_payload};
+use super::*;
+use crate::history::SessionHistoryEntryKind;
+use crate::local::{
+    AgentTranscriptEntryKind as Kind, AgentTranscriptEntryPage,
+    AgentTranscriptEntryStatus as Status, AgentTranscriptPeek, AgentTranscriptTitle,
+    PeekAgentTranscriptRequest, ReadAgentTranscriptEntryRequest, DEFAULT_AGENT_PEEK_ENTRIES,
+    DEFAULT_AGENT_PEEK_PAGE_CHARS, MAX_AGENT_PEEK_ENTRIES, MAX_AGENT_PEEK_PAGE_CHARS,
+};
+use crate::session_history_page::SessionHistoryPageEntry;
+
+mod title;
+
+pub(super) const WAIT_TOOL: &str = "chariox.wait";
+
+pub(crate) async fn execute_agent_transcript_peek(
+    operational_history: OperationalHistoryStore,
+    request: PeekAgentTranscriptRequest,
+    agent_import: Option<ExternalProviderImportMetadata>,
+    now_ms: u64,
+    protect: impl Fn(&str) -> String + Send + 'static,
+) -> Result<AgentTranscriptPeek, DaemonError> {
+    tokio::task::spawn_blocking(move || {
+        peek(
+            &operational_history,
+            &request,
+            agent_import.as_ref(),
+            now_ms,
+            &protect,
+        )
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "peek agent transcript",
+        message: error.to_string(),
+    })?
+}
+
+pub(crate) async fn execute_agent_transcript_entry_read(
+    operational_history: OperationalHistoryStore,
+    request: ReadAgentTranscriptEntryRequest,
+    agent_import: Option<ExternalProviderImportMetadata>,
+    protect: impl Fn(&str) -> String + Send + 'static,
+) -> Result<AgentTranscriptEntryPage, DaemonError> {
+    tokio::task::spawn_blocking(move || {
+        read_entry(
+            &operational_history,
+            &request,
+            agent_import.as_ref(),
+            &protect,
+        )
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "read agent transcript entry",
+        message: error.to_string(),
+    })?
+}
+
+fn peek_error(message: String) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "peek agent transcript",
+        message,
+    }
+}
+
+/// A row and the sequences it covers.
+struct Row {
+    sequence_start: u64,
+    sequence_end: u64,
+    title: AgentTranscriptTitle,
+    before_turn: Option<u64>,
+}
+
+fn peek(
+    operational_history: &OperationalHistoryStore,
+    request: &PeekAgentTranscriptRequest,
+    agent_import: Option<&ExternalProviderImportMetadata>,
+    now_ms: u64,
+    protect: &impl Fn(&str) -> String,
+) -> Result<AgentTranscriptPeek, DaemonError> {
+    let limit = request
+        .limit
+        .unwrap_or(DEFAULT_AGENT_PEEK_ENTRIES)
+        .clamp(1, MAX_AGENT_PEEK_ENTRIES);
+    // Keep the containing turn complete: cutting its events at a row cursor can turn a
+    // completed tool into its earlier running snapshot when another row lies between them.
+    let cursor = request
+        .before
+        .as_deref()
+        .map(|cursor| {
+            let parsed = cursor.split_once('/').and_then(|(row, turn)| {
+                Some((row.parse::<u64>().ok()?, turn.parse::<u64>().ok()?))
+            });
+            parsed.ok_or_else(|| {
+                peek_error(format!(
+                    "invalid before cursor `{cursor}`: pass the `before` of an earlier peek"
+                ))
+            })
+        })
+        .transpose()?;
+    let before_turn = cursor.and_then(|(_, turn)| (turn != 0).then_some(turn));
+    // Turns hold any number of rows: read more of them until the page is full.
+    let mut prompt_count = 2;
+    loop {
+        let outline = load_scoped_agent_outline(
+            operational_history,
+            &request.session_id,
+            &request.agent_id,
+            prompt_count,
+            before_turn,
+            agent_import,
+        )?;
+        let older_turns = outline.next_cursor.as_ref().map(|c| c.before_sequence);
+        let mut rows = Vec::new();
+        for (index, turn) in outline.turns.iter().enumerate() {
+            let upper = outline
+                .turns
+                .get(index + 1)
+                .map(|next| next.user_prompt.entry_index as u64)
+                .or(before_turn);
+            let mut turn_entries = turn_rows(
+                operational_history,
+                request,
+                agent_import,
+                turn,
+                now_ms,
+                protect,
+            )?;
+            for row in &mut turn_entries {
+                row.before_turn = upper;
+            }
+            rows.extend(
+                turn_entries
+                    .into_iter()
+                    .filter(|row| cursor.is_none_or(|(before, _)| row.sequence_start < before)),
+            );
+        }
+        if rows.len() < limit && older_turns.is_some() && prompt_count < MAX_LATEST_PROMPT_COUNT {
+            prompt_count = (prompt_count * 2).min(MAX_LATEST_PROMPT_COUNT);
+            continue;
+        }
+        rows.sort_by_key(|row| (row.sequence_start, row.sequence_end));
+        let older_rows = rows.len() > limit;
+        let rows = rows.split_off(rows.len().saturating_sub(limit));
+        let before = match rows.first() {
+            Some(oldest) if older_rows || older_turns.is_some() => Some(format!(
+                "{}/{}",
+                oldest.sequence_start,
+                oldest.before_turn.unwrap_or(0)
+            )),
+            None => older_turns.map(|sequence| format!("{sequence}/{sequence}")),
+            _ => None,
+        };
+        return Ok(AgentTranscriptPeek {
+            agent_id: request.agent_id.clone(),
+            entries: rows
+                .into_iter()
+                .map(|mut row| {
+                    row.title.title = title::text_title(&row.title.title);
+                    row.title
+                })
+                .collect(),
+            before,
+        });
+    }
+}
+
+fn turn_rows(
+    operational_history: &OperationalHistoryStore,
+    request: &PeekAgentTranscriptRequest,
+    agent_import: Option<&ExternalProviderImportMetadata>,
+    turn: &SessionHistoryOutlineTurn,
+    now_ms: u64,
+    protect: &impl Fn(&str) -> String,
+) -> Result<Vec<Row>, DaemonError> {
+    let open = turn.lifecycle == SessionHistoryOutlineTurnLifecycle::Open;
+    let turn_status = match turn.lifecycle {
+        SessionHistoryOutlineTurnLifecycle::Open => Status::Running,
+        SessionHistoryOutlineTurnLifecycle::Completed => Status::Completed,
+        SessionHistoryOutlineTurnLifecycle::Cancelled => Status::Cancelled,
+        SessionHistoryOutlineTurnLifecycle::Failed => Status::Failed,
+    };
+    let mut rows = Vec::new();
+    if turn.user_prompt.total_chars > 0 {
+        let ended = turn.completed_at_ms.unwrap_or(now_ms);
+        rows.push(entry_row(
+            &turn.user_prompt,
+            Kind::Prompt,
+            title::text_title(&protect(&turn.user_prompt.entry.text)),
+            turn_status,
+            turn.started_at_ms,
+            Some(ended.saturating_sub(turn.started_at_ms)),
+        ));
+    }
+    for blob in &turn.blobs {
+        rows.push(blob_row(
+            operational_history,
+            request,
+            agent_import,
+            blob,
+            turn_status,
+            now_ms,
+            protect,
+        )?);
+    }
+    // A long message is both a blob and its truncated inline entry: the blob is the row.
+    let covered = |entry: &SessionHistoryPageEntry| {
+        let sequence = entry.entry_index as u64;
+        turn.blobs.iter().any(|blob| {
+            blob.kind == entry.entry.kind
+                && (blob.sequence_start..=blob.sequence_end).contains(&sequence)
+        })
+    };
+    for entry in turn
+        .entries
+        .iter()
+        .chain(&turn.summary)
+        .filter(|e| !covered(e))
+    {
+        let kind = page_entry_kind(entry.entry.kind);
+        rows.push(entry_row(
+            entry,
+            kind,
+            title::text_title(&protect(&entry.entry.text)),
+            Status::Completed,
+            entry.entry.timestamp_ms,
+            None,
+        ));
+    }
+    // The open turn's latest message or thought is the one being written.
+    if open {
+        if let Some(latest) = rows
+            .iter_mut()
+            .filter(|row| row.title.kind != Kind::Prompt)
+            .max_by_key(|row| row.sequence_start)
+            .filter(|row| matches!(row.title.kind, Kind::Assistant | Kind::Thinking))
+        {
+            latest.title.status = Status::Running;
+            latest.title.duration_ms = Some(now_ms.saturating_sub(latest.title.at_ms));
+            if latest.title.kind == Kind::Thinking {
+                latest.title.title = latest.title.title.replacen("Thought", "Thinking", 1);
+            }
+        }
+    }
+    Ok(rows)
+}
+
+fn entry_row(
+    entry: &SessionHistoryPageEntry,
+    kind: Kind,
+    title: String,
+    status: Status,
+    at_ms: u64,
+    duration_ms: Option<u64>,
+) -> Row {
+    let sequence_start = entry.entry_index as u64;
+    let sequence_end = entry.sequence_end.map_or(sequence_start, |end| end as u64);
+    Row {
+        sequence_start,
+        sequence_end,
+        before_turn: None,
+        title: AgentTranscriptTitle {
+            entry_id: blob_id(sequence_start, sequence_end),
+            kind,
+            title,
+            status,
+            at_ms,
+            duration_ms,
+            chars: entry.total_chars,
+        },
+    }
+}
+
+fn page_entry_kind(kind: SessionHistoryEntryKind) -> Kind {
+    match kind {
+        SessionHistoryEntryKind::UserPrompt => Kind::Prompt,
+        SessionHistoryEntryKind::ProviderOutput => Kind::Assistant,
+        SessionHistoryEntryKind::ProviderReasoning => Kind::Thinking,
+        SessionHistoryEntryKind::ProviderTool => Kind::ToolCall,
+        SessionHistoryEntryKind::ProviderError => Kind::Error,
+        SessionHistoryEntryKind::ProviderStatus | SessionHistoryEntryKind::Notice => Kind::Notice,
+    }
+}
+
+fn blob_row(
+    operational_history: &OperationalHistoryStore,
+    request: &PeekAgentTranscriptRequest,
+    agent_import: Option<&ExternalProviderImportMetadata>,
+    blob: &crate::local::SessionHistoryOutlineBlob,
+    turn_status: Status,
+    now_ms: u64,
+    protect: &impl Fn(&str) -> String,
+) -> Result<Row, DaemonError> {
+    let session_id = &request.session_id;
+    let agent_id = &request.agent_id;
+    let mut kind = page_entry_kind(blob.kind);
+    let mut status = Status::Completed;
+    let mut at_ms = blob.timestamp_ms;
+    let mut duration_ms = None;
+    let title = match kind {
+        Kind::ToolCall => {
+            let snapshot = blob
+                .preview
+                .as_deref()
+                .and_then(|preview| serde_json::from_str::<Map<String, Value>>(preview).ok())
+                .unwrap_or_default();
+            let background = snapshot.get("background").and_then(Value::as_bool) == Some(true);
+            if snapshot.get("tool").and_then(Value::as_str) == Some(WAIT_TOOL) {
+                kind = Kind::Wait;
+            }
+            status = tool_status(&snapshot);
+            // A call the turn left behind without its end ended with the turn.
+            if status == Status::Running && !background && turn_status != Status::Running {
+                status = turn_status;
+            }
+            let mut started = snapshot.get("started_at_ms").and_then(Value::as_u64);
+            if started.is_none() && (status == Status::Running || blob.entry_count > 1) {
+                // Some official harnesses publish pending/running/completed snapshots
+                // without clock fields. Their first history event is still the start.
+                started = operational_history
+                    .load_session_events_for_agent_sequence_range(
+                        session_id,
+                        agent_id,
+                        blob.sequence_start,
+                        blob.sequence_start,
+                    )?
+                    .first()
+                    .map(|event| event.timestamp_ms);
+            }
+            let finished = snapshot.get("finished_at_ms").and_then(Value::as_u64);
+            at_ms = started.unwrap_or(blob.timestamp_ms);
+            duration_ms = match (status, finished) {
+                (Status::Running, _) => Some(now_ms.saturating_sub(at_ms)),
+                (_, Some(finished)) => Some(finished.saturating_sub(at_ms)),
+                _ => started.map(|started| blob.timestamp_ms.saturating_sub(started)),
+            };
+            title::tool_title(
+                &protected_tool_snapshot(snapshot, protect),
+                status == Status::Running,
+            )
+        }
+        Kind::Thinking => {
+            title::thought_title(&protect(blob.preview.as_deref().unwrap_or_default()), false)
+        }
+        _ => {
+            // A grouped message's summary counts its fragments: title it by its words.
+            let entries = load_blob_content_entries(
+                operational_history,
+                session_id,
+                agent_id,
+                blob.sequence_start,
+                blob.sequence_end,
+                agent_import,
+            )?;
+            let text = entries
+                .iter()
+                .map(|entry| entry.entry.text.as_str())
+                .collect::<String>();
+            title::text_title(&protect(&text))
+        }
+    };
+    Ok(Row {
+        sequence_start: blob.sequence_start,
+        sequence_end: blob.sequence_end,
+        before_turn: None,
+        title: AgentTranscriptTitle {
+            entry_id: blob.blob_id.clone(),
+            kind,
+            title,
+            status,
+            at_ms,
+            duration_ms,
+            chars: blob.total_chars,
+        },
+    })
+}
+
+fn tool_status(snapshot: &Map<String, Value>) -> Status {
+    if title::woken_by(snapshot) == Some("deadline_reached") {
+        return Status::TimedOut;
+    }
+    let status = snapshot
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    match status.as_str() {
+        "running" | "pending" | "in_progress" | "inprogress" | "started" | "queued" => {
+            Status::Running
+        }
+        "failed" | "error" | "errored" => Status::Failed,
+        "cancelled" | "canceled" | "interrupted" | "aborted" | "declined" => Status::Cancelled,
+        _ => Status::Completed,
+    }
+}
+
+fn read_entry(
+    operational_history: &OperationalHistoryStore,
+    request: &ReadAgentTranscriptEntryRequest,
+    agent_import: Option<&ExternalProviderImportMetadata>,
+    protect: &impl Fn(&str) -> String,
+) -> Result<AgentTranscriptEntryPage, DaemonError> {
+    let (sequence_start, sequence_end) = parse_blob_id(&request.entry_id)?;
+    let entries = load_blob_content_entries(
+        operational_history,
+        &request.session_id,
+        &request.agent_id,
+        sequence_start,
+        sequence_end,
+        agent_import,
+    )?;
+    let Some(first) = entries.first() else {
+        return Err(peek_error(format!(
+            "entry `{}` is not in this agent's transcript: pass an entry_id from its peek",
+            request.entry_id
+        )));
+    };
+    let mut kind = page_entry_kind(first.entry.kind);
+    let (title, content) = if kind == Kind::ToolCall {
+        let snapshot = protected_tool_snapshot(merged_tool_snapshot(&entries), protect);
+        if snapshot.get("tool").and_then(Value::as_str) == Some(WAIT_TOOL) {
+            kind = Kind::Wait;
+        }
+        let running = tool_status(&snapshot) == Status::Running;
+        (
+            title::tool_title(&snapshot, running),
+            tool_content(&snapshot),
+        )
+    } else {
+        let text = entries
+            .iter()
+            .map(|entry| entry.entry.text.as_str())
+            .collect::<String>();
+        let text = protect(&text);
+        let title = if kind == Kind::Thinking {
+            title::thought_title(&text, false)
+        } else {
+            title::text_title(&protect(&text))
+        };
+        (title, text)
+    };
+    let limit = request
+        .limit
+        .unwrap_or(DEFAULT_AGENT_PEEK_PAGE_CHARS)
+        .clamp(1, MAX_AGENT_PEEK_PAGE_CHARS);
+    let total_chars = content.chars().count();
+    let offset = request.offset.min(total_chars);
+    let text = content.chars().skip(offset).take(limit).collect::<String>();
+    let end = offset + text.chars().count();
+    Ok(AgentTranscriptEntryPage {
+        entry_id: request.entry_id.clone(),
+        kind,
+        title: title::text_title(&title),
+        offset,
+        text,
+        total_chars,
+        next_offset: (end < total_chars).then_some(end),
+    })
+}
+
+/// Sanitize fields before title shortening or page slicing, so boundaries never reveal
+/// a fragment of a Vault value that the complete-field scrub would otherwise remove.
+fn protected_tool_snapshot(
+    snapshot: Map<String, Value>,
+    protect: &impl Fn(&str) -> String,
+) -> Map<String, Value> {
+    fn visit(value: &mut Value, protect: &impl Fn(&str) -> String) {
+        match value {
+            Value::String(text) => *text = protect(text),
+            Value::Array(items) => items.iter_mut().for_each(|item| visit(item, protect)),
+            Value::Object(fields) => fields.values_mut().for_each(|value| visit(value, protect)),
+            _ => {}
+        }
+    }
+    let mut value = Value::Object(snapshot);
+    visit(&mut value, protect);
+    match value {
+        Value::Object(snapshot) => snapshot,
+        _ => unreachable!("snapshot stays an object"),
+    }
+}
+
+/// A call's snapshots, later fields winning; an imported result record keeps the call's tool.
+fn merged_tool_snapshot(entries: &[SessionHistoryPageEntry]) -> Map<String, Value> {
+    let mut snapshot = Map::new();
+    for entry in entries {
+        if let Some(Value::Object(mut fields)) = provider_tool_payload(&entry.entry.text) {
+            if fields.get("tool").and_then(Value::as_str) == Some("function_call_output") {
+                fields.remove("tool");
+            }
+            snapshot.extend(fields);
+        }
+    }
+    snapshot
+}
+
+/// A call reads as its input, then its output as the tool printed it.
+fn tool_content(snapshot: &Map<String, Value>) -> String {
+    let mut content = String::new();
+    if let Some(input) = snapshot.get("input").filter(|input| !input.is_null()) {
+        content.push_str(&format!("input: {input}\n"));
+    }
+    for key in ["output", "aggregatedOutput", "result", "text", "error"] {
+        match snapshot.get(key) {
+            Some(Value::String(text)) if !text.is_empty() => content.push_str(text),
+            Some(value) if !value.is_null() && !value.as_str().is_some_and(str::is_empty) => {
+                content.push_str(&value.to_string())
+            }
+            _ => continue,
+        }
+        if !content.ends_with('\n') {
+            content.push('\n');
+        }
+    }
+    content
+}
+
+#[cfg(test)]
+mod tests;

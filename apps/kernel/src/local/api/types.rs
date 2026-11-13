@@ -13,6 +13,7 @@ use chariox_relay::protocol::RelayKernelPresence;
 mod account_transfer;
 mod agent_deadline;
 mod agent_lifecycle;
+mod agent_peek;
 mod agent_tree;
 mod agent_triggers;
 mod agent_utility;
@@ -67,6 +68,7 @@ mod workspace;
 pub use account_transfer::*;
 pub use agent_deadline::*;
 pub use agent_lifecycle::*;
+pub use agent_peek::*;
 pub use agent_tree::*;
 pub use agent_triggers::*;
 pub use agent_utility::*;
@@ -516,4 +518,7 @@ pub use workspace::*;
 /// `waiting` state is projected on its activity, and a turn the kernel started is marked `system_prompt` in the outline.
 /// 1006 (person cards, provisional): an active interaction carries `asker_name`, the asking agent's
 /// alias (else its ref), and a sub-agent's card is shown in its top parent's panel whoever holds it.
+/// 1009 (Landing 10 peek, provisional): `PeekAgentTranscript` lists an agent's latest transcript rows as
+/// titles (`AgentTranscriptPeek`) with a `before` cursor and `ReadAgentTranscriptEntry` reads one row by
+/// pages (`AgentTranscriptEntryPage`); a wait without a deadline gets `now + 30 min` as `deadline_ms`.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1027;

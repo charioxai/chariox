@@ -26,7 +26,7 @@ fn child_exists(team: &Family, child: &str) -> bool {
     team.runtime.owned.agent_store.get_agent(child).is_ok()
 }
 
-/// The parent subscribes to its one working child, yields on it with no deadline and ends its turn;
+/// The parent subscribes to its one working child, yields on it with a long deadline and ends its turn;
 /// the child then finishes. Returns the parent task id and the receipt's sequence.
 async fn parent_waits_and_child_finishes(team: &Family) -> (String, u64) {
     let store = &team.runtime.owned.durable_state_store;
@@ -55,7 +55,8 @@ async fn parent_waits_and_child_finishes(team: &Family) -> (String, u64) {
         .as_str()
         .unwrap()
         .to_owned();
-    // No deadline_ms: the wait ends with the child.
+    // The child may take hours; an explicit deadline keeps the default timeout out of this cleanup drill.
+    let deadline = crate::session::unix_epoch_ms() + 6 * 60 * 60_000;
     parent_tool(
         team,
         "chariox.events.yield",
@@ -65,11 +66,12 @@ async fn parent_waits_and_child_finishes(team: &Family) -> (String, u64) {
             "registration_ids": [registration],
             "inbox_cursor": 0,
             "reason": "waiting for the child",
+            "deadline_ms": deadline,
         }),
     )
     .await;
     let waiting = store.agent_task(&parent_task.task_id).unwrap().unwrap();
-    assert_eq!(waiting.wait.as_ref().unwrap().deadline_ms, None);
+    assert_eq!(waiting.wait.as_ref().unwrap().deadline_ms, Some(deadline));
     team.runtime
         .owned
         .complete_local_prompt_without_advance(&team.room, &team.parent, Some(&team.parent_run))
@@ -146,7 +148,7 @@ async fn ack(team: &Family, sequence: u64, handled: bool) {
         .unwrap();
 }
 
-// Drill: spawn one child, yield with no deadline, wake only on its child_finished, ack it handled,
+// Drill: spawn one child, yield with an explicit long deadline, wake only on its child_finished, ack it handled,
 // and the child is gone.
 #[tokio::test]
 async fn a_handled_child_finished_receipt_deletes_the_spawned_child() {

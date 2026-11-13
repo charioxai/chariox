@@ -80,6 +80,9 @@ pub(crate) use types::{
 pub(crate) const SWEEP_MS: u64 = 30_000;
 pub(crate) const DELIVERY_TIMEOUT_MS: u64 = 120_000;
 pub(crate) const LONG_WAIT_MS: u64 = 900_000;
+/// Every wait ends: one without its own deadline times out after 30 minutes, so an agent whose
+/// sources never report still wakes and can tell it is stuck.
+pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
 pub(crate) const NO_PROGRESS_LIMIT: u32 = 3;
 
 fn sql_integer(value: u64) -> Result<i64, DaemonError> {

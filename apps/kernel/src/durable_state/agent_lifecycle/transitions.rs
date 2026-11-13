@@ -446,11 +446,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     "nothing to wait on: every tracked obligation is resolved; reply with the final answer",
                 ));
             }
-            if t.goal.is_some() && deadline.is_none() {
-                return Err(error("a goal yield requires a finite future deadline_ms"));
-            }
+            let deadline = deadline.unwrap_or(now.saturating_add(super::DEFAULT_WAIT_TIMEOUT_MS));
             if ids.is_empty()
-                || deadline.is_some_and(|d| d <= now || d > i64::MAX as u64)
+                || deadline <= now
+                || deadline > i64::MAX as u64
                 || reason.trim().is_empty()
             {
                 return Err(error(
@@ -493,7 +492,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             // deadline so an early check-in cannot turn a live source into a timeout.
             t.wait = Some(AgentWait {
                 registration_ids: ids,
-                deadline_ms: deadline,
+                deadline_ms: Some(deadline),
                 started_at_ms: now,
                 inbox_cursor: cursor,
                 long_wait_notified: false,
@@ -965,7 +964,7 @@ fn retain_question_wait(
                 })
             })
             .collect();
-        let deadline_ms = super::wakes::question_deadline(tx, t, &selected)?;
+        let deadline_ms = super::wakes::question_deadline(tx, t, &selected, now)?;
         t.wait = Some(AgentWait {
             registration_ids: selected.into_iter().map(|r| r.id).collect(),
             deadline_ms: Some(deadline_ms),
