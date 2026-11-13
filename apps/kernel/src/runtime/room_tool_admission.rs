@@ -76,6 +76,20 @@ pub(crate) fn in_subtree(
     ))
 }
 
+/// Destructive identity changes belong only to the target's immediate parent.
+pub(crate) fn direct_child(
+    actor: &AgentInstance,
+    target: &AgentInstance,
+) -> Result<(), DaemonError> {
+    if target.session_id() == actor.session_id() && target.parent_agent_id() == Some(actor.id()) {
+        Ok(())
+    } else {
+        Err(denied(
+            "only a direct child in this room can be renamed or deleted",
+        ))
+    }
+}
+
 /// Workflow execution can reset provider context, so peers are not bindings.
 pub(crate) fn workflow_node(
     actor: &AgentInstance,
