@@ -233,7 +233,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
     MetaCommandDoc {
         name: "agent deadline",
         aliases: &["agent deadline"],
-        usage: "agent deadline <agent-ref> <90s|30m|2h|1d|none> [--room <room>] | agent deadline get <agent-ref>",
+        usage: "agent deadline <agent-ref> <90s|30m|2h|1d|none> [--room <room>] | agent deadline get <agent-ref> [--room <room>]",
         examples: &["agent deadline worker-1 30m", "agent deadline get worker-1"],
         tags: &["agent", "deadline", "orchestration"],
         intents: &["limit how long a worker runs", "read a worker's deadline"],

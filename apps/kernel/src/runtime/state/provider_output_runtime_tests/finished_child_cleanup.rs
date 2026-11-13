@@ -184,6 +184,26 @@ async fn a_handled_child_finished_receipt_deletes_the_spawned_child() {
 }
 
 #[tokio::test]
+async fn a_parent_keeps_a_finished_child_for_its_next_round() {
+    let team = family_of("child-cleanup-keep", 1, None, true, true).await;
+    let child = team.kids[0].child.clone();
+    let (_, receipt) = parent_waits_and_child_finishes(&team).await;
+    team.runtime
+        .ack_agent_inbox(
+            &team.room,
+            &team.parent,
+            &serde_json::json!({"sequence": receipt, "handled": true, "keep_children": true}),
+            crate::session::unix_epoch_ms(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        child_exists(&team, &child),
+        "a child the parent keeps survives its handled receipt"
+    );
+}
+
+#[tokio::test]
 async fn an_unhandled_ack_keeps_the_child() {
     let team = family_of("child-cleanup-unhandled", 1, None, true, true).await;
     let child = team.kids[0].child.clone();

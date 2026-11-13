@@ -962,6 +962,20 @@ async fn deadline_edit_authority() {
     )
     .await;
     assert!(cross.ok, "same-owner cross-room deadline: {cross:?}");
+    let read_cross = || {
+        let (world, q) = (&world, &q);
+        async move {
+            let got = room_command(
+                world,
+                "a",
+                &format!("agent deadline get {} --room {}", q, world.other_room),
+            )
+            .await;
+            assert!(got.ok, "same-owner cross-room deadline read: {got:?}");
+            got.payload["response"]["deadline"].clone()
+        }
+    };
+    assert!(read_cross().await["deadline_ms"].is_u64());
     let cross_clear = room_command(
         &world,
         "a",
@@ -969,6 +983,7 @@ async fn deadline_edit_authority() {
     )
     .await;
     assert!(cross_clear.ok, "{cross_clear:?}");
+    assert!(read_cross().await.is_null());
 }
 
 #[test]

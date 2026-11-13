@@ -25,6 +25,8 @@ pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
 pub(crate) use worker_stops::{UnstoppedWorkerRun, WorkerStopMutation};
 #[cfg(test)]
 mod blocked_intent_tests;
+#[cfg(test)]
+mod child_end_receipt_tests;
 pub(crate) mod created_peers;
 mod delivery_waits;
 #[cfg(test)]
@@ -34,6 +36,8 @@ mod goal_evidence;
 #[cfg(test)]
 mod goal_tests;
 pub(crate) mod goals;
+#[cfg(test)]
+mod message_reply_tests;
 mod migration;
 pub(crate) mod outside;
 #[cfg(test)]
@@ -41,6 +45,8 @@ mod outside_tests;
 pub(crate) mod peer_follows;
 #[cfg(test)]
 mod peer_room_reply_tests;
+#[cfg(test)]
+mod peer_task_follow_tests;
 #[cfg(test)]
 mod plain_tests;
 mod quarantine;
@@ -1359,6 +1365,16 @@ fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonEr
         tx.execute("UPDATE agent_inbox SET payload=json_set(payload,'$.state','handled') WHERE room_id=?1 AND agent_id=?2 AND occurrence_id=?3 AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND json_extract(payload,'$.state')='pending'", params![room, agent, format!("task-terminal-{task}")]).map_err(sql)?;
     }
     Ok(e)
+}
+/// The receipt `e` of a task's end whose `child_finished` the recipient has already handled.
+fn folded_into_handled_child_end(
+    tx: &Transaction<'_>,
+    e: &InboxEvent,
+) -> Result<bool, DaemonError> {
+    let Some(task) = e.occurrence_id.strip_prefix("task-terminal-") else {
+        return Ok(false);
+    };
+    tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND occurrence_id=?3 AND json_extract(payload,'$.kind')='child_finished' AND json_extract(payload,'$.state')='handled')", params![e.room_id, e.agent_id, format!("child-finished-{task}")], |r| r.get(0)).map_err(sql)
 }
 /// The receipt `e` of a task's end, for a recipient that already has that task's `child_finished`.
 fn receipt_folded(tx: &Transaction<'_>, e: &InboxEvent) -> Result<bool, DaemonError> {

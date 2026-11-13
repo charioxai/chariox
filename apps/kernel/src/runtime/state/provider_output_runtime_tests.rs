@@ -176,6 +176,7 @@ mod leased_output;
 mod leased_refused_checkout;
 mod mcp_catalog_reload;
 mod peer_events;
+mod peer_task_follow;
 mod process_tool_settlement;
 #[cfg(unix)]
 mod project_environment_shell;

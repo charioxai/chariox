@@ -67,7 +67,9 @@ use subscriptions::{
 pub(crate) const WATCH_INTERVAL_MS: u64 = 100;
 pub(crate) const WAITING_ROOM_ROW_COALESCE_MS: u64 = 500;
 const PUMP_INTERVAL_MS: u64 = 500;
-const PROVIDER_OUTPUT_PUMP_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// At most half the process shutdown budget: the subsystem cleanup after it withdraws cards and
+/// stops provider utilities, and must still run before the watchdog ends the process.
+const PROVIDER_OUTPUT_PUMP_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 const IDLE_PUMP_INTERVAL_MS: u64 = 5_000;
 pub(crate) const SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS: u64 = 20;
 const HEARTBEAT_INTERVAL_TICKS: u64 = 50;
@@ -798,6 +800,7 @@ where
                     task.abort();
                 }
                 mcp_task.abort();
+                crate::shutdown::stage("subsystem cleanup");
                 let _ = router.runtime_state().end_kernel_access_for_shutdown();
                 if let Err(error) = router.shutdown_cleanup().await {
                     crate::logging::error_with_fields(

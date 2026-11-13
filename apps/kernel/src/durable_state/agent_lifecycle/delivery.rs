@@ -83,6 +83,7 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
             }
             let admitted = event(tx, e)?;
             tx.execute("INSERT INTO agent_delegation_messages VALUES(?1,?2) ON CONFLICT(sequence) DO NOTHING",params![sql_integer(admitted.sequence)?,t.task_id]).map_err(sql)?;
+            super::replies::answer_by_message(tx, &admitted)?;
             if admitted.reply_requested {
                 let id = format!("reply-{}", admitted.sequence);
                 if !t.obligations.iter().any(|o| o.id == id) {

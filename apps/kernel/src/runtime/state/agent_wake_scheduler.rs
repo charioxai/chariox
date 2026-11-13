@@ -49,6 +49,13 @@ impl AgentWakeMonitor {
             .register(Arc::new(super::wake_driver::TimerDriver));
         monitor
     }
+
+    /// How long the scheduler has been silent: since its last tick, or since the kernel started
+    /// when it has not ticked yet.
+    fn scheduler_silent_ms(&self, now: u64) -> u64 {
+        let tick = self.scheduler_tick_ms.load(Ordering::Acquire);
+        now.saturating_sub(tick.max(self.started_at_ms))
+    }
 }
 
 fn armed(w: &AgentWake) -> bool {
@@ -267,7 +274,7 @@ impl KernelRuntimeState {
         let tick = monitor.scheduler_tick_ms.load(Ordering::Acquire);
         let timers = store.agent_armed_timers()?;
         if !timers.is_empty()
-            && now.saturating_sub(tick) > WAKE_FIRE_TOLERANCE_MS
+            && monitor.scheduler_silent_ms(now) > WAKE_FIRE_TOLERANCE_MS
             && !monitor.scheduler_stall_alerted.swap(true, Ordering::AcqRel)
         {
             let since = if tick == 0 {
@@ -329,12 +336,9 @@ impl KernelRuntimeState {
     }
 
     pub(super) fn wake_scheduler_health(&self, now: u64) -> serde_json::Value {
-        let tick = self
-            .owned
-            .agent_wakes
-            .scheduler_tick_ms
-            .load(Ordering::Acquire);
-        serde_json::json!({"last_tick_at_ms":tick,"stalled":now.saturating_sub(tick) > WAKE_FIRE_TOLERANCE_MS,"fire_tolerance_ms":WAKE_FIRE_TOLERANCE_MS,"delivery_tolerance_ms":WAKE_DELIVERY_TOLERANCE_MS})
+        let monitor = &self.owned.agent_wakes;
+        let tick = monitor.scheduler_tick_ms.load(Ordering::Acquire);
+        serde_json::json!({"last_tick_at_ms":tick,"stalled":monitor.scheduler_silent_ms(now) > WAKE_FIRE_TOLERANCE_MS,"fire_tolerance_ms":WAKE_FIRE_TOLERANCE_MS,"delivery_tolerance_ms":WAKE_DELIVERY_TOLERANCE_MS})
     }
 
     /// After a restart no process from an earlier kernel is supervised; it is

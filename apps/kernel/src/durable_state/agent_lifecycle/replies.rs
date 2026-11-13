@@ -71,6 +71,66 @@ pub(super) fn forward_to_sender_room(
         _ => Ok(()),
     }
 }
+/// A reply_requested question its recipient read inside a running turn (shown by an inbox read, or
+/// already acknowledged) has no message turn of its own whose end could answer it: the recipient's
+/// next message to the asker is that answer.
+pub(super) fn answer_by_message(
+    tx: &Transaction<'_>,
+    reply: &InboxEvent,
+) -> Result<(), DaemonError> {
+    // The question lives in the replier's inbox, in the room the reply was sent from.
+    let replier_room = reply.payload["sender_room_id"]
+        .as_str()
+        .unwrap_or(&reply.room_id);
+    let question: Option<(i64, String)> = tx
+        .query_row(
+            "SELECT q.sequence,json_extract(q.payload,'$.state') FROM agent_inbox q WHERE q.room_id=?1 AND q.agent_id=?2 AND q.source_id=?3 \
+             AND json_extract(q.payload,'$.kind')='message' AND json_extract(q.payload,'$.reply_requested')=1 \
+             AND (json_extract(q.payload,'$.state') IN ('accepted','acknowledged','handled') \
+                  OR EXISTS(SELECT 1 FROM agent_inbox_shown s WHERE s.sequence=q.sequence)) \
+             AND NOT EXISTS(SELECT 1 FROM agent_source_occurrences o WHERE o.room_id=q.room_id AND o.source_id='agent-event-'||q.agent_id||'-'||q.sequence) \
+             ORDER BY q.sequence LIMIT 1",
+            params![replier_room, reply.source_id, reply.agent_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    let Some((question, state)) = question else {
+        return Ok(());
+    };
+    let text = reply.payload["message"].as_str().unwrap_or_default();
+    let excerpt = &text[..text.floor_char_boundary(4_000)];
+    super::supervision::apply(
+        tx,
+        Operation::SourceOutcome {
+            now: crate::session::unix_epoch_ms(),
+            room: replier_room.into(),
+            source: format!("agent-event-{}-{question}", reply.source_id),
+            occurrence: format!("reply-terminal-{question}"),
+            success: true,
+            public_answer: Some(serde_json::json!({
+                "agent_id": reply.source_id,
+                "reply_sequence": reply.sequence,
+                "excerpt": excerpt,
+            })),
+        },
+    )?;
+    // Answering the question handles it: it is not delivered again as a turn of its own.
+    if !matches!(state.as_str(), "acknowledged" | "handled") {
+        super::delivery::apply(
+            tx,
+            Operation::Ack {
+                room: replier_room.into(),
+                agent: reply.source_id.clone(),
+                sequence: u64::try_from(question)
+                    .map_err(|_| error("corrupt question sequence"))?,
+                handled: true,
+                now: crate::session::unix_epoch_ms(),
+            },
+        )?;
+    }
+    Ok(())
+}
 pub(super) fn reconcile_source(
     tx: &Transaction<'_>,
     room: &str,

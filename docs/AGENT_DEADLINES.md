@@ -17,7 +17,7 @@ The owner can use `chariox agent deadline <agent> <90s|30m|2h|1d|none>`
 (optionally `--session ROOM`, `--kernel KERNEL`, `--socket PATH`). Durations start
 at the time of the request. Agents use the Room command
 `agent deadline <agent-ref> <duration|none> [--room <room>]` or read with
-`agent deadline get <agent-ref>`. A parent can edit descendants; an owner's
+`agent deadline get <agent-ref> [--room <room>]`. A parent can edit descendants; an owner's
 coordinator can edit a peer of the same owner when its authority covers the
 peer, including an ordinary agent in another room. An agent cannot edit its own
 deadline, an ancestor's, a hidden sub-agent in another room, or another owner's

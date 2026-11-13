@@ -5,7 +5,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-const SHUTDOWN_BUDGET: Duration = Duration::from_secs(10);
+pub(crate) const SHUTDOWN_BUDGET: Duration = Duration::from_secs(10);
 static WATCHDOG: OnceLock<Arc<Shared>> = OnceLock::new();
 
 struct State {

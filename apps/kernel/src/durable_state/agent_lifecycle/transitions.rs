@@ -855,7 +855,10 @@ pub(super) fn recover_source(
     task: &mut AgentTaskExecution,
     mut registration: Registration,
 ) -> Result<(), DaemonError> {
-    let source: Option<(i64,String,bool,Option<String>)> = tx.query_row("SELECT sequence,occurrence_id,success,public_answer FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2 AND sequence>?3 ORDER BY sequence DESC LIMIT 1",params![task.room_id,registration.source_id,sql_integer(registration.source_cursor)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+    // A followed task may end in another room of the owner; its outcome is recorded there.
+    let any_room = registration.peer
+        && super::peer_follows::followed_task(tx, &registration.source_id)?.is_some();
+    let source: Option<(i64,String,bool,Option<String>)> = tx.query_row("SELECT sequence,occurrence_id,success,public_answer FROM agent_source_occurrences WHERE (room_id=?1 OR ?4) AND source_id=?2 AND sequence>?3 ORDER BY sequence DESC LIMIT 1",params![task.room_id,registration.source_id,sql_integer(registration.source_cursor)?,any_room],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
     if let Some((seq, id, success, answer)) = source {
         if success && super::delegation::unbound(task, &registration) {
             return Ok(());
@@ -874,7 +877,7 @@ pub(super) fn recover_source(
                 registration.peer && registration.obligation_id.is_none(),
             ),
         )?;
-        registration.live = super::peer_follows::outlives(&registration, &id);
+        registration.live = super::peer_follows::outlives(tx, &registration, &id)?;
         registration.source_cursor =
             u64::try_from(seq).map_err(|_| error("corrupt source sequence"))?;
         tx.execute(
