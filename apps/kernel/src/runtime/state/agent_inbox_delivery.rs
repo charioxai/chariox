@@ -59,6 +59,13 @@ impl KernelRuntimeState {
             .owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent);
+        // Checks use a separate tool-free conversation. Keep ordinary work in
+        // the inbox until its agent can handle it in a work turn.
+        if active.as_ref().is_some_and(|prompt| {
+            prompt.prompt_origin() == crate::session::PromptOrigin::CompletionCheck
+        }) {
+            return Ok(());
+        }
         // A04 causal fence: during sudo-bound work only that task's correlated
         // wakes are delivered (never by steering); other events stay pending
         // visibly and run as regular turns once the window ends.
