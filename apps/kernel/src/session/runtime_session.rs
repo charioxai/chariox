@@ -1288,11 +1288,12 @@ impl RuntimeSession {
         self.workspace_live_sync_mode
     }
 
-    /// Attachments are presence: who is connected right now. No view shows them, so
-    /// attach and detach churn alone never needs a whole session sent to every viewer.
-    pub fn equivalent_except_attachments(&self, other: &Self) -> bool {
+    /// Attachments and the last use are presence: who is connected and when. No Room view
+    /// shows them, so attach, detach and use alone never need a whole session sent to every viewer.
+    pub fn equivalent_except_presence(&self, other: &Self) -> bool {
         let mut left = self.clone();
         left.attachment_ids = other.attachment_ids.clone();
+        left.last_used_at_ms = other.last_used_at_ms;
         left == *other
     }
 

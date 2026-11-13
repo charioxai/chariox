@@ -275,11 +275,11 @@ pub(crate) enum KernelEvent {
     },
 }
 
+/// The session metadata a `session_metadata_changed` event carries; a change of anything else
+/// (last use, last prompt time) sends no event of its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SessionMetadataPatch {
     pub(crate) alias: Option<String>,
-    pub(crate) last_used_at_ms: Option<u64>,
-    pub(crate) last_prompt_sent_at_ms: Option<u64>,
     pub(crate) hidden: bool,
     pub(crate) focused_agent_id: Option<String>,
     pub(crate) workspace_live_sync_mode: Option<WorkspaceLiveSyncMode>,
@@ -289,8 +289,6 @@ impl SessionMetadataPatch {
     fn from_session(session: &RuntimeSession) -> Self {
         Self {
             alias: session.alias().map(str::to_string),
-            last_used_at_ms: session.last_used_at_ms(),
-            last_prompt_sent_at_ms: session.last_prompt_sent_at_ms(),
             hidden: session.is_hidden(),
             focused_agent_id: session.focused_agent_id().map(str::to_string),
             workspace_live_sync_mode: session.workspace_live_sync_mode(),
