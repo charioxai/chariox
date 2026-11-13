@@ -70,6 +70,8 @@ export function renderAgentInteractionStrips(options: InteractionStripRenderOpti
   }
 }
 
+const stripViews = new WeakMap<BoxRenderable, string>()
+
 function renderInteractionStrip(
   options: InteractionStripRenderOptions,
   box: BoxRenderable | undefined,
@@ -77,10 +79,6 @@ function renderInteractionStrip(
 ): void {
   if (!box) {
     return
-  }
-  for (const child of [...box.getChildren()]) {
-    box.remove(String(child.id))
-    child.destroyRecursively?.()
   }
   const interaction = options.activeInteractionForAgent(agent?.id ?? null)
   const queuedPrompts = options.queuedPromptStripItemsForAgent(agent?.id ?? null)
@@ -98,16 +96,28 @@ function renderInteractionStrip(
   box.paddingTop = interaction ? 0 : 0
   box.paddingBottom = interaction ? 0 : 0
   box.backgroundColor = theme.backgroundElement
-  if (!visible) {
-    box.requestRender?.()
-    return
-  }
-
   const focused = agent?.id === options.focusedAgentId
   const selectedQueuedPromptIndex = focused
     ? options.selectedQueuedPromptIndexForAgent(agent?.id ?? null)
     : -1
   const providerLogin = interaction ? options.providerLoginState?.(interaction) ?? null : null
+  // Ordinary output can announce the same work stack repeatedly. Preserve its
+  // native renderables; rebuilding a full queue delays the next input event.
+  const view = providerLogin ? null : JSON.stringify([
+    agent?.id, focused, interaction, interaction && options.askingAgentLabel?.(interaction),
+    interaction && [options.selectedChoiceIndex(interaction.id), options.customReply(interaction.id), options.customEditing(interaction.id)],
+    queuedPrompts, selectedQueuedPromptIndex, subAgents, queuedJobs, remoteJobs, triggers, deliveries,
+  ])
+  if (view !== null && stripViews.get(box) === view) return
+  for (const child of [...box.getChildren()]) {
+    box.remove(String(child.id))
+    child.destroyRecursively?.()
+  }
+  if (!visible) {
+    if (view !== null) stripViews.set(box, view); else stripViews.delete(box)
+    box.requestRender?.()
+    return
+  }
   renderQueuedJobStrip(options, box, queuedJobs)
   for (const line of remoteJobs) box.add(new TextRenderable(options.renderer, { content: line, fg: theme.textMuted, wrapMode: "word" }))
   if (interaction && providerLogin) {
@@ -161,6 +171,7 @@ function renderInteractionStrip(
       wrapMode: "word",
     }))
   }
+  if (view !== null) stripViews.set(box, view); else stripViews.delete(box)
   box.requestRender?.()
 }
 
