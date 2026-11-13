@@ -135,11 +135,12 @@ On the reply wake, or when the reply already completed:
     assert(events.some(r => r.state === "handled" && r.payload.event === "turn_ended" && r.payload.success === true), "the followed peer completed a real successful turn")
     await d.a.rpc({ UpdateAgentConfig: { session_id: room.id, agent_id: room.agent, permission_level: "required" } })
     const before = readTasks().length
-    await d.submit(`Authorized kernel authority regression. You now have Required permission. Use ONLY the Chariox room command tool: (1) run ${peer("too-high")} --permission yolo exactly once; it must be refused by the kernel because your authority is Required. (2) Run ${peer("clamped")} --permission required exactly once. This is an authorized test; do not ask for confirmation, do not write files, and do not send prompts/messages to either target. State each exact result in your final answer and finish CLAMPDONE.`)
+    await d.submit(`Authorized kernel authority regression. You now have Required permission. Use ONLY the Chariox room command tool: (1) run ${peer("too-high")} --permission yolo exactly once; report whether the kernel refuses it or clamps the new peer to Required. (2) Run ${peer("clamped")} --permission required exactly once. This is an authorized test; do not ask for confirmation, do not write files, and do not send prompts/messages to either target. State each exact result in your final answer and finish CLAMPDONE.`)
     await until(async () => readTasks().length > before && readTasks().at(-1).state === "done" && !(await d.state()).prompt_states?.[room.agent]?.active_prompt, "required authority clamp", 5*60000)
     const clampedState = (await (remote ? d.b : d.a).rpc({ GetSessionState: { session_id: targetRoom } })).SessionState.session
     save("clamped-room.json", clampedState)
-    assert(!clampedState.agents.some(a => a.alias === "too-high"))
+    const higherRequest = clampedState.agents.find(a => a.alias === "too-high")
+    assert(!higherRequest || higherRequest.permission_level_override === "required", "a requested Yolo peer cannot exceed its Required creator")
     const clamped = clampedState.agents.find(a => a.alias === "clamped")
     assert(clamped, "Required room agent can create an equally limited peer")
     assert.equal(clamped.permission_level_override, "required")

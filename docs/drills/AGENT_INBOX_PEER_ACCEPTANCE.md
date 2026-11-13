@@ -37,8 +37,8 @@ this does not validate hosted Cloud enrollment or provider-account-copy/PAC-01.
 
 The peer scenario requires a real child to invoke the forbidden room-peer spawn,
 then a separate room-agent prompt to create a peer and receive its automatically followed turn
-end. A Required parent must fail to create a Yolo peer and succeed at creating a
-Required peer. Agent state independently confirms the resulting authority. Each phase waits for the actual handled outcome before the next TUI prompt; no model-written report is needed for peer authority.
+end. A Required parent must never create a Yolo peer: the request may be refused
+or clamped to Required. An explicit Required peer request must succeed. Agent state independently confirms the resulting authority. Each phase waits for the actual handled outcome before the next TUI prompt; no model-written report is needed for peer authority.
 
 The inbox scenario uses three followed room workers in another Room. Their
 nonurgent completions must all be durably pending while the orchestrator holds
