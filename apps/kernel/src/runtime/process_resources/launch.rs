@@ -179,32 +179,6 @@ impl LaunchAdmission {
             .filter(|memory| *memory > 0)
     }
 
-    /// A declaration or the exact line that established a peak can prove that
-    /// waiting will never help. Normalized variants remain free to use less.
-    pub(crate) fn memory_refusal(
-        &self,
-        argv: &[String],
-        cwd: &Path,
-        minimum_memory: u64,
-    ) -> Option<String> {
-        let seen = admission::seen_argv(0, argv, Some(cwd.to_path_buf()));
-        let expected = self
-            .0
-            .ledger
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .peaks
-            .get(&seen.key)
-            .filter(|peak| peak.exact == seen.exact)
-            .map_or(0, |peak| peak.memory);
-        let need = minimum_memory.max(expected);
-        let capacity = self.0.capacity();
-        (need > capacity).then(|| format!(
-            "chariox: stopped this command: it needs about {} and this machine's memory pool is {}, so it can never fit here. Run it on a larger machine or lower its memory use.\n",
-            super::waits::size(need), super::waits::size(capacity),
-        ))
-    }
-
     pub(crate) fn would_wait(
         &self,
         id: &str,

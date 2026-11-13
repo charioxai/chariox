@@ -452,7 +452,7 @@ async fn offload_job_reader_grace_is_ten_minutes_and_normal_exec_stays_five() {
             directory.path(),
             &["/bin/true".into()],
             &crate::local::JobNeeds {
-                memory_gib: None,
+                memory_gib: Some(1),
                 cpus: None,
             },
             None,
@@ -483,18 +483,7 @@ async fn offload_job_reader_grace_is_ten_minutes_and_normal_exec_stays_five() {
 async fn offload_job_declared_memory_queues_before_creating_a_process() {
     let directory = crate::test_support::TestWorktree::new("offload-job-minimum-memory");
     let marker = directory.path().join("started");
-    let service = super::queue_tests::limited(2 * 1024 * 1024 * 1024, u64::MAX / 2);
-    let _busy = service
-        .inner
-        .admission
-        .reserve_with_memory(
-            "other-job",
-            &["cat".into()],
-            Path::new("/"),
-            false,
-            1536 * 1024 * 1024,
-        )
-        .unwrap();
+    let service = super::queue_tests::limited(512 * 1024 * 1024, u64::MAX / 2);
     let id = service
         .open_job_as(
             "room",
@@ -527,53 +516,6 @@ async fn offload_job_declared_memory_queues_before_creating_a_process() {
     let (_, _, outcome) = collect(&service, &id).await;
     assert!(matches!(outcome, ExecOutcome::Failed { .. }));
     assert!(!marker.exists());
-}
-
-#[tokio::test]
-async fn offload_job_larger_than_the_whole_pool_finishes_without_a_process() {
-    let directory = crate::test_support::TestWorktree::new("offload-job-impossible-memory");
-    let marker = directory.path().join("started");
-    let service = super::queue_tests::limited(512 * 1024 * 1024, u64::MAX / 2);
-    let id = service
-        .open_job_as(
-            "room",
-            crate::session::DEFAULT_LOCAL_USER_ID,
-            directory.path(),
-            &[
-                "/bin/sh".into(),
-                "-c".into(),
-                format!("touch '{}'", marker.display()),
-            ],
-            &crate::local::JobNeeds {
-                memory_gib: Some(1),
-                cpus: None,
-            },
-            None,
-            Some("agent".into()),
-        )
-        .unwrap();
-    let result = tokio::time::timeout(Duration::from_secs(2), collect(&service, &id)).await;
-    // Clean up even on the base: the regression must not leave a queued launch.
-    if result.is_err() {
-        service.cancel("room", &id).unwrap();
-        collect(&service, &id).await;
-    }
-    let (_, stderr, outcome) = result.expect("a command larger than the whole pool waited forever");
-    let ExecOutcome::Failed { message } = outcome else {
-        panic!("{outcome:?}")
-    };
-    assert!(
-        message.contains("1 GB") && message.contains("461 MB") && message.contains("never fit"),
-        "{message}"
-    );
-    assert!(!marker.exists());
-    assert!(!service.has_running_work());
-    assert_eq!(String::from_utf8(stderr).unwrap(), message);
-    let input_error = service.write("room", &id, 0, "eA==").unwrap_err();
-    assert!(
-        input_error.to_string().contains("never fit"),
-        "{input_error}"
-    );
 }
 
 #[tokio::test]

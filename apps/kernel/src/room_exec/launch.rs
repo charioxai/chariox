@@ -125,23 +125,6 @@ pub(super) fn start(
                     return;
                 }
                 Err(wait) => {
-                    if wait.reason == crate::runtime::process_resources::WaitReason::Memory {
-                        if let Some(message) = service.inner.admission.memory_refusal(
-                            &intent.command,
-                            &intent.cwd,
-                            record.minimum_memory,
-                        ) {
-                            // No process exists, so publish the refusal on the same
-                            // error stream the job reader already drains.
-                            record
-                                .output
-                                .lock()
-                                .expect("exec output poisoned")
-                                .push(super::ExecStream::Stderr, message.as_bytes());
-                            service.finish(&record, ExecOutcome::Failed { message });
-                            return;
-                        }
-                    }
                     let mut state = record.state.lock().expect("exec state poisoned");
                     if placed.borrow().is_some() {
                         continue;
