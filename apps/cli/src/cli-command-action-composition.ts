@@ -51,6 +51,7 @@ import {
 import {
   getUserConfig,
   getUserConfigSchema,
+  createCredentialVault,
   getCredentialVaultStatus,
   lockCredentialVault,
   unlockCredentialVault,
@@ -821,6 +822,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     }),
     getCredentialVaultStatus: () => getCredentialVaultStatus(client),
     lockCredentialVault: () => lockCredentialVault(client),
+    createCredentialVault: passphrase => createCredentialVault(client, passphrase),
     unlockCredentialVault: (passphrase, duration) => unlockCredentialVault(client, passphrase, duration),
     manageCredentialVault: () => manageCredentialVault(client, sessionState().id, focusedAgentId()),
     registerCredential: (sourcePath) => registerCredential(client, sourcePath),
