@@ -42,14 +42,8 @@ pub(crate) fn projected_session_state_response(
     // The label is read before the session, so a state is never older than its revision.
     let agent_activity_revision = session_projection.change_sequence();
     let (session, processes, disk_usage) =
-        match runtime_state.session_state_response(request.clone()) {
-            Ok(LocalDaemonResponse::SessionState {
-                session,
-                processes,
-                disk_usage,
-                ..
-            }) => (session, processes, disk_usage),
-            Ok(_) => unreachable!("session state request returned a different response"),
+        match runtime_state.session_with_resources(&request.session_id) {
+            Ok(state) => state,
             Err(error) => return Some(Err(error)),
         };
     let caller_user_id =

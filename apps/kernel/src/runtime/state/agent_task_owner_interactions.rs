@@ -50,31 +50,30 @@ impl KernelRuntimeOwnedState {
         let Ok(session) = self.session_store.get_session(room) else {
             return Ok(());
         };
-        let tasks = self.durable_state_store.agent_tasks(Some(room), None)?;
-        let stale = session
-            .active_interactions()
-            .iter()
-            .map(|i| i.id())
-            .filter(|id| {
-                let Some(rest) = id.strip_prefix(BLOCKED_TASK_DECISION_PREFIX) else {
-                    return false;
-                };
-                let Some((task_id, revision)) = rest.rsplit_once('-') else {
-                    return true;
-                };
-                let Ok(revision) = revision.parse::<u64>() else {
-                    return true;
-                };
-                tasks
-                    .iter()
-                    .find(|task| task.task_id == task_id)
-                    .is_none_or(|task| {
-                        !self.task_needs_owner_interaction(task)
-                            || revision != task.blocked_revision
-                    })
-            })
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
+        // Each decision names its task; only those are read, not the Room's finished turns.
+        let mut stale = Vec::new();
+        for id in session.active_interactions().iter().map(|i| i.id()) {
+            let Some(rest) = id.strip_prefix(BLOCKED_TASK_DECISION_PREFIX) else {
+                continue;
+            };
+            let current = match rest
+                .rsplit_once('-')
+                .and_then(|(task, revision)| Some((task, revision.parse::<u64>().ok()?)))
+            {
+                Some((task, revision)) => self
+                    .durable_state_store
+                    .agent_task(task)?
+                    .filter(|task| task.room_id == room)
+                    .is_some_and(|task| {
+                        self.task_needs_owner_interaction(&task)
+                            && revision == task.blocked_revision
+                    }),
+                None => false,
+            };
+            if !current {
+                stale.push(id.to_owned());
+            }
+        }
         for id in stale {
             self.timeout_runtime_interaction(room, &id)?;
             tracing::debug!(interaction_id=%id, room_id=room, "resolved task owner decision withdrawn");
@@ -271,7 +270,7 @@ impl KernelRuntimeState {
         for task in self
             .owned
             .durable_state_store
-            .agent_tasks(Some(room), Some(prompt.target_agent_id()))?
+            .agent_unfinished_tasks(room, Some(prompt.target_agent_id()))?
             .into_iter()
             .filter(|task| {
                 task.prompt_id != prompt.id()

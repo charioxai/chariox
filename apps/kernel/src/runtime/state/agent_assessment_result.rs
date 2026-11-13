@@ -206,14 +206,14 @@ impl KernelRuntimeOwnedState {
         else {
             return;
         };
-        let Ok(tasks) = self
+        let Ok(task) = self
             .durable_state_store
-            .agent_tasks(Some(room), Some(agent))
+            .agent_turn_task(room, agent, prompt.id())
         else {
             return;
         };
         if prompt.prompt_origin() != crate::session::PromptOrigin::CompletionCheck {
-            if tasks.iter().any(|t| {
+            if task.iter().any(|t| {
                 t.state == ExecutionState::Working
                     && t.prompt_id == prompt.id()
                     && t.provider_run_id.as_deref() == Some(&output.provider_run_id)
@@ -228,7 +228,7 @@ impl KernelRuntimeOwnedState {
             }
             return;
         }
-        if !tasks.iter().any(|task| {
+        if !task.iter().any(|task| {
             task.state == ExecutionState::Working
                 && task.prompt_id == prompt.id()
                 && task.provider_run_id.as_deref() == Some(&output.provider_run_id)

@@ -405,7 +405,8 @@ impl KernelRuntimeOwnedState {
         let has_answer = self.provider_run_projection.get(run).is_some_and(|run| {
             run.client_interface() == crate::provider::ProviderClientInterface::NativeTui
         }) || Self::entries_answer_prompt(&entries, prompt.id(), answer_run);
-        if !cancelled {
+        // Only a goal-check prompt evaluates a task; other turns do not read the agent's history.
+        if !cancelled && ledger::goals::is_completion_check_prompt_id(prompt.id()) {
             if let Some(task) = self
                 .durable_state_store
                 .agent_tasks(Some(room), Some(agent))?
