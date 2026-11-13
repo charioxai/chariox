@@ -3530,6 +3530,13 @@ test('browsertools: full_page captures beyond the viewport at one pixel per CSS 
   assert.deepEqual([tall.height, tall.page_height, tall.truncated], [16000, 40000, true]);
 }));
 
+test('browsertools: an unprotected page that fits retains native full-page encoding', () => using(async ({ host, connection, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  withCdp(connection, method => method === 'Page.getLayoutMetrics' ? { cssContentSize: { width: 1280, height: 800 }, cssVisualViewport: { pageX: 0, pageY: 0 } } : undefined);
+  await host.request(agentShot(opened, { full_page: true }));
+  assert.equal(sent.filter(call => call.method === 'Page.captureScreenshot').at(-1).params.captureBeyondViewport, true);
+}));
+
 test('browsertools: full_page falls back to JPEG for a page whose PNG is too large, and refuses a protected page', () => using(async ({ host, connection, sent }) => {
   const opened = await host.request({ op: 'open', url: 'about:blank' });
   withCdp(connection, (method, params) => method === 'Page.getLayoutMetrics' ? { cssContentSize: { width: 1280, height: 5000 } }

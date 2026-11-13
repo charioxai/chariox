@@ -61,7 +61,9 @@ async function fullPage(host, tab) {
   const density = host.scales.get(tab.tab_id) ?? host.viewport().device_scale_factor;
   const viewport = host.pageSize(tab.tab_id), visual = metrics.cssVisualViewport;
   // At the document origin a whole page that fits the viewport already has complete trusted mask geometry.
-  if (width <= viewport.width && pageHeight <= viewport.height && visual?.pageX === 0 && visual?.pageY === 0) {
+  const protectedPage = host.protection.targets.some(target => target.target_id === tab.target_id) ||
+    [...(host.browser.fillTargets?.values() ?? [])].some(target => target.target_id === tab.target_id);
+  if (protectedPage && width <= viewport.width && pageHeight <= viewport.height && visual?.pageX === 0 && visual?.pageY === 0) {
     return { ...await host.displayScreenshot(tab, { x: 0, y: 0, width, height, scale: 1 / density }), page_height: pageHeight };
   }
   // One image pixel per CSS pixel, whatever the page density. A page whose PNG does not fit gets smaller encodings.
