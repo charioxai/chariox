@@ -1022,3 +1022,38 @@ async fn guest_deadline_subtree() {
         );
     }
 }
+
+#[test]
+fn kfinish_repeating_delete_of_a_retired_child_confirms_its_deletion() {
+    run_large_stack_async_test("kfinish-delete-retired", delete_retired_child);
+}
+
+async fn delete_retired_child() {
+    let world = world("kfinish-delete-retired").await;
+    let deleted = room_command(&world, "a", "agent delete s").await;
+    assert!(deleted.ok, "{deleted:?}");
+    let child = &world.ids["s"];
+    for reference in ["s", child.as_str()] {
+        let repeated = room_command(&world, "a", &format!("agent delete {reference}")).await;
+        assert!(
+            repeated.ok,
+            "a completed deletion must be confirmed: {repeated:?}"
+        );
+        assert_eq!(repeated.payload["response"]["agent"]["id"], *child);
+        assert_eq!(repeated.payload["response"]["already_deleted"], true);
+        assert!(repeated.payload["response"]["deleted_at_ms"]
+            .as_u64()
+            .is_some_and(|at| at > 0));
+        assert!(!repeated.payload["response"]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty());
+        let other = room_command(&world, "peer", &format!("agent delete {reference}")).await;
+        assert!(
+            !other.ok,
+            "a peer gains no control over a retired child: {other:?}"
+        );
+    }
+    let missing = room_command(&world, "a", "agent delete never-existed").await;
+    assert!(!missing.ok, "unknown agents must still fail");
+}

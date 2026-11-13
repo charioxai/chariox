@@ -126,8 +126,9 @@ impl crate::app::NativePromptHandoffPolicy for KernelRuntimeOwnedState {
         Ok(())
     }
 
-    fn note_turn_work(&self, run_id: &str) {
-        self.background_holds.note_output_of_run(run_id);
+    fn note_turn_work(&self, run_id: &str, active_prompt: Option<&str>) {
+        self.background_holds
+            .note_output_of_run(run_id, active_prompt);
     }
 }
 

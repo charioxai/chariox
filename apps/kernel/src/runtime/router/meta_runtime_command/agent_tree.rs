@@ -126,6 +126,37 @@ impl CommandRouter {
                     meta_command_error(message),
                 ))
             }
+            Some("delete" | "destroy" | "remove")
+                if args.len() == 1 && self.runtime_state.room_agent_tools_enabled() =>
+            {
+                let agents = self.runtime_state.session_agents(session.id());
+                if agents.iter().any(|agent| {
+                    agent.id() == args[0]
+                        || agent.agent_ref() == args[0]
+                        || agent.alias() == Some(args[0].as_str())
+                }) {
+                    None
+                } else {
+                    self.runtime_state.durable_state_store().deleted_spawned_child(caller, &args[0])?
+                        .map(|deleted| RuntimeToolResult {
+                            ok: true,
+                            payload: serde_json::json!({
+                                "command":command,
+                                "response": {
+                                    "type":"AgentDestroyed",
+                                    "agent":super::summary::summarize_meta_agent(&deleted.agent),
+                                    "already_deleted":true,
+                                    "deleted_at_ms":deleted.deleted_at_ms,
+                                    "reason":if deleted.handled_completion {
+                                        "The kernel automatically deleted this sub-agent after its child_finished receipt was handled."
+                                    } else {
+                                        "The kernel already deleted this sub-agent."
+                                    },
+                                },
+                            }),
+                        })
+                }
+            }
             Some("children") => {
                 Some(self.meta_agent_children_result(session, caller, command, args))
             }

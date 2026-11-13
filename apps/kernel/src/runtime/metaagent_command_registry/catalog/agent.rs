@@ -186,7 +186,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned agents only",
         routed: true,
-        description: "Delete one of this user's regular agents from the current session.",
+        description: "Delete one of this user's regular agents from the current session. If the kernel already deleted your spawned child, succeeds with already_deleted, deleted_at_ms and the reason; automatic cleanup follows a handled child_finished receipt.",
     },
     MetaCommandDoc {
         name: "agent cancel",

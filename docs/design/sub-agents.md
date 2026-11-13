@@ -147,7 +147,7 @@ Orchdrill gaps closed: ORCH-04 by section 4; ORCH-05 by `agent deadline` (`SetAg
 
 A parent **parks** on `events.yield` covering its children's obligations and is resumed by `child_finished` or `child_decision` (urgent, section 3).
 
-A child whose turn ends while a `run_in_background` call still runs is not finished: its one task stays Working, the provider wakes it with a notification turn when the call ends, and the parent gets one `child_finished` whose `public_answer` includes that turn's text. The kernel releases the task when the notification turn completes, 60 s after the last call ended, when the child's `--deadline` fires, or after 30 minutes with no deadline; a release with a call still running says so in the `public_answer` excerpt. Only a plain child task waits this way (no goal, wait or open obligation).
+A child whose turn ends while a `run_in_background` call still runs is not finished: its one task stays Working, the provider wakes it with a notification turn when the call ends, and the parent gets one `child_finished` whose `public_answer` includes that turn's text. Only background calls from that task's own turn hold it: a separate message reply completes independently and leaves earlier work and waits intact. An urgent message to an active turn steers that same turn. The kernel releases the task when the notification turn completes, 60 s after the last call ended without a notification turn, or when the child's explicit `--deadline` or cancellation stops it. Running work has no implicit time limit; a forced end with a call still running says so in the `public_answer` excerpt. Only a plain child task waits this way (no goal, wait or open obligation).
 
 ## 7. Peers, remote sub-agents and the reshaped reach
 

@@ -122,3 +122,104 @@ fn repeated_deadline_wakes_on_a_running_child_keep_the_orchestrator_live() {
         assert_eq!(task.state, ExecutionState::Waiting, "wake {n}: {task:?}");
     }
 }
+
+fn child_finishes(f: &Fixture) -> u64 {
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "child-result".into(),
+        success: true,
+        public_answer: Some(serde_json::json!({"text":"finished"})),
+        now: 4,
+    });
+    f.store.agent_inbox("room", "parent", 0).unwrap()[0].sequence
+}
+
+fn handle(f: &Fixture, sequence: u64, handled: bool) {
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence,
+        handled,
+        now: 5,
+    });
+}
+
+#[test]
+fn kfinish_handling_the_last_outcome_ends_the_earlier_wait() {
+    for deadline in [None, Some(60_000)] {
+        let f = Fixture::new();
+        wait_on_child(&f, deadline);
+        let sequence = child_finishes(&f);
+        // An unrelated event turn handles the original task's final receipt.
+        f.begin("event-turn");
+        handle(&f, sequence, true);
+        f.settle("event-turn", true);
+        let finished = f.store.agent_task("p").unwrap().unwrap();
+        assert_eq!(finished.state, ExecutionState::Done, "{finished:?}");
+        assert!(finished.wait.is_none());
+        assert!(!finished.reason.is_empty(), "record why the old wait ended");
+        let revision = finished.revision;
+        sweep(&f, OLD_DEADLINE_MS * 4);
+        assert_eq!(f.store.agent_task("p").unwrap().unwrap().revision, revision);
+        assert!(
+            f.store
+                .agent_inbox("room", "parent", sequence)
+                .unwrap()
+                .is_empty(),
+            "a settled task has no deadline or recheck wake"
+        );
+        let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+        assert_eq!(reopened.agent_task("p").unwrap().unwrap(), finished);
+    }
+}
+
+#[test]
+fn kfinish_a_receipt_ack_without_handling_keeps_the_wait_unfinished() {
+    let f = Fixture::new();
+    wait_on_child(&f, Some(60_000));
+    let sequence = child_finishes(&f);
+    handle(&f, sequence, false);
+    sweep(&f, 6);
+    assert_eq!(f.task().state, ExecutionState::Waiting);
+    assert_eq!(f.task().obligations[0].status, "settling");
+    handle(&f, sequence, true);
+    assert_eq!(f.task().state, ExecutionState::Done);
+}
+
+#[test]
+fn kfinish_sweep_ends_a_wait_whose_last_spawn_was_cancelled() {
+    let f = Fixture::new();
+    wait_on_child(&f, Some(60_000));
+    f.apply(Operation::ReleaseSpawn {
+        room: "room".into(),
+        source: "child".into(),
+    });
+    let event = f.store.agent_inbox("room", "parent", 0).unwrap().remove(0);
+    handle(&f, event.sequence, true);
+    sweep(&f, 60_001);
+    let finished = f.task();
+    assert_eq!(finished.state, ExecutionState::Done, "{finished:?}");
+    assert_eq!(finished.obligations[0].status, "cancelled");
+    assert!(finished.wait.is_none());
+    assert!(f
+        .store
+        .agent_inbox("room", "parent", event.sequence)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn kfinish_cancelling_the_last_spawn_still_requires_handling_its_loss() {
+    let f = Fixture::new();
+    wait_on_child(&f, None);
+    f.apply(Operation::ReleaseSpawn {
+        room: "room".into(),
+        source: "child".into(),
+    });
+    sweep(&f, 6);
+    assert_eq!(f.task().state, ExecutionState::Waiting);
+    let event = f.store.agent_inbox("room", "parent", 0).unwrap().remove(0);
+    handle(&f, event.sequence, true);
+    assert_eq!(f.task().state, ExecutionState::Done);
+}

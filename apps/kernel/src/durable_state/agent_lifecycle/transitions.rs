@@ -732,7 +732,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         tx,
                         crate::durable_state::agent_subtree_deletion::AGENT_SUBTREE_DELETING,
                         root,
-                        serde_json::json!({ "session_id": room, "agent_ids": subtree }),
+                        serde_json::json!({ "session_id": room, "agent_ids": subtree,
+                            "reason": "handled_child_finished", "receipt_sequence": event.sequence }),
                     )?;
                 }
             }

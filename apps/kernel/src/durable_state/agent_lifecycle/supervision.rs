@@ -260,6 +260,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             continue;
                         }
                     };
+                    if super::settled_waits::finish(tx, &mut t)? {
+                        t.revision += 1;
+                        save(tx, &t)?;
+                        changed.push(t);
+                        continue;
+                    }
                     let next_check_in = t.goal.as_ref().and_then(|goal| goal.next_check_in_ms);
                     let source_deadline = if let Some(wait) = t.wait.as_ref() {
                         wakes::source_deadline(tx, &t, &wait.registration_ids)?
