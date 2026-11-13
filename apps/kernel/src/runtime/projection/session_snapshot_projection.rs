@@ -161,6 +161,7 @@ impl SessionSnapshotProjection {
         let mut session = app.session_state_store().get_session(session_id)?;
         let agents = app.agents().get_session_agents(session_id);
         session.set_agents(agents);
+        session.name_interaction_askers();
         app.project_session_runtime_view(&mut session);
         let provider_run = session
             .active_provider_run_id()

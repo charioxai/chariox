@@ -1056,6 +1056,20 @@ impl RuntimeSession {
             .collect()
     }
 
+    /// Resolves names while the projection still includes the hidden sub-agents.
+    pub(crate) fn name_interaction_askers(&mut self) {
+        let agents = &self.agents;
+        for interaction in &mut self.active_interactions {
+            let name = interaction.agent_id().and_then(|asker| {
+                agents
+                    .iter()
+                    .find(|agent| agent.id() == asker)
+                    .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned())
+            });
+            interaction.set_asker_name(name);
+        }
+    }
+
     /// Moves where the user sees an active interaction; the interaction itself stays one object.
     pub(crate) fn show_interaction_in(&mut self, id: &str, agent: Option<String>) {
         if let Some(position) = self

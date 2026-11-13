@@ -169,6 +169,8 @@ export type NativeInteractionOrigin =
 export type RuntimeInteraction = RuntimeInteractionSubject & {
   asking_task_id?: string | null
   related_agent_id?: string | null
+  /** Kernel-resolved asker alias or ref, supplied with the card. */
+  asker_name?: string | null
   /** A sub-agent's decision the user holds is listed with the room agent, whose panel shows it. */
   shown_in_agent_id?: string | null
   /** Person cards: the wake source whose occurrence closes this card by itself. */

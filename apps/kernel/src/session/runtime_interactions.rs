@@ -252,6 +252,9 @@ pub struct RuntimeInteraction {
     /// A sub-agent's decision the user holds is listed with the top parent, whose panel shows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     shown_in_agent_id: Option<String>,
+    /// The kernel resolves the asker's alias or ref with the card, before hiding sub-agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    asker_name: Option<String>,
     /// MP-08 / MP-11 protocol 538: kernel-established sudo presentation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sudo_request: Option<crate::local::SudoRequestPresentation>,
@@ -398,6 +401,7 @@ impl RuntimeInteraction {
             related_agent_id: None,
             closes_with_wake: None,
             shown_in_agent_id: None,
+            asker_name: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::Agent {
                 agent_id: agent_id.into(),
@@ -457,6 +461,14 @@ impl RuntimeInteraction {
     pub(crate) fn shown_in(mut self, agent: Option<String>) -> Self {
         self.shown_in_agent_id = agent;
         self
+    }
+
+    pub fn asker_name(&self) -> Option<&str> {
+        self.asker_name.as_deref()
+    }
+
+    pub(crate) fn set_asker_name(&mut self, name: Option<String>) {
+        self.asker_name = name;
     }
 
     pub fn closes_with_wake(&self) -> Option<&str> {
@@ -603,6 +615,7 @@ impl RuntimeInteraction {
             related_agent_id: None,
             closes_with_wake: None,
             shown_in_agent_id: None,
+            asker_name: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::KernelOperation {
                 kernel_operation_id: operation_id.into(),
