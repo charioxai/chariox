@@ -179,6 +179,26 @@ impl DurableKernelStateStore {
             rusqlite::params_from_iter(values),
         )
     }
+    /// The unfinished or unreadable tasks of a Room, or of one of its agents, through the partial
+    /// index of unfinished tasks: the work on every turn does not read the finished ones.
+    pub(crate) fn agent_unfinished_tasks(
+        &self,
+        room: &str,
+        agent: Option<&str>,
+    ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+        let (filter, values) = match agent {
+            Some(agent) => ("room_id=?1 AND agent_id=?2", vec![room, agent]),
+            None => ("room_id=?1", vec![room]),
+        };
+        self.read_tasks(
+            "agent.lifecycle.unfinished_tasks",
+            &format!(
+                "rowid IN (SELECT rowid FROM agent_tasks INDEXED BY agent_tasks_unfinished \
+                 WHERE {filter} AND (state IS NULL OR state NOT IN ('done','cancelled')))"
+            ),
+            rusqlite::params_from_iter(values),
+        )
+    }
     /// The tasks of `room` that yielded and wait for a source, through the (room, state) index.
     pub(crate) fn agent_waiting_tasks(
         &self,
