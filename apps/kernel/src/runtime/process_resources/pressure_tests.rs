@@ -202,7 +202,10 @@ impl Workload {
             .is_some_and(|state| state == "T")
     }
     pub(super) fn root_alive(&mut self) -> bool {
-        self.child.try_wait().unwrap().is_none()
+        self.exit_status().is_none()
+    }
+    pub(super) fn exit_status(&mut self) -> Option<std::process::ExitStatus> {
+        self.child.try_wait().unwrap()
     }
     /// What the command was told on its own error stream.
     #[cfg(target_os = "linux")]
@@ -423,7 +426,31 @@ fn pressure_in(
         &[("big", 800, 0, 0), ("idle", 0, 0, 0)],
     );
     let c = Workload::start(domain(&pool, "c", cgroup), &[("small", 20, 0, 0)]);
-    settle(1);
+    // The holder's startup allocation must not contribute pressure attributed to the grower.
+    let big_pid = u32::try_from(a.pid("big")).expect("the holder PID should be positive");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let ready = a
+            .domain
+            .state
+            .lock()
+            .unwrap()
+            .commands
+            .iter()
+            .any(|command| {
+                command.pid == big_pid
+                    && command.resident >= 800 * MIB
+                    && command.measured_growth == 0
+            });
+        if ready {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the holder never finished its startup allocation"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let b = Workload::start(
         domain(&pool, "b", cgroup),
         &[("idle", 0, 0, 0), ("grow", start, rate, 1000)],
@@ -1069,24 +1096,11 @@ fn a_steady_fast_grower_stays_paused_once_and_ends_with_the_reason() {
         b.waiting("grow"),
         "the paused grower continued without room"
     );
-    let grower_pid = u32::try_from(b.pid("grow")).expect("the grower PID should be positive");
-    let grower = b
-        .domain
-        .state
-        .lock()
-        .unwrap()
-        .samples
-        .iter()
-        .find(|sample| sample.pid == grower_pid)
-        .expect("the grower should have been sampled")
-        .process_id
-        .clone();
-    let events = take_wait_events();
-    let began = events
-        .iter()
-        .filter(|event| event.process_id == grower && matches!(event.change, WaitChange::Began))
+    let began = take_wait_events()
+        .into_iter()
+        .filter(|event| matches!(event.change, WaitChange::Began))
         .count();
-    assert_eq!(began, 1, "the grower was paused {began} times: {events:?}");
+    assert_eq!(began, 1, "the grower was paused {began} times");
     {
         let mut observation = b.domain.state.lock().unwrap();
         for entry in observation

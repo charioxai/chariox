@@ -456,12 +456,28 @@ fn five_growing_builds(cgroup: bool) {
     const BUILDS: usize = 5;
     take_wait_events();
     let pool = pool(1500);
-    let mut builds = Vec::new();
-    for index in 0..BUILDS {
-        builds.push(Workload::run(
-            domain(&pool, &format!("build-{index}"), cgroup),
-            &[("job", build(100, 400))],
-        ));
+    let mut builds = (0..BUILDS)
+        .map(|index| {
+            Workload::gated(
+                domain(&pool, &format!("build-{index}"), cgroup),
+                &[("job", build(100, 400))],
+            )
+        })
+        .collect::<Vec<_>>();
+    // A terminal's resource watch is already running when its commands start.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while builds
+        .iter()
+        .any(|build| build.domain.state.lock().unwrap().samples.is_empty())
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the build watches never sampled their roots"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    for build in &builds {
+        build.go(&["job"]);
         std::thread::sleep(Duration::from_millis(600));
     }
     let pids = builds
@@ -514,8 +530,12 @@ fn five_growing_builds(cgroup: bool) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    let notices = builds
+        .iter()
+        .map(|build| build.told("job"))
+        .collect::<Vec<_>>();
     let evidence = format!(
-        "finished {finished_at:?}\nstops {stops:?}\nresumes {resumes:?}\nlongest all paused {longest_all_paused:?}"
+        "finished {finished_at:?}\nstops {stops:?}\nresumes {resumes:?}\nlongest all paused {longest_all_paused:?}\nnotices {notices:?}"
     );
     if let Ok(path) = std::env::var("HEALTHPAUSE_EVIDENCE") {
         let _ = std::fs::write(path, &evidence);
@@ -523,6 +543,25 @@ fn five_growing_builds(cgroup: bool) {
     assert!(
         finished_at.iter().all(Option::is_some),
         "a build never finished: {evidence}"
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut outcomes = Vec::with_capacity(BUILDS);
+    for build in &mut builds {
+        loop {
+            if let Some(outcome) = build.exit_status() {
+                outcomes.push(outcome);
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a finished build's shell never exited: {evidence}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    assert!(
+        outcomes.iter().all(std::process::ExitStatus::success),
+        "a build was ended instead of finishing: {outcomes:?}\n{evidence}"
     );
     // (a) The pool was never left with every build paused for long.
     assert!(
