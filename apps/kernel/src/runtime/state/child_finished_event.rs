@@ -88,6 +88,9 @@ impl KernelRuntimeState {
         });
         if !reported_is_terminal
             || store.agent_has_other_unfinished_task(room, child_id, task_id)?
+            || !store
+                .agent_unpublished_done_tasks(room, child_id)?
+                .is_empty()
         {
             return Ok(None);
         }

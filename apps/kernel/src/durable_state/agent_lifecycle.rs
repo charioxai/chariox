@@ -47,6 +47,7 @@ mod quarantine;
 mod replies;
 #[cfg(test)]
 mod reply_terminal_tests;
+mod settled_waits;
 mod subscriptions;
 mod supervision;
 #[cfg(test)]
@@ -80,6 +81,7 @@ pub(crate) use types::{
 pub(crate) const SWEEP_MS: u64 = 30_000;
 pub(crate) const DELIVERY_TIMEOUT_MS: u64 = 120_000;
 pub(crate) const LONG_WAIT_MS: u64 = 900_000;
+pub(crate) const RESOLVED_WAIT_REASON: &str = "All obligations handled and wait sources resolved";
 
 fn sql_integer(value: u64) -> Result<i64, DaemonError> {
     i64::try_from(value).map_err(|_| error("integer exceeds durable storage bound"))
@@ -176,9 +178,21 @@ impl DurableKernelStateStore {
             .read_tasks("agent.lifecycle.task", "task_id=?1", [task])?
             .pop())
     }
+    pub(crate) fn agent_unpublished_done_tasks(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+        self.read_tasks(
+            "agent.lifecycle.unpublished_done",
+            "rowid IN (SELECT rowid FROM agent_tasks INDEXED BY agent_tasks_done_pending \
+             WHERE state='done' AND terminal_outcome_recorded=0 AND room_id=?1 AND agent_id=?2)",
+            params![room, agent],
+        )
+    }
     /// The tasks a lifecycle sweep can act on: unfinished or unreadable ones, cancelled ones whose
-    /// terminal outcome is not recorded yet, and finished ones that carry obligations. Every other
-    /// finished task is complete, so the sweep does not read it.
+    /// terminal outcome is not recorded yet, and finished ones that carry obligations or still
+    /// owe their terminal outcome. Recorded plain history stays out of the sweep.
     pub(crate) fn agent_tasks_to_sweep(&self) -> Result<Vec<AgentTaskExecution>, DaemonError> {
         self.read_tasks(
             "agent.lifecycle.sweep_tasks",
@@ -187,7 +201,9 @@ impl DurableKernelStateStore {
              UNION SELECT rowid FROM agent_tasks WHERE state IS NULL \
              UNION SELECT rowid FROM agent_tasks WHERE obligated=1 \
              UNION SELECT rowid FROM agent_tasks INDEXED BY agent_tasks_cancelled_pending \
-              WHERE state='cancelled' AND terminal_outcome_recorded=0)",
+              WHERE state='cancelled' AND terminal_outcome_recorded=0 \
+             UNION SELECT rowid FROM agent_tasks INDEXED BY agent_tasks_done_pending \
+              WHERE state='done' AND terminal_outcome_recorded=0)",
             [],
         )
     }
@@ -502,6 +518,31 @@ impl DurableKernelStateStore {
             .agent_events_for_prompt(room, agent, prompt)?
             .into_iter()
             .next())
+    }
+    /// Source outcomes handled by this turn, including urgent steering into it.
+    pub(crate) fn agent_handled_source_events_for_turn(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+    ) -> Result<Vec<InboxEvent>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.handled_turn_sources")?;
+        let mut query = db.prepare("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state')='handled' AND json_extract(payload,'$.kind') IN ('source_completed','source_lost','child_finished','peer_event') AND (json_extract(payload,'$.prompt_id')=?3 OR json_extract(payload,'$.target_prompt_id')=?3) ELSE 0 END ORDER BY sequence").map_err(sql)?;
+        let rows = query
+            .query_map(params![room, agent, prompt], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(sql)?;
+        rows.map(|row| {
+            let (sequence, source, occurrence, payload) = row.map_err(sql)?;
+            decode_inbox(sequence, room, agent, &source, &occurrence, &payload)
+        })
+        .collect()
     }
     /// Pending rows after `lead` that one wake may carry with it, in order,
     /// up to the first reply request (answered by a turn of its own).
@@ -988,6 +1029,8 @@ fn index_task_lookups(db: &Connection) -> Result<(), DaemonError> {
         "CREATE INDEX IF NOT EXISTS agent_tasks_state ON agent_tasks(state);
          CREATE INDEX IF NOT EXISTS agent_tasks_cancelled_pending ON agent_tasks(task_id)
              WHERE state='cancelled' AND terminal_outcome_recorded=0;
+         CREATE INDEX IF NOT EXISTS agent_tasks_done_pending ON agent_tasks(room_id,agent_id,task_id)
+             WHERE state='done' AND terminal_outcome_recorded=0;
          CREATE INDEX IF NOT EXISTS agent_tasks_unfinished ON agent_tasks(room_id,agent_id)
              WHERE state IS NULL OR state NOT IN ('done','cancelled');
          CREATE INDEX IF NOT EXISTS agent_tasks_live ON agent_tasks(room_id,agent_id,state);

@@ -36,3 +36,70 @@ impl DurableKernelStateStore {
         }))
     }
 }
+
+/// The completed deletion of a child, including the reason for automatic cleanup.
+pub(crate) struct DeletedChild {
+    pub agent: crate::agent::AgentInstance,
+    pub deleted_at_ms: u64,
+    pub handled_completion: bool,
+}
+
+impl DurableKernelStateStore {
+    pub(crate) fn deleted_spawned_child(
+        &self,
+        parent: &crate::agent::AgentInstance,
+        reference: &str,
+    ) -> Result<Option<DeletedChild>, DaemonError> {
+        let operation = "durable_state.deleted_spawned_child";
+        let db = self.lock_connection(operation)?;
+        let row: Option<(String, i64, bool)> = db
+            .query_row(
+                "SELECT json_extract(d.payload_json,'$.agent'), d.timestamp_ms,
+                EXISTS(SELECT 1 FROM durable_state_events cleanup
+                    WHERE cleanup.kind='agent.subtree_deleting'
+                    AND cleanup.subject_id=json_extract(d.payload_json,'$.agent.id')
+                    AND cleanup.sequence<d.sequence AND json_valid(cleanup.payload_json)
+                    AND json_extract(cleanup.payload_json,'$.reason')='handled_child_finished')
+             FROM durable_state_events d WHERE d.kind='agent.deleted'
+             AND json_valid(d.payload_json)
+             AND json_extract(d.payload_json,'$.agent.session_id')=?1
+             AND json_extract(d.payload_json,'$.agent.owner_user_id')=?2
+             AND json_extract(d.payload_json,'$.agent.parent_agent_id.agent_id')=?3
+             AND json_extract(d.payload_json,'$.agent.spawn_key') IS NOT NULL
+             AND (json_extract(d.payload_json,'$.agent.id')=?4
+                  OR json_extract(d.payload_json,'$.agent.agent_ref')=?4
+                  OR json_extract(d.payload_json,'$.agent.alias')=?4)
+             ORDER BY d.sequence DESC LIMIT 1",
+                params![
+                    parent.session_id(),
+                    parent.owner_user_id(),
+                    parent.id(),
+                    reference
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation,
+                message: error.to_string(),
+            })?;
+        row.map(|(payload, deleted_at_ms, handled_completion)| {
+            let deleted_at_ms =
+                u64::try_from(deleted_at_ms).map_err(|_| DaemonError::LocalTransport {
+                    operation,
+                    message: "deleted child timestamp is invalid".into(),
+                })?;
+            let agent =
+                serde_json::from_str(&payload).map_err(|error| DaemonError::LocalTransport {
+                    operation,
+                    message: format!("deleted child record is invalid: {error}"),
+                })?;
+            Ok(DeletedChild {
+                agent,
+                deleted_at_ms,
+                handled_completion,
+            })
+        })
+        .transpose()
+    }
+}

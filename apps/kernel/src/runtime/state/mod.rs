@@ -1668,6 +1668,7 @@ mod agent_lifecycle_runtime;
 mod agent_membership_read_tests;
 mod agent_parent_runtime;
 mod agent_subtree_cascade;
+mod agent_task_completion;
 mod agent_tree_runtime;
 mod background_hold;
 mod child_finished_event;
