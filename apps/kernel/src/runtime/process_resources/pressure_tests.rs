@@ -1069,11 +1069,24 @@ fn a_steady_fast_grower_stays_paused_once_and_ends_with_the_reason() {
         b.waiting("grow"),
         "the paused grower continued without room"
     );
-    let began = take_wait_events()
-        .into_iter()
-        .filter(|event| matches!(event.change, WaitChange::Began))
+    let grower_pid = u32::try_from(b.pid("grow")).expect("the grower PID should be positive");
+    let grower = b
+        .domain
+        .state
+        .lock()
+        .unwrap()
+        .samples
+        .iter()
+        .find(|sample| sample.pid == grower_pid)
+        .expect("the grower should have been sampled")
+        .process_id
+        .clone();
+    let events = take_wait_events();
+    let began = events
+        .iter()
+        .filter(|event| event.process_id == grower && matches!(event.change, WaitChange::Began))
         .count();
-    assert_eq!(began, 1, "the grower was paused {began} times");
+    assert_eq!(began, 1, "the grower was paused {began} times: {events:?}");
     {
         let mut observation = b.domain.state.lock().unwrap();
         for entry in observation
