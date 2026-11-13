@@ -2,13 +2,17 @@
 
 import { createHash, createPrivateKey, createPublicKey, sign, verify } from "node:crypto"
 import { spawnSync } from "node:child_process"
-import { constants, createReadStream } from "node:fs"
+import { constants } from "node:fs"
 import { chmod, copyFile, lstat, mkdir, readFile, readdir, utimes, writeFile } from "node:fs/promises"
-import { basename, dirname, join, relative, resolve, sep } from "node:path"
+import { basename, dirname, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import { validateSliceImage } from "./slice-image-archive.mjs"
+import { sha256File, sha256Tree } from "./release-tree-digest.mjs"
+import { manifestBytes, sha as sha256Bytes, signingRequestBytes } from "./release-signing-documents.mjs"
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex")
+// A signing request replaces the three signing inputs: signatures come back from the signer later.
+const SIGNING_OPTIONS = ["builder-attestation-signature", "trusted-builder-public-key", "signing-key"]
 const REQUIRED_OPTIONS = [
   "kernel",
   "supervisor",
@@ -49,10 +53,15 @@ const SLICE_BUILD_CONTEXT_SOURCES = [
 const SLICE_RUNTIME_SOURCE_ROOTS = "apps/kernel/slice-linux-docker/runtime-source-roots.txt"
 
 function usage() {
-  return "usage: package-managed-kernel-release --kernel <path> --supervisor <path> --relay <path> --app-package <path> --app-wasm-worker <path> --builder-attestation <path> --builder-attestation-signature <path> --trusted-builder-public-key <path> --signing-key <path> --source-repository <git-worktree> --source-commit <40-hex-commit> --output <directory> --slice-image <directory>"
+  return "usage: package-managed-kernel-release --kernel <path> --supervisor <path> --relay <path> --app-package <path> --app-wasm-worker <path> --builder-attestation <path> (--builder-attestation-signature <path> --trusted-builder-public-key <path> --signing-key <path> | --signing-request <new file>) --source-repository <git-worktree> --source-commit <40-hex-commit> --output <directory> --slice-image <directory>"
 }
 
-function parseOptions(argv, requiredOptions = REQUIRED_OPTIONS) {
+function packageOptionNames(argv) {
+  const staged = argv.includes("--signing-request")
+  return [...REQUIRED_OPTIONS.filter((name) => !staged || !SIGNING_OPTIONS.includes(name)), ...(staged ? ["signing-request"] : [])]
+}
+
+function parseOptions(argv, requiredOptions = packageOptionNames(argv)) {
   const options = new Map()
   for (let index = 0; index < argv.length; index += 2) {
     const option = argv[index]
@@ -97,42 +106,6 @@ async function prepareOutput(path) {
   } else {
     await mkdir(path, { recursive: true, mode: 0o755 })
   }
-}
-
-async function sha256File(path) {
-  const hash = createHash("sha256")
-  for await (const chunk of createReadStream(path)) hash.update(chunk)
-  return `sha256:${hash.digest("hex")}`
-}
-
-async function updateTreeHash(root, current, hash) {
-  for (const entry of await readdir(current, { withFileTypes: true }).then((entries) =>
-    entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0),
-  )) {
-    const path = join(current, entry.name)
-    const pathFromRoot = relative(root, path).split(sep).join("/")
-    const metadata = await lstat(path)
-    const mode = metadata.mode & 0o7777
-    if (entry.isDirectory()) {
-      hash.update(`directory:${Buffer.byteLength(pathFromRoot)}:${pathFromRoot}:${mode}:`)
-      await updateTreeHash(root, path, hash)
-      continue
-    }
-    if (!entry.isFile()) throw new Error("slice build context contains an unsupported file type")
-    hash.update(`file:${Buffer.byteLength(pathFromRoot)}:${pathFromRoot}:${mode}:${metadata.size}:`)
-    for await (const chunk of createReadStream(path)) hash.update(chunk)
-  }
-}
-
-async function sha256Tree(root) {
-  const metadata = await lstat(root)
-  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
-    throw new Error("slice build context must be a directory, not a symlink")
-  }
-  const hash = createHash("sha256")
-  hash.update(`directory:1:.:${metadata.mode & 0o7777}:`)
-  await updateTreeHash(root, root, hash)
-  return `sha256:${hash.digest("hex")}`
 }
 
 function gitText(repositoryRoot, args, label) {
@@ -337,6 +310,7 @@ async function verifyBuilderAttestation(options, sourceIdentity, artifactDigests
       throw new Error("builder attestation artifacts do not match the staged binaries")
     }
   }
+  if (!options["trusted-builder-public-key"]) return { attestationBytes }
   const trustedBuilderRawKey = decodeCanonicalBase64(
     await readFile(options["trusted-builder-public-key"]),
     32,
@@ -377,8 +351,11 @@ async function packageRelease(options) {
   await requireRegularFile(options["app-package"], "App package developer binary")
   await requireRegularFile(options["app-wasm-worker"], "App WASM worker")
   await requireRegularFile(options["builder-attestation"], "builder attestation", 64 * 1024)
-  await requireRegularFile(options["builder-attestation-signature"], "builder attestation signature", 1024)
-  await requireRegularFile(options["trusted-builder-public-key"], "trusted builder public key", 1024)
+  const signed = "signing-key" in options
+  if (signed) {
+    await requireRegularFile(options["builder-attestation-signature"], "builder attestation signature", 1024)
+    await requireRegularFile(options["trusted-builder-public-key"], "trusted builder public key", 1024)
+  }
   const repositoryRoot = options["source-repository"]
   const repositoryMetadata = await lstat(repositoryRoot).catch((error) => {
     throw new Error(`source repository cannot be read: ${error.message}`)
@@ -579,13 +556,15 @@ async function packageRelease(options) {
     appPackage: packagedAppPackageDigest,
     appWasmWorker: packagedAppWasmWorkerDigest,
   })
-  const signingKeyMetadata = await requireRegularFile(
-    options["signing-key"],
-    "release signing key",
-    64 * 1024,
-  )
-  if (process.platform !== "win32" && (signingKeyMetadata.mode & 0o077) !== 0) {
-    throw new Error("release signing key must not be readable by group or other users")
+  if (signed) {
+    const signingKeyMetadata = await requireRegularFile(
+      options["signing-key"],
+      "release signing key",
+      64 * 1024,
+    )
+    if (process.platform !== "win32" && (signingKeyMetadata.mode & 0o077) !== 0) {
+      throw new Error("release signing key must not be readable by group or other users")
+    }
   }
 
   await installBytes(
@@ -593,110 +572,122 @@ async function packageRelease(options) {
     join(releaseDirectory, "build-attestation.json"),
     0o644,
   )
-  await installBytes(
-    Buffer.from(builderAttestation.signature.toString("base64")),
-    join(releaseDirectory, "build-attestation.sig"),
-    0o644,
-  )
-  await installBytes(
-    Buffer.from(builderAttestation.trustedBuilderRawKey.toString("base64")),
-    join(releaseDirectory, "builder-public-key"),
-    0o644,
-  )
+  let packagedBuildAttestationSignatureDigest = null
+  let packagedBuilderPublicKeyDigest = null
+  if (signed) {
+    await installBytes(
+      Buffer.from(builderAttestation.signature.toString("base64")),
+      join(releaseDirectory, "build-attestation.sig"),
+      0o644,
+    )
+    await installBytes(
+      Buffer.from(builderAttestation.trustedBuilderRawKey.toString("base64")),
+      join(releaseDirectory, "builder-public-key"),
+      0o644,
+    )
+    packagedBuildAttestationSignatureDigest = await sha256File(join(releaseDirectory, "build-attestation.sig"))
+    packagedBuilderPublicKeyDigest = await sha256File(join(releaseDirectory, "builder-public-key"))
+  }
   const packagedBuildAttestationDigest = await sha256File(join(releaseDirectory, "build-attestation.json"))
-  const packagedBuildAttestationSignatureDigest = await sha256File(join(releaseDirectory, "build-attestation.sig"))
-  const packagedBuilderPublicKeyDigest = await sha256File(join(releaseDirectory, "builder-public-key"))
 
-  const manifestBytes = Buffer.from(
-    JSON.stringify({
-      schemaVersion: 3,
-      managedUpdateEvidenceVersion: 1,
-      sourceCommit: sourceIdentity.commit,
-      sourceTree: sourceIdentity.tree,
-      artifacts: [
-        {
-          name: "chariox-kernel",
-          path: "/usr/local/bin/chariox-kernel",
-          sha256: packagedKernelDigest,
-        },
-        {
-          name: "chariox-managed-bootstrap",
-          path: "/usr/local/bin/chariox-managed-bootstrap",
-          sha256: packagedSupervisorDigest,
-        },
-        {
-          name: "chariox-app-package",
-          path: "/usr/local/bin/chariox-app-package",
-          sha256: packagedAppPackageDigest,
-        },
-        {
-          name: "chariox-app-wasm-worker",
-          path: "/usr/local/bin/chariox-app-wasm-worker",
-          sha256: packagedAppWasmWorkerDigest,
-        },
-        {
-          name: "chariox-managed-bootstrap.service",
-          path: "/etc/systemd/system/chariox-managed-bootstrap.service",
-          sha256: packagedServiceDigest,
-        },
-        {
-          name: "chariox-path1-managed-bootstrap.service",
-          path: "/etc/systemd/system/chariox-path1-managed-bootstrap.service",
-          sha256: packagedPath1ServiceDigest,
-        },
-        {
-          name: "chariox-rootless-docker.service",
-          path: "/etc/systemd/system/chariox-rootless-docker.service",
-          sha256: packagedRootlessDockerServiceDigest,
-        },
-        {
-          name: "chariox-data-volume-admission.service",
-          path: "/etc/systemd/system/chariox-data-volume-admission.service",
-          sha256: packagedDataVolumeAdmissionServiceDigest,
-        },
-        {
-          name: "chariox-rootless-docker.path1-data-volume.conf",
-          path: "/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf",
-          sha256: packagedRootlessDataVolumeDropInDigest,
-        },
-        {
-          name: "chariox-slice-disk-quota-allocator.path1-data-volume.conf",
-          path: "/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf",
-          sha256: packagedQuotaAllocatorDataVolumeDropInDigest,
-        },
-        {
-          name: "chariox-slice-broker.service",
-          path: "/etc/systemd/system/chariox-slice-broker.service",
-          sha256: packagedSliceBrokerServiceDigest,
-        },
-        {
-          name: "chariox-slice-image",
-          path: "/usr/lib/chariox/slice-image",
-          sha256: packagedSliceImageDigest,
-        },
-        {
-          name: "chariox-slice-build-context",
-          path: SLICE_BUILD_CONTEXT_PATH,
-          sha256: packagedSliceBuildContextDigest,
-        },
-        {
-          name: "chariox-build-attestation",
-          path: "/usr/lib/chariox/build-attestation.json",
-          sha256: packagedBuildAttestationDigest,
-        },
-        {
-          name: "chariox-build-attestation-signature",
-          path: "/usr/lib/chariox/build-attestation.sig",
-          sha256: packagedBuildAttestationSignatureDigest,
-        },
-        {
-          name: "chariox-builder-public-key",
-          path: "/usr/lib/chariox/builder-public-key",
-          sha256: packagedBuilderPublicKeyDigest,
-        },
-      ],
-    }),
-  )
+  const manifestEntries = [
+    {
+      name: "chariox-kernel",
+      path: "/usr/local/bin/chariox-kernel",
+      sha256: packagedKernelDigest,
+    },
+    {
+      name: "chariox-managed-bootstrap",
+      path: "/usr/local/bin/chariox-managed-bootstrap",
+      sha256: packagedSupervisorDigest,
+    },
+    {
+      name: "chariox-app-package",
+      path: "/usr/local/bin/chariox-app-package",
+      sha256: packagedAppPackageDigest,
+    },
+    {
+      name: "chariox-app-wasm-worker",
+      path: "/usr/local/bin/chariox-app-wasm-worker",
+      sha256: packagedAppWasmWorkerDigest,
+    },
+    {
+      name: "chariox-managed-bootstrap.service",
+      path: "/etc/systemd/system/chariox-managed-bootstrap.service",
+      sha256: packagedServiceDigest,
+    },
+    {
+      name: "chariox-path1-managed-bootstrap.service",
+      path: "/etc/systemd/system/chariox-path1-managed-bootstrap.service",
+      sha256: packagedPath1ServiceDigest,
+    },
+    {
+      name: "chariox-rootless-docker.service",
+      path: "/etc/systemd/system/chariox-rootless-docker.service",
+      sha256: packagedRootlessDockerServiceDigest,
+    },
+    {
+      name: "chariox-data-volume-admission.service",
+      path: "/etc/systemd/system/chariox-data-volume-admission.service",
+      sha256: packagedDataVolumeAdmissionServiceDigest,
+    },
+    {
+      name: "chariox-rootless-docker.path1-data-volume.conf",
+      path: "/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf",
+      sha256: packagedRootlessDataVolumeDropInDigest,
+    },
+    {
+      name: "chariox-slice-disk-quota-allocator.path1-data-volume.conf",
+      path: "/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf",
+      sha256: packagedQuotaAllocatorDataVolumeDropInDigest,
+    },
+    {
+      name: "chariox-slice-broker.service",
+      path: "/etc/systemd/system/chariox-slice-broker.service",
+      sha256: packagedSliceBrokerServiceDigest,
+    },
+    {
+      name: "chariox-slice-image",
+      path: "/usr/lib/chariox/slice-image",
+      sha256: packagedSliceImageDigest,
+    },
+    {
+      name: "chariox-slice-build-context",
+      path: SLICE_BUILD_CONTEXT_PATH,
+      sha256: packagedSliceBuildContextDigest,
+    },
+    {
+      name: "chariox-build-attestation",
+      path: "/usr/lib/chariox/build-attestation.json",
+      sha256: packagedBuildAttestationDigest,
+    },
+    {
+      name: "chariox-build-attestation-signature",
+      path: "/usr/lib/chariox/build-attestation.sig",
+      sha256: packagedBuildAttestationSignatureDigest,
+    },
+    {
+      name: "chariox-builder-public-key",
+      path: "/usr/lib/chariox/builder-public-key",
+      sha256: packagedBuilderPublicKeyDigest,
+    },
+  ]
+  const identity = { sourceCommit: sourceIdentity.commit, sourceTree: sourceIdentity.tree }
+  if (!signed) {
+    // Stage only: the signer gets this small request, and the signatures are embedded later.
+    await normalizeTree(rootfs, timestamp)
+    const request = signingRequestBytes("managed", {
+      ...identity,
+      attestationBytes: builderAttestation.attestationBytes,
+      entries: manifestEntries,
+      sliceBuildContext: packagedSliceBuildContextDigest,
+      sliceImage: packagedSliceImageDigest,
+    })
+    await installBytes(request, options["signing-request"], 0o644)
+    process.stdout.write(`${JSON.stringify({ requestDigest: sha256Bytes(request), output: options.output })}\n`)
+    return
+  }
+  const manifestBytesValue = manifestBytes("managed", identity, manifestEntries)
   const privateKey = createPrivateKey({
     key: await readFile(options["signing-key"]),
     format: "pem",
@@ -705,13 +696,13 @@ async function packageRelease(options) {
   if (privateKey.asymmetricKeyType !== "ed25519") {
     throw new Error("release signing key must be an Ed25519 PKCS8 private key")
   }
-  const signature = sign(null, manifestBytes, privateKey)
+  const signature = sign(null, manifestBytesValue, privateKey)
   if (signature.length !== 64) {
     throw new Error("release signature has the wrong length")
   }
 
   await mkdir(releaseDirectory, { recursive: true, mode: 0o755 })
-  await writeFile(join(releaseDirectory, "release-manifest.json"), manifestBytes, {
+  await writeFile(join(releaseDirectory, "release-manifest.json"), manifestBytesValue, {
     flag: "wx",
     mode: 0o644,
   })
@@ -725,8 +716,7 @@ async function packageRelease(options) {
     { flag: "wx", mode: 0o644 },
   )
   await normalizeTree(rootfs, timestamp)
-  const releaseDigest = `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`
-  process.stdout.write(`${releaseDigest}\n`)
+  process.stdout.write(`${sha256Bytes(manifestBytesValue)}\n`)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
