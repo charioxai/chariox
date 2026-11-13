@@ -388,24 +388,19 @@ async fn a_call_that_is_still_running_does_not_end_the_hold_at_a_completed_turn(
 }
 
 #[tokio::test]
-async fn a_call_that_never_ends_releases_a_child_without_a_deadline_after_half_an_hour() {
-    let team = child_with_a_call_running("background-hold-limit").await;
-    team.runtime
+async fn a_running_call_has_no_implicit_deadline() {
+    let team = child_with_a_call_running("background-hold-no-limit").await;
+    assert!(!team
+        .runtime
         .owned
-        .background_holds
-        .held_since_for_test(&team.task.task_id, 1);
+        .held_task_due(
+            &team.task,
+            crate::session::unix_epoch_ms() + 120 * MINUTE_MS,
+        )
+        .unwrap());
     sweep(&team).await;
-    let events = child_finished(&team);
-    assert_eq!(events.len(), 1, "{events:?}");
-    assert_eq!(events[0].payload["success"], true);
-    let excerpt = events[0].payload["public_answer"]["excerpt"]
-        .as_str()
-        .unwrap();
-    assert!(excerpt.contains("started the server"), "{excerpt}");
-    assert!(
-        excerpt.contains("background command was still running"),
-        "{excerpt}"
-    );
+    assert!(working(&team));
+    assert!(child_finished(&team).is_empty());
 }
 
 #[tokio::test]
@@ -421,12 +416,11 @@ async fn a_deadline_keeps_the_hold_until_it_fires_and_then_says_the_call_still_r
             deadline: deadline_ms,
         })
         .unwrap();
-    team.runtime
-        .owned
-        .background_holds
-        .held_since_for_test(&team.task.task_id, 1);
     sweep(&team).await;
-    assert!(working(&team), "the deadline decides, not the half hour");
+    assert!(
+        working(&team),
+        "the explicit deadline keeps the task until it fires"
+    );
     assert!(child_finished(&team).is_empty());
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -442,4 +436,183 @@ async fn a_deadline_keeps_the_hold_until_it_fires_and_then_says_the_call_still_r
         .as_str()
         .unwrap()
         .contains("background command was still running"));
+}
+
+#[tokio::test]
+async fn a_long_running_background_job_stays_working_after_a_message_turn() {
+    let team = child_with_a_call_running("background-hold-long-message").await;
+    let message = crate::session::PromptQueueItem::new(
+        "housekeeping-message",
+        "message-attachment",
+        &team.child,
+        "Report status and keep the original job running",
+        crate::session::PromptStatus::Completed,
+    );
+    team.runtime
+        .owned
+        .ensure_agent_task(&team.room, &team.child, &message, Some(&team.child_run))
+        .unwrap();
+    team.runtime
+        .owned
+        .settle_agent_task(&team.room, &team.child, &message, &team.child_run, false)
+        .unwrap();
+    assert!(
+        !team
+            .runtime
+            .owned
+            .held_task_due(
+                &team.task,
+                crate::session::unix_epoch_ms() + 120 * MINUTE_MS,
+            )
+            .unwrap(),
+        "a live command has no implicit half-hour deadline",
+    );
+    sweep(&team).await;
+    assert!(
+        working(&team),
+        "a status message cannot finish the original background job"
+    );
+    assert!(child_finished(&team)
+        .iter()
+        .all(|event| { event.payload["child_task_id"] != team.task.task_id }));
+}
+
+async fn status_message(team: &Team, reply: bool) -> String {
+    let mut event = crate::durable_state::agent_lifecycle::occurrence(
+        &team.room,
+        &team.child,
+        &team.parent,
+        "status-message",
+        "message",
+        serde_json::json!({"message": "Report status; keep the original job running"}),
+    );
+    event.reply_requested = reply;
+    team.runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Occur(event))
+        .unwrap();
+    team.runtime
+        .deliver_agent_inbox_for_test(&team.room, &team.child)
+        .await
+        .unwrap();
+    let event = team
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_inbox(&team.room, &team.child, 0)
+        .unwrap()
+        .remove(0);
+    event.prompt_id.expect("message starts its own turn")
+}
+
+#[tokio::test]
+async fn a_message_reply_does_not_wait_for_an_earlier_tasks_background_command() {
+    let team = child_with_a_call_running("background-hold-message-reply").await;
+    let prompt = status_message(&team, true).await;
+    apply(
+        &team,
+        vec![text_chunk("The original command is still running")],
+    )
+    .await;
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, true)
+        .await
+        .unwrap();
+    let reply = team
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_turn_task(&team.room, &team.child, &prompt)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reply.state,
+        ExecutionState::Done,
+        "a reply does not own the earlier command"
+    );
+    assert!(
+        working(&team),
+        "the message reply preserves the original job"
+    );
+}
+
+#[tokio::test]
+async fn a_status_message_is_not_the_background_completion_notification() {
+    let team = child_with_a_call_running("background-hold-message-notification").await;
+    status_message(&team, false).await;
+    apply(
+        &team,
+        vec![text_chunk("The original command is still running")],
+    )
+    .await;
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, true)
+        .await
+        .unwrap();
+    // No completion notification followed the call's end. The unrelated status reply must not
+    // suppress the normal grace-period recovery of the original task.
+    apply(
+        &team,
+        vec![ended_at(crate::session::unix_epoch_ms() - 2 * MINUTE_MS)],
+    )
+    .await;
+    sweep(&team).await;
+    assert!(
+        !working(&team),
+        "the status reply was not an executing completion notification"
+    );
+    assert!(child_finished(&team)
+        .iter()
+        .any(|event| event.payload["child_task_id"] == team.task.task_id));
+}
+
+#[tokio::test]
+async fn a_messages_own_background_command_holds_only_its_own_task() {
+    let team = child_with_a_call_running("background-hold-message-own-call").await;
+    let prompt = status_message(&team, false).await;
+    let mut launched = lifecycle("claude_background_launched");
+    launched["id"] = "message-job".into();
+    apply(
+        &team,
+        vec![tool_chunk(&launched), text_chunk("started the second job")],
+    )
+    .await;
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, true)
+        .await
+        .unwrap();
+    let message_task = || {
+        team.runtime
+            .owned
+            .durable_state_store
+            .agent_turn_task(&team.room, &team.child, &prompt)
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(message_task().state, ExecutionState::Working);
+    assert!(working(&team));
+
+    apply(
+        &team,
+        vec![ended_at(crate::session::unix_epoch_ms() - 2 * MINUTE_MS)],
+    )
+    .await;
+    sweep(&team).await;
+    assert!(
+        !working(&team),
+        "a newer command cannot hold the older task"
+    );
+    assert_eq!(
+        message_task().state,
+        ExecutionState::Working,
+        "the message still owns its own running command"
+    );
+
+    let mut ended = lifecycle("claude_background_finished");
+    ended["id"] = "message-job".into();
+    ended["finished_at_ms"] = (crate::session::unix_epoch_ms() - 2 * MINUTE_MS).into();
+    apply(&team, vec![tool_chunk(&ended)]).await;
+    sweep(&team).await;
+    assert_eq!(message_task().state, ExecutionState::Done);
 }

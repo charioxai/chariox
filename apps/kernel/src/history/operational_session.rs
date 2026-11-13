@@ -462,12 +462,32 @@ impl OperationalHistoryStore {
         session_id: &str,
         provider_run_id: &str,
     ) -> Result<Vec<SessionHistoryEntry>, DaemonError> {
+        self.load_provider_tool_entries(session_id, provider_run_id, None)
+    }
+
+    /// Background calls retain the prompt that launched them, including their late exit rows.
+    pub(crate) fn load_provider_tool_entries_for_prompt(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        prompt_id: &str,
+    ) -> Result<Vec<SessionHistoryEntry>, DaemonError> {
+        self.load_provider_tool_entries(session_id, provider_run_id, Some(prompt_id))
+    }
+
+    fn load_provider_tool_entries(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        prompt_id: Option<&str>,
+    ) -> Result<Vec<SessionHistoryEntry>, DaemonError> {
         self.delay_read_if_configured();
         let connection = self.lock_read_connection(Some(session_id))?;
         let mut statement = connection
             .prepare(
                 "SELECT event_json FROM history_events
                  WHERE session_id = ?1 AND provider_run_id = ?2 AND kind = 'provider_tool'
+                   AND (?3 IS NULL OR prompt_id = ?3)
                  ORDER BY sequence ASC",
             )
             .map_err(|error| DaemonError::SessionHistoryFailed {
@@ -476,7 +496,7 @@ impl OperationalHistoryStore {
                 message: error.to_string(),
             })?;
         let mut rows = statement
-            .query(params![session_id, provider_run_id])
+            .query(params![session_id, provider_run_id, prompt_id])
             .map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: Some(session_id.to_string()),
                 operation: "load provider run tools",

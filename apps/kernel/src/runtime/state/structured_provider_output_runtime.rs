@@ -607,11 +607,23 @@ impl KernelRuntimeState {
         mut poll_result: crate::provider::ProviderPromptSignalBatch,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         let owned = &self.owned;
-        owned.note_output_of_held_run(provider_run_id, &poll_result.chunks);
         owned
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let active_prompt = if let Some(agent) = provider_run.agent_instance_id() {
+            let session = owned.session_store.get_session(session_id)?;
+            owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent)
+        } else {
+            None
+        };
+        owned.note_output_of_held_run(
+            provider_run_id,
+            active_prompt.as_ref().map(|prompt| prompt.id()),
+            &poll_result.chunks,
+        );
         let requires_authoritative_turn_completion =
             crate::provider::provider_run_requires_authoritative_turn_completion(&provider_run);
         let agent_id = provider_run.agent_instance_id().map(str::to_string);
