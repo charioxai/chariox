@@ -119,7 +119,7 @@ impl AppFilesBroker {
 }
 #[cfg(test)]
 mod tests;
-fn file_failure(failure: AppFileError) -> RemoteError {
+pub(super) fn file_failure(failure: AppFileError) -> RemoteError {
     match failure {
         AppFileError::File(PrivateDataError::OutcomeUncertain) => {
             error("APP_FILE_OUTCOME_UNCERTAIN", false)
