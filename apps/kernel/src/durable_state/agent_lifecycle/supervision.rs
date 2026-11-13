@@ -216,7 +216,18 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         &public_answer,
                         peers_ended && !obligations_changed,
                     );
-                    event(tx, e)?;
+                    let told = event(tx, e)?;
+                    // The child's end was already handled through its child_finished, so its
+                    // receipt arrives handled: it settles what it reports as a handled ack does.
+                    if told.state == "handled" && folded_into_handled_child_end(tx, &told)? {
+                        for o in &mut t.obligations {
+                            if o.completion_source() == Some(&source)
+                                && matches!(o.status.as_str(), "failed" | "settling")
+                            {
+                                o.status = "satisfied".into();
+                            }
+                        }
+                    }
                     t.revision += 1;
                     save(tx, &t)?;
                 }
