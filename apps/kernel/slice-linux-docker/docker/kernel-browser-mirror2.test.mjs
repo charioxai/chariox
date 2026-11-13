@@ -1165,3 +1165,25 @@ test('MP-10: a child frame whose delta keeps failing is re-mounted once per cred
   await frames.drain(stream, null, null);
   assert.equal(mounts, 2, 'the next credit tries the re-mounted child again');
 });
+
+// A native region measures live geometry repeatedly during admission. Its known
+// document owner must not wait behind a busy renderer's frame-tree response.
+for(const change of [null,'navigation','detach','connection'])test(`region bounds retain the known document owner through ${change??'a busy renderer'}`,async()=>{
+ let reads=0,frame;const tab={tab_id:'t',target_id:'T',document_id:'D'};
+ const connection={isOpen:()=>true,send:async()=>{reads++;throw Object.assign(Error('loading renderer frame tree is busy'),{code:'browser_cdp_timeout'});}};
+ frame={connection,sessionId:'s',frame:{loaderId:'D'}};
+ const browser={connection,currentPageFrame:()=>frame},host={browser,protection:{unknown:false,values:[],targets:[]}};
+ const mirror=new Mirror2({host}),stream={world:{connection,sessionId:'s',ref:'mirror'},frames:new Map()};
+ mirror.protectTargets=async()=>{};mirror.frames.regionBoxes=async()=>[];
+ const boxes=[{id:'n1',box:[0,0,1280,800]}];
+ mirror.evaluate=async()=>{if(change==='navigation')frame={...frame,frame:{loaderId:'next'}};if(change==='detach')frame=null;if(change==='connection')browser.connection={};return boxes;};
+ if(change)await assert.rejects(mirror.regionBoxes(stream,tab),{code:'stale_document_reference'});
+ else assert.deepEqual(await mirror.regionBoxes(stream,tab),boxes);
+ assert.equal(reads,0,'a known owner is fenced by committed document events, without a renderer frame-tree query');
+});
+test('region bounds without a committed owner still read the document before and after geometry',async()=>{
+ let reads=0;const connection={isOpen:()=>true,send:async method=>{assert.equal(method,'Page.getFrameTree');reads++;return {frameTree:{frame:{id:'T',loaderId:'D'}}};}};
+ const mirror=new Mirror2({host:{browser:{connection},protection:{unknown:false,values:[],targets:[]}}}),stream={world:{connection,sessionId:'s',ref:'mirror'},frames:new Map()};
+ mirror.protectTargets=async()=>{};mirror.frames.regionBoxes=async()=>[];mirror.evaluate=async()=>[];
+ await mirror.regionBoxes(stream,{target_id:'T',document_id:'D'});assert.equal(reads,2);
+});

@@ -7,6 +7,7 @@ import { createDeflateRaw, constants as zlib } from 'node:zlib';
 import { mirrorExceptionReason } from './kernel-browser-error-label.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
 import { mirror2ObserverExpression, sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
+import {captureDocumentOwner} from './browser-controller-frames.mjs';
 import { assertCurrentDocument, assertNotCancelled, BrowserActionError } from './browser-controller-actions.mjs';
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
 // VAUDIT S3 / AU-03: the owner's own view shows Vault fills and captures as the page does. Only the
@@ -916,10 +917,13 @@ export class Mirror2 {
     assertNotCancelled(signal);
     const world = stream.world;
     if (!world || world.connection !== this.host.browser.connection || !world.connection.isOpen()) throw new Error('MP-11: region document unavailable');
-    await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id);
+    // The committed owner fences navigation/detach while a busy renderer delays frame-tree reads.
+    const owner=captureDocumentOwner(this.host.browser,tab,world.connection,world.sessionId);
+    const current=()=>owner?owner.assertCurrent():assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);
+    await current();
     await this.protectTargets(world, tab, maskPolicy(stream, this.host.protection));
     const boxes = [...(await this.evaluate(world, `${world.ref}.regionBoxes()`)).filter(b => !stream.frames.has(b.id)), ...await this.frames.regionBoxes(stream, world, tab, maskPolicy(stream, this.host.protection))];
-    await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id);
+    await current();
     assertNotCancelled(signal); return boxes;
   }
   async opaqueBoxes(world, stream) { return [...(await this.evaluate(world, `${world.ref}.opaqueBoxes()`)).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)]; }
