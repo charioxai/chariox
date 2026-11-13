@@ -19,7 +19,7 @@ fn frame() -> AppConfirmationFrame {
 
 /// An owner's App Tab served by a fake browser controller that answers the card's
 /// region requests and logs every request it gets.
-async fn preview_rig() -> (Rig, ViewContext, std::path::PathBuf, String) {
+async fn preview_rig() -> (Rig, ViewContext, std::path::PathBuf) {
     use std::os::unix::fs::PermissionsExt;
     let mut rig = rig_for_catalog(true);
     rig.grant().await;
@@ -69,7 +69,7 @@ done
     )
     .unwrap();
     let context = rig.runtime.view_context(&rig.agent, TAB).await.unwrap();
-    (rig, context, log, origin)
+    (rig, context, log)
 }
 
 async fn pending_confirmation(rig: &Rig) -> crate::session::RuntimeInteraction {
@@ -95,17 +95,11 @@ async fn pending_confirmation(rig: &Rig) -> crate::session::RuntimeInteraction {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_card_carries_the_kernels_frame_and_the_hosts_own_preview_and_confirm_lets_the_action_on(
 ) {
-    let (rig, context, log, origin) = preview_rig().await;
+    let (rig, context, log) = preview_rig().await;
     let input = json!({"amount": 1200});
-    let ask = rig.runtime.ask_person_to_confirm(
-        rig.run.id(),
-        &rig.agent,
-        &context,
-        frame(),
-        &input,
-        TAB,
-        &origin,
-    );
+    let ask =
+        rig.runtime
+            .ask_person_to_confirm(rig.run.id(), &rig.agent, &context, frame(), &input);
     let (outcome, ()) = tokio::join!(ask, async {
         let card = pending_confirmation(&rig).await;
         assert_eq!(card.app_confirmation(), Some(&frame()));
@@ -148,17 +142,11 @@ async fn the_card_carries_the_kernels_frame_and_the_hosts_own_preview_and_confir
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancel_stops_the_action_and_says_nothing_ran() {
-    let (rig, context, _log, origin) = preview_rig().await;
+    let (rig, context, _log) = preview_rig().await;
     let input = json!({"amount": 1200});
-    let ask = rig.runtime.ask_person_to_confirm(
-        rig.run.id(),
-        &rig.agent,
-        &context,
-        frame(),
-        &input,
-        TAB,
-        &origin,
-    );
+    let ask =
+        rig.runtime
+            .ask_person_to_confirm(rig.run.id(), &rig.agent, &context, frame(), &input);
     let (outcome, ()) = tokio::join!(ask, async {
         let card = pending_confirmation(&rig).await;
         rig.runtime
@@ -177,17 +165,11 @@ async fn cancel_stops_the_action_and_says_nothing_ran() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn neither_an_agent_nor_sudo_can_answer_the_card() {
-    let (rig, context, _log, origin) = preview_rig().await;
+    let (rig, context, _log) = preview_rig().await;
     let input = json!({"amount": 1200});
-    let ask = rig.runtime.ask_person_to_confirm(
-        rig.run.id(),
-        &rig.agent,
-        &context,
-        frame(),
-        &input,
-        TAB,
-        &origin,
-    );
+    let ask =
+        rig.runtime
+            .ask_person_to_confirm(rig.run.id(), &rig.agent, &context, frame(), &input);
     let (outcome, ()) = tokio::join!(ask, async {
         let card = pending_confirmation(&rig).await;
         for answer in [
@@ -226,17 +208,11 @@ async fn neither_an_agent_nor_sudo_can_answer_the_card() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn simultaneous_confirm_and_cancel_settle_once() {
-    let (rig, context, _log, origin) = preview_rig().await;
+    let (rig, context, _log) = preview_rig().await;
     let input = json!({"amount": 1200});
-    let ask = rig.runtime.ask_person_to_confirm(
-        rig.run.id(),
-        &rig.agent,
-        &context,
-        frame(),
-        &input,
-        TAB,
-        &origin,
-    );
+    let ask =
+        rig.runtime
+            .ask_person_to_confirm(rig.run.id(), &rig.agent, &context, frame(), &input);
     let (outcome, ()) = tokio::join!(ask, async {
         let card = pending_confirmation(&rig).await;
         let answers: Vec<_> = ["confirm", "cancel"]

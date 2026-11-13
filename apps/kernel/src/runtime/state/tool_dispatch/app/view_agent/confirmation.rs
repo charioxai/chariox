@@ -11,6 +11,23 @@ const CONFIRMATION_TIMEOUT_SEC: u64 = 300;
 const CONFIRM: &str = "confirm";
 const CANCEL: &str = "cancel";
 
+/// The App's own Tab and origin: a preview is shown from there only.
+fn confirmation_tab(context: &ViewContext) -> Result<(String, String), ViewError> {
+    let ViewHost::User { retained, .. } = &context.host else {
+        return Err(failure(
+            "confirmation_unavailable",
+            "This action needs the person's confirmation in an App Tab: open the App in a Tab first.",
+        ));
+    };
+    let view = &retained.1;
+    let tab_id = view
+        .browser
+        .as_ref()
+        .map(|browser| browser.tab_id.clone())
+        .ok_or_else(|| failure("unknown_view", "The App view closed; reopen it"))?;
+    Ok((tab_id, view.origin.clone()))
+}
+
 /// An abandoned call (the turn ended while the card waited) still removes its preview, in
 /// the view's turn so a later preview is not cleared by mistake.
 struct PreviewCleanup {
@@ -47,19 +64,7 @@ impl KernelRuntimeState {
         action: &UiActionDeclaration,
         input: &Value,
     ) -> Result<(), ViewError> {
-        let ViewHost::User { retained, .. } = &context.host else {
-            return Err(failure(
-                "confirmation_unavailable",
-                "This action needs the person's confirmation in an App Tab: open the App in a Tab first.",
-            ));
-        };
-        let view = &retained.1;
-        let tab_id = view
-            .browser
-            .as_ref()
-            .map(|browser| browser.tab_id.clone())
-            .ok_or_else(|| failure("unknown_view", "The App view closed; reopen it"))?;
-        let origin = view.origin.clone();
+        confirmation_tab(context)?;
         let current_turn = || {
             self.authorize_room_provider_epoch(Some(agent.id()), Some(run_id))
                 .map_err(|_| {
@@ -92,7 +97,7 @@ impl KernelRuntimeState {
             context: Some(context.clone()),
         };
         let decision = self
-            .ask_person_to_confirm(run_id, agent, context, frame, input, &tab_id, &origin)
+            .ask_person_to_confirm(run_id, agent, context, frame, input)
             .await;
         // Every way out removes the preview from the page.
         let cleared = self
@@ -114,9 +119,9 @@ impl KernelRuntimeState {
         context: &ViewContext,
         frame: AppConfirmationFrame,
         input: &Value,
-        tab_id: &str,
-        origin: &str,
     ) -> Result<(), ViewError> {
+        let (tab_id, origin) = confirmation_tab(context)?;
+        let (tab_id, origin) = (tab_id.as_str(), origin.as_str());
         let unavailable =
             |error: DaemonError| failure("confirmation_unavailable", error.to_string());
         let session_id = agent.session_id();
