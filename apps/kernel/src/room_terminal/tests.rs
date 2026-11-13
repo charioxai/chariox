@@ -579,9 +579,20 @@ async fn a_hot_reload_hands_over_who_launched_the_terminals_commands() {
 }
 
 /// The PTY a master descriptor refers to, or `None` when the descriptor is not an open PTY master.
+#[cfg(target_os = "linux")]
 fn pty_number(fd: i32) -> Option<libc::c_uint> {
     let mut number: libc::c_uint = 0;
     (unsafe { libc::ioctl(fd, libc::TIOCGPTN, &mut number) } == 0).then_some(number)
+}
+
+/// The PTY a master descriptor refers to (its replica's device name; macOS has no `TIOCGPTN`),
+/// or `None` when the descriptor is not an open PTY master.
+#[cfg(target_os = "macos")]
+fn pty_number(fd: i32) -> Option<std::ffi::CString> {
+    let mut name = [0 as libc::c_char; 128];
+    // SAFETY: TIOCPTYGNAME writes at most 128 bytes, NUL-terminated, into `name`.
+    (unsafe { libc::ioctl(fd, libc::TIOCPTYGNAME as libc::c_ulong, name.as_mut_ptr()) } == 0)
+        .then(|| unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_owned())
 }
 
 #[tokio::test]
