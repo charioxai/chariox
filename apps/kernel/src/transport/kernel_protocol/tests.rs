@@ -1424,3 +1424,31 @@ fn agent_tree_changed_is_one_event_per_changed_tree() {
         "any-attachment"
     ));
 }
+
+// Snapshot projection/redaction sorts JSON keys; a direct frame must agree.
+#[test]
+fn turn_outcome_field_order_survives_snapshot_projection() {
+    let mut projection = session_snapshot_with_agent();
+    projection.agent_activity.get_mut("agent-a").unwrap().last_completed_turn = Some(serde_json::from_value(serde_json::json!({
+        "turn_id": "turn-a", "prompt_id": "prompt-a", "provider_run_id": "run-a", "agent_id": "agent-a",
+        "completed_at_ms": 1, "outcome": {"kind": "completed", "retryable": false, "reason": ""}
+    })).unwrap());
+    let frame = KernelOutgoingFrame::Event {
+        kernel: None,
+        event_id: 1,
+        event: Box::new(KernelEvent::SessionSnapshot {
+            room_workflows: projection.room_workflows,
+            session: Box::new(projection.session),
+            provider_run: Box::new(None),
+            agent_activity: Box::new(projection.agent_activity),
+            agent_activity_revision: 0,
+        }),
+    };
+    let direct = serialize_frame(&frame).unwrap();
+    let projected = serialize_frame_value(serde_json::to_value(&frame).unwrap()).unwrap();
+    let outcome_json = |wire: &str| {
+        let start = wire.find("\"outcome\":{").unwrap() + "\"outcome\":".len();
+        wire[start..].split('}').next().unwrap().to_string()
+    };
+    assert_eq!(outcome_json(&direct), outcome_json(&projected));
+}

@@ -8,10 +8,9 @@ use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::time::Instant;
 
-/// Two chunks before a rate is measured: one drains while the next already
-/// waits behind it, so a slow link never idles for a receipt. Once the rate is
-/// known the floor is two frames of `chunk_bytes`.
-pub const FLOOR_BYTES: usize = 2 * CHUNK_BYTES;
+/// A cold Room reply fits before the first receipt. Once a rate is measured,
+/// the adaptive floor is two frames of `chunk_bytes`.
+pub const START_WINDOW_BYTES: usize = 64 * 1024;
 /// The smallest bulk text frame: its header and its receipt stay a few percent of it.
 pub const MIN_CHUNK_BYTES: usize = 4 * 1024;
 /// A bulk frame takes about this long on the measured link, so a small frame
@@ -102,7 +101,7 @@ impl DrainWindow {
     pub fn bytes(&self) -> usize {
         let floor = 2 * self.chunk_bytes();
         let (Some(rtt), Some(rate)) = (self.min_rtt, self.max_rate()) else {
-            return floor;
+            return START_WINDOW_BYTES;
         };
         let gain = if self.filled {
             STEADY_GAIN
@@ -184,7 +183,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_window_starts_at_the_floor_and_doubles_with_each_round_trip() {
         let mut window = DrainWindow::new(Instant::now());
-        assert_eq!(window.bytes(), FLOOR_BYTES);
+        assert_eq!(window.bytes(), START_WINDOW_BYTES);
         // A fast 90 ms path: everything sent in one round trip comes back in the next.
         for round in 0..4 {
             let in_flight = window.bytes();
