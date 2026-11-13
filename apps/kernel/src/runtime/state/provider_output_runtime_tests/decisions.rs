@@ -1298,6 +1298,48 @@ async fn a_decision_the_holder_answered_can_be_acknowledged_by_sequence() {
     assert_eq!(acked["acknowledged"], sequence);
 }
 
+/// A card that died with the kernel holding it (a restart after an abandoned shutdown) leaves
+/// its holder's decision event with nothing to answer: it no longer needs one and can be acked.
+#[tokio::test]
+async fn a_decision_whose_card_is_gone_can_be_acknowledged() {
+    let t = tree(
+        "decision-card-gone",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    t.raise(permission("perm-gone", &t.c)).await;
+    let sequence = t.decision_events(&t.p)[0].sequence;
+    let handled = serde_json::json!({"sequence": sequence, "handled": true});
+    let ack = || t.runtime.ack_agent_inbox(&t.room, &t.p, &handled, 1);
+    assert!(ack().await.is_err(), "a live card still needs its answer");
+    // What a restart leaves behind: no responder and no card in the room.
+    t.runtime
+        .owned
+        .pending_interactions
+        .write()
+        .remove("perm-gone");
+    {
+        let mut sessions = t.runtime.owned.session_store.write();
+        let mut room = sessions.get_session(&t.room).unwrap().clone();
+        room.remove_active_interaction("perm-gone");
+        sessions.restore_session(room);
+    }
+    let read = t
+        .runtime
+        .read_agent_inbox(&t.room, &t.p, &serde_json::json!({}))
+        .unwrap();
+    let view = read["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["sequence"] == sequence)
+        .expect("the decision event is still listed");
+    assert_eq!(view["needs_answer"], false, "{view}");
+    let acked = ack().await.expect("nothing is left to answer");
+    assert_eq!(acked["acknowledged"], sequence);
+}
+
 /// The holder's turn is settling and its output pump holds the run's provider lane: the child's
 /// approval request must not wait for it, and must reach the holder once its turn has ended.
 #[tokio::test]
