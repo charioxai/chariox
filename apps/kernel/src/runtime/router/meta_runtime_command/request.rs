@@ -8,6 +8,8 @@ use crate::local::{
     SliceStateSaveRequest, SliceStateSaveScope, SliceStateStatusRequest,
 };
 
+pub(super) const DEADLINE_USAGE: &str = "usage: agent deadline <agent-ref> <90s|30m|2h|1d|none> [--room <room>] | agent deadline get <agent-ref> [--room <room>]";
+
 pub(super) fn deadline_edit_time(value: &str) -> Result<Option<u64>, DaemonError> {
     if value == "none" {
         return Ok(None);
@@ -118,7 +120,7 @@ pub(super) fn meta_agent_request(
             }))
         }
         Some("deadline") => {
-            let usage = || meta_command_error("usage: agent deadline <agent-ref> <90s|30m|2h|1d|none> [--room <room>] | agent deadline get <agent-ref>");
+            let usage = || meta_command_error(DEADLINE_USAGE);
             match args.get(1..).unwrap_or_default() {
                 [verb, reference] if verb == "get" => {
                     let agent = room_command_agent(agents, metaagent, reference, room_tools)?;

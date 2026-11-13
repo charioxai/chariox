@@ -38,16 +38,16 @@ impl CommandRouter {
         Ok(match tokens.get(1).map(String::as_str) {
             Some("deadline") if args.iter().any(|arg| arg == "--room") => {
                 let result = async {
-                    let [reference, value, flag, room] = args else {
-                        return Err(meta_command_error(
-                            "usage: agent deadline <agent-ref> <duration|none> [--room <room>]",
-                        ));
+                    // A read names no time; a set names the new one or `none`.
+                    let (reference, value, room) = match args {
+                        [verb, reference, flag, room] if verb == "get" && flag == "--room" => {
+                            (reference, None, room)
+                        }
+                        [reference, value, flag, room] if flag == "--room" => {
+                            (reference, Some(value), room)
+                        }
+                        _ => return Err(meta_command_error(super::request::DEADLINE_USAGE)),
                     };
-                    if flag != "--room" {
-                        return Err(meta_command_error(
-                            "usage: agent deadline <agent-ref> <duration|none> [--room <room>]",
-                        ));
-                    }
                     let room = self
                         .runtime_state
                         .resolve_session_ref_id(room, None)
@@ -58,13 +58,21 @@ impl CommandRouter {
                         Some(&room),
                         reference,
                     )?;
-                    let request = LocalDaemonRequest::SetAgentDeadline(
-                        crate::local::SetAgentDeadlineRequest {
-                            session_id: target.session_id().into(),
-                            agent_id: target.id().into(),
-                            deadline_ms: super::request::deadline_edit_time(value)?,
-                        },
-                    );
+                    let request = match value {
+                        None => LocalDaemonRequest::GetAgentDeadline(
+                            crate::local::GetAgentDeadlineRequest {
+                                session_id: target.session_id().into(),
+                                agent_id: target.id().into(),
+                            },
+                        ),
+                        Some(value) => LocalDaemonRequest::SetAgentDeadline(
+                            crate::local::SetAgentDeadlineRequest {
+                                session_id: target.session_id().into(),
+                                agent_id: target.id().into(),
+                                deadline_ms: super::request::deadline_edit_time(value)?,
+                            },
+                        ),
+                    };
                     Box::pin(
                         self.dispatch(meta_kernel_command(provider_run, caller, &request), request),
                     )
