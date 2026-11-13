@@ -41,14 +41,18 @@ fn mp08_state_wait_parks_until_the_state_differs_and_never_polls_the_host() {
             );
             assert_eq!(first["tabs"][0]["title"], "first");
 
-            // Nothing changed: the read parks for its wait and then answers with the same revision.
+            // Nothing changed: the read parks for its wait and then answers with the same revision
+            // only (transport3: the whole state with its Tab icons was 3.7 KB every two seconds).
             let started = std::time::Instant::now();
             let idle = wait(&router, &revision, 400).await;
             assert!(
                 started.elapsed() >= std::time::Duration::from_millis(350),
                 "idle waits last their deadline"
             );
-            assert_eq!(idle["revision"], revision.as_str());
+            assert_eq!(
+                idle,
+                serde_json::json!({"revision": revision, "unchanged": true})
+            );
 
             // A signal without a content change (a wake that read the same state) keeps it parked.
             std::fs::write(root.join("signal"), "1").unwrap();
