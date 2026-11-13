@@ -4,6 +4,8 @@ use std::time::Duration;
 use wait_timeout::ChildExt;
 
 const CHILD_TEST: &str = "CHARIOX_ISOLATED_ENV_TEST";
+#[cfg(unix)]
+const REAP_ATTEMPTS: u32 = 100;
 
 pub(crate) fn environment_test_isolated() -> bool {
     std::env::var_os(CHILD_TEST).is_some()
@@ -65,6 +67,15 @@ pub(crate) fn isolate_environment_test() -> bool {
     }
     let stdout = root.path().join("stdout");
     let stderr = root.path().join("stderr");
+    // Provider harnesses the test starts run in sessions of their own, so no
+    // group signal reaches them; every descendant inherits this claim instead.
+    #[cfg(unix)]
+    let claim = root.path().display().to_string();
+    #[cfg(unix)]
+    command.env(
+        crate::runtime::owned_process_signals::CLAIM_VARIABLE,
+        &claim,
+    );
     command
         .env(CHILD_TEST, name)
         .stdout(Stdio::from(File::create(&stdout).unwrap()))
@@ -103,6 +114,8 @@ pub(crate) fn isolate_environment_test() -> bool {
         let _ = child.kill();
         let _ = child.wait();
     }
+    #[cfg(unix)]
+    end_claimed_descendants(&claim);
     let stdout = std::fs::read_to_string(stdout).unwrap();
     let stderr = std::fs::read_to_string(stderr).unwrap();
     assert!(
@@ -115,4 +128,61 @@ pub(crate) fn isolate_environment_test() -> bool {
         }
     }
     true
+}
+
+/// The isolated test has ended, passed or not: whatever it started and left
+/// running (provider servers, detached helpers) must not outlive it.
+#[cfg(unix)]
+pub(crate) fn end_claimed_descendants(claim: &str) {
+    use crate::runtime::owned_process_signals::OwnedProcessSignals;
+    for _ in 0..REAP_ATTEMPTS {
+        match OwnedProcessSignals::end_claimed_tree(claim, None) {
+            Ok(true) => return,
+            Ok(false) => std::thread::sleep(Duration::from_millis(20)),
+            Err(error) => panic!("isolated test descendants could not be ended: {error}"),
+        }
+    }
+    panic!("isolated test descendants are still running after {REAP_ATTEMPTS} attempts");
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    use super::super::{detached_job, detached_sleeper_running, environment_test_isolated};
+
+    /// The job sleeps this many seconds, so the owner finds it by its arguments.
+    fn sleep_seconds(owner: u32) -> u32 {
+        200_000 + owner % 100_000
+    }
+
+    #[test]
+    fn an_isolated_test_leaves_no_detached_session_running() {
+        let isolated = environment_test_isolated();
+        let owner = if isolated {
+            std::os::unix::process::parent_id()
+        } else {
+            std::process::id()
+        };
+        let seconds = sleep_seconds(owner);
+        if super::isolate_environment_test() {
+            assert!(
+                !detached_sleeper_running(seconds),
+                "the isolated test left `sleep {seconds}` running in a session of its own"
+            );
+            return;
+        }
+        let started = Command::new("sh")
+            .arg("-c")
+            .arg(detached_job("/dev/null", seconds))
+            .status()
+            .expect("detached job should start");
+        assert!(started.success());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !detached_sleeper_running(seconds) {
+            assert!(Instant::now() < deadline, "the detached job should start");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }

@@ -15,7 +15,7 @@ mod environment;
 #[cfg(unix)]
 pub(crate) use claude_executable::TestClaudeExecutable;
 #[cfg(unix)]
-pub(crate) use detached_job::{detached_job, process_alive, session_job};
+pub(crate) use detached_job::{detached_job, detached_sleeper_running, process_alive, session_job};
 #[cfg(unix)]
 mod pre_exec_child;
 mod room_turn;
@@ -26,6 +26,8 @@ mod task_subscription;
 #[cfg(target_os = "linux")]
 mod thread_stack;
 pub(crate) mod working_agent_ages;
+#[cfg(unix)]
+pub(crate) use environment::end_claimed_descendants;
 pub(crate) use environment::{environment_test_isolated, isolate_environment_test};
 #[cfg(unix)]
 pub(crate) use pre_exec_child::PreExecChild;
