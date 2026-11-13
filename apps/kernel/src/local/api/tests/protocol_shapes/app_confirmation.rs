@@ -1,10 +1,10 @@
 use super::*;
 
-// APP-CONFIRM-01, local 1006 -> next: a person-confirmed App action is an `app-confirm-*` agent card that carries
+// APP-CONFIRM-01, local 1057 / peer 495: a person-confirmed App action is an `app-confirm-*` agent card that carries
 // the kernel's own App and publisher frame, and its signed declaration names the compact view that previews the input.
 #[test]
 fn app_confirmation_shapes_are_pinned() {
-    const { assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 1006) };
+    const { assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 1057) };
     let frame = crate::local::AppConfirmationFrame {
         installation_id: "campaign".into(),
         app_id: "com.chariox.campaign".into(),
@@ -66,6 +66,18 @@ fn app_confirmation_shapes_are_pinned() {
         .unwrap();
     let action = serde_json::to_value(action).unwrap();
     assert_eq!(action["effect"], "person_confirmed");
+    // The client reads these very shapes (`fixtures/app-confirmation-protocol.json`).
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../../../fixtures/app-confirmation-protocol.json"
+    ))
+    .unwrap();
+    assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    assert_eq!(fixture["interaction"], wire);
+    assert_eq!(fixture["action"], action);
     let snapshot = serde_json::json!({"action": action, "interaction": wire});
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(

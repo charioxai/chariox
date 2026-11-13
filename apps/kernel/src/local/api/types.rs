@@ -535,4 +535,8 @@ pub use workspace::*;
 /// settings; durable jobs,
 /// job-only command admission and outcomes, placement policies, process estimates, session job feeds and
 /// the owner's global offload decision.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1006;
+/// 1057 (APP-CONFIRM-01): a signed UI action may have effect `person_confirmed` with a `confirmationView`;
+/// its card is an `app-confirm-*` agent interaction that carries `app_confirmation` (installation, App,
+/// publisher and action, written by the kernel from the verified release) and the App's own preview as its
+/// protected browser `view`. Only the person answers it.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1057;

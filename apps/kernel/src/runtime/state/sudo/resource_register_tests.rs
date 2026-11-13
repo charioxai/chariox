@@ -258,7 +258,7 @@ fn resource_register_protocol_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "23ec956e1b14a3cd8b18857e757641f00a87329cf4be49a437aba550c888a240"
+        "5a8311470677d10ce971073ce54d8dd94864c5f91e376de2abe46523f7b6f89f"
     );
 }
 

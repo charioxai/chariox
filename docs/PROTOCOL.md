@@ -7355,6 +7355,26 @@ the session and never stored, so a client names who asks in the card's first pai
 card is shown in its top parent's panel (`shown_in_agent_id`) whoever holds it (above). Focused check: `cargo test -p chariox-kernel --lib --
 a_sub_agent_card_carries a_projected_card_names_its_asker the_user_answers_a_decision protocol_shapes`.
 
+### APP-CONFIRM-01: person-confirmed App actions — local 1057 / relay peer 495
+
+A signed `schemas/ui-actions.json` action may have `effect: "person_confirmed"` with a
+`confirmationView` (the name of the compact view the App registers with
+`chariox.view.confirmation`); every other effect refuses the field. The kernel runs such an action only after
+the person confirms the exact input on one card. The card is an agent interaction (`app-confirm-*`, kind
+`choice`, `Confirm` / `Cancel`, 300 s, default `cancel`) with two additions a client reads:
+
+- `app_confirmation`: `{installation_id, app_id, app_name, publisher_id, publisher_name, action_name}`,
+  written by the kernel from the verified release (all six present, none other). A client frames the
+  preview with these words and never with text the App supplied.
+- `view.browser_region`: the App's own preview, found by the browser host (not the App or the agent) in the
+  App's Tab, shown through the existing protected card region. A client that cannot show it offers no
+  Confirm; the card's `message` carries the exact input (at most 2000 characters) for clients that read text.
+
+Only the person answers: no agent holder or owner agent, `/sudo`, session approval or earlier answer stands
+in for it. `AppViewAction.effect` in a catalog may be `person_confirmed`, with `confirmationView`. Relay peer
+495 forwards `app_confirmation` with its interaction. Focused check: `cargo test -p chariox-kernel --lib --
+view_agent protocol_shapes::app_confirmation user_only`. Contracts: `docs/APPS_V2_CONTRACTS.md`.
+
 ### MP-08 / MP-09 / MP-10 / MP-11: Files on the owner's machines — local 1005 / relay peer 444
 
 The Kernel files requests above are the owner's Files service on a machine. Local 1005 adds a
