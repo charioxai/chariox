@@ -42,7 +42,10 @@ fn main() {
     ]});
     let files = BTreeMap::from([
         ("runtime/app.wasm".to_string(), component),
-        ("schemas/tools.json".into(), serde_json::to_vec(&tools).unwrap()),
+        (
+            "schemas/tools.json".into(),
+            serde_json::to_vec(&tools).unwrap(),
+        ),
         ("ui/index.html".into(), std::fs::read(view).unwrap()),
     ]);
     std::fs::create_dir_all(&output).unwrap();
