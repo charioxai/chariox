@@ -1,0 +1,80 @@
+{
+  "local": 1007,
+  "relayPeer": 446,
+  "requests": [
+    {
+      "WatchKernelResources": {
+        "subscription_request_id": "files-sub",
+        "watches": [
+          {
+            "resource": "file_changes",
+            "params": {
+              "paths": [
+                "/home/me",
+                "/home/me/note.txt"
+              ],
+              "kernel": "worker"
+            },
+            "known_revision": null
+          }
+        ]
+      }
+    }
+  ],
+  "responses": [
+    {
+      "KernelResourcesWatched": {
+        "refused": []
+      }
+    }
+  ],
+  "events": [
+    {
+      "event": "kernel_resource_changed",
+      "resource": "file_changes",
+      "params": {
+        "paths": [
+          "/home/me",
+          "/home/me/note.txt"
+        ],
+        "kernel": "worker"
+      },
+      "revision": "epoch:1",
+      "body": {
+        "snapshot": {
+          "data": {
+            "resync": true,
+            "error": null
+          }
+        }
+      }
+    }
+  ],
+  "peerRequests": [
+    {
+      "kind": "watch_machine_files",
+      "subscription_id": "home-sub",
+      "paths": [
+        "/home/me"
+      ]
+    },
+    {
+      "kind": "unwatch_machine_files",
+      "subscription_id": "home-sub"
+    },
+    {
+      "kind": "machine_files_changed",
+      "subscription_id": "home-sub"
+    }
+  ],
+  "peerResponses": [
+    {
+      "kind": "machine_files_watched",
+      "created": true
+    },
+    {
+      "kind": "machine_files_watched",
+      "created": false
+    }
+  ]
+}

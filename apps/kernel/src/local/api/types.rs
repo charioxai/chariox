@@ -536,5 +536,6 @@ pub use workspace::*;
 /// job-only command admission and outcomes, placement policies, process estimates, session job feeds and
 /// the owner's global offload decision; a `room_terminal` relay subscription pushes a Room terminal's output
 /// (CXT1, raw bytes) from the viewer's offset, with the Room's terminals when they change, instead of one
-/// `read_output` per page (docs/PROTOCOL.md, "Pushed output stream").
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1006;
+/// `read_output` per page (docs/PROTOCOL.md, "Pushed output stream"); 1007 adds native Files interests on the
+/// resource feed, including home-relayed worker invalidations.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1007;
