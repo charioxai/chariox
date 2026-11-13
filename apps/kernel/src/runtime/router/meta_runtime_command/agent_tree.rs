@@ -15,6 +15,10 @@ fn room_option(args: &[String]) -> Option<&str> {
         .map(String::as_str)
 }
 
+/// The standing approval of an agent's watched commands, as `agent children` lists it and `agent revoke` names it.
+const WATCHED_PROCESS_GRANT: &str = "watched-process";
+const REVOKE_USAGE: &str = "usage: agent revoke <agent-ref> watched-process";
+
 /// `agent children` lists at most this many descendants.
 const CHILDREN_LISTED_LIMIT: usize = 64;
 
@@ -166,6 +170,7 @@ impl CommandRouter {
             Some("children") => {
                 Some(self.meta_agent_children_result(session, caller, command, args))
             }
+            Some("revoke") => Some(self.meta_agent_revoke_result(session, caller, command, args)),
             Some("answer" | "pass") => Some(
                 self.dispatch_meta_child_decision_command(session, caller, command, tokens)
                     .await?,
@@ -357,6 +362,46 @@ impl CommandRouter {
         )
     }
 
+    /// `agent revoke <agent> watched-process` withdraws the standing approval a person gave an agent
+    /// below the caller with "Allow for this agent": its next watched command asks again.
+    fn meta_agent_revoke_result(
+        &self,
+        session: &crate::session::RuntimeSession,
+        caller: &crate::agent::AgentInstance,
+        command: &str,
+        args: &[String],
+    ) -> RuntimeToolResult {
+        let result = (|| {
+            let [reference, grant] = args else {
+                return Err(meta_command_error(REVOKE_USAGE));
+            };
+            if grant != WATCHED_PROCESS_GRANT {
+                return Err(meta_command_error(REVOKE_USAGE));
+            }
+            let agents = self.runtime_state.session_agents(session.id());
+            let agent = crate::runtime::room_tool_admission::resolve_agent(
+                &agents,
+                caller.session_id(),
+                reference,
+            )?;
+            crate::runtime::room_tool_admission::in_subtree(caller, agent, &agents)?;
+            let was_held = self.runtime_state.revoke_watched_process_grant(agent.id());
+            Ok(RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "command": command,
+                    "response": {
+                        "type": "AgentGrantRevoked",
+                        "agent": super::summary::summarize_meta_agent(agent),
+                        "grant": grant,
+                        "was_held": was_held,
+                    },
+                }),
+            })
+        })();
+        result.unwrap_or_else(|error| meta_command_failure_result(command, error))
+    }
+
     /// `agent children [agent]` lists everything below the caller, or below one of its descendants.
     pub(super) fn meta_agent_children_result(
         &self,
@@ -424,6 +469,11 @@ impl CommandRouter {
                     "is_processing": agent.is_processing(),
                     "has_active_prompt": session.active_prompt_for_agent(agent.id()).is_some(),
                     "deadline": deadline,
+                    "grants": if self.runtime_state.holds_watched_process_grant(agent.id()) {
+                        vec![WATCHED_PROCESS_GRANT]
+                    } else {
+                        Vec::new()
+                    },
                 }));
                 frontier.push((agent.id().to_string(), depth + 1));
             }

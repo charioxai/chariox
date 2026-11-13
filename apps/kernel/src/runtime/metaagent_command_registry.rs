@@ -244,10 +244,10 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
         "agent" => match tokens.get(1).map(String::as_str) {
             Some(
                 "list" | "ls" | "spawn" | "focus" | "alias" | "name" | "delete" | "destroy"
-                | "remove" | "cancel" | "steer" | "message" | "deadline" | "children" | "answer" | "pass" | "usage" | "profiles",
+                | "remove" | "cancel" | "steer" | "message" | "deadline" | "children" | "revoke" | "answer" | "pass" | "usage" | "profiles",
             ) => Some(MetaCommandExecutionPolicy::Routed),
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "only `agent list|spawn|focus|alias|delete|cancel|steer|message|deadline|children|answer|pass|usage|profiles` are routed for metaagent command execution yet".to_string(),
+                message: "only `agent list|spawn|focus|alias|delete|cancel|steer|message|deadline|children|revoke|answer|pass|usage|profiles` are routed for metaagent command execution yet".to_string(),
             }),
         },
         "workflow" => match tokens.get(1).map(String::as_str) {

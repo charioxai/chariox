@@ -1100,7 +1100,7 @@ impl KernelRuntimeState {
             .await;
         for agent in owned.agent_store.get_session_agents(session_id) {
             self.revoke_agent_app_capability_grants(&agent).await?;
-            self.terminal_input_grants.forget(agent.id());
+            self.forget_agent_grants(agent.id());
         }
         let worker_agents = self.agents_leased_to_workers(session_id);
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
