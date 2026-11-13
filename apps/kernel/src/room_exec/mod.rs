@@ -439,13 +439,21 @@ impl RoomExecService {
         let next = offset
             .checked_add(bytes.len() as u64)
             .ok_or_else(|| error("exec_offset_mismatch", "stdin offset overflow"))?;
-        let sender = input.sender.as_ref().ok_or_else(|| {
-            error(
-                "exec_stdin_closed",
-                "stdin is closed; start a new exec to send more input",
-            )
-        })?;
-        sender.try_send(Some(bytes)).map_err(input_error)?;
+        let closed = || {
+            let output = record.output.lock().expect("exec output poisoned");
+            let message = match &output.outcome {
+                Some(ExecOutcome::Failed { message }) => message.as_str(),
+                _ => "stdin is closed; start a new exec to send more input",
+            };
+            error("exec_stdin_closed", message)
+        };
+        let sender = input.sender.as_ref().ok_or_else(closed)?;
+        sender
+            .try_send(Some(bytes))
+            .map_err(|failure| match failure {
+                mpsc::error::TrySendError::Closed(_) => closed(),
+                failure => input_error(failure),
+            })?;
         input.offset = next;
         input.last = Some((offset, digest));
         Ok(next)
