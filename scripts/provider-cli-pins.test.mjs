@@ -28,7 +28,7 @@ for (const [name, directory, dockerfilePath] of [
       assert.equal(lock.packages[`node_modules/${pkg}`].version, expected, `${name} ${pkg} installed lock drift`)
     }
     const dockerfile = await readFile(new URL(dockerfilePath, root), 'utf8')
-    assert.match(dockerfile, /COPY deploy\/managed-kernel\/provider-versions\.env \.\//)
+    assert.match(dockerfile, /COPY deploy\/runtime-release\/provider-versions\.env \.\//)
     assert.match(dockerfile, /\. \.\/provider-versions\.env/)
     for (const [cli, key, prefix, suffix] of [
       ['codex', 'CHARIOX_CODEX_VERSION', 'codex-cli ', ''],
