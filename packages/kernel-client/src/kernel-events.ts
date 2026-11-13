@@ -128,6 +128,14 @@ export type KernelEvent =
     inventory_version: string
   }
   | {
+    // Protocol 1006: one watched resource of a `kernel_resources` subscription.
+    event: "kernel_resource_changed"
+    resource: string
+    params: unknown
+    revision: string
+    body: { unchanged: Record<string, never> } | { snapshot: { data: unknown } }
+  }
+  | {
     event: "waiting_room_rows_changed"
     sessions_total?: number
     sessions_next_cursor?: string | null

@@ -214,6 +214,9 @@ export function createKernelEventDispatchController(
       case "waiting_room_inventory_changed":
         void deps.refreshWaitingRoomData()
         return
+      case "kernel_resource_changed":
+        // The TUI reads the Vault, accounts and Apps by request; it never watches kernel resources.
+        return
       case "relay_status_changed":
         deps.recordDaemonActivity("kernel_relay_status_changed")
         await applyRelayStatusChanged(event)
