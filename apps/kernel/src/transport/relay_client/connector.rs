@@ -648,10 +648,10 @@ async fn run_daemon_relay_connector_inner(
     let mut refresh_error: Option<String> = None;
     let mut drop_backoff = DropBackoff::default();
 
-    loop {
+    'connector: loop {
         if *shutdown.borrow() {
             disconnect_relay(&state, "shutdown before relay connect", presence).await;
-            return;
+            break 'connector;
         }
 
         if static_relay.is_none() {
@@ -730,7 +730,7 @@ async fn run_daemon_relay_connector_inner(
                 record_relay_reconnect(&router, &relay_url, problem.reason(), delay);
                 token_refresh_failures = token_refresh_failures.saturating_add(1);
                 if wait_for_reconnect_delay(shutdown, delay).await {
-                    return;
+                    break 'connector;
                 }
                 continue;
             }
@@ -805,7 +805,7 @@ async fn run_daemon_relay_connector_inner(
                                         presence,
                                     )
                                     .await;
-                                    return;
+                                    break 'connector;
                                 }
                             }
                             _ = &mut wait => {}
@@ -836,7 +836,7 @@ async fn run_daemon_relay_connector_inner(
             record_relay_reconnect(&router, &relay_url, "relay refused the token", delay);
             refused_failures = refused_failures.saturating_add(1);
             if wait_for_reconnect_delay(shutdown, delay).await {
-                return;
+                break 'connector;
             }
             continue;
         }
@@ -873,7 +873,7 @@ async fn run_daemon_relay_connector_inner(
                 record_relay_reconnect(&router, &relay_url, "relay connect timed out", delay);
                 reconnect_attempt = reconnect_attempt.saturating_add(1);
                 if wait_for_reconnect_delay(shutdown, delay).await {
-                    return;
+                    break 'connector;
                 }
                 continue;
             }
@@ -948,7 +948,7 @@ async fn run_daemon_relay_connector_inner(
                     );
                     reconnect_attempt = reconnect_attempt.saturating_add(1);
                     if wait_for_reconnect_delay(shutdown, delay).await {
-                        return;
+                        break 'connector;
                     }
                     continue;
                 }
@@ -973,7 +973,7 @@ async fn run_daemon_relay_connector_inner(
                             record_relay_reconnect(&router, &relay_url, &error, delay);
                             reconnect_attempt = reconnect_attempt.saturating_add(1);
                             if wait_for_reconnect_delay(shutdown, delay).await {
-                                return;
+                                break 'connector;
                             }
                             continue;
                         }
@@ -1053,7 +1053,7 @@ async fn run_daemon_relay_connector_inner(
                                 writer_task.abort();
                                 clear_remote_inventory_projection(&router);
                                 disconnect_relay(&state, "daemon shutting down", presence).await;
-                                return;
+                                break 'connector;
                             }
                         }
                         _ = tokio::time::sleep_until(last_read_at + RELAY_READ_IDLE_LIMIT) => {
@@ -1397,7 +1397,7 @@ async fn run_daemon_relay_connector_inner(
                 record_relay_reconnect(&router, &relay_url, reconnect_reason, delay);
                 reconnect_attempt = reconnect_attempt.saturating_add(1);
                 if wait_for_reconnect_delay(shutdown, delay).await {
-                    return;
+                    break 'connector;
                 }
             }
             Ok(Err(error)) => {
@@ -1417,11 +1417,12 @@ async fn run_daemon_relay_connector_inner(
                 record_relay_reconnect(&router, &relay_url, "relay socket connect failed", delay);
                 reconnect_attempt = reconnect_attempt.saturating_add(1);
                 if wait_for_reconnect_delay(shutdown, delay).await {
-                    return;
+                    break 'connector;
                 }
             }
         }
     }
+    local_browser.wait_stopped().await;
 }
 
 #[cfg(test)]

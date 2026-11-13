@@ -86,6 +86,10 @@ pub(crate) struct LocalBrowserDirect {
 }
 
 impl LocalBrowserDirect {
+    pub(super) async fn wait_stopped(&self) {
+        self.rtc.wait_stopped().await;
+    }
+
     pub(super) fn new(
         router: Arc<CommandRouter>,
         command_sequence: Arc<AtomicU64>,
