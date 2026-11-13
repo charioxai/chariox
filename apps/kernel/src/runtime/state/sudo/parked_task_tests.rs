@@ -943,6 +943,8 @@ async fn waiting_projection_never_marks_a_waiting_turn_unread() {
     );
     assert_eq!(room.unread_idle_agent_count, 0);
     assert!(!session.agent_has_unread_output("local", &task.agent_id));
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: repeated unconditional Stop is idempotent.
 #[tokio::test]
 async fn unconditional_stop_of_an_idle_agent_succeeds_with_or_without_room_tools() {

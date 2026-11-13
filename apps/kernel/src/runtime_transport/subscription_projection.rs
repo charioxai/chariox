@@ -465,6 +465,8 @@ mod tests {
             "the tree delta cannot carry notification availability"
         );
     }
+
+    #[test]
     fn private_provider_updates_do_not_repeat_public_state() {
         let mut before = snapshot();
         before.provider_run = Some(

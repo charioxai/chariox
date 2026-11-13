@@ -178,6 +178,16 @@ pub(crate) async fn execute(
         if let Some(target) = kernel_target.as_ref().filter(|_| machine_state == "ready") {
             let grant = grant
                 .or_else(|| command.reach_caller_id())
+                .or_else(|| {
+                    crate::runtime::cloud_relay_authorization::kernel_cloud_owner(config, command)
+                        .then(|| {
+                            format!(
+                                "{}{}",
+                                crate::runtime::state::reach::OWNER_GRANT_PREFIX,
+                                state.kernel_owner_user_id()
+                            )
+                        })
+                })
                 .unwrap_or_else(|| {
                     let user_id = command
                         .caller

@@ -1395,10 +1395,6 @@ impl Disk {
 /// The volume holding `path`, with its floor.
 fn disk_room(volume: &Volume, path: &Path) -> Option<Disk> {
     let space = volume(path)?;
-    // Anonymous memory files have no disk capacity and cannot fill a disk.
-    if space.total == 0 {
-        return None;
-    }
     Some(Disk {
         id: space.id,
         free: space.free,
