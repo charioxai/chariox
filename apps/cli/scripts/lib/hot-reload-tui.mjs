@@ -35,11 +35,11 @@ if (${JSON.stringify(carrier)} === "relay") {
   const identity = createCliRelayIdentityStore().getOrCreate()
   const client = new LocalIpcClient(endpoint)
   try {
-    const reply = await client.send({ ResolveKernelClientConnection: { kernel_ref: rig.daemonId, machine_ref: rig.machineId, client_id: "hot-reload-tui-relay", session_id: ${JSON.stringify(sessionId)}, public_key_thumbprint: identity.publicKeyThumbprint } })
-    const grant = reply.KernelClientConnectionResolved?.connection
+    const reply = await client.send({ IssueCloudRelayClientToken: { target_daemon_alias: rig.daemonId, client_id: "hot-reload-tui-relay", session_id: ${JSON.stringify(sessionId)}, public_key_thumbprint: identity.publicKeyThumbprint } })
+    const grant = reply.CloudRelayClientTokenIssued?.token
     if (!grant) throw Error("Kernel did not issue a TUI relay grant")
     env.HOT_RELOAD_TUI_GRANT = grant.relay_token
-    args.push("--relay-url", grant.relay_url, "--target-daemon-id", grant.target_daemon_id, "--relay-token-env", "HOT_RELOAD_TUI_GRANT", "--relay-token-issuer", endpoint, rig.daemonId)
+    args.push("--relay-url", grant.relay_url, "--target-daemon-id", rig.daemonId, "--relay-token-env", "HOT_RELOAD_TUI_GRANT", "--relay-token-issuer", endpoint, rig.daemonId)
   } finally { await client.close() }
 } else args.push("--kernel-url", endpoint)
 const child = Bun.spawn(args, { env, stdin: "inherit", stdout: "inherit", stderr: "inherit" })
