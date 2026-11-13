@@ -60,6 +60,7 @@ mod remote_inventory;
 mod reply_notes;
 mod request_errors;
 mod request_timing;
+mod room_terminal_stream;
 mod sender_identity;
 mod subscriptions;
 pub(crate) use browser_input_order::release_input_turn;

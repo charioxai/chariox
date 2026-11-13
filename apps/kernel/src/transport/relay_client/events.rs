@@ -252,7 +252,7 @@ async fn emit_relay_replay_gap_snapshot(
     Ok(())
 }
 
-async fn send_relay_event_frame(
+pub(super) async fn send_relay_event_frame(
     outgoing_tx: &RelayOutgoingSender,
     subscription_id: &str,
     event_id: u64,

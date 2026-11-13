@@ -151,6 +151,24 @@ pub(super) async fn handle_relay_subscribe(
             return Ok(());
         }
     };
+    if subscription_scope.as_deref() == Some(super::room_terminal_stream::ROOM_TERMINAL_SCOPE) {
+        return super::room_terminal_stream::handle_subscribe(
+            router,
+            outgoing_tx,
+            subscription_tasks,
+            super::room_terminal_stream::RoomTerminalSubscription {
+                request_id: relay_request_id,
+                relay_id: relay_subscription_id,
+                session_id,
+                address: attachment_id,
+                identity: caller_identity,
+                public_key: client_public_key,
+                from_offset: resume_from_event_id,
+                heartbeat_interval,
+            },
+        )
+        .await;
+    }
     let subscriber = RelaySubscriber {
         heartbeat_interval,
         caller: crate::runtime::command::KernelCaller::for_relay_request(caller_identity.clone()),

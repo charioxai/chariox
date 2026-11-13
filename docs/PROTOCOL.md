@@ -5765,6 +5765,33 @@ a home restart ends the wake as lost, and the terminal itself is not affected.
 - Peer 177 only re-binds the embedded local response union to local 569; no
   peer request is added.
 
+#### Pushed output stream — provisional local 1043
+
+A viewer that shows a terminal live subscribes once instead of sending one `read_output` per page.
+The relay subscription has `subscription_scope: "room_terminal"`, `session_id` the Room,
+`attachment_id` the terminal as `<terminal_id>` or `<terminal_id>@<host_agent>` (a terminal on the
+machine of a Room agent), and `resume_from_event_id` the output offset the viewer has drawn
+(required). The kernel answers the subscription only after a first read with the same access check
+and routing as `read_output`; a refusal is the subscription's error. It then reads on its side, with
+the same 16 ms gathering, and pushes:
+
+- `room_terminal_output` (CXT1: JSON header, raw bytes after it): `next_offset`, `bytes: [0, n]`,
+  `gap: true` only when the offset is no longer retained (the viewer rebuilds from a snapshot and
+  subscribes again), and `terminal` (the summary) only on the first page and when anything but its
+  `output_offset` changed. The event id is `next_offset`. After a gap, or the page that reaches the end
+  of an ended terminal, the stream sends nothing more.
+- `room_terminals_listed { terminals }` (JSON): the Room-wide `list` result (the viewer's tabs), first
+  before the first page, then whenever a terminal came, went or changed in anything but its
+  `output_offset`; the kernel compares every 3 s. A list that fails while a worker is away is skipped.
+- `heartbeat` (JSON) after a heartbeat interval in which the stream sent nothing.
+- `room_terminal_stream_ended { message }` when a read fails (worker away, terminal closed); the
+  viewer subscribes again from its offset.
+
+Nothing is retained for replay: a lost stream is resumed by subscribing again from the offset reached.
+A hidden view unsubscribes and receives nothing until it is shown again; while a view streams it
+does not poll `list`. `read_output` and `list` stay for replaying retained output, the TUI and agent
+tools.
+
 #### Terminal clients (TUI)
 
 `chariox terminal --session REF [--kernel-url URL] [list | new [TITLE] | close TERMINAL | TERMINAL]` and the TUI's
