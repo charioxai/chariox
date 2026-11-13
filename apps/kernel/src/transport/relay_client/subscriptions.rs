@@ -955,7 +955,7 @@ async fn record_relay_subscription_attachment_heartbeat(
     phase: &str,
 ) {
     if let Err(error) = router
-        .record_terminal_attachment_heartbeat(
+        .record_subscription_attachment_heartbeat(
             session_id,
             attachment_id,
             crate::session::unix_epoch_ms(),
