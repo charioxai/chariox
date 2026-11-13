@@ -454,7 +454,7 @@ proposed names are contracts, not existing types:
 
 | Record | Required fields and invariant |
 | --- | --- |
-| Task execution | Causal task ID for a plain prompt/delegated work or explicit goal and their resumed turns; owner/room/agent, current run/lease epoch, state/revision, safe progress summary, last progress sequence/time, no-progress wake count, done-correction receipt. Independent user prompts get separate tasks; overview cannot hide an older incomplete task behind a newer done turn. |
+| Task execution | Causal task ID for a plain prompt/delegated work or explicit goal and their resumed turns; owner/room/agent, current run/lease epoch, state/revision, safe progress summary, last progress time, done-correction receipt. Independent user prompts get separate tasks; overview cannot hide an older incomplete task behind a newer done turn. |
 | Obligation | ID, task/creating turn/agent, kind (delegate, workflow run, watcher, owned process, hand-off), exact resource/run/source identity and epoch, lifecycle (`open`, `settling`, `satisfied`, `cancelled`, `failed`), completion cursor/receipt and cleanup disposition. Failed obligations require visible handling; resource disappearance alone does not settle the task. |
 | Wait | Task/revision, source registration IDs and cursors, required obligation coverage, deadline timestamp plus live monotonic bound, wait reason, start time, last notification, next sweep/check and wake-intent ID. The safety deadline is separate from source liveness; it cannot hide loss of all sources. |
 | Turn settlement | Task/turn/run/lease, candidate end state, final public answer reference, ledger revision, validation outcome, one correction attempt and delivery receipt. A stale settlement cannot override a newer turn or owner cancellation. |
@@ -529,17 +529,9 @@ never acknowledges an undurable wait. The existing active-provider liveness
 reconciler also routes dead `working` turns here. Sweeps share ordinary managed
 admission/quiescence, and do not keep an otherwise idle machine powered on.
 
-**Progress guard and visibility.** Propose N = 3 consecutive wake turns without
-visible progress, persisted per task across restarts. Progress is a new public
-artifact/result, handled obligation outcome or completed operation with safe
-evidence, not a repeated status sentence, timer reschedule, ACK, new empty
-delegate or cursor change alone. The kernel compares normalized public results
-and resource receipts; it cannot prove the semantic completeness of arbitrary
-model work. At N, stop automatic wake-loop scheduling and raise `blocked` with
-the repeated reasons and next owner action. The owner may resume/cancel; resume
-records an explicit new budget. Separately, 15 minutes waiting without progress
-triggers a long-wait notification even if no wakes occurred. Coalesce reminders
-per task/revision without hiding later failure or blocked transitions.
+**Long-wait visibility.** Fifteen minutes waiting without progress triggers a
+long-wait notification even if no wakes occurred. Coalesce reminders per
+task/revision without hiding later failure or blocked transitions.
 
 Room overview and every web/local/remote TUI show `working`, `waiting on X until
 T`, `blocked on Y`, or `done`, open-obligation counts and last visible progress.
@@ -594,9 +586,7 @@ obligation coverage and a finite check-in deadline. If incomplete and no live
 sources exist, immediately re-prompt the same agent to continue, using ordinary
 dispatch and the next durable continuation sequence. This transient scheduling
 phase is visible as working; it cannot become idle or falsely waiting. Source
-loss/check-in wakes re-evaluate and take the same branches. The progress guard
-counts immediate no-progress continuations as well as wakes, so the loop cannot
-spin indefinitely. Work-turn EOF/error is reconciled before evaluation; provider
+loss/check-in wakes re-evaluate and take the same branches. Work-turn EOF/error is reconciled before evaluation; provider
 failure is not proof of achieved work. Explicit user stop disables the loop.
 
 **Who evaluates, and cost/loop bounds.** The kernel owns the check and asks the
@@ -634,8 +624,7 @@ neither delivers them to client output streams nor projects them into the
 history outline, so no Chariox client shows protocol text in an agent pane. On timeout/malformed result, make one
 visible user-required recovery interaction, not an unbounded evaluation retry.
 Cost is at most one check turn per work-turn revision, plus ordinary continued
-work; the guard bounds no-progress attempts but does not cap a progressing
-multi-hour goal. Surface check count/elapsed/cost metadata if the harness
+work. Surface check count/elapsed/cost metadata if the harness
 provides it. Provider confirmation is evidence of its assessment, not proof of
 arbitrary semantic correctness; drills independently verify deployment/artifacts.
 
@@ -695,7 +684,7 @@ notifies all terminals immediately and carries finite reminders and safe scope:
 | Hand-off: 2FA/human check/model refusal/site disallows automation | Protected click/code/secret interaction on existing target; owner acts or cancels. Resume from status only after target revalidation, never with typed bytes. |
 | Missing user-owned resource: account, quota/billing, credential not in Vault | Name required account/resource and product setup path, never request model-visible credential. Owner links/funds/provides it through protected UI and explicitly retries. |
 | Unanswered approval or expired sudo still needed | Project the existing owner-only approval or fresh Extend/elevation interaction; owner verifies/answers or cancels. Receipt alone resumes authorized work, never replays an uncertain effect. |
-| Progress guard / unresolved runtime delivery or evaluation | Show failed/no-progress receipts and safe actions: inspect/fix resource, explicitly resume or cancel. Owner resume records a new guard budget; a reconnect or source heartbeat alone cannot unblock. |
+| Unresolved runtime delivery or evaluation | Show failed receipts and safe actions: inspect/fix resource, explicitly resume or cancel. A reconnect or source heartbeat alone cannot unblock. |
 
 **Migration from today's `/goal`.** Source at the pinned base implements the
 workflow registry shortcut `planner-worker-reviewer`, not this native durable
@@ -904,7 +893,7 @@ owner staging. This design study authorizes no deployment or hosted-system acces
 | PR / size / dependencies | Scope; mandatory appendix cells |
 | --- | --- |
 | 1 — room admission/tools, M; main | Room tools, immutable creator lineage and obligation registration at dispatch; A01, G01–G18 + S01–S04. MP-08/MP-10/MP-11. |
-| 2 — durable events/yield, L; 1 + #885 | Inbox/receipts, explicit turn-end states, obligation enforcement, sweep/progress guard and all-client visibility; A02, G01–G18 + S01–S04. MP-08/MP-09/MP-10/MP-11. Split persistence and lifecycle enforcement at service boundaries if needed; neither is accepted alone. |
+| 2 — durable events/yield, L; 1 + #885 | Inbox/receipts, explicit turn-end states, obligation enforcement, sweep and all-client visibility; A02, G01–G18 + S01–S04. MP-08/MP-09/MP-10/MP-11. Split persistence and lifecycle enforcement at service boundaries if needed; neither is accepted alone. |
 | 3 — process/timer watchers, M; 2 | Owned watchers/processes and MP-09 activity/recovery; A03, G01–G18 + S01–S04. MP-08/MP-09/MP-10/MP-11. |
 | 4 — sudo windows/policy, M; 1 + 2 | Hour-scale grants, owner-work causal fence, fresh extension, status/warnings and approval prohibition; A04, G01–G18 + S01–S06. MP-08/MP-10/MP-11. |
 | 5 — user-requested capability grants, M; 1 + #900 | Prompt-caused resource grants and executable App-agent admission; A05, G01–G18 + S01–S04. MP-08/MP-10/MP-11. |
@@ -1055,7 +1044,6 @@ already pass on base; do not deliberately weaken base to manufacture RED.
 | G12 | 1. Exercise real owner passkey, Vault-backed service login, actual hand-off and private-overlay protection via product paths. 2. Check real page/process observation and output without exposing any value. 3. Privately scan model/tool/history/trace/events/FTS, DOM/screenshots/mirror, logs and retained evidence. No secret is observable/searchable; relay/Cloud receive no plaintext. Synthetic echo/malicious-output canaries supplement these real flows as separate regression subruns. | Boolean leak report for each sink, actual service outcome, protection epochs and safe pixels; no secret in reports. | BLOCKED(B0) |
 | G13 | 1. Start an owned source that stays healthy. 2. Yield with a 60-second deadline. 3. Let it lapse: one `deadline_reached` wake re-evaluates, and new waiting needs a fresh finite deadline. 4. Repeat with restart before the deadline: `source_lost` is the intended outcome (Miguel 2026-10-14), with explicit recovery rather than pretending the old executor survived. | Countdown screens, durable deadline/source-loss occurrences, provider handling and recovery. | BLOCKED(B0) |
 | G14 | 1. Wait separately on delegate, workflow, process and App source. 2. Delete/fail delegate, cancel workflow, lose process and revoke App. 3. Remove all sources before deadline; also lose one required source while another lives. Immediate failure event wakes/blocks, never eternal waiting. | Per-source cause and bounded wake time, visible failed obligation and resolution. | BLOCKED(B0) |
-| G15 | 1. Cause three consecutive wakes with only repeated status/deadline changes. 2. Restart between wakes 2/3. Escalate once to blocked with one user interaction; no fourth autonomous loop. 3. Repeat with a real result between wakes; counter resets. | Counter/progress receipts, blocked notification/screens and negative-loop count. | BLOCKED(B0) |
 | G16 | 1. Keep delegate/workflow/watcher/process/hand-off obligations open in separate runs. 2. Cause provider to claim done, then claim done again without resolving them. First claim re-prompts once with safe obligation list, second blocks; no completion feedback. 3. Resolve/cancel and finish successfully. | Correction receipt, purported final shown as progress, second block and terminal zero-open ledger. | BLOCKED(B0) |
 | G17 | 1. End with no state, empty/tool-only final and provider EOF in separate runs. 2. Attempt waiting with no sources, no deadline and a past deadline. 3. Wait 15 real minutes without progress. Invalid ends classify/correct/block; long wait notifies every attached terminal and reconnecting client. | State classification, denial/correction screens and timed long-wait notification. | BLOCKED(B0) |
 | G18 | 1. Fail the owned durable writer at registration/settlement. 2. Restore it. 3. Wedge a wake delivery and advance past its bound; lose source/deadline scheduling once to exercise sweep. No undurable success, sweep recovers within 30 seconds or delivery blocks within 2 minutes, exact intent retained. | Write failure, sweep/receipt timeline, degraded/blocked projection and recovery. | BLOCKED(B0) |
@@ -1293,12 +1281,12 @@ and FB's real Cloud/Firebase services; missing accounts block the affected cells
 | Case | Exact steps and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
 | S01 | 1. Owner submits `/goal` for the real app's frontend/backend implementation and actual publication request. 2. Agent ends after frontend work with no live source; goal check says incomplete. 3. Kernel immediately continues, backend and authorized deployment complete, one bounded completion check confirms independently verified live app. Ordinary prompt control uses no continuing goal loop. | Original objective, real artifacts/deploy receipt/live URL, evaluation/continuation receipts and goal row. | BLOCKED(B0) |
-| S02 | 1. Goal delegates real work, yields with 1-minute check-in interval, source stays live without progress. 2. Check-in wakes ask whether sources progress; verify configurable 10-minute default and 60-minute maximum in separate tasks. 3. Kill required/all sources and restart before due check. No infinite waits, missed intervals coalesce, no-progress guard persists. | Deadline/source-liveness/check-in timeline, all-client wait countdown and restart guard. | BLOCKED(B0) |
+| S02 | 1. Goal delegates real work, yields with 1-minute check-in interval, source stays live without progress. 2. Check-in wakes ask whether sources progress; verify configurable 10-minute default and 60-minute maximum in separate tasks. 3. Kill required/all sources and restart before due check. No infinite waits, missed intervals coalesce, wait sources persist. | Deadline/source-liveness/check-in timeline, all-client wait countdown and restart receipts. | BLOCKED(B0) |
 | S03 | 1. Try done with each obligation kind still open, then repeat false claim. 2. Timeout/malform evaluation and drop its acceptance ACK separately. 3. Deliver stale evaluation after objective edit. At most one check per work revision, no evaluator recursion or duplicate spend, bounded correction then user block, stale result fenced. | Check counts/origin/60-second bound/8 KiB result, corrected goal row and no recursive turn. | BLOCKED(B0) |
-| S04 | 1. Trigger each blocked category: decision/input, 2FA/refusal/automation prohibition, missing account/quota/billing/credential, unanswered approval/expired required sudo, progress guard. 2. Deliver source progress/reconnect while blocked; neither resumes. 3. Owner resolves through protected product UI or cancels. Exactly one revalidated resume/cancel, human input stays protected. | Each category's interaction/notification, owner response receipt and boolean leakage scan. | BLOCKED(B0) |
+| S04 | 1. Trigger each blocked category: decision/input, 2FA/refusal/automation prohibition, missing account/quota/billing/credential, unanswered approval/expired required sudo. 2. Deliver source progress/reconnect while blocked; neither resumes. 3. Owner resolves through protected product UI or cancels. Exactly one revalidated resume/cancel, human input stays protected. | Each category's interaction/notification, owner response receipt and boolean leakage scan. | BLOCKED(B0) |
 | S05 | 1. Start `/sudo /goal`, wait through warning/expiry, then Extend with fresh passkey. 2. Pause/resume from each UI, restart home/worker and edit objective. 3. Child/grandchild completion feeds root goal evaluation; delegates stay ordinary, A cannot delete grandchild. Goal survives sudo loss and explicit owner stop; no implicit elevation or goal inheritance. | Goal/sudo rows in every client, elapsed counters/revisions, direct-creator denials and safe reauthorization. | BLOCKED(B0) |
 | S06 | 1. Open legacy `/goal` planner-worker-reviewer invocation at pinned base. 2. Migrate once with recovered objective/run/node bindings, restart twice and replay migration ACK. 3. Exercise unknown objective and completed/cancelled runs. Preserve work/history, ask owner to adopt unknown goal, no duplicate nodes or dual scheduler; `/goal`, user templates and `/loop` remain available as specified. | Migration receipts, preserved objective/run/history, node launch counts and old-client diagnostic. | BLOCKED(B0) |
-| S07 | 1. Goal delegates a real long build and retains a watcher while root has independent implementation work. 2. Completion check returns validated continue; immediately admit root work without waiting for a source/check-in, keeping both obligations/subscriptions live. 3. Exhaust independent work, choose covered finite waiting, then consume build/watcher results and finish. Empty/repeated continue remains subject to progress guard. | Evaluation/next-turn timestamps before any source event, independent artifact, retained source IDs/ledger, later wait/check-in/result timeline and final zero-open done. | BLOCKED(B0) |
+| S07 | 1. Goal delegates a real long build and retains a watcher while root has independent implementation work. 2. Completion check returns validated continue; immediately admit root work without waiting for a source/check-in, keeping both obligations/subscriptions live. 3. Exhaust independent work, choose covered finite waiting, then consume build/watcher results and finish. | Evaluation/next-turn timestamps before any source event, independent artifact, retained source IDs/ledger, later wait/check-in/result timeline and final zero-open done. | BLOCKED(B0) |
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — final integration scenario suite
 
@@ -1395,10 +1383,10 @@ selection and report uncertainty; optimize without tuning on held-out answers.
 | Eval order / workload | Overhaul features exercised (PR numbers above) |
 | --- | --- |
 | 1 — SWE-bench Verified Mini (50-task pilot) | Room delegation/direct-creator isolation (1), correlated results/wakes (2/10), process/test watchers (3), public history (9), goal checks and verifier completion (12). |
-| 1 — Terminal-Bench 2.0 (89-task pilot) | Ordinary/leased/slice tools (1/10), process ownership/cancellation and timers (3), durable waiting/progress guards (2), bounded goal continuation (12). |
+| 1 — Terminal-Bench 2.0 (89-task pilot) | Ordinary/leased/slice tools (1/10), process ownership/cancellation and timers (3), durable waiting (2), bounded goal continuation (12). |
 | 2 — GAIA validation subset | Mixed-team coordination (1/2/10), admitted browser/App resources (5), protected Vault/hand-off when task allows (6/7), public history (9), original-objective completion (12). |
 | 2 — tau2-bench airline | No-reply/urgency/correlated teamwork (1/2), admitted actions and explicit human approvals where supported (5/7/8), history (9), goal obligations/checks (12). Benchmark tool simulators remain grader targets, not provider runtimes. |
-| 2 — Long-Horizon Terminal-Bench | Durable goals, deadline/check-in/no-progress guards (2/12), watchers (3), hour-scale sudo/fresh owner extension where allowed (4), leased recovery (10), history/migration (9/11). |
+| 2 — Long-Horizon Terminal-Bench | Durable goals, deadlines/check-ins (2/12), watchers (3), hour-scale sudo/fresh owner extension where allowed (4), leased recovery (10), history/migration (9/11). |
 | Open Chariox multi-agent suite: parallel bundles | Public independent task bundles/graders; fan-out/results, direct-child rights and cancellation (1/2), watchers (3), leased parity (10), overall completion (12). |
 | Open suite: mixed difficulty | Public tasks with known grading; planner/worker assignment, mixed/cheap teams, verifier and best-of-n; room authority/results (1/2), history (9), leases (10), completion checks (12). |
 | Open suite: long-horizon build+deploy with restarts | Public tasks/graders and real services; LIVE flagship FB flow, goals/wakes/watchers (2/3/12), sudo (4), capability/Vault/hand-off/payment (5–8), history (9), leased restart and migration (10/11). Controlled FA fixtures remain separate regression/eval targets, never feature acceptance. |
@@ -1445,7 +1433,6 @@ the approved 60-minute default direction:
 | --- | --- |
 | Sudo default | 60 minutes |
 | Sudo maximum per fresh verification | 8 hours |
-| No-progress guard | N = 3 consecutive wakes/continuations |
 | Kernel sweep | 30 seconds |
 | Goal check-in | 10 minutes, configurable 1–60 minutes |
 | Long-wait notice | 15 minutes without progress |

@@ -304,8 +304,7 @@ fn fire_one(
         cancel_settle(tx, &mut wake, now)?;
         return Ok(None);
     }
-    // Timer-only turns exhaust the existing no-progress budget. Wait for
-    // explicit owner disposition before emitting another paid check-in.
+    // An explicitly blocked task waits for owner disposition.
     if t.state == ExecutionState::Blocked {
         return Ok(None);
     }

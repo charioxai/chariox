@@ -38,7 +38,10 @@ pub struct AgentTaskExecution {
     pub obligations: Vec<AgentObligation>,
     pub wait: Option<AgentWait>,
     pub last_progress_at_ms: u64,
+    // Kept on the wire for clients of this protocol; the kernel no longer counts wakes.
+    #[serde(default)]
     pub progress_sequence: u64,
+    #[serde(default)]
     pub no_progress_wakes: u32,
     pub correction_used: bool,
     pub pending_prompt_id: Option<String>,

@@ -420,7 +420,7 @@ mod tests {
             "task_id": id, "room_id": "room", "agent_id": agent, "prompt_id": "p",
             "provider_run_id": null, "revision": 1, "state": state, "reason": "",
             "obligations": [], "wait": null, "last_progress_at_ms": 0,
-            "progress_sequence": 0, "no_progress_wakes": 0, "correction_used": false,
+            "correction_used": false,
             "pending_prompt_id": null
         }))
         .unwrap()
