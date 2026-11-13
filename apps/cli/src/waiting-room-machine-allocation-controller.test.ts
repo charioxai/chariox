@@ -4,7 +4,7 @@ import type { MachineAllocation, MachineAllocationCapability } from "./machine-a
 import { WaitingRoomMachineAllocationController } from "./waiting-room-machine-allocation-controller.js"
 
 const capability: MachineAllocationCapability = {
-  revision: "offer-7", actions: ["acquire"], offer: {
+  revision: "offer-7", actions: ["acquire"], job_offers: [], job_default_class_id: null, offer: {
     machine_type: "General purpose", vcpu: 4, ram_gb: 8, disk_gb: 50, location: "Site A",
     terms: { amount: "1.00", currency: "EUR", period: "hour" },
   },

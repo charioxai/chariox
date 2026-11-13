@@ -453,7 +453,7 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
 }
 
 test("the new machine details show the service offer as read-only rows", () => {
-  const remote = { machineAllocationCapability: { revision: "offer-1", actions: ["acquire"], offer: { machine_type: "Service type", vcpu: 6, ram_gb: 12, disk_gb: 80, location: "Site A", terms: { amount: "2.50", currency: "EUR", period: "hour" as const } } } }
+  const remote = { machineAllocationCapability: { revision: "offer-1", actions: ["acquire"], job_offers: [], job_default_class_id: null, offer: { machine_type: "Service type", vcpu: 6, ram_gb: 12, disk_gb: 80, location: "Site A", terms: { amount: "2.50", currency: "EUR", period: "hour" as const } } } }
   const rows = waitingRoomMachineOfferRows(waitingRoomState({}), remote)
   assert.deepEqual(rows.map(row => [row.title, row.value]), [["Machine type", "Service type"], ["CPU", "6"], ["Memory", "12 GB"], ["Disk", "80 GB"], ["Location", "Site A"], ["Terms", "2.50 EUR/hour"]])
   assert.ok(rows.every(row => !row.selectable && !row.focused))

@@ -55,7 +55,7 @@ test("waiting room inventory refresh applies snapshots and filters hidden inacti
 
 test("waiting room inventory refresh applies managed catalog and exact launch target", async () => {
   const machineAllocationCapability: MachineAllocationCapability = {
-    revision: "offer-1", actions: ["acquire"], offer: null,
+    revision: "offer-1", actions: ["acquire"], job_offers: [], job_default_class_id: null, offer: null,
   }
   const harness = createHarness({
     snapshots: [inventory("v1", {
@@ -75,7 +75,7 @@ test("waiting room inventory refresh applies managed catalog and exact launch ta
 
 test("waiting room inventory refresh preserves the last managed catalog on transient omission", async () => {
   const machineAllocationCapability: MachineAllocationCapability = {
-    revision: "offer-1", actions: ["acquire"], offer: null,
+    revision: "offer-1", actions: ["acquire"], job_offers: [], job_default_class_id: null, offer: null,
   }
   const harness = createHarness({
     snapshots: [
@@ -93,7 +93,7 @@ test("waiting room inventory refresh preserves the last managed catalog on trans
 
 test("waiting room inventory refresh clears retained managed catalog across kernel scope", async () => {
   const machineAllocationCapability: MachineAllocationCapability = {
-    revision: "offer-1", actions: ["acquire"], offer: null,
+    revision: "offer-1", actions: ["acquire"], job_offers: [], job_default_class_id: null, offer: null,
   }
   const harness = createHarness({
     snapshots: [
@@ -111,7 +111,7 @@ test("waiting room inventory refresh clears retained managed catalog across kern
 test("waiting room inventory refresh clears retained managed catalog across Cloud account scope", async () => {
   let scope = "kernel-a:account-a"
   const machineAllocationCapability: MachineAllocationCapability = {
-    revision: "offer-1", actions: ["acquire"], offer: null,
+    revision: "offer-1", actions: ["acquire"], job_offers: [], job_default_class_id: null, offer: null,
   }
   const harness = createHarness({
     snapshots: [

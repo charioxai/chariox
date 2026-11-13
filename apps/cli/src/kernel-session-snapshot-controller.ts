@@ -44,10 +44,12 @@ export function createKernelSessionSnapshotController(
     // from the retired subscription can arrive after an explicit selection.
     if (previousSession.id !== nextSession.id) return
     const projectedSession = deps.projectSession(nextSession, nextProviderRun ?? deps.getProviderRun())
-    const mergedSession = {
+    const jobs = projectedSession.jobs ?? previousSession.jobs
+    const processes = projectedSession.processes ?? previousSession.processes
+    const mergedSession: RuntimeSession = {
       ...projectedSession,
-      jobs: projectedSession.jobs ?? previousSession.jobs,
-      processes: projectedSession.processes ?? previousSession.processes,
+      ...(jobs ? { jobs } : {}),
+      ...(processes ? { processes } : {}),
       workflow_runs: mergeObservedTerminalWorkflowRuns(
         previousSession.workflow_runs ?? [],
         projectedSession.workflow_runs ?? [],

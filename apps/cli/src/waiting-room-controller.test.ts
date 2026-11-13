@@ -1220,7 +1220,7 @@ function catalog(): ProviderCatalog {
 }
 
 test("the new machine selection acquires the service offer before account or workspace admission", () => {
-  const capability = { revision: "offer-1", actions: ["acquire"], offer: { machine_type: "Standard", vcpu: 4, ram_gb: 8, disk_gb: 50, location: "Site A", terms: { amount: "1.00", currency: "EUR", period: "hour" as const } } }
+  const capability = { revision: "offer-1", actions: ["acquire"], job_offers: [], job_default_class_id: null, offer: { machine_type: "Standard", vcpu: 4, ram_gb: 8, disk_gb: 50, location: "Site A", terms: { amount: "1.00", currency: "EUR", period: "hour" as const } } }
   const options = { state: waitingRoomState({ selectedMachineRef: NEW_MACHINE_ALLOCATION_REF }), catalog: fallbackProviderCatalog(), currentProvider: "codex" as const, currentModel: "gpt-5.4", remote: { machineAllocationCapability: capability, machineAllocationOffered: true } }
   assert.deepEqual(deriveWaitingRoomCreateSessionDecision(options), { action: "acquire-machine", capability })
   assert.deepEqual(deriveWaitingRoomActivationDecision({ ...options, sessions: [] }), { action: "acquire-machine", capability })

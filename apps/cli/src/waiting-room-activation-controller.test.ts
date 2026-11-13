@@ -903,7 +903,7 @@ for (const code of ["local_transport_error", "outcome_unknown"]) {
 }
 
 test("machine acquisition activates the service offer without creating or attaching a session", async () => {
-  const capability = { revision: "offer-1", actions: ["acquire"], offer: { machine_type: "Standard", vcpu: 4, ram_gb: 8, disk_gb: 50, location: "Site A", terms: { amount: "1.00", currency: "EUR", period: "hour" as const } } }
+  const capability = { revision: "offer-1", actions: ["acquire"], job_offers: [], job_default_class_id: null, offer: { machine_type: "Standard", vcpu: 4, ram_gb: 8, disk_gb: 50, location: "Site A", terms: { amount: "1.00", currency: "EUR", period: "hour" as const } } }
   const acquired: unknown[] = []
   const harness = createHarness({ controlDecision: { action: "none" }, activationDecision: { action: "acquire-machine", capability }, createSessionDecision: { action: "acquire-machine", capability }, acquireMachine: async offer => { acquired.push(offer) } })
   await harness.controller.activate()
