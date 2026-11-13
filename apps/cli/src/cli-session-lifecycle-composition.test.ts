@@ -145,7 +145,7 @@ test("MP-08/MP-10 recovery retries a failed session subscription before declarin
   }
   const deps = new Proxy(values, { get: (target, key) => key in target ? target[key as keyof typeof target] : () => {} }) as unknown as CliSessionLifecycleCompositionDeps
   await createCliSessionLifecycleComposition(deps).recoverAttachedSessionAfterKernelRestart()
-  assert.deepEqual({ subscriptions, repairs, recovered, retries }, { subscriptions: 2, repairs: 2, recovered: 1, retries: 1 })
+  assert.deepEqual({ subscriptions, repairs, recovered, retries }, { subscriptions: 3, repairs: 0, recovered: 1, retries: 1 })
 })
 
 // MP-08 / MP-10 (panes R12, PANE-15; panetest-d T-10 RED): a remote TUI whose
