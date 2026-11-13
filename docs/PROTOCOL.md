@@ -5988,9 +5988,10 @@ failed turn retains its original kind and controlled public reason while the
 existing recovery notice explains what happened.
 
 `interrupted_by_restart` is a turn the kernel restarted in the middle of and could
-not resume (for example the Vault stayed locked, or no provider session identified
-the turn). The turn settles as failed, not cancelled; the agent is in the `error`
-state; one `SubmitPrompt` on the same agent continues the same provider
+not resume (its reason names only what the kernel observed, such as a locked Vault
+that refused the launch, or that no provider session identified the turn). A turn the
+task already went on from under a continuation prompt ends without an outcome. The
+turn settles as failed, not cancelled; the agent is in the `error` state; one `SubmitPrompt` on the same agent continues the same provider
 conversation and its turn ends `completed` with its own turn id. A turn that
 restart recovery does resume ends with the outcome of the resumed turn.
 A provider run whose process is gone and whose exit the kernel never saw is

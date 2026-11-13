@@ -62,8 +62,11 @@ pub(super) enum CancelledLocalPromptRestartOutcome {
 type DurableRestartRecoveryTarget = (String, String, String);
 // Wall clock, not attempts: one attempt can take seconds (a launch that waits on a locked Vault).
 const RESTART_RECOVERY_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
-const UNRECOVERABLE_PROMPT_REASON: &str = "The prompt could not be restored after the restart (the provider could not start, for example because the Chariox Vault stayed locked)";
-const UNIDENTIFIED_PROMPT_REASON: &str = "The prompt could not be resumed after the restart (no provider session or transcript identified the interrupted turn)";
+const UNRECOVERABLE_PROMPT_REASON: &str = "The prompt could not be restored after the restart";
+// Named only when the kernel saw the locked Vault refuse the launch.
+const UNRECOVERABLE_PROMPT_VAULT_REASON: &str =
+    "The prompt could not be restored after the restart because the Chariox Vault stayed locked";
+const UNIDENTIFIED_PROMPT_REASON: &str = "The prompt could not be resumed after the restart: no provider session or transcript identified the interrupted turn";
 const UNANSWERABLE_PROMPT_REASON: &str = "The kernel restarted while this turn waited for an answer to a question, and that answer can no longer reach it. Send the request again to continue the conversation";
 const RESTART_RECOVERY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -284,19 +287,23 @@ impl KernelRuntimeState {
         }
     }
 
-    /// MP-08/MP-09/MP-10 G13: the turn yielded (or its task already settled) before the kernel
-    /// stopped, so no provider turn is owed for this prompt. The ledger refuses to redispatch it,
-    /// and retrying that for the whole recovery window held the task's fired wakes for minutes.
+    /// MP-08/MP-09/MP-10 G13: no provider turn is owed for this prompt, because its turn yielded
+    /// or its task settled before the kernel stopped, or because the task went on under a
+    /// continuation prompt (the ledger names that one now). The ledger refuses to redispatch the
+    /// prompt, and retrying that for the whole recovery window held the task's fired wakes for
+    /// minutes and then ended it with a failure card for a turn that had gone on.
     fn local_prompt_task_handed_off(&self, room: &str, agent: &str, prompt_id: &str) -> bool {
         self.owned
             .durable_state_store
             .agent_tasks(Some(room), Some(agent))
             .is_ok_and(|tasks| {
                 tasks.iter().any(|task| {
-                    task.prompt_id == prompt_id
+                    let settled = task.prompt_id == prompt_id
                         && task.pending_prompt_id.is_none()
                         && task.state
-                            != crate::durable_state::agent_lifecycle::ExecutionState::Working
+                            != crate::durable_state::agent_lifecycle::ExecutionState::Working;
+                    let continued = task.task_id == prompt_id && task.prompt_id != prompt_id;
+                    settled || continued
                 })
             })
     }
@@ -385,9 +392,13 @@ impl KernelRuntimeState {
         &self,
         summary: &mut DurableRestartRecoverySummary,
     ) {
+        let awaiting_vault = summary.agents_awaiting_vault.clone();
         let unrecoverable = std::mem::take(&mut summary.failed_local_prompts)
             .into_iter()
-            .map(|target| (target, UNRECOVERABLE_PROMPT_REASON));
+            .map(|target| {
+                let reason = unrecoverable_reason(&awaiting_vault, &target);
+                (target, reason)
+            });
         let unidentified = std::mem::take(&mut summary.unidentified_local_prompts)
             .into_iter()
             .map(|target| (target, UNIDENTIFIED_PROMPT_REASON));
@@ -1618,6 +1629,18 @@ fn provider_restart_continuation_prompt(operation_id: &str) -> String {
     )
 }
 
+/// The reason names the Vault only for an agent whose launch the kernel saw it refuse.
+fn unrecoverable_reason(
+    awaiting_vault: &BTreeSet<(String, String)>,
+    (session_id, agent_id, _): &DurableRestartRecoveryTarget,
+) -> &'static str {
+    if awaiting_vault.contains(&(session_id.clone(), agent_id.clone())) {
+        UNRECOVERABLE_PROMPT_VAULT_REASON
+    } else {
+        UNRECOVERABLE_PROMPT_REASON
+    }
+}
+
 fn log_restart_recovery_failure(
     session_id: &str,
     agent_id: &str,
@@ -1675,6 +1698,24 @@ mod tests {
     use crate::session::{CreateSessionRequest, PromptQueueItem, PromptStatus};
     use std::sync::Arc;
     use tokio::sync::Mutex;
+
+    #[test]
+    fn only_a_launch_the_locked_vault_refused_names_the_vault() {
+        let target = (
+            "session".to_string(),
+            "agent".to_string(),
+            "prompt".to_string(),
+        );
+        assert!(!unrecoverable_reason(&BTreeSet::new(), &target).contains("Vault"));
+        let awaiting = BTreeSet::from([("session".to_string(), "agent".to_string())]);
+        assert!(unrecoverable_reason(&awaiting, &target).contains("Vault stayed locked"));
+        let other = (
+            "session".to_string(),
+            "other".to_string(),
+            "prompt".to_string(),
+        );
+        assert!(!unrecoverable_reason(&awaiting, &other).contains("Vault"));
+    }
 
     fn runtime_with_active_prompt(
         delivery_phase: crate::session::DurablePromptDeliveryPhase,
@@ -2542,6 +2583,11 @@ mod tests {
             "the task must carry the definitive outcome: {task:?}"
         );
         assert!(
+            !task.reason.contains("Vault"),
+            "the kernel did not see a locked Vault, so the receipt must not name one: {}",
+            task.reason
+        );
+        assert!(
             task.reason.contains("could not be restored"),
             "{}",
             task.reason
@@ -2704,7 +2750,14 @@ mod tests {
                     })
                     .expect("the task binds to its workflow node");
             }
-            yield_to_a_fired_timer(store, &session_id, &agent_id, &task.task_id, &prompt_id, now);
+            yield_to_a_fired_timer(
+                store,
+                &session_id,
+                &agent_id,
+                &task.task_id,
+                &prompt_id,
+                now,
+            );
             let targets = runtime.durable_restart_recovery_targets();
 
             let window = std::time::Duration::from_secs(2);
