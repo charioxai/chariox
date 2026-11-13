@@ -5845,7 +5845,7 @@ a home restart ends the wake as lost, and the terminal itself is not affected.
 - Peer 177 only re-binds the embedded local response union to local 569; no
   peer request is added.
 
-#### Pushed output stream — provisional local 1043
+#### Pushed output stream — local 1006 (Landing 10)
 
 A viewer that shows a terminal live subscribes once instead of sending one `read_output` per page.
 The relay subscription has `subscription_scope: "room_terminal"`, `session_id` the Room,
