@@ -267,7 +267,8 @@ fn running_writer_consumes_disk_prediction_before_free_space_is_sampled() {
     )));
     let dir = std::env::temp_dir().join(format!("binary-writes-{:016x}", rand::random::<u64>()));
     std::fs::create_dir_all(&dir).unwrap();
-    let argv = vec!["/usr/bin/python3".into(), "-c".into(), "import sys,time; f=open('output','wb'); print('ready',flush=True); [(f.write(b'x'*(10*1048576)),f.flush(),time.sleep(0.1)) for _ in range(20)]; sys.stdin.readline()".into()];
+    // The fsync makes the writes reach storage: macOS counts only those, Linux counts them as the pages are dirtied.
+    let argv = vec!["/usr/bin/python3".into(), "-c".into(), "import os,sys,time; f=open('output','wb'); print('ready',flush=True); [(f.write(b'x'*(10*1048576)),f.flush(),os.fsync(f.fileno()),time.sleep(0.1)) for _ in range(20)]; sys.stdin.readline()".into()];
     let second = vec!["second-writer".into()];
     {
         let mut ledger = admission.0.ledger.lock().unwrap();

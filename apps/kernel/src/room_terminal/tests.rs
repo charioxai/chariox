@@ -579,9 +579,20 @@ async fn a_hot_reload_hands_over_who_launched_the_terminals_commands() {
 }
 
 /// The PTY a master descriptor refers to, or `None` when the descriptor is not an open PTY master.
+#[cfg(target_os = "linux")]
 fn pty_number(fd: i32) -> Option<libc::c_uint> {
     let mut number: libc::c_uint = 0;
     (unsafe { libc::ioctl(fd, libc::TIOCGPTN, &mut number) } == 0).then_some(number)
+}
+
+/// The PTY a master descriptor refers to (its replica's device name; macOS has no `TIOCGPTN`),
+/// or `None` when the descriptor is not an open PTY master.
+#[cfg(target_os = "macos")]
+fn pty_number(fd: i32) -> Option<std::ffi::CString> {
+    let mut name = [0 as libc::c_char; 128];
+    // SAFETY: TIOCPTYGNAME writes at most 128 bytes, NUL-terminated, into `name`.
+    (unsafe { libc::ioctl(fd, libc::TIOCPTYGNAME as libc::c_ulong, name.as_mut_ptr()) } == 0)
+        .then(|| unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_owned())
 }
 
 #[tokio::test]
@@ -1929,7 +1940,7 @@ async fn typed_commands_report_finish_and_exit_code_even_when_instant() {
     for (line, expected) in [
         ("echo builtin-done\r", 0),
         ("false\r", 1),
-        ("/bin/true\r", 0),
+        ("/usr/bin/env true\r", 0),
         ("(exit 7)\r", 7),
         ("(:)&\r", 0),
     ] {
@@ -2995,7 +3006,7 @@ async fn exited_terminal_does_not_become_work_when_its_state_is_locked() {
             rows: 24,
             title: None,
             opened_by: TerminalActor::User,
-            command: Some(vec!["/bin/true".into()]),
+            command: Some(vec!["/usr/bin/env".into(), "true".into()]),
         })
         .unwrap();
     let owner = service.terminal_for_test(&terminal.terminal_id);
