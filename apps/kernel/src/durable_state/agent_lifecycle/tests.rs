@@ -4131,7 +4131,7 @@ fn terminal_outcome_and_cancellation_projection_commit_together() {
         .unwrap();
     f.apply(outcome());
     assert!(f.store.agent_tasks_to_sweep().unwrap().is_empty());
-    db.execute_batch("DROP INDEX agent_tasks_cancelled_pending; ALTER TABLE agent_tasks DROP COLUMN terminal_outcome_recorded;").unwrap();
+    db.execute_batch("DROP INDEX agent_tasks_cancelled_pending; DROP INDEX agent_tasks_done_pending; ALTER TABLE agent_tasks DROP COLUMN terminal_outcome_recorded;").unwrap();
     initialize(&mut db).unwrap();
     assert!(
         f.store.agent_tasks_to_sweep().unwrap().is_empty(),

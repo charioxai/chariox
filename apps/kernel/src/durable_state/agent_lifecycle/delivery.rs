@@ -421,7 +421,9 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
                         });
                     // A Blocked task awaits its owner: another task's outcome that merely
                     // names it as a subscriber must not move its revision.
+                    let finished_wait = super::settled_waits::finish(tx, &mut t)?;
                     if changed
+                        || finished_wait
                         || (!already_handled && belongs && t.state != ExecutionState::Blocked)
                     {
                         let timer_outcome = e.payload["public_answer"]["kind"].as_str() == Some("timer")
