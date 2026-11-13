@@ -876,10 +876,11 @@ impl KernelRuntimeState {
         }
         let resources_unsettled = self.owned.agent_task_resources_unsettled(&task)?;
         if correction {
-            let text = match self.owned.goal_continuation_context(&task)? {
-                Some(text) => text,
-                None => super::agent_task_projection::task_correction_text(&task),
-            };
+            let mut text = self.owned.task_correction_text(&task)?;
+            if let Some(goal) = self.owned.goal_continuation_context(&task)? {
+                text.push('\n');
+                text.push_str(&goal);
+            }
             if let Err(e) = Box::pin(self.dispatch_task_continuation(
                 &task,
                 source.source_attachment_id(),

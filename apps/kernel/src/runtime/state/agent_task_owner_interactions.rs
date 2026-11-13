@@ -141,7 +141,7 @@ impl KernelRuntimeState {
         } else {
             // The card shows in the room agent's pane, so it says which agent needs the person.
             let agent = self.owned.agent_store.get_agent(&task.agent_id).ok();
-            super::agent_task_projection::blocked_card_message(
+            self.owned.blocked_card_message(
                 agent
                     .as_ref()
                     .map(|agent| agent.alias().unwrap_or(agent.agent_ref())),

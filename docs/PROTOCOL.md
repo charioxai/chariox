@@ -1047,11 +1047,17 @@ retained for a later wake and uncertainty pinned. Explicitly stopped receivers
 keep pending items. `reply_requested=true` creates one correlated reply
 obligation; ordinary messages must not produce courtesy feedback loops.
 
-Blocked tasks create one kernel-owned **Agent needs your action** interaction,
-projected to every session client. In the TUI, open it with F8, Ctrl+G or
-`/approvals`, explicitly select Resume or Cancel, then confirm. Resume
-revalidates the blocked revision and retained receipts; progress or reconnect
-alone cannot resume. Cancellation retains obligations until actual owned
+Blocked tasks create one kernel-owned **Agent needs your action** interaction.
+A helper's decision goes first to its nearest eligible parent as an urgent
+`child_decision` inbox event. The holder answers with `agent answer <interaction>
+resume|cancel`, or hands the same decision up with `agent pass <interaction>`.
+A root task, or a decision no eligible ancestor can hold, keeps the person's
+card. Browser-access consent stays with the person. The correction and Resume
+instruction name every unresolved obligation, its source label when available,
+and the calls that settle it, using the actual registrations and receipt sequences.
+For a person-held card in the TUI, open it with F8, Ctrl+G or `/approvals`, select
+Resume or Cancel, then confirm. Resume revalidates the blocked revision and
+retained receipts; progress or reconnect alone cannot resume. Cancellation retains obligations until actual owned
 resource settlement. MP-08/MP-10/MP-11: cancellation applies to the addressed
 task; an older independent wait still receives its source completion or deadline
 wake. Historical task ordering is not an agent stop disposition.
