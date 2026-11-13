@@ -79,6 +79,15 @@ pub(crate) fn encode_reply(response: &mut Value) -> Result<Vec<u8>, serde_json::
     pack(response, &payload)
 }
 
+/// A Room terminal stream event: its header, with `bytes` naming the raw output after it.
+pub(crate) fn encode_room_output(
+    mut header: Value,
+    data: &[u8],
+) -> Result<Vec<u8>, serde_json::Error> {
+    header["bytes"] = serde_json::json!([0, data.len()]);
+    pack(&header, data)
+}
+
 #[derive(Clone, Copy)]
 enum RoomByteEncoding {
     Base64,
