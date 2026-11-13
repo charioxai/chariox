@@ -6,7 +6,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use crate::error::DaemonError;
 
 use super::context_plan::ManagedKernelContextPlan;
-use super::freshness::{ManagedKernelFreshnessEvidence, ManagedKernelRuntimeIdentityReport};
+use super::runtime_identity::ManagedKernelRuntimeIdentityReport;
 
 const MAX_RESPONSE_BYTES: u64 = 96 * 1024;
 
@@ -58,7 +58,7 @@ pub(super) struct ConfirmRequest {
     pub(super) machine_id: String,
     pub(super) machine_credential: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) freshness_evidence: Option<ManagedKernelFreshnessEvidence>,
+    pub(super) confirmation_evidence: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -117,7 +117,7 @@ impl BootstrapCloudClient for HttpBootstrapCloudClient {
         api_url: &str,
         request: &ExchangeRequest,
     ) -> Result<ExchangeResponse, DaemonError> {
-        self.post_managed(api_url, "/v1/managed-kernels/bootstrap/exchange", request)
+        self.post_managed(api_url, "/v1/kernels/bootstrap/exchange", request)
     }
 
     fn confirm(
@@ -125,7 +125,7 @@ impl BootstrapCloudClient for HttpBootstrapCloudClient {
         api_url: &str,
         request: &ConfirmRequest,
     ) -> Result<ConfirmResponse, DaemonError> {
-        self.post_managed(api_url, "/v1/managed-kernels/bootstrap/confirm", request)
+        self.post_managed(api_url, "/v1/kernels/bootstrap/confirm", request)
     }
 
     fn report_runtime_identity(
@@ -133,11 +133,7 @@ impl BootstrapCloudClient for HttpBootstrapCloudClient {
         api_url: &str,
         request: &ManagedKernelRuntimeIdentityReport,
     ) -> Result<RuntimeIdentityReportResponse, DaemonError> {
-        self.post_managed(
-            api_url,
-            "/v1/managed-kernels/reimage/runtime-identity",
-            request,
-        )
+        self.post_managed(api_url, "/v1/kernels/runtime-identity", request)
     }
 }
 
@@ -211,10 +207,7 @@ fn cloud_error(message: impl Into<String>) -> DaemonError {
 mod tests {
     use serde_json::json;
 
-    use super::{
-        ConfirmRequest, ManagedKernelFreshnessEvidence, ManagedKernelRuntimeIdentityReport,
-    };
-    use crate::managed_bootstrap::freshness::ManagedKernelResidueChecks;
+    use super::{ConfirmRequest, ManagedKernelRuntimeIdentityReport};
 
     // The file is Cloud's own exchange answer; Cloud checks its real answer against the same file,
     // and the answer type refuses fields it does not know.
@@ -229,49 +222,18 @@ mod tests {
     }
 
     #[test]
-    fn confirm_and_pre_reimage_report_wires_match_cloud_contract() {
-        let evidence = ManagedKernelFreshnessEvidence {
-            schema_version: None,
-            linux_boot_id: "01234567-89ab-cdef-0123-456789abcdef".to_string(),
-            os_machine_id: "a".repeat(32),
-            runtime_release_digest: format!("sha256:{}", "b".repeat(64)),
-            runtime_source_commit: "c".repeat(40),
-            runtime_source_tree: "d".repeat(40),
-            residue_checks: ManagedKernelResidueChecks {
-                old_services_absent: true,
-                old_processes_absent: true,
-                old_state_absent: true,
-            },
-            data_volume_serial: None,
-            data_volume_size_gb: None,
-        };
+    fn confirmation_and_runtime_identity_wires_match_authority_contract() {
+        let evidence = json!({"authority": "sample", "proof": {"device": 42}});
         let confirm = ConfirmRequest {
             token: format!("mkboot_{}", "t".repeat(40)),
             environment_id: "environment-1".to_string(),
             machine_id: "machine-1".to_string(),
             machine_credential: format!("mcred_{}", "x".repeat(40)),
-            freshness_evidence: Some(evidence),
+            confirmation_evidence: Some(evidence.clone()),
         };
         assert_eq!(
-            serde_json::to_value(confirm).expect("confirm serializes"),
-            json!({
-                "token": format!("mkboot_{}", "t".repeat(40)),
-                "environmentId": "environment-1",
-                "machineId": "machine-1",
-                "machineCredential": format!("mcred_{}", "x".repeat(40)),
-                "freshnessEvidence": {
-                    "linuxBootId": "01234567-89ab-cdef-0123-456789abcdef",
-                    "osMachineId": "a".repeat(32),
-                    "runtimeReleaseDigest": format!("sha256:{}", "b".repeat(64)),
-                    "runtimeSourceCommit": "c".repeat(40),
-                    "runtimeSourceTree": "d".repeat(40),
-                    "residueChecks": {
-                        "oldServicesAbsent": true,
-                        "oldProcessesAbsent": true,
-                        "oldStateAbsent": true,
-                    },
-                },
-            })
+            serde_json::to_value(confirm).unwrap()["confirmationEvidence"],
+            evidence
         );
 
         let report = ManagedKernelRuntimeIdentityReport {

@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 const root = new URL('../', import.meta.url)
-const policy = Object.fromEntries((await readFile(new URL('deploy/managed-kernel/provider-versions.env', root), 'utf8'))
+const policy = Object.fromEntries((await readFile(new URL('deploy/runtime-release/provider-versions.env', root), 'utf8'))
   .trim().split('\n').map(line => line.split('=')))
 const providers = {
   '@openai/codex': 'CHARIOX_CODEX_VERSION',

@@ -4,7 +4,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { chmod, copyFile, mkdir, readFile, readlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { installBootRelease } from '../../../../deploy/managed-kernel/boot-release.mjs';
+import { installBootRelease } from '../../../../deploy/runtime-release/boot-release.mjs';
 
 const [root, worker] = process.argv.slice(2);
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -21,7 +21,8 @@ await put(join(source, 'README'), 'release source\n', 0o644);
 for (const args of [['init', '-q'], ['add', '.'], ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'source']])
   execFileSync('git', ['-C', source, ...args]);
 const output = join(root, 'release');
-const packaged = JSON.parse(execFileSync('node', [join(sourceRoot, 'scripts/package-boot-release.mjs'),
+const packaged = JSON.parse(execFileSync('node', [join(sourceRoot, 'scripts/package-runtime-release.mjs'),
+  '--enrollment-observer', join(inputs, 'chariox-managed-bootstrap'), '--bootstrap-unit', join(inputs, 'chariox-managed-bootstrap'),
   '--kernel', join(inputs, 'chariox-kernel'), '--bootstrap', join(inputs, 'chariox-managed-bootstrap'),
   '--worker', join(inputs, 'chariox-app-wasm-worker'), '--relay', join(inputs, 'chariox-relay'),
   '--signing-key', join(inputs, 'signing-key.pem'), '--source', source, '--output', output], { encoding: 'utf8' }));

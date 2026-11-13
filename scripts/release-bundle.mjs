@@ -207,11 +207,6 @@ export async function assemble(options) {
     for (const name of ['install-browser-dependencies.sh', 'install-root.sh', 'install-user.sh', 'start-kernel.sh', 'chariox-kernel.service', 'chariox-app-bwrap.apparmor'])
       await regularFile(join(local, name), `deploy/local-linux/${name}`);
     for (const path of await files(local)) installer.push([join(local, path), `deploy/local-linux/${path}`]);
-    // install-root.sh installs these units from ../managed-kernel.
-    const units = join(sourceRoot, 'deploy/managed-kernel');
-    for (const name of ['chariox-docker-admission-locks.service']) {
-      if (await lstat(join(units, name)).then(() => true, () => false)) installer.push([join(units, name), `deploy/managed-kernel/${name}`]);
-    }
     installer.push([join(sourceRoot, 'deploy/release-bundle/install.sh'), 'install.sh']);
   }
   installer.push([join(sourceRoot, 'LICENSE'), 'LICENSE']);

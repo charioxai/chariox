@@ -163,7 +163,6 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: allocated 371 pairs the embedded local response union with local 920.
 /// 374 pairs the embedded local response union with local 923 (`CredentialVaultUnlocked`).
 /// Landing union 374 pairs the embedded local union with local 923 (it carries peers 364, 370 and 371).
-/// Allocated 375 pairs the embedded local response union with local 924 (opaque reimage `providerId`).
 /// MP-08/MP-09/MP-10/MP-11: 376 pairs local 925 (the relay close's `kernel_reload`).
 /// 377 pairs the embedded local union with local 926 (direct data channel liveness).
 /// 378 pairs the embedded local union with local 927 (`SessionProcess.state`, `StartSessionProcessNow`).
@@ -212,7 +211,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// `StartFileTransfer`, `GetFileTransfer` and `CancelFileTransfer` between kernels of one owner, and
 /// renames the answers `LeasedAgentFileRead` and `LeasedAgentFileRefused` to `FileSliceRead` and
 /// `FileRefused`, which both file services use.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 444;
+/// 465: carries the generic runtime identity observation local request and response.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 465;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

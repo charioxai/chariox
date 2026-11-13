@@ -836,7 +836,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::SealCredentialVaultKey(_)
         | LocalDaemonRequest::ManageCredentialVault(_)
         | LocalDaemonRequest::PreflightProviderAccountPortability(_)
-        | LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(_)
+        | LocalDaemonRequest::ObserveKernelRuntimeIdentity(_)
         | LocalDaemonRequest::StartManagedContextTransfer(_)
         | LocalDaemonRequest::GetManagedContextTransferStatus(_)
         | LocalDaemonRequest::GetManagedContextLaunchTarget(_)

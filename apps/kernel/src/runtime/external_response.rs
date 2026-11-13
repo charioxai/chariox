@@ -341,7 +341,7 @@ response_policies! {
         CredentialVaultLocked,
         CredentialVaultUnlocked,
         CredentialVaultManaged,
-        ManagedEnvironmentPreReimageObserved,
+        KernelRuntimeIdentityObserved,
         ManagedContextTransferStarted,
         ManagedContextTransferStatus,
         ManagedContextLaunchTarget,

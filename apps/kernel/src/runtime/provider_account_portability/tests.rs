@@ -1,7 +1,7 @@
 use super::*;
 use crate::account_profile::ProviderAccountContextTransfer;
 use crate::config::PersistedCloudRelayProfile;
-use crate::local::{LocalDaemonRequest, ManagedEnvironmentProviderAccountSelection};
+use crate::local::{LocalDaemonRequest, ProviderAccountTransferProfile};
 use crate::runtime::command::{KernelCallerKind, KernelCommandSource};
 use std::{
     fs,
@@ -46,8 +46,8 @@ impl Fixture {
             ..Default::default()
         });
         let request = PreflightProviderAccountPortabilityRequest {
-            provider_accounts: ManagedEnvironmentProviderAccounts::Selected {
-                accounts: vec![ManagedEnvironmentProviderAccountSelection {
+            provider_accounts: ProviderAccountTransferSelection::Selected {
+                accounts: vec![ProviderAccountTransferProfile {
                     provider: "codex".into(),
                     account_profile: profile.profile_id,
                 }],
@@ -139,12 +139,12 @@ fn preflight_rechecks_portability_and_keeps_export_errors_private() {
         &fixture.request
     )
     .is_ok());
-    let ManagedEnvironmentProviderAccounts::Selected { accounts } =
+    let ProviderAccountTransferSelection::Selected { accounts } =
         &mut fixture.request.provider_accounts
     else {
         panic!()
     };
-    accounts.push(ManagedEnvironmentProviderAccountSelection {
+    accounts.push(ProviderAccountTransferProfile {
         provider: "claude".into(),
         account_profile: "missing".into(),
     });
@@ -159,7 +159,7 @@ fn preflight_rechecks_portability_and_keeps_export_errors_private() {
     assert!(failure.contains("no transferable credentials"));
     assert!(!failure.contains("synthetic-portability-only"));
     assert!(!failure.contains(&fixture.root.to_string_lossy().to_string()));
-    fixture.request.provider_accounts = ManagedEnvironmentProviderAccounts::None;
+    fixture.request.provider_accounts = ProviderAccountTransferSelection::None;
     assert!(check_preflight(
         &fixture.config,
         &fixture.profiles,
@@ -199,8 +199,8 @@ fn vault_backed_login_is_accepted_by_preflight_and_offered_to_context_transfer()
         false,
     )
     .unwrap();
-    let selection = ManagedEnvironmentProviderAccounts::Selected {
-        accounts: vec![ManagedEnvironmentProviderAccountSelection {
+    let selection = ProviderAccountTransferSelection::Selected {
+        accounts: vec![ProviderAccountTransferProfile {
             provider: "claude".into(),
             account_profile: token_profile.profile_id,
         }],

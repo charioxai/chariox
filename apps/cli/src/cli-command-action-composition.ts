@@ -3,7 +3,7 @@ import { projectEnvironmentCommand } from "./project-environment-command.js"
 import { listProviderAccountCopyOffers, copyProviderAccountFromKernel } from "./provider-api.js"
 import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
 import type { AgentTaskExecution } from "@chariox/kernel-client/kernel-types"
-import { getManagedContextTransferStatus } from "./managed-environment-api.js"
+import { getManagedContextTransferStatus } from "./managed-context-api.js"
 import { getCloudClientControlProfile } from "./cloud-client-control.js"
 import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
 import { getAppInstallationRequest, listWorkflowNotificationsRequest } from "@chariox/kernel-client/ipc-requests"
@@ -259,7 +259,6 @@ export type CliCommandActionCompositionDeps = {
   currentExecutionMode: AnyFn
   currentPermissionLevel: AnyFn
   refreshWaitingRoomData: AnyFn
-  reimageManagedEnvironment?: AnyFn
   remoteMachinesState: AnyFn
   setRemoteMachinesState: AnyFn
   reconcileWaitingRoom: AnyFn
@@ -378,7 +377,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     currentExecutionMode,
     currentPermissionLevel,
     refreshWaitingRoomData,
-    reimageManagedEnvironment,
     remoteMachinesState,
     setRemoteMachinesState,
     reconcileWaitingRoom,
@@ -693,7 +691,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     setWorkspaceLiveSyncMode: (sessionId, mode) => setWorkspaceLiveSyncMode(client, sessionId, mode),
     unsetUserConfigValue: (path) => unsetUserConfigValue(client, path),
     refreshWaitingRoomData,
-    ...(reimageManagedEnvironment ? { reimageManagedEnvironment } : {}),
     getRemoteMachines: remoteMachinesState,
     setRemoteMachines: setRemoteMachinesState,
     reconcileWaitingRoom: () => reconcileWaitingRoom(),

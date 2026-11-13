@@ -6,7 +6,7 @@ RUN echo 'a3413a37a8e09cc21b2c11c9ffb23d92d2fc9d1933c9e7617f5c4fba4f72d37d  /etc
 FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS js-toolchain
 WORKDIR /opt/chariox-toolchain
 COPY docker/publication/toolchain/package.json docker/publication/toolchain/package-lock.json ./
-COPY deploy/managed-kernel/provider-versions.env ./
+COPY deploy/runtime-release/provider-versions.env ./
 COPY docker/publication/toolchain/canonicalize-sbom.mjs ./
 RUN . ./provider-versions.env \
   && npm ci --omit=dev \
@@ -39,7 +39,7 @@ RUN pnpm --filter @chariox/tool-display run build \
 
 FROM rust:1.99.1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS rust-builder
 ARG CARGO_BUILD_JOBS=1
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=1005
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=1027
 WORKDIR /opt/chariox
 COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20250701T000000Z bookworm main' > /etc/apt/sources.list \
@@ -65,8 +65,7 @@ COPY packages/app-wit packages/app-wit
 COPY packages/app-wasm-worker packages/app-wasm-worker
 COPY packages/app-sdk-rust packages/app-sdk-rust
 COPY packages/app-sdk-tools packages/app-sdk-tools
-COPY deploy/managed-kernel/extract-release.py deploy/managed-kernel/extract-release.py
-COPY deploy/managed-kernel/release-update-storage.py deploy/managed-kernel/release-update-storage.py
+COPY deploy/runtime-release/extract-release.py deploy/runtime-release/extract-release.py
 COPY packages/event-protocol packages/event-protocol
 RUN CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS}" cargo build --locked --manifest-path apps/kernel/Cargo.toml --release --bin chariox-kernel \
   && test "$(target/release/chariox-kernel --print-local-daemon-protocol-version)" = "${CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION}"
@@ -79,7 +78,7 @@ LABEL dev.chariox.debian-snapshot="20250701T000000Z"
 ARG CHARIOX_CODEX_VERSION=0.159.3
 ARG CHARIOX_OPENCODE_VERSION=1.19.0
 ARG CHARIOX_CLAUDE_VERSION=2.1.296
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=1005
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=1027
 LABEL dev.chariox.provider.codex.version="${CHARIOX_CODEX_VERSION}"
 LABEL dev.chariox.provider.opencode.version="${CHARIOX_OPENCODE_VERSION}"
 LABEL dev.chariox.provider.claude.version="${CHARIOX_CLAUDE_VERSION}"

@@ -12,7 +12,6 @@ import {
   waitingRoomLaunchPlacement,
   waitingRoomSelectedLaunchKernelRef,
   waitingRoomSelectedLaunchMachineRef,
-  managedEnvironmentMachineRef,
 } from "./waiting-room-runtime-placement.js"
 
 test("waiting room launch machine options include local and remote labels", () => {
@@ -39,27 +38,6 @@ test("waiting room launch kernel options scope kernels by selected machine", () 
   ])
 })
 
-test("waiting room launch placement normalizes stale selections", () => {
-  assert.equal(waitingRoomSelectedLaunchMachineRef({ selectedMachineRef: "missing" }, remote()), "local")
-  assert.equal(waitingRoomSelectedLaunchKernelRef({
-    selectedMachineRef: "machine-1",
-    selectedKernelRef: "missing",
-  }, remote()), "kernel-1a")
-  assert.equal(waitingRoomSelectedLaunchMachineRef({
-    selectedMachineRef: "managed:new",
-  }), "managed:new")
-  assert.equal(waitingRoomSelectedLaunchMachineRef({
-    selectedMachineRef: managedEnvironmentMachineRef("environment-stale"),
-  }), managedEnvironmentMachineRef("environment-stale"))
-  assert.deepEqual(normalizeWaitingRoomLaunchPlacement({
-    selectedMachineRef: "machine-2",
-    selectedKernelRef: "missing",
-  }, remote()), {
-    selectedMachineRef: "machine-2",
-    selectedKernelRef: "kernel-2a",
-  })
-})
-
 test("waiting room launch placement resolves launch refs", () => {
   assert.deepEqual(waitingRoomLaunchPlacement({
     selectedMachineRef: "machine-1",
@@ -68,54 +46,7 @@ test("waiting room launch placement resolves launch refs", () => {
     machineRef: "machine-1",
     kernelRef: "kernel-1b",
     workerKernelRef: null,
-    managedEnvironmentId: null,
-    newManagedEnvironment: false,
-  })
-})
-
-test("waiting room MP-08/MP-11 ready managed machines expose the common discovered kernel list", () => {
-  const managedRemote = {
-    ...remote(),
-    managedEnvironments: [{
-      environmentId: "environment-1",
-      name: "Managed build",
-      managedRepositoryRoot: "/home/chariox",
-      desiredState: "running" as const,
-      observedState: "ready",
-      desiredRevision: 2,
-      observedRevision: 2,
-      runtimeMachineId: "machine-1",
-      runtimeKernelId: "kernel-1b",
-    }],
-  }
-  // MP-08: the managed machine is offered once, as its environment; its relay machine row is not a second choice.
-  assert.deepEqual(waitingRoomLaunchMachineOptions(managedRemote).map((option) => option.id), [
-    "local",
-    "machine-2",
-    "machine-without-kernel",
-    managedEnvironmentMachineRef("environment-1"),
-    "managed:new",
-  ])
-  assert.deepEqual(waitingRoomLaunchKernelOptions(
-    managedRemote,
-    managedEnvironmentMachineRef("environment-1"),
-  ).map((option) => option.id), ["kernel-1a", "kernel-1b"])
-  assert.deepEqual(waitingRoomLaunchPlacement({
-    selectedMachineRef: managedEnvironmentMachineRef("environment-1"),
-    selectedKernelRef: "kernel-1b",
-  }, managedRemote), {
-    machineRef: "machine-1",
-    kernelRef: "kernel-1b",
-    workerKernelRef: null,
-    managedEnvironmentId: "environment-1",
-    newManagedEnvironment: false,
-  })
-  assert.deepEqual(cycleWaitingRoomLaunchKernel({
-    selectedMachineRef: managedEnvironmentMachineRef("environment-1"),
-    selectedKernelRef: "kernel-1b",
-  }, managedRemote, 1), {
-    selectedMachineRef: managedEnvironmentMachineRef("environment-1"),
-    selectedKernelRef: "kernel-1a",
+    newMachineAllocation: false,
   })
 })
 
@@ -190,16 +121,4 @@ function remote() {
       },
     ],
   }
-}
-
-for (const observedState of ["stopped", "starting", "ready"] as const) {
-  test(`MP-02/MP-08/MP-11 enrolled ${observedState} placement retains its selected owner without online inventory`, () => {
-    const environment = { environmentId: "environment-1", name: "Enrolled",
-      desiredState: "stopped" as const, observedState, desiredRevision: 2, observedRevision: 2,
-      runtimeMachineId: "machine-1", runtimeKernelId: "kernel-1a", contextManifestDigest: "sha256:manifest" }
-    const state = { selectedMachineRef: managedEnvironmentMachineRef(environment.environmentId), selectedKernelRef: "kernel-1b" }
-    assert.equal(waitingRoomSelectedLaunchKernelRef(state, { managedEnvironments: [environment], kernels: [] }), "kernel-1b")
-    assert.equal(normalizeWaitingRoomLaunchPlacement(state, { managedEnvironments: [environment], kernels: [] }).selectedKernelRef, "kernel-1b")
-    assert.equal(waitingRoomSelectedLaunchKernelRef(state, { managedEnvironments: [{ ...environment, contextManifestDigest: null }], kernels: [] }), "")
-  })
 }

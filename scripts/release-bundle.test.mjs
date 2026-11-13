@@ -35,8 +35,8 @@ async function bundleInputs(root, target) {
   const sliceBuildContext = join(root, 'slice-build-context');
   await put(join(sliceBuildContext, 'apps/kernel/slice-linux-docker/runtime-source-roots.txt'), 'apps/kernel\n');
   await put(join(sliceBuildContext, 'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh'), '#!/bin/sh\n', 0o755);
-  await put(join(sliceBuildContext, SLICE_DOCKERFILE), 'FROM scratch\nCOPY deploy/managed-kernel/provider-versions.env /pins/\n');
-  await put(join(sliceBuildContext, 'deploy/managed-kernel/provider-versions.env'), '# public version pins\n');
+  await put(join(sliceBuildContext, SLICE_DOCKERFILE), 'FROM scratch\nCOPY deploy/runtime-release/provider-versions.env /pins/\n');
+  await put(join(sliceBuildContext, 'deploy/runtime-release/provider-versions.env'), '# public version pins\n');
   const releaseKey = generateKeyPairSync('ed25519').privateKey;
   const releaseKeyPath = join(root, 'bundle-release.pem');
   await put(releaseKeyPath, releaseKey.export({ type: 'pkcs8', format: 'pem' }), 0o600);
@@ -170,8 +170,8 @@ test('the slice build context exports committed roots and every Dockerfile input
   await put(join(source, 'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh'), '#!/bin/sh\n', 0o755);
   await put(join(source, 'apps/kernel/src/lib.rs'), '// kernel\n');
   await put(join(source, 'apps/browser-session-import/chrome-cookie-batch.mjs'), 'export {}\n');
-  await put(join(source, SLICE_DOCKERFILE), 'FROM scratch\nCOPY Cargo.toml /\nCOPY apps/kernel /kernel\nCOPY apps/browser-session-import /import\nADD deploy/managed-kernel/provider-versions.env /pins\n');
-  await put(join(source, 'deploy/managed-kernel/provider-versions.env'), '# public version pins\n');
+  await put(join(source, SLICE_DOCKERFILE), 'FROM scratch\nCOPY Cargo.toml /\nCOPY apps/kernel /kernel\nCOPY apps/browser-session-import /import\nADD deploy/runtime-release/provider-versions.env /pins\n');
+  await put(join(source, 'deploy/runtime-release/provider-versions.env'), '# public version pins\n');
   await put(join(source, 'Cargo.toml'), '[workspace]\n');
   await put(join(source, 'docs/unrelated.md'), 'not in the context\n');
   const run = args => execFileSync('git', ['-C', source, ...args], { encoding: 'utf8' }).trim();
@@ -187,7 +187,7 @@ test('the slice build context exports committed roots and every Dockerfile input
   const listing = execFileSync('find', ['.', '-type', 'f'], { cwd: join(root, 'context'), encoding: 'utf8' }).trim().split('\n').sort();
   assert.deepEqual(listing, ['./Cargo.toml', './apps/browser-session-import/chrome-cookie-batch.mjs', './apps/kernel/slice-linux-docker/docker/Dockerfile',
     './apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh', './apps/kernel/slice-linux-docker/runtime-source-roots.txt',
-    './apps/kernel/src/lib.rs', './deploy/managed-kernel/provider-versions.env']);
+    './apps/kernel/src/lib.rs', './deploy/runtime-release/provider-versions.env']);
   const { stat: statFile } = await import('node:fs/promises');
   assert.ok((await statFile(join(root, 'context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh'))).mode & 0o100);
   await assert.rejects(exportSliceBuildContext(source, head, join(root, 'context')), /EEXIST/);
@@ -246,18 +246,18 @@ test('the committed slice Dockerfile resolves every COPY and ADD source in the e
     }
   }
   assert.deepEqual(missing, [], 'packaged distribution context must resolve every local Dockerfile input');
-  const pinPath = 'deploy/managed-kernel/provider-versions.env';
+  const pinPath = 'deploy/runtime-release/provider-versions.env';
   const committedPin = execFileSync('git', ['-C', repository, 'show', `${sourceCommit}:${pinPath}`]);
   assert.equal(sha256(await readFile(join(output, pinPath))), sha256(committedPin));
 });
 
 test('assembly and signing reject an incomplete context even when its manifest checksums agree', async (context) => {
   const { options, releaseKeyPath, releasePublic } = await fixture(context);
-  const pinPath = 'deploy/managed-kernel/provider-versions.env';
+  const pinPath = 'deploy/runtime-release/provider-versions.env';
   const input = join(options.sliceBuildContext, pinPath);
   const pin = await readFile(input);
   await rm(input);
-  await assert.rejects(assemble(options), /missing Dockerfile input deploy\/managed-kernel\/provider-versions\.env/);
+  await assert.rejects(assemble(options), /missing Dockerfile input deploy\/runtime-release\/provider-versions\.env/);
   await assert.rejects(lstat(options.output), /ENOENT/);
   await put(input, pin);
   await assemble(options);

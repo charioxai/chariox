@@ -34,7 +34,7 @@ import {
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
-import { waitingRoomManagedCatalogRemoteState } from "./waiting-room-managed-environments.js"
+import { waitingRoomAllocationRemoteState } from "./waiting-room-machine-allocation.js"
 
 export type CliAutomationSnapshotDeps = {
   attachmentId?: () => string | null
@@ -82,7 +82,7 @@ export type CliAutomationSnapshotDeps = {
 export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): CliAutomationSnapshot {
   const session = deps.sessionState()
   const waitingRoomTargets = deps.waitingRoomTargets()
-  const managedEnvironmentCatalog = waitingRoomTargets.managedEnvironmentCatalog
+  const machineAllocationCapability = waitingRoomTargets.machineAllocationCapability
   const selectedWorkflow = session.workflows?.find((workflow) => workflow.id === deps.selectedWorkflowId()) ?? null
   const waitingRoomState = deps.waitingRoomState()
   const providerAccounts = deps.providerAccountsState()
@@ -193,7 +193,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           slices: deps.slicesState(),
           ...(providerAccounts === undefined ? {} : { providerAccounts }),
           projects: deps.waitingRoomProjects?.() ?? [],
-          ...waitingRoomManagedCatalogRemoteState(managedEnvironmentCatalog),
+          ...waitingRoomAllocationRemoteState(machineAllocationCapability),
         }, waitingRoomTargets, deps.themeRegistryState()).map((row) => ({
           id: row.id,
           externalSessionId: row.id.startsWith("external-session:") ? row.id.slice("external-session:".length) : null,

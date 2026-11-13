@@ -1,3 +1,4 @@
+import type { MachineAllocationCapability } from "./machine-allocation-api.js"
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import type { RuntimeSession, SliceRecord } from "./cli-types.js"
 import type {
@@ -20,8 +21,8 @@ import type {
   WaitingRoomState,
 } from "./waiting-room-types.js"
 import { formatWorkspaceLiveSyncModeLabel } from "@chariox/kernel-client/workspace-live-sync-mode"
-import type { ManagedEnvironmentDevelopmentSetup } from "@chariox/kernel-client/ipc-managed-environment-requests"
-import { waitingRoomProjectDevelopmentSetup } from "./waiting-room-managed-environments.js"
+import type { ContextDevelopmentSetup } from "@chariox/kernel-client/context-transfer-types"
+import { waitingRoomProjectDevelopmentSetup } from "./waiting-room-context-selection.js"
 import {
   waitingRoomExecutionMode,
   waitingRoomPermissionLevel,
@@ -33,14 +34,6 @@ export type WaitingRoomCreateSessionLaunch = WaitingRoomLaunchConfig & {
   execution_mode: "build" | "plan"
   permission_level: "required" | "yolo"
   projectSelection?: WaitingRoomLaunchConfig["projectSelection"]
-}
-
-export type WaitingRoomPreparedManagedLaunch = {
-  launch: WaitingRoomLaunchConfig
-  assertActive: () => void
-  verifyProjectBinding: (session: RuntimeSession) => void
-  commit: () => Promise<void>
-  rollback: () => Promise<void>
 }
 
 export type WaitingRoomActivationControllerDeps = {
@@ -79,16 +72,14 @@ export type WaitingRoomActivationControllerDeps = {
     workspaceId: string
     worktreeId: string
     workspaceMount: string
-    developmentSetup?: ManagedEnvironmentDevelopmentSetup | null
+    developmentSetup?: ContextDevelopmentSetup | null
     workerKernelRef?: string | null
   }) => Promise<SliceRecord>
   startSlice?: (sliceRef: string) => Promise<SliceRecord>
   deleteSlice?: (sliceRef: string) => Promise<unknown>
   updateSlices?: (slice: SliceRecord) => void
   prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<void>
-  prepareManagedSessionLaunch?: (
-    launch: WaitingRoomLaunchConfig,
-  ) => Promise<WaitingRoomPreparedManagedLaunch>
+  acquireMachine?: (capability: MachineAllocationCapability) => Promise<void>
   prepareExistingSessionClient?: (session: SessionListEntry) => Promise<void>
   attachBinding: (
     session: Pick<RuntimeSession, "id">,
@@ -150,9 +141,7 @@ export function createWaitingRoomActivationController(
     }
   }
 
-  const startSessionFromWaitingRoomDefaults = async (
-    managedEnvironment?: WaitingRoomLaunchConfig["managedEnvironment"],
-  ) => {
+  const startSessionFromWaitingRoomDefaults = async () => {
     try {
       if (!deps.isKernelConnected()) {
         await deps.connectKernel()
@@ -165,9 +154,7 @@ export function createWaitingRoomActivationController(
         currentModel: deps.getCurrentModel(),
         remote: deps.getRemoteState(),
       })
-      return await applyCreateSessionDecision(decision.action === "create" && managedEnvironment
-        ? { ...decision, launch: { ...decision.launch, managedEnvironment } }
-        : decision)
+      return await applyCreateSessionDecision(decision)
     } catch (error) {
       deps.warn("waiting room prompt bootstrap failed", {
         error: deps.formatError(error),
@@ -233,6 +220,10 @@ export function createWaitingRoomActivationController(
   const applyActivationDecision = async (
     decision: WaitingRoomActivationDecision,
   ) => {
+    if (decision.action === "acquire-machine") {
+      await acquireMachine(decision.capability)
+      return
+    }
     if (decision.action === "create") {
       await createAndAttachSession(decision.launch)
       return
@@ -271,26 +262,19 @@ export function createWaitingRoomActivationController(
       deps.flashFooter(decision.message, "error")
       throw new Error(decision.message)
     }
+    if (decision.action === "acquire-machine") return await acquireMachine(decision.capability)
     return await createAndAttachSession(decision.launch)
   }
 
+  const acquireMachine = async (capability: MachineAllocationCapability) => {
+    if (!deps.acquireMachine) throw new Error("Machine acquisition is unavailable in this client.")
+    await deps.acquireMachine(capability)
+  }
+
   const createAndAttachSession = async (launch: WaitingRoomLaunchConfig) => {
-    const managedLaunch = Boolean(launch.managedEnvironment)
     const inventoryStatus = deps.getRemoteState().inventoryStatus
-    if (!managedLaunch && (inventoryStatus === "loading" || inventoryStatus === "error")) {
+    if (inventoryStatus === "loading" || inventoryStatus === "error") {
       throw new Error("Waiting for selected kernel inventory. Try again after it connects.")
-    }
-    const prepared = launch.managedEnvironment
-      ? await deps.prepareManagedSessionLaunch?.(launch)
-      : {
-          launch,
-          assertActive: () => {},
-          verifyProjectBinding: () => {},
-          commit: async () => {},
-          rollback: async () => {},
-        }
-    if (!prepared) {
-      throw new Error("managed session launch orchestration is unavailable in this build")
     }
     let session: RuntimeSession | null = null
     let createdSliceRef: string | null = null
@@ -298,60 +282,47 @@ export function createWaitingRoomActivationController(
     let projectBindingChecked = false
     let attachAttempted = false
     try {
-      const preparedLaunch = prepared.launch
-      prepared.assertActive()
-      if (!managedLaunch) {
-        await deps.prepareSessionOwnerClient?.(preparedLaunch)
-        prepared.assertActive()
-      }
-      const accountBlock = preparedLaunch.sliceRef ? null : selectedProviderAccountStartBlockReason(
-        deps.getRemoteState().providerAccounts, preparedLaunch.provider,
-        preparedLaunch.accountProfile ?? deps.getAccountProfile() ?? undefined,
-        null, preparedLaunch.model,
+      await deps.prepareSessionOwnerClient?.(launch)
+      const accountBlock = launch.sliceRef ? null : selectedProviderAccountStartBlockReason(
+        deps.getRemoteState().providerAccounts, launch.provider,
+        launch.accountProfile ?? deps.getAccountProfile() ?? undefined,
+        null, launch.model,
       )
       if (accountBlock) throw new Error(accountBlock)
-      const sliceRef = await prepareSliceForLaunch(preparedLaunch, (sliceRef) => {
+      const sliceRef = await prepareSliceForLaunch(launch, (sliceRef) => {
         createdSliceRef = sliceRef
       })
-      prepared.assertActive()
       workspacePath = deps.getWorkspaceTarget()
       const worktreePath = deps.getWorktreeTarget()
       session = await deps.createSession(
         workspacePath,
         worktreePath,
         {
-          provider: preparedLaunch.provider,
-          model: preparedLaunch.model,
-          effort: preparedLaunch.effort,
-          account_profile: preparedLaunch.accountProfile ?? deps.getAccountProfile() ?? "default",
+          provider: launch.provider,
+          model: launch.model,
+          effort: launch.effort,
+          account_profile: launch.accountProfile ?? deps.getAccountProfile() ?? "default",
           execution_mode: waitingRoomExecutionMode(deps.getWaitingRoomState()),
           permission_level: waitingRoomPermissionLevel(deps.getWaitingRoomState()),
-          workspaceLiveSyncMode: preparedLaunch.workspaceLiveSyncMode ?? "off",
-          ...(preparedLaunch.projectSelection ? { projectSelection: preparedLaunch.projectSelection } : {}),
+          workspaceLiveSyncMode: launch.workspaceLiveSyncMode ?? "off",
+          ...(launch.projectSelection ? { projectSelection: launch.projectSelection } : {}),
           ...(sliceRef ? { sliceRef } : {}),
         },
       )
-      prepared.assertActive()
-      if (managedLaunch) {
+      if (launch.projectSelection) {
         projectBindingChecked = true
-        prepared.verifyProjectBinding(session)
-        prepared.assertActive()
-      } else if (preparedLaunch.projectSelection) {
-        projectBindingChecked = true
-        if (preparedLaunch.projectSelection.kind === "existing"
-          && session.project_id !== preparedLaunch.projectSelection.project_id) {
+        if (launch.projectSelection.kind === "existing"
+          && session.project_id !== launch.projectSelection.project_id) {
           throw new Error("The created session is attached to a different Project than the Waiting Room selection.")
         }
       }
       attachAttempted = true
-      await deps.attachBinding(session, true, preparedLaunch)
-      prepared.assertActive()
-      await prepared.commit()
+      await deps.attachBinding(session, true, launch)
       deps.flashFooter(createdSessionFooter(session, sliceRef), "info")
       return session
     } catch (error) {
       const cleanupErrors: string[] = []
-      if (session && (managedLaunch || projectBindingChecked)) {
+      if (session && projectBindingChecked) {
         if (attachAttempted) {
           try {
             await deps.rollbackAttachedSession(session.id)
@@ -377,11 +348,6 @@ export function createWaitingRoomActivationController(
             `failed to remove orphaned slice ${createdSliceRef}: ${deps.formatError(cleanupError)}`,
           )
         }
-      }
-      try {
-        await prepared.rollback()
-      } catch (rollbackError) {
-        cleanupErrors.push(`failed to restore the source kernel connection: ${deps.formatError(rollbackError)}`)
       }
       if (!session && error instanceof LocalIpcError && error.code === "local_transport_error"
         && cleanupErrors.length === 0) {

@@ -290,21 +290,21 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_pre_reimage_observation_to_distinct_interactive_metadata() {
-        let request = LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
-            crate::local::ObserveManagedEnvironmentPreReimageRequest {
+    fn normalizes_runtime_identity_observation_to_distinct_interactive_metadata() {
+        let request = LocalDaemonRequest::ObserveKernelRuntimeIdentity(
+            crate::local::ObserveKernelRuntimeIdentityRequest {
                 environment_id: "environment-1".to_string(),
                 expected_generation: 4,
             },
         );
         let command = KernelCommand::from_local_request("observe-1", None, None, &request);
 
-        assert_eq!(command.command_type, "managed_environment.reimage.observe");
+        assert_eq!(command.command_type, "kernel.runtime_identity.observe");
         assert_eq!(command.priority, KernelCommandPriority::Interactive);
         assert_eq!(
             command.payload,
             serde_json::json!({
-                "ObserveManagedEnvironmentPreReimage": {
+                "ObserveKernelRuntimeIdentity": {
                     "environmentId": "environment-1",
                     "expectedGeneration": 4,
                 }

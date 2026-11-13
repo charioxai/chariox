@@ -255,7 +255,7 @@ pub enum LocalDaemonRequest {
     ManageCredentialVault(ManageCredentialVaultRequest),
     PreflightProviderAccountPortability(PreflightProviderAccountPortabilityRequest),
     ControlPlane(ControlPlaneRequest),
-    ObserveManagedEnvironmentPreReimage(ObserveManagedEnvironmentPreReimageRequest),
+    ObserveKernelRuntimeIdentity(ObserveKernelRuntimeIdentityRequest),
     StartManagedContextTransfer(Box<StartManagedContextTransferRequest>),
     GetManagedContextTransferStatus(GetManagedContextTransferStatusRequest),
     GetManagedContextLaunchTarget(GetManagedContextLaunchTargetRequest),

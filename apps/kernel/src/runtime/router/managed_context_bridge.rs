@@ -97,7 +97,7 @@ impl CommandRouter {
     pub(crate) async fn relay_arm_managed_context_import_with_home_caller(
         &self,
         request: RelayManagedContextArmRequest,
-        disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
+        disposable_home_caller: Option<&crate::config::LeaseWorkerHomeCaller>,
     ) -> Result<RelayPeerResponse, DaemonError> {
         let RelayManagedContextArmRequest {
             identity,
@@ -238,7 +238,7 @@ impl CommandRouter {
         source_kernel_id: String,
         transfer_id: String,
         capability: String,
-        disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
+        disposable_home_caller: Option<&crate::config::LeaseWorkerHomeCaller>,
     ) -> Result<RelayPeerResponse, DaemonError> {
         let caller = managed_context_transfer_caller(
             self,
@@ -272,7 +272,7 @@ impl CommandRouter {
     pub(crate) async fn relay_upload_managed_context_chunk_with_home_caller(
         &self,
         request: RelayManagedContextChunkRequest,
-        disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
+        disposable_home_caller: Option<&crate::config::LeaseWorkerHomeCaller>,
     ) -> Result<RelayPeerResponse, DaemonError> {
         let RelayManagedContextChunkRequest {
             identity,
@@ -332,7 +332,7 @@ impl CommandRouter {
         source_kernel_id: String,
         transfer_id: String,
         capability: String,
-        disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
+        disposable_home_caller: Option<&crate::config::LeaseWorkerHomeCaller>,
     ) -> Result<RelayPeerResponse, DaemonError> {
         let caller = managed_context_transfer_caller(
             self,
@@ -378,7 +378,7 @@ impl CommandRouter {
         source_kernel_id: String,
         transfer_id: String,
         capability: String,
-        disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
+        disposable_home_caller: Option<&crate::config::LeaseWorkerHomeCaller>,
     ) -> Result<RelayPeerResponse, DaemonError> {
         let caller = managed_context_transfer_caller(
             self,
@@ -889,7 +889,7 @@ fn managed_context_transfer_caller(
     router: &CommandRouter,
     identity: &RelayCallerIdentity,
     source_kernel_id: &str,
-    disposable_home_caller: Option<&crate::managed_bootstrap::worker::CloudHomeCaller>,
+    disposable_home_caller: Option<&crate::config::LeaseWorkerHomeCaller>,
 ) -> Result<ManagedContextTransferCaller, DaemonError> {
     let owner_user_id = identity.user_id.clone().ok_or_else(|| {
         managed_context_authorization_error(
@@ -964,13 +964,11 @@ fn managed_context_transfer_caller(
 
     let home_caller = match disposable_home_caller {
         Some(home_caller) => home_caller.clone(),
-        None => router.confirmed_disposable_worker_home_caller()?,
+        None => router.enrolled_lease_worker_home_caller()?,
     };
     let source_subject_matches = match identity.subject_kind {
         chariox_relay::auth::RelaySubjectKind::Kernel => identity.subject == home_caller.kernel_id,
-        chariox_relay::auth::RelaySubjectKind::Machine => {
-            identity.subject == home_caller.machine_id
-        }
+        chariox_relay::auth::RelaySubjectKind::Machine => !identity.subject.trim().is_empty(),
         _ => false,
     };
     if source_kernel_id != home_caller.kernel_id

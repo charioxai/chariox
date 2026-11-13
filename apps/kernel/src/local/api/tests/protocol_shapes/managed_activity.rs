@@ -52,7 +52,7 @@ fn managed_activity_http_producer_keeps_timestamp_and_the_one_receiver_route() {
         "activity_changed_at: &'a str",
         "canonical_activity_timestamp",
         "chrono::SecondsFormat::Millis",
-        "ACTIVITY_ENDPOINT: &str = \"/v1/managed-kernels/activity\"",
+        "ACTIVITY_ENDPOINT: &str = \"/v1/kernels/activity\"",
     ] {
         assert!(
             producer.contains(required),

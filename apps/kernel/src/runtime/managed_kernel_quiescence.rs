@@ -15,9 +15,9 @@ use crate::runtime::state::{
     KernelRuntimeState, ManagedKernelQuiescenceChallenge, ManagedKernelQuiescenceOutcome,
 };
 
-const POLL_ENDPOINT: &str = "/v1/managed-kernels/quiescence/poll";
-const ACK_ENDPOINT: &str = "/v1/managed-kernels/quiescence/ack";
-const RELEASE_ACK_ENDPOINT: &str = "/v1/managed-kernels/quiescence/release-ack";
+const POLL_ENDPOINT: &str = "/v1/kernels/quiescence/poll";
+const ACK_ENDPOINT: &str = "/v1/kernels/quiescence/ack";
+const RELEASE_ACK_ENDPOINT: &str = "/v1/kernels/quiescence/release-ack";
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_FAILURE_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const FAILURE_WARNING_SUMMARY_INTERVAL: u8 = 5;

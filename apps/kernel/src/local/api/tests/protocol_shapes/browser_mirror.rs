@@ -254,7 +254,7 @@ fn browser_mirror2_native_font_failures_550_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-font-failures-550.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "fdffbfccbc87fa651e8ccef07676474a0bd0a8b214c674e5b0aebcf6f077594b"
+        "d4385a72b4fa3d848b4b06a628a29c4f8edf8b40e7b44eefe66a4679891d984d"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -275,7 +275,7 @@ fn browser_mirror2_font_absent_567_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-font-absent-567.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "d542d6b4c4175c5520f10e0d5812ad3663a05302e099d5a8fc249e50a1207736"
+        "6be8b3f8880db7bbf2b226a283e51da79beceb362cf0ccb46fb88b5a8c78e94d"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -303,7 +303,7 @@ fn browser_mirror2_viewport_first_629_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-viewport-first-629.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "a602b02f16f3f8c1a182b2f42972278d68ef23e8396bfbe630cc28401fc500b6"
+        "7d8b92f1dd1880b5176c46555ff88aec6e69eeb78b12c050e0070b9e5f6e1c20"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -331,7 +331,7 @@ fn browser_mirror2_visited_links_629_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-visited-links-629.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "c7bf9b759dfd486a00fe49d8192d96092682442435da86b6159ded1f2636fac0"
+        "bf54aa57dda04680e81cee935839de44497768c1a6c301d51506a98459cc9e66"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -358,7 +358,7 @@ fn browser_mirror2_document_font_requirements_550_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-font-requirements-550.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "352b59c6c738bd81c038d3d6edfe2113cf087961fff24adb0f7e4c38ff0ca9c2"
+        "844489ce7709fd6bdc8dc99adc14999380238053135955a2c061bdc6abcbc0cf"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -406,7 +406,7 @@ fn browser_pointer_cursor_and_document_mode_920_shape_is_pinned() {
     let bytes = include_bytes!("browser-pointer-cursor-document-mode-920.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "767e52584d3da8936fa02505e3b29f135fdcfc28ed379e7692e2c836dcd832ce"
+        "39cd4ab44c1b6817a232542c2914acee4592e66088f530f7c894ae2be86c640f"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);

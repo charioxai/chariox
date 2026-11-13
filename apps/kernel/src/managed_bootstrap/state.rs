@@ -12,10 +12,6 @@ use crate::config::write_private_file;
 use crate::error::DaemonError;
 
 use super::context_plan::ManagedKernelContextPlan;
-use super::freshness::{
-    valid_provider_rebuild_action_id, validate_freshness_evidence, ManagedKernelFreshnessEvidence,
-};
-
 const MAX_STATE_BYTES: u64 = 96 * 1024;
 pub(super) const DEFAULT_MANAGED_REPOSITORY_ROOT: &str = "/home/chariox";
 pub(super) const TRUSTED_BUILDER_PUBLIC_KEY_ENV: &str = "CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY";
@@ -23,7 +19,6 @@ pub(super) const MANAGED_BOOTSTRAP_PATH: &str = "/var/lib/chariox/managed-bootst
 pub(super) const PROTECTED_BOOTSTRAP_DIRECTORY: &str = "/etc/chariox/bootstrap";
 pub(super) const PROTECTED_MANAGED_BOOTSTRAP_PATH: &str =
     "/etc/chariox/bootstrap/managed-bootstrap.json";
-const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BootstrapConfig {
@@ -54,12 +49,12 @@ pub(super) struct ManagedBootstrapEnvelope {
     pub(super) runtime_release_digest: String,
     #[serde(default)]
     pub(super) managed_repository_root: Option<String>,
+    /// Opaque evidence supplied by the installation's enrollment authority.
+    /// The authority validates its policy; the kernel binds and forwards the exact value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) provider_rebuild_action_id: Option<String>,
+    pub(super) confirmation_evidence: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) expected_data_volume_serial: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) expected_data_volume_size_gb: Option<u32>,
+    pub(super) authority_data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,7 +72,7 @@ pub(super) struct BootstrapReceipt {
     pub(super) environment_id: String,
     pub(super) machine_id: String,
     pub(super) kernel_id: String,
-    #[serde(default = "initial_managed_environment_generation")]
+    #[serde(default = "initial_enrollment_generation")]
     pub(super) generation: u64,
     pub(super) relay_public_key: String,
     pub(super) runtime_release_digest: String,
@@ -86,10 +81,6 @@ pub(super) struct BootstrapReceipt {
     pub(super) confirmed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) context_plan: Option<ManagedKernelContextPlan>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) provider_rebuild_action_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) freshness_evidence: Option<ManagedKernelFreshnessEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,7 +96,7 @@ pub(super) struct ManagedBootstrapGrantBinding {
     pub(super) receipt_binding_digest: Option<String>,
 }
 
-fn initial_managed_environment_generation() -> u64 {
+fn initial_enrollment_generation() -> u64 {
     1
 }
 
@@ -252,19 +243,9 @@ impl ManagedBootstrapEnvelope {
                 self.managed_repository_root.as_deref(),
             )
             .is_err()
-            || self
-                .provider_rebuild_action_id
-                .as_deref()
-                .is_some_and(|value| !valid_provider_rebuild_action_id(value))
         {
             return Err(state_error("managed bootstrap envelope is invalid"));
         }
-        validate_volume_binding_for_schema(
-            self.schema_version,
-            protected_storage_input,
-            self.expected_data_volume_serial.as_deref(),
-            self.expected_data_volume_size_gb,
-        )?;
         self.expires_at()?;
         validate_cloud_url(&self.control_plane_url)
     }
@@ -314,14 +295,17 @@ impl ManagedBootstrapEnvelope {
         update_binding_component(&mut digest, self.expires_at.as_bytes());
         update_binding_component(&mut digest, self.runtime_release_digest.as_bytes());
         update_optional_binding_component(&mut digest, self.managed_repository_root.as_deref());
-        update_optional_binding_component(&mut digest, self.provider_rebuild_action_id.as_deref());
-        update_optional_binding_component(&mut digest, self.expected_data_volume_serial.as_deref());
-        match self.expected_data_volume_size_gb {
-            Some(size_gb) => {
-                digest.update([1]);
-                update_binding_component(&mut digest, &size_gb.to_be_bytes());
+        for value in [&self.authority_data, &self.confirmation_evidence] {
+            match value {
+                Some(value) => {
+                    digest.update([1]);
+                    update_binding_component(
+                        &mut digest,
+                        &serde_json::to_vec(value).expect("JSON value serializes"),
+                    );
+                }
+                None => digest.update([0]),
             }
-            None => digest.update([0]),
         }
         format!("sha256:{:x}", digest.finalize())
     }
@@ -493,15 +477,6 @@ impl BootstrapReceipt {
                 .context_plan
                 .as_ref()
                 .is_some_and(|plan| plan.validate().is_err())
-            || self
-                .provider_rebuild_action_id
-                .as_deref()
-                .is_some_and(|value| !valid_provider_rebuild_action_id(value))
-            || self.freshness_evidence.as_ref().is_some_and(|evidence| {
-                self.provider_rebuild_action_id.is_none()
-                    && !(self.schema_version == 3 && self.generation > 1)
-                    || validate_freshness_evidence(evidence, &self.runtime_release_digest).is_err()
-            })
             || !confirmation_is_valid
         {
             return Err(state_error("managed bootstrap receipt is invalid"));
@@ -602,34 +577,6 @@ pub(super) fn validate_protected_bootstrap_file(
         return Err(state_error(
             "protected bootstrap input must be root:chariox with directory mode 0750 and file mode 0640",
         ));
-    }
-    Ok(())
-}
-
-pub(super) fn validate_volume_binding_for_schema(
-    schema_version: u32,
-    protected_storage_input: bool,
-    serial: Option<&str>,
-    size_gb: Option<u32>,
-) -> Result<(), DaemonError> {
-    let storage_schema = protected_storage_input && matches!(schema_version, 2 | 3);
-    if !storage_schema {
-        if serial.is_some() || size_gb.is_some() {
-            return Err(state_error(
-                "legacy bootstrap envelope cannot include a data-volume binding",
-            ));
-        }
-        return Ok(());
-    }
-    let valid_serial = serial.is_some_and(|value| {
-        !value.is_empty()
-            && value.bytes().all(|byte| byte.is_ascii_digit())
-            && value.parse::<u64>().is_ok_and(|number| {
-                number > 0 && number <= MAX_SAFE_INTEGER && number.to_string() == value
-            })
-    });
-    if !valid_serial || size_gb.is_none_or(|value| value == 0) {
-        return Err(state_error("data-volume bootstrap binding is invalid"));
     }
     Ok(())
 }

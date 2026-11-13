@@ -82,7 +82,7 @@ async function automation(request) {
 async function apiProxy() {
   const server = createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk
-    if (req.url === '/v1/managed-kernels/context/ticket' && body) contextId = JSON.parse(body).ownerManaged?.contextId ?? contextId
+    if (req.url === '/v1/kernels/context/ticket' && body) contextId = JSON.parse(body).ownerManaged?.contextId ?? contextId
     const headers = {}; for (const key of ['content-type', 'x-chariox-kernel-credential']) if (req.headers[key]) headers[key] = req.headers[key]
     const response = await fetch(origin + req.url, {method: req.method, headers, body: ['GET', 'HEAD'].includes(req.method) ? undefined : body, redirect: 'error'})
     res.writeHead(response.status, {'content-type': response.headers.get('content-type') ?? 'application/json'}); res.end(await response.text())

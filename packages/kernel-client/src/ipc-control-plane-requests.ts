@@ -1,3 +1,6 @@
+/** Owner connections acquire and attach machines through the kernel from this version. */
+export const machineAllocationMinimumProtocolVersion = 1027
+
 /** Optional connected service data. An absent machine_allocation hides hosted actions. */
 export type ControlPlaneRequest =
   | { action: "capabilities" }
