@@ -471,7 +471,7 @@ fn a_long_wait_inside_the_limit_does_not_emit_a_notice() {
 #[cfg(target_os = "linux")]
 /// A build: grows to `top` MiB at `rate` MiB/s, holds it a moment and ends.
 fn build(rate: u64, top: u64) -> String {
-    format!("python3 -c '{DIE_WITH_PARENT}import time\nb=[]\nfor _ in range({top}//8):\n b.append(bytearray(8*1048576)); time.sleep(8/{rate})\ntime.sleep(1.5)' build")
+    format!("python3 -c '{DIE_WITH_PARENT}import time\nb=[]\nfor _ in range({top}//8):\n b.append(bytearray(8*1048576)); time.sleep(8/{rate})\ntime.sleep(1.5); print(\"BUILD_FINISHED\", file=sys.stderr, flush=True)' build")
 }
 
 /// The scheduler state letter of a command (`T` once admission stopped it),
@@ -600,6 +600,9 @@ fn five_growing_builds(cgroup: bool) {
         outcomes.iter().all(std::process::ExitStatus::success),
         "a build was ended instead of finishing: {outcomes:?}\n{evidence}"
     );
+    for build in &builds {
+        build.assert_told("job", "BUILD_FINISHED");
+    }
     // (a) The pool was never left with every build paused for long.
     assert!(
         longest_all_paused < Duration::from_secs(3),
@@ -629,9 +632,7 @@ fn five_growing_builds(cgroup: bool) {
     for index in 0..BUILDS {
         for resumed in &resumes[index] {
             assert!(
-                !stops[index]
-                    .iter()
-                    .any(|stop| stop > resumed && *stop - *resumed < Duration::from_secs(1)),
+                !stops[index].iter().any(|stop| stop > resumed),
                 "build {index} was stopped again right after it continued: {evidence}"
             );
         }
