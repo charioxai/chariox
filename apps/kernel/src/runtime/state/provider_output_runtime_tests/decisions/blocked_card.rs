@@ -89,9 +89,10 @@ async fn a_blocked_helpers_card_goes_to_its_parent_and_names_what_it_owes() {
     let id = Tree::blocked_card_id(&task);
 
     assert_eq!(t.holder(&id), DecisionHolder::Agent(t.p.clone()));
-    assert!(
-        t.panels().is_empty(),
-        "no person card while the parent holds it"
+    assert_eq!(
+        t.panels(),
+        vec![(t.g.clone(), vec![id.clone()])],
+        "the person sees it in the top panel while the parent holds it"
     );
     let events = t.decision_events(&t.p);
     assert_eq!(events.len(), 1, "{events:?}");
@@ -214,7 +215,8 @@ async fn correction_and_resume_name_the_obligation_label_and_actual_registration
     }
     let resumed = owned.task_resume_text(&task, &task.reason).unwrap();
     assert!(
-        resumed.contains("Repeated invalid turn end") && resumed.contains("has now been resumed"),
+        resumed.contains("Its turn ended before its work was done")
+            && resumed.contains("has now been resumed"),
         "{resumed}"
     );
     let mut settled = task;

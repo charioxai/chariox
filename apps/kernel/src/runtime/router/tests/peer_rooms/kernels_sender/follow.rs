@@ -718,7 +718,17 @@ fn a_follow_kept_past_its_turn_is_listed_and_unsubscribed_in_a_later_turn() {
             .expect("A follows a peer on another kernel");
         let id = follow["registration_id"].as_str().unwrap().to_owned();
         b.end_turn(false).await;
-        assert_eq!(a.peer_events_after_delivery(1).await.len(), 1);
+        let delivered = a.peer_events_after_delivery(1).await;
+        assert_eq!(delivered.len(), 1);
+        // A peer event still pending when A's turn ends wakes A; this turn handles it, so A is
+        // idle until the later turn below.
+        a.tool(
+            "chariox.events.ack",
+            &task,
+            serde_json::json!({"sequence": delivered[0].sequence, "handled": true}),
+        )
+        .await
+        .expect("A handles the peer event in its turn");
         a.end_turn(false).await;
 
         (a.token, a.prompt) = running_turn(&mut *a.app.lock().await, &a.room, a.agent.id());
