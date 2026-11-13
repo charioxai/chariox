@@ -404,16 +404,18 @@ impl ClaudeToolTranscript {
                     self.truncated = true;
                     return None;
                 }
-                let top_level = value.get("parent_tool_use_id").is_none_or(Value::is_null);
+                let parent = value.get("parent_tool_use_id").and_then(Value::as_str);
+                let top_level = parent.is_none();
+                // A helper this agent started in the background has its own background
+                // commands reported back here, so they are held for like this agent's own. A
+                // foreground helper's commands end with that helper and are reported to it only.
+                let reported_here = parent.is_none_or(|parent| self.background.contains_key(parent));
                 let pending = PendingTool {
                     name: name.to_string(),
                     top_level,
                     input: bounded_input(block.get("input").unwrap_or(&Value::Null)),
                     started_at_ms: now_ms,
-                    // A helper agent's own background commands end with that helper, and the
-                    // provider reports their end to it, not to this agent: only a call made
-                    // at this agent's own level can be held for.
-                    background: top_level
+                    background: reported_here
                         && launches_background_task(name, block.get("input")),
                 };
                 if pending.bytes(id) > PENDING_BYTES.saturating_sub(self.pending_bytes) {
@@ -743,11 +745,11 @@ mod tests {
         assert_eq!(ended[0]["finished_at_ms"], 3_000);
     }
 
-    // Live (l10orch r1): a background helper ran its own `sleep` in the background. The provider
-    // reports that command's end to the helper, so a record of it left open would hold the agent
-    // for the whole hold limit after the helper had answered.
+    // Live (l10orch r1): a helper's own background `sleep` left open held the agent for the whole
+    // hold limit. A foreground helper's commands are reported to that helper only; a background
+    // helper's are replayed here (kwait_nested_background_command_ends_on_replayed_task_notification).
     #[test]
-    fn a_background_command_of_a_helper_agent_is_not_held_for() {
+    fn a_background_command_of_a_foreground_helper_agent_is_not_held_for() {
         let mut transcript = ClaudeToolTranscript::default();
         let mut launch = background_launch("nested", "sleep 40");
         launch["parent_tool_use_id"] = json!("toolu_helper");
