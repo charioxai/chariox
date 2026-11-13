@@ -704,6 +704,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             t.provider_run_id = Some(run);
             t.revision += 1;
             save(tx, &t)?;
+            super::settled_waits::finish_agent_waits(tx, &t.room_id, &t.agent_id)?;
             Ok(Outcome::Settled {
                 task: t,
                 correction,
