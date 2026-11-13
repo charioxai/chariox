@@ -75,6 +75,17 @@ impl CommandRouter {
             .await
     }
 
+    pub(crate) async fn record_subscription_attachment_heartbeat(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        self.runtime_state
+            .record_subscription_attachment_heartbeat(session_id, attachment_id, now_ms)
+            .await
+    }
+
     pub(crate) async fn detach_terminal_attachment(
         &self,
         attachment_id: &str,

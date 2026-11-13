@@ -141,6 +141,18 @@ impl KernelRuntimeState {
             .record_heartbeat(session_id, attachment_id, now_ms)
     }
 
+    /// The heartbeat of the subscription an attachment is watched through: it expires with that subscription.
+    pub(crate) async fn record_subscription_attachment_heartbeat(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        self.owned
+            .attachment_store
+            .record_subscription_heartbeat(session_id, attachment_id, now_ms)
+    }
+
     pub(crate) async fn sweep_stale_terminal_attachments(&self, now_ms: u64) {
         let stale_attachment_ids = self
             .owned

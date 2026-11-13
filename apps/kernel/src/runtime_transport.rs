@@ -1256,7 +1256,7 @@ async fn record_connection_subscription_heartbeat(
         return;
     }
     if let Err(error) = router
-        .record_terminal_attachment_heartbeat(
+        .record_subscription_attachment_heartbeat(
             &subscription.session_id,
             &subscription.attachment_id,
             crate::session::unix_epoch_ms(),
