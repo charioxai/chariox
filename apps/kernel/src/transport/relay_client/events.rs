@@ -1,12 +1,14 @@
 //! Relay kernel event emission, retention, replay, and replay-gap recovery.
 
 use super::*;
+use crate::runtime::event_log::SerializedEvent;
 
 const RELAY_EVENT_LOG_MAX_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug)]
 pub(super) struct RelayEventRuntime {
     pub(super) event_log: EventLog<KernelEvent>,
+    serialized_snapshot: tokio::sync::Mutex<Option<Arc<SerializedEvent<KernelEvent>>>>,
 }
 
 impl RelayEventRuntime {
@@ -15,6 +17,7 @@ impl RelayEventRuntime {
     ) -> Result<Self, DaemonError> {
         let event_counter_path = event_counter_path.into();
         Ok(Self {
+            serialized_snapshot: Default::default(),
             event_log: EventLog::new_with_persistent_event_store_and_retention(
                 EventRetentionPolicy {
                     max_stream_events: RECENT_EVENT_LIMIT,
@@ -33,9 +36,49 @@ impl RelayEventRuntime {
         })
     }
 
+    async fn serialized_snapshot(
+        &self,
+        event: KernelEvent,
+    ) -> Result<Arc<SerializedEvent<KernelEvent>>, DaemonError> {
+        let mut cached = self.serialized_snapshot.lock().await;
+        if let Some(encoded) = cached.as_ref().filter(|encoded| encoded.event() == &event) {
+            if crate::runtime::perf_timing::enabled() {
+                crate::logging::info_with_fields(
+                    "daemon.event_encoding",
+                    "snapshot encoding reused",
+                    serde_json::json!({"cache_hit":true,"bytes":encoded.json().get().len()}),
+                );
+            }
+            return Ok(Arc::clone(encoded));
+        }
+        // One bounded cache also admits only one bulk encoder at a time. Free
+        // the runtime workers to publish controls while serialization runs.
+        let encoded = tokio::task::spawn_blocking(move || SerializedEvent::new(event))
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "serialize relay snapshot",
+                message: error.to_string(),
+            })?
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "serialize relay snapshot",
+                message: error.to_string(),
+            })?;
+        let encoded = Arc::new(encoded);
+        if crate::runtime::perf_timing::enabled() {
+            crate::logging::info_with_fields(
+                "daemon.event_encoding",
+                "snapshot encoded",
+                serde_json::json!({"cache_hit":false,"bytes":encoded.json().get().len()}),
+            );
+        }
+        *cached = Some(Arc::clone(&encoded));
+        Ok(encoded)
+    }
+
     #[cfg(test)]
     pub(super) fn for_tests(retention_limit: usize) -> Self {
         Self {
+            serialized_snapshot: Default::default(),
             event_log: EventLog::new(retention_limit),
         }
     }
@@ -53,6 +96,33 @@ pub(super) async fn emit_relay_event(
     let prepared_at_ms = crate::session::unix_epoch_ms();
     router.admit_relay_stream(client_public_key)?;
     let daemon_private_key = router.relay_private_key();
+    if matches!(&event, KernelEvent::SessionSnapshot { .. }) {
+        let encoded = event_runtime.serialized_snapshot(event).await?;
+        let encrypted_event = relay_crypto::encrypt_payload_for_peer(
+            &daemon_private_key,
+            client_public_key,
+            encoded.json().get().as_bytes(),
+        )?;
+        let append_started = std::time::Instant::now();
+        let event_id = event_runtime
+            .event_log
+            .append_serialized(event_stream_id.to_string(), &encoded)
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "reserve relay event id",
+                message: error.to_string(),
+            })?
+            .event_id;
+        crate::runtime::perf_timing::record_relay_event(
+            subscription_id,
+            event_id,
+            encoded.event(),
+            prepared_at_ms,
+            append_started.elapsed().as_micros(),
+        );
+        return send_relay_event_frame(outgoing_tx, subscription_id, event_id, encrypted_event)
+            .await;
+    }
     let plaintext =
         crate::transport::terminal_output_wire::encode(&mut event).map_err(|error| {
             DaemonError::LocalTransport {
@@ -279,4 +349,50 @@ pub(super) async fn send_relay_event_frame(
         );
     }
     result
+}
+
+#[cfg(test)]
+mod encoding_tests {
+    use super::*;
+    #[tokio::test]
+    async fn identical_subscriber_snapshots_share_only_their_plaintext_encoding() {
+        let runtime = RelayEventRuntime::for_tests(8);
+        let snapshot = KernelEvent::SessionSnapshot {
+            room_workflows: crate::runtime::projection::RoomWorkflowInventory {
+                session_id: "room".into(),
+                home_kernel_id: "kernel".into(),
+                revision: "1".into(),
+                workflow_count: 0,
+                workflows: vec![],
+            },
+            session: Box::new(crate::session::RuntimeSession::new(
+                "room",
+                None,
+                "workspace",
+                "worktree",
+                "machine",
+                "kernel",
+            )),
+            provider_run: Box::new(None),
+            agent_activity: Box::default(),
+            agent_activity_revision: 1,
+        };
+        let first = runtime.serialized_snapshot(snapshot.clone()).await.unwrap();
+        let second = runtime.serialized_snapshot(snapshot.clone()).await.unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        let mut next = snapshot;
+        if let KernelEvent::SessionSnapshot {
+            agent_activity_revision,
+            ..
+        } = &mut next
+        {
+            *agent_activity_revision = 2;
+        }
+        let next = runtime.serialized_snapshot(next).await.unwrap();
+        assert!(!Arc::ptr_eq(&first, &next));
+        assert_eq!(
+            serde_json::from_str::<KernelEvent>(next.json().get()).unwrap(),
+            *next.event()
+        );
+    }
 }

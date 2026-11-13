@@ -1,5 +1,5 @@
 // MP-08 / MP-09 / MP-10 / MP-11 A6/A7: wires the sub-agents stripe, list card and view to the session. The kernel's
-// tree is the only source; this file reads it again when something of the room changes and routes the keys.
+// tree revision is the source for reads; Room snapshots only reconcile membership. This file also routes the keys.
 import { createEffect, createSignal, onCleanup, untrack } from "solid-js"
 import { SubAgentsController } from "@chariox/kernel-client/sub-agents-controller"
 import { dialogTextWidth } from "./cli-dialog-panel-size.js"
@@ -8,9 +8,6 @@ import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
 import { subAgentsCardRows } from "./sub-agents-card-view.js"
 
 type Key = { name: string; ctrl?: boolean; meta?: boolean; shift?: boolean; eventType?: string; preventDefault?(): void; stopPropagation?(): void }
-
-/** Events after which the room's trees may differ. The kernel's own `agent_tree` follow event is an outside event. */
-const ROOM_CHANGE_EVENTS = new Set(["session_snapshot", "agent_activity_changed", "agent_tree_changed", "provider_run_changed", "runtime_interactions_changed"])
 
 export function createCliSubAgentsComposition(deps: {
   client: LocalIpcClient
@@ -27,19 +24,13 @@ export function createCliSubAgentsComposition(deps: {
     changed: () => { setRevision(value => value + 1); draw() },
   })
 
-  let reading = false
-  let again = false
-  const refreshAll = async () => {
-    if (reading) { again = true; return }
-    reading = true
-    try {
-      do {
-        again = false
-        const ids = deps.attached() ? (deps.session().agents ?? []).map((agent: { id: string }) => agent.id) : []
-        controller.retainRoots(ids)
-        await Promise.all(ids.map(id => controller.refresh(id)))
-      } while (again)
-    } finally { reading = false }
+  let roots = new Set<string>()
+  const reconcileRoots = async () => {
+    const ids = deps.attached() ? (deps.session().agents ?? []).map((agent: { id: string }) => agent.id) : []
+    controller.retainRoots(ids)
+    const changed = ids.length !== roots.size || ids.some(id => !roots.has(id))
+    roots = new Set(ids)
+    if (changed) await Promise.all(ids.map(id => controller.refresh(id)))
   }
 
   let attachedTo: string | null = null
@@ -48,13 +39,16 @@ export function createCliSubAgentsComposition(deps: {
     untrack(() => {
       if (id === attachedTo) return
       attachedTo = id
+      roots.clear()
       controller.reset()
-      if (id) void refreshAll()
+      if (id) void reconcileRoots()
     })
   })
   createEffect(() => { const focused = deps.focusedAgentId(); untrack(() => controller.select(focused)) })
   onCleanup(deps.client.onKernelEvent(event => {
-    if (deps.attached() && ROOM_CHANGE_EVENTS.has(event.event)) void refreshAll()
+    if (!deps.attached()) return
+    if (event.event === "session_snapshot") { void reconcileRoots(); return }
+    if (event.event === "agent_tree_changed" && event.session_id === deps.session().id && roots.has(event.root)) void controller.refresh(event.root)
   }))
 
   const cardOpen = () => { revision(); return controller.cardOpen }

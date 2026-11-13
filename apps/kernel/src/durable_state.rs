@@ -1943,22 +1943,27 @@ fn commit_durable_write_batch(
                     event_connection_imports::apply_event(&transaction, kind, payload_json)?;
                     decision_holders::apply_event(&transaction, kind, payload_json)?;
                     if kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND {
+                        let prompt_state =
+                            crate::durable_prompt_state::DurablePromptStateEventPayload::decode(
+                                payload_json,
+                            )
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?;
                         workflow_notifications::agent_lineage::record_prompt_state_in(
                             &transaction,
-                            payload_json,
+                            &prompt_state,
                         )?;
                         workflow_notifications::agent_steer::record_prompt_state_in(
                             &transaction,
-                            payload_json,
+                            &prompt_state,
                         )?;
                         workflow_dispatch_intents::record_prompt_state_in(
                             &transaction,
-                            payload_json,
+                            &prompt_state,
                         )?;
-                        trigger_resends::record_prompt_state_in(&transaction, payload_json)?;
+                        trigger_resends::record_prompt_state_in(&transaction, &prompt_state)?;
                         app_event_maintenance::agent::record_prompt_state_in(
                             &transaction,
-                            payload_json,
+                            &prompt_state,
                         )?;
                     }
                     if kind == "session.updated"

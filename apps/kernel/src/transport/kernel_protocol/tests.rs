@@ -1461,3 +1461,58 @@ fn turn_outcome_field_order_survives_snapshot_projection() {
     };
     assert_eq!(outcome_json(&direct), outcome_json(&projected));
 }
+
+#[test]
+fn touched_queue_announces_activity_before_its_complete_snapshot() {
+    for provider_clock in [false, true] {
+        let mut previous = session_snapshot_with_agent();
+        if provider_clock {
+            let mut run =
+                serde_json::to_value(RuntimeProviderRun::from_control_capability_inference(
+                    "provider-run-a",
+                    "session-a".into(),
+                    Some("agent-a".into()),
+                    "codex".into(),
+                ))
+                .unwrap();
+            run["last_activity_at_ms"] = serde_json::json!(1);
+            previous.provider_run = Some(serde_json::from_value(run).unwrap());
+        }
+        let mut current = previous.clone();
+        let prompt = PromptQueueItem::new(
+            "q",
+            "attachment",
+            "agent-a",
+            "queued text",
+            PromptStatus::Queued,
+        );
+        let mut session = serde_json::to_value(&current.session).unwrap();
+        session["last_used_at_ms"] = serde_json::json!(1);
+        previous.session = serde_json::from_value(session.clone()).unwrap();
+        session["last_used_at_ms"] = serde_json::json!(2);
+        session["queued_prompts"] = serde_json::json!([prompt]);
+        session["prompt_states"] = serde_json::json!({"agent-a": {"queued_prompts": [prompt]}});
+        current.session = serde_json::from_value(session).unwrap();
+        assert_eq!(current.session.queued_prompts().len(), 1);
+        current
+            .agent_activity
+            .get_mut("agent-a")
+            .unwrap()
+            .queued_prompt_count = 1;
+        if provider_clock {
+            let mut run = serde_json::to_value(current.provider_run.as_ref().unwrap()).unwrap();
+            run["last_activity_at_ms"] = serde_json::json!(2);
+            current.provider_run = Some(serde_json::from_value(run).unwrap());
+        }
+        let events =
+            crate::runtime_transport::session_projection_events(&current, Some(&previous), false);
+        assert!(
+            matches!(
+                events.first(),
+                Some(KernelEvent::AgentActivityChanged { .. })
+            ),
+            "queue activity must precede its full snapshot"
+        );
+        assert!(events.iter().any(|event| matches!(event, KernelEvent::SessionSnapshot { session, .. } if session.queued_prompts().len() == 1)), "queue text must still reach every client");
+    }
+}

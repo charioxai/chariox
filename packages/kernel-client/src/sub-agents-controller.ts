@@ -70,7 +70,7 @@ export class SubAgentsController {
   apply(tree: AgentTree): void {
     const known = this.trees.get(tree.root)
     const newest = this.revs.get(tree.root)
-    if (newest !== undefined && tree.rev < newest) return
+    if (newest !== undefined && tree.rev <= newest) return
     this.revs.set(tree.root, tree.rev)
     if (tree.nodes.length === 0) {
       this.trees.delete(tree.root)

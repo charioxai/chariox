@@ -78,3 +78,27 @@ test("OF-22 the queued job stripe shows its rate and invokes VM and Stop actions
     assert.ok(frame.includes("[Stop]"))
   } finally { harness.renderer.destroy() }
 })
+
+test("unchanged work strips keep their renderables and changed queue controls repaint", async () => {
+  const harness = await createTestRenderer({ width: 100, height: 12, useThread: false })
+  const box = new BoxRenderable(harness.renderer, { width: 100 }); harness.renderer.root.add(box)
+  const store = createInteractionChoiceStoreController()
+  let prompt = "queued work"
+  const render = () => renderAgentInteractionStrips({
+    renderer: harness.renderer, primaryBox: box, auxiliaryBoxes: [], visibleAgents: [{ id: "agent-1" }] as never,
+    maxAgentsPerScreen: 1, focusedAgentId: "agent-1", activeInteractionForAgent: () => null,
+    selectedChoiceIndex: store.selectedChoiceIndex, setSelectedChoiceIndex: store.setSelectedIndex,
+    customReply: store.customReply, customEditing: store.isCustomEditing,
+    queuedPromptStripItemsForAgent: () => [{ promptId: "q", agentId: "agent-1", prompt, status: "queued", canCancel: true, canSteer: true }] as never,
+    selectedQueuedPromptIndexForAgent: () => 0, onQueuedPromptAction: () => {}, agentTriggerStripItemsForAgent: () => [],
+  })
+  try {
+    render(); await harness.renderOnce()
+    const children = box.getChildren()
+    render(); await harness.renderOnce()
+    assert.equal(box.getChildren().every((child, index) => child === children[index]), true, "unchanged work does not rebuild the strip")
+    prompt = "edited work"; render(); await harness.renderOnce()
+    assert.match(harness.captureCharFrame(), /edited work/)
+    assert.ok(!harness.captureCharFrame().includes("queued work"))
+  } finally { harness.renderer.destroy() }
+})

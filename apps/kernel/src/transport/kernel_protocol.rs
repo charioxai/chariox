@@ -689,9 +689,16 @@ pub(crate) fn agent_activity_changed_event(
     let session_allows_activity_delta = previous_snapshot.session == snapshot.session
         || previous_snapshot
             .session
-            .equivalent_except_prompt_runtime(&snapshot.session);
+            .equivalent_except_prompt_runtime_and_session_metadata(&snapshot.session);
     if !session_allows_activity_delta
-        || previous_snapshot.provider_run != snapshot.provider_run
+        || previous_snapshot
+            .provider_run
+            .as_ref()
+            .map(|run| PublicProviderRun::from(run).without_activity_timestamp())
+            != snapshot
+                .provider_run
+                .as_ref()
+                .map(|run| PublicProviderRun::from(run).without_activity_timestamp())
         || previous_snapshot.agent_activity == snapshot.agent_activity
     {
         return None;
@@ -835,6 +842,15 @@ pub(crate) fn can_skip_session_snapshot(
     // a window opens, warns, extends or ends alongside another projection delta.
     emitted_projection_delta
         && previous_snapshot.is_some_and(|previous| {
+            // Activity carries queue identities but not text or attachments.
+            // Concurrent metadata also needs the complete state when no metadata delta can carry it.
+            if !previous.session.same_prompt_runtime(&snapshot.session)
+                || (previous.agent_activity != snapshot.agent_activity
+                    && SessionMetadataPatch::from_session(&previous.session)
+                        != SessionMetadataPatch::from_session(&snapshot.session))
+            {
+                return false;
+            }
             // Interaction and task deltas cannot carry a changed execution route
             // or account. Keep the full agent projection alongside those deltas.
             if previous.session.agents() != snapshot.session.agents() {

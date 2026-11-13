@@ -58,3 +58,24 @@ test("snapshot prompt attachment metadata is kept without inline file contents",
   h.controller.syncQueuedPromptsForSession(state)
   assert.deepEqual(h.visible()[0]?.attachments, [{ url: "chariox-terminal://public.png", mime: "image/png", filename: "public.png" }])
 })
+
+for (const action of ["cancel", "steer"] as const) test(`queued ${action} reaches the socket before pending-state layout`, async () => {
+  let written = false
+  let finish!: (value: unknown) => void
+  const held = new Promise(resolve => { finish = resolve })
+  const order: string[] = []
+  const controller = createCliQueuedPromptController({
+    client: { send: async () => { await Promise.resolve(); await Promise.resolve(); written = true; order.push("write"); return held } },
+    sessionState: session, attachmentState: () => ({ id: "attachment" }),
+    visibleTranscriptAgentId: () => "agent-1", transcriptEntryProjectionController: { renderableEntries: () => [] },
+    currentAgentPaneEntries: () => [], replaceTranscriptEntries: () => {}, setAgentTranscriptEntries: () => {},
+    renderAgentInteractions: () => { order.push(written ? "draw after write" : "draw before write") },
+    applyResponseLayout: () => {}, appendSteeredPrompt: () => {}, applySessionState: () => {},
+    flashFooter: () => {}, formatError: String, updateSessionChrome: () => {},
+  })
+  controller.handleQueuedPromptAction({ queuedPrompt: { agentId: "agent-1", promptId: "q", canCancel: true, canSteer: true } } as TranscriptEntry, action)
+  await new Promise(resolve => setTimeout(resolve, 10))
+  finish({ Error: { message: "fixture refusal" } })
+  await Promise.resolve(); await Promise.resolve()
+  assert.deepEqual(order.slice(0, 2), ["write", "draw after write"])
+})
