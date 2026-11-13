@@ -18,7 +18,9 @@ pub(crate) fn session_projection_events(
     });
     if same_public
         && previous.is_some_and(|before| {
-            before.processes == snapshot.processes && before.disk_usage == snapshot.disk_usage
+            before.processes == snapshot.processes
+                && before.disk_usage == snapshot.disk_usage
+                && before.jobs == snapshot.jobs
         })
     {
         return Vec::new();
@@ -186,6 +188,31 @@ mod tests {
                 KernelEvent::SessionSnapshot { .. },
                 KernelEvent::SessionJobsChanged { jobs, .. },
             ] if jobs.is_empty()
+        ));
+    }
+
+    #[test]
+    fn a_jobs_only_change_reaches_subscribers() {
+        let before = snapshot();
+        let mut after = before.clone();
+        after.jobs.push(crate::local::JobView {
+            job_id: "job".into(),
+            agent_id: "agent".into(),
+            command: "cargo build".into(),
+            state: "running".into(),
+            placement: crate::local::JobPlacement::Local,
+            started_at_ms: 1,
+            machine_label: None,
+            address: None,
+            class_id: None,
+            rate_per_minute: None,
+            estimate_micros: None,
+            deleted: false,
+            result: None,
+        });
+        assert!(matches!(
+            session_projection_events(&after, Some(&before), false).as_slice(),
+            [KernelEvent::SessionJobsChanged { jobs, .. }] if jobs.len() == 1
         ));
     }
 
