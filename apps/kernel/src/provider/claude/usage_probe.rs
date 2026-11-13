@@ -18,7 +18,7 @@ const CLAUDE_RATE_LIMIT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// Oldest Claude Code whose `haiku` alias answers the credential check with
 /// the marker: 2.1.212 resolves it to Haiku 4.5, which replies with prose and
 /// leaves every Vault-backed login "inconclusive". The managed image pin
-/// (`deploy/managed-kernel/provider-versions.env`) must not go below it.
+/// (`deploy/runtime-release/provider-versions.env`) must not go below it.
 #[cfg(test)]
 const CLAUDE_CREDENTIAL_CHECK_MIN_CODE_VERSION: &str = "2.1.296";
 
@@ -483,7 +483,7 @@ mod tests {
 
     #[test]
     fn managed_image_pin_is_not_older_than_the_credential_check_requires() {
-        let pins = include_str!("../../../../../deploy/managed-kernel/provider-versions.env");
+        let pins = include_str!("../../../../../deploy/runtime-release/provider-versions.env");
         let pinned = pins
             .lines()
             .find_map(|line| line.strip_prefix("CHARIOX_CLAUDE_VERSION="))

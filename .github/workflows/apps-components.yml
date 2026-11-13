@@ -25,8 +25,8 @@ on:
       - 'apps/cli/src/runtime.ts'
       - 'apps/cli/package.json'
       - 'apps/cli/tsconfig.json'
-      - 'deploy/managed-kernel/**'
-      - 'scripts/*managed-kernel-release*'
+      - 'deploy/runtime-release/**'
+      - 'scripts/package-runtime-release.mjs'
       - 'scripts/test-app-fetch-clients.mjs'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -76,8 +76,6 @@ jobs:
         run: node --test --test-concurrency=1 packages/app-sdk/test/*.test.js
       - name: Test pinned Fetch clients through the broker adapter
         run: node scripts/test-app-fetch-clients.mjs
-      - name: Test signed managed release helper packaging
-        run: node --test --test-concurrency=1 scripts/managed-kernel-release.test.mjs
       - uses: pnpm/action-setup@v4
         with:
           version: 9.15.0

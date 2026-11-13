@@ -66,78 +66,6 @@
     "seam": "hosted relay account (cloud_api_client)"
   },
   {
-    "path": "/managed-environments",
-    "callers": [
-      "apps/cli/src/managed-environment-api.ts"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away",
-    "slice": "B2"
-  },
-  {
-    "path": "/managed-environments/options",
-    "callers": [
-      "apps/cli/src/managed-environment-api.ts"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away",
-    "slice": "B2"
-  },
-  {
-    "path": "/managed-environments/{}",
-    "callers": [
-      "apps/cli/src/managed-environment-api.ts"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away",
-    "slice": "B2"
-  },
-  {
-    "path": "/managed-environments/{}/context-transfer",
-    "callers": [
-      "apps/cli/src/managed-environment-api.ts"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away",
-    "slice": "B2"
-  },
-  {
-    "path": "/managed-environments/{}/lifecycle",
-    "callers": [
-      "apps/cli/src/managed-environment-api.ts"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away",
-    "slice": "B2"
-  },
-  {
-    "path": "/managed-environments/{}/reimage",
-    "callers": [
-      "apps/cli/src/managed-environment-api.ts"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away",
-    "slice": "B2"
-  },
-  {
-    "path": "/managed-environments/{}/reimage/preflight",
-    "callers": [
-      "apps/cli/src/managed-environment-api.ts"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away",
-    "slice": "B2"
-  },
-  {
-    "path": "/managed-environments/{}/reimage/stop",
-    "callers": [
-      "apps/cli/src/managed-environment-reimage-stop.ts"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away",
-    "slice": "B2"
-  },
-  {
     "path": "/relay/targets",
     "callers": [
       "apps/cli/scripts/live-owner-context-transfer-drill.mjs",
@@ -315,39 +243,39 @@
     "seam": "/machine add"
   },
   {
-    "path": "/v1/managed-kernels/activity",
+    "path": "/v1/kernels/activity",
     "callers": [
       "apps/kernel/src/runtime/managed_kernel_activity.rs"
     ],
-    "why": "signed kernel activity report; rename in OSS-boundary item 8",
+    "why": "signed kernel activity observation supplied to its authority",
     "seam": "KernelActivityReport"
   },
   {
-    "path": "/v1/managed-kernels/bootstrap/confirm",
+    "path": "/v1/kernels/bootstrap/confirm",
     "callers": [
       "apps/kernel/src/managed_bootstrap/cloud.rs"
     ],
-    "why": "a freshly booted worker kernel redeems its enrollment token with its control plane; rename to enrollment bootstrap in OSS-boundary item 6",
+    "why": "kernel enrollment exchange and confirmation supplied by its authority",
     "seam": "worker kernel enrollment bootstrap"
   },
   {
-    "path": "/v1/managed-kernels/bootstrap/exchange",
+    "path": "/v1/kernels/bootstrap/exchange",
     "callers": [
       "apps/kernel/src/managed_bootstrap/cloud.rs"
     ],
-    "why": "a freshly booted worker kernel redeems its enrollment token with its control plane; rename to enrollment bootstrap in OSS-boundary item 6",
+    "why": "kernel enrollment exchange and confirmation supplied by its authority",
     "seam": "worker kernel enrollment bootstrap"
   },
   {
-    "path": "/v1/managed-kernels/context/complete",
+    "path": "/v1/kernels/context/complete",
     "callers": [
       "apps/kernel/src/managed_context/cloud_completion.rs"
     ],
-    "why": "transfer tickets issued and completed by the owner's control plane; rename in OSS-boundary item 7",
+    "why": "transfer tickets issued and completed by the owner's control plane",
     "seam": "context transfer ticket authority"
   },
   {
-    "path": "/v1/managed-kernels/context/ticket",
+    "path": "/v1/kernels/context/ticket",
     "callers": [
       "apps/cli/scripts/live-byom-account-drill.mjs",
       "apps/cli/scripts/live-owner-context-refusal-drill.mjs",
@@ -355,11 +283,11 @@
       "apps/kernel/src/managed_context/outbound_service.rs",
       "apps/kernel/src/managed_context/owner_authority.rs"
     ],
-    "why": "transfer tickets issued and completed by the owner's control plane; rename in OSS-boundary item 7",
+    "why": "transfer tickets issued and completed by the owner's control plane",
     "seam": "context transfer ticket authority"
   },
   {
-    "path": "/v1/managed-kernels/quiescence/ack",
+    "path": "/v1/kernels/quiescence/ack",
     "callers": [
       "apps/kernel/src/runtime/managed_kernel_quiescence.rs"
     ],
@@ -367,7 +295,7 @@
     "seam": "KernelQuiescence"
   },
   {
-    "path": "/v1/managed-kernels/quiescence/poll",
+    "path": "/v1/kernels/quiescence/poll",
     "callers": [
       "apps/kernel/src/runtime/managed_kernel_quiescence.rs"
     ],
@@ -375,7 +303,7 @@
     "seam": "KernelQuiescence"
   },
   {
-    "path": "/v1/managed-kernels/quiescence/release-ack",
+    "path": "/v1/kernels/quiescence/release-ack",
     "callers": [
       "apps/kernel/src/runtime/managed_kernel_quiescence.rs"
     ],
@@ -383,31 +311,12 @@
     "seam": "KernelQuiescence"
   },
   {
-    "path": "/v1/managed-kernels/reimage/runtime-identity",
+    "path": "/v1/kernels/runtime-identity",
     "callers": [
       "apps/kernel/src/managed_bootstrap/cloud.rs"
     ],
-    "why": "Cloud-only, deleted by OSS-boundary item 3 (rental plan): pre-reimage runtime identity",
-    "seam": "none; the path goes away",
-    "slice": "B3"
-  },
-  {
-    "path": "/v1/managed-kernels/release-update/artifact",
-    "callers": [
-      "apps/kernel/src/runtime/managed_release_update.rs"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary item 4 (rental plan item 3): in-place release update coordinated by Cloud",
-    "seam": "none; the path goes away",
-    "slice": "B6"
-  },
-  {
-    "path": "/v1/managed-kernels/release-update/poll",
-    "callers": [
-      "apps/kernel/src/runtime/managed_release_update.rs"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary item 4 (rental plan item 3): in-place release update coordinated by Cloud",
-    "seam": "none; the path goes away",
-    "slice": "B6"
+    "why": "Kernel-observed boot, machine and signed release identity reported to the enrollment authority",
+    "seam": "kernel runtime identity observation"
   },
   {
     "path": "/v1/messages",

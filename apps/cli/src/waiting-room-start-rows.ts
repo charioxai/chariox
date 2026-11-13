@@ -19,18 +19,8 @@ import {
 import { describeWaitingRoomWorktreeSelection, waitingRoomWorktreeDisabledHint } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 import { describeWaitingRoomProjectSelection } from "./waiting-room-projects.js"
-import {
-  DEFAULT_MANAGED_REPOSITORY_ROOT,
-  managedAutoStopLabel,
-  managedEnvironmentIsLaunchReady,
-  managedKernelContextLabel,
-  managedProviderAccountIsTransferable,
-  managedProviderAccountUnavailableLabel,
-  managedProviderAccountSelections,
-  selectedManagedEnvironment,
-  waitingRoomConfiguresNewManagedMachine,
-  waitingRoomProjectRepositoryOptions,
-} from "./waiting-room-managed-environments.js"
+import { waitingRoomConfiguresNewManagedMachine } from "./waiting-room-machine-allocation.js"
+import { waitingRoomProjectRepositoryOptions } from "./waiting-room-context-selection.js"
 
 export type WaitingRoomStartRowsChoice = {
   providerId: BackendProviderId
@@ -52,18 +42,9 @@ export function waitingRoomStartRows(
     | "projectNameDraft"
     | "sliceSelectionId"
     | "sliceDisplayMode"
-    | "managedComputeClass"
-    | "managedRegion"
-    | "managedKernelContext"
-    | "managedContextSourceTargetId"
     | "managedDevelopmentMode"
     | "managedRepositorySelection"
     | "managedRepositoryIndex"
-    | "managedProviderAccountSource"
-    | "managedProviderAccountSelection"
-    | "managedProviderAccountIndex"
-    | "managedGitCredentialSource"
-    | "managedAutoStopPreset"
     | "providerId"
     | "accountProfileId"
     | "modelId"
@@ -102,7 +83,6 @@ export function waitingRoomStartRows(
   const configuresManaged = waitingRoomConfiguresNewManagedMachine(state.selectedMachineRef)
   const configuresSliceDevelopment = !configuresManaged
     && Boolean(state.sliceSelectionId && state.sliceSelectionId !== "none")
-  const selectedEnvironment = selectedManagedEnvironment(state, remote)
   const managedRepositoryRows = waitingRoomManagedRepositoryRows(state, remote, options.titleWidth)
   const sliceDevelopmentRows: WaitingRoomRow[] = configuresSliceDevelopment
     ? [
@@ -114,14 +94,12 @@ export function waitingRoomStartRows(
     {
       id: "new",
       title: configuresManaged
-        ? "Create machine and start session"
-        : selectedEnvironment && !managedEnvironmentIsLaunchReady(selectedEnvironment)
-          ? "Start machine and session"
-          : choice.accountProfile && choice.accountProfile.auth_state !== "authenticated"
+        ? "Create machine"
+        : choice.accountProfile && choice.accountProfile.auth_state !== "authenticated"
             ? `${choice.accountProfile.auth_state === "unknown" ? "Check sign-in" : "Sign in"} ${choice.accountProfile.label}`
             : choice.accountProfile && providerAccountAdmissionBlocked(choice.accountProfile, Date.now(), choice.model?.id)
               ? "Choose account with quota" : "Start New Session",
-      value: configuresManaged && remote.managedRentUnavailable ? remote.managedRentUnavailable : "Press Enter",
+      value: "Press Enter",
       titleWidth: options.titleWidth,
       indent: 0,
       focused: state.focus === "new",
@@ -138,18 +116,6 @@ export function waitingRoomStartRows(
       selectable: true,
       scrollbar: "",
     },
-    ...(selectedEnvironment
-      ? [{
-          id: "managed-environment-repository-root",
-          title: "Trusted repository root",
-          value: selectedEnvironment.managedRepositoryRoot,
-          titleWidth: options.titleWidth,
-          indent: 2,
-          focused: false,
-          selectable: false,
-          scrollbar: "",
-        }]
-      : []),
     {
       id: "launch-kernel",
       title: "Kernel",
@@ -364,61 +330,14 @@ function waitingRoomManagedRepositoryRows(
   ]
 }
 
-export function waitingRoomManagedMachineDialogRows(
-  state: WaitingRoomState,
-  remote: WaitingRoomRemoteState = {},
-  titleWidth = 28,
-): WaitingRoomRow[] {
-  const repositoryRows = waitingRoomManagedRepositoryRows(state, remote, titleWidth)
-  const accountSelections = managedProviderAccountSelections(state, remote)
+export function waitingRoomMachineOfferRows(_state: WaitingRoomState, remote: WaitingRoomRemoteState = {}, titleWidth = 28): WaitingRoomRow[] {
+  const offer = remote.machineAllocationCapability?.offer
+  if (!offer) return []
   return [
-    startRow("managed-compute", "Compute class", state.managedComputeClass ?? "Unavailable", state, titleWidth),
-    startRow("managed-region", "Region", state.managedRegion ?? "Unavailable", state, titleWidth),
-    startRow(
-      "managed-repository-root",
-      "Trusted repository root",
-      state.managedRepositoryRoot ?? DEFAULT_MANAGED_REPOSITORY_ROOT,
-      state,
-      titleWidth,
-    ),
-    startRow("managed-kernel-context", "Kernel context from", managedKernelContextLabel(state, remote), state, titleWidth),
-    startRow("managed-development", "Development setup", state.managedDevelopmentMode === "current_project" ? "Current Project" : "Empty", state, titleWidth),
-    ...repositoryRows,
-    startRow(
-      "managed-provider-accounts",
-      "Provider accounts source",
-      state.managedProviderAccountSource === "none" ? "None" : `${accountSelections.length} selected`,
-      state,
-      titleWidth,
-    ),
-    ...(remote.providerAccounts ?? []).map((profile, managedProviderAccountIndex): WaitingRoomRow => {
-      const transferable = managedProviderAccountIsTransferable(profile)
-      const included = accountSelections.some((selection) => (
-        selection.provider === profile.provider && selection.accountProfile === profile.profile_id
-      ))
-      return {
-        id: `managed-provider-account:${profile.provider}:${profile.profile_id}`,
-        title: profile.label,
-        value: `${formatManagedProviderAccountFamily(profile.provider)} · ${included
-          ? transferable ? "Included" : `Included, ${managedProviderAccountUnavailableLabel(profile)}`
-          : transferable ? "Excluded" : `Unavailable, ${managedProviderAccountUnavailableLabel(profile)}`}`,
-        titleWidth,
-        indent: 2,
-        focused: state.focus === "managed-provider-account"
-          && (state.managedProviderAccountIndex ?? 0) === managedProviderAccountIndex,
-        selectable: transferable,
-        scrollbar: "",
-      }
-    }),
-    startRow(
-      "managed-git-credentials",
-      "Git credentials source",
-      state.managedGitCredentialSource === "none" ? "None" : "GitHub",
-      state,
-      titleWidth,
-    ),
-    startRow("managed-auto-stop", "Auto-stop policy", managedAutoStopLabel(state), state, titleWidth),
-  ]
+    ["Machine type", offer.machine_type], ["CPU", String(offer.vcpu)], ["Memory", `${offer.ram_gb} GB`],
+    ["Disk", `${offer.disk_gb} GB`], ["Location", offer.location],
+    ["Terms", `${offer.terms.amount} ${offer.terms.currency}/${offer.terms.period}`],
+  ].map(([title, value]) => ({ id: `machine-offer:${title}`, title: title!, value: value!, titleWidth, indent: 1, focused: false, selectable: false, scrollbar: "" }))
 }
 
 function startRow(
@@ -451,12 +370,6 @@ function formatTitleCase(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1)
 }
 
-function formatManagedProviderAccountFamily(provider: string): string {
-  if (provider === "opencode") return "OpenCode"
-  if (provider === "codex") return "Codex"
-  if (provider === "claude") return "Claude"
-  return formatTitleCase(provider)
-}
 
 function formatBackendProviderLabel(providerId: BackendProviderId) {
   return backendProviderLabel(providerId)

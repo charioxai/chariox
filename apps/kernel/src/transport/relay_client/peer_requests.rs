@@ -160,7 +160,7 @@ pub(super) async fn handle_daemon_peer_request(
     }
     let disposable_home_caller =
         if router.kernel_runtime_role() == crate::config::KernelRuntimeRole::RemoteLeaseWorker {
-            router.confirmed_disposable_worker_home_caller().ok()
+            router.enrolled_lease_worker_home_caller().ok()
         } else {
             None
         };
@@ -5906,7 +5906,7 @@ mod tests {
                         continue;
                     };
                     let headers = String::from_utf8_lossy(&request[..header_end]);
-                    assert!(headers.starts_with("POST /v1/managed-kernels/context/complete "));
+                    assert!(headers.starts_with("POST /v1/kernels/context/complete "));
                     let content_length = headers
                         .lines()
                         .find_map(|line| {

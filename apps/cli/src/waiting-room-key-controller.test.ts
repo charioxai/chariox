@@ -5,7 +5,7 @@ import { fallbackProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
-import { NEW_MANAGED_MACHINE_REF } from "./waiting-room-managed-environments.js"
+import { NEW_MACHINE_ALLOCATION_REF } from "./waiting-room-machine-allocation.js"
 import {
   createWaitingRoomKeyController,
   type WaitingRoomKeyControllerDeps,
@@ -89,7 +89,7 @@ test("waiting room key controller opens managed configuration from the Machine f
   const harness = createHarness({
     state: waitingRoomState({
       focus: "launch-machine",
-      selectedMachineRef: NEW_MANAGED_MACHINE_REF,
+      selectedMachineRef: NEW_MACHINE_ALLOCATION_REF,
     }),
   })
 
@@ -102,10 +102,10 @@ test("Machine navigation waits for Enter before opening managed configuration", 
   for (const name of ["right", "left"]) {
     const harness = createHarness({
       state: waitingRoomState({ focus: "launch-machine", selectedMachineRef: "local" }),
-      remote: { managedEnvironments: [] },
+      remote: { machineAllocationOffered: true },
     })
     assert.equal(harness.controller.handleKey({ name, eventType: "press" }), true)
-    assert.equal(harness.reconciledStates().at(-1)?.selectedMachineRef, NEW_MANAGED_MACHINE_REF)
+    assert.equal(harness.reconciledStates().at(-1)?.selectedMachineRef, NEW_MACHINE_ALLOCATION_REF)
     assert.deepEqual(harness.calls(), ["reconcile"])
     assert.equal(harness.controller.handleKey({ name: "enter", eventType: "press" }), true)
     assert.deepEqual(harness.calls(), ["reconcile", "open-managed-machine"])

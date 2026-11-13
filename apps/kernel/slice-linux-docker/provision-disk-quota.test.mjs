@@ -97,12 +97,11 @@ test("managed saved-home restore mounts its verified archive directory read-only
 })
 
 test("fresh quota driver selection is gated by the exact XFS project-quota mount", async () => {
-  const [service, allocator, backend, unit, installer] = await Promise.all([
+  const [service, allocator, backend, unit] = await Promise.all([
     read("./managed-rootless-service.sh"),
     read("./slice-disk-quota-allocator.mjs"),
     read("./slice-disk-quota-xfs-backend.mjs"),
     read("./chariox-slice-disk-quota-allocator.service"),
-    read("../../../deploy/managed-kernel/install-image.sh"),
   ])
   assert.match(service, /\[ \"\$1\" = \"\$ROOTLESS_DATA_ROOT\" \] && \[ \"\$2\" = xfs \]/)
   assert.match(service, /pquota,\*\|\*,prjquota,\*/)
@@ -123,16 +122,6 @@ test("fresh quota driver selection is gated by the exact XFS project-quota mount
   assert.match(unit, /Group=chariox-docker/)
   assert.doesNotMatch(unit, /BindReadOnlyPaths=.*allocator\.sock/)
   assert.match(unit, /slice-disk-quota-service\.mjs/)
-  assert.match(installer, /slice-disk-quota-xfs-backend\.mjs/)
-})
-
-test("shared allocator coordination helper is packaged and writable to the broker only at its state root", async () => {
-  const [brokerUnit, installer] = await Promise.all([
-    read("../../../deploy/managed-kernel/chariox-slice-broker.service"),
-    read("../../../deploy/managed-kernel/install-image.sh"),
-  ])
-  assert.match(brokerUnit, /ReadWritePaths=.*\/var\/lib\/chariox-slice-disk-quota/)
-  assert.match(installer, /slice-disk-quota-coordinator\.mjs/)
 })
 
 test("MP-03/MP-10/MP-11 paired disk-cap fields remain covered by the current union protocol", async () => {

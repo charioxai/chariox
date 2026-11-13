@@ -147,8 +147,12 @@ export const NEUTRAL_DEPLOY_ROOT = 'deploy/managed-kernel/'
 const NEUTRAL_DEPLOY_PATTERNS = [['connected-service word', /(?<![A-Za-z0-9])cloud(?![A-Za-z0-9]|-init)/i]]
 
 export const providerNameFindings = (path, text) => patternFindings(path, text, PROVIDER_PATTERNS)
-export const vocabularyFindings = (path, text) => patternFindings(path, text,
-  path.startsWith(NEUTRAL_DEPLOY_ROOT) ? [...VOCABULARY_PATTERNS, ...NEUTRAL_DEPLOY_PATTERNS] : VOCABULARY_PATTERNS)
+const ENROLLMENT_AUTHORITY_POLICY = ['enrollment authority policy', /provider_rebuild_action_id|expected_data_volume_serial|expected_data_volume_size_gb|freshness_evidence/]
+export const vocabularyFindings = (path, text) => patternFindings(path, text, [
+  ...VOCABULARY_PATTERNS,
+  ...(path.startsWith(NEUTRAL_DEPLOY_ROOT) ? NEUTRAL_DEPLOY_PATTERNS : []),
+  ...(path.startsWith('apps/kernel/src/managed_bootstrap/') ? [ENROLLMENT_AUTHORITY_POLICY] : []),
+])
 
 // Product code for the path and request checks; the whole-file list only excuses names and vocabulary.
 const isProductPath = path => !SELF_FILES.has(path) && !EXEMPT_PATH.test(path)

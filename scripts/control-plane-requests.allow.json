@@ -36,15 +36,7 @@
     "why": "generic seam: kernel-to-kernel context transfer; Cloud only issues the transfer ticket"
   },
   {
-    "name": "LocalDaemonRequest::ObserveManagedEnvironmentPreReimage",
-    "why": "Cloud-only, deleted by OSS-boundary item 3 (rental plan: reimage)"
-  },
-  {
     "name": "packages/kernel-client/src/ipc-managed-context-requests.ts",
     "why": "generic seam: builders for kernel-to-kernel context transfer"
-  },
-  {
-    "name": "packages/kernel-client/src/ipc-managed-environment-requests.ts",
-    "why": "Cloud-only, deleted by OSS-boundary item 3 (rental plan): only the response types and the pre-reimage observation builder remain"
   }
 ]

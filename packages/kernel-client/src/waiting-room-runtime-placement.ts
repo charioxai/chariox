@@ -19,26 +19,13 @@ export type WaitingRoomLaunchConnectedKernelInput = {
 }
 
 export type WaitingRoomLaunchRemoteState = {
+  machineAllocationOffered?: boolean
   machines?: readonly WaitingRoomLaunchMachineInput[]
   kernels?: readonly WaitingRoomLaunchKernelInput[]
-  managedEnvironments?: readonly WaitingRoomLaunchManagedEnvironmentInput[]
   relay?: WaitingRoomLaunchConnectedKernelInput | null
 }
 
-export type WaitingRoomLaunchManagedEnvironmentInput = {
-  environmentId: string
-  name: string
-  desiredState: "running" | "stopped" | "deleted"
-  observedState: string
-  desiredRevision: number
-  observedRevision: number
-  runtimeMachineId: string | null
-  runtimeKernelId: string | null
-  contextManifestDigest?: string | null
-}
-
-export const NEW_MANAGED_MACHINE_REF = "managed:new"
-const managedEnvironmentRefPrefix = "managed:environment:"
+export const NEW_MACHINE_ALLOCATION_REF = "allocation:new"
 
 export type WaitingRoomLaunchPlacementState = {
   selectedMachineRef?: string | null
@@ -49,7 +36,6 @@ export type WaitingRoomLaunchMachineOption<TMachine extends WaitingRoomLaunchMac
   id: string
   label: string
   machine: TMachine | null
-  managedEnvironment: WaitingRoomLaunchManagedEnvironmentInput | null
 }
 
 export type WaitingRoomLaunchKernelOption<TKernel extends WaitingRoomLaunchKernelInput = WaitingRoomLaunchKernelInput> = {
@@ -62,37 +48,13 @@ export type WaitingRoomLaunchKernelOption<TKernel extends WaitingRoomLaunchKerne
 export function waitingRoomLaunchMachineOptions<TMachine extends WaitingRoomLaunchMachineInput>(
   remote: {
     machines?: readonly TMachine[]
-    managedEnvironments?: readonly WaitingRoomLaunchManagedEnvironmentInput[]
+    machineAllocationOffered?: boolean
   } = {},
 ): WaitingRoomLaunchMachineOption<TMachine>[] {
-  // A managed machine is offered once, as its environment, whose kernels are the same machine's.
-  const managedMachineIds = new Set((remote.managedEnvironments ?? [])
-    .filter((environment) => environment.desiredState !== "deleted")
-    .flatMap((environment) => environment.runtimeMachineId ? [environment.runtimeMachineId] : []))
   return [
-    { id: "local", label: "local", machine: null, managedEnvironment: null },
-    ...(remote.machines ?? []).filter((machine) => !managedMachineIds.has(machine.machine_id)).map((machine) => ({
-      id: machine.machine_id,
-      label: machine.machine_alias ?? machine.display_name ?? machine.machine_id,
-      machine,
-      managedEnvironment: null,
-    })),
-    ...(remote.managedEnvironments ?? [])
-      .filter((environment) => environment.desiredState !== "deleted")
-      .map((environment) => ({
-        id: managedEnvironmentMachineRef(environment.environmentId),
-        label: `${environment.name} · ${managedEnvironmentStatusLabel(environment)}`,
-        machine: null,
-        managedEnvironment: environment,
-      })),
-    ...(remote.managedEnvironments !== undefined
-      ? [{
-          id: NEW_MANAGED_MACHINE_REF,
-          label: "+ New Chariox-managed machine...",
-          machine: null,
-          managedEnvironment: null,
-        }]
-      : []),
+    { id: "local", label: "local", machine: null },
+    ...(remote.machines ?? []).map(machine => ({ id: machine.machine_id, label: machine.machine_alias ?? machine.display_name ?? machine.machine_id, machine })),
+    ...(remote.machineAllocationOffered ? [{ id: NEW_MACHINE_ALLOCATION_REF, label: "+ New machine...", machine: null }] : []),
   ]
 }
 
@@ -102,20 +64,14 @@ export function waitingRoomSelectedLaunchMachineRef(
 ): string {
   const options = waitingRoomLaunchMachineOptions(remote)
   const selected = state.selectedMachineRef?.trim() || "local"
-  if (selected === NEW_MANAGED_MACHINE_REF || managedEnvironmentIdFromMachineRef(selected)) {
-    return selected
-  }
-  const managed = remote.managedEnvironments?.find((environment) => (
-    environment.desiredState !== "deleted" && environment.runtimeMachineId === selected
-  ))
-  if (managed) return managedEnvironmentMachineRef(managed.environmentId)
+  if (selected === NEW_MACHINE_ALLOCATION_REF) return selected
   return options.some((option) => option.id === selected) ? selected : options[0]?.id ?? "local"
 }
 
 export function waitingRoomLaunchKernelOptions<TKernel extends WaitingRoomLaunchKernelInput>(
   remote: {
     kernels?: readonly TKernel[]
-    managedEnvironments?: readonly WaitingRoomLaunchManagedEnvironmentInput[]
+    machineAllocationOffered?: boolean
     relay?: WaitingRoomLaunchConnectedKernelInput | null
   } = {},
   machineRef = "local",
@@ -123,14 +79,7 @@ export function waitingRoomLaunchKernelOptions<TKernel extends WaitingRoomLaunch
   if (machineRef === "local") {
     return [{ id: "local", label: "local", machineId: "local", kernel: null }]
   }
-  const managedEnvironmentId = managedEnvironmentIdFromMachineRef(machineRef)
-  if (managedEnvironmentId) {
-    const environment = remote.managedEnvironments
-      ?.find((candidate) => candidate.environmentId === managedEnvironmentId)
-    if (!environment || !managedEnvironmentIsReady(environment)) return []
-    machineRef = environment.runtimeMachineId!
-  }
-  if (machineRef === NEW_MANAGED_MACHINE_REF) return []
+  if (machineRef === NEW_MACHINE_ALLOCATION_REF) return []
   const options: WaitingRoomLaunchKernelOption<TKernel>[] = (remote.kernels ?? [])
     .filter((kernel) => kernel.machine_id === machineRef)
     .map((kernel) => ({
@@ -161,10 +110,6 @@ export function waitingRoomSelectedLaunchKernelRef(
   const machineRef = waitingRoomSelectedLaunchMachineRef(state, remote)
   const options = waitingRoomLaunchKernelOptions(remote, machineRef)
   const selected = state.selectedKernelRef?.trim() || (machineRef === "local" ? "local" : "")
-  const environmentId = managedEnvironmentIdFromMachineRef(machineRef)
-  const environment = remote.managedEnvironments?.find((candidate) => candidate.environmentId === environmentId)
-  // MP-02/MP-08/MP-11: retain the owner while lifecycle and online inventory converge.
-  if (environment?.contextManifestDigest && selected) return selected
   return options.some((option) => option.id === selected) ? selected : options[0]?.id ?? ""
 }
 
@@ -175,21 +120,15 @@ export function waitingRoomLaunchPlacement(
   machineRef: string
   kernelRef: string
   workerKernelRef: string | null
-  managedEnvironmentId: string | null
-  newManagedEnvironment: boolean
+  newMachineAllocation: boolean
 } {
   const machineRef = waitingRoomSelectedLaunchMachineRef(state, remote)
   const kernelRef = waitingRoomSelectedLaunchKernelRef(state, remote)
-  const environment = remote.managedEnvironments?.find((candidate) => (
-    candidate.environmentId === managedEnvironmentIdFromMachineRef(machineRef)
-  ))
   return {
-    machineRef: environment && managedEnvironmentIsReady(environment)
-      ? environment.runtimeMachineId as string : machineRef,
+    machineRef,
     kernelRef,
     workerKernelRef: null,
-    managedEnvironmentId: managedEnvironmentIdFromMachineRef(machineRef),
-    newManagedEnvironment: machineRef === NEW_MANAGED_MACHINE_REF,
+    newMachineAllocation: machineRef === NEW_MACHINE_ALLOCATION_REF,
   }
 }
 
@@ -208,11 +147,8 @@ export function formatWaitingRoomLaunchKernelValue(
   const machineRef = waitingRoomSelectedLaunchMachineRef(state, remote)
   const selected = waitingRoomSelectedLaunchKernelRef(state, remote)
   if (!selected) {
-    if (machineRef === NEW_MANAGED_MACHINE_REF) return "created during launch"
-    const environmentId = managedEnvironmentIdFromMachineRef(machineRef)
-    const environment = remote.managedEnvironments
-      ?.find((candidate) => candidate.environmentId === environmentId)
-    return environment ? managedEnvironmentStatusLabel(environment) : "none available"
+    if (machineRef === NEW_MACHINE_ALLOCATION_REF) return "created on acquisition"
+    return "none available"
   }
   return waitingRoomLaunchKernelOptions(remote, machineRef).find((option) => option.id === selected)?.label ?? selected
 }
@@ -258,7 +194,7 @@ export function cycleWaitingRoomLaunchKernel<TState extends WaitingRoomLaunchPla
   const next = options[modulo(index + delta, options.length)] ?? options[0]
   return {
     ...state,
-    selectedMachineRef: managedEnvironmentIdFromMachineRef(machineRef) ? machineRef : next?.machineId ?? machineRef,
+    selectedMachineRef: next?.machineId ?? machineRef,
     selectedKernelRef: next?.id ?? "",
   }
 }
@@ -268,28 +204,4 @@ function modulo(value: number, size: number) {
     return 0
   }
   return ((value % size) + size) % size
-}
-
-export function managedEnvironmentMachineRef(environmentId: string): string {
-  return `${managedEnvironmentRefPrefix}${environmentId}`
-}
-
-export function managedEnvironmentIdFromMachineRef(machineRef: string | null | undefined): string | null {
-  const value = machineRef?.trim() ?? ""
-  return value.startsWith(managedEnvironmentRefPrefix)
-    ? value.slice(managedEnvironmentRefPrefix.length) || null
-    : null
-}
-
-function managedEnvironmentIsReady(environment: WaitingRoomLaunchManagedEnvironmentInput): boolean {
-  return environment.desiredState === "running"
-    && environment.observedState === "ready"
-    && environment.desiredRevision === environment.observedRevision
-    && Boolean(environment.runtimeMachineId)
-    && Boolean(environment.runtimeKernelId)
-}
-
-function managedEnvironmentStatusLabel(environment: WaitingRoomLaunchManagedEnvironmentInput): string {
-  if (managedEnvironmentIsReady(environment)) return "ready"
-  return environment.observedState.replaceAll("_", " ")
 }

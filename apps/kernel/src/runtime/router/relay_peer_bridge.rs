@@ -96,10 +96,10 @@ impl CommandRouter {
         self.config_projection.snapshot().kernel_runtime_role
     }
 
-    pub(crate) fn confirmed_disposable_worker_home_caller(
+    pub(crate) fn enrolled_lease_worker_home_caller(
         &self,
-    ) -> Result<crate::managed_bootstrap::worker::CloudHomeCaller, DaemonError> {
-        crate::managed_bootstrap::worker::confirmed_disposable_worker_home_caller(
+    ) -> Result<crate::config::LeaseWorkerHomeCaller, DaemonError> {
+        crate::lease_worker_enrollment::enrolled_lease_worker_home_caller(
             &self.config_projection.snapshot(),
         )?
         .ok_or_else(|| DaemonError::KernelRuntimeRoleDenied {

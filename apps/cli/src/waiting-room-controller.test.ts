@@ -19,7 +19,7 @@ import {
 import type { SessionListEntry } from "./sessions.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
-import { NEW_MANAGED_MACHINE_REF, managedEnvironmentMachineRef } from "./waiting-room-managed-environments.js"
+import { NEW_MACHINE_ALLOCATION_REF } from "./waiting-room-machine-allocation.js"
 import type { ProviderAccountProfile } from "@chariox/kernel-client"
 import {
   __setWaitingRoomWorktreeInventoryForTest,
@@ -101,17 +101,6 @@ test("MP-08 / MP-11 existing slice launch defers authentication to its worker", 
     assert.equal(deriveWaitingRoomCreateSessionDecision({ ...options, state: { ...state, sliceSelectionId: "new" } }).action, "error")
     assert.equal(deriveWaitingRoomCreateSessionDecision({ ...options, state: { ...state, sliceSelectionId: "none" } }).action, "error")
   } finally { __setWaitingRoomWorktreeInventoryForTest(null) }
-})
-
-test("MP-08 / MP-11 Start prepares an existing managed machine before sign-in interception", () => {
-  const remote = {
-    providerAccounts: [{ provider: "codex", profile_id: "home-default", label: "Home", is_default: true, auth_state: "not_configured" }] as ProviderAccountProfile[],
-  }
-  const state = { ...waitingRoomState(), providerId: "codex" as const, accountProfileId: "home-default", selectedMachineRef: managedEnvironmentMachineRef("environment-1") }
-  const options = { state, remote, workspacePath: "/workspace", worktreePath: "/workspace" }
-  assert.deepEqual(deriveWaitingRoomControlActivationDecision(options), { action: "none" })
-  // The same unauthenticated account on an ordinary local launch offers login.
-  assert.equal(deriveWaitingRoomControlActivationDecision({ ...options, state: { ...state, selectedMachineRef: "local" } }).action, "stage-command")
 })
 
 test("waiting room activation stages existing worktree selections for session creation", async () => {
@@ -566,9 +555,7 @@ test("deriveWaitingRoomActivationDecision returns join and error decisions for s
 
 test("managed draft errors do not block joins or unattached-agent actions", () => {
   const invalidManagedDraft = {
-    selectedMachineRef: NEW_MANAGED_MACHINE_REF,
-    managedComputeClass: "retired-class",
-    managedRegion: "retired-region",
+    selectedMachineRef: NEW_MACHINE_ALLOCATION_REF,
   } satisfies Partial<WaitingRoomState>
   const sessions = [session("session-1")]
   const join = deriveWaitingRoomActivationDecision({
@@ -579,9 +566,6 @@ test("managed draft errors do not block joins or unattached-agent actions", () =
     currentModel: "opencode/gpt-5.4",
   })
   assert.equal(join.action, "join")
-  if (join.action === "join") {
-    assert.equal(join.launch.managedEnvironment, undefined)
-  }
 
   assert.deepEqual(deriveWaitingRoomActivationDecision({
     state: waitingRoomState({ ...invalidManagedDraft, focus: "external-session" }),
@@ -1234,3 +1218,11 @@ function catalog(): ProviderCatalog {
     connected: ["codex", "opencode", "anthropic"],
   }
 }
+
+test("the new machine selection acquires the service offer before account or workspace admission", () => {
+  const capability = { revision: "offer-1", actions: ["acquire"], offer: { machine_type: "Standard", vcpu: 4, ram_gb: 8, disk_gb: 50, location: "Site A", terms: { amount: "1.00", currency: "EUR", period: "hour" as const } } }
+  const options = { state: waitingRoomState({ selectedMachineRef: NEW_MACHINE_ALLOCATION_REF }), catalog: fallbackProviderCatalog(), currentProvider: "codex" as const, currentModel: "gpt-5.4", remote: { machineAllocationCapability: capability, machineAllocationOffered: true } }
+  assert.deepEqual(deriveWaitingRoomCreateSessionDecision(options), { action: "acquire-machine", capability })
+  assert.deepEqual(deriveWaitingRoomActivationDecision({ ...options, sessions: [] }), { action: "acquire-machine", capability })
+  assert.equal(deriveWaitingRoomCreateSessionDecision({ ...options, remote: {} }).action, "error")
+})

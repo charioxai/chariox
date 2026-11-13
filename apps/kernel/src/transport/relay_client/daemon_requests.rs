@@ -1349,11 +1349,11 @@ mod tests {
     }
 
     #[test]
-    fn pre_reimage_observation_uses_the_normal_encrypted_daemon_request_envelope() {
+    fn runtime_identity_observation_uses_the_normal_encrypted_daemon_request_envelope() {
         let payload = serde_json::json!({
             "command_id": "observe-1",
             "request": {
-                "ObserveManagedEnvironmentPreReimage": {
+                "ObserveKernelRuntimeIdentity": {
                     "environmentId": "environment-1",
                     "expectedGeneration": 4
                 }
@@ -1367,8 +1367,8 @@ mod tests {
         assert_eq!(request.command_id.as_deref(), Some("observe-1"));
         assert!(matches!(
             request.request,
-            crate::local::LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
-                crate::local::ObserveManagedEnvironmentPreReimageRequest {
+            crate::local::LocalDaemonRequest::ObserveKernelRuntimeIdentity(
+                crate::local::ObserveKernelRuntimeIdentityRequest {
                     environment_id,
                     expected_generation: 4,
                 }

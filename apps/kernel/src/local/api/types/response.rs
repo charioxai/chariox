@@ -263,7 +263,7 @@ pub enum LocalDaemonResponse {
     CredentialVaultKeySealed { seed: crate::secret::VaultKeySeed, },
     CredentialVaultManaged { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
     ProviderAccountPortabilityPreflightPassed {},
-    ManagedEnvironmentPreReimageObserved { acknowledgement: ManagedEnvironmentPreReimageObservationAcknowledgement, },
+    KernelRuntimeIdentityObserved { acknowledgement: KernelRuntimeIdentityObservationAcknowledgement, },
     ManagedContextTransferStarted { status: crate::managed_context::outbound_service::ManagedContextOutboundOperationStatus, },
     ManagedContextTransferStatus { status: crate::managed_context::outbound_service::ManagedContextOutboundOperationStatus, },
     ManagedContextLaunchTarget { target: ManagedContextLaunchTarget, },

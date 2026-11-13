@@ -163,7 +163,6 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: allocated 371 pairs the embedded local response union with local 920.
 /// 374 pairs the embedded local response union with local 923 (`CredentialVaultUnlocked`).
 /// Landing union 374 pairs the embedded local union with local 923 (it carries peers 364, 370 and 371).
-/// Allocated 375 pairs the embedded local response union with local 924 (opaque reimage `providerId`).
 /// MP-08/MP-09/MP-10/MP-11: 376 pairs local 925 (the relay close's `kernel_reload`).
 /// 377 pairs the embedded local union with local 926 (direct data channel liveness).
 /// 378 pairs the embedded local union with local 927 (`SessionProcess.state`, `StartSessionProcessNow`).

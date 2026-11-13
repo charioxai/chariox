@@ -1,8 +1,10 @@
+import { acquireMachineAllocation, getMachineAllocation, machineAllocationCapability, type MachineAllocationCapability } from "./machine-allocation-api.js"
+import { WaitingRoomMachineAllocationController } from "./waiting-room-machine-allocation-controller.js"
+import { waitingRoomAllocationRemoteState } from "./waiting-room-machine-allocation.js"
 import type { LocalIpcClient } from "./ipc.js"
 import { normalizeProviderAccountProfileId } from "./waiting-room-provider-accounts.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import { createWaitingRoomWorkspaceController, createWaitingRoomWorkspacePlacementController, waitingRoomWorkspaceSelection } from "./waiting-room-workspace-controller.js"
-import { getCloudClientControlProfile } from "./cloud-client-control.js"
 import type { CloudClient } from "./cloud-client.js"
 import { createCloudWaitingRoomController } from "./cloud-waiting-room-controller.js"
 import { randomUUID } from "node:crypto"
@@ -11,7 +13,6 @@ import { updateAgentConfig, updateAgentProfile } from "./agent-api.js"
 import { createDetachedKernelConnectController } from "./detached-kernel-connect-controller.js"
 import { importExternalProviderSession, listExternalProviderSessions } from "./external-provider-session-api.js"
 import type { SliceRecord } from "./cli-types.js"
-import { prepareWaitingRoomEnrolledLaunch, waitingRoomManagedEnvironmentKernelRef } from "./waiting-room-enrolled-launch.js"
 import {
   saveProviderPreferences,
   saveUiPreferences,
@@ -19,7 +20,7 @@ import {
   relayCloudProfile,
 } from "./preferences.js"
 import { loadLocalKernelPresences } from "./local-kernel-presence.js"
-import { browseWaitingRoomKernelWorkspace, createWaitingRoomKernelConnectionController } from "./waiting-room-kernel-client.js"
+import { createWaitingRoomKernelConnectionController } from "./waiting-room-kernel-client.js"
 import {
   getProviderAuthStatus,
   getProviderCatalog,
@@ -43,26 +44,9 @@ import {
 import { applyTheme } from "./theme.js"
 import {
   createWaitingRoomActivationController,
-  type WaitingRoomPreparedManagedLaunch,
 } from "./waiting-room-activation-controller.js"
 import { cliWaitingRoomSliceApiOptions } from "./waiting-room-slice-api-options.js"
 import type { WaitingRoomLaunchConfig } from "./waiting-room-controller.js"
-import {
-  createManagedEnvironment,
-  listManagedEnvironmentCatalog,
-  getManagedContextLaunchTarget,
-  getManagedContextTransferStatus,
-  getManagedEnvironment,
-  getManagedEnvironmentReimagePreflight,
-  observeManagedEnvironmentPreReimage,
-  prepareManagedEnvironmentContextTransfer,
-  requestManagedEnvironmentLifecycle,
-  requestManagedEnvironmentReimage,
-  startManagedContextTransfer,
-} from "./managed-environment-api.js"
-import {
-  WaitingRoomManagedEnvironmentLaunchController,
-} from "./waiting-room-managed-environment-launch-controller.js"
 import { getWaitingRoomInventory } from "./waiting-room-inventory-api.js"
 import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
 import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
@@ -79,24 +63,10 @@ import {
   renameProject,
   restoreProject,
 } from "./project-api.js"
-import type {
-  ManagedEnvironmentCatalog,
-  ManagedEnvironmentSummary,
-} from "@chariox/kernel-client/ipc-managed-environment-requests"
 import {
   clearStagedWaitingRoomWorktreeSelection,
 } from "./waiting-room-worktrees.js"
 import { existingProjectSelectionId } from "./waiting-room-projects.js"
-import {
-  managedEnvironmentMachineRef,
-  selectedManagedEnvironment,
-  SIGNED_OUT_MANAGED_CATALOG,
-  waitingRoomManagedCatalogRemoteState,
-  waitingRoomStateAfterFailedRent,
-} from "./waiting-room-managed-environments.js"
-import {
-  WaitingRoomManagedEnvironmentReimageController,
-} from "./waiting-room-managed-environment-reimage-controller.js"
 import {
   type MutableLocalIpcClientPivot,
 } from "./mutable-local-ipc-client.js"
@@ -197,7 +167,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   const cachedWaitingRoomInventories = waitingRoomInventoryCache.load()
   let providerCatalogSelectionRevision = 0
   let manualKernelSelectionGeneration = 0
-  let managedEnvironmentCatalog: ManagedEnvironmentCatalog | undefined
+  let allocationCapability: MachineAllocationCapability | null | undefined
   let homeKernelId: string | null = null
   let homeMachineId: string | null = null
   let sourceLaunchTarget: { workspaceId: string; worktreeId: string } | null | undefined
@@ -205,7 +175,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     ...(sourceLaunchTarget
       ? { workspaceId: sourceLaunchTarget.workspaceId, worktreeId: sourceLaunchTarget.worktreeId }
       : {}),
-    ...waitingRoomManagedCatalogRemoteState(managedEnvironmentCatalog),
+    ...waitingRoomAllocationRemoteState(allocationCapability),
   })
   let workspacePlacementController: ReturnType<typeof createWaitingRoomWorkspacePlacementController> | undefined
   const kernelConnectionController = createWaitingRoomKernelConnectionController({
@@ -231,7 +201,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     setWorktree: deps.setPendingWorktreeTarget,
     resetSelection: () => deps.setWaitingRoomStateProjection({ ...deps.waitingRoomState(), worktreeSelectionId: "", projectSelectionId: "default" }),
     send: (request) => deps.client.send(request),
-    getSelection: () => waitingRoomWorkspaceSelection(deps.waitingRoomState(), { machineId: homeMachineId, kernelId: homeKernelId }, managedEnvironmentCatalog?.environments ?? []),
+    getSelection: () => waitingRoomWorkspaceSelection(deps.waitingRoomState(), { machineId: homeMachineId, kernelId: homeKernelId }),
     withClient: (token, read) => kernelConnectionController.readWorkspace({
       ...token, isActive: () => waitingRoomWorkspaceController.isCurrent(token),
     }, read),
@@ -316,17 +286,10 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   const reconcileWaitingRoom = waitingRoomReconcileController.reconcile
   const reconcileWaitingRoomProjection = waitingRoomReconcileController.reconcileProjection
 
-  const controlProfile = async () => {
-    const profile = await getCloudClientControlProfile(deps.cloudClient, deps.kernelConnected() ? deps.client : undefined)
-    if (!profile) throw new Error("Sign in with /cloud login before controlling managed machines")
-    return profile
-  }
   const getInventoryForClient = (client: LocalIpcClient) => getWaitingRoomInventory(client, async () => {
-    try {
-      const profile = await getCloudClientControlProfile(deps.cloudClient, client)
-      return profile ? await listManagedEnvironmentCatalog(profile) : SIGNED_OUT_MANAGED_CATALOG
-    } catch (error) {
-      deps.appLogger?.warn("failed to load managed machine catalog", {error: deps.formatError(error)})
+    try { return await machineAllocationCapability(client) }
+    catch (error) {
+      deps.appLogger?.warn("failed to read machine allocation capability", { error: deps.formatError(error) })
       return undefined
     }
   })
@@ -358,10 +321,10 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     setRemoteKernels: deps.setRemoteKernelsState,
     setProviderAccountCopyOffers: offers => deps.setProviderAccountCopyOffersState?.(offers),
     setProviderAccounts: deps.setProviderAccountsState,
-    setManagedEnvironmentCatalog: (catalog) => {
-      managedEnvironmentCatalog = catalog
+    setMachineAllocationCapability: (capability) => {
+      allocationCapability = capability
     },
-    getManagedEnvironmentCatalogScope: (inventory) => {
+    getMachineAllocationCapabilityScope: (inventory) => {
       const profile = relayCloudProfile(deps.preferencesState())
       return JSON.stringify([
         inventory.kernelId,
@@ -416,12 +379,10 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   const refreshWaitingRoomDataNow = async () => {
     if (!deps.kernelConnected()) return refreshCloudDirectory()
     await waitingRoomInventoryRefreshController.refreshNow()
-    await workspacePlacementController?.refreshDisabledWorkspace()
   }
   const refreshWaitingRoomData = async () => {
     if (!deps.kernelConnected()) return refreshCloudDirectory()
     await waitingRoomInventoryRefreshController.refresh()
-    await workspacePlacementController?.refreshDisabledWorkspace()
   }
   const applyWaitingRoomTransportClosed = waitingRoomInventoryRefreshController.applyTransportClosed
   const applyWaitingRoomRowsChanged = waitingRoomInventoryRefreshController.applyRowsChanged
@@ -469,209 +430,65 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   workspacePlacementController = createWaitingRoomWorkspacePlacementController({
     getState: deps.waitingRoomState,
     homeMachineId: () => homeMachineId,
-    managedEnvironments: () => managedEnvironmentCatalog?.environments ?? [],
     beginMachineSelection: waitingRoomWorkspaceController.beginMachineSelection,
     connect: replaceClientForKernel,
     homeKernelId: () => homeKernelId,
-    workspaceLoading: waitingRoomWorkspaceController.isLoading,
-    browseManaged: async (kernelRef, machineRef, isActive) => {
-      const token = waitingRoomWorkspaceController.captureRequest()
-      try {
-        await browseWaitingRoomKernelWorkspace(deps.client, {
-          kernelRef, machineRef, clientId: deps.options.clientId,
-          isActive: () => isActive() && waitingRoomWorkspaceController.isCurrent(token),
-        }, waitingRoomInventoryRefreshController.applyWorkspacePreview, getInventoryForClient)
-      } finally {
-        waitingRoomWorkspaceController.finishRequest(token)
-      }
-    },
     refresh: refreshWaitingRoomDataNow,
     failure: (error) => deps.flashFooter(deps.formatError(error), "error"),
   })
 
-  const managedEnvironmentLaunchController = new WaitingRoomManagedEnvironmentLaunchController({
-    createEnvironment: async (input) => createManagedEnvironment(await controlProfile(), input, deps.client),
-    getEnvironment: async (environmentId) => getManagedEnvironment(await controlProfile(), environmentId),
-    requestLifecycle: async (input) => requestManagedEnvironmentLifecycle(await controlProfile(), input),
-    prepareContextTransfer: async (environmentId) => prepareManagedEnvironmentContextTransfer(
-      await controlProfile(),
-      environmentId,
-    ),
-    startContextTransfer: (ticket, launchId) => startManagedContextTransfer(deps.client, ticket, launchId),
-    getContextTransferStatus: (contextId) => getManagedContextTransferStatus(deps.client, contextId),
-    approveMachine: async (machineId) => {
-      await approveRemoteMachine(deps.client.currentClient(), machineId)
-    },
-    connectKernel: async (machineId, kernelId, isActive) => {
-      const sourceRelay = deps.relayStatusState()
-      const connectedTarget: { inventory: WaitingRoomInventory | null } = { inventory: null }
-      let clientPivot: MutableLocalIpcClientPivot | null = null
-      if (!await replaceClientForKernel(kernelId, machineId, isActive, (inventory) => {
-        const relay = inventory.relayStatus
-        if (relay.daemon_id !== kernelId || relay.machine_id !== machineId) {
-          throw new Error("connected kernel identity does not match the managed environment binding")
-        }
-        connectedTarget.inventory = inventory
-        deps.setRelayStatusState(relay)
-      }, (pivot) => {
-        clientPivot = pivot
-      })) {
-        return null
-      }
-      const relay = connectedTarget.inventory?.relayStatus ?? deps.relayStatusState()
-      if (relay?.daemon_id !== kernelId || relay.machine_id !== machineId) {
-        throw new Error("connected kernel identity does not match the managed environment binding")
-      }
-      deps.setRelayStatusState(relay)
-      let settled = false
-      const commit = async () => {
-        if (settled) return
-        settled = true
-        const pivot = clientPivot
-        clientPivot = null
-        try {
-          await pivot?.commit()
-        } catch (error) {
-          deps.appLogger?.warn("failed to close the previous kernel client after managed launch", {
-            error: deps.formatError(error),
-          })
-        }
-      }
-      const rollback = async () => {
-        if (settled) return
-        settled = true
-        const pivot = clientPivot
-        clientPivot = null
-        try {
-          await pivot?.rollback()
-        } finally {
-          if (pivot) deps.setRelayStatusState(sourceRelay)
-        }
-      }
-      if (relay.connected !== true) {
-        await rollback()
-        return null
-      }
-      return { commit, rollback }
-    },
-    getLaunchTarget: (contextId, planDigest) => getManagedContextLaunchTarget(
-      deps.client,
-      contextId,
-      planDigest,
-    ),
-    createIdempotencyKey: randomUUID,
-    offeredRegions: (computeClass) => managedEnvironmentCatalog?.computeClasses
-      .find((option) => option.computeClass === computeClass)?.regions ?? [],
-    delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    nowMs: Date.now,
+  const allocationController = new WaitingRoomMachineAllocationController({
+    acquire: (revision, requestId) => acquireMachineAllocation(deps.client, revision, requestId),
+    get: allocationRef => getMachineAllocation(deps.client, allocationRef),
+    requestId: randomUUID, now: Date.now, delay: ms => new Promise(resolve => setTimeout(resolve, ms)),
   })
-
-  const prepareManagedSessionLaunch = async (
-    launch: WaitingRoomLaunchConfig,
-  ): Promise<WaitingRoomPreparedManagedLaunch> => {
-    const selection = launch.managedEnvironment
-    if (!selection) {
-      throw new Error("managed session launch selection is missing")
-    }
-    let expectedMachineRef = deps.waitingRoomState().selectedMachineRef
-    let expectedOwnershipRevision = deps.waitingRoomLaunchOwnershipRevision()
-    let cancelled = false
+  const acquireMachine = async (capability: MachineAllocationCapability) => {
+    const sourceState = deps.waitingRoomState()
+    const sourceRelay = deps.relayStatusState()
+    const sourceWorkspace = deps.pendingWorkspaceTarget()
+    const sourceWorktree = deps.pendingWorktreeTarget()
+    let expectedMachine = sourceState.selectedMachineRef
+    let expectedRevision = deps.waitingRoomLaunchOwnershipRevision()
+    let pivot: MutableLocalIpcClientPivot | null = null
     const assertActive = () => {
-      if (cancelled
-        || deps.waitingRoomState().selectedMachineRef !== expectedMachineRef
-        || deps.waitingRoomLaunchOwnershipRevision() !== expectedOwnershipRevision) {
-        cancelled = true
-        throw new Error("managed session launch was cancelled because the Waiting Room selection changed")
+      if (deps.isAttached() || deps.waitingRoomState().selectedMachineRef !== expectedMachine || deps.waitingRoomLaunchOwnershipRevision() !== expectedRevision) {
+        throw new Error("Machine acquisition was cancelled because the Waiting Room selection changed. Retry to check the same allocation.")
       }
     }
-    const environmentChanged = (environment: ManagedEnvironmentSummary) => {
-      assertActive()
-      if (managedEnvironmentCatalog) {
-        managedEnvironmentCatalog = {
-          ...managedEnvironmentCatalog,
-          environments: [
-            environment,
-            ...managedEnvironmentCatalog.environments.filter((candidate) => (
-              candidate.environmentId !== environment.environmentId
-            )),
-          ],
-        }
-      }
-      expectedMachineRef = managedEnvironmentMachineRef(environment.environmentId)
-      const kernelRef = waitingRoomManagedEnvironmentKernelRef(launch, environment)
-      deps.setWaitingRoomState({
-        ...deps.waitingRoomState(),
-        selectedMachineRef: expectedMachineRef,
-        managedRepositoryRoot: environment.managedRepositoryRoot,
-        ...(kernelRef ? { selectedKernelRef: kernelRef } : {}),
-      })
-      expectedOwnershipRevision = deps.waitingRoomLaunchOwnershipRevision()
-      deps.rebuildTranscript()
-    }
-    const prepared = await managedEnvironmentLaunchController.prepare(selection, {
-      selectedKernelRef: launch.ownerKernelRef,
-      assertActive,
-      environmentChanged,
-      progress: (message) => deps.flashFooter(message, "info"),
-    }).catch((error: unknown) => {
-      if (!cancelled && deps.waitingRoomState().selectedMachineRef === expectedMachineRef) {
-        deps.setWaitingRoomState(waitingRoomStateAfterFailedRent(deps.waitingRoomState(), managedWaitingRoomRemote()))
-        deps.rebuildTranscript()
-      }
-      throw error
-    })
     try {
+      const machine = await allocationController.acquire(capability, { assertActive, allocated() {}, progress: message => deps.flashFooter(message, "info") })
       assertActive()
-      if (prepared.kind === "enrolled") {
-        return prepareWaitingRoomEnrolledLaunch({ launch, prepared, assertActive })
-      }
-      deps.setPendingWorkspaceTarget(prepared.workspacePath)
-      deps.setPendingWorktreeTarget(prepared.worktreePath)
-      clearStagedWaitingRoomWorktreeSelection()
-      const {
-        managedEnvironment: _managedEnvironment,
-        workerKernelRef: _workerKernelRef,
-        sliceRef: _sliceRef,
-        sliceCreate: _sliceCreate,
-        projectSelection: _projectSelection,
-        ...ordinaryLaunch
-      } = launch
-      expectedMachineRef = managedEnvironmentMachineRef(prepared.environment.environmentId)
-      deps.setWaitingRoomState({
-        ...deps.waitingRoomState(),
-        selectedMachineRef: expectedMachineRef,
-        selectedKernelRef: prepared.environment.runtimeKernelId ?? "",
-        projectSelectionId: prepared.projectSelection.kind === "existing"
-          ? existingProjectSelectionId(prepared.projectSelection.project_id)
-          : "default",
-        worktreeSelectionId: `existing:${prepared.worktreePath}`,
-        sliceSelectionId: "none",
-      })
-      expectedOwnershipRevision = deps.waitingRoomLaunchOwnershipRevision()
-      deps.rebuildTranscript()
-      return {
-        launch: {
-          ...ordinaryLaunch,
-          ownerMachineRef: prepared.environment.runtimeMachineId,
-          ownerKernelRef: prepared.environment.runtimeKernelId,
-          projectSelection: prepared.projectSelection,
-        },
-        assertActive,
-        verifyProjectBinding: prepared.verifyProjectBinding,
-        commit: async () => {
-          await prepared.commit()
-        },
-        rollback: async () => {
-          await prepared.rollback()
-        },
-      }
+      const target = machine.kernel_target
+      await approveRemoteMachine(deps.client.currentClient(), target.machine_id)
+      assertActive()
+      let inventory: WaitingRoomInventory | undefined
+      const connected = await replaceClientForKernel(target.kernel_id, target.machine_id, () => {
+        try { assertActive(); return true } catch { return false }
+      }, next => {
+        if (next.kernelId !== target.kernel_id || next.machineId !== target.machine_id) throw new Error("The connected kernel differs from the acquired machine.")
+        inventory = next
+      }, next => { pivot = next })
+      assertActive()
+      if (!connected || !inventory) throw new Error("The new machine is not reachable yet. Retry to check the same allocation.")
+      expectedMachine = target.machine_id
+      deps.setWaitingRoomStateProjection({ ...deps.waitingRoomState(), selectedMachineRef: target.machine_id, selectedKernelRef: target.kernel_id, projectSelectionId: "default", worktreeSelectionId: "", sliceSelectionId: "none" })
+      waitingRoomWorkspaceController.beginMachineSelection(target.machine_id, target.kernel_id)
+      expectedRevision = deps.waitingRoomLaunchOwnershipRevision()
+      deps.setRelayStatusState(inventory.relayStatus)
+      await waitingRoomWorkspaceController.applyInventory(inventory)
+      assertActive()
+      await refreshWaitingRoomDataNow()
+      assertActive()
+      await (pivot as MutableLocalIpcClientPivot | null)?.commit()
+      allocationController.complete(machine.allocation_ref)
+      deps.flashFooter("Machine ready.", "info")
     } catch (error) {
-      try {
-        await prepared.rollback()
-      } catch (rollbackError) {
-        throw new Error(
-          `${deps.formatError(error)}; failed to restore the source kernel connection: ${deps.formatError(rollbackError)}`,
-        )
+      await (pivot as MutableLocalIpcClientPivot | null)?.rollback()
+      deps.setRelayStatusState(sourceRelay)
+      if (deps.waitingRoomState().selectedMachineRef === expectedMachine && deps.waitingRoomLaunchOwnershipRevision() === expectedRevision) {
+        deps.setWaitingRoomStateProjection(sourceState)
+        deps.setPendingWorkspaceTarget(sourceWorkspace)
+        deps.setPendingWorktreeTarget(sourceWorktree)
       }
       throw error
     }
@@ -770,7 +587,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       )
       deps.setWaitingRoomStateProjection({ ...deps.waitingRoomState(), accountProfileId: launch.accountProfile })
     },
-    prepareManagedSessionLaunch,
+    acquireMachine,
     prepareExistingSessionClient: async (session) => {
       await replaceClientForKernel(session.kernel_id ?? session.host_daemon_id, session.machine_id ?? session.host_machine_id)
       await refreshWaitingRoomDataNow()
@@ -783,149 +600,6 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   })
   const activateWaitingRoom = waitingRoomActivationController.activate
   const startSessionFromWaitingRoomDefaults = waitingRoomActivationController.startSessionFromWaitingRoomDefaults
-  const assertLocalReimageAuthority = kernelConnectionController.assertLocalReimageAuthority
-
-  const managedEnvironmentReimageController = new WaitingRoomManagedEnvironmentReimageController({
-    getPreflight: async (environmentId) => {
-      assertLocalReimageAuthority()
-      return getManagedEnvironmentReimagePreflight(await controlProfile(), environmentId)
-    },
-    observePreviousKernel: async ({ environmentId, expectedGeneration, machineId, kernelId }) => {
-      assertLocalReimageAuthority()
-      const sourceRelay = deps.relayStatusState()
-      let pivot: MutableLocalIpcClientPivot | null = null
-      let observedIdentity = false
-      try {
-        const connected = await replaceClientForKernel(
-          kernelId,
-          machineId,
-          () => true,
-          (inventory) => {
-            observedIdentity = inventory.kernelId === kernelId && inventory.machineId === machineId
-            if (!observedIdentity) {
-              throw new Error("The old kernel identity does not match the managed reimage preflight.")
-            }
-          },
-          (nextPivot) => { pivot = nextPivot },
-        )
-        if (!connected || !observedIdentity || !pivot) {
-          throw new Error("The old kernel observation did not leave local-kernel authority.")
-        }
-        return await observeManagedEnvironmentPreReimage(deps.client, {
-          environmentId,
-          expectedGeneration,
-        })
-      } finally {
-        const previousPivot = pivot as MutableLocalIpcClientPivot | null
-        if (previousPivot) {
-          await previousPivot.rollback()
-          deps.setRelayStatusState(sourceRelay)
-        }
-      }
-    },
-    requestReimage: async (input) => {
-      assertLocalReimageAuthority()
-      return requestManagedEnvironmentReimage(await controlProfile(), input, deps.client)
-    },
-    getEnvironment: async (environmentId) => {
-      assertLocalReimageAuthority()
-      return getManagedEnvironment(await controlProfile(), environmentId)
-    },
-    launchReplacement: async (environment) => {
-      if (managedEnvironmentCatalog) {
-        managedEnvironmentCatalog = {
-          ...managedEnvironmentCatalog,
-          environments: [
-            environment,
-            ...managedEnvironmentCatalog.environments.filter((candidate) => (
-              candidate.environmentId !== environment.environmentId
-            )),
-          ],
-        }
-      }
-      deps.setWaitingRoomState({
-        ...deps.waitingRoomState(),
-        selectedMachineRef: managedEnvironmentMachineRef(environment.environmentId),
-        selectedKernelRef: environment.runtimeKernelId ?? "",
-      })
-      deps.rebuildTranscript()
-      // MP-02/MP-08/MP-11: a reimage cutover retains transactional connection
-      // ownership while the enrolled adapter preserves ordinary launch choices.
-      await startSessionFromWaitingRoomDefaults({ kind: "existing", environmentId: environment.environmentId })
-    },
-    createIdempotencyKey: randomUUID,
-    delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    nowMs: Date.now,
-  })
-
-  const reimageManagedEnvironment = async (
-    environmentId: string,
-    action: "prepare" | "confirm" | "cancel",
-  ): Promise<{ message: string; tone: "info" | "error" }> => {
-    if (deps.isAttached()) {
-      throw new Error("Return to the Waiting Room before reimaging a managed machine.")
-    }
-    const selected = selectedManagedEnvironment(deps.waitingRoomState(), managedWaitingRoomRemote())
-    if (!selected || selected.environmentId !== environmentId) {
-      throw new Error("Select the managed machine in the Waiting Room before reimaging it.")
-    }
-    const attempt = {
-      assertActive: () => {
-        assertLocalReimageAuthority()
-        const current = selectedManagedEnvironment(deps.waitingRoomState(), managedWaitingRoomRemote())
-        if (deps.isAttached() || current?.environmentId !== environmentId) {
-          throw new Error("Managed reimage control returned safely to the local kernel because the selection changed.")
-        }
-      },
-      progress: (message: string) => deps.flashFooter(message, "info"),
-    }
-    if (action === "cancel") {
-      const result = managedEnvironmentReimageController.cancel(environmentId)
-      if (result.status === "irreversible") {
-        return {
-          message: `Reimage of ${environmentId} was already accepted and cannot be cancelled; use /machine reimage ${environmentId} confirm to resume it.`,
-          tone: "error",
-        }
-      }
-      return {
-        message: result.status === "cancelled"
-          ? `Cancelled reimage of ${environmentId} before any destructive mutation.`
-          : `No prepared reimage exists for ${environmentId}.`,
-        tone: result.status === "cancelled" ? "info" : "error",
-      }
-    }
-    if (action === "confirm") {
-      await managedEnvironmentReimageController.confirm(environmentId, attempt)
-      return {
-        message: `Reimaged ${environmentId}, transferred its selected context, pivoted to the fresh kernel, and passed Project setup.`,
-        tone: "info",
-      }
-    }
-    const contextPlan = {
-      sourceTargetId: selected.contextPlan.source?.sourceTargetId ?? null,
-      kernelContext: selected.contextPlan.kernelContext,
-      developmentSetup: selected.contextPlan.developmentSetup,
-      providerAccounts: selected.contextPlan.providerAccounts,
-      gitCredentials: selected.contextPlan.gitCredentials,
-    }
-    const prepared = await managedEnvironmentReimageController.prepare(
-      environmentId,
-      contextPlan,
-      attempt,
-    )
-    const confirmation = prepared.confirmation
-    const prefix = prepared.status === "resume_required"
-      ? "This reimage is already irreversible; resume"
-      : "Destructive confirmation required"
-    const suffix = prepared.status === "resume_required"
-      ? `Run /machine reimage ${environmentId} confirm to resume the same accepted operation.`
-      : `Run /machine reimage ${environmentId} confirm, or /machine reimage ${environmentId} cancel before confirmation.`
-    return {
-      message: `${prefix}: provider server ${confirmation.providerServerId}, generation ${confirmation.generation}, old machine ${confirmation.runtimeMachineId}, old kernel ${confirmation.runtimeKernelId}, image ${confirmation.providerImageId}, release ${confirmation.runtimeReleaseDigest}. ${suffix}`,
-      tone: prepared.status === "resume_required" ? "error" : "info",
-    }
-  }
-
   const waitingRoomLifecycleConfirmationController = createWaitingRoomLifecycleConfirmationController()
   const waitingRoomLifecycleActionController = createWaitingRoomLifecycleActionController({
     isKernelConnected: deps.kernelConnected,
@@ -1053,7 +727,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     worktreePath: deps.pendingWorktreeTarget(),
     workspaceId: sourceLaunchTarget?.workspaceId,
     worktreeId: sourceLaunchTarget?.worktreeId,
-    managedEnvironmentCatalog,
+    ...waitingRoomAllocationRemoteState(allocationCapability),
   })
 
   return {
@@ -1088,7 +762,6 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       await waitingRoomWorkspaceController.editWorkspace(path)
       reconcileWaitingRoomProjection(deps.waitingRoomState())
     },
-    reimageManagedEnvironment,
     startSessionFromWaitingRoomDefaults,
     waitingRoomTargets,
   }

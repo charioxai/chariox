@@ -2,20 +2,20 @@ use super::*;
 use crate::local::*;
 
 #[test]
-fn local_daemon_pre_reimage_observation_shape_is_versioned() {
+fn local_daemon_runtime_identity_observation_shape_is_versioned() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
     let snapshot = serde_json::json!([
-        LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
-            ObserveManagedEnvironmentPreReimageRequest {
+        LocalDaemonRequest::ObserveKernelRuntimeIdentity(
+            ObserveKernelRuntimeIdentityRequest {
                 environment_id: "environment-1".to_string(),
                 expected_generation: 1,
             },
         ),
-        LocalDaemonResponse::ManagedEnvironmentPreReimageObserved {
-            acknowledgement: ManagedEnvironmentPreReimageObservationAcknowledgement {
+        LocalDaemonResponse::KernelRuntimeIdentityObserved {
+            acknowledgement: KernelRuntimeIdentityObservationAcknowledgement {
                 environment_id: "environment-1".to_string(),
                 generation: 1,
                 observed_at: "2026-09-22T01:02:03.000Z".to_string(),
@@ -23,11 +23,11 @@ fn local_daemon_pre_reimage_observation_shape_is_versioned() {
         },
     ]);
     assert_eq!(
-        snapshot.pointer("/0/ObserveManagedEnvironmentPreReimage/expectedGeneration"),
+        snapshot.pointer("/0/ObserveKernelRuntimeIdentity/expectedGeneration"),
         Some(&serde_json::json!(1))
     );
     assert_eq!(
-        snapshot.pointer("/1/ManagedEnvironmentPreReimageObserved/acknowledgement/observedAt"),
+        snapshot.pointer("/1/KernelRuntimeIdentityObserved/acknowledgement/observedAt"),
         Some(&serde_json::json!("2026-09-22T01:02:03.000Z"))
     );
     let serialized = serde_json::to_string(&snapshot).expect("pre-reimage observation shape");

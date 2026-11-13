@@ -1,4 +1,4 @@
-import type { ManagedEnvironmentShutdownPolicy } from "./managed-environment-api.js"
+import type { MachineAllocationCapability } from "./machine-allocation-api.js"
 import {
   catalogModelOptions,
   selectConfiguredVariant,
@@ -29,20 +29,8 @@ import {
   waitingRoomWorktreeDisabledHint,
 } from "./waiting-room-worktrees.js"
 import type { SessionProjectSelection, WaitingRoomProjectSummary } from "./waiting-room-projects.js"
-import type {
-  ManagedEnvironmentContextPlanInput,
-} from "@chariox/kernel-client/ipc-managed-environment-requests"
-import {
-  DEFAULT_MANAGED_REPOSITORY_ROOT,
-  managedEnvironmentShutdownPolicy,
-  managedEnvironmentContextPlanInput,
-  managedEnvironmentDraftBlockReason,
-  managedEnvironmentIdFromMachineRef,
-  managedEnvironmentIsLaunchReady,
-  selectedManagedEnvironment,
-  waitingRoomConfiguresNewManagedMachine,
-  waitingRoomProjectDevelopmentSetup,
-} from "./waiting-room-managed-environments.js"
+import { waitingRoomConfiguresNewManagedMachine } from "./waiting-room-machine-allocation.js"
+import { waitingRoomProjectDevelopmentSetup } from "./waiting-room-context-selection.js"
 import { providerAccountSignInCommand, selectedProviderAccount, selectedProviderAccountStartBlockReason } from "./waiting-room-provider-accounts.js"
 
 export type WaitingRoomLaunchConfig = {
@@ -59,16 +47,7 @@ export type WaitingRoomLaunchConfig = {
   sliceRef?: string | null
   sliceCreate?: { displayMode: "headless" | "headed" } | null
   projectSelection?: SessionProjectSelection | null
-  managedEnvironment?:
-    | {
-        kind: "new"
-        computeClass: string
-        region: string
-        managedRepositoryRoot: string
-        shutdownPolicy: ManagedEnvironmentShutdownPolicy
-        contextPlan: ManagedEnvironmentContextPlanInput
-      }
-    | { kind: "existing"; environmentId: string }
+
 }
 
 export type WaitingRoomStateUpdate = {
@@ -80,6 +59,7 @@ export type WaitingRoomStateUpdate = {
 }
 
 export type WaitingRoomActivationDecision =
+  | { action: "acquire-machine"; capability: MachineAllocationCapability }
   | { action: "create"; launch: WaitingRoomLaunchConfig }
   | { action: "join"; session: SessionListEntry; launch: WaitingRoomLaunchConfig }
   | { action: "import-external-session"; externalSessionId: string }
@@ -87,6 +67,7 @@ export type WaitingRoomActivationDecision =
   | { action: "none" }
 
 export type WaitingRoomCreateSessionDecision =
+  | { action: "acquire-machine"; capability: MachineAllocationCapability }
   | { action: "create"; launch: WaitingRoomLaunchConfig }
   | { action: "error"; message: string }
 
@@ -320,15 +301,12 @@ export function deriveWaitingRoomActivationDecision(options: {
   }
 
   if (options.state.focus !== "session") {
-    const managedEnvironment = waitingRoomManagedLaunchSelection(options.state, options.remote ?? {})
-    if (typeof managedEnvironment === "string") {
-      return { action: "error", message: managedEnvironment }
-    }
-    const accountBlock = managedEnvironment || choice.sliceRef || waitingRoomAccountInventoryIsRemote(options.state, options.remote ?? {}) ? null : selectedProviderAccountStartBlockReason(
+    if (waitingRoomConfiguresNewManagedMachine(options.state.selectedMachineRef)) return waitingRoomAcquisitionDecision(options.remote ?? {})
+    const accountBlock = choice.sliceRef || waitingRoomAccountInventoryIsRemote(options.state, options.remote ?? {}) ? null : selectedProviderAccountStartBlockReason(
       options.remote?.providerAccounts, launch.provider, launch.accountProfile, null, launch.model,
     )
     if (accountBlock) return { action: "error", message: accountBlock }
-    const worktreeSelection = stageLaunchWorktree(options.state.worktreeSelectionId, managedEnvironment)
+    const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
     if (!worktreeSelection.ok) {
       return { action: "error", message: worktreeSelection.message }
     }
@@ -340,7 +318,6 @@ export function deriveWaitingRoomActivationDecision(options: {
       action: "create",
       launch: {
         ...launch,
-        ...(managedEnvironment ? { managedEnvironment } : {}),
       },
     }
   }
@@ -365,16 +342,13 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
   currentModel: string
   remote?: WaitingRoomRemoteState
 }): WaitingRoomCreateSessionDecision {
+  if (waitingRoomConfiguresNewManagedMachine(options.state.selectedMachineRef)) return waitingRoomAcquisitionDecision(options.remote ?? {})
   const choice = waitingRoomChoice(options.state, [], options.catalog, options.remote)
-  const managedEnvironment = waitingRoomManagedLaunchSelection(options.state, options.remote ?? {})
-  if (typeof managedEnvironment === "string") {
-    return { action: "error", message: managedEnvironment }
-  }
-  const accountBlock = managedEnvironment || choice.sliceRef || waitingRoomAccountInventoryIsRemote(options.state, options.remote ?? {}) ? null : selectedProviderAccountStartBlockReason(
+  const accountBlock = choice.sliceRef || waitingRoomAccountInventoryIsRemote(options.state, options.remote ?? {}) ? null : selectedProviderAccountStartBlockReason(
     options.remote?.providerAccounts, choice.providerId, options.state.accountProfileId, null, choice.model?.id,
   )
   if (accountBlock) return { action: "error", message: accountBlock }
-  const worktreeSelection = stageLaunchWorktree(options.state.worktreeSelectionId, managedEnvironment)
+  const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
   if (!worktreeSelection.ok) {
     return { action: "error", message: worktreeSelection.message }
   }
@@ -394,7 +368,6 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
     ...(options.state.projectSelectionId ? { projectSelection: choice.projectSelection } : {}),
     ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
     ...(choice.sliceCreate ? { sliceCreate: choice.sliceCreate } : {}),
-    ...(managedEnvironment ? { managedEnvironment } : {}),
   }
   return {
     action: "create",
@@ -402,38 +375,11 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
   }
 }
 
-// A managed launch works in the folder its machine prepares, so the home's worktree is neither needed nor staged.
-function stageLaunchWorktree(
-  worktreeSelectionId: string | undefined,
-  managedEnvironment: WaitingRoomLaunchConfig["managedEnvironment"],
-): ReturnType<typeof stageWaitingRoomWorktreeSelection> {
-  if (!managedEnvironment) return stageWaitingRoomWorktreeSelection(worktreeSelectionId)
-  clearStagedWaitingRoomWorktreeSelection()
-  return { ok: true }
-}
-
-function waitingRoomManagedLaunchSelection(
-  state: WaitingRoomState,
-  remote: WaitingRoomRemoteState,
-): WaitingRoomLaunchConfig["managedEnvironment"] | string | undefined {
-  if (waitingRoomConfiguresNewManagedMachine(state.selectedMachineRef)) {
-    const blockReason = managedEnvironmentDraftBlockReason(state, remote)
-    if (blockReason) return blockReason
-    return {
-      kind: "new",
-      computeClass: state.managedComputeClass ?? "",
-      region: state.managedRegion ?? "",
-      managedRepositoryRoot: state.managedRepositoryRoot ?? DEFAULT_MANAGED_REPOSITORY_ROOT,
-      shutdownPolicy: managedEnvironmentShutdownPolicy(state),
-      contextPlan: managedEnvironmentContextPlanInput(state, remote),
-    }
-  }
-  const environmentId = managedEnvironmentIdFromMachineRef(state.selectedMachineRef)
-  // MP-02/MP-08/MP-11: enrollment defaults apply only during preparation.
-  // Ready Machines use the ordinary cwd/Project/worker/slice launch path.
-  const environment = selectedManagedEnvironment(state, remote)
-  if (environment && managedEnvironmentIsLaunchReady(environment)) return undefined
-  return environmentId ? { kind: "existing", environmentId } : undefined
+function waitingRoomAcquisitionDecision(remote: WaitingRoomRemoteState): WaitingRoomCreateSessionDecision {
+  const capability = remote.machineAllocationCapability
+  return capability?.offer && capability.actions.includes("acquire")
+    ? { action: "acquire-machine", capability }
+    : { action: "error", message: "The connected service is not offering a new machine." }
 }
 
 function waitingRoomAccountInventoryIsRemote(state: WaitingRoomState, remote: WaitingRoomRemoteState): boolean {
@@ -479,7 +425,7 @@ export function deriveWaitingRoomControlActivationDecision(options: {
     case "new": {
       // Source accounts are not authoritative until managed preparation has
       // started and connected the selected machine.
-      if (waitingRoomManagedLaunchSelection(options.state, remote)
+      if (waitingRoomConfiguresNewManagedMachine(options.state.selectedMachineRef)
         || waitingRoomAccountInventoryIsRemote(options.state, remote)) return { action: "none" }
       const placement = waitingRoomLaunchPlacement(options.state, remote)
       const slices = waitingRoomSlices(remote, {

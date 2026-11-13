@@ -10,7 +10,7 @@ import { installLocal, targetPlatform, publicUrl } from "./installer.mjs"
 import { setupFixture } from "./fixture.mjs"
 import { launchdDefinition, launchdManager } from "./launchd.mjs"
 import { runMachine } from "./machine/remote.mjs"
-const extractorSource = await readFile(new URL("../../deploy/managed-kernel/extract-release.py", import.meta.url), "utf8")
+const extractorSource = await readFile(new URL("../../deploy/runtime-release/extract-release.py", import.meta.url), "utf8")
 const state = await realpath(process.env.CHARIOX_BYOM_TEST_STATE ?? tmpdir())
 async function harness(t, overrides = {}) {
   const dir = await mkdtemp(join(state, "setup-test-")); t.after(() => rm(dir, { recursive: true, force: true }))

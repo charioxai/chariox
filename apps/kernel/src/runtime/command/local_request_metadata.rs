@@ -257,8 +257,8 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::ControlPlane(_) => {
             LocalRequestMetadata::new("control_plane", Interactive)
         }
-        LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(_) => {
-            LocalRequestMetadata::new("managed_environment.reimage.observe", Interactive)
+        LocalDaemonRequest::ObserveKernelRuntimeIdentity(_) => {
+            LocalRequestMetadata::new("kernel.runtime_identity.observe", Interactive)
         }
         LocalDaemonRequest::StartManagedContextTransfer(_) => {
             LocalRequestMetadata::new("managed_context.transfer.start", Background)
@@ -1190,7 +1190,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::GetKernelResourceTelemetry(_)
         | LocalDaemonRequest::ExportDebugBundle(_)
         | LocalDaemonRequest::PreflightProviderAccountPortability(_)
-        | LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(_)
+        | LocalDaemonRequest::ObserveKernelRuntimeIdentity(_)
         | LocalDaemonRequest::StartManagedContextTransfer(_)
         | LocalDaemonRequest::GetManagedContextTransferStatus(_)
         | LocalDaemonRequest::GetManagedContextLaunchTarget(_)

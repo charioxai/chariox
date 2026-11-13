@@ -163,7 +163,7 @@ async function handleCloud(req,res) {
         const ticket=randomBytes(32).toString('hex');secrets.push(ticket);tickets.set(ticket,binding)
         response={...binding,ticket,expiresAt:new Date(Date.now()+300_000).toISOString()}
       }
-    } else if(req.url==='/v1/managed-kernels/context/ticket') {
+    } else if(req.url==='/v1/kernels/context/ticket') {
       const actor=[...ownerProfiles.values()].find(actor=>actor.credential===body.kernelCredential);assert(actor)
       assert.equal(body.environmentId,undefined,'owner admission never accepts an environment substitute')
       const request=body.ownerManaged??body.ownerManagedExport??body.ownerManagedImport;assert(request)

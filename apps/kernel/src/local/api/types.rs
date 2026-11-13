@@ -10,6 +10,7 @@ use crate::slice::{
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 use chariox_relay::protocol::RelayKernelPresence;
 
+mod account_transfer;
 mod agent_deadline;
 mod agent_lifecycle;
 mod agent_tree;
@@ -34,7 +35,6 @@ mod kernel_computer;
 mod kernel_files;
 mod kernel_gateway;
 mod managed_context;
-mod managed_environment;
 mod metaagent;
 mod notes;
 mod outside_events;
@@ -49,6 +49,7 @@ mod resource_telemetry;
 mod response;
 mod room_environment;
 mod room_terminal;
+mod runtime_identity;
 mod screenshot;
 mod session_control;
 mod slice;
@@ -62,6 +63,7 @@ mod workflow;
 mod workflow_notification;
 mod workspace;
 
+pub use account_transfer::*;
 pub use agent_deadline::*;
 pub use agent_lifecycle::*;
 pub use agent_tree::*;
@@ -86,7 +88,6 @@ pub use kernel_computer::*;
 pub use kernel_files::*;
 pub use kernel_gateway::*;
 pub use managed_context::*;
-pub use managed_environment::*;
 pub use metaagent::*;
 pub use notes::*;
 pub use outside_events::*;
@@ -101,6 +102,7 @@ pub use resource_telemetry::*;
 pub use response::*;
 pub use room_environment::*;
 pub use room_terminal::*;
+pub use runtime_identity::*;
 pub use screenshot::*;
 pub use session_control::*;
 pub use slice::*;
@@ -134,11 +136,7 @@ pub use workspace::*;
 /// Version 334 carries kernel-authoritative managed-target resource telemetry.
 /// Version 335 adds measured CPU utilization and its sample window to that telemetry.
 /// Version 336 adds kernel-verified installed release identity to resource telemetry.
-/// Version 337 adds authenticated managed-environment reimage control and receipt evidence.
-/// Version 338 adds deliberate, generation-bound pre-reimage observation reporting.
-/// Version 339 requires a fresh managed-context selection for every reimage request.
 /// Version 340 coordinates the signed managed-activity transition-time contract.
-/// Version 341 adds the authenticated managed-environment reimage preflight read.
 /// Version 342 carries the create-selected trusted managed repository root and
 /// returns the persisted root in managed-environment summaries.
 /// Version 343 carries the originating home prompt in forwarded worker tool context.
@@ -421,8 +419,6 @@ pub use workspace::*;
 /// Landing union 923 carries 913 (`SessionState` `processes`), 917 (direct browser sessions over WebRTC),
 /// 919 (user-side browser frame stream removed, `display_ack` `paused`), 920 (mirror `document_mode`,
 /// `pointer_cursor`) and 923 (session-less Vault unlock).
-/// Allocated 924 makes the managed-environment reimage preflight `desiredRelease.providerId` an opaque
-/// string that Cloud defines (it was a one-value enum); the wire value is unchanged.
 /// MP-08/MP-09/MP-10/MP-11: 925 marks a hot reload's relay close (`kernel_reload`), which the relay
 /// forwards to the kernel's subscribed clients so they retry within the swap.
 /// Version 926 makes the direct data channel's liveness a contract: the kernel pings
@@ -436,7 +432,7 @@ pub use workspace::*;
 /// Allocated 930 adds agent triggers; `/wait-in` and `/wait-every` become schedule triggers.
 /// Allocated 931 adds trigger deliveries the person can resend and removes the `/wait` schedule shape.
 /// Allocated 932 adds the HTTP trigger source and `InvokeAgentTrigger`/`ReadAgentTriggerTranscript`.
-/// Landing union 932 carries 924 (opaque reimage `providerId`), 925 (hot reload `kernel_reload`), 926 (direct
+/// Landing union 932 carries 925 (hot reload `kernel_reload`), 926 (direct
 /// data channel liveness), 927 (process admission), 928 (outside interaction `question`/`resolution`), 929 (Vault
 /// secret requests) and 930 to 932 (agent triggers).
 /// Browser header 933 adds the portable active Tab, history bounds and bounded favicon PNGs to the
