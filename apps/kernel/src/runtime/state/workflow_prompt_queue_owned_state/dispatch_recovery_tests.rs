@@ -106,6 +106,34 @@ fn workspace_release_submits_pending_entry_once_and_blocked_poll_does_not_rewrit
     assert_eq!(prompt_count(&runtime, &session), 1);
 }
 
+#[tokio::test]
+async fn released_blocker_starts_the_blocked_entry_without_another_trigger() {
+    let (runtime, session, run, blocker, _root) = blocked_entry();
+    let retries = tokio::spawn({
+        let runtime = runtime.clone();
+        async move { runtime.run_contended_claim_retries().await }
+    });
+    drop(blocker);
+    let started = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !runtime
+            .owned
+            .workflow_entry_intent(&session, &run)
+            .unwrap()
+            .unwrap()
+            .submitted
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    retries.abort();
+    assert!(
+        started.is_ok(),
+        "WFCLAIM-01: the blocked entry must start once the claim it waited for is released"
+    );
+    assert_eq!(prompt_count(&runtime, &session), 1);
+}
+
 #[test]
 fn user_resume_of_unsubmitted_entry_keeps_one_original_operation() {
     let (runtime, session, run, blocker, _root) = blocked_entry();
@@ -674,4 +702,51 @@ async fn restart_orphan_outcome_replaces_the_normalized_active_workflow_run() {
             "adopted goal needs a definitive failure with reason and recovery: {events:?}"
         );
     }
+}
+
+#[test]
+fn failed_entry_preparation_releases_its_preclaimed_workspace() {
+    let (runtime, session, run, blocker, _root) = blocked_entry();
+    drop(blocker);
+    let db = rusqlite::Connection::open(runtime.owned.durable_state_store.path()).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER fail_entry_preparation BEFORE INSERT ON durable_state_events
+         WHEN NEW.kind = 'workflow.runtime.updated'
+         BEGIN SELECT RAISE(FAIL, 'injected entry preparation failure'); END;",
+    )
+    .unwrap();
+    let snapshot = runtime
+        .owned
+        .session_store
+        .read()
+        .resolve_workflow_run_ref(&session, &run)
+        .unwrap();
+    let node = &snapshot.node_runs()[0];
+    let claim = runtime
+        .owned
+        .workflow_dispatch_claim_id(&session, &run, node.id());
+    let error = runtime
+        .owned
+        .workflow_schedule_entry_node(&session, &snapshot)
+        .err()
+        .expect("preparation must fail");
+    assert!(error
+        .to_string()
+        .contains("injected entry preparation failure"));
+    assert!(
+        !runtime.owned.prompt_workspace_claims.contains(&claim),
+        "WFDELAY-02: failed preparation must release the preclaimed workspace"
+    );
+    let session = runtime.owned.session_store.get_session(&session).unwrap();
+    runtime
+        .owned
+        .workspace_coordinator
+        .acquire_worktree_write_claim(
+            session.workspace_id(),
+            session.worktree_id(),
+            session.id(),
+            None,
+            "next_node",
+        )
+        .expect("another node can use the worktree immediately");
 }

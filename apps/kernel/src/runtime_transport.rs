@@ -760,6 +760,9 @@ where
     let wake_state = router.runtime_state();
     let wake_scheduler_task =
         tokio::spawn(async move { wake_state.run_agent_wake_scheduler().await });
+    let claim_state = router.runtime_state();
+    let contended_claim_task =
+        tokio::spawn(async move { claim_state.run_contended_claim_retries().await });
     let created_peer_router = Arc::clone(&router);
     let created_peer_release_task =
         tokio::spawn(async move { created_peer_router.run_created_peer_release().await });
@@ -773,6 +776,7 @@ where
                 }
                 drop(_restart_recovery_task);
                 wake_scheduler_task.abort();
+                contended_claim_task.abort();
                 created_peer_release_task.abort();
                 pump_task.abort();
                 crate::shutdown::stage("provider output pump");
