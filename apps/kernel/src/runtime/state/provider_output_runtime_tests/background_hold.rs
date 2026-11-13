@@ -444,3 +444,188 @@ async fn a_deadline_keeps_the_hold_until_it_fires_and_then_says_the_call_still_r
         .unwrap()
         .contains("background command was still running"));
 }
+
+#[tokio::test]
+async fn kwait_native_helpers_keep_the_child_working_through_interim_notifications() {
+    let team = team_with("kwait-native-helper", None, false).await;
+    let dir = std::env::temp_dir().join(format!("kwait-native-helper-{}", std::process::id()));
+    let run = native_child(&team, &dir).await;
+    let transcript = dir.join("session.jsonl");
+    let lines = vec![
+        serde_json::json!({"type":"assistant", "uuid":"helper-start", "message":{"content":[{
+            "type":"tool_use", "id":"helper", "name":"Agent", "input":{"prompt":"Inspect the project", "run_in_background":true}
+        }]}}),
+        serde_json::json!({"type":"user", "uuid":"helper-launched", "message":{"content":[{
+            "type":"tool_result", "tool_use_id":"helper", "content":"Async agent launched successfully. agentId: a123"
+        }]}, "toolUseResult":{"isAsync":true,"agentId":"a123"}}),
+        serde_json::json!({"type":"assistant", "uuid":"interim-answer", "message":{"content":[{"type":"text","text":"My helper is still inspecting."}]}}),
+    ];
+    read_native_transcript(&team, &run, &transcript, &lines).await;
+    team.runtime
+        .flush_provider_history(&team.child_run)
+        .await
+        .unwrap();
+    team.runtime
+        .owned
+        .complete_local_prompt_without_advance(&team.room, &team.child, Some(&team.child_run))
+        .unwrap();
+    let settlement = team
+        .runtime
+        .owned
+        .settle_agent_task(
+            &team.room,
+            &team.child,
+            &team.child_prompt,
+            &team.child_run,
+            false,
+        )
+        .unwrap();
+    assert!(
+        settlement.is_none(),
+        "a provider helper still runs: {settlement:?}"
+    );
+    assert!(working(&team));
+    assert!(child_finished(&team).is_empty());
+    let mut lines = lines;
+    lines.push(serde_json::json!({"type":"user","uuid":"helper-progress", "message":{"content":
+        "<task-notification><task-id>a123</task-id><tool-use-id>helper</tool-use-id><status>running</status><summary>Still inspecting</summary></task-notification>"}}));
+    read_native_transcript(&team, &run, &transcript, &lines).await;
+    team.runtime
+        .flush_provider_history(&team.child_run)
+        .await
+        .unwrap();
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, false)
+        .await
+        .unwrap();
+    assert!(
+        working(&team),
+        "an interim notification cannot finish the child"
+    );
+    assert!(child_finished(&team).is_empty());
+    lines.push(serde_json::json!({"type":"user","uuid":"helper-done", "message":{"content":
+        "<task-notification><task-id>a123</task-id><tool-use-id>helper</tool-use-id><status>completed</status><summary>Inspection complete</summary></task-notification>"}}));
+    lines.push(serde_json::json!({"type":"assistant","uuid":"final-answer", "message":{"content":[{"type":"text","text":"The helper completed its inspection."}]}}));
+    read_native_transcript(&team, &run, &transcript, &lines).await;
+    team.runtime
+        .flush_provider_history(&team.child_run)
+        .await
+        .unwrap();
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, false)
+        .await
+        .unwrap();
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(events[0].payload["public_answer"]["excerpt"]
+        .as_str()
+        .unwrap()
+        .contains("helper completed"));
+    let child_run = team.child_run.clone();
+    team.runtime
+        .with_app_side_effect(move |app| {
+            let _ = app.pty_mut().remove_process(&child_run);
+        })
+        .await;
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn kwait_held_background_work_keeps_the_provider_in_the_output_pump() {
+    let team = child_with_a_call_running("kwait-held-output-pump").await;
+    let owned = &team.runtime.owned;
+    let session = owned.session_store.get_session(&team.room).unwrap();
+    assert!(owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &team.child)
+        .is_none());
+    assert!(
+        !owned
+            .git_turn_snapshots
+            .provider_run_ids_for_session(&team.room)
+            .contains(&team.child_run),
+        "the fixture must exercise held work, not a pending snapshot"
+    );
+    let run = owned.provider_store.get_run(&team.child_run).unwrap();
+    assert!(run.client_interface().is_chariox());
+    assert!(!crate::provider::provider_run_uses_claude_native_bridge(
+        &run
+    ));
+    let selected = super::super::provider_output_runtime::provider_run_ids_for_owned_output_pump(
+        owned, &session,
+    );
+    assert!(
+        selected.contains(&team.child_run),
+        "the held child's completion frames must still be drained: {selected:?}"
+    );
+    apply(
+        &team,
+        vec![
+            ended_at(crate::session::unix_epoch_ms()),
+            text_chunk("the background work completed"),
+        ],
+    )
+    .await;
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, false)
+        .await
+        .unwrap();
+    assert!(!team
+        .runtime
+        .owned
+        .is_held_for_background_calls(&team.task.task_id));
+}
+
+#[tokio::test]
+async fn kwait_parked_background_work_is_selected_and_resumed_by_both_output_pumps() {
+    for structured in [false, true] {
+        let team = child_with_a_call_running(&format!("kwait-parked-output-{structured}")).await;
+        let owned = &team.runtime.owned;
+        let parked = owned
+            .provider_store
+            .park_run_provider_only(&team.room, &team.child_run)
+            .unwrap()
+            .into_run();
+        owned.provider_run_projection.update(parked);
+        let session = owned.session_store.get_session(&team.room).unwrap();
+        let selected =
+            super::super::provider_output_runtime::provider_run_ids_for_owned_output_pump(
+                owned, &session,
+            );
+        assert!(selected.contains(&team.child_run));
+        if structured {
+            team.runtime
+                .pump_owned_structured_provider_output(&team.room, &team.child_run, Vec::new())
+                .await
+                .unwrap();
+        } else {
+            team.runtime
+                .pump_owned_provider_output(&team.room, &team.child_run, Vec::new(), false)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            owned
+                .provider_store
+                .get_run(&team.child_run)
+                .unwrap()
+                .state(),
+            crate::provider::ProviderRunState::Running,
+            "parked background work still needs output polling"
+        );
+        assert!(owned.is_held_for_background_calls(&team.task.task_id));
+        apply(
+            &team,
+            vec![
+                ended_at(crate::session::unix_epoch_ms()),
+                text_chunk("the parked background work completed"),
+            ],
+        )
+        .await;
+        team.runtime
+            .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, false)
+            .await
+            .unwrap();
+        assert!(!owned.is_held_for_background_calls(&team.task.task_id));
+    }
+}

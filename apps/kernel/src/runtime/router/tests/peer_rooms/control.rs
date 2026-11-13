@@ -358,3 +358,35 @@ fn the_steer_room_command_keeps_the_authority_limit_and_the_message_one_does_not
         }
     });
 }
+
+#[test]
+fn kwait_cancelling_an_idle_peer_is_a_successful_noop() {
+    run_peer_test("kwait-idle-cancel", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        rooms
+            .router
+            .runtime_state
+            .end_agent_turn_for_tests(&rooms.peer_room, rooms.peer.id(), true)
+            .await
+            .unwrap();
+        assert!(
+            !rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await,
+            "the target must be idle before cancellation"
+        );
+        for _ in 0..2 {
+            let result = rooms
+                .room_command(
+                    &rooms.sender_token,
+                    format!("agent cancel peer --room {}", rooms.peer_room),
+                )
+                .await;
+            assert!(result.ok, "{}", result.payload);
+            assert_eq!(
+                result.payload["response"]["already_idle"], true,
+                "{}",
+                result.payload
+            );
+            assert!(!rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await);
+        }
+    });
+}

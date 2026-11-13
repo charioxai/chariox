@@ -12,7 +12,9 @@ impl KernelRuntimeState {
         let owned = &self.owned;
         let mut provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
         if provider_run.state() == crate::provider::ProviderRunState::Parked {
-            if !owned.provider_run_has_active_prompt(session_id, &provider_run)? {
+            if !owned.provider_run_has_active_prompt(session_id, &provider_run)?
+                && !owned.background_holds.holds_run(provider_run_id)
+            {
                 return Ok(owned
                     .structured_output_records
                     .take_and_stop_polling(provider_run_id));

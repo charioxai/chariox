@@ -180,6 +180,9 @@ impl KernelRuntimeState {
 
     /// Fires due wakes and (from the scheduler only) arms new ones.
     async fn tick_agent_wakes(&self, now: u64, verify: bool) -> Result<(), DaemonError> {
+        // Timers read only their scheduled rows. A failed reconciliation or an unreadable
+        // historical wake must not hold back the kernel clock.
+        self.tick_timer_wakes(now, verify)?;
         self.tick_interaction_wakes(now)?;
         self.resume_browser_region_cards();
         let store = &self.owned.durable_state_store;
@@ -190,6 +193,11 @@ impl KernelRuntimeState {
                 self.ensure_leased_process_poll(&wake);
             }
         }
+        Ok(())
+    }
+
+    fn tick_timer_wakes(&self, now: u64, verify: bool) -> Result<(), DaemonError> {
+        let store = &self.owned.durable_state_store;
         let timers = store.agent_armed_timers()?;
         if verify && timers.iter().any(|w| w.verified_at_ms.is_none()) {
             store.agent_lifecycle(Operation::VerifyWakes { now })?;
@@ -273,7 +281,7 @@ impl KernelRuntimeState {
             w.next_due_ms
                 .is_some_and(|d| d + WAKE_FIRE_TOLERANCE_MS < now)
         }) {
-            self.tick_agent_wakes(now, false).await?;
+            self.tick_timer_wakes(now, false)?;
         }
         self.sweep_driver_liveness(now)?;
         let wakes: BTreeMap<_, _> = store

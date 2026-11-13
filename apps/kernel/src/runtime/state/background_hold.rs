@@ -63,6 +63,19 @@ impl BackgroundHolds {
     pub(super) fn release(&self, task_id: &str) {
         self.lock().remove(task_id);
     }
+    /// These runs still own work after their prompted turn ended.
+    pub(super) fn provider_run_ids_for_session(&self, room: &str) -> BTreeSet<String> {
+        self.lock()
+            .values()
+            .filter(|held| held.room == room)
+            .map(|held| held.run.clone())
+            .collect()
+    }
+
+    pub(super) fn holds_run(&self, run: &str) -> bool {
+        self.lock().values().any(|held| held.run == run)
+    }
+
     fn of_run(&self, room: &str, agent: &str, run: &str) -> Vec<String> {
         self.lock()
             .iter()

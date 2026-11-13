@@ -499,3 +499,58 @@ fn a_peer_spawn_from_another_kernel_into_a_room_it_cannot_address_is_refused() {
         }
     });
 }
+
+#[test]
+fn kwait_idle_cancel_from_another_kernel_stays_a_noop_on_retry() {
+    run_peer_test("kwait-idle-cancel-kernel", || async {
+        let rooms = Rooms::new(
+            AgentPermissionLevel::Required,
+            AgentPermissionLevel::Required,
+        );
+        rooms
+            .router
+            .runtime_state
+            .end_agent_turn_for_tests(&rooms.peer_room, rooms.peer.id(), true)
+            .await
+            .unwrap();
+        assert!(
+            !rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await,
+            "the target must be idle before cancellation"
+        );
+        let response = rooms
+            .request_from_kernel_a(cancel(&rooms, AgentExecutionMode::Build))
+            .await;
+        assert!(
+            matches!(
+                response,
+                RelayPeerResponse::PeerAgentAccepted {
+                    duplicate: false,
+                    ..
+                }
+            ),
+            "{response:?}"
+        );
+        crate::test_support::admit_room_test_turn(
+            &mut *rooms.app.lock().await,
+            &rooms.peer_room,
+            rooms.peer.id(),
+        );
+        let response = rooms
+            .request_from_kernel_a(cancel(&rooms, AgentExecutionMode::Build))
+            .await;
+        assert!(
+            matches!(
+                response,
+                RelayPeerResponse::PeerAgentAccepted {
+                    duplicate: true,
+                    ..
+                }
+            ),
+            "{response:?}"
+        );
+        assert!(
+            rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await,
+            "an idle cancel's retry cannot cancel later work"
+        );
+    });
+}

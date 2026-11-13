@@ -3065,3 +3065,66 @@ fn blocked_question_admission_preserves_turn_and_work_boundaries() {
     });
     assert!(arm("interaction", "p").is_err(), "closed tasks cannot ask");
 }
+
+#[test]
+fn kwait_yield_refusal_names_the_uncovered_timer_label_and_cancel_call() {
+    let f = Fixture::new();
+    f.create("wait-a", "timer", Some(1_000), None);
+    f.create("wait-b", "timer", Some(2_000), None);
+    let refusal = f
+        .store
+        .agent_lifecycle(Operation::Yield {
+            task: "p".into(),
+            prompt: "p".into(),
+            registrations: vec!["completion-wait-a".into()],
+            cursor: 0,
+            deadline: Some(5_000),
+            reason: "wait for timers".into(),
+            now: 20,
+        })
+        .unwrap_err()
+        .to_string();
+    for expected in [
+        "wait-b",
+        "timer wait-b",
+        "completion-wait-b",
+        "chariox.events.cancel_wake",
+        "wake_id",
+        "origin_prompt_id",
+    ] {
+        assert!(refusal.contains(expected), "missing {expected}: {refusal}");
+    }
+}
+
+#[test]
+fn kwait_an_older_tasks_timer_still_fires_after_a_later_event_turn() {
+    let f = Fixture::new();
+    f.create("older-timer", "timer", Some(1_000), None);
+    f.wait_on(&["older-timer"]);
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "later-event".into(),
+        run: Some("run".into()),
+        now: 40,
+    });
+    f.apply(Operation::Settle {
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "later-event".into(),
+        run: "run".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 50,
+    });
+    f.apply(Operation::FireWakes { now: 45 * 60_000 });
+    let wake = f.wake("older-timer");
+    assert_eq!(wake.state, "fired");
+    assert_eq!(wake.fire_count, 1);
+    assert_eq!(wake.task_id, "p");
+    assert!(f
+        .inbox()
+        .iter()
+        .any(|e| e.source_id == wake.id && e.kind == "source_completed"));
+}
