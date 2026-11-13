@@ -397,3 +397,75 @@ impl Reader {
         }
     }
 }
+
+#[cfg(test)]
+mod protocol_shape {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn mp08_room_terminal_stream_1043_snapshot_and_hash() {
+        let bytes =
+            include_bytes!("../../local/api/tests/protocol_shapes/room-terminal-stream-1043.json");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(bytes)),
+            "d65d7e98c769f5db98aef35510d5d53064f46419ac54138d113005627c8ee3a9"
+        );
+        let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(
+            fixture["local_protocol"],
+            crate::local::LOCAL_DAEMON_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            fixture["peer_protocol"],
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+        );
+        assert_eq!(fixture["subscription_scope"], ROOM_TERMINAL_SCOPE);
+        assert_eq!(
+            fixture["attachment_id"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|address| parse_address(address.as_str().unwrap()))
+                .collect::<Vec<_>>(),
+            [
+                Some(("term-1a2b".to_string(), None)),
+                Some(("term-1a2b".to_string(), Some("agent-w".to_string())))
+            ]
+        );
+        assert_eq!(parse_address("term-1a2b@"), None);
+        assert_eq!(parse_address("@agent-w"), None);
+        let header = |event: &StreamEvent, data: &[u8]| {
+            let wire = crate::transport::terminal_output_wire::encode_room_output(
+                serde_json::to_value(event).unwrap(),
+                data,
+            )
+            .unwrap();
+            let size = u32::from_be_bytes(wire[4..8].try_into().unwrap()) as usize;
+            assert_eq!(&wire[8 + size..], data, "the bytes travel raw");
+            serde_json::from_slice::<serde_json::Value>(&wire[8..8 + size]).unwrap()
+        };
+        let page = StreamEvent::RoomTerminalOutput {
+            next_offset: 4893,
+            gap: false,
+            terminal: None,
+        };
+        assert_eq!(header(&page, &[b'x'; 4893]), fixture["output_header"]);
+        let gap = StreamEvent::RoomTerminalOutput {
+            next_offset: 9000,
+            gap: true,
+            terminal: None,
+        };
+        assert_eq!(header(&gap, &[]), fixture["gap_header"]);
+        let listed = StreamEvent::RoomTerminalsListed { terminals: &[] };
+        assert_eq!(serde_json::to_value(listed).unwrap(), fixture["listed"]);
+        assert_eq!(
+            serde_json::to_value(StreamEvent::Heartbeat).unwrap(),
+            fixture["heartbeat"]
+        );
+        let ended = StreamEvent::RoomTerminalStreamEnded {
+            message: fixture["ended"]["message"].as_str().unwrap(),
+        };
+        assert_eq!(serde_json::to_value(ended).unwrap(), fixture["ended"]);
+    }
+}

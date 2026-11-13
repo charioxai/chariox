@@ -513,4 +513,7 @@ pub use workspace::*;
 /// transcript.
 /// 1008 (provisional): encrypted relay terminal output uses CXT1 metadata and raw byte segments,
 /// including replay. Clients and gateways restore the ordinary terminal record shape.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1008;
+/// 1043 (provisional): a `room_terminal` relay subscription pushes a Room terminal's output (CXT1, raw
+/// bytes) from the viewer's offset, with the Room's terminals when they change, instead of one
+/// `read_output` per page (docs/PROTOCOL.md, "Pushed output stream").
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1043;
