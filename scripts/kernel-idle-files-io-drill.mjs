@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// A real Files read must not trigger a process-map sweep when there is no agent scratch to trim.
+// Idle scratch maintenance must not scan other processes when there is nothing to trim.
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import { openSync } from "node:fs"
@@ -48,7 +48,7 @@ try {
   const ready = Date.now() + 60_000
   for (;;) {
     try { if ((await client.send({ GetDaemonHealth: null })).DaemonHealth) break } catch {}
-    if (Date.now() > ready) throw Error("isolated kernel did not become ready")
+    if (Date.now() > ready) throw Error(`isolated kernel did not become ready; see ${path.join(evidence, "kernel.log")}`)
     await delay(100)
   }
   const file = path.join(home, "large.log"), size = 200 * 1024 * 1024
@@ -81,10 +81,16 @@ try {
   assert.deepEqual(await readdir(path.join(state, "t")), [], "the drill created no agent scratch")
   await stop(trace)
   const syscalls = await readFile(traceFile, "utf8")
-  outcome.processMapReads = syscalls.split("\n").filter(line => /(?:read|pread64)\(\d+<\/proc\/\d+\/maps>/.test(line)).length
-  outcome.result = outcome.processMapReads === 0 ? "PASS" : "FAIL"
+  const maps = syscalls.split("\n").flatMap(line => {
+    const match = /^(\d+) (?:read|pread64)\(\d+<\/proc\/(\d+)\/maps>/.exec(line)
+    return match ? [{ reader: Number(match[1]), target: Number(match[2]) }] : []
+  })
+  // Child runtimes legitimately read their own mappings; the scratch sweep reads other processes.
+  outcome.selfMapReads = maps.filter(({ reader, target }) => reader === target).length
+  outcome.foreignProcessMapReads = maps.filter(({ reader, target }) => reader !== target).length
+  outcome.result = outcome.foreignProcessMapReads === 0 ? "PASS" : "FAIL"
   await writeFile(path.join(evidence, "result.json"), JSON.stringify(outcome, null, 2))
-  assert.equal(outcome.processMapReads, 0, "idle scratch maintenance scanned process maps although there is nothing to trim")
+  assert.equal(outcome.foreignProcessMapReads, 0, "idle scratch maintenance scanned other processes despite there being nothing to trim")
   console.log(JSON.stringify(outcome))
 } finally {
   await stop(trace)
