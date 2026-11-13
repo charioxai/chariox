@@ -5,6 +5,8 @@
 // Disk cells (OF-37..OF-42): --scenario temp (every agent's TMPDIR is its own short folder inside the kernel's home),
 // trim (idle scratch goes, what is open or busy stays, an ended Room clears at once), runaway (the orphaned writer filling the disk is attributed and
 // stopped, other owners' builds are never paused).
+// --reach 1 --relay-binary R: a second kernel reaches this one over a private relay and a follower on it also follows the Room (OF-32).
+// --script-owners N [--script-command "python3 buildp1.py s{S} 1600 40 5"]: N outside scripts (own grant, `chariox exec`) join the --task round.
 // Usage: node process-admission-live.mjs --scenario memory|disk|temp|room-isolation|trim|trim-live|disk-volumes|disk-waits|disk-replay|stop-cycles|runaway --kernel-binary K --state-root DIR --evidence-dir DIR
 //   --login-file F [--agents 5] [--mem 7G] [--disk-gb 12] [--task a.txt:marker,b.txt:marker2] [--tui 1]
 //   [--codex-agents 5 --codex-profile-dir DIR] [--work-dir DIR] [--seed-peaks FILE]
@@ -24,6 +26,7 @@ import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import { LocalIpcClient } from "../../packages/kernel-client/dist/ipc.js"
 import { runDiskCells } from "./process-admission-disk-cells.mjs"
+import { startReach } from "./process-admission-reach.mjs"
 
 const flags = new Map()
 for (let i = 2; i < process.argv.length; i++) flags.set(process.argv[i], process.argv[++i])
@@ -163,7 +166,8 @@ let pump
 let sampling = true
 let following = true
 const holderDir = join(dir, "holder")
-const readFollowed = () => existsSync(join(holderDir, "records.log")) ? readFileSync(join(holderDir, "records.log"), "utf8").split("\n").filter(Boolean).map(line => { const i = line.indexOf(" "); return { received_ms: Number(line.slice(0, i)), wait: JSON.parse(line.slice(i + 1)) } }) : []
+const reachHolderDir = join(dir, "holder-reach")
+const readFollowed = (from = holderDir) => existsSync(join(from, "records.log")) ? readFileSync(join(from, "records.log"), "utf8").split("\n").filter(Boolean).map(line => { const i = line.indexOf(" "); return { received_ms: Number(line.slice(0, i)), wait: JSON.parse(line.slice(i + 1)) } }) : []
 const tmuxName = `admission-${process.pid}`
 let tui = false
 const tuiScreens = join(evidence, "tui")
@@ -194,7 +198,8 @@ const runCleanup = async () => {
   for (const name of fixtureNames) for (const { pid } of osProcesses(name)) if (pid > 1) { try { process.kill(pid, "SIGKILL") } catch { /* gone */ } }
   writeFileSync(join(evidence, "os-trace.json"), JSON.stringify(osTrace))
   writeFileSync(join(evidence, "followed.json"), JSON.stringify(readFollowed(), null, 1))
-  for (const f of ["grant.err", "subscribe.err", "wait.err", "loop.log"]) if (existsSync(join(holderDir, f))) appendFileSync(join(evidence, "holder-logs.txt"), `== ${f}\n${readFileSync(join(holderDir, f), "utf8")}`)
+  if (existsSync(reachHolderDir)) writeFileSync(join(evidence, "followed-reach.json"), JSON.stringify(readFollowed(reachHolderDir), null, 1))
+  for (const [label, from] of [["holder", holderDir], ["reach", reachHolderDir]]) for (const f of ["grant.err", "subscribe.err", "wait.err", "loop.log"]) if (existsSync(join(from, f))) appendFileSync(join(evidence, "holder-logs.txt"), `== ${label} ${f}\n${readFileSync(join(from, f), "utf8")}`)
   writeFileSync(join(evidence, "transcript.jsonl"), transcripts())
   if (tui) { try { writeFileSync(join(tuiScreens, "final.txt"), tmux("capture-pane", "-p", "-t", tmuxName)); tmux("kill-session", "-t", tmuxName) } catch { /* gone */ } }
   stopOwned()
@@ -368,11 +373,13 @@ try {
 
   // The follower: an outside holder (its own process tree, the `chariox` command) that gets a grant, follows the
   // agents and logs every record with the time it received it.
-  mkdirSync(holderDir)
-  writeFileSync(join(holderDir, "holder.sh"), `#!/bin/bash
+  // `reach` follows through a second kernel (--reach 1): its holder runs against that kernel and names this one with --kernel.
+  const startHolder = (from, env, kernelName) => {
+    mkdirSync(from)
+    writeFileSync(join(from, "holder.sh"), `#!/bin/bash
 cd "$(dirname "$0")"
 chariox access request --until-exit > grant.json 2> grant.err || exit 2
-chariox events subscribe --kernel ${alias} --session ${sessionId} > subscribe.json 2> subscribe.err || exit 3
+chariox events subscribe --kernel ${kernelName} --session ${sessionId} > subscribe.json 2> subscribe.err || exit 3
 echo subscribed > ready
 cursor=0
 while :; do
@@ -385,10 +392,33 @@ while :; do
   chariox events ack $cursor > /dev/null 2>&1
 done
 `, { mode: 0o755 })
-  const holder = own(spawn("bash", ["-c", `bash ${join(holderDir, "holder.sh")}; true`], { env: kernelEnv, stdio: "ignore" }))
-  note("holder-start", { pid: holder.pid })
+    const child = own(spawn("bash", ["-c", `bash ${join(from, "holder.sh")}; true`], { env, stdio: "ignore" }))
+    note("holder-start", { pid: child.pid, kernel: kernelName })
+    return until(() => existsSync(join(from, "ready")), `follower ${kernelName} subscribed`, 120000).then(() => note("follower-ready", { kernel: kernelName })).catch(e => note("follower-failed", { kernel: kernelName, error: String(e) }))
+  }
+  const reach = flags.get("--reach") === "1" ? await startReach({ relayBinary: resolve(need("--relay-binary")), kernelBinary, dir, evidence, drillEnv: kernelEnv, drillRpc: rpc, passkey, own, until, note }) : null
   const followed = []
-  const followerLoop = until(() => existsSync(join(holderDir, "ready")), "follower subscribed", 120000).then(() => note("follower-ready")).catch(e => note("follower-failed", { error: String(e) }))
+  const runScriptOwner = (n, template) => new Promise(done => {
+    const scriptDir = join(dir, `script-owner-${n}`)
+    mkdirSync(scriptDir)
+    const argv = template.replaceAll("{S}", String(n)).split(" ")
+    writeFileSync(join(scriptDir, "run.sh"), `#!/bin/bash
+cd ${JSON.stringify(work)}
+chariox access request --until-exit > ${scriptDir}/grant.json 2> ${scriptDir}/grant.err || exit 2
+chariox exec --kernel ${alias} --session ${sessionId} -- ${argv.map(a => JSON.stringify(a)).join(" ")} > ${scriptDir}/out.txt 2> ${scriptDir}/err.txt
+echo $? > ${scriptDir}/rc
+`, { mode: 0o755 })
+    const child = own(spawn("bash", [join(scriptDir, "run.sh")], { env: kernelEnv, stdio: "ignore" }))
+    note("script-owner-start", { n, pid: child.pid, command: argv.join(" ") })
+    const started = Date.now()
+    child.once("close", () => {
+      const read = f => existsSync(join(scriptDir, f)) ? readFileSync(join(scriptDir, f), "utf8") : null
+      const row = { n, exit_code: Number(read("rc")), seconds: (Date.now() - started) / 1000, stderr: read("err.txt")?.slice(0, 2000), stdout: read("out.txt")?.slice(0, 500) }
+      note("script-owner-done", row)
+      done(row)
+    })
+  })
+  const followerLoop = Promise.all([startHolder(holderDir, kernelEnv, alias), ...(reach ? [startHolder(reachHolderDir, reach.env, reach.target)] : [])])
 
   // --tui: the real terminal client attached to the Room in tmux; every changed screen is kept.
   if (flags.has("--tui")) {
@@ -474,10 +504,14 @@ done
     const [file, marker] = spec.split(":")
     const started = Date.now()
     // A Codex agent gets <name>-codex.txt and ends by writing answer-bN.txt (its transcripts are not read).
-    const templateFor = n => readFileSync(resolve(codexNumbers.includes(n) ? file.replace(/\.txt$/, "-codex.txt") : file), "utf8")
+    const answersInFile = n => providerOf(n) !== "claude"
+    const templateFor = n => readFileSync(resolve(answersInFile(n) ? file.replace(/\.txt$/, "-codex.txt") : file), "utf8")
+    // A script owner is an outside process with its own grant that runs the same build through `chariox exec`.
+    const scripts = Array.from({ length: Number(flags.get("--script-owners") ?? 0) }, (_, i) => runScriptOwner(i + 1, flags.get("--script-command") ?? "python3 buildp1.py s{S} 1600 40 5"))
     await Promise.all(agents.map((target, i) => ask(templateFor(i + 1).replaceAll("{N}", String(i + 1)), target)))
-    await Promise.all(agents.map((_, i) => until(() => codexNumbers.includes(i + 1) ? existsSync(join(work, `answer-b${i + 1}.txt`)) : transcripts().includes(`${marker}_b${i + 1}`), `agent ${i + 1} answer ${marker}`, Number(flags.get("--wait-s") ?? 900) * 1000)
+    await Promise.all(agents.map((_, i) => until(() => answersInFile(i + 1) ? existsSync(join(work, `answer-b${i + 1}.txt`)) : transcripts().includes(`${marker}_b${i + 1}`), `agent ${i + 1} answer ${marker}`, Number(flags.get("--wait-s") ?? 900) * 1000)
       .then(() => note("answered", { agent: i + 1, marker, seconds: ((Date.now() - started) / 1000).toFixed(1) }))))
+    report.script_owners = await Promise.all(scripts)
     report[`round_${marker}_s`] = (Date.now() - started) / 1000
   }
   report.peaks_file = join(dir, "chariox/state/admission-peaks.json")
