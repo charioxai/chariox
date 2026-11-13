@@ -117,11 +117,9 @@ impl Uploads {
             Lane::Event => &self.event,
         };
         let frame = match upload {
-            Some(Upload {
-                message: Message::Text(_),
-                ..
-            }) => self.window.chunk_bytes(),
-            Some(_) if self.adaptive_binary => self.window.first_chunk_bytes(),
+            Some(upload) if matches!(&upload.message, Message::Text(_)) || self.adaptive_binary => {
+                self.window.chunk_bytes()
+            }
             Some(_) => CHUNK_BYTES,
             None => return false,
         };
@@ -132,11 +130,7 @@ impl Uploads {
     pub(crate) fn next_chunk(&mut self, lane: Lane) -> Option<Message> {
         let next_id = self.last_id.checked_add(1)?;
         let adaptive = self.adaptive_binary;
-        let limit = if adaptive {
-            self.window.first_chunk_bytes()
-        } else {
-            self.window.chunk_bytes()
-        };
+        let limit = self.window.chunk_bytes();
         let upload = self.slot(lane).as_mut()?;
         let id = if upload.id == 0 { next_id } else { upload.id };
         let (chunk, end) = upload.next_chunk(id, limit, adaptive)?;

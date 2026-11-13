@@ -1,6 +1,6 @@
 //! MP-08 / MP-10 / MP-11: bounded opaque multiplexing (532 / peer 140).
 #[cfg(test)]
-use crate::drain_window::FLOOR_BYTES;
+use crate::drain_window::START_WINDOW_BYTES;
 use crate::drain_window::{DrainWindow, SendStamp};
 use crate::frame_transport::{
     binary_chunk, binary_chunk_payload, text_chunk, TransportFrame, CHUNK_BYTES,
@@ -557,14 +557,9 @@ where
                     };
                     transfer.id = id;
                 }
-                if let Some((message, end)) = transfer.next_chunk(
-                    if binary_requests {
-                        credit.drain.first_chunk_bytes()
-                    } else {
-                        credit.drain.chunk_bytes()
-                    },
-                    binary_requests,
-                ) {
+                if let Some((message, end)) =
+                    transfer.next_chunk(credit.drain.chunk_bytes(), binary_requests)
+                {
                     let small_binary = transfer
                         .binary
                         .as_ref()
@@ -844,7 +839,7 @@ mod tests {
         {
             wire += message.len();
             assert!(
-                wire <= FLOOR_BYTES + SMALL_RESERVE_BYTES,
+                wire <= START_WINDOW_BYTES + SMALL_RESERVE_BYTES,
                 "combined byte credit exceeded"
             );
             match message {
@@ -865,7 +860,7 @@ mod tests {
             "small messages stalled on receipt/assembly slots: {ids:?}"
         );
         assert!(
-            ids.len() < (FLOOR_BYTES + SMALL_RESERVE_BYTES) / 4096 + 2,
+            ids.len() < (START_WINDOW_BYTES + SMALL_RESERVE_BYTES) / 4096 + 2,
             "byte window must stop an unacknowledged stream"
         );
         assert_eq!(ids, (1..=ids.len() as u64).collect::<Vec<_>>());
@@ -1163,8 +1158,9 @@ mod tests {
         }
         task.abort();
         let delay = small_delay.unwrap();
-        let bound =
-            Duration::from_secs_f64((FLOOR_BYTES + SMALL_RESERVE_BYTES) as f64 / RATE as f64 + 0.5);
+        let bound = Duration::from_secs_f64(
+            (START_WINDOW_BYTES + SMALL_RESERVE_BYTES) as f64 / RATE as f64 + 0.5,
+        );
         assert!(
             delay <= bound,
             "the small reply waited {delay:?}, bound {bound:?}"
@@ -1427,6 +1423,45 @@ mod tests {
         let _ = task.await;
         assert_eq!(ids, ["m1", "m2", "m3", "m4"], "replies stalled on receipts");
     }
+    // A fresh Room attach must fit before the first receipt returns.
+    #[tokio::test]
+    async fn cold_room_reply_finishes_before_its_first_receipt() {
+        let (socket, mut client) = sockets().await;
+        let (tx, rx) = mpsc::channel(8);
+        let (_ack_tx, ack_rx) = mpsc::channel(32);
+        let (_ct, cr) = mpsc::channel(8);
+        let reply = serde_json::json!({"kind": "client_response", "request_id": "cold-room", "payload": "x".repeat(60 * 1024)}).to_string();
+        tx.send(Message::Text(reply.clone().into())).await.unwrap();
+        drop(tx);
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            true,
+            false,
+            ack_rx,
+            cr,
+            WriterUsage::fixture(true),
+        ));
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        let completed = tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(Ok(Message::Text(text))) = client.next().await {
+                if let (Some(complete), _) = receiver.receive(&text).unwrap() {
+                    return Some(complete);
+                }
+            }
+            None
+        })
+        .await;
+        task.abort();
+        let _ = task.await;
+        assert_eq!(
+            completed.ok().flatten().as_deref(),
+            Some(reply.as_str()),
+            "cold reply waited for a receipt"
+        );
+    }
+
     #[test]
     fn mp08_mp10_mp11_retired_writes_keep_exact_ordered_byte_credit() {
         let mut active = VecDeque::new();
@@ -1490,7 +1525,7 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(80), client.next()).await
         {
             total += message.len();
-            assert!(total <= FLOOR_BYTES);
+            assert!(total <= START_WINDOW_BYTES);
             match message {
                 Message::Binary(b) => {
                     assert_eq!(&b[..], &binary);
@@ -1731,7 +1766,7 @@ mod tests {
             wire += message.len();
         }
         assert!(
-            wire >= FLOOR_BYTES - CHUNK_BYTES,
+            wire >= START_WINDOW_BYTES - CHUNK_BYTES,
             "bulk must fill the window first"
         );
         tx.send(display_event("band", 1, "band".into()))
