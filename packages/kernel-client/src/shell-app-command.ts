@@ -6,6 +6,7 @@ import {
   removeAppInboxRouteRequest, testAppInboxRouteRequest,
   grantAppConnectionRequest, revokeAppConnectionRequest, listAppConnectionsRequest, getAppSetRequest,
   revokeAppFileGrantsRequest, inspectAppViewRequest,
+  grantAppFolderRequest, listAppFolderGrantsRequest, revokeAppFolderGrantRequest,
 } from "./ipc-app-requests.js"
 import type { AppViewCatalog, AppViewInspection, AppAutomationSummary, AppConnectionSummary, AppInboxRouteSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
 import { LocalIpcError } from "./local-ipc-error.js"
@@ -26,6 +27,7 @@ const usage = [
   "       app inbox test <installation-id> <route-id> <occurrence-id> '<json-payload>'",
   "       app connection list <installation-id> | grant <installation-id> <generator>/<connection-id> | revoke <installation-id> <connection-id>",
   "       app file revoke <installation-id> [<operation-id>]",
+  '       app folder grant <operation-id> "<kernel-folder>" read-only|read-write | list <installation-id> | revoke <installation-id> <grant-id>',
 ].join("\n")
 
 /** `/app` arguments with an `inbox test` payload taken from the raw line, so
@@ -113,6 +115,12 @@ export async function executeAppCommand(
     } else return { ok: false, message: usage }
   } else if (action === "file" && rest[0] === "revoke" && rest[1] && rest.length <= 3) {
     request = revokeAppFileGrantsRequest(rest[1], rest[2])
+  } else if (action === "folder") {
+    const [verb, first, second, access] = rest
+    if (verb === "list" && first && rest.length === 2) request = listAppFolderGrantsRequest(first)
+    else if (verb === "revoke" && first && second && rest.length === 3) request = revokeAppFolderGrantRequest(first, second)
+    else if (verb === "grant" && first && second && rest.length === 4 && (access === "read-only" || access === "read-write")) request = grantAppFolderRequest(defaults.sessionId ?? "", first, second, access === "read-only" ? "read_only" : "read_write")
+    else return { ok: false, message: usage }
   } else if (action === "automation") {
     const parsed = automationRequest(rest)
     if (!parsed) return { ok: false, message: usage }
@@ -129,7 +137,16 @@ export async function executeAppCommand(
     const check = action === "uninstall" ? `app status ${rest[0]}` : `app worker ${rest[0]}`
     return { ok: false, message: `The kernel did not answer, so the ${action} may still happen. Check with ${check} before trying again.` }
   }
-  if (response.AppRequestFailed) return appFailure(response, action === "connection" || action === "file" ? `${action} ${rest[0]}` : action)
+  if (response.AppRequestFailed) return appFailure(response, action === "connection" || action === "file" || action === "folder" ? `${action} ${rest[0]}` : action)
+  if (response.AppFolderGranted) {
+    const data = expect<{ grant_id: string; installation_id: string }>(response, "AppFolderGranted")
+    return { ok: true, message: `Shared the folder with the App. Revoke access with app folder revoke ${data.installation_id} ${data.grant_id}.`, data }
+  }
+  if (response.AppFolderGrantRevoked) return { ok: true, message: "Revoked the App's folder access.", data: response.AppFolderGrantRevoked }
+  if (response.AppFolderGrantsListed) {
+    const data = expect<{ grants: { grant_id: string; path: string; access: string }[] }>(response, "AppFolderGrantsListed")
+    return { ok: true, message: data.grants.map(grant => `${grant.grant_id} · ${JSON.stringify(grant.path)} · ${grant.access === "read_only" ? "read only" : "read and write"}`).join("\n") || "No folders shared with this App.", data }
+  }
   if (response.AppLogs) {
     const data = expect<{ installation_id: string; entries: AppLogEntry[] }>(response, "AppLogs")
     const lines = data.entries.map(formatLogEntry)
@@ -350,11 +367,13 @@ function appFailure(response: Record<string, unknown>, action?: string): ShellCo
       : action === "inbox" ? "Not found: check the App installation and route."
       : action?.startsWith("connection") ? "Not found: check the App installation and the connection id."
       : action === "file revoke" ? "Not found: check the App installation and the file request id."
+      : action?.startsWith("folder") ? "Not found: check the App installation, folder request or grant id."
       : "App installation not found.",
     invalid_request: action === "inbox"
       ? "Invalid App request: the event must be one the App declares as incoming, and a payload must match its schema."
       : action === "connection grant"
         ? "Invalid App request: the App's signed manifest must declare this generator under capabilities.connections."
+        : action === "folder grant" ? "Choose a real folder on the kernel's machine; a folder without a stable filesystem identity cannot be shared."
         : "Invalid App request.",
     busy: "App requests are busy. Try again shortly.",
     receipt_expired: "App receipt expired. This request was not re-executed; check the App state before issuing a new command.",

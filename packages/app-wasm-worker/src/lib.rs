@@ -11,6 +11,7 @@ mod attribution;
 mod bindings;
 mod broker;
 mod files;
+mod folders;
 mod host;
 mod http;
 pub mod ipc;

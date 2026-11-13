@@ -29,6 +29,7 @@ pub(crate) mod app_file_exports;
 pub(crate) mod app_file_grants;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_files;
+pub(crate) mod app_folder_grants;
 pub(crate) mod app_host_actions;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_http;
@@ -230,6 +231,8 @@ enum DurableWriterRequest {
     AppLog(Box<app_logs::AppLogRequest>),
     AppValidation(Box<app_validations::ValidationRequest>),
     AppFileGrant(Box<app_file_grants::FileGrantRequest>),
+    AppFolder(Box<app_folder_grants::FolderRequest>),
+    AppFolderReserve(Box<app_folder_grants::FolderReserveRequest>),
     AppFileExport(Box<app_file_exports::FileExportRequest>),
     AppHostAction(Box<app_host_actions::HostActionRequest>),
     AppConnectionGrant(Box<app_connections::ConnectionGrantRequest>),
@@ -464,6 +467,7 @@ impl DurableKernelStateStore {
             message: "App validation schema could not be initialized".into(),
         })?;
         app_file_grants::initialize(&connection)
+            .and_then(|()| app_folder_grants::initialize(&connection))
             .and_then(|()| app_file_exports::initialize(&connection))
             .and_then(|()| app_host_actions::initialize(&connection))
             .and_then(|()| app_connections::initialize(&connection))
@@ -1723,6 +1727,14 @@ fn run_durable_writer_with(
             }
             DurableWriterRequest::AppFileGrant(request) => {
                 app_file_grants::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppFolderReserve(request) => {
+                app_folder_grants::execute_reserve(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppFolder(request) => {
+                app_folder_grants::execute(&mut connection, *request);
                 continue;
             }
             DurableWriterRequest::AppHostAction(request) => {

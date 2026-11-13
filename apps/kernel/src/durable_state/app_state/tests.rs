@@ -263,6 +263,34 @@ pub(super) fn view_package(total_bytes: usize) -> (Vec<u8>, TrustedPublisher) {
 pub(super) fn package() -> (Vec<u8>, TrustedPublisher) {
     package_with_tools(false)
 }
+pub(super) fn folder_package() -> (Vec<u8>, TrustedPublisher) {
+    let (bytes, publisher) = package();
+    let verified = verify(
+        &bytes,
+        &VerificationPolicy::new(
+            crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+            vec![publisher.clone()],
+        ),
+    )
+    .unwrap();
+    let mut manifest = verified.manifest().clone();
+    manifest.capabilities.external_files =
+        vec![chariox_app_package::ExternalFileAccess::UserFolder];
+    let files = verified
+        .files()
+        .map(|(path, bytes)| (path.to_owned(), bytes.to_vec()))
+        .collect();
+    (
+        pack(
+            &manifest,
+            &files,
+            &SigningKey::from_bytes(&[71; 32]),
+            &Limits::default(),
+        )
+        .unwrap(),
+        publisher,
+    )
+}
 pub(super) fn stage_approved_update(
     store: &DurableKernelStateStore,
     owner: &str,

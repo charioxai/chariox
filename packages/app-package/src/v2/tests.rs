@@ -177,6 +177,22 @@ fn package_vectors_are_stable() {
 }
 
 #[test]
+fn a_signed_package_can_declare_owner_selected_folder_access() {
+    let mut fixture = base();
+    let mut manifest = serde_json::to_value(&fixture.manifest).unwrap();
+    manifest["capabilities"]["externalFiles"] = json!(["user_folder"]);
+    fixture.manifest = serde_json::from_value(manifest).expect(
+        "a signed user_folder permission must be admitted before its owner grants a folder",
+    );
+    let package = packed(&fixture, &[]);
+    let verified = verify(&package, &policy()).unwrap();
+    assert_eq!(
+        serde_json::to_value(&verified.manifest().capabilities).unwrap()["externalFiles"],
+        json!(["user_folder"])
+    );
+}
+
+#[test]
 fn review_vectors_are_stable_and_bind_nothing_into_the_publisher_digests() {
     check_vectors("package-reviews.json", package_vector);
     let path: PathBuf = [

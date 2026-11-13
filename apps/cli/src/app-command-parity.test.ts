@@ -36,6 +36,7 @@ const shared: Record<string, string[][]> = {
     ["connection", "revoke", "install-1", "team-1"],
   ],
   file: [["file", "revoke", "install-1"], ["file", "revoke", "install-1", "operation-1"]],
+  folder: [["folder", "grant", "operation-1", "/notes", "read-only"], ["folder", "list", "install-1"], ["folder", "revoke", "install-1", "grant-1"]],
 }
 
 async function cliRequests(args: string[]): Promise<unknown[]> {
@@ -128,6 +129,7 @@ test("App command parity snapshot", () => {
     "inbox: cli=inbox list|add|remove|test INSTALLATION … | tui=inbox list|add|remove|test INSTALLATION …",
     "connection: cli=connection list|grant|revoke INSTALLATION … | tui=connection list|grant|revoke INSTALLATION …",
     'file: cli=file revoke INSTALLATION [OPERATION] | tui=file grant OPERATION "FILE"… | file save OPERATION "PATH" | file revoke INSTALLATION [OPERATION]',
+    'folder: cli=folder grant OPERATION "KERNEL-FOLDER" read-only|read-write | list INSTALLATION | revoke INSTALLATION GRANT | tui=folder grant OPERATION "KERNEL-FOLDER" read-only|read-write | list INSTALLATION | revoke INSTALLATION GRANT',
   ])
   assert.match(cliAppUsage(), /chariox app create\|keygen\|manifest\|validate\|pack\|inspect\|install\|update\|list\|actions\|set\|/)
   const help = tuiAppHelp()

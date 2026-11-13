@@ -266,6 +266,7 @@ fn rooms_named(request: &LocalDaemonRequest) -> Vec<String> {
         LocalDaemonRequest::GenerateWorkspaceCommitMessage(r) => &r.session_id,
         LocalDaemonRequest::RunAgentUtility(r) => &r.session_id,
         LocalDaemonRequest::AcceptAppHostAction(r) => &r.session_id,
+        LocalDaemonRequest::GrantAppFolder(r) => &r.session_id,
         LocalDaemonRequest::GrantAppFile(r) => &r.session_id,
         LocalDaemonRequest::SaveAppFileExport(r) => &r.session_id,
         LocalDaemonRequest::BeginAppPublisherEnrollment(r) => &r.session_id,

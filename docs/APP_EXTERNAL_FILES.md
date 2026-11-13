@@ -24,7 +24,7 @@ occurred. Only a definitely pre-publication failure may release the claim.
 A successful rename followed by an uncertain sync is an uncertain effect, not
 permission to replay. This uses the existing private-file publication boundary.
 
-## Permanent folders (FILES-FOLDER-01, design before implementation)
+## Permanent folders (FILES-FOLDER-01)
 
 Add a signed `user_folder` external-file capability. Installation approval
 shows this files permission and a permission-changing update requires approval.
@@ -79,4 +79,33 @@ agent calls without an App grant, uninstall/reinstall and permission-changing
 updates. Notes-over-Markdown and photo-directory fixtures must run with real
 contained workers on Linux and macOS, including remote-kernel clients. Mac
 validation needs the actual Mac; a Linux implementation or test cannot stand
-in for it. No permanent-folder implementation or acceptance is claimed here.
+in for it. Acceptance is recorded per platform and client in the external drill ledger;
+implementation on Linux does not establish the macOS and remote-client cells.
+
+### SDK and owner controls
+
+The signed declaration is `external_files: ["user_folder"]`. `host.pick_folder`
+(`host.pickFolder()` in JavaScript) waits for a trusted owner choice and returns
+an opaque grant. `folders.list(grant, relative)`, `folders.read(grant, relative)`
+and `folders.write(grant, relative, bytes)` carry relative paths and bounded
+bytes through the kernel broker. They give the worker no external preopen.
+Listings contain safe regular files and directories only; unsupported entries
+are omitted. Names reserved for unpublished writes are neither listed nor
+readable. A contained App can use Markdown and photo bytes through the same API.
+
+A grant permits 60 calls per minute, at most 512 KiB per file operation, at most
+1,024 entries per listing, and 512 MiB cumulative admitted writes. The write
+budget is spent before staging and is retained when an operation is cancelled,
+fails or has an uncertain outcome. The owner can revoke an unused grant and
+make a fresh selection when the write allowance is exhausted. Each installation
+may retain 32 grants and four pending choices; a choice expires after ten minutes.
+
+Web chooses on the request's kernel using its directory browser. The shared
+text-terminal commands are `/app folder grant OP "KERNEL-PATH" read-only`
+(or `read-write`), `/app folder list INSTALLATION` and
+`/app folder revoke INSTALLATION GRANT`. Paths never refer to the terminal
+client's local filesystem. Extensions exposes the same owner's list and revoke
+controls. Changing the signed permissions or uninstalling removes grants.
+`FOLDER_CHANGED` requires a fresh selection. `READ_ONLY`, `RATE_LIMITED` and
+`QUOTA_EXCEEDED` name the refused bound. `APP_FOLDER_OUTCOME_UNCERTAIN` means
+inspect the destination before doing anything further; it never authorizes replay.

@@ -40,6 +40,7 @@ export const appCommandCatalog: readonly AppCommandEntry[] = [
   both("inbox", "list|add|remove|test INSTALLATION …", "manage an App's inbox routes"),
   both("connection", "list|grant|revoke INSTALLATION …", "manage an App's connections"),
   { verb: "file", cli: "file revoke INSTALLATION [OPERATION]", tui: 'file grant OPERATION "FILE"… | file save OPERATION "PATH" | file revoke INSTALLATION [OPERATION]', summary: "answer or revoke an App's file request" },
+  both("folder", 'grant OPERATION "KERNEL-FOLDER" read-only|read-write | list INSTALLATION | revoke INSTALLATION GRANT', "share or revoke a folder on the kernel's machine"),
 ]
 
 export const cliOnlyAppVerbs = new Set(appCommandCatalog.filter((entry) => !entry.tui).map((entry) => entry.verb))

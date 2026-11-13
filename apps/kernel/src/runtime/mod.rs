@@ -19,6 +19,7 @@ pub(crate) mod app_event_pump;
 pub(crate) mod app_file_grant_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_files_broker;
+pub(crate) mod app_folder_broker;
 pub(crate) mod app_host_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_http;

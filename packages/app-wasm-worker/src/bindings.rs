@@ -10,6 +10,7 @@ wasmtime::component::bindgen!({
             import chariox:app/events@1.0.0;
             import chariox:app/connections@1.0.0;
             import chariox:app/files@1.0.0;
+            import chariox:app/folders@1.0.0;
             import chariox:app/http@1.0.0;
             import chariox:app/log@1.0.0;
             import chariox:app/host@1.0.0;

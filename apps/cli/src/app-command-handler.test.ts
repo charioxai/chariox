@@ -3,6 +3,14 @@ import test from "node:test"
 import { parseSlashCommand, type ParsedSlashCommand } from "./commands.js"
 import { appSlashArgs, handleAppSlashCommand } from "./app-command-handler.js"
 
+test("/app folder grant preserves a quoted remote-kernel path without reading the terminal filesystem", async () => {
+  const requests: unknown[]=[];const notices: string[]=[];
+  await handleAppSlashCommand({currentAppSessionId:()=>"room-1",sendAppRequest:async request=>{requests.push(request);return {AppFolderGranted:{operation_id:"op",installation_id:"app",grant_id:"grant"}}},appendNotice:message=>{notices.push(message)},flashFooter:message=>assert.fail(message)},
+    {kind:"app",raw:'/app folder grant op "/only-on-the-remote-kernel/my notes" read-only',args:["folder","grant","op","/only-on-the-remote-kernel/my notes","read-only"]});
+  assert.deepEqual(requests,[{GrantAppFolder:{session_id:"room-1",operation_id:"op",path:"/only-on-the-remote-kernel/my notes",access:"read_only"}}]);
+  assert.match(notices[0]!,/app folder revoke app grant/);
+})
+
 test("App slash handler displays kernel installation state without session authority", async () => {
   const notices: string[] = []
   const requests: unknown[] = []

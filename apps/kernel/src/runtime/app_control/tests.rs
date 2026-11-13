@@ -3,6 +3,68 @@ use crate::durable_state::apps::{AppRegistryMutation, AppRegistryOutcome};
 use crate::runtime::command::KernelCaller;
 use chariox_app_runtime::installation::{CapabilityApproval, ReleaseMetadata};
 
+#[test]
+fn folder_permissions_require_a_human_client_and_the_installation_owner() {
+    let harness = crate::local::test_support::LocalRouterTestHarness::new();
+    harness.with_app(|app| seed(&app.durable_state_store(), "alice", "folder-owner"));
+    let requests = [
+        LocalDaemonRequest::GrantAppFolder(GrantAppFolderRequest {
+            session_id: "s".into(),
+            operation_id: "unknown".into(),
+            path: "/not-selected".into(),
+            access: AppFolderAccess::ReadWrite,
+        }),
+        LocalDaemonRequest::ListAppFolderGrants(AppWorkerRequest {
+            installation_id: "folder-owner".into(),
+        }),
+        LocalDaemonRequest::RevokeAppFolderGrant(RevokeAppFolderGrantRequest {
+            installation_id: "folder-owner".into(),
+            grant_id: "unknown".into(),
+        }),
+    ];
+    for kind in [
+        KernelCallerKind::Metaagent,
+        KernelCallerKind::RemoteKernel,
+        KernelCallerKind::HostedService,
+    ] {
+        let mut caller = KernelCaller::for_source(&KernelCommandSource::LocalCli);
+        caller.user_id = Some("alice".into());
+        caller.caller_kind = kind;
+        for request in &requests {
+            let response = harness.dispatch_with_caller(request.clone(), caller.clone());
+            if caller.caller_kind == KernelCallerKind::HostedService {
+                assert!(matches!(
+                    response,
+                    Err(crate::error::DaemonError::LocalTransport {
+                        operation: "authorize hosted service request",
+                        ..
+                    })
+                ));
+            } else {
+                assert_eq!(response.unwrap(), failed(AppRequestErrorCode::Unauthorized));
+            }
+        }
+    }
+    // An unrelated operation must not inspect even a syntactically valid host path.
+    for owner in ["alice", "bob"] {
+        assert_eq!(
+            harness
+                .dispatch_as_user(owner, requests[0].clone())
+                .unwrap(),
+            failed(AppRequestErrorCode::NotFound)
+        );
+    }
+    assert_eq!(
+        harness
+            .dispatch_as_user("bob", requests[1].clone())
+            .unwrap(),
+        failed(AppRequestErrorCode::NotFound)
+    );
+    assert!(
+        matches!(harness.dispatch_as_user("alice",requests[1].clone()).unwrap(),LocalDaemonResponse::AppFolderGrantsListed{grants,..} if grants.is_empty())
+    );
+}
+
 fn seed(store: &DurableKernelStateStore, owner: &str, id: &str) {
     let result = store
         .mutate_app_installation(

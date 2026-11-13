@@ -24,6 +24,9 @@ impl KernelRuntimeState {
             | LocalDaemonRequest::AcceptAppHostAction(_)
             | LocalDaemonRequest::RestoreAppDataSnapshot(_)
             | LocalDaemonRequest::GrantAppFile(_)
+            | LocalDaemonRequest::GrantAppFolder(_)
+            | LocalDaemonRequest::ListAppFolderGrants(_)
+            | LocalDaemonRequest::RevokeAppFolderGrant(_)
             | LocalDaemonRequest::PreviewDeploymentApps(_)
             | LocalDaemonRequest::PrepareDeploymentApps(_)
             | LocalDaemonRequest::GetAppSet(_)
@@ -54,6 +57,30 @@ impl KernelRuntimeState {
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Option<LocalDaemonResponse> {
+        if matches!(
+            request,
+            LocalDaemonRequest::GrantAppFolder(_)
+                | LocalDaemonRequest::ListAppFolderGrants(_)
+                | LocalDaemonRequest::RevokeAppFolderGrant(_)
+        ) {
+            use crate::runtime::command::{KernelCallerKind, KernelCommandSource};
+            if !matches!(
+                command.source,
+                KernelCommandSource::LocalCli
+                    | KernelCommandSource::LocalIpc
+                    | KernelCommandSource::RelayClient
+            ) || !matches!(
+                command.caller.caller_kind,
+                KernelCallerKind::LocalClient | KernelCallerKind::RemoteClient
+            ) || self.room_provider_origin.is_some()
+            {
+                return Some(failed(AppRequestErrorCode::Unauthorized));
+            }
+            return Some(match crate::runtime::app_control::owner(command) {
+                Ok(owner) => Box::pin(self.folder_control(owner, request.clone())).await,
+                Err(code) => failed(code),
+            });
+        }
         if let LocalDaemonRequest::ListAppInstallations(list) = request {
             let room_id = list.session_id.as_deref()?;
             let caller = match crate::runtime::app_control::owner(command) {

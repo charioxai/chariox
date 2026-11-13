@@ -8,6 +8,7 @@ mod authority;
 mod cancellation;
 mod connections;
 mod file_grants;
+mod folder_grants;
 mod host_actions;
 mod outcomes;
 mod real_generator;

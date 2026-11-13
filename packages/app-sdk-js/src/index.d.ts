@@ -75,12 +75,18 @@ export const files: {
 export const http: {
   fetch(request: { url: string; method: string; headers: Array<[string, string]>; connectionId: string | null; operationId: string | null }, body: AsyncIterable<Uint8Array> | null): ImportPromise<[{ status: number; headers: Array<[string, string]>; url: string }, HostStream<Uint8Array>]>;
 };
+export const folders: {
+  list(grantId: string, path: string): ImportPromise<Array<{ name: string; kind: 'file' | 'directory'; bytes: bigint }>>;
+  read(grantId: string, path: string): ImportPromise<Uint8Array>;
+  write(grantId: string, path: string, contents: Uint8Array): ImportPromise<bigint>;
+};
 export const log: { write(level: 'debug' | 'info' | 'warn' | 'error', message: string, fields: string): void };
 export const host: {
   notify(title: string, body: string | null): ImportPromise<string>;
   openLink(url: string): ImportPromise<{ offerId: string; state: string }>;
   writeClipboard(text: string): ImportPromise<{ offerId: string; state: string }>;
   pickFile(request: { multiple: boolean; accept: string[] }): ImportPromise<string[]>;
+  pickFolder(): ImportPromise<string>;
 };
 export interface Operation { operationId: string; state: 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled' | 'reconciliation' }
 export const validation: {

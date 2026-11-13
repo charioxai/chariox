@@ -263,6 +263,32 @@ impl<T: Send> connections::HostWithStore<T> for HasSelf<Host> {
 }
 impl host::Host for Host {}
 impl<T: Send> host::HostWithStore<T> for HasSelf<Host> {
+    async fn pick_folder(accessor: &Accessor<T, Self>) -> Result<String, types::AppError> {
+        let mut value = call(accessor, "host.pick_folder", json!({})).await?;
+        loop {
+            match value["state"].as_str() {
+                Some("granted") => return text(&value, "grantId"),
+                Some("pending") => {}
+                Some("declined") => {
+                    return Err(app_error(error("CANCELLED", "folder selection cancelled")))
+                }
+                Some("expired") => {
+                    return Err(app_error(error(
+                        "FOLDER_PICK_EXPIRED",
+                        "folder selection expired; choose again",
+                    )))
+                }
+                _ => return Err(invalid()),
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            value = call(
+                accessor,
+                "host.pick_folder_status",
+                json!({"operationId":text(&value,"operationId")?}),
+            )
+            .await?;
+        }
+    }
     async fn notify(
         accessor: &Accessor<T, Self>,
         title: String,

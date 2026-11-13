@@ -154,6 +154,7 @@ pub enum ClipboardAccess {
 #[serde(rename_all = "snake_case")]
 pub enum ExternalFileAccess {
     UserSelected,
+    UserFolder,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

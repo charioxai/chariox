@@ -3,6 +3,19 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import { appCommandArgs, executeAppCommand, inboxRequest } from "./shell-app-command.js"
 
+test("folder control requires explicit access and reports only acknowledged grants and revocations", async () => {
+  const sent: unknown[]=[];
+  const client={send:async(request:Record<string,unknown>)=>{sent.push(request);return {AppRequestFailed:{code:"invalid_request"}}}};
+  assert.equal((await executeAppCommand(["folder","grant","op","/notes"],client)).ok,false);
+  assert.equal(sent.length,0);
+  const refused=await executeAppCommand(["folder","grant","op","/notes","read-write"],client);
+  assert.equal(refused.ok,false);assert.match(refused.message!,/kernel's machine/);
+  const listed=await executeAppCommand(["folder","list","app"],{send:async()=>({AppFolderGrantsListed:{installation_id:"app",grants:[{grant_id:"g",path:"/notes",access:"read_only",written_bytes:0}]}})});
+  assert.equal(listed.ok,true);assert.match(listed.message!,/read only/);
+  const revoked=await executeAppCommand(["folder","revoke","app","g"],{send:async()=>({AppFolderGrantRevoked:{installation_id:"app",grant_id:"g"}})});
+  assert.equal(revoked.ok,true);assert.match(revoked.message!,/Revoked/);
+})
+
 test("App list preserves large generations and pages without unbounded collection", async () => {
   const requests: Record<string, unknown>[] = []
   const result = await executeAppCommand(["list", "--limit", "1"], { send: async request => {

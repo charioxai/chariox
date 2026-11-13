@@ -208,6 +208,17 @@ export function saveAppFileExportRequest(sessionId: string, operationId: string)
   return { SaveAppFileExport: { session_id: sessionId, operation_id: operationId } }
 }
 
+/** The folder belongs to the kernel's machine, including remote terminals. */
+export function grantAppFolderRequest(sessionId: string, operationId: string, path: string, access: "read_only" | "read_write") {
+  return { GrantAppFolder: { session_id: sessionId, operation_id: operationId, path, access } }
+}
+export function listAppFolderGrantsRequest(installationId: string) {
+  return { ListAppFolderGrants: { installation_id: installationId } }
+}
+export function revokeAppFolderGrantRequest(installationId: string, grantId: string) {
+  return { RevokeAppFolderGrant: { installation_id: installationId, grant_id: grantId } }
+}
+
 /** Protocol 409: take a copy/link offer once, after an explicit human gesture.
  * Execute the returned payload in the accepting terminal, never in an App view. */
 export function acceptAppHostActionRequest(sessionId: string, operationId: string) {

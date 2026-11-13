@@ -16,6 +16,8 @@ pub const fn assert_production_build() {
 pub mod app_catalog;
 pub mod app_inbox;
 pub mod app_outbox;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub mod external_folder;
 pub mod installation;
 pub mod managed_state;
 #[cfg(any(target_os = "macos", target_os = "linux"))]

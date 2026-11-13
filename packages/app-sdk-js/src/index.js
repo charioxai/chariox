@@ -9,6 +9,7 @@ import schedule from 'chariox:app/schedule@1.0.0';
 import events from 'chariox:app/events@1.0.0';
 import connections from 'chariox:app/connections@1.0.0';
 import files from 'chariox:app/files@1.0.0';
+import folders from 'chariox:app/folders@1.0.0';
 import http from 'chariox:app/http@1.0.0';
 import log from 'chariox:app/log@1.0.0';
 import host from 'chariox:app/host@1.0.0';
@@ -39,7 +40,7 @@ globalThis.console = Object.fromEntries(['debug', 'info', 'log', 'warn', 'error'
 export const fetch = createFetch(http);
 globalThis.fetch = fetch;
 
-export { registry, state, schedule, events, connections, files, http, log, host, validation, ResourceScope, Headers, AppResponse };
+export { registry, state, schedule, events, connections, files, folders, http, log, host, validation, ResourceScope, Headers, AppResponse };
 
 export function defineApp(app) {
   return createHandlers(app, { registry, finishInvocation: timers.finishInvocation, context: resources => ({

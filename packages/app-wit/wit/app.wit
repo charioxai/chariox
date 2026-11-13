@@ -110,6 +110,18 @@ interface files {
   %export: async func(path: string) -> result<string, app-error>;                                     // files.export
 }
 
+/// Durable access to an owner-selected folder. Paths are relative to an opaque
+/// grant; the host path and every filesystem descriptor stay in the kernel.
+@since(version = 1.0.0)
+interface folders {
+  use app-types.{app-error};
+  enum entry-kind { file, directory }
+  record entry { name: string, kind: entry-kind, bytes: u64 }
+  %list: async func(grant-id: string, path: string) -> result<list<entry>, app-error>;
+  read: async func(grant-id: string, path: string) -> result<list<u8>, app-error>;
+  write: async func(grant-id: string, path: string, contents: list<u8>) -> result<u64, app-error>;
+}
+
 // R2/R6, L1/L2: brokered HTTP streaming and cancellation.
 @since(version = 1.0.0)
 interface http {
@@ -147,6 +159,7 @@ interface host {
   write-clipboard: async func(text: string) -> result<offer, app-error>;                  // host.clipboard_write
   /// Waits for the person's choice; the worker polls host.pick_file_status.
   pick-file: async func(request: pick) -> result<list<string>, app-error>;               // host.pick_file (+ _status)
+  pick-folder: async func() -> result<string, app-error>;                                // host.pick_folder (+ _status)
 }
 
 // R2/R6, L1/L2, A1: existing kernel protected-effect approvals.
@@ -201,6 +214,7 @@ world app {
   import events;
   import connections;
   import files;
+  import folders;
   import http;
   import log;
   import host;

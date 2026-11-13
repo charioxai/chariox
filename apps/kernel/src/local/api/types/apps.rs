@@ -483,6 +483,35 @@ pub struct GrantAppFileRequest {
     pub files: Vec<AppFileContents>,
 }
 
+pub use chariox_app_runtime::external_folder::FolderAccess as AppFolderAccess;
+
+/// The authenticated owner's selection on the kernel's machine. This path is
+/// private grant state; the App receives only a random handle.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantAppFolderRequest {
+    pub session_id: String,
+    pub operation_id: String,
+    pub path: String,
+    pub access: AppFolderAccess,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevokeAppFolderGrantRequest {
+    pub installation_id: String,
+    pub grant_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppFolderGrantSummary {
+    pub grant_id: String,
+    pub path: String,
+    pub access: AppFolderAccess,
+    pub written_bytes: u64,
+}
+
 /// Protocol 394: the owner ends an installation's file requests and the
 /// grants its App has not imported: all of them, or one request's
 /// (`operation_id`). The App reads them as `expired` and can no longer import

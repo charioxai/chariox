@@ -464,6 +464,11 @@ pub(crate) fn fixture_event_package() -> (Vec<u8>, chariox_app_package::TrustedP
 }
 
 #[cfg(test)]
+pub(crate) fn fixture_folder_package() -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
+    tests::folder_package()
+}
+
+#[cfg(test)]
 pub(crate) fn fixture_release_package(
     version: &str,
     schema: u32,

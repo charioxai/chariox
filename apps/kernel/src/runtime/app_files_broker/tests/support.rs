@@ -45,6 +45,12 @@ impl Fixture {
         Self::with_clipboard(mode, false)
     }
     pub(super) fn with_clipboard(mode: Mode, clipboard_write: bool) -> Self {
+        Self::with_capabilities(mode, clipboard_write, false)
+    }
+    pub(super) fn with_folder(mode: Mode) -> Self {
+        Self::with_capabilities(mode, false, true)
+    }
+    fn with_capabilities(mode: Mode, clipboard_write: bool, folder: bool) -> Self {
         let mut scratch = Scratch(
             std::env::temp_dir().join(format!("chariox-app-files-{:016x}", rand::random::<u64>())),
         );
@@ -53,7 +59,9 @@ impl Fixture {
         // trusted fixture root (including macOS's /var alias) before storing it.
         scratch.0 = std::fs::canonicalize(&scratch.0).unwrap();
         let store = DurableKernelStateStore::open_owned(scratch.0.join("kernel.sqlite")).unwrap();
-        let (bytes, publisher) = if clipboard_write {
+        let (bytes, publisher) = if folder {
+            crate::durable_state::app_state::fixture_folder_package()
+        } else if clipboard_write {
             crate::durable_state::app_state::fixture_host_package()
         } else {
             fixture_event_package()

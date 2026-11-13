@@ -274,6 +274,31 @@ fn admission_surface_is_frozen() {
 }
 
 #[test]
+fn folder_imports_are_never_admitted_to_the_migration_world() {
+    let (mut resolve, _) = contract::resolve();
+    let bytes=fixture(&mut resolve,"package fixture:folder-migration; world probe { import chariox:app/folders@1.0.0; export chariox:app/migration-handlers@1.0.0; }");
+    assert!(
+        matches!(check_component(&bytes,MIGRATION_WORLD),Err(ComponentError::ImportNotAllowed{import}) if import=="chariox:app/folders@1.0.0")
+    );
+}
+
+#[test]
+fn folder_import_names_do_not_admit_a_forged_write_signature() {
+    let original = include_str!("../wit/app.wit");
+    let source = original.replace(
+        "write: async func(grant-id: string, path: string, contents: list<u8>)",
+        "write: async func(grant-id: string, path: string, contents: string)",
+    );
+    assert_ne!(source, original);
+    let (mut resolve, _) = contract::with_app(&source);
+    let bytes=fixture(&mut resolve,"package fixture:folder-signature; world probe { import chariox:app/folders@1.0.0; export chariox:app/handlers@1.0.0; }");
+    assert!(matches!(
+        check_component(&bytes, APP_WORLD),
+        Err(ComponentError::TypeMismatch { .. })
+    ));
+}
+
+#[test]
 fn unknown_export_member_has_typed_refusal() {
     let source = include_str!("../wit/app.wit").replace(
         "interface handlers {",

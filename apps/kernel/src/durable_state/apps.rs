@@ -474,13 +474,15 @@ pub(crate) fn forget_uninstalled(
 /// release it kept: structured state, wakes, logs, and the file contents it was
 /// handed or offered. Its private storage (where a platform has one) is
 /// deleted by the supervisor first.
-const DATA_TABLES: [&str; 10] = [
+const DATA_TABLES: [&str; 12] = [
     "app_state_values",
     "app_state_heads",
     "app_state_snapshot_values",
     "app_state_migrations",
     "app_wakes",
     "app_logs",
+    "app_folder_grants",
+    "app_folder_picks",
     "app_file_grants",
     "app_file_picks",
     "app_file_exports",

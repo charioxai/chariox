@@ -43,7 +43,7 @@ impl PickState {
             Self::Expired => "expired",
         }
     }
-    fn parse(value: &str) -> Option<Self> {
+    pub(super) fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "pending" => Self::Pending,
             "granted" => Self::Granted,
