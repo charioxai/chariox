@@ -30,6 +30,7 @@ mod event_publication;
 mod external_provider_session;
 mod file_transfer;
 mod history;
+mod job;
 mod kernel_access;
 mod kernel_browser;
 mod kernel_computer;
@@ -46,6 +47,7 @@ mod prompt_control;
 mod prompt_settings;
 mod provider_control;
 mod remote_access;
+mod remote_jobs;
 mod request;
 mod resource_telemetry;
 mod response;
@@ -85,6 +87,7 @@ pub use event_publication::*;
 pub use external_provider_session::*;
 pub use file_transfer::*;
 pub use history::*;
+pub use job::*;
 pub use kernel_access::*;
 pub use kernel_browser::*;
 pub use kernel_computer::*;
@@ -101,6 +104,7 @@ pub use prompt_control::*;
 pub use prompt_settings::*;
 pub use provider_control::*;
 pub use remote_access::*;
+pub use remote_jobs::*;
 pub use request::*;
 pub use resource_telemetry::*;
 pub use response::*;
@@ -529,4 +533,6 @@ pub use workspace::*;
 /// `parser`, `mode`, `sync_timeout_ms`, `poll_ms` and `input_schema`. `InvokeAgentTrigger` carries the
 /// parsed `input`; `ReadAgentTriggerHttpOptions` and `ReadAgentTriggerReply` serve the gateways.
 /// Owner room agent and card commands, including non-secret cross-room answers (peer 449).
+/// 1011: durable jobs, job-only command admission and outcomes, placement policies,
+/// process estimates, session job feeds and the owner's global offload decision.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1027;

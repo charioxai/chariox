@@ -6,6 +6,8 @@ pub enum LocalDaemonResponse {
     ControlPlane { result: ControlPlaneResponse },
     SessionProcessesStopped { result: crate::runtime::process_resources::ProcessControlResult },
     SessionProcessStartedNow { process_id: String },
+    RemoteJobPolicy { result: RemoteJobPolicy },
+    SessionProcessRemoteStarted { session_id: String, process_id: String, job_id: String },
     ProviderUsageSnapshot { accounts: Vec<ProviderUsageAccount> },
     AgentUsageSnapshot { snapshot: AgentUsageSnapshot },
     EventSubscription { subscription: EventSubscription },
@@ -152,6 +154,8 @@ pub enum LocalDaemonResponse {
         agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
         #[serde(default)]
         agent_activity_revision: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        jobs: Vec<JobView>,
         /// The rows the live `session_processes_changed` feed shows.
         processes: Vec<crate::runtime::process_resources::SessionProcess>,
         disk_usage: Vec<crate::runtime::disk_usage::DiskUsageEntry>,

@@ -46,6 +46,8 @@ export function createKernelSessionSnapshotController(
     const projectedSession = deps.projectSession(nextSession, nextProviderRun ?? deps.getProviderRun())
     const mergedSession = {
       ...projectedSession,
+      jobs: projectedSession.jobs ?? previousSession.jobs,
+      processes: projectedSession.processes ?? previousSession.processes,
       workflow_runs: mergeObservedTerminalWorkflowRuns(
         previousSession.workflow_runs ?? [],
         projectedSession.workflow_runs ?? [],

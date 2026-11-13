@@ -18,7 +18,8 @@
   {
     "path": "/control-plane",
     "callers": [
-      "apps/kernel/src/runtime/control_plane.rs"
+      "apps/kernel/src/runtime/control_plane.rs",
+      "apps/kernel/src/runtime/state/job_compute.rs"
     ],
     "why": "forwards ControlPlane requests to the owner's connected service",
     "seam": "LocalDaemonRequest::ControlPlane"

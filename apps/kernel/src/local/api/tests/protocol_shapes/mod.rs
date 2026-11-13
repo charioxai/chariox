@@ -59,6 +59,7 @@ mod publication;
 mod recall_terminal_metaagent;
 mod released_provider_run;
 mod resource_protection;
+mod remote_jobs;
 mod resource_telemetry;
 mod room_controller;
 mod room_environment;

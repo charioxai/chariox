@@ -1,6 +1,7 @@
 import { createCliAppActionsComposition } from "./cli-app-actions-composition.js"
 import { createCliUserAppViewsComposition } from "./cli-user-app-views-composition.js"
 import { sessionActivePromptForAgent } from "@chariox/kernel-client/session-prompt-identity"
+import { performQueuedJobAction } from "./queued-job-actions.js"
 import type { MutableLocalIpcClient } from "./mutable-local-ipc-client.js"
 import { createCliViewPersistence } from "./cli-view-persistence.js"
 import { recordPaneFirstFrame } from "./pane-first-frame-timing.js"
@@ -865,6 +866,10 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => selectedQueuedPromptIndexForAgent(agentId),
     onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") =>
       handleQueuedPromptStripAction(item, action),
+    onQueuedJobAction: (job, action) => {
+      if (!isAttached()) return
+      void performQueuedJobAction(client, sessionState().id, job, action).catch(error => appLogger?.error("queued_job_action_failed", { action, error: formatError(error) }))
+    },
     interactionChoiceStore, providerLoginInteractions, promptUsageMeta, sessionHydrating, setSessionHydrating,
     setLoadingHistory, setHistoryLoadingMessage,
     rebuildTranscript: () => rebuildTranscript(),

@@ -17,6 +17,12 @@ pub use api::{
     WorkflowNotificationTargetKind, NOTIFICATION_RETENTION_MS,
 };
 pub use api::{CreatedResource, CreatedResourceState, ResourceRevokeMethod};
+pub use api::{
+    GetRemoteJobPolicyRequest, JobCommand, JobMachineOffer, JobMachineRate, JobNeeds, JobOutcome,
+    JobPlacement, JobRanOn, JobResult, JobView, OffloadPolicy, RemoteJobEstimate,
+    RemoteJobPlacement, RemoteJobPolicy, RunJobRequest, RunSessionProcessRemotelyRequest,
+    SetRemoteJobPolicyRequest,
+};
 mod api;
 pub use api::{
     AgentDeadline, AgentDeadlineState, AgentTree, AgentTreeNode, AgentTreeState, AgentTreeTotals,

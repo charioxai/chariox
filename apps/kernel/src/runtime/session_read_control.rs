@@ -83,6 +83,16 @@ pub(crate) fn projected_session_state_response(
         agent_activity: redact_agent_activity_for_session(agent_activity, &redacted_session),
         agent_activity_revision,
         processes,
+        jobs: runtime_state
+            .session_jobs(redacted_session.id())
+            .into_iter()
+            .filter(|job| {
+                redacted_session
+                    .agents()
+                    .iter()
+                    .any(|a| a.id() == job.agent_id)
+            })
+            .collect(),
         disk_usage,
         session: redacted_session,
     }))

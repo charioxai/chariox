@@ -285,6 +285,10 @@ mod tests {
 
     fn row(agent: &str, state: SessionProcessState) -> SessionProcess {
         SessionProcess {
+            remote_available: false,
+            remote_refusal: None,
+            estimate: None,
+            placement: None,
             owner: SessionProcessOwner::Agent(agent.into()),
             process: ProcessSample {
                 process_id: "p".into(),

@@ -320,3 +320,15 @@ test("MP-08 / MP-10 / MP-11 G03 ignores a late snapshot from the previously sele
   assert.equal(harness.providerRun?.id, "run-2")
   assert.deepEqual(harness.calls, [])
 })
+
+test("session snapshot retains separate jobs and processes feeds, and explicit empty feeds clear them", async () => {
+  const jobs = [{ job_id: "job-1" }] as NonNullable<RuntimeSession["jobs"]>
+  const processes = [{ process_id: "process-1" }] as NonNullable<RuntimeSession["processes"]>
+  const harness = createHarness({ session: session({ jobs, processes }) })
+  await harness.controller.apply(session(), null)
+  assert.deepEqual(harness.session.jobs, jobs)
+  assert.deepEqual(harness.session.processes, processes)
+  await harness.controller.apply(session({ jobs: [], processes: [] }), null)
+  assert.deepEqual(harness.session.jobs, [])
+  assert.deepEqual(harness.session.processes, [])
+})

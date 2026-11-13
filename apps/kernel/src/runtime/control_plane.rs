@@ -54,6 +54,51 @@ pub(crate) async fn execute(
             ))
         };
     };
+    if matches!(
+        request,
+        ControlPlaneRequest::Acquire { .. } | ControlPlaneRequest::AcquireJob { .. }
+    ) {
+        let offered = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
+            profile.api_url.clone(),
+            "/control-plane",
+            cloud_request_body(
+                &profile.account_id,
+                credential,
+                &ControlPlaneRequest::Capabilities {},
+            ),
+        )
+        .await?;
+        let ControlPlaneResponse::Capabilities { machine_allocation } = offered else {
+            return Err(unavailable(
+                "control_plane_binding_invalid",
+                "The connected service did not return its machine offer",
+            ));
+        };
+        state
+            .approve_machine_acquisition(command, request, machine_allocation.as_ref())
+            .await?;
+        if let Some(grant) = &grant {
+            state.authorize_external_request(grant, &request_shape)?;
+        } else if let Some(reach) = command.reach_caller_id() {
+            state.authorize_gateway_request(&reach, &request_shape)?;
+        }
+        if let (ControlPlaneRequest::AcquireJob { job_ref, .. }, Some(job_id)) =
+            (request, command.caller.caller_id.strip_prefix("job:"))
+        {
+            let (room, agent, owner) = state.job_acquisition_subject(job_id)?;
+            if job_ref != job_id
+                || command.session_id.as_deref() != Some(room.as_str())
+                || command.agent_id.as_deref() != Some(agent.as_str())
+                || command.caller.metaagent_id.as_deref() != Some(agent.as_str())
+                || command.caller.user_id.as_deref() != Some(owner.as_str())
+            {
+                return Err(unavailable(
+                    "control_plane_binding_invalid",
+                    "The accepted job no longer matches its Room, agent and owner",
+                ));
+            }
+        }
+    }
     let mut result = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
         profile.api_url.clone(),
         "/control-plane",
@@ -74,6 +119,9 @@ pub(crate) async fn execute(
     let response_matches = matches!(
         (&result, request),
         (
+            ControlPlaneResponse::JobCancelled { .. },
+            ControlPlaneRequest::CancelJob { .. }
+        ) | (
             ControlPlaneResponse::Capabilities { .. },
             ControlPlaneRequest::Capabilities {}
         ) | (
@@ -83,7 +131,9 @@ pub(crate) async fn execute(
     ) || (matches!(result, ControlPlaneResponse::Machine { .. })
         && !matches!(
             request,
-            ControlPlaneRequest::Capabilities {} | ControlPlaneRequest::List {}
+            ControlPlaneRequest::Capabilities {}
+                | ControlPlaneRequest::List {}
+                | ControlPlaneRequest::CancelJob { .. }
         ));
     if !response_matches {
         return Err(unavailable(
@@ -97,11 +147,13 @@ pub(crate) async fn execute(
         access_state,
         access_reason,
         state: machine_state,
+        purpose,
         ..
     } = &mut result
     {
         let expected = match request {
             ControlPlaneRequest::Get { allocation_ref }
+            | ControlPlaneRequest::JobStarted { allocation_ref, .. }
             | ControlPlaneRequest::Release { allocation_ref, .. }
             | ControlPlaneRequest::Start { allocation_ref, .. }
             | ControlPlaneRequest::Stop { allocation_ref, .. }
@@ -143,14 +195,24 @@ pub(crate) async fn execute(
                     "The machine caller's kernel access ended",
                 )
             })?;
-            match gateway
-                .attach_machine(
-                    target,
-                    &origin,
-                    &format!("{}:machine-access", command.command_id),
-                )
-                .await
-            {
+            let attached = if purpose.as_deref() == Some("offload_job") {
+                gateway
+                    .attach_job_machine(
+                        target,
+                        &origin,
+                        &format!("{}:machine-access", command.command_id),
+                    )
+                    .await
+            } else {
+                gateway
+                    .attach_machine(
+                        target,
+                        &origin,
+                        &format!("{}:machine-access", command.command_id),
+                    )
+                    .await
+            };
+            match attached {
                 Ok(()) => *access_state = "available".into(),
                 Err(error) => *access_reason = Some(error.code().to_string()),
             }

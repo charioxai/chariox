@@ -25,6 +25,20 @@ export async function handleConfigSlashCommand(
   command: Extract<ParsedSlashCommand, { kind: "config" }>,
 ): Promise<void> {
   const [subcommand, keyPath, ...rest] = command.args
+  if (subcommand === "agents-offload") {
+    if (rest.length || (keyPath && keyPath !== "on" && keyPath !== "off")) {
+      deps.flashFooter("usage: /config agents-offload [on|off]", "error")
+      return
+    }
+    if (!deps.getUserConfig || (keyPath && !deps.setUserConfigValue)) {
+      deps.flashFooter("user config is unavailable in this build", "error")
+      return
+    }
+    if (keyPath) await deps.setUserConfigValue!("agents.offload_without_asking", keyPath === "on" ? "true" : "false")
+    const payload = await deps.getUserConfig()
+    deps.appendNotice(`Agents may offload and acquire machines without asking: ${payload.config.agents?.offload_without_asking === true ? "On" : "Off"}`)
+    return
+  }
   if (!subcommand || subcommand === "show") {
     await showUserConfig(deps)
     return

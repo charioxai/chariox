@@ -16,6 +16,8 @@ pub(crate) const SESSION_SNAPSHOT_PROJECTION_VERSION: u64 = 4;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSnapshotProjection {
     pub processes: Vec<crate::runtime::process_resources::SessionProcess>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jobs: Vec<crate::local::JobView>,
     pub disk_usage: Vec<crate::runtime::disk_usage::DiskUsageEntry>,
     pub room_workflows: super::RoomWorkflowInventory,
     pub metadata: ProjectionMetadata,
@@ -122,6 +124,14 @@ impl SessionSnapshotProjection {
                     session.can_view_tree_agent_owned_by(user_id, agent.owner_user_id())
                 })
         });
+        self.jobs.retain(|job| {
+            self.session.agents().iter().any(|agent| {
+                agent.id() == job.agent_id
+                    && self
+                        .session
+                        .can_view_tree_agent_owned_by(user_id, agent.owner_user_id())
+            })
+        });
         self.session = self
             .session
             .redacted_for_user_with_workflow_history(user_id, history)?;
@@ -207,6 +217,7 @@ impl SessionSnapshotProjection {
             &super::YieldedSources::of_room(&app.durable_state_store(), session_id),
         );
         Ok(Self {
+            jobs: Vec::new(),
             disk_usage: Vec::new(),
             processes,
             room_workflows: super::RoomWorkflowInventory::project(

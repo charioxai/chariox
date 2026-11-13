@@ -6,6 +6,7 @@ mod agent_messaging_tools;
 mod agent_peek_tools;
 mod credential_tools;
 mod extension_tools;
+mod jobs;
 mod meta_tool_args;
 mod meta_tool_names;
 mod meta_tool_specs;

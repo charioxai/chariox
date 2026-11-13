@@ -42,6 +42,7 @@ const MAX_PER_KERNEL: usize = 64;
 pub enum ExecOutcome {
     Exited { code: i32 },
     Signaled { signal: i32 },
+    MemoryLimit { limit_bytes: u64 },
     Failed { message: String },
 }
 
@@ -119,11 +120,15 @@ enum CancelReason {
 
 pub(super) struct Record {
     intent: LaunchIntent,
+    launch_command: Vec<String>,
+    job: bool,
+    minimum_memory: u64,
     state: Mutex<ExecState>,
     force: watch::Sender<bool>,
     place: watch::Sender<Option<Arc<placement::Placed>>>,
     created_at: tokio::time::Instant,
     reader_deadline: watch::Sender<tokio::time::Instant>,
+    reader_lease: Duration,
     input: Mutex<Input>,
     output: Mutex<buffer::Output>,
     changed: Notify,
@@ -134,7 +139,7 @@ pub(super) struct Record {
 impl Record {
     fn renew_reader(&self) {
         self.reader_deadline
-            .send_replace(tokio::time::Instant::now() + lease::READER_LEASE);
+            .send_replace(tokio::time::Instant::now() + self.reader_lease);
     }
 }
 
@@ -199,6 +204,53 @@ impl RoomExecService {
         authority: Option<crate::runtime::state::KernelRuntimeState>,
         acting_agent: Option<String>,
     ) -> Result<String, DaemonError> {
+        self.open_launch(
+            session_id,
+            owner_user_id,
+            cwd,
+            command,
+            authority,
+            acting_agent,
+            false,
+            0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn open_job_as(
+        &self,
+        session_id: &str,
+        owner_user_id: &str,
+        cwd: &Path,
+        command: &[String],
+        needs: &crate::local::JobNeeds,
+        authority: Option<crate::runtime::state::KernelRuntimeState>,
+        acting_agent: Option<String>,
+    ) -> Result<String, DaemonError> {
+        self.open_launch(
+            session_id,
+            owner_user_id,
+            cwd,
+            command,
+            authority,
+            acting_agent,
+            true,
+            u64::from(needs.memory_gib.unwrap_or(0)) * 1024 * 1024 * 1024,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open_launch(
+        &self,
+        session_id: &str,
+        owner_user_id: &str,
+        cwd: &Path,
+        command: &[String],
+        authority: Option<crate::runtime::state::KernelRuntimeState>,
+        acting_agent: Option<String>,
+        job: bool,
+        minimum_memory: u64,
+    ) -> Result<String, DaemonError> {
         if command.is_empty()
             || command.len() > 64
             || command[0].is_empty()
@@ -244,11 +296,27 @@ impl RoomExecService {
         let (sender, receiver) = mpsc::channel(8);
         let (cancel, cancelled) = watch::channel(None);
         let created_at = tokio::time::Instant::now();
-        let (reader_deadline, deadline) = watch::channel(created_at + lease::READER_LEASE);
+        let reader_lease = if job {
+            lease::JOB_READER_LEASE
+        } else {
+            lease::READER_LEASE
+        };
+        let (reader_deadline, deadline) = watch::channel(created_at + reader_lease);
         let exec_id = format!("exec-{:032x}", rand::random::<u128>());
         let (force, forced) = watch::channel(false);
         let (place, placed) = watch::channel(None);
         let record = Arc::new(Record {
+            job,
+            minimum_memory,
+            launch_command: if job {
+                vec![
+                    "python3".into(),
+                    "-c".into(),
+                    crate::jobs::COMMAND_WRAPPER.into(),
+                ]
+            } else {
+                command.to_vec()
+            },
             intent: LaunchIntent {
                 exec_id: exec_id.clone(),
                 session_id: session_id.to_owned(),
@@ -262,6 +330,7 @@ impl RoomExecService {
             place,
             created_at,
             reader_deadline,
+            reader_lease,
             input: Mutex::new(Input {
                 sender: Some(sender),
                 offset: 0,
@@ -400,7 +469,12 @@ impl RoomExecService {
             ));
         }
         if let Some(sender) = &input.sender {
-            sender.try_send(None).map_err(input_error)?;
+            // A reaped child may close its receiver before cleanup publishes
+            // the outcome. Closing is already satisfied; readers still drain it.
+            match sender.try_send(None) {
+                Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
+                Err(failure) => return Err(input_error(failure)),
+            }
             input.sender = None;
         }
         Ok(offset)
@@ -500,6 +574,25 @@ impl RoomExecService {
                 .map(|agent| format!("{origin_kernel}/{agent}")),
         })));
         record.changed.notify_waiters();
+        Ok(())
+    }
+
+    pub(crate) fn cancel_queued(
+        &self,
+        session_id: &str,
+        exec_id: &str,
+        before_cancel: impl FnOnce(),
+    ) -> Result<(), DaemonError> {
+        let record = self.record(session_id, exec_id)?;
+        let state = record.state.lock().expect("exec state poisoned");
+        if !matches!(*state, ExecState::Queued { .. }) {
+            return Err(error(
+                "job_already_started",
+                "This command already started and cannot be moved safely",
+            ));
+        }
+        before_cancel();
+        record.cancel.send_replace(Some(CancelReason::Canceled));
         Ok(())
     }
 

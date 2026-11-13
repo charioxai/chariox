@@ -167,12 +167,58 @@ impl LaunchAdmission {
         )))
     }
 
+    pub(crate) fn expected_memory(&self, argv: &[String], cwd: &Path) -> Option<u64> {
+        let seen = admission::seen_argv(0, argv, Some(cwd.to_path_buf()));
+        self.0
+            .ledger
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .peaks
+            .get(&seen.key)
+            .map(|peak| peak.memory)
+            .filter(|memory| *memory > 0)
+    }
+
+    pub(crate) fn would_wait(
+        &self,
+        id: &str,
+        argv: &[String],
+        cwd: &Path,
+        minimum_memory: u64,
+    ) -> bool {
+        self.reserve_with_memory(id, argv, cwd, false, minimum_memory)
+            .is_err()
+    }
+
+    pub(crate) fn is_heavy(&self, argv: &[String], cwd: &Path) -> bool {
+        let seen = admission::seen_argv(0, argv, Some(cwd.to_path_buf()));
+        self.0
+            .ledger
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .peaks
+            .get(&seen.key)
+            .is_some_and(|peak| peak.memory >= admission::light(self.0.ceiling))
+    }
+
+    #[cfg(test)]
     pub(crate) fn reserve(
         &self,
         id: &str,
         argv: &[String],
         cwd: &Path,
         force: bool,
+    ) -> Result<LaunchPermit, LaunchWait> {
+        self.reserve_with_memory(id, argv, cwd, force, 0)
+    }
+
+    pub(crate) fn reserve_with_memory(
+        &self,
+        id: &str,
+        argv: &[String],
+        cwd: &Path,
+        force: bool,
+        minimum_memory: u64,
     ) -> Result<LaunchPermit, LaunchWait> {
         let pool = &self.0;
         let protection = pool.protection();
@@ -185,7 +231,7 @@ impl LaunchAdmission {
             // callers and observed-command admission.
             let ledger = pool.ledger.lock().unwrap_or_else(|e| e.into_inner());
             let expected = ledger.peaks.get(&seen.key).unwrap_or_default();
-            let memory = expected.memory.max(16 * MIB);
+            let memory = expected.memory.max(minimum_memory).max(16 * MIB);
             let mut launches = pool.launches.lock().unwrap_or_else(|e| e.into_inner());
             let light = admission::light(pool.ceiling);
             let launch_memory = room.remaining(&launches);

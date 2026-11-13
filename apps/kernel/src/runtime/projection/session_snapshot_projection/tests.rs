@@ -1064,6 +1064,7 @@ fn a_private_member_does_not_hear_of_the_tree_of_another_users_agent() {
     room.set_agents(vec![agent("root", "owner"), agent("mine", "private")]);
     let projection = |user: &str| {
         let snapshot = SessionSnapshotProjection {
+            jobs: Vec::new(),
             processes: Vec::new(),
             disk_usage: Vec::new(),
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(&room, user),

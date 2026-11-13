@@ -43,6 +43,16 @@ export async function executeConfigCommand(
   deps: ShellConfigCommandDeps,
 ): Promise<ShellCommandResult> {
   const [action, keyPath, ...rest] = parsed.args
+  if (action === "agents-offload") {
+    if (rest.length || (keyPath && keyPath !== "on" && keyPath !== "off")) return { ok: false, message: "usage: config agents-offload [on|off]" }
+    if (keyPath) {
+      const changed = await deps.client.send(setUserConfigValueRequest("agents.offload_without_asking", keyPath === "on" ? "true" : "false"))
+      expectVariant<CharioxUserConfigPayload>(changed, "UserConfigUpdated")
+    }
+    const response = await deps.client.send(getUserConfigRequest())
+    const payload = expectVariant<CharioxUserConfigPayload>(response, "UserConfig")
+    return { ok: true, message: `Agents may offload and acquire machines without asking: ${payload.config.agents?.offload_without_asking === true ? "On" : "Off"}`, data: payload }
+  }
   if (!action || action === "show") {
     const response = await deps.client.send(getUserConfigRequest())
     const payload = expectVariant<CharioxUserConfigPayload>(response, "UserConfig")
