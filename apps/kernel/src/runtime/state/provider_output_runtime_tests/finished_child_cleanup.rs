@@ -324,19 +324,20 @@ async fn kfinish_handled_child_receipt_finishes_the_original_parent_task() {
     let team = family_of("kfinish-parent-settlement", 1, None, true, true).await;
     let (parent_task, receipt) = parent_waits_and_child_finishes(&team).await;
     ack(&team, receipt, true).await;
-    let task = team
-        .runtime
-        .owned
-        .durable_state_store
-        .agent_task(&parent_task)
-        .unwrap()
-        .unwrap();
-    assert_eq!(task.state, ExecutionState::Done, "{task:?}");
-    assert!(task.wait.is_none());
-    assert!(!task.reason.is_empty());
+    let task_now = || {
+        team.runtime
+            .owned
+            .durable_state_store
+            .agent_task(&parent_task)
+            .unwrap()
+            .unwrap()
+    };
+    // The receipt was handled by a separate event turn that is still working: the
+    // agent is not done, so the original task is not either.
+    let working = task_now();
+    assert_eq!(working.state, ExecutionState::Waiting, "{working:?}");
     assert!(child_exists(&team, &team.kids[0].child));
-    // The receipt was handled by a separate event turn. Once that turn ends,
-    // completion of the original task must also reach its subscribers.
+    // Once that turn ends, completion of the original task must also reach its subscribers.
     let event_task = team
         .runtime
         .owned
@@ -389,6 +390,10 @@ async fn kfinish_handled_child_receipt_finishes_the_original_parent_task() {
         .finish_agent_task_settlement(Some((event_settled, false)), &event_prompt)
         .await
         .unwrap();
+    let task = task_now();
+    assert_eq!(task.state, ExecutionState::Done, "{task:?}");
+    assert!(task.wait.is_none());
+    assert!(!task.reason.is_empty());
     assert!(
         team.runtime
             .owned

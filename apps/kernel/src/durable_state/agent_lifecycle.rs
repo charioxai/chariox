@@ -56,6 +56,8 @@ mod reply_terminal_tests;
 #[cfg(test)]
 mod running_source_wait_tests;
 mod settled_waits;
+#[cfg(test)]
+mod steered_turn_tests;
 mod subscriptions;
 mod supervision;
 #[cfg(test)]
