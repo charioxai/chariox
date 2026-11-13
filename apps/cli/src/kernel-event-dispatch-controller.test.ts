@@ -468,6 +468,13 @@ test("kernel event dispatch applies non-focus session metadata without resyncing
   ])
 })
 
+test("streaming metadata that repeats the current focus does not drain output for a resync", async () => {
+  const harness = createHarness({ focusChanged: false })
+  await harness.controller.handleKernelEvent({ event: "session_metadata_changed", session_id: "session-1",
+    metadata: { focused_agent_id: "agent-1", last_activity_at_ms: 2 } })
+  assert.deepEqual(harness.calls, ["activity:kernel_session_metadata_changed", "apply-session-metadata:session-1:focused_agent_id,last_activity_at_ms"])
+})
+
 test("kernel event dispatch applies runtime interaction deltas without resyncing", async () => {
   const harness = createHarness()
 
@@ -602,6 +609,7 @@ test("kernel event dispatch reconciles durable history after assistant completio
 
 function createHarness(options: {
   refreshAssistantMessageHistory?: (agentId: string) => Promise<boolean>
+  focusChanged?: boolean
 } = {}) {
   const calls: string[] = []
   const snapshots: Array<{
@@ -642,6 +650,7 @@ function createHarness(options: {
     },
     applySessionMetadataChanged: (sessionId, metadata) => {
       calls.push(`apply-session-metadata:${sessionId}:${Object.keys(metadata).sort().join(",")}`)
+      return options.focusChanged ?? Object.prototype.hasOwnProperty.call(metadata, "focused_agent_id")
     },
     applyRuntimeInteractionsChanged: (sessionId, activeInteractions) => {
       calls.push(`apply-runtime-interactions:${sessionId}:${activeInteractions.length}`)

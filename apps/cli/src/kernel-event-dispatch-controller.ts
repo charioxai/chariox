@@ -55,7 +55,7 @@ type KernelEventDispatchControllerDeps = {
   applySessionMetadataChanged: (
     sessionId: string,
     metadata: Record<string, unknown>,
-  ) => Promise<void> | void
+  ) => Promise<boolean> | boolean
   applyRuntimeInteractionsChanged: (
     sessionId: string,
     activeInteractions: Record<string, unknown>[],
@@ -330,8 +330,8 @@ export function createKernelEventDispatchController(
       deps.appendNotice(`Kernel sent malformed metadata for session ${event.session_id}.`, "warning")
       return
     }
-    await deps.applySessionMetadataChanged(event.session_id, event.metadata)
-    if (Object.prototype.hasOwnProperty.call(event.metadata, "focused_agent_id")) {
+    const focusChanged = await deps.applySessionMetadataChanged(event.session_id, event.metadata)
+    if (focusChanged) {
       await deps.resyncAttachedKernelState("focused_agent_changed")
     }
   }

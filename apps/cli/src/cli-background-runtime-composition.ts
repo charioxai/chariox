@@ -467,6 +467,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     sessionId: string,
     metadata: Record<string, unknown>,
   ) => {
+    let focusChanged = false
     applyDeltaSessionState(sessionId, (session) => {
       const patch: Partial<RuntimeSession> = {}
       if (Object.prototype.hasOwnProperty.call(metadata, "alias")) {
@@ -487,12 +488,14 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
       }
       if (Object.prototype.hasOwnProperty.call(metadata, "focused_agent_id")) {
         patch.focused_agent_id = nullableString(metadata.focused_agent_id)
+        focusChanged = patch.focused_agent_id !== session.focused_agent_id
       }
       if (Object.prototype.hasOwnProperty.call(metadata, "workspace_live_sync_mode")) {
         patch.workspace_live_sync_mode = workspaceLiveSyncMode(metadata.workspace_live_sync_mode)
       }
       return { ...session, ...patch }
     })
+    return focusChanged
   }
   const applyRuntimeInteractionsChanged = (
     sessionId: string,
