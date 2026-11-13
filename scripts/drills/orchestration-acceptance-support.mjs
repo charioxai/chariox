@@ -105,25 +105,6 @@ export async function createDrill(flags) {
     }
     const a = await kernel("a"), b = await kernel("b")
     const provider = flags.get("--provider") ?? "codex", model = provider === "codex" ? "gpt-6-luna" : "claude-haiku-5-5"
-    let profile, profileB
-    if (provider === "codex") {
-      const link = async k => {
-        const p = (await k.rpc({ LinkProviderAccountProfile: { provider, label: "ao-codex", path: required("--codex-profile-path") } })).ProviderAccountProfile.profile
-        await k.rpc({ RefreshProviderAccountProfile: { provider, account_profile: p.profile_id } })
-        return p.profile_id
-      }
-      profile = await link(a); profileB = await link(b)
-    } else {
-      const value = readFileSync(process.env.CLAUDE_TOKEN_FILE ?? "/root/.claude-lanes/oauth-token.chariox", "utf8").trim()
-      await a.rpc({ SetProviderAccountCredential: { provider, account_profile: "default", value, overwrite: true } })
-      profile = (await a.rpc({ GetProviderAccountProfile: { provider, account_profile: "default" } })).ProviderAccountProfile.profile.profile_id
-      await until(() => enrolled.has(b.status.daemon_id), "target enrollment")
-      const target = enrolled.get(b.status.daemon_id)
-      const result = await a.rpc({ CopyProviderAccountToKernel: { provider, account_profile: profile, operation_id: `ao-copy-${randomUUID()}`, target_kernel_id: target.kernelId, target_key_thumbprint: target.keyThumbprint, replace: false } })
-      profileB = result.ProviderAccountCopied.receipt.account_profile
-      assert(profileB)
-      save("account-copy.json", result); record("account-copied", { profile, profileB })
-    }
     const work = join(a.dir, "work")
     execFileSync("git", ["init", "-q", "-b", "main", work])
     writeFileSync(join(work, "README.md"), "AO-PE-03 / AO-IN-02 real provider acceptance\n")
@@ -135,6 +116,38 @@ export async function createDrill(flags) {
       await k.client.subscribeToKernelEvents(made.session.id, attachment)
       await k.rpc({ LaunchProviderRun: { session_id: made.session.id, agent_id: made.agent.id, adapter_key: provider, provider, account_profile: account, model, variant: "low", native_tui: false } })
       return { id: made.session.id, agent: made.agent.id, attachment }
+    }
+    let profile, profileB
+    if (provider === "codex") {
+      const link = async k => {
+        const p = (await k.rpc({ LinkProviderAccountProfile: { provider, label: "ao-codex", path: required("--codex-profile-path") } })).ProviderAccountProfile.profile
+        await k.rpc({ RefreshProviderAccountProfile: { provider, account_profile: p.profile_id } })
+        return p.profile_id
+      }
+      profile = await link(a)
+      const bootstrap = await makeRoom(a, "account-transfer", profile)
+      const spawned = (await a.rpc({ SpawnAgent: { session_id: bootstrap.id, alias: "account-transfer-worker", provider, account_profile: profile, model, effort: "low", permission_level: "yolo", kernel_ref: b.status.daemon_id, worktree_id: join(b.dir, "work") } })).AgentSpawned.agent
+      await a.rpc(submitPromptRequest(bootstrap.id, bootstrap.attachment, spawned.id, "Reply READY as your final answer. Do not use tools.", []))
+      await until(() => {
+        const rows = JSON.parse(execFileSync("sqlite3", ["-readonly", "-json", join(a.dir, "chariox/state.db"), `SELECT payload FROM agent_tasks WHERE agent_id='${spawned.id}'`]).toString() || "[]").map(r => JSON.parse(r.payload))
+        return rows.some(r => r.state === "done")
+      }, "Codex transfer worker completes real turn", 180000)
+      const profiles = (await b.rpc({ ListProviderAccountProfiles: { provider } })).ProviderAccountProfilesListed.profiles.filter(p => p.auth_state === "authenticated")
+      assert.equal(profiles.length, 1, "one selected Codex account installed through the product")
+      profileB = profiles[0].profile_id
+      save("account-transfer.json", { source_profile: profile, target_profile: profileB, worker: spawned.id, target_kernel: b.status.daemon_id })
+      await a.rpc({ DestroyAgent: { session_id: bootstrap.id, agent_id: spawned.id } })
+      record("account-transferred", { profile, profileB })
+    } else {
+      const value = readFileSync(process.env.CLAUDE_TOKEN_FILE ?? "/root/.claude-lanes/oauth-token.chariox", "utf8").trim()
+      await a.rpc({ SetProviderAccountCredential: { provider, account_profile: "default", value, overwrite: true } })
+      profile = (await a.rpc({ GetProviderAccountProfile: { provider, account_profile: "default" } })).ProviderAccountProfile.profile.profile_id
+      await until(() => enrolled.has(b.status.daemon_id), "target enrollment")
+      const target = enrolled.get(b.status.daemon_id)
+      const result = await a.rpc({ CopyProviderAccountToKernel: { provider, account_profile: profile, operation_id: `ao-copy-${randomUUID()}`, target_kernel_id: target.kernelId, target_key_thumbprint: target.keyThumbprint, replace: false } })
+      profileB = result.ProviderAccountCopied.receipt.account_profile
+      assert(profileB)
+      save("account-copy.json", result); record("account-copied", { profile, profileB })
     }
     const room = await makeRoom(a, "ao-parent", profile), other = await makeRoom(b, "ao-other", profileB)
     const state = async () => (await a.rpc({ GetSessionState: { session_id: room.id } })).SessionState.session

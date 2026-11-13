@@ -23,7 +23,11 @@ Run `--scenario peer` at both placements. `--tui yes` submits prompts through th
 built TUI prompt handler and captures terminal output plus automation snapshots.
 Without it the same prompts enter through local IPC.
 
-Codex profiles are linked through the product's native-directory registration.
+The Codex source profile is linked through native-directory registration. A
+real remote execution on B installs that selected account through the product's
+encrypted worker account transfer; both peer workers and later leased children
+reuse B's installed profile. B is not separately linked to the source directory,
+which would create an unrelated duplicate identity when a child needs transfer.
 Claude imports the explicitly authorized `CLAUDE_TOKEN_FILE` into A's Vault
 (default `/root/.claude-lanes/oauth-token.chariox`). B receives its independent
 profile through `CopyProviderAccountToKernel`, with official verification over
@@ -41,8 +45,16 @@ nonurgent completions must all be durably pending while the orchestrator holds
 its initial turn. Only then does the driver release that turn. It requires one
 wake prompt shared by all three completions, a model inbox read containing all
 three, and handled acknowledgements. It then unfollows the workers and sends
-one reply-requested message: the recipient's durable wake must contain only that
-request, and its real final answer must reach the sender.
+one reply-requested message: locally to a worker peer, or to a fresh remote child
+for the other-kernel case. Cross-kernel room peers do not support requesting a
+reply; leased children do. A leased child's inbox remains on its home kernel,
+so the driver locates the recipient's authoritative inbox rather than assuming
+it is stored on the execution kernel. That durable wake must contain only the
+request, and its causal final-answer receipt must reach the sender. The child's
+`child_finished` notification may carry that answer after the duplicate source
+receipt is handled by the kernel. If a provider ends its batch turn after the
+three acknowledgements, the driver starts the independent reply phase through
+the same TUI prompt handler; it never rereads or redelivers the completion batch.
 
 This distinguishes batching from provider completion timing. As specified in
 `docs/design/sub-agents.md` section 3.4, batching covers what is pending when the
