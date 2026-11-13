@@ -86,7 +86,7 @@ form.addEventListener("submit", async event => {
   if (!input.value.trim()) return
   send.disabled = true
   try {
-    const response = await fetch(base, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json", ...csrfHeaders }, body: JSON.stringify({ prompt: input.value }) })
+    const response = await fetch(`${base}send`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json", ...csrfHeaders }, body: JSON.stringify({ prompt: input.value }) })
     const result = await response.json() as { error?: string; outcome?: string }
     if (!response.ok) throw Error(result.error ?? "The message was not accepted.")
     input.value = ""; notice.textContent = `Message ${result.outcome ?? "accepted"}.`

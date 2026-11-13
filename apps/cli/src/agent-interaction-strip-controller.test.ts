@@ -27,7 +27,7 @@ test("agent interaction strip controller renders current pane and interaction in
     selectedQueuedPromptIndexForAgent: () => 0,
     onQueuedPromptAction: () => {},
     agentTriggerStripItemsForAgent: (agentId) => agentId === "agent-a"
-      ? [{ id: "trigger-1", label: "every 10m", busyPolicy: "steer", enabled: true, nextRunAtMs: 1, fired: 0, lastError: null, offline: false }]
+      ? [{ id: "trigger-1", label: "every 10m", busyPolicy: "steer", enabled: true, nextRunAtMs: 1, fired: 0, lastError: null, offline: false, done: false }]
       : [],
     renderStrips: (options) => {
       rendered.push(options)

@@ -524,4 +524,8 @@ pub use workspace::*;
 /// 1010 (Landing 10, provisional): an unconditional idle Stop returns `NothingToStop`.
 /// 1008 (provisional): encrypted relay terminal output uses CXT1 metadata and raw byte segments,
 /// including replay. Clients and gateways restore the ordinary terminal record shape.
+/// 1007 (provisional): agent triggers take the Workflows panel's trigger options: a schedule's cron or
+/// interval `trigger`, `overlap_policy` and `max_runs`; an HTTP trigger's `route`, `methods`,
+/// `parser`, `mode`, `sync_timeout_ms`, `poll_ms` and `input_schema`. `InvokeAgentTrigger` carries the
+/// parsed `input`; `ReadAgentTriggerHttpOptions` and `ReadAgentTriggerReply` serve the gateways.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1027;

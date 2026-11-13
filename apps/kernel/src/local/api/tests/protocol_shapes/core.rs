@@ -349,8 +349,13 @@ fn local_daemon_protocol_agent_trigger_shape_is_versioned() {
         session_id: "session-1".into(),
         agent_id: "agent-1".into(),
         source: crate::local::AgentTriggerSourceRequest::Schedule {
-            interval_seconds: 300,
+            trigger: crate::session::WorkflowScheduleTrigger::cron(
+                "0 30 9 * * 1-5",
+                "Europe/Berlin",
+            ),
             repeat: crate::session::AgentTriggerRepeat::Every,
+            overlap_policy: Some(crate::session::WorkflowScheduleOverlapPolicy::Queue),
+            max_runs: Some(Some(3)),
         },
         busy_policy: Some(crate::session::AgentTriggerBusyPolicy::Steer),
         prompt: Some("Check the build.".into()),
@@ -372,7 +377,11 @@ fn local_daemon_protocol_agent_trigger_shape_is_versioned() {
         serde_json::json!([
             { "CreateAgentTrigger": {
                 "session_id": "session-1", "agent_id": "agent-1",
-                "source": { "kind": "schedule", "interval_seconds": 300, "repeat": "every" },
+                "source": {
+                    "kind": "schedule",
+                    "trigger": { "kind": "cron", "expression": "0 30 9 * * 1-5", "timezone": "Europe/Berlin" },
+                    "repeat": "every", "overlap_policy": "queue", "max_runs": 3,
+                },
                 "busy_policy": "steer", "prompt": "Check the build.",
             } },
             { "UpdateAgentTrigger": {
@@ -385,7 +394,7 @@ fn local_daemon_protocol_agent_trigger_shape_is_versioned() {
     let hash = Sha256::digest(serde_json::to_string(&requests).unwrap().as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "d7be76173ad86e109c06608125a2c8f2cf3cb86570b989f7c760e174d2d59eb7"
+        "1517e485931f9224576b32a27e1ec9ae4689620f44617db9e7f32033b3e5fd02"
     );
 
     let mut session = crate::session::RuntimeSession::new(
@@ -400,12 +409,12 @@ fn local_daemon_protocol_agent_trigger_shape_is_versioned() {
         "trigger-1",
         "agent-1",
         "user-1",
-        60,
-        crate::session::AgentTriggerRepeat::Once,
+        crate::session::AgentSchedule::interval(60, crate::session::AgentTriggerRepeat::Once),
         crate::session::AgentTriggerBusyPolicy::Queue,
         "Continue from where you left off.",
         1_000,
-    );
+    )
+    .expect("schedule should be valid");
     session.add_agent_trigger(trigger.clone());
     let response = LocalDaemonResponse::AgentTriggerCreated { trigger, session };
     let snapshot = serde_json::to_value(response).expect("agent trigger response should encode");
@@ -413,7 +422,10 @@ fn local_daemon_protocol_agent_trigger_shape_is_versioned() {
         snapshot.pointer("/AgentTriggerCreated/trigger"),
         Some(&serde_json::json!({
             "id": "trigger-1", "agent_id": "agent-1", "created_by_user_id": "user-1",
-            "source": { "kind": "schedule", "interval_seconds": 60, "repeat": "once", "next_run_at_ms": 61_000 },
+            "source": {
+                "kind": "schedule", "trigger": { "kind": "interval", "every_seconds": 60 },
+                "repeat": "once", "overlap_policy": "skip", "next_run_at_ms": 61_000,
+            },
             "busy_policy": "queue", "prompt": "Continue from where you left off.",
             "enabled": true, "created_at_ms": 1_000, "fired": 0, "coalesced": 0,
         }))
@@ -1330,30 +1342,92 @@ fn local_daemon_protocol_http_agent_trigger_shape_is_versioned() {
     let request = LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
         session_id: "s1".into(),
         agent_id: "a1".into(),
-        source: crate::local::AgentTriggerSourceRequest::Http,
+        source: crate::local::AgentTriggerSourceRequest::from_http_options(
+            crate::session::AgentHttpOptionsRequest {
+                route: Some("/hooks/build".into()),
+                methods: vec![crate::session::AgentHttpMethod::Post],
+                parser: Some(crate::session::AgentHttpParser::Webhook),
+                mode: Some(crate::session::AgentHttpResponseMode::Sync),
+                sync_timeout_ms: Some(30_000),
+                poll_ms: Some(250),
+                input_schema: Some(serde_json::json!({"type": "object"})),
+            },
+        ),
         busy_policy: Some(crate::session::AgentTriggerBusyPolicy::Queue),
         prompt: Some("Handle input".into()),
     });
     let shape = serde_json::to_value(request).unwrap();
     assert_eq!(
         shape,
-        serde_json::json!({"CreateAgentTrigger":{"session_id":"s1","agent_id":"a1","source":{"kind":"http"},"busy_policy":"queue","prompt":"Handle input"}})
+        serde_json::json!({"CreateAgentTrigger":{"session_id":"s1","agent_id":"a1","source":{
+            "kind":"http","route":"/hooks/build","methods":["POST"],"parser":{"kind":"webhook"},
+            "mode":"sync","sync_timeout_ms":30000,"poll_ms":250,"input_schema":{"type":"object"},
+        },"busy_policy":"queue","prompt":"Handle input"}})
     );
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_string(&shape).unwrap().as_bytes())
         ),
-        "f9419e3fcbadc4c17da27366023f63894597569187c6da123b425d755249596d"
+        "01a4c1b93e01b9302265c1bd41e3c930cbdd7f39dd64ca95bf26149289df7eb8"
     );
     let invoke = LocalDaemonRequest::InvokeAgentTrigger(crate::local::InvokeAgentTriggerRequest {
         session_id: "s1".into(),
         trigger_id: "h1".into(),
-        payload: serde_json::json!({"prompt":"Hello"}),
+        input: serde_json::json!({"prompt":"Hello"}),
+        http: Some(crate::local::AgentTriggerHttpBody {
+            body_base64: "e30=".into(),
+            content_type: "application/json".into(),
+        }),
     });
     assert_eq!(
         serde_json::to_value(invoke).unwrap(),
-        serde_json::json!({"InvokeAgentTrigger":{"session_id":"s1","trigger_id":"h1","payload":{"prompt":"Hello"}}})
+        serde_json::json!({"InvokeAgentTrigger":{"session_id":"s1","trigger_id":"h1","input":{"prompt":"Hello"},
+            "http":{"body_base64":"e30=","content_type":"application/json"}}})
+    );
+    let read =
+        LocalDaemonRequest::ReadAgentTriggerReply(crate::local::ReadAgentTriggerReplyRequest {
+            session_id: "s1".into(),
+            trigger_id: "h1".into(),
+            prompt_id: "p1".into(),
+        });
+    assert_eq!(
+        serde_json::to_value(read).unwrap(),
+        serde_json::json!({"ReadAgentTriggerReply":{"session_id":"s1","trigger_id":"h1","prompt_id":"p1"}})
+    );
+    for (reply, shape) in [
+        (
+            crate::local::AgentTriggerReply::Pending,
+            serde_json::json!({"status":"pending"}),
+        ),
+        (
+            crate::local::AgentTriggerReply::Completed {
+                text: "Done.".into(),
+            },
+            serde_json::json!({"status":"completed","text":"Done."}),
+        ),
+        (
+            crate::local::AgentTriggerReply::Failed {
+                message: "Stopped.".into(),
+            },
+            serde_json::json!({"status":"failed","message":"Stopped."}),
+        ),
+    ] {
+        assert_eq!(
+            serde_json::to_value(LocalDaemonResponse::AgentTriggerReplyRead { reply }).unwrap(),
+            serde_json::json!({ "AgentTriggerReplyRead": { "reply": shape } })
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(LocalDaemonResponse::AgentTriggerInvoked {
+            invocation: crate::local::AgentTriggerInvocation::InvalidInput {
+                message: "input does not match the input schema".into(),
+            },
+        })
+        .unwrap(),
+        serde_json::json!({"AgentTriggerInvoked":{"invocation":{
+            "status":"invalid_input","message":"input does not match the input schema",
+        }}})
     );
     let response = LocalDaemonResponse::AgentTriggerInvoked {
         invocation: crate::local::AgentTriggerInvocation::Offline,

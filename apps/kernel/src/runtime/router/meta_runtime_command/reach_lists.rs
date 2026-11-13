@@ -1,4 +1,5 @@
-//! `room list` and `slice list`: what `--room` and `--slice` accept for the calling agent.
+//! `room list` and `slice list`: what `--room` and `--slice` accept for the calling agent;
+//! `trigger list`: the calling agent's own triggers.
 use super::*;
 
 impl CommandRouter {
@@ -35,6 +36,15 @@ impl CommandRouter {
                     })
                     .collect::<Vec<_>>();
                 serde_json::json!({"slices": slices})
+            }
+            [first, second] if first == "trigger" && second == "list" => {
+                let triggers = session
+                    .agent_triggers()
+                    .iter()
+                    .filter(|trigger| trigger.agent_id() == caller.id())
+                    .map(super::own_schedule::own_trigger_row)
+                    .collect::<Vec<_>>();
+                serde_json::json!({"triggers": triggers})
             }
             _ => return None,
         };

@@ -490,6 +490,19 @@ impl CommandRouter {
                         .await
                 })
             }
+            LocalDaemonRequest::ReadAgentTriggerReply(request) => boxed_handler(|| async move {
+                // A sync response polls this while the firing's turn runs on the session lane.
+                let caller = command_caller_user_id(&command);
+                self.runtime_state
+                    .read_agent_trigger_reply(request, &caller)
+            }),
+            LocalDaemonRequest::ReadAgentTriggerHttpOptions(request) => {
+                boxed_handler(|| async move {
+                    let caller = command_caller_user_id(&command);
+                    self.runtime_state
+                        .read_agent_trigger_http_options(request, &caller)
+                })
+            }
             request @ (LocalDaemonRequest::GetWaitingRoomInventory(_)
             | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)
             | LocalDaemonRequest::ListWaitingRoomSessions(_)) => boxed_handler(|| async move {

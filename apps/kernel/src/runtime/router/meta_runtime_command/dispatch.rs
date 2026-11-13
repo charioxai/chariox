@@ -916,8 +916,8 @@ impl CommandRouter {
         }
     }
 
-    /// `trigger notification <source> [prompt]` and `trigger remove <id>`: an agent acts on its own
-    /// triggers only, so the request never carries an agent argument.
+    /// `trigger notification <source> [prompt]`, `trigger add schedule …` and `trigger remove <id>`:
+    /// an agent acts on its own triggers only, so the request never carries an agent argument.
     fn meta_trigger_request(
         &self,
         session: &crate::session::RuntimeSession,
@@ -950,6 +950,18 @@ impl CommandRouter {
                     },
                 ))
             }
+            Some("add") if args.get(1).map(String::as_str) == Some("schedule") => {
+                let (source, prompt) = super::own_schedule::own_schedule(&args[2..])?;
+                Ok(LocalDaemonRequest::CreateAgentTrigger(
+                    crate::local::CreateAgentTriggerRequest {
+                        session_id: session.id().to_string(),
+                        agent_id: actor.id().to_string(),
+                        source,
+                        busy_policy: None,
+                        prompt,
+                    },
+                ))
+            }
             Some("remove") => {
                 let [_, trigger_id] = args else {
                     return Err(meta_command_error("usage: trigger remove <trigger-id>"));
@@ -969,7 +981,7 @@ impl CommandRouter {
                 ))
             }
             _ => Err(meta_command_error(
-                "usage: trigger notification <source> [prompt] | trigger remove <trigger-id>",
+                "usage: trigger notification <source> [prompt] | trigger add schedule (--every <N>m | --cron '<expr>' [--timezone <zone>]) [--prompt <text>] | trigger list | trigger remove <trigger-id>",
             )),
         }
     }

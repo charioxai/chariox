@@ -193,16 +193,18 @@ async fn managed_working_agents_counts_an_idle_agent_with_an_enabled_trigger() {
     let runtime = runtime().await;
     restore_room(&runtime, ROOM);
     let mut room = runtime.owned.session_store.get_session(ROOM).unwrap();
-    room.add_agent_trigger(AgentTrigger::schedule(
-        "trigger-1",
-        "agent-1",
-        "owner",
-        3_600,
-        AgentTriggerRepeat::Every,
-        AgentTriggerBusyPolicy::Queue,
-        "check in",
-        1,
-    ));
+    room.add_agent_trigger(
+        AgentTrigger::schedule(
+            "trigger-1",
+            "agent-1",
+            "owner",
+            crate::session::AgentSchedule::interval(3_600, AgentTriggerRepeat::Every),
+            AgentTriggerBusyPolicy::Queue,
+            "check in",
+            1,
+        )
+        .expect("schedule should be valid"),
+    );
     runtime.owned.session_store.restore_session(room);
     assert_eq!(runtime.managed_working_agent_count(), 1);
 

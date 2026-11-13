@@ -5436,6 +5436,32 @@ create request sends `{"kind": "http"}` and the kernel picks both), `InvokeAgent
 The `schedule`, `http` and `notification` prompt origins also travel in
 `SubmitLeasedPrompt.git_context.prompt_origin`: the home refuses a worker below peer 381 instead of sending one. `local_daemon_protocol_http_agent_trigger_shape_is_versioned` pins the shapes.
 
+Allocated 1007 (relay peer 446) gives agent triggers the Workflows panel's trigger options. A
+`schedule` source is `{"kind": "schedule", "trigger": {"kind": "interval", "every_seconds"} |
+{"kind": "cron", "expression", "timezone"}, "repeat": "once"|"every", "overlap_policy"?:
+"skip"|"queue", "max_runs"?}`: the workflow schedule's trigger (six-field cron in an IANA timezone,
+validated with the same messages), `skip` (the default, as `/wait-every` always did) skips a firing
+while the previous one is queued or running and `queue` lets one firing wait behind it. `max_runs`
+left out takes the workflow schedule default (100), `null` never stops and N makes the trigger done
+after N firings: it stays in `agent_triggers`, never fires and wakes nothing; `/wait-in` (`once`)
+takes none. Clients preview with `PreviewWorkflowSchedule`. An `http` source takes `route` (default
+`/`, below the trigger's address; the page's own paths are refused), `methods` (`GET`, `POST`;
+default both), `parser` (`{"kind": "path_template", "template"}` with a `:prompt` segment, `json`
+(default), `query_params`, `webhook`), `mode` (`async` default, or `sync` with `sync_timeout_ms`
+1..300000, default 300000, and `poll_ms` 50..timeout, default 500; refused with `async`) and
+`input_schema` (a JSON Schema object, compiled at creation). The stored source carries them and
+`recent_firings` (the last 64 HTTP firings). `InvokeAgentTrigger` is now `{session_id, trigger_id,
+input, http?: {body_base64, content_type}}`: `input` is what the gateway's parser (the publication
+parser) made of the request; a non-conforming `input` answers `invalid_input {message}` and
+delivers nothing. `ReadAgentTriggerHttpOptions {session_id, trigger_id}` answers
+`AgentTriggerHttpOptionsRead {enabled, options}` for the local gateway and the hosted ingress, and
+`ReadAgentTriggerReply {session_id, trigger_id, prompt_id}` answers `AgentTriggerReplyRead {reply:
+pending | completed {text} | failed {message}}` for a sync response, only for the trigger's own
+recent firings. Create, update and invoke requests refuse unknown fields. Relay peer 446 follows
+the local allocation (the hosted ingress admits the two reads). The shapes are pinned by
+`local_daemon_protocol_agent_trigger_shape_is_versioned` and
+`local_daemon_protocol_http_agent_trigger_shape_is_versioned`.
+
 Allocated 931 (relay peer 380) makes every trigger firing a labelled prompt and lets a person
 resend one the provider did not confirm. A firing's transcript prompt carries `prompt_origin`
 `schedule` (a schedule trigger), `http` (an HTTP trigger) or `notification` (a workflow notification) and is recorded before

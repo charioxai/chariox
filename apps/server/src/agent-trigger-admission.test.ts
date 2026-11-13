@@ -18,7 +18,10 @@ function ingress() {
   const sent: unknown[] = [], bootstraps: unknown[] = []
   const app = buildHostedAgentTriggerServer({publicOrigin: "https://ingress.example", admission: selfHostedAdmission(config), connect: (async (kernel: string, bootstrap: (key: string) => Promise<unknown>) => {
     bootstraps.push(await bootstrap("a".repeat(64)))
-    return {send: async (value: unknown) => {sent.push(value); return {AgentTriggerInvoked: {invocation: {status: "accepted", prompt_id: "prompt-1", outcome: "queued"}}}}, close: async () => {}}
+    return {send: async (value: unknown) => {
+      if (Object.hasOwn(value as object, "ReadAgentTriggerHttpOptions")) return {AgentTriggerHttpOptionsRead: {enabled: true, options: {route: "/", methods: ["GET", "POST"], parser: {kind: "json"}, mode: "async"}}}
+      sent.push(value); return {AgentTriggerInvoked: {invocation: {status: "accepted", prompt_id: "prompt-1", outcome: "queued"}}}
+    }, close: async () => {}}
   }) as never})
   return {app, sent, bootstraps}
 }
@@ -28,8 +31,8 @@ test("self-hosted admission fires a trigger for the holder of its access token a
   try {
     const fired = await app.inject({method: "POST", url: "/agent-triggers/nightly/", headers: {authorization: `Bearer ${token}`, "content-type": "text/plain"}, payload: "run the nightly check"})
     assert.equal(fired.statusCode, 202); assert.equal(fired.json().prompt_id, "prompt-1")
-    const request = (sent[0] as {InvokeAgentTrigger: {session_id: string; trigger_id: string; payload: {prompt: string}}}).InvokeAgentTrigger
-    assert.ok(request.session_id === "session-1" && request.trigger_id === "trigger-1" && request.payload.prompt === "run the nightly check")
+    const request = (sent[0] as {InvokeAgentTrigger: {session_id: string; trigger_id: string; input: unknown}}).InvokeAgentTrigger
+    assert.ok(request.session_id === "session-1" && request.trigger_id === "trigger-1" && request.input === "run the nightly check")
     assert.deepEqual((bootstraps[0] as {target: unknown}).target, {daemonId: "kernel-1", kernelRef: "kernel-1"})
     assert.ok(!fired.body.includes("relay-secret") && !JSON.stringify(fired.headers).includes("relay-secret"), "the relay credential never reaches the caller")
   } finally {await app.close()}

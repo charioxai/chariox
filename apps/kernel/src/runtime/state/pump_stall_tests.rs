@@ -141,16 +141,18 @@ pub(in crate::runtime::state) fn add_due_trigger(
 ) {
     let mut session = runtime.owned.session_store.get_session(session_id).unwrap();
     // Created long ago, so the first run is already due.
-    session.add_agent_trigger(AgentTrigger::schedule(
-        id,
-        agent_id,
-        "owner",
-        60,
-        AgentTriggerRepeat::Every,
-        busy_policy,
-        format!("fire {id}"),
-        1,
-    ));
+    session.add_agent_trigger(
+        AgentTrigger::schedule(
+            id,
+            agent_id,
+            "owner",
+            crate::session::AgentSchedule::interval(60, AgentTriggerRepeat::Every),
+            busy_policy,
+            format!("fire {id}"),
+            1,
+        )
+        .expect("schedule should be valid"),
+    );
     runtime.owned.session_store.restore_session(session);
 }
 
@@ -359,16 +361,18 @@ async fn triggers_of_one_agent_fire_in_claim_order_across_pumps() {
             .session_store
             .get_session(&session_id)
             .unwrap();
-        session.add_agent_trigger(AgentTrigger::schedule(
-            id,
-            &agent_id,
-            "owner",
-            60,
-            AgentTriggerRepeat::Every,
-            busy_policy,
-            format!("fire {id}"),
-            created_ms,
-        ));
+        session.add_agent_trigger(
+            AgentTrigger::schedule(
+                id,
+                &agent_id,
+                "owner",
+                crate::session::AgentSchedule::interval(60, AgentTriggerRepeat::Every),
+                busy_policy,
+                format!("fire {id}"),
+                created_ms,
+            )
+            .expect("schedule should be valid"),
+        );
         runtime.owned.session_store.restore_session(session);
     }
     // The steer of `first` waits for the lane of the running turn.

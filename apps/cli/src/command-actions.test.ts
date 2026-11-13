@@ -23,7 +23,7 @@ test("/trigger creates, changes, removes and lists the focused agent's triggers"
   const trigger = {
     id: "trigger-1",
     agent_id: "agent-1",
-    source: { kind: "schedule" as const, interval_seconds: 3, repeat: "every" as const, next_run_at_ms: 3_000 },
+    source: { kind: "schedule" as const, trigger: { kind: "interval" as const, every_seconds: 3 }, repeat: "every" as const, overlap_policy: "skip" as const, next_run_at_ms: 3_000 },
     busy_policy: "steer" as const,
     prompt: "Check the build",
     enabled: true,
@@ -55,9 +55,9 @@ test("/trigger creates, changes, removes and lists the focused agent's triggers"
   await run("/trigger")
 
   assert.deepEqual(calls.slice(0, 10), [
-    JSON.stringify({ CreateAgentTrigger: { session_id: "session-1", agent_id: "agent-1", source: { kind: "schedule", interval_seconds: 3, repeat: "every" }, busy_policy: "steer", prompt: "Check the build" } }),
+    JSON.stringify({ CreateAgentTrigger: { session_id: "session-1", agent_id: "agent-1", source: { kind: "schedule", trigger: { kind: "interval", every_seconds: 3 }, repeat: "every", max_runs: null }, busy_policy: "steer", prompt: "Check the build" } }),
     "info:trigger every 0.05 minutes · steer",
-    JSON.stringify({ CreateAgentTrigger: { session_id: "session-1", agent_id: "agent-1", source: { kind: "schedule", interval_seconds: 60, repeat: "once" }, busy_policy: "queue", prompt: "Check once" } }),
+    JSON.stringify({ CreateAgentTrigger: { session_id: "session-1", agent_id: "agent-1", source: { kind: "schedule", trigger: { kind: "interval", every_seconds: 60 }, repeat: "once" }, busy_policy: "queue", prompt: "Check once" } }),
     "info:trigger in 1 minute · queue",
     JSON.stringify({ UpdateAgentTrigger: { session_id: "session-1", trigger_id: "trigger-1", enabled: false } }),
     "info:trigger trigger-1 off",

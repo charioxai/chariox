@@ -891,16 +891,18 @@ mod tests {
             None,
             GridPosition::new(0, 0, 1, 1),
         )]);
-        session.add_agent_trigger(AgentTrigger::schedule(
-            "trigger",
-            "agent",
-            DEFAULT_LOCAL_USER_ID,
-            60,
-            AgentTriggerRepeat::Every,
-            AgentTriggerBusyPolicy::Queue,
-            "the owner's private prompt",
-            1,
-        ));
+        session.add_agent_trigger(
+            AgentTrigger::schedule(
+                "trigger",
+                "agent",
+                DEFAULT_LOCAL_USER_ID,
+                crate::session::AgentSchedule::interval(60, AgentTriggerRepeat::Every),
+                AgentTriggerBusyPolicy::Queue,
+                "the owner's private prompt",
+                1,
+            )
+            .expect("schedule should be valid"),
+        );
         session.note_unconfirmed_trigger_delivery(TriggerDelivery::not_confirmed(
             "prompt",
             "trigger",

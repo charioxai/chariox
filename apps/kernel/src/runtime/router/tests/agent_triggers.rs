@@ -342,10 +342,7 @@ fn wait_request(
     LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
         session_id: session.id().to_string(),
         agent_id: agent.id().to_string(),
-        source: crate::local::AgentTriggerSourceRequest::Schedule {
-            interval_seconds: 60,
-            repeat,
-        },
+        source: crate::local::AgentTriggerSourceRequest::interval(60, repeat),
         busy_policy: Some(crate::session::AgentTriggerBusyPolicy::Queue),
         prompt: prompt.map(str::to_string),
     })
@@ -359,10 +356,10 @@ fn every_minute(
     crate::local::CreateAgentTriggerRequest {
         session_id: session.id().to_string(),
         agent_id: agent.id().to_string(),
-        source: crate::local::AgentTriggerSourceRequest::Schedule {
-            interval_seconds: 60,
-            repeat: crate::session::AgentTriggerRepeat::Every,
-        },
+        source: crate::local::AgentTriggerSourceRequest::interval(
+            60,
+            crate::session::AgentTriggerRepeat::Every,
+        ),
         busy_policy: Some(busy_policy),
         prompt: Some("The same prompt text".to_string()),
     }
@@ -462,10 +459,10 @@ async fn destroying_an_agent_removes_its_triggers() {
             LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
                 session_id: session.id().to_string(),
                 agent_id: agent_id.to_string(),
-                source: crate::local::AgentTriggerSourceRequest::Schedule {
-                    interval_seconds: 600,
-                    repeat: crate::session::AgentTriggerRepeat::Every,
-                },
+                source: crate::local::AgentTriggerSourceRequest::interval(
+                    600,
+                    crate::session::AgentTriggerRepeat::Every,
+                ),
                 busy_policy: Some(crate::session::AgentTriggerBusyPolicy::Queue),
                 prompt: None,
             });
@@ -988,10 +985,7 @@ async fn restart_with_pending_steer(
                     &agent,
                     crate::session::AgentTriggerBusyPolicy::Steer,
                 );
-                request.source = crate::local::AgentTriggerSourceRequest::Schedule {
-                    interval_seconds: 60,
-                    repeat,
-                };
+                request.source = crate::local::AgentTriggerSourceRequest::interval(60, repeat);
                 request
             },
             agent.owner_user_id(),

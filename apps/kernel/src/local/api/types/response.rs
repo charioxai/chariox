@@ -376,6 +376,8 @@ pub enum LocalDaemonResponse {
     PromptSettingsReset { settings: Vec<crate::prompt_assembly::PromptSettingRecord>, },
     AgentTriggerTranscript { trigger: crate::session::AgentTrigger, agent_alias: String, online: bool, busy: bool, history: Box<LocalDaemonResponse>, deliveries: Vec<crate::session::TriggerDelivery>, },
     AgentTriggerInvoked { invocation: AgentTriggerInvocation, },
+    AgentTriggerReplyRead { reply: AgentTriggerReply, },
+    AgentTriggerHttpOptionsRead { enabled: bool, options: crate::session::AgentHttpOptions, },
     AgentTriggerCreated { trigger: crate::session::AgentTrigger, session: RuntimeSession, },
     AgentTriggerUpdated { trigger: crate::session::AgentTrigger, session: RuntimeSession, },
     AgentTriggerDeleted { trigger: crate::session::AgentTrigger, session: RuntimeSession, },

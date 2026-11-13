@@ -235,6 +235,7 @@ mod tests {
     }
 
     mod agent_messaging;
+    mod agent_trigger_schedule_options;
     mod agent_triggers;
     mod app_bindings;
     mod app_capability_grants;
