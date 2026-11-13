@@ -280,12 +280,14 @@ pub use api::{
     UserAppViewBrowser, UserAppViewHost, UserAppViewRequest, APP_SET_SCHEMA,
 };
 pub use api::{
+    AppConfirmationFrame, AppInstallPresentation, AppInstallPromptOperation, NEVER_EXPIRES_MS,
+};
+pub use api::{
     AppDevPushFailureCode, AppDevPushRequest, AppInstallOperationPhase, AppInstallOperationRequest,
     AppInstallOperationSummary, AppPublisherEnrollmentPhase, AppPublisherEnrollmentRequest,
     AppPublisherEnrollmentSummary, BeginAppDevPushRequest, BeginAppInstallRequest,
     BeginAppPublisherEnrollmentRequest, BeginAppUpdateRequest,
 };
-pub use api::{AppInstallPresentation, AppInstallPromptOperation, NEVER_EXPIRES_MS};
 pub use api::{
     ApproveBrowserImportRequest, BrowserImportConsentStatus, BrowserImportSelection,
     BrowserImportSourceRequest, CancelBrowserImportRequest, PrepareBrowserImportRequest,

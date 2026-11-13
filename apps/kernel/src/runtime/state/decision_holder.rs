@@ -30,6 +30,8 @@ pub(crate) enum UserOnly {
     Sudo,
     Passkey,
     Payment,
+    /// A person-confirmed App action: only the person's Confirm lets it run.
+    AppConfirmation,
     /// Provider login, pairing, relay and Cloud identity, human verification.
     SignIn,
     /// Kernel access grants and their extensions.
@@ -64,6 +66,8 @@ pub(crate) fn user_only(
         Some(UserOnly::AccessGrant)
     } else if super::vault_use::is_vault_payment_decision(interaction.id()) {
         Some(UserOnly::Payment)
+    } else if interaction.app_confirmation().is_some() {
+        Some(UserOnly::AppConfirmation)
     } else if pending.passkey_prompt.is_some()
         || interaction
             .choices()

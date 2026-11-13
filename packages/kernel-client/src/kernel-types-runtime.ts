@@ -194,6 +194,19 @@ export type RuntimeInteraction = RuntimeInteractionSubject & {
   handoff?: import("./owner-handoff.js").RuntimeHandoff | null
   /** MP-08 / MP-09 / MP-10 / MP-11: a `vault-card-*` decision for one card payment. */
   payment?: VaultPaymentApproval | null
+  /** APP-CONFIRM-01: an `app-confirm-*` decision for one person-confirmed App action. */
+  app_confirmation?: AppConfirmationFrame | null
+}
+
+/** The App and publisher the kernel verified for a person-confirmed action. The App's own preview is the card's
+ * `view` region; none of these words come from the App. */
+export type AppConfirmationFrame = {
+  installation_id: string
+  app_id: string
+  app_name: string
+  publisher_id: string
+  publisher_name: string
+  action_name: string
 }
 
 /** One card payment the owner approves. `origin` is the page the kernel observed;

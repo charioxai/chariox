@@ -63,6 +63,20 @@ pub struct AppInstallPresentation {
     pub review: serde_json::Value,
 }
 
+/// What a person-confirmed App action's card is about, written by the kernel from the
+/// verified installed release. The preview beside it is the App's own component; this
+/// frame is never App-supplied text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppConfirmationFrame {
+    pub installation_id: String,
+    pub app_id: String,
+    pub app_name: String,
+    pub publisher_id: String,
+    pub publisher_name: String,
+    pub action_name: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppInstallPromptOperation {

@@ -11,6 +11,7 @@ mod agent_liveness;
 mod agent_peek;
 mod agent_workflow;
 mod aggregate_agent_model;
+mod app_confirmation;
 mod app_dev_push;
 mod app_dev_register;
 mod app_events;

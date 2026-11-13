@@ -58,6 +58,9 @@ impl ActiveRelease {
     pub(crate) fn generation(&self) -> u64 {
         self.binding.token().generation
     }
+    pub(crate) fn publisher_id(&self) -> String {
+        self.trust.publisher().publisher_id.clone()
+    }
     pub(crate) fn event_catalog(
         &self,
         verified: &impl VerifiedApp,
