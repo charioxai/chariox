@@ -7,6 +7,9 @@
 //! so it is authorised like that request and carries the same public
 //! projection. Revisions are content hashes of that projection, so they
 //! survive a kernel restart.
+#[path = "kernel_file_feed.rs"]
+mod files;
+
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
@@ -413,6 +416,8 @@ pub(crate) async fn run_kernel_resource_feed<E, F>(
     E: FnMut(KernelEvent) -> F,
     F: Future<Output = bool>,
 {
+    let (file_events, mut file_changes) = mpsc::channel(1);
+    let mut file_watch = None;
     let mut changes = router.kernel_resource_changes().subscribe();
     changes.borrow_and_update();
     let mut feed = Feed {
@@ -434,10 +439,21 @@ pub(crate) async fn run_kernel_resource_feed<E, F>(
         let events = tokio::select! {
             update = updates.recv() => {
                 let Some(update) = update else { return };
-                let (refused, events) = feed.replace(update.watches, update.caller).await;
+                let (files, resources): (Vec<_>, Vec<_>) = update.watches.into_iter().partition(|watch| watch.resource == "file_changes");
+                file_watch = None;
+                let (mut refused, mut events) = feed.replace(resources, update.caller.clone()).await;
+                if files.len() > 1 {
+                    refused.extend(files.into_iter().map(|watch| refusal(watch, "file_watch_limit".into(), "send one file_changes watch set per client".into())));
+                } else if let Some(watch) = files.into_iter().next() {
+                    match files::start(Arc::clone(&feed.router), feed.source.clone(), update.caller, &watch, file_events.clone()).await {
+                        Ok((running, initial)) => { file_watch = Some(running); events.push(initial); },
+                        Err(message) => refused.push(refusal(watch, "file_watch_refused".into(), message)),
+                    }
+                }
                 let _ = update.reply.send(refused);
                 events
             }
+            Some(event) = file_changes.recv(), if file_watch.is_some() => vec![event],
             changed = changes.changed() => {
                 if changed.is_err() {
                     return;

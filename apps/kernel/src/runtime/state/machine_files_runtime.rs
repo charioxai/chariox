@@ -136,7 +136,7 @@ impl KernelRuntimeState {
     }
 
     /// The Cloud account whose kernels this one may reach.
-    fn file_peer_owner(&self) -> Result<String, DaemonError> {
+    pub(super) fn file_peer_owner(&self) -> Result<String, DaemonError> {
         let config = self.owned.config_projection.snapshot();
         let owner = config
             .cloud_relay

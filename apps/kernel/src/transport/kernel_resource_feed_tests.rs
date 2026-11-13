@@ -332,3 +332,84 @@ fn only_resource_changing_commands_signal_the_feed() {
         assert!(!may_change_resources(unrelated), "{unrelated}");
     }
 }
+
+#[tokio::test]
+async fn file_changes_are_native_bounded_and_resync_after_resubscription() {
+    let kernel = Kernel::new();
+    let dir = kernel.root.join("visible");
+    std::fs::create_dir(&dir).unwrap();
+    let params = json!({"paths":[dir.display().to_string()]});
+    let interest = KernelResourceWatch {
+        resource: "file_changes".into(),
+        params: params.clone(),
+        known_revision: None,
+    };
+    let (inbox, mut events) = kernel.feed();
+    assert!(submit_watch_set(&inbox, vec![interest.clone()], owner())
+        .await
+        .unwrap()
+        .is_empty());
+    let (first, _) = next_change(&mut events).await;
+    for i in 0..20 {
+        std::fs::write(dir.join(format!("{i}.txt")), "native").unwrap();
+    }
+    let (second, _) = tokio::time::timeout(Duration::from_millis(250), next_change(&mut events))
+        .await
+        .unwrap();
+    assert_ne!(first, second);
+    // A complete interest replacement registers first, then sends a baseline even
+    // when the client remembers the old epoch: reconnect cannot miss a gap.
+    let interest = KernelResourceWatch {
+        known_revision: Some(second.clone()),
+        ..interest
+    };
+    assert!(submit_watch_set(&inbox, vec![interest], owner())
+        .await
+        .unwrap()
+        .is_empty());
+    let (resumed, _) = next_change(&mut events).await;
+    assert_ne!(second, resumed);
+    assert!(submit_watch_set(&inbox, vec![], owner())
+        .await
+        .unwrap()
+        .is_empty());
+    while events.try_recv().is_ok() {}
+    std::fs::write(dir.join("closed"), "no subscriber").unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(80), next_change(&mut events))
+            .await
+            .is_err()
+    );
+    let too_many = KernelResourceWatch {
+        resource: "file_changes".into(),
+        params: json!({"paths": vec![dir.display().to_string(); 65]}),
+        known_revision: None,
+    };
+    assert_eq!(
+        submit_watch_set(&inbox, vec![too_many], owner())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let denied = KernelResourceWatch {
+        resource: "file_changes".into(),
+        params,
+        known_revision: None,
+    };
+    assert_eq!(
+        submit_watch_set(&inbox, vec![denied], collaborator())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    drop(inbox);
+    drop(events);
+    kernel
+        .router
+        .runtime_state()
+        .shutdown_cleanup()
+        .await
+        .unwrap();
+}

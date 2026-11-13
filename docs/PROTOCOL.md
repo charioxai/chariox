@@ -7635,3 +7635,11 @@ commands retain their normal authority.
 
 The shared configuration response crosses peer connections, so both version
 numbers advance. `resource-protection-1006.json` and its SHA-256 test pin the shape.
+
+### Native Files invalidations (local1054 / peer492)
+
+`kernel_resources` also accepts one `file_changes` interest: `params:{paths:[absoluteOrHomePath],kernel?:kernelReference}`. A client may hold64 paths across its subscriptions. Each resource change carries a fresh epoch/sequence revision and a snapshot `{resync:true,error:null|string}`. The client refreshes existing directory/file data on every invalidation, including the initial snapshot; it does not replay invalidations or poll. A backend failure sends its reason and requires re-registration. Invalid/protected paths and excess interests are explicit `KernelResourcesWatched.refused` entries. Closing/replacing the subscription releases its native watches.
+
+The implementation uses notify's native inotify/FSEvents backend, non-recursive directories and their parents, with a bounded one-slot queue and20ms coalescing. Parent watches cover atomic replacement and removal/recreation; overflow invalidates the whole interest set. A native backend failure never selects a polling backend.
+
+For a remote machine the home kernel sends `WatchMachineFiles{subscription_id,paths}` over the authenticated same-owner encrypted peer link. The worker pushes `MachineFilesChanged{subscription_id}`; the home acknowledges with `MachineFilesWatched{created:false}` and forwards a resource invalidation to its client. Registration returns `created:true` after worker restart, forcing resync.30s lease renewals perform no filesystem reads;90s expiry bounds abandoned workers, and `UnwatchMachineFiles{subscription_id}` releases promptly. Each worker bounds clients per peer to16 and total clients to256, with64 paths each. Lost event acknowledgements retry; reconnect/native overflow resyncs complete interests.

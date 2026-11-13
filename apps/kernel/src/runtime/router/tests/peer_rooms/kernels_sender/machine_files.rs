@@ -17,14 +17,17 @@ fn machine_link(kernel: &Kernel) {
                 let router = router.clone();
                 Box::pin(async move {
                     match request {
-                        RelayPeerRequest::StatMachinePath { .. }
+                        RelayPeerRequest::WatchMachineFiles { .. }
+                        | RelayPeerRequest::UnwatchMachineFiles { .. }
+                        | RelayPeerRequest::MachineFilesChanged { .. }
+                        | RelayPeerRequest::StatMachinePath { .. }
                         | RelayPeerRequest::ListMachineDirectory { .. }
                         | RelayPeerRequest::ReadMachineFile { .. }
                         | RelayPeerRequest::DeleteMachinePath { .. }
                         | RelayPeerRequest::StartFileTransfer { .. }
                         | RelayPeerRequest::GetFileTransfer { .. }
                         | RelayPeerRequest::CancelFileTransfer { .. } => {
-                            router.relay_machine_files(request).await
+                            router.relay_machine_files(&from, request).await
                         }
                         other => router.relay_peer_agent(&from, &owner, other).await,
                     }

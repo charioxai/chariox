@@ -435,6 +435,7 @@ impl KernelRuntimeState {
             self.hand_over_reach_revocations();
         }
         crate::shutdown::stage("Files transfers and records");
+        self.peer_file_watches.shutdown();
         let files = self.file_transfers.clone();
         let files_shutdown = tokio::spawn(async move { files.shutdown().await });
         crate::shutdown::stage("room execs");

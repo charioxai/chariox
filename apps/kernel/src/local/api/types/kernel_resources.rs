@@ -28,6 +28,15 @@ pub struct KernelResourceRefusal {
     pub message: String,
 }
 
+/// Native filesystem interests. A home kernel may relay another machine's invalidations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelFileWatchParams {
+    pub paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel: Option<String>,
+}
+
 fn empty_params() -> Value {
     Value::Object(serde_json::Map::new())
 }
