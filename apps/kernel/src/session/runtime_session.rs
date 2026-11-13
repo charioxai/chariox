@@ -1301,11 +1301,14 @@ impl RuntimeSession {
         left == right
     }
 
-    pub fn equivalent_except_prompt_runtime(&self, other: &Self) -> bool {
+    pub fn same_prompt_runtime(&self, other: &Self) -> bool {
+        self.prompt_runtime == other.prompt_runtime
+    }
+
+    pub fn equivalent_except_prompt_runtime_and_session_metadata(&self, other: &Self) -> bool {
         let mut left = self.clone();
-        let right = other.clone();
-        left.prompt_runtime = right.prompt_runtime.clone();
-        left == right
+        left.prompt_runtime = other.prompt_runtime.clone();
+        left.equivalent_except_session_metadata(other)
     }
 
     pub fn equivalent_except_runtime_interactions(&self, other: &Self) -> bool {
