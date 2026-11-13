@@ -7382,3 +7382,12 @@ While a step is pending or running, or `git_init` or `worktree` failed and was n
 `WaitingRoomLaunchTarget.git_available` (always serialized, `false` for readers that lack it) reports whether a `git` executable runs on the kernel's machine; a client offers "Initialize Git" only when it is true.
 
 Focused checks: `cargo test -p chariox-kernel --test kernel_websocket_runtime_integration room_setup`, `cargo test -p chariox-kernel --lib room_setup`.
+
+### Pending card asker identity (provisional local1041 / peer479)
+
+An active interaction's `asker_name` is resolved by the kernel from the asking
+agent's current alias, or its stable agent ref. Session projections resolve it
+before redacting the hidden sub-agent roster. Clients render this name directly
+with the card, without waiting for a descendant read or using a remembered name.
+The interaction subject and `shown_in_agent_id` remain the authority for ownership
+and presentation; the name does not grant permission to answer.
