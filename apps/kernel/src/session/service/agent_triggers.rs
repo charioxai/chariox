@@ -495,6 +495,56 @@ mod tests {
     }
 
     #[test]
+    fn interval_agent_trigger_stays_anchored_over_ten_delayed_firings() {
+        let (mut service, session_id, trigger) =
+            service_with_schedule(3, AgentTriggerRepeat::Every);
+        let first_due = trigger.next_run_at_ms();
+        for beat in 0..10 {
+            let due = first_due + beat * 3_000;
+            assert_eq!(service.claim_due_agent_triggers(due).len(), 1);
+            service
+                .mark_agent_trigger_fired(
+                    &session_id,
+                    trigger.id(),
+                    due + 2_000,
+                    AgentTriggerOutcome::Queued,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                service.next_scheduled_runtime_wake_at_ms(),
+                Some(due + 3_000),
+                "delivery delay must not move beat {beat}"
+            );
+        }
+    }
+
+    #[test]
+    fn interval_agent_trigger_skips_missed_beats_without_changing_phase() {
+        let (mut service, session_id, trigger) =
+            service_with_schedule(3, AgentTriggerRepeat::Every);
+        let due = trigger.next_run_at_ms();
+        assert_eq!(service.claim_due_agent_triggers(due + 10_000).len(), 1);
+        service
+            .mark_agent_trigger_coalesced(&session_id, trigger.id(), due + 10_000)
+            .unwrap();
+        assert_eq!(
+            service.next_scheduled_runtime_wake_at_ms(),
+            Some(due + 12_000)
+        );
+        assert!(service.claim_due_agent_triggers(due + 11_999).is_empty());
+        assert_eq!(service.claim_due_agent_triggers(due + 12_000).len(), 1);
+        service
+            .mark_agent_trigger_failed(&session_id, trigger.id(), due + 14_500, "retry".into())
+            .unwrap();
+        // A failure keeps the phase and leaves at least a second before retrying.
+        assert_eq!(
+            service.next_scheduled_runtime_wake_at_ms(),
+            Some(due + 18_000)
+        );
+    }
+
+    #[test]
     fn coalesced_agent_trigger_advances_wake_without_counting_a_firing() {
         let (mut service, session_id, trigger) =
             service_with_schedule(600, AgentTriggerRepeat::Every);

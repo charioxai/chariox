@@ -277,7 +277,14 @@ async fn schedule_triggers_coalesce_active_and_restored_occurrences() {
         let snapshot = session_store.get_session(session.id()).unwrap();
         for trigger in snapshot.agent_triggers() {
             assert_eq!(trigger.fired(), 1);
-            assert_eq!(trigger.next_run_at_ms(), now_ms + 60_000);
+            let start = schedules
+                .iter()
+                .find(|original| original.id() == trigger.id())
+                .unwrap();
+            assert_eq!(
+                trigger.next_run_at_ms(),
+                start.next_run_at_ms() + (tick + 1) * 60_000
+            );
         }
     }
 

@@ -508,7 +508,14 @@ impl AgentTrigger {
             // A re-enabled schedule counts a full interval from now instead of
             // firing at once for the time it was off.
             if enabled && !self.enabled {
-                self.schedule_next_run(now_ms, 0);
+                if let AgentTriggerSource::Schedule {
+                    trigger,
+                    next_run_at_ms,
+                    ..
+                } = &mut self.source
+                {
+                    *next_run_at_ms = trigger.next_run_after_ms(now_ms).unwrap_or(u64::MAX);
+                }
             }
             if !enabled {
                 self.dispatch_in_flight = false;
@@ -563,10 +570,23 @@ impl AgentTrigger {
             return;
         };
         let earliest = now_ms.saturating_add(minimum_delay_seconds.saturating_mul(1_000));
-        // The trigger was validated at creation; a time beyond the calendar never comes.
-        *next_run_at_ms = trigger
-            .next_run_after_ms(now_ms)
-            .map_or(u64::MAX, |next| next.max(earliest));
+        *next_run_at_ms = match trigger {
+            WorkflowScheduleTrigger::Interval { every_seconds } => {
+                // Advance along the existing schedule's grid, skipping missed beats. Delivery
+                // latency must not shift every subsequent firing (including after a restart).
+                let interval_ms = every_seconds.saturating_mul(1_000);
+                let threshold = earliest.max(now_ms.saturating_add(1));
+                let steps = threshold
+                    .saturating_sub(*next_run_at_ms)
+                    .div_ceil(interval_ms)
+                    .max(1);
+                next_run_at_ms.saturating_add(steps.saturating_mul(interval_ms))
+            }
+            // The trigger was validated at creation; a time beyond the calendar never comes.
+            WorkflowScheduleTrigger::Cron { .. } => trigger
+                .next_run_after_ms(now_ms)
+                .map_or(u64::MAX, |next| next.max(earliest)),
+        };
     }
 }
 

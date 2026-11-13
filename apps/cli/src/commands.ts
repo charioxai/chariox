@@ -1,9 +1,11 @@
+import { parseTriggerAdd, TRIGGER_ADD_USAGE, type AddTriggerAction } from "./trigger-add-command.js"
 import { tokenizeShellLine } from "@chariox/kernel-client/shell-core"
 
 export type SessionCommandAction = "create" | "new" | "attach" | "list" | "ls" | "status" | "info" | "inspect" | "delete"
 
 /** `/trigger` and its `/wait-in` / `/wait-every` aliases. */
 export type TriggerCommandAction =
+  | AddTriggerAction
   | { type: "list" }
   | {
       type: "create"
@@ -438,10 +440,14 @@ export function sharedShellCommandForSlashCommand(input: string): string | null 
 }
 
 export const TRIGGER_USAGE =
-  "usage: /trigger [list] | every|in <minutes> [--steer|--queue] <prompt> | notification <source> [prompt] | on|off|queue|steer <id> | remove <id> | resend <prompt-id>"
+  `usage: /trigger [list] | every|in <minutes> [--steer|--queue] <prompt> | notification <source> [prompt] | on|off|queue|steer <id> | remove <id> | resend <prompt-id> · ${TRIGGER_ADD_USAGE}`
 
 function parseTriggerCommand(command: string): Extract<ParsedSlashCommand, { kind: "trigger" }> {
   const [verb = "list", ...rest] = command.slice("/trigger".length).trim().split(/\s+/).filter(Boolean)
+  if (verb === "add") {
+    try { return { kind: "trigger", raw: command, action: parseTriggerAdd(command), error: null } }
+    catch (error) { return { kind: "trigger", raw: command, action: null, error: error instanceof Error ? error.message : TRIGGER_ADD_USAGE } }
+  }
   if (verb === "list" && rest.length === 0) {
     return { kind: "trigger", raw: command, action: { type: "list" }, error: null }
   }
