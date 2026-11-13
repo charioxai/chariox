@@ -368,6 +368,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 turn.provider_run_id == provider_run_id
                     && termination_prompt_id.is_none_or(|prompt_id| turn.prompt_id == prompt_id)
             });
+        let settlement_recorded = completed_turn.is_some();
         let provider_termination = completed_turn
             .as_ref()
             .and_then(|turn| turn.provider_termination.clone());
@@ -551,6 +552,44 @@ impl<'a> RemoteLeaseRuntime<'a> {
             || latest_output_history_completion_key.is_some()
             || history_cursor.output_prompt_key.as_deref()
                 == Some(leased_home_prompt_projection_key(&leased_agent).as_str());
+        let completion_already_projected = leased_agent
+            .replayable_completion
+            .as_ref()
+            .filter(|replay| {
+                replay.provider_run_id == provider_run_id
+                    && (replay.home_prompt_id == home_prompt_id
+                        // After the scoped turn is retired, its replay still
+                        // suppresses synthetic completions from old history.
+                        || (home_prompt_id.is_none() && !backing_prompt_active))
+            })
+            .is_some_and(|replay| {
+                let completion_key = leased_provider_run_completion_key(
+                    &leased_agent,
+                    provider_run_id,
+                    &replay.message_id,
+                );
+                leased_agent
+                    .projected_completion_keys
+                    .iter()
+                    .any(|key| key == &completion_key)
+            });
+        let replay_has_settlement = leased_agent
+            .replayable_completion
+            .as_ref()
+            .filter(|replay| {
+                replay.provider_run_id == provider_run_id && replay.home_prompt_id == home_prompt_id
+            })
+            .is_some_and(|replay| {
+                replay.failure.is_some() || replay.provider_termination.is_some()
+            });
+        // Removing a prompt and publishing its outcome are separate writes.
+        // A home turn waits for that outcome; a committed replay survives restart.
+        let completion_waits_for_settlement = home_prompt_id.is_some()
+            && !backing_prompt_active
+            && !settlement_recorded
+            && !completion_already_projected
+            && !replay_has_settlement
+            && !provider_run_failed;
         let native_prompt_has_settled =
             completion_waits_for_native_prompt_settlement && !backing_prompt_active;
         let mut deferred_explicit_completion = false;
@@ -566,7 +605,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             && !provider_run_failed;
         if completion_waits_for_output
             || completion_waits_for_native_stop
-            || (completion_waits_for_runtime_tools && !completions.is_empty())
+            || ((completion_waits_for_runtime_tools || completion_waits_for_settlement)
+                && !completions.is_empty())
         {
             if let Some(completion) = completions.last() {
                 if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
@@ -609,32 +649,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             && replay.home_prompt_id == home_prompt_id
                     });
         let explicit_completion_waiting = explicit_completion_waiting_for_output
-            || explicit_completion_waiting_for_prompt_settlement;
-        let completion_already_projected = leased_agent
-            .replayable_completion
-            .as_ref()
-            .filter(|replay| {
-                replay.provider_run_id == provider_run_id
-                    && (replay.home_prompt_id == home_prompt_id
-                        // After the scoped turn is retired, its replay still
-                        // suppresses synthetic completions from old history.
-                        || (home_prompt_id.is_none() && !backing_prompt_active))
-            })
-            .is_some_and(|replay| {
-                let completion_key = leased_provider_run_completion_key(
-                    &leased_agent,
-                    provider_run_id,
-                    &replay.message_id,
-                );
-                leased_agent
-                    .projected_completion_keys
-                    .iter()
-                    .any(|key| key == &completion_key)
-            });
+            || explicit_completion_waiting_for_prompt_settlement
+            || completion_waits_for_settlement;
         if completions.is_empty()
             && !completion_waits_for_runtime_tools
             && (requires_explicit_completion || unprojected_replay_for_turn)
             && !explicit_completion_waiting_for_prompt_settlement
+            && !completion_waits_for_settlement
             && (native_prompt_has_settled
                 || current_batch_has_provider_output
                 || provider_run_has_projected_output
@@ -2772,9 +2793,11 @@ mod explicit_completion_tests {
 
             // A projection may have read its outcome snapshot before the settler
             // published it, then drained the newly published completion record.
-            for _ in 0..2 {
+            for recovery in [false, true] {
                 let projection = RemoteLeaseRuntime::new(&mut app)
-                    .drain_leased_runtime_projection(&leased.id, &run, false)
+                    .drain_leased_runtime_projection_with_recovery(
+                        &leased.id, &run, false, recovery,
+                    )
                     .unwrap();
                 if let Some((_, RelayPeerEvent::LeasedRuntimeProjection { completions, .. })) =
                     projection
