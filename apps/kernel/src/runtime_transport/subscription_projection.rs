@@ -11,7 +11,7 @@ pub(crate) fn session_projection_events(
     has_terminal_workflow_update: bool,
 ) -> Vec<KernelEvent> {
     let same_public = previous.is_some_and(|before| {
-        before.session == snapshot.session
+        before.session.equivalent_except_attachments(&snapshot.session)
             && public_run(before) == public_run(snapshot)
             && before.agent_activity == snapshot.agent_activity
             && before.room_workflows == snapshot.room_workflows
@@ -248,6 +248,24 @@ mod tests {
             ),
             "Return route/account changes must reach subscribers beside another projection delta"
         );
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (transport3): every client attach, detach and reaped attachment
+    // resent the whole session (4.6 KB with 50 attachment ids) to each subscription of every viewer,
+    // although no view shows who is attached.
+    #[test]
+    fn attachment_churn_sends_no_session_snapshot() {
+        let mut before = snapshot();
+        before.session.add_attachment("attachment-a");
+        let mut after = before.clone();
+        after.session.add_attachment("attachment-b");
+        assert!(session_projection_events(&after, Some(&before), false).is_empty());
+        after.session.remove_attachment("attachment-a");
+        after.session.set_alias(Some("after".into()));
+        assert!(matches!(
+            session_projection_events(&after, Some(&before), false).as_slice(),
+            [KernelEvent::SessionMetadataChanged { .. }]
+        ));
     }
 
     #[test]
