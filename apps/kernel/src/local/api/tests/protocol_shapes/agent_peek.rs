@@ -30,6 +30,6 @@ fn agent_peek_protocol_1006_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&snapshot).unwrap().as_bytes())
         ),
-        "6db85f8fd2f6c2086efb63d7fb431e721b7d3dfe73e2012c5dd807ce51533cc2"
+        "928f8b2705cc48cc37b5ad01dc0f0216c721db0895cc07463bc4f071f66f24ed"
     );
 }

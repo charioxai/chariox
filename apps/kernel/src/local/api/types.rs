@@ -535,4 +535,5 @@ pub use workspace::*;
 /// settings; durable jobs,
 /// job-only command admission and outcomes, placement policies, process estimates, session job feeds and
 /// the owner's global offload decision.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1006;
+/// 1054 adds native Files interests on the resource feed, including home-relayed worker invalidations.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1054;

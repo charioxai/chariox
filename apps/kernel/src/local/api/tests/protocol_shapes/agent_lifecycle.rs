@@ -258,7 +258,7 @@ fn owner_agent_cancellation_987_snapshot_and_hash() {
     let bytes = include_bytes!("owner-agent-cancellation-987.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "a6e2295d5f4075cff344cecf5a5ca96400025cfee55973f06ecee50058725438"
+        "65cad31addb66ea1e79a50e4cb261a04d44aefcf3c5f7a368bac7432c2ee836f"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -304,7 +304,7 @@ fn browser_owner_action_shape_is_bound_to_protocol993() {
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(fixture.to_string().as_bytes())),
-        "0b434fb54ead324176186aa649fcdc8c22a61ec57be087aa72fb529898e25016"
+        "de3ab594c23645fe9e0c147406d2a9e2e24c046476fcfd7bd0c76da851be2b84"
     );
 }
 

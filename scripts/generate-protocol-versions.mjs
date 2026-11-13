@@ -12,6 +12,7 @@ update("fixtures/protocol-versions.json", JSON.stringify({ local: localProtocolV
 // These snapshots compare their allocation with the current runtime pair.
 // Their shape hashes remain explicit in the focused protocol tests.
 const currentSnapshots = [
+  "apps/kernel/src/local/api/tests/protocol_shapes/files-watch-1054.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/agent-browser-owner-action-993.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-dev-push-933.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-dev-register-933.json",

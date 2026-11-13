@@ -34,6 +34,7 @@ mod dictation;
 mod display_resumption;
 mod event_publication;
 mod extension_apps;
+mod files_watch;
 mod fresh_remote_relay_inventory;
 mod handoff_config;
 mod kernel_access;
