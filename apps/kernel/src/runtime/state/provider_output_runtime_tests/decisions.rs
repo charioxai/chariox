@@ -436,6 +436,41 @@ async fn the_user_holds_it_as_the_same_interaction_listed_with_the_top_parent_on
     assert_eq!(session.interactions_listed_for(&t.g)[0].id(), "perm-3");
 }
 
+// UIQA-S4a: an ordinary session response must name an asker hidden from the Room roster.
+#[tokio::test]
+async fn session_snapshot_names_hidden_asker_before_any_tree_read() {
+    let t = tree(
+        "decision-asker-snapshot",
+        AgentPermissionLevel::Required,
+        AgentPermissionLevel::Required,
+    )
+    .await;
+    t.raise(permission("snapshot-card", &t.c)).await;
+    let request = crate::local::GetSessionStateRequest {
+        session_id: t.room.clone(),
+    };
+    let response = t.runtime.session_state_response(request).unwrap();
+    let wire = serde_json::to_value(response).unwrap();
+    let session = &wire["SessionState"]["session"];
+    let card = session["active_interactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|card| card["id"] == "snapshot-card")
+        .unwrap();
+    assert_eq!(card["agent_id"], t.c);
+    assert_eq!(card["asker_name"], "c");
+    let projected = t
+        .runtime
+        .session_snapshot(&t.room)
+        .await
+        .unwrap()
+        .redacted_for_user(crate::session::DEFAULT_LOCAL_USER_ID);
+    assert!(projected.agents().iter().all(|agent| agent.id() != t.c));
+    let wire = serde_json::to_value(projected).unwrap();
+    assert_eq!(wire["active_interactions"][0]["asker_name"], "c");
+}
+
 #[tokio::test]
 async fn only_the_current_holder_may_answer() {
     let t = tree(
