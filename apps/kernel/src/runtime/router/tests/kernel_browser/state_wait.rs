@@ -65,7 +65,7 @@ fn mp08_state_wait_parks_until_the_state_differs_and_never_polls_the_host() {
             let parked = {
                 let router = router.clone();
                 let revision = revision.clone();
-                tokio::spawn(async move { wait(&router, &revision, 2000).await })
+                tokio::spawn(async move { wait(&router, &revision, 10_000).await })
             };
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
             assert!(!parked.is_finished(), "parked while nothing changes");
@@ -82,7 +82,7 @@ fn mp08_state_wait_parks_until_the_state_differs_and_never_polls_the_host() {
             let request = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
                 command: KernelBrowserCommand::StateWait {
                     after: String::new(),
-                    wait_ms: 2001,
+                    wait_ms: 10_001,
                 },
             });
             assert!(router

@@ -1582,7 +1582,7 @@ export class KernelBrowserHost {
       // Protocol 556: the kernel parks here, outside its protection barrier, until a state read could differ.
       if (request.method === "host.browser" && request.params?.op === "state_signal") {
         const {after, wait_ms} = request.params;
-        const parked = await this.stateSignal.wait(Number.isSafeInteger(after) ? after : null, Math.min(Number(wait_ms) || 0, 5000), signal);
+        const parked = await this.stateSignal.wait(Number.isSafeInteger(after) ? after : null, Math.min(Number(wait_ms) || 0, 10_000), signal);
         return { id: request.id, ok: true, result: { signal: parked } };
       }
       if (request.method === "host.browser") {

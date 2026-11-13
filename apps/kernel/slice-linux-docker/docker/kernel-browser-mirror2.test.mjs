@@ -153,6 +153,14 @@ test('MP-08/MP-10: a credit replayed after a reconnect gets its original packet,
   assert.deepEqual([first, replay, other.sequence, runs], [first, first, 2, 2]);
 });
 
+test('MP-08/MP-10: an idle viewer may park one credit for ten seconds, no longer', async () => {
+  const mirror = new Mirror2({ host: {} }), stream = { chain: Promise.resolve(), issued: 0 }, waits = [];
+  mirror.packet = async (s, command, scope, signal, deadline) => { waits.push(deadline - Date.now()); return { sequence: ++stream.issued }; };
+  await mirror.next(stream, { command_id: 'idle', after_sequence: 1, wait_ms: 10_000 }, 'scope');
+  assert.ok(waits[0] > 9_000 && waits[0] <= 10_000, `the credit waits for its whole period: ${waits}`);
+  await assert.rejects(mirror.next(stream, { command_id: 'long', after_sequence: 2, wait_ms: 10_001 }, 'scope'), /invalid mirror wait/);
+});
+
 test('BROWSER-UX-05: the first packet is built at registration; the first credit takes it without a second build', async () => {
   const mirror = new Mirror2({ host: {} }), stream = { id: 's1', chain: Promise.resolve(), issued: 0 }, built = [];
   mirror.packet = async (s, command) => { built.push(command.after_sequence); await new Promise(resolve => setTimeout(resolve, 20)); return { sequence: ++stream.issued }; };
