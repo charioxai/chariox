@@ -39,3 +39,8 @@ memory pressure inside an owned 4 GiB cgroup and disk pressure on a private ext4
 loop volume. It requires delegated cgroups and loop-mount permission. Pass its
 binary, profile, state and evidence paths through the `RESSET_*` environment
 variables named at the top of the script; keep state and evidence outside Git.
+
+Jobs that declare memory needs reserve capacity before spawning a process and
+wait when that declared capacity is unavailable. This admission does not pause
+or stop healthy running commands. Memory off and explicit Start now also apply
+to these job reservations.

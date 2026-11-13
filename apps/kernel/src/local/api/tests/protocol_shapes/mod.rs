@@ -147,3 +147,5 @@ mod session_activity;
 
 mod owner_vault;
 mod totp;
+
+mod resource_protection;

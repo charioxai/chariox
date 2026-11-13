@@ -250,7 +250,13 @@ impl LaunchAdmission {
                 .memory
                 .saturating_sub(reserved)
                 .saturating_sub(launch_memory.values().copied().fold(0, u64::saturating_add));
-            if !force && protection.memory && pool.memory_emergency() && memory > free {
+            // A declared job books capacity before it has a PID. Ordinary
+            // command predictions wait only when physical memory is short.
+            if !force
+                && protection.memory
+                && (minimum_memory > 0 || pool.memory_emergency())
+                && memory > free
+            {
                 return Err(LaunchWait {
                     reason: admission::WaitReason::Memory,
                     need_bytes: memory,

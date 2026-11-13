@@ -588,3 +588,44 @@ fn a_different_exact_binary_command_has_no_known_output_volume() {
         "a normalized command key cannot identify the next command's output volume"
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn declared_job_memory_waits_before_spawn_on_a_healthy_machine() {
+    let total = std::fs::read_to_string("/proc/meminfo")
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("MemTotal:"))
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap()
+        * 1024;
+    let pool = Arc::new(Pool::new(total, true).with_machine_pressure(Box::new(|| false)));
+    let admission = LaunchAdmission(pool.clone());
+    let argv = vec!["/bin/true".into()];
+    // An explicitly sized job can wait for a larger machine without either
+    // starting a PID or stopping healthy work to manufacture room.
+    let required = total.saturating_mul(2);
+    let wait = admission
+        .reserve_with_memory("declared", &argv, Path::new("/"), false, required)
+        .err()
+        .expect("declared memory needs must be admitted before a PID exists");
+    assert_eq!(wait.reason, admission::WaitReason::Memory);
+    assert_eq!(wait.need_bytes, required);
+    assert!(pool.launches.lock().unwrap().is_empty());
+    // Ordinary commands with no declared need remain governed by actual
+    // pressure, and the owner's memory-off decision also applies to jobs.
+    assert!(admission
+        .reserve("ordinary", &argv, Path::new("/"), false)
+        .is_ok());
+    pool.configure(crate::config::ResourceProtection {
+        memory: false,
+        ..Default::default()
+    });
+    assert!(admission
+        .reserve_with_memory("off", &argv, Path::new("/"), false, required)
+        .is_ok());
+}

@@ -9,6 +9,8 @@ use tokio::sync::watch;
 
 #[cfg(test)]
 mod approval_tests;
+#[cfg(test)]
+mod cleanup_tests;
 mod control;
 mod driver;
 mod execute;

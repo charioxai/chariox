@@ -397,11 +397,9 @@ export class LocalIpcClient {
     )) {
       throw new Error("explicit and environment kernel local auth credentials cannot both be configured")
     }
-    if (this.relayAuthToken && (
-      explicitLocalAuthToken
-      || process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN !== undefined
-      || process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE !== undefined
-    )) {
+    // A terminal may inherit credentials for its local renewal issuer. A relay
+    // connection leaves them untouched and never attaches them to its transport.
+    if (this.relayAuthToken && explicitLocalAuthToken) {
       throw new Error("kernel local auth credentials cannot be used with relay transport")
     }
     if (explicitLocalAuthToken && isHostedPublicationGateway()) {

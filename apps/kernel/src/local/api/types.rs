@@ -535,4 +535,5 @@ pub use workspace::*;
 /// Owner room agent and card commands, including non-secret cross-room answers (peer 449).
 /// 1011: durable jobs, job-only command admission and outcomes, placement policies,
 /// process estimates, session job feeds and the owner's global offload decision.
+/// 1021: shared machine-local memory, disk and CPU resource-protection settings.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1027;

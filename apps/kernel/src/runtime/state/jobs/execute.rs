@@ -6,7 +6,7 @@ use std::io::Write;
 use zeroize::Zeroizing;
 
 /// Output is protected as complete lines, including values that cross relay chunk boundaries.
-struct Output {
+pub(super) struct Output {
     pending: Vec<u8>,
     tail: String,
     file: std::fs::File,
@@ -15,7 +15,7 @@ struct Output {
 }
 
 impl Output {
-    fn new(state: &KernelRuntimeState, record: &Record) -> Result<Self, DaemonError> {
+    pub(super) fn new(state: &KernelRuntimeState, record: &Record) -> Result<Self, DaemonError> {
         let directory = state
             .owned
             .config_projection
@@ -208,7 +208,9 @@ impl KernelRuntimeState {
         let _ = output.push(self, &record.room_id, &[], true);
         let mut result = result.unwrap_or_else(|error| {
             let _ = output.push(self, &record.room_id, error.to_string().as_bytes(), true);
-            failed(&record, "Job failed; see the protected output log".into())
+            record.result.clone().unwrap_or_else(|| {
+                failed(&record, "Job failed; see the protected output log".into())
+            })
         });
         output.file.flush().ok();
         let config = self.owned.config_projection.snapshot();
@@ -251,8 +253,10 @@ impl KernelRuntimeState {
             Ok(artifact) => artifact.operational_path.to_string_lossy().into_owned(),
             Err(_) => output.log,
         };
-        result.duration_ms = crate::session::unix_epoch_ms()
-            .saturating_sub(record.running_at_ms.unwrap_or(record.started_at_ms));
+        if record.result.is_none() {
+            result.duration_ms = crate::session::unix_epoch_ms()
+                .saturating_sub(record.running_at_ms.unwrap_or(record.started_at_ms));
+        }
         self.finish_job(&wake, &mut record, result).await;
     }
 
@@ -349,22 +353,10 @@ impl KernelRuntimeState {
                     let result = self
                         .run_remote_job(record, &machine, environment, output, cancelled)
                         .await;
-                    record.state = "deleting".into();
-                    save_record(self, record)?;
-                    let release = self.job_compute_release(&machine, &origin).await;
-                    if let Err(error) = release {
-                        return Err(ledger::error(format!(
-                            "Job finished but remote machine cleanup is pending: {error}"
-                        )));
-                    }
-                    record.deleted = true;
-                    save_record(self, record)?;
-                    return match result {
-                        Err(_) if *cancelled.borrow() => {
-                            uncollected_stop(self, record, output, JobOutcome::Cancelled)
-                        }
-                        result => result,
-                    };
+                    let was_cancelled = *cancelled.borrow();
+                    return self
+                        .complete_remote_job(record, output, result, was_cancelled)
+                        .await;
                 }
                 Err(error) if is_capacity_failure(&error) => {
                     record.placement = JobPlacement::Local;
@@ -392,6 +384,54 @@ impl KernelRuntimeState {
             }
             result => result,
         }
+    }
+
+    pub(super) async fn complete_remote_job(
+        &self,
+        record: &mut Record,
+        output: &mut Output,
+        result: Result<JobResult, DaemonError>,
+        cancelled: bool,
+    ) -> Result<JobResult, DaemonError> {
+        let result = match result {
+            Err(_) if cancelled => uncollected_stop(self, record, output, JobOutcome::Cancelled),
+            result => result,
+        };
+        let mut result = result.unwrap_or_else(|error| {
+            let _ = output.push(self, &record.room_id, error.to_string().as_bytes(), true);
+            failed(record, "Job failed; see the protected output log".into())
+        });
+        output
+            .file
+            .flush()
+            .map_err(|e| ledger::error(e.to_string()))?;
+        result.output_tail = output.tail.clone();
+        result.log = output.log.clone();
+        result.duration_ms = crate::session::unix_epoch_ms()
+            .saturating_sub(record.running_at_ms.unwrap_or(record.started_at_ms));
+        // Execution and file return are complete. A service restart during
+        // deletion must not erase their result, including after kernel recovery.
+        record.result = Some(result.clone());
+        record.state = "deleting".into();
+        save_record(self, record)?;
+        match self
+            .job_compute_release_ref(
+                record.allocation_ref.as_deref().expect("remote allocation"),
+                record
+                    .capability_revision
+                    .as_deref()
+                    .expect("remote capability"),
+            )
+            .await
+        {
+            Ok(()) => record.deleted = true,
+            Err(error) => {
+                let notice = format!("Job finished; remote machine cleanup is pending: {error}. Check this job again to retry cleanup.\n");
+                output.push(self, &record.room_id, notice.as_bytes(), true)?;
+            }
+        }
+        save_record(self, record)?;
+        Ok(result)
     }
 
     async fn run_local_job(

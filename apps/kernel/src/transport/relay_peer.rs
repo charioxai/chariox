@@ -219,6 +219,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 449 pairs the owner room card command results with local 1011.
 /// Peer 449: job execution needs and memory-limit outcomes, private authenticated
 /// job targets and durable job operations between owner kernels.
+/// Peer 459 carries the machine resource-protection configuration in kernel responses.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 465;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
