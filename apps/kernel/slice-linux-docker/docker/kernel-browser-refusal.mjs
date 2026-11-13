@@ -26,6 +26,10 @@ export class PointerOutsideViewport extends Error {
 // MP-08/MP-10/MP-11: fixed texts for the agent-only reads (region screenshot, scroll to a node, save, wait). Each names
 // what the agent changes next and never carries a page value, URL or path.
 const toolReasons = new Map([
+  ['full_page_protected', 'A full-page image cannot keep Vault-filled fields masked. Use a viewport screenshot (omit full_page), snapshot or find. Browser access is still held.'],
+  ['payment_approval_required', 'This payment needs a live owner approval. Fill the saved card again to ask.'],
+  ['payment_already_sent', 'This payment was already sent and may have completed. Inspect the receipt before starting another payment.'],
+  ['payment_target_unavailable', 'The checkout action could not be checked. Observe it again.'],
   ['region_conflict', 'screenshot takes one of node_ref, clip or full_page, not several'],
   ['node_ref_invalid', 'node_ref must be a top-level node_ref from a fresh snapshot (backend:N)'],
   ['node_unavailable', 'the node is gone or has no box on the page; take a fresh snapshot'],

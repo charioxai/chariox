@@ -3530,6 +3530,13 @@ test('browsertools: full_page captures beyond the viewport at one pixel per CSS 
   assert.deepEqual([tall.height, tall.page_height, tall.truncated], [16000, 40000, true]);
 }));
 
+test('browsertools: an unprotected page that fits retains native full-page encoding', () => using(async ({ host, connection, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  withCdp(connection, method => method === 'Page.getLayoutMetrics' ? { cssContentSize: { width: 1280, height: 800 }, cssVisualViewport: { pageX: 0, pageY: 0 } } : undefined);
+  await host.request(agentShot(opened, { full_page: true }));
+  assert.equal(sent.filter(call => call.method === 'Page.captureScreenshot').at(-1).params.captureBeyondViewport, true);
+}));
+
 test('browsertools: full_page falls back to JPEG for a page whose PNG is too large, and refuses a protected page', () => using(async ({ host, connection, sent }) => {
   const opened = await host.request({ op: 'open', url: 'about:blank' });
   withCdp(connection, (method, params) => method === 'Page.getLayoutMetrics' ? { cssContentSize: { width: 1280, height: 5000 } }
@@ -3541,8 +3548,10 @@ test('browsertools: full_page falls back to JPEG for a page whose PNG is too lar
   const small = await host.request(agentShot(opened, { full_page: true }));
   assert.deepEqual([small.mime_type, small.scale, small.width, small.height], ['image/jpeg', 0.6, 768, 3000]);
   const before = sent.length;
-  host.browser.fillTargets = new Map([['field', { kind: 'browser' }]]);
-  await assert.rejects(host.request(agentShot(opened, { full_page: true })), { code: 'user_domain_not_granted' });
+  host.protection.targets = [{ kind: 'browser', target_id: host.tabs.get(opened.tab_id).target_id, document_id: host.tabs.get(opened.tab_id).document_id, value_hash: 'unbound' }];
+  withCdp(connection, (method, params) => { if (method === 'Runtime.evaluate' && params.expression.includes('visibilityState')) throw Error('fill geometry unavailable'); });
+  await assert.rejects(host.request(agentShot(opened, { full_page: true })), error => error.code === 'kernel_browser_failed' && /viewport screenshot.*omit full_page.*access is still held/i.test(error.message));
+  assert.ok((await host.request({op:'state',focused_agent:true})).tabs.length, 'a protected full-page refusal retains browser access');
   assert.equal(sent.slice(before).filter(call => call.method === 'Page.captureScreenshot').length, 0, 'no unmasked pixels are captured');
 }));
 
@@ -3758,3 +3767,35 @@ test('browsertools: a wait past its deadline still reports once the target can b
 test('browsertools: wait does not hold the host mutation lane', () => {
   assert.equal(scheduleHostRequest({ method: 'host.browser', params: { op: 'wait', text: 'a' } }, null, { device_scale_factor: 1 }).kind, 'bridge');
 });
+
+for (const authority of [[], [{ id: 'other-payment', origin: 'https://shop.test' }]]) {
+  test('MP-08 saved-card Pay click needs the same live owner approval', () => using(async ({host,sent}) => {
+    const opened=await host.request({op:'open',url:'https://shop.test/checkout'}),tab=opened.tabs[0];
+    host.browser.performAction=async()=>({});
+    host.browser.paymentInputTarget=async()=>({payment:true,origin:'https://shop.test',document_id:tab.document_id});
+    const filled=await host.handle({id:'fill',method:'host.secret',params:{tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,node_ref:'backend:7',observed_by:'agent:buyer',_vault_payment:{id:'approved-payment',origin:'https://shop.test',expires_at_ms:Date.now()+900000},action:{kind:'fill',text:'test-only',expected_document_url:tab.url}}});
+    assert.equal(filled.ok,true);
+    const before=sent.filter(r=>r.method==='Input.dispatchMouseEvent').length;
+    const click=await host.handle({id:'pay',method:'host.browser',params:{op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,observed_by:'agent:buyer',_agent_input:true,_vault_payment_approvals:authority,input:{kind:'click',x:20,y:20}}});
+    assert.equal(click.ok,false,'an expired, ended or different approval cannot pay');
+    assert.match(JSON.stringify(click),/payment.*approval/i);
+    assert.equal(sent.filter(r=>r.method==='Input.dispatchMouseEvent').length,before,'no physical click');
+  }));
+}
+
+test('MP-08 a payment commit is single use even after a lost acknowledgement',()=>using(async({host,sent},root)=>{
+  const opened=await host.request({op:'open',url:'https://shop.test/checkout'}),tab=opened.tabs[0];
+  host.browser.performAction=async()=>({});
+  host.browser.paymentInputTarget=async()=>({payment:true,origin:'https://shop.test',document_id:tab.document_id});
+  await host.handle({id:'fill',method:'host.secret',params:{tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,node_ref:'backend:7',observed_by:'agent:buyer',_vault_payment:{id:'approved-payment',origin:'https://shop.test',expires_at_ms:Date.now()+900000},action:{kind:'fill',text:'test-only',expected_document_url:tab.url}}});
+  const params={op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,observed_by:'agent:buyer',_agent_input:true,_vault_payment_approvals:[{id:'approved-payment',origin:'https://shop.test'}],input:{kind:'click',x:20,y:20}};
+  const first=await host.handle({id:'pay-1',method:'host.browser',params});
+  assert.equal(first.ok,true);
+  const before=sent.filter(r=>r.method==='Input.dispatchMouseEvent').length;
+  host.paymentActions=new host.paymentActions.constructor(root);
+  host.paymentActions.register(tab,{id:'approved-payment',origin:'https://shop.test',expires_at_ms:Date.now()+900000});
+  const again=await host.handle({id:'pay-2',method:'host.browser',params});
+  assert.equal(again.ok,false,'do not pay again when the first result is uncertain');
+  assert.match(JSON.stringify(again),/already.*sent|receipt/i);
+  assert.equal(sent.filter(r=>r.method==='Input.dispatchMouseEvent').length,before);
+}));

@@ -7,6 +7,7 @@ import type {
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import {
+  createCredentialVaultRequest,
   type CredentialVaultRequestContext,
   getCredentialVaultStatusRequest,
   getUserConfigRequest,
@@ -81,6 +82,14 @@ export async function lockCredentialVault(
 ): Promise<Record<string, unknown>> {
   const response = await client.send<Record<string, unknown>>(lockCredentialVaultRequest())
   return expectVariant<{ status: Record<string, unknown> }>(response, "CredentialVaultLocked").status
+}
+
+export async function createCredentialVault(
+  client: LocalIpcClient,
+  passphrase: string,
+): Promise<{ action: string; status: Record<string, unknown> }> {
+  const response = await client.send<Record<string, unknown>>(createCredentialVaultRequest(passphrase))
+  return expectVariant<{ action: string; status: Record<string, unknown> }>(response, "CredentialVaultUnlocked")
 }
 
 /** `duration` is what the owner asked for; without one the Vault stays open for the length the kernel preselects. */

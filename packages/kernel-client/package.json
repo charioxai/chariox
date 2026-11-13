@@ -89,6 +89,7 @@
     "./shell-capability-format": "./dist/shell-capability-format.js",
     "./shell-session-footer": "./dist/shell-session-footer.js",
     "./shell-remote-format": "./dist/shell-remote-format.js",
+    "./shell-config-command": "./dist/shell-config-command.js",
     "./shell-core": "./dist/shell-core.js",
     "./shell-app-command": "./dist/shell-app-command.js",
     "./shell-executor": "./dist/shell-executor.js",

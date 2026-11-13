@@ -312,6 +312,8 @@ impl KernelRuntimeState {
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let kernel_browser = tool_name == "chariox.kernel_browser";
         let kernel_snapshot = kernel_browser && arguments["command"]["op"] == "snapshot";
+        let chosen_clipboard = tool_name == "chariox.kernel_computer"
+            && arguments["command"]["op"] == "clipboard_read";
         let browser_state = kernel_browser
             && matches!(
                 arguments["command"]["op"].as_str(),
@@ -360,7 +362,7 @@ impl KernelRuntimeState {
                 result.payload = protection.scrub_kernel_snapshot_result(&room, result.payload)?;
             } else if browser_state {
                 result.payload = protection.scrub_kernel_browser_state(&room, result.payload)?;
-            } else {
+            } else if !chosen_clipboard {
                 result = protection.scrub_runtime_result(&room, result)?;
             }
         }

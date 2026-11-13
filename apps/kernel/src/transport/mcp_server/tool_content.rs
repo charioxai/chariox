@@ -93,7 +93,7 @@ pub(super) fn runtime_tool_content(mut payload: Value) -> (Vec<Value>, Value) {
         metadata.insert("chariox_truncated".to_string(), Value::Bool(true));
         metadata.insert(
             "chariox_guidance".to_string(),
-            Value::String("Result exceeded the 64 KiB MCP text limit. Request a narrower snapshot or smaller tool output.".to_string()),
+            Value::String(if pretty { "Snapshot exceeded the 64 KiB MCP text limit. Use chariox.kernel_browser with command {op:find,tab_id,generation,query,kind:field|button|link|any} to get matching controls and node_refs. Empty query lists controls. Follow next_offset with the returned document_id beside command to get more." } else { "Result exceeded the 64 KiB MCP text limit. Request smaller tool output." }.to_string()),
         );
         metadata.insert("preview".to_string(), Value::String(preview));
         payload = Value::Object(metadata);

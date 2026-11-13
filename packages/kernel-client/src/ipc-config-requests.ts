@@ -75,6 +75,11 @@ export function lockCredentialVaultRequest() {
   return { LockCredentialVault: null }
 }
 
+/** The owner's own client chooses the first Vault passphrase; the kernel rejects replacing one. */
+export function createCredentialVaultRequest(passphrase: string) {
+  return { CreateCredentialVault: { origin: { kind: "passphrase", passphrase } } }
+}
+
 /** The owner's own client unlocks the kernel's existing Vault; no session, no agent. */
 export function unlockCredentialVaultRequest(passphrase: string, duration: VaultUnlockDuration, surface: VaultUnlockSurface) {
   return { UnlockCredentialVault: { passphrase, duration, surface } }

@@ -7,6 +7,35 @@ use crate::{
     runtime::{command::KernelCommand, kernel_browser_host::KernelBrowserHost},
 };
 impl KernelRuntimeState {
+    #[cfg(test)]
+    pub(crate) fn install_kernel_computer_fixture(
+        &self,
+        user: &str,
+        script: &std::path::Path,
+        root: &std::path::Path,
+    ) {
+        self.owned
+            .kernel_browser_host
+            .install_fixture_backend(user, script, root);
+        self.owned
+            .kernel_browser_host
+            .protected_request(
+                user,
+                None,
+                "host.browser",
+                serde_json::json!({"op":"start"}),
+                serde_json::json!({"unknown":false,"values":[],"targets":[]}),
+            )
+            .unwrap();
+    }
+    #[cfg(test)]
+    pub(crate) fn register_kernel_room_fixture_value(&self, room: &str, value: &str) {
+        self.owned
+            .room_secret_observations
+            .register(room, value)
+            .unwrap();
+    }
+
     // Do not wait for a barrier in the socket reader: it must keep detecting disconnect.
     pub(crate) fn kernel_browser_receipt_revision(
         &self,

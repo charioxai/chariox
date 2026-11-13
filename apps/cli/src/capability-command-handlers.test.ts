@@ -167,6 +167,26 @@ test("credential vault unlock reads the passphrase hidden and sends it with no s
   await assert.rejects(handleCredentialSlashCommand(wrong.deps, command), { message: "That is not the Vault passphrase. Try again." })
 })
 
+test("credential vault create confirms hidden input before creating without a session", async () => {
+  const harness = capabilityHarness(agent()), prompts: string[] = [], sent: string[] = []
+  const deps = { ...harness.deps, createCredentialVault: async (passphrase: string) => { sent.push(passphrase); return { action: "created", status: { unlocked: true } } } }
+  deps.readSecret = async prompt => { prompts.push(prompt); return "Chosen Passphrase 🔑" }
+  const command = parseSlashCommand("/credential vault create") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "credential" }>
+  await handleCredentialSlashCommand(deps, command)
+  assert.deepEqual(prompts, ["New Vault passphrase: ", "Confirm Vault passphrase: "])
+  assert.deepEqual(sent, ["Chosen Passphrase 🔑"])
+  assert.deepEqual(harness.footers, ["info:vault created"])
+  assert.deepEqual(harness.notices, [])
+})
+
+test("credential vault status describes a fresh Vault without prompting", async () => {
+  const harness = capabilityHarness(agent())
+  harness.deps.getCredentialVaultStatus = async () => ({ unlocked: false, awaiting_passphrase: true })
+  harness.deps.readSecret = async () => { throw Error("must not prompt") }
+  await handleCredentialSlashCommand(harness.deps, parseSlashCommand("/credential vault status") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "credential" }>)
+  assert.deepEqual(harness.footers, ["info:vault needs a passphrase; run /credential vault create"])
+})
+
 test("a vault passphrase change reports its own outcome", async () => {
   const harness = capabilityHarness(agent())
   harness.deps.manageCredentialVault = async () => ({ action: "passphrase_changed", status: { unlocked: true } })
