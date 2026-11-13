@@ -514,4 +514,6 @@ pub use workspace::*;
 /// `KernelResourcesWatched`, `kernel_resource_changed`) for the Vault, provider accounts and Apps.
 /// 1006 (Landing 10, provisional): the owner ends a wait with `CancelAgentWait` (the agent is not woken), an agent's
 /// `waiting` state is projected on its activity, and a turn the kernel started is marked `system_prompt` in the outline.
+/// 1006 (person cards, provisional): an active interaction carries `asker_name`, the asking agent's
+/// alias (else its ref), and a sub-agent's card is shown in its top parent's panel whoever holds it.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1027;

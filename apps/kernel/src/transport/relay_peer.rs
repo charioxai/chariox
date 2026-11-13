@@ -212,6 +212,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// renames the answers `LeasedAgentFileRead` and `LeasedAgentFileRefused` to `FileSliceRead` and
 /// `FileRefused`, which both file services use.
 /// 465: carries the generic runtime identity observation local request and response.
+/// Peer 445 (person cards, provisional): an active interaction carries `asker_name`.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 465;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

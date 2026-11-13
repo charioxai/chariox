@@ -1064,7 +1064,7 @@ impl RuntimeSession {
     }
 
     /// The pending interactions a client lists for `agent_id`: its own, except those it
-    /// does not show (a sub-agent's decision the user holds), plus the ones shown here.
+    /// does not show (a sub-agent's decision), plus the ones shown here.
     pub fn interactions_listed_for(&self, agent_id: &str) -> Vec<&RuntimeInteraction> {
         self.active_interactions
             .iter()
@@ -1073,6 +1073,21 @@ impl RuntimeSession {
                 None => interaction.agent_id() == Some(agent_id),
             })
             .collect()
+    }
+
+    /// Names each agent's card by its asker as the session's agents name it now, so a client
+    /// shows who asks without a lookup.
+    pub(crate) fn name_interaction_askers(&mut self) {
+        let agents = &self.agents;
+        for interaction in &mut self.active_interactions {
+            let name = interaction.agent_id().and_then(|asker| {
+                agents
+                    .iter()
+                    .find(|agent| agent.id() == asker)
+                    .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned())
+            });
+            interaction.set_asker_name(name);
+        }
     }
 
     /// Moves where the user sees an active interaction; the interaction itself stays one object.
