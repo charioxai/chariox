@@ -84,6 +84,7 @@ pub(super) async fn handle_subscribe(
             display_id: None,
             display_pump: None,
             _terminal_lease: None,
+            resource_watch: None,
             handle,
         },
     ) {
