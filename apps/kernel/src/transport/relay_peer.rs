@@ -1074,6 +1074,18 @@ pub enum RelayPeerRequest {
         overwrite: bool,
         content: RemoteFileBytes,
     },
+    /// Native file interests leased by a home kernel; renewals do no filesystem I/O.
+    WatchMachineFiles {
+        subscription_id: String,
+        paths: Vec<String>,
+    },
+    UnwatchMachineFiles {
+        subscription_id: String,
+    },
+    /// Coalesced invalidation pushed by the worker, authenticated to its kernel identity.
+    MachineFilesChanged {
+        subscription_id: String,
+    },
     /// Files on this machine for another kernel of the same owner. What it is, by absolute path.
     StatMachinePath {
         path: String,
@@ -1604,6 +1616,9 @@ pub enum RelayPeerResponse {
         truncated: bool,
     },
     MachinePathDeleted,
+    MachineFilesWatched {
+        created: bool,
+    },
     FileTransfer {
         job: crate::local::FileTransferJob,
     },

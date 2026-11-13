@@ -144,8 +144,17 @@ impl CommandRouter {
 
     pub(crate) async fn relay_machine_files(
         &self,
+        sender: &str,
         request: crate::transport::relay_peer::RelayPeerRequest,
     ) -> Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError> {
+        if matches!(
+            request,
+            crate::transport::relay_peer::RelayPeerRequest::WatchMachineFiles { .. }
+                | crate::transport::relay_peer::RelayPeerRequest::UnwatchMachineFiles { .. }
+                | crate::transport::relay_peer::RelayPeerRequest::MachineFilesChanged { .. }
+        ) {
+            return self.runtime_state.serve_file_watch(sender, request).await;
+        }
         self.runtime_state.serve_machine_files(request).await
     }
 

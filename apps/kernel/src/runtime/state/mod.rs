@@ -107,11 +107,13 @@ use outside_events::InteractionPhase;
 pub(crate) use outside_events::{is_outside_event_request, source_not_available};
 mod environment_tools;
 mod file_copy_tool;
+mod file_watch_runtime;
 mod job_compute;
 mod jobs;
 mod leased_agent_file_serve;
 mod machine_acquisition;
 mod machine_files_runtime;
+pub(crate) use file_watch_runtime::{FileWatchPermit, RemoteFileWatch};
 mod machine_files_tools;
 mod remote_jobs;
 mod sudo;
@@ -249,6 +251,7 @@ pub(crate) struct KernelRuntimeState {
     peer_spawns_in_flight: peer_agent_inbound::PeerSpawnsInFlight,
     /// File transfers whose destination is this kernel.
     file_transfers: Arc<crate::machine_files::TransferJobs>,
+    peer_file_watches: Arc<file_watch_runtime::PeerFileWatches>,
     /// One pass at a time deletes the peers whose creator ended.
     created_peer_release: Arc<tokio::sync::Mutex<()>>,
     /// When Cloud's kernel directory was last read, and the kernels it listed as unlinked.
@@ -1146,6 +1149,7 @@ impl KernelRuntimeState {
             unknown_peer_follows: Default::default(),
             peer_spawns_in_flight: Default::default(),
             file_transfers: Default::default(),
+            peer_file_watches: Default::default(),
             created_peer_release: Default::default(),
             unlinked_kernels: Default::default(),
             lifecycle_sweeps: Default::default(),

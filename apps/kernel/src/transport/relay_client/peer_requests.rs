@@ -451,7 +451,7 @@ pub(super) async fn handle_daemon_peer_request(
             requester_public_key.clone(),
         );
         if machine_file_request(&request) {
-            let response = match router.relay_machine_files(request).await {
+            let response = match router.relay_machine_files(sender, request).await {
                 Ok(response) => response,
                 Err(error) => {
                     return RelayRequestOutcome {
@@ -594,6 +594,9 @@ pub(super) async fn handle_daemon_peer_request(
         | RelayPeerRequest::SpawnRoomPeer { .. }
         | RelayPeerRequest::DeleteRoomPeer { .. }
         | RelayPeerRequest::DeliverPeerAgentOutcome { .. }
+        | RelayPeerRequest::WatchMachineFiles { .. }
+        | RelayPeerRequest::UnwatchMachineFiles { .. }
+        | RelayPeerRequest::MachineFilesChanged { .. }
         | RelayPeerRequest::StatMachinePath { .. }
         | RelayPeerRequest::ListMachineDirectory { .. }
         | RelayPeerRequest::ReadMachineFile { .. }
@@ -2628,7 +2631,10 @@ fn project_environment_setup_request(request: &RelayPeerRequest) -> bool {
 fn machine_file_request(request: &RelayPeerRequest) -> bool {
     matches!(
         request,
-        RelayPeerRequest::StatMachinePath { .. }
+        RelayPeerRequest::WatchMachineFiles { .. }
+            | RelayPeerRequest::UnwatchMachineFiles { .. }
+            | RelayPeerRequest::MachineFilesChanged { .. }
+            | RelayPeerRequest::StatMachinePath { .. }
             | RelayPeerRequest::ListMachineDirectory { .. }
             | RelayPeerRequest::ReadMachineFile { .. }
             | RelayPeerRequest::DeleteMachinePath { .. }
