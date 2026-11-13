@@ -36,6 +36,8 @@ mod goal_evidence;
 #[cfg(test)]
 mod goal_tests;
 pub(crate) mod goals;
+#[cfg(test)]
+mod message_reply_tests;
 mod migration;
 pub(crate) mod outside;
 #[cfg(test)]
