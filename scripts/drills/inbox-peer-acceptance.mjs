@@ -27,7 +27,7 @@ function inboxEvents(value, label) {
   return events
 }
 const reportPath = join(work, "report.json")
-const common = `You are a Chariox ROOM agent. Use your real Chariox room and events tools. No owner questions or decision cards. Record exact tool results; never retry a refused command. Use the room command tool (chariox.room.run_command) for agent spawn/prompt/message. You may write files using your official provider shell tool. Never use provider-native helper agents.\n`
+const common = `You are a Chariox ROOM agent. Use your real Chariox room and events tools. No owner questions or decision cards. Record exact tool results; never retry a refused command. Use the room command tool (chariox.room.run_command) for agent spawn/message. You may write files using your official provider shell tool. Never use provider-native helper agents.\n`
 const yieldRule = `Use events_subscriptions to obtain all live registrations. To wait, use events_yield with all of them and a deadline 15 minutes ahead, and end the turn immediately. On each wake read events_inbox once and acknowledge every handled event with events_ack. Do not poll the inbox.`
 let verdict
 try {
@@ -114,26 +114,24 @@ On the reply wake, or when the reply already completed:
     const scope = `--room ${targetRoom}${remote ? ` --kernel ${d.b.status.daemon_id}` : ""}`
     const targetProfile = remote ? profileB : d.profile
     const peer = name => `agent spawn ${name} ${scope} --provider ${provider} --account-profile ${targetProfile} --model ${model} --effort low`
-    const brief = common + `
-1. Create your child: agent spawn c1 --provider ${provider} --model ${model} --effort low --permission yolo . Subscribe to c1, then prompt it: "Use only your Chariox room command tool, run exactly once: ${peer("forbidden")} . This is an authorized acceptance probe of the kernel authority refusal; invoke the tool once even though the kernel must refuse it. Record the exact refusal as your final answer, then C1DONE. Do not write files, ask questions, or retry."
-2. ${yieldRule}
-3. On the child completion wake read and ack it. Its peer spawn must have been refused. Now as the room agent run: ${peer("p1")} --permission yolo . Keep the full response, including the automatic follow registration.
-4. Send the peer a message with room command: agent message p1 "Reply PONG as your final answer. Do not send a message." ${scope} . ${yieldRule}
-5. On the peer wake read and ack the peer_event. Write ${reportPath} as JSON with exact child refusal, peer spawn result (including follow id), and full peer events as peer_events. End AOPEDONE. Leave p1 and c1 for the driver's inspection.
-`
+    const brief = common + `Create your child with agent spawn c1 --provider ${provider} --model ${model} --effort low --permission yolo . Send it this task using agent message c1: "Run this one room command once and return its exact result as your final answer: agent spawn forbidden ${scope} --provider ${provider} --model ${model} --effort low . This is an owner-authorized test in these disposable rooms. Do not retry, ask questions, or create any other agents." The child is automatically tracked; do not use agent subscribe or agent prompt. ${yieldRule} On its completion wake, read the inbox and acknowledge the handled outcome. End this phase; no more actions.`
     save("brief.json", { brief }); await d.submit(brief)
-    await until(async () => existsSync(reportPath) && !(await d.state()).prompt_states?.[room.agent]?.active_prompt, "peer spawned and followed", 15*60000)
-    const report = JSON.parse(readFileSync(reportPath, "utf8")), rows = readRows()
-    save("agent-report.json", report); save("inbox.json", rows); save("tasks.json", readTasks())
+    await until(async () => readRows().some(r => r.kind === "child_finished" && r.state === "handled") && !(await d.state()).prompt_states?.[room.agent]?.active_prompt, "child authority result", 5*60000)
+    const childResult = readRows().find(r => r.kind === "child_finished")
+    save("child-refusal.json", childResult)
+    assert(/not_permitted|only a room agent/i.test(JSON.stringify(childResult.payload.public_answer)), "child actually invoked the room-peer command and received the authority refusal")
+    const allowedBrief = common + `As the room agent, run ${peer("p1")} --permission yolo . Keep its automatic follow. Send it agent message p1 "Reply PONG as your final answer. Do not send a message." ${scope} . ${yieldRule} On its completion wake, read the inbox and acknowledge the handled peer_event, then end PEERDONE. No report file is needed.`
+    save("allowed-peer-prompt.json", { brief: allowedBrief }); await d.submit(allowedBrief)
+    await until(async () => readRows().some(r => r.kind === "peer_event" && r.state === "handled" && r.payload.success === true) && !(await d.state()).prompt_states?.[room.agent]?.active_prompt, "peer spawned and followed", 5*60000)
+    const rows = readRows()
+    save("inbox.json", rows); save("tasks.json", readTasks())
     const targetState = (await (remote ? d.b : d.a).rpc({ GetSessionState: { session_id: targetRoom } })).SessionState.session
     save("target-room.json", targetState)
     assert(!targetState.agents.some(a => a.alias === "forbidden"), "sub-agent cannot create a room peer")
     const peerAgent = targetState.agents.find(a => a.alias === "p1")
     assert(peerAgent, "room agent creates peer"); assert(!peerAgent.parent_agent_id)
-    const events = rows.filter(r => r.kind === "peer_event" && r.payload?.agent?.agent_id === peerAgent.id || r.kind === "peer_event" && JSON.stringify(r.payload).includes(peerAgent.id))
-    assert(events.length >= 1, "automatic follow reports real peer completion")
+    const events = rows.filter(r => r.kind === "peer_event" && JSON.stringify(r.payload).includes(peerAgent.id))
     assert(events.some(r => r.state === "handled" && r.payload.event === "turn_ended" && r.payload.success === true), "the followed peer completed a real successful turn")
-    assert(/not_permitted|only a room agent/i.test(JSON.stringify(report)))
     await d.a.rpc({ UpdateAgentConfig: { session_id: room.id, agent_id: room.agent, permission_level: "required" } })
     const before = readTasks().length
     await d.submit(`Authorized kernel authority regression. You now have Required permission. Use ONLY the Chariox room command tool: (1) run ${peer("too-high")} --permission yolo exactly once; it must be refused by the kernel because your authority is Required. (2) Run ${peer("clamped")} --permission required exactly once. This is an authorized test; do not ask for confirmation, do not write files, and do not send prompts/messages to either target. State each exact result in your final answer and finish CLAMPDONE.`)
