@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // MP-08 / MP-09 / MP-10 / MP-11 dataplane/TUI-RELOAD (Cloud docs/CLIENT_DATA_PLANE.md 11.5): restarts the built TUI against a real kernel and
-// records its screen every 50 ms in a private tmux server. Faults, applied while the TUI is closed: F0 none, F1 the kernel link is held for 8 s
-// (a local TCP hold in front of the kernel), F7 the kernel is down, F10 the kernel restarted between the two visits.
+// records its screen every 50 ms in a private tmux server. Faults: F0 none, F1 the kernel answers only 8 s after the TUI started, F7 the kernel
+// is down, F10 the kernel restarted between the two visits.
 // Each restart passes when the remembered Room view is the first content drawn (F0, F1, F10 within 300 ms of the first frame; F7 at all),
 // no frame says the kernel is offline before there is evidence, and nothing of the transcript appears and then disappears.
 // Real path: the kernel binary, its local auth, the built TUI (apps/cli/dist) under bun. The provider is the kernel's dev-stub.
@@ -37,7 +37,7 @@ const tmux = (...args) => execFileSync("tmux", ["-L", tmuxServer, ...args], { en
 const log = []
 const note = (line) => { const stamped = `${new Date().toISOString()} ${line}`; log.push(stamped); console.log(stamped) }
 const freePort = () => new Promise((resolve, reject) => { const server = net.createServer(); server.on("error", reject); server.listen(0, "127.0.0.1", () => { const { port } = server.address(); server.close(() => resolve(port)) }) })
-const ports = { kernel: await freePort(), mcp: await freePort(), opencode: await freePort(), codex: await freePort(), hold: await freePort() }
+const ports = { kernel: await freePort(), mcp: await freePort(), opencode: await freePort(), codex: await freePort() }
 const env = {
   PATH: process.env.PATH, HOME: path.join(runDir, "home"), TERM: "xterm-256color", LANG: "C.UTF-8", TMPDIR: runDir, CHARIOX_HOME: home,
   XDG_CONFIG_HOME: path.join(runDir, "xdg-config"), XDG_DATA_HOME: path.join(runDir, "xdg-data"), XDG_STATE_HOME: path.join(runDir, "xdg-state"),
@@ -71,19 +71,6 @@ const answering = async () => {
   throw new Error("the kernel did not answer within 60 s")
 }
 
-// The TUI always reaches the kernel through this hold, so every visit uses one address. F1 holds the link for 8 s; otherwise it passes at once.
-let holdMs = 0
-const hold = net.createServer((socket) => {
-  const delay = holdMs
-  socket.pause()
-  setTimeout(() => {
-    const upstream = net.connect(ports.kernel, "127.0.0.1")
-    upstream.on("error", () => socket.destroy()); socket.on("error", () => upstream.destroy())
-    socket.pipe(upstream); upstream.pipe(socket); socket.resume()
-  }, delay)
-})
-await new Promise((resolve) => hold.listen(ports.hold, "127.0.0.1", resolve))
-
 const cells = []
 try {
   startKernel()
@@ -100,8 +87,7 @@ try {
   const screen = () => { try { return tmux("capture-pane", "-p", "-t", session) } catch { return "" } }
   const close = async () => { try { tmux("send-keys", "-t", session, "C-c") } catch {} await sleep(800); try { tmux("kill-session", "-t", session) } catch {} }
   // The first visit fills the TUI's view cache.
-  const tuiUrl = `ws://127.0.0.1:${ports.hold}`
-  launch(tuiUrl)
+  launch(kernelUrl)
   for (let waited = 0; !screen().includes(`${marker} 12`); waited += 200) { if (waited > 60_000) throw new Error(`the TUI never showed the Room:\n${screen()}`); await sleep(200) }
   await sleep(3_000)
   await close()
@@ -110,8 +96,9 @@ try {
     for (let index = 0; index < restarts; index++) {
       if (fault === "F7") await stopKernel()
       if (fault === "F10") { await stopKernel(); startKernel(); await (await answering()).close?.() }
-      holdMs = fault === "F1" ? 8_000 : 0
-      launch(tuiUrl)
+      // F1: the kernel answers only 8 s after the TUI started (it is coming up); the TUI dials the same address throughout.
+      if (fault === "F1") { await stopKernel(); setTimeout(startKernel, 8_000) }
+      launch(kernelUrl)
       const began = Date.now()
       const frames = []
       while (Date.now() - began < observeMs) {
@@ -120,8 +107,8 @@ try {
         await sleep(50)
       }
       await close()
-      if (fault === "F7") { startKernel(); await (await answering()).close?.() }
-      holdMs = 0
+      if (fault === "F7") startKernel()
+      if (fault === "F7" || fault === "F1") await (await answering()).close?.()
       const blank = (text) => text.trim() === ""
       const first = frames.find((frame) => !blank(frame.text))
       const content = frames.find((frame) => frame.text.includes(marker))
@@ -149,7 +136,6 @@ try {
   }
 } finally {
   try { tmux("kill-server") } catch {}
-  hold.close()
   await stopKernel()
   writeFileSync(path.join(evidence, "tui-reload.json"), JSON.stringify({ kernelBin, faults, restarts, cells }, null, 1))
   writeFileSync(path.join(evidence, "tui-reload.log"), `${log.join("\n")}\n`)
