@@ -682,7 +682,6 @@ fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
                 }),
                 _ => None,
             };
-            entry.stopped = waiting;
             if let Some(change) = change {
                 let process_id = observation
                     .samples
@@ -694,8 +693,10 @@ fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
         }
         (signals, changes)
     };
-    #[cfg(unix)]
+    #[cfg(not(unix))]
+    let _ = tree;
     for (command, waiting) in signals {
+        #[cfg(unix)]
         tree.signal(
             command,
             if waiting {
@@ -704,9 +705,15 @@ fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
                 libc::SIGCONT
             },
         );
+        let mut observation = watched.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = observation.admission.get_mut(&command) {
+            if waiting {
+                entry.stopped = true;
+            } else {
+                entry.continued();
+            }
+        }
     }
-    #[cfg(not(unix))]
-    let _ = (tree, signals);
     for (command, process_id, change, state) in changes {
         let line = match change {
             waits::WaitChange::Began => waits::began_line(&state),

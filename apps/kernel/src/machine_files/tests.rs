@@ -1044,7 +1044,8 @@ async fn a_file_transfer_stopped_by_a_kernel_restart_is_listed_again_and_finishe
     );
     assert!(!staging_left(&here));
 
-    // Another restart: the outcome is still there and nothing runs again.
+    // The next store reads the durable outcome after the old writer settles.
+    recorded(&state, &started.job_id, "\"done\"").await;
     let jobs = Arc::new(TransferJobs::default());
     assert!(jobs.attach(state).is_empty());
     let kept = jobs.get(&started.job_id).unwrap();
@@ -1472,6 +1473,13 @@ async fn a_startup_snapshot_written_late_never_overwrites_a_newer_outcome() {
     assert_eq!(digest_of(&here.join("f.bin")), sha256);
     // A visible terminal outcome must already survive a restart, even when
     // the writer was delayed. Do not give the writer time to catch up here.
+    let text = std::fs::read_to_string(state.join(format!("{id}.json"))).unwrap();
+    assert!(text.contains("\"done\""), "{text}");
+    // Once the delayed startup snapshot lands, the newer outcome still stands.
+    tokio::time::timeout(Duration::from_secs(30), jobs.startup_recorded())
+        .await
+        .expect("the delayed startup snapshot should finish")
+        .expect("the startup snapshot should be durable");
     let text = std::fs::read_to_string(state.join(format!("{id}.json"))).unwrap();
     assert!(text.contains("\"done\""), "{text}");
 

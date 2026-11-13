@@ -890,23 +890,31 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> Result<String, DaemonError> {
-        // The client id predates triggers; queued firings already reference it.
+        // Firings of different agents share this attachment. Keep lookup and
+        // creation atomic so a concurrent attach cannot detach a firing's input.
         let client_id = format!("agent-schedules:{session_id}");
-        if let Some(attachment) = self
-            .attachment_store
+        let mut sessions = self.session_store.write();
+        let mut attachments = self.attachment_store.write();
+        if let Some(attachment) = attachments
             .list_client_attachments(&client_id)
             .into_iter()
             .find(|attachment| attachment.session_id() == session_id)
         {
             return Ok(attachment.id().to_string());
         }
-        let session = self.session_store.get_session(session_id)?;
-        let attachment = self.attach(crate::attachment::AttachRequest::for_user(
-            session_id,
-            client_id,
-            crate::attachment::ClientCapabilityLevel::AutomationOnly,
-            session.owner_user_id(),
-        ))?;
+        let owner = sessions
+            .get_session(session_id)?
+            .owner_user_id()
+            .to_string();
+        let attachment = attachments.attach(
+            &mut sessions,
+            crate::attachment::AttachRequest::for_user(
+                session_id,
+                client_id,
+                crate::attachment::ClientCapabilityLevel::AutomationOnly,
+                owner,
+            ),
+        )?;
         Ok(attachment.id().to_string())
     }
 

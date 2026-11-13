@@ -368,6 +368,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 turn.provider_run_id == provider_run_id
                     && termination_prompt_id.is_none_or(|prompt_id| turn.prompt_id == prompt_id)
             });
+        let settlement_recorded = completed_turn.is_some();
         let provider_termination = completed_turn
             .as_ref()
             .and_then(|turn| turn.provider_termination.clone());
@@ -551,6 +552,44 @@ impl<'a> RemoteLeaseRuntime<'a> {
             || latest_output_history_completion_key.is_some()
             || history_cursor.output_prompt_key.as_deref()
                 == Some(leased_home_prompt_projection_key(&leased_agent).as_str());
+        let completion_already_projected = leased_agent
+            .replayable_completion
+            .as_ref()
+            .filter(|replay| {
+                replay.provider_run_id == provider_run_id
+                    && (replay.home_prompt_id == home_prompt_id
+                        // After the scoped turn is retired, its replay still
+                        // suppresses synthetic completions from old history.
+                        || (home_prompt_id.is_none() && !backing_prompt_active))
+            })
+            .is_some_and(|replay| {
+                let completion_key = leased_provider_run_completion_key(
+                    &leased_agent,
+                    provider_run_id,
+                    &replay.message_id,
+                );
+                leased_agent
+                    .projected_completion_keys
+                    .iter()
+                    .any(|key| key == &completion_key)
+            });
+        let replay_has_settlement = leased_agent
+            .replayable_completion
+            .as_ref()
+            .filter(|replay| {
+                replay.provider_run_id == provider_run_id && replay.home_prompt_id == home_prompt_id
+            })
+            .is_some_and(|replay| {
+                replay.failure.is_some() || replay.provider_termination.is_some()
+            });
+        // Removing a prompt and publishing its outcome are separate writes.
+        // A home turn waits for that outcome; a committed replay survives restart.
+        let completion_waits_for_settlement = home_prompt_id.is_some()
+            && !backing_prompt_active
+            && !settlement_recorded
+            && !completion_already_projected
+            && !replay_has_settlement
+            && !provider_run_failed;
         let native_prompt_has_settled =
             completion_waits_for_native_prompt_settlement && !backing_prompt_active;
         let mut deferred_explicit_completion = false;
@@ -566,7 +605,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             && !provider_run_failed;
         if completion_waits_for_output
             || completion_waits_for_native_stop
-            || (completion_waits_for_runtime_tools && !completions.is_empty())
+            || ((completion_waits_for_runtime_tools || completion_waits_for_settlement)
+                && !completions.is_empty())
         {
             if let Some(completion) = completions.last() {
                 if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
@@ -609,32 +649,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             && replay.home_prompt_id == home_prompt_id
                     });
         let explicit_completion_waiting = explicit_completion_waiting_for_output
-            || explicit_completion_waiting_for_prompt_settlement;
-        let completion_already_projected = leased_agent
-            .replayable_completion
-            .as_ref()
-            .filter(|replay| {
-                replay.provider_run_id == provider_run_id
-                    && (replay.home_prompt_id == home_prompt_id
-                        // After the scoped turn is retired, its replay still
-                        // suppresses synthetic completions from old history.
-                        || (home_prompt_id.is_none() && !backing_prompt_active))
-            })
-            .is_some_and(|replay| {
-                let completion_key = leased_provider_run_completion_key(
-                    &leased_agent,
-                    provider_run_id,
-                    &replay.message_id,
-                );
-                leased_agent
-                    .projected_completion_keys
-                    .iter()
-                    .any(|key| key == &completion_key)
-            });
+            || explicit_completion_waiting_for_prompt_settlement
+            || completion_waits_for_settlement;
         if completions.is_empty()
             && !completion_waits_for_runtime_tools
             && (requires_explicit_completion || unprojected_replay_for_turn)
             && !explicit_completion_waiting_for_prompt_settlement
+            && !completion_waits_for_settlement
             && (native_prompt_has_settled
                 || current_batch_has_provider_output
                 || provider_run_has_projected_output
@@ -2509,6 +2530,43 @@ mod explicit_completion_tests {
             .is_none());
     }
 
+    fn correlate_home_prompt(
+        app: &mut crate::app::DaemonApp,
+        leased: &crate::execution_lease::LeasedAgent,
+        run: &str,
+        home_prompt: &str,
+    ) {
+        let backing = app
+            .prompt_owner_active_prompt_for_agent_snapshot(
+                &leased.backing_session_id,
+                &leased.backing_agent_id,
+            )
+            .unwrap()
+            .unwrap();
+        RemoteLeaseRuntime::new(app)
+            .begin_leased_prompt_receipt(&leased.id, home_prompt)
+            .unwrap();
+        let mut receipt = app
+            .worker_prompt_receipts
+            .get(&leased.id, home_prompt)
+            .unwrap()
+            .clone();
+        receipt.backing_prompt_id = Some(backing.id().into());
+        app.worker_prompt_receipts.persist(receipt).unwrap();
+        RemoteLeaseRuntime::new(app)
+            .update_leased_prompt_receipt(
+                &leased.id,
+                home_prompt,
+                crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptPhase::Accepted,
+                Some(run),
+            )
+            .unwrap();
+        app.leased_agents
+            .get_mut(&leased.id)
+            .unwrap()
+            .active_home_prompt_id = Some(home_prompt.into());
+    }
+
     pub(super) fn reused_explicit_completion_run() -> (
         crate::app::DaemonApp,
         crate::execution_lease::LeasedAgent,
@@ -2552,10 +2610,7 @@ mod explicit_completion_tests {
             .get_mut(&leased_agent.id)
             .expect("leased agent should remain registered")
             .provider = "codex".to_string();
-        app.leased_agents
-            .get_mut(&leased_agent.id)
-            .unwrap()
-            .active_home_prompt_id = Some("home-prompt-a".to_string());
+        correlate_home_prompt(&mut app, &leased_agent, &provider_run_id, "home-prompt-a");
         let first_completed_at_ms = RemoteLeaseRuntime::new(&mut app)
             .leased_agent_snapshot_for_test(&leased_agent.id)
             .and_then(|agent| agent.active_home_prompt_started_at_ms)
@@ -2625,10 +2680,7 @@ mod explicit_completion_tests {
             .get_mut(&leased_agent.id)
             .unwrap()
             .provider = "codex".to_string();
-        app.leased_agents
-            .get_mut(&leased_agent.id)
-            .unwrap()
-            .active_home_prompt_id = Some("home-prompt-b".to_string());
+        correlate_home_prompt(&mut app, &leased_agent, &provider_run_id, "home-prompt-b");
         (app, leased_agent, provider_run_id)
     }
 
@@ -2720,6 +2772,119 @@ mod explicit_completion_tests {
                 completions.is_empty(),
                 "cancellation completion should project exactly once"
             );
+        }
+    }
+
+    #[test]
+    fn leased_completion_waits_for_the_scoped_settlement_record() {
+        for provider in ["managed-dev-stub", "codex"] {
+            let mut config = DaemonConfig::for_tests();
+            config.accept_remote_leases = true;
+            let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+            let lease = RemoteLeaseRuntime::new(&mut app)
+                .create_execution_lease("home", "room", "agent", false, "owner")
+                .unwrap();
+            let leased = RemoteLeaseRuntime::new(&mut app)
+                .create_leased_agent(
+                    &lease.id,
+                    "managed-dev-stub",
+                    "default",
+                    Some("default".into()),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            let (run, outcome) = RemoteLeaseRuntime::new(&mut app)
+                .submit_leased_prompt(&leased.id, "work that fails", Vec::new())
+                .unwrap();
+            let PromptSubmissionOutcome::Started { prompt } = outcome else {
+                panic!("the leased prompt should start");
+            };
+            correlate_home_prompt(&mut app, &leased, &run, prompt.id());
+            app.leased_agents.get_mut(&leased.id).unwrap().provider = provider.into();
+            app.prompt_owner_complete_active_prompt_only(
+                &leased.backing_session_id,
+                &leased.backing_agent_id,
+            )
+            .unwrap();
+            let at = crate::session::unix_epoch_ms();
+            app.terminal_mut().record_assistant_message_completion(
+                &leased.backing_session_id,
+                &run,
+                Some(&leased.backing_agent_id),
+                vec![leased.backing_attachment_id.clone()],
+                &format!("prompt-complete:{}", prompt.id()),
+                at,
+            );
+
+            // A projection may have read its outcome snapshot before the settler
+            // published it, then drained the newly published completion record.
+            for recovery in [false, true] {
+                let projection = RemoteLeaseRuntime::new(&mut app)
+                    .drain_leased_runtime_projection_with_recovery(
+                        &leased.id, &run, false, recovery,
+                    )
+                    .unwrap();
+                if let Some((_, RelayPeerEvent::LeasedRuntimeProjection { completions, .. })) =
+                    projection
+                {
+                    assert!(
+                        completions.is_empty(),
+                        "unsettled turn became success: {completions:?}"
+                    );
+                }
+                assert_eq!(
+                    app.leased_agents
+                        .get(&leased.id)
+                        .unwrap()
+                        .active_home_prompt_id
+                        .as_deref(),
+                    Some(prompt.id()),
+                    "the exact home turn remains pending"
+                );
+            }
+            let termination = crate::provider::ProviderRunTermination::process_exit(137, at);
+            let failure = termination.failure.clone().unwrap();
+            app.completed_git_turn_snapshot_store()
+                .record_prompt_settlement_with_termination(
+                    &leased.backing_session_id,
+                    &leased.backing_agent_id,
+                    &run,
+                    &prompt,
+                    at,
+                    Some(prompt.created_at_ms()),
+                    crate::git_observer::CompletedTurnSettlementStatus::Failed,
+                    Some(termination),
+                    Some(failure),
+                );
+            let projection = RemoteLeaseRuntime::new(&mut app)
+                .drain_leased_runtime_projection(&leased.id, &run, false)
+                .unwrap()
+                .expect("the recorded failure should project");
+            let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = projection.1;
+            assert_eq!(completions.len(), 1);
+            assert_eq!(completions[0].home_prompt_id.as_deref(), Some(prompt.id()));
+            assert_eq!(
+                completions[0].failure.as_ref().unwrap().kind,
+                crate::provider::TurnOutcomeKind::ProviderCrashed
+            );
+            assert!(completions[0]
+                .provider_termination
+                .as_ref()
+                .unwrap()
+                .reason
+                .contains("137"));
+            let repeated = RemoteLeaseRuntime::new(&mut app)
+                .drain_leased_runtime_projection(&leased.id, &run, false)
+                .unwrap();
+            if let Some((_, RelayPeerEvent::LeasedRuntimeProjection { completions, .. })) = repeated
+            {
+                assert!(completions.is_empty(), "a recorded failure projects once");
+            }
         }
     }
 

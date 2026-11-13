@@ -124,6 +124,80 @@ fn unsettle(ledger: &mut Ledger) {
     ledger.filler_at = None;
 }
 
+#[test]
+fn a_continued_command_settles_before_memory_can_pause_it_again() {
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    let mut ledger = Ledger::new(None);
+    let mut first = entry(1, Peak::default());
+    first.admitted = true;
+    first.resident = 600 * MIB;
+    let oldest = owner(
+        "oldest",
+        true,
+        vec![command(1, 600 * MIB, 50 * MIB)],
+        vec![(1, first)],
+    );
+    let mut next = entry(2, Peak::default());
+    next.admitted = true;
+    next.resident = 600 * MIB;
+    next.paused_rate = 50 * MIB;
+    next.wait_for(Wait::Paused(WaitReason::Memory));
+    next.stopped = true;
+    let continued = owner(
+        "continued",
+        true,
+        vec![command(2, 600 * MIB, 50 * MIB)],
+        vec![(2, next)],
+    );
+    let members = vec![oldest.clone(), continued.clone()];
+    let ample = room(4 * GIB, false, &volume);
+    let mut state = State::read(&members, &ample);
+    assert!(ledger
+        .resume(&members, WaitReason::Memory, &mut state, &ample)
+        .is_some());
+    let tight = room(0, true, &volume);
+
+    // The continue may still be waiting in the watch's control channel.
+    assert!(!ledger.pass(&members, &continued, &tight));
+    assert_eq!(wait(&continued, 2), None);
+    continued
+        .lock()
+        .unwrap()
+        .admission
+        .get_mut(&2)
+        .unwrap()
+        .continued();
+    assert!(!ledger.pass(&members, &continued, &tight));
+    assert_eq!(wait(&continued, 2), None);
+
+    // Pressure still pauses another growing command during this one's settle.
+    let mut latest = entry(3, Peak::default());
+    latest.admitted = true;
+    latest.resident = 600 * MIB;
+    let newer = owner(
+        "newer",
+        true,
+        vec![command(3, 600 * MIB, 50 * MIB)],
+        vec![(3, latest)],
+    );
+    let all = vec![oldest.clone(), continued.clone(), newer.clone()];
+    assert!(!ledger.pass(&all, &newer, &tight));
+    assert_eq!(wait(&newer, 3), Some(Wait::Paused(WaitReason::Memory)));
+    assert_eq!(wait(&continued, 2), None);
+
+    continued
+        .lock()
+        .unwrap()
+        .admission
+        .get_mut(&2)
+        .unwrap()
+        .resumed_at = Some(Instant::now() - SETTLE);
+    assert!(!ledger.pass(&all, &continued, &tight));
+    assert_eq!(wait(&continued, 2), Some(Wait::Paused(WaitReason::Memory)));
+    assert_eq!(wait(&oldest, 1), None);
+}
+
 fn sample(memory: u64) -> ProcessSample {
     ProcessSample {
         process_id: "binary".into(),

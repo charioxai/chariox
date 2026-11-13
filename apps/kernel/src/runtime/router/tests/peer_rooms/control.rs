@@ -41,12 +41,7 @@ fn a_message_after_a_peer_cancel_runs_on_the_cancelled_agent() {
             )
             .await;
         assert!(cancel.ok, "{}", cancel.payload);
-        rooms
-            .router
-            .runtime_state
-            .end_agent_turn_for_tests(&rooms.peer_room, rooms.peer.id(), true)
-            .await
-            .expect("the cancelled turn settles");
+        rooms.settle_cancelled_turn().await;
         rooms
             .send(serde_json::json!({
                 "agent": "peer",
@@ -57,7 +52,7 @@ fn a_message_after_a_peer_cancel_runs_on_the_cancelled_agent() {
             .expect("a peer may message");
         assert!(
             rooms
-                .message_was_delivered(&rooms.peer_room, rooms.peer.id())
+                .wait_for_message_delivery(&rooms.peer_room, rooms.peer.id())
                 .await,
             "a cancel ends the current task, not the agent: the later message runs"
         );
@@ -143,7 +138,7 @@ fn a_message_after_a_peer_cancel_of_a_parked_task_runs() {
             .expect("a peer may message");
         assert!(
             rooms
-                .message_was_delivered(&rooms.peer_room, parked.id())
+                .wait_for_message_delivery(&rooms.peer_room, parked.id())
                 .await,
             "a cancel ends the parked task, not the agent: the later message runs"
         );

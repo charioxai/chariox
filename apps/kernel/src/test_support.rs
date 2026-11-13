@@ -44,7 +44,10 @@ pub(crate) use thread_stack::{
 /// Place this first in any test that mutates env or calls an env-mutating fixture.
 macro_rules! isolated_env_test {
     () => {
-        if $crate::test_support::isolate_environment_test() {
+        $crate::test_support::isolated_env_test!(std::time::Duration::from_secs(180));
+    };
+    ($timeout:expr) => {
+        if $crate::test_support::isolate_environment_test($timeout) {
             return;
         }
     };
