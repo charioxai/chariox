@@ -1825,6 +1825,14 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 }
             };
             let scope = kernel_subscription_scope(subscription_scope.as_deref());
+            if scope == KernelSubscriptionScope::KernelResources {
+                refuse(KernelTransportError {
+                    code: "kernel_resources_relay_only".into(),
+                    message: "kernel_resources subscriptions are served over the relay; on a direct socket read the resources with their list requests".into(),
+                    retryable: false,
+                });
+                return;
+            }
             crate::logging::info_with_fields(
                 "daemon.runtime_transport",
                 "kernel websocket subscribed",

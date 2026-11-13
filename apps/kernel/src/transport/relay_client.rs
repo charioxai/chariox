@@ -50,6 +50,7 @@ mod display_tunnel;
 mod envelope_io;
 mod events;
 mod incoming_envelopes;
+mod kernel_resources;
 mod local_browser;
 mod metadata_client;
 mod peer_client;

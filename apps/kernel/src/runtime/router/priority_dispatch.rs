@@ -321,6 +321,13 @@ impl CommandRouter {
                 )
                 .await
             }),
+            // The relay connection that holds the subscription answers it before the router.
+            LocalDaemonRequest::WatchKernelResources(_) => boxed_handler(|| async move {
+                Err(DaemonError::MachineRequest {
+                    code: "kernel_resources_relay_only".into(),
+                    message: "WatchKernelResources is answered for a kernel_resources subscription over the relay; send it on that relay link".into(),
+                })
+            }),
             request @ (LocalDaemonRequest::GetProviderCatalog(_)
             | LocalDaemonRequest::GetClientCatalogSnapshot(_)
             | LocalDaemonRequest::GetClientCatalogRevisions(_)

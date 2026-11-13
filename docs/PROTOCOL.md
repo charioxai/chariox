@@ -2580,12 +2580,35 @@ Protocol v295 clients may render Actor colors and pointer presence and may publi
 
 No minimum version changes for clients that do not use these Environment controls. A released client that invokes `environment.start`, `environment.stop`, or `environment.retry` must require protocol v270 or newer; one that updates the canonical viewport must require v271 or newer; one that requests or depends on human takeover state must require v272 or newer; one that releases input must require v273 or newer; one that renders Action ordering or queue state must require v274 or newer; one that replays Environment events must require v275 or newer; one that renders active cancellation state must require v276 or newer; one that cancels Actions must require v277 or newer; one that renders Action timing or terminal outcomes must require v278 or newer; one that lists Action history must require v279 or newer; one that submits human pointer clicks must require v294 or newer; one that renders or publishes pointer presence must require v295 or newer; one that captures a Room screenshot or reads its chunks must require v296 or newer; one that submits human pointer movement, drag, scroll, text, or key input must require v302 or newer; one that writes or reads the human clipboard contract must require v303 or newer.
 
-## 4.1.1 Kernel Resource Subscription (proposed)
+## 4.1.1 Kernel Resource Subscription
 
-Status: proposed for Landing 9 (Cloud `docs/CLIENT_DATA_PLANE.md` section 6); not
-implemented. The protocol number is allocated when it lands; the relay peer
-protocol is unchanged because the relay forwards `subscription_scope` as an opaque
-string.
+Status: protocol 1006 serves `vault_status`, `vault_entries`, `provider_accounts`
+and `app_installations` (Cloud `docs/CLIENT_DATA_PLANE.md` section 6); the other
+resources listed below, `changes`, multi-part snapshots and the conditional
+`AttachSessionView` are not implemented yet. The relay peer protocol is unchanged
+because the relay forwards `subscription_scope` as an opaque string.
+
+What 1006 implements:
+
+- The subscription is served over the relay. A direct socket refuses the scope with
+  `kernel_resources_relay_only`, and `WatchKernelResources` sent anywhere but a relay
+  link is refused with the same code.
+- `subscription_request_id` is the relay subscription id. A browser signs each
+  subscription with its own key and its requests with another, so the kernel finds
+  the subscription by this id; every watch is read as the sender of the watch set.
+- Each watch is read with the request it replaces (`GetCredentialVaultStatus`,
+  `ListCredentials`, `ListProviderAccountProfiles`, `ListAppInstallations` with every
+  page) through the router, as that caller: the same collaborator gate and capability
+  checks apply, and a refused read is listed in `refused`. `data` is the fields of
+  that request's response.
+- Answers to a new watch may arrive before or after `KernelResourcesWatched`.
+- A request that changes Vault entries, the Vault lock, provider accounts or App
+  installations signals the feed, which reads every watched resource again and sends
+  a snapshot only when its revision changed. An unlocked Vault is read again when its
+  lease ends. Changes no request makes (a login finishing in the provider's CLI) are
+  read within 10 s.
+- A re-subscribe starts the feed over: the client sends its watch set again after the
+  transport reports `transport_resumed` for `__kernel_resources__`.
 
 One generic contract replaces request/response polling for every value a client
 shows: the client says which resources it shows and the revision it holds; the
@@ -7221,6 +7244,12 @@ Room setup (`CreateSession.setup`, `RuntimeSession.room_setup`, `RetryRoomSetup`
 `SuggestSessionAlias` and `git_available` on the launch target, and an agent's `wait.deadline_ms` that
 is `null` for a yield without a deadline (`protocol_shapes/agent_lifecycle.rs`). Relay peer 444 renames
 the leased agent file answers. Managed upgrades admit 1002 and 1003.
+
+The kernel resource feed carries local daemon protocol 1006 (provisional: the next free number after
+1005; relay peer stays 444 because the relay forwards the subscription scope unread). It adds the
+`kernel_resources` subscription scope, `WatchKernelResources` / `KernelResourcesWatched` and the
+`kernel_resource_changed` event (§4.1.1). Web clients require 1006. Focused check:
+`cargo test -p chariox-kernel --lib -- kernel_resource`.
 
 ### MP-08 / MP-09 / MP-10 / MP-11: Files on the owner's machines — local 1005 / relay peer 444
 

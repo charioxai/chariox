@@ -273,6 +273,12 @@ impl CommandRouter {
         machines
     }
 
+    pub(crate) fn kernel_resource_changes(
+        &self,
+    ) -> &crate::transport::kernel_resource_feed::KernelResourceChanges {
+        &self.kernel_resource_changes
+    }
+
     pub(crate) fn client_catalog_change_sequence(&self) -> u64 {
         self.provider_catalog_projection.change_sequence()
     }

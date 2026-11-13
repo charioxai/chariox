@@ -240,6 +240,12 @@ pub(super) async fn handle_prepared_daemon_request(
                     }
                 }
             }
+            if let LocalDaemonRequest::WatchKernelResources(watch) = &request.request {
+                let watched =
+                    super::kernel_resources::watch(display_subscriptions, caller, watch.clone())
+                        .await;
+                return kernel_resources_outcome(watched, &daemon_private_key, &client_public_key);
+            }
             let request_kind = relay_request_kind(&request.request);
             let bind_import_response = is_browser_import_request(&request.request);
             let mut result = match request.on_behalf_of {
@@ -691,6 +697,42 @@ fn display_ack_outcome(
     };
     let response = crate::local::LocalDaemonResponse::KernelBrowser {
         result: serde_json::json!({"acknowledged":true,"push":status,"ack_timing":true}),
+    };
+    match serde_json::to_vec(&response).ok().and_then(|plaintext| {
+        relay_crypto::encrypt_payload_for_peer(daemon_private_key, client_public_key, &plaintext)
+            .ok()
+    }) {
+        Some(encrypted_response) => RelayRequestOutcome {
+            display_event: None,
+            encrypted_response: Some(encrypted_response),
+            error: None,
+        },
+        None => RelayRequestOutcome {
+            display_event: None,
+            encrypted_response: None,
+            error: Some(relay_error(
+                "relay_request_failed",
+                "failed to encrypt relay response",
+                false,
+            )),
+        },
+    }
+}
+
+fn kernel_resources_outcome(
+    watched: Result<crate::local::LocalDaemonResponse, RelayError>,
+    daemon_private_key: &str,
+    client_public_key: &str,
+) -> RelayRequestOutcome {
+    let response = match watched {
+        Ok(response) => response,
+        Err(error) => {
+            return RelayRequestOutcome {
+                display_event: None,
+                encrypted_response: None,
+                error: Some(error),
+            }
+        }
     };
     match serde_json::to_vec(&response).ok().and_then(|plaintext| {
         relay_crypto::encrypt_payload_for_peer(daemon_private_key, client_public_key, &plaintext)

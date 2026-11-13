@@ -198,6 +198,7 @@ pub enum LocalDaemonResponse {
     ProviderCatalog { catalog: OpenCodeProviderCatalog, },
     ClientCatalogRevisions { revisions: ClientCatalogRevisions, },
     ClientCatalogSnapshot { snapshot: ClientCatalogSnapshot, },
+    KernelResourcesWatched { refused: Vec<KernelResourceRefusal>, },
     ProviderCommandCatalogs { catalogs: BTreeMap<String, ProviderCommandCatalog>, },
     McpServerInstalled { mcp: CharioxMcpServerConfig, path: PathBuf, },
     McpServerUpdated { mcp: CharioxMcpServerConfig, path: PathBuf, },

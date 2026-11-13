@@ -6,6 +6,7 @@ pub(crate) mod gateway_identity;
 pub(crate) mod home_audit_feed;
 pub(crate) mod kernel_browser_display;
 pub(crate) mod kernel_protocol;
+pub(crate) mod kernel_resource_feed;
 pub(crate) mod listener_admission;
 pub(crate) mod mcp_server;
 pub(crate) mod passkey_prompt_feed;

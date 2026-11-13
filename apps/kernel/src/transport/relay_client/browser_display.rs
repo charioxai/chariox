@@ -345,6 +345,7 @@ async fn register_delivery(
             _terminal_lease: terminal_lease,
             relay_subscription_id: route.relay_id.clone(),
             client_public_key: route.public_key.clone(),
+            resource_watch: None,
             handle: tokio::spawn(sleep(Duration::from_secs(60))),
         },
     );
@@ -448,6 +449,7 @@ mod tests {
                 _terminal_lease: None,
                 relay_subscription_id: "relay".into(),
                 client_public_key: "key".into(),
+                resource_watch: None,
                 handle: tokio::spawn(sleep(Duration::from_secs(60))),
             },
         )])));
@@ -485,6 +487,7 @@ mod tests {
                 _terminal_lease: None,
                 relay_subscription_id: "relay".into(),
                 client_public_key: "key".into(),
+                resource_watch: None,
                 handle: tokio::spawn(sleep(Duration::from_secs(60))),
             },
         )])));
@@ -1050,6 +1053,7 @@ mod paired_tests {
                 display_id: None,
                 display_pump: None,
                 _terminal_lease: None,
+                resource_watch: None,
                 handle: tokio::spawn(sleep(Duration::from_secs(60))),
             },
         )])));

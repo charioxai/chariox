@@ -322,6 +322,7 @@ public_events! {
     RelayStatusChanged => "relay_status_changed",
     RemoteMachinesChanged => "remote_machines_changed",
     WaitingRoomInventoryChanged => "waiting_room_inventory_changed",
+    KernelResourceChanged => "kernel_resource_changed",
     WaitingRoomRowsChanged => "waiting_room_rows_changed",
     ClientCatalogChanged => "client_catalog_changed",
     ProviderCatalogChanged => "provider_catalog_changed",

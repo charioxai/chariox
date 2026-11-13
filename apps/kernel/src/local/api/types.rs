@@ -34,6 +34,7 @@ mod kernel_browser;
 mod kernel_computer;
 mod kernel_files;
 mod kernel_gateway;
+mod kernel_resources;
 mod managed_context;
 mod metaagent;
 mod notes;
@@ -87,6 +88,7 @@ pub use kernel_browser::*;
 pub use kernel_computer::*;
 pub use kernel_files::*;
 pub use kernel_gateway::*;
+pub use kernel_resources::*;
 pub use managed_context::*;
 pub use metaagent::*;
 pub use notes::*;
@@ -508,4 +510,6 @@ pub use workspace::*;
 /// `workspace_id`, `worktree_id` and `worker_kernel_id`, and an agent's wait is a `provider_tool` row of its
 /// transcript.
 /// 1027: generic runtime identity observation and opaque enrollment authority evidence.
+/// 1006: the kernel resource feed (`kernel_resources` subscription, `WatchKernelResources`,
+/// `KernelResourcesWatched`, `kernel_resource_changed`) for the Vault, provider accounts and Apps.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1027;
