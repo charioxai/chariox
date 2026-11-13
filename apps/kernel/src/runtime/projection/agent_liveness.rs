@@ -253,11 +253,11 @@ impl YieldedSources {
         store: &crate::durable_state::DurableKernelStateStore,
         room: &str,
     ) -> Self {
-        let tasks = store.agent_tasks(Some(room), None).unwrap_or_default();
+        // Only waiting tasks yield on sources; the Room's finished turns are not read.
+        let tasks = store.agent_waiting_tasks(room).unwrap_or_default();
         let wakes = store.agent_wakes(Some(room), None).unwrap_or_default();
         let registrations = tasks
             .iter()
-            .filter(|task| task.state == ExecutionState::Waiting)
             .flat_map(|task| store.agent_registrations(&task.task_id).unwrap_or_default())
             .collect();
         Self {

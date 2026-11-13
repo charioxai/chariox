@@ -59,10 +59,23 @@ impl DurableKernelStateStore {
         room: Option<&str>,
         agent: Option<&str>,
     ) -> Result<Vec<AgentWake>, DaemonError> {
+        // Literal filters, as for tasks, so the (room, agent) index serves a Room's read.
+        let (filter, values) = match (room, agent) {
+            (Some(room), Some(agent)) => ("room_id=?1 AND agent_id=?2", vec![room, agent]),
+            (Some(room), None) => ("room_id=?1", vec![room]),
+            (None, Some(agent)) => ("agent_id=?1", vec![agent]),
+            (None, None) => ("1", vec![]),
+        };
         let db = self.lock_connection("agent.lifecycle.wakes")?;
-        let mut q = db.prepare_cached("SELECT payload FROM agent_wakes WHERE (?1 IS NULL OR room_id=?1) AND (?2 IS NULL OR agent_id=?2) ORDER BY rowid").map_err(sql)?;
+        let mut q = db
+            .prepare_cached(&format!(
+                "SELECT payload FROM agent_wakes WHERE {filter} ORDER BY rowid"
+            ))
+            .map_err(sql)?;
         let rows = q
-            .query_map(params![room, agent], |r| r.get::<_, String>(0))
+            .query_map(rusqlite::params_from_iter(values), |r| {
+                r.get::<_, String>(0)
+            })
             .map_err(sql)?;
         rows.map(|row| decode(&row.map_err(sql)?)).collect()
     }

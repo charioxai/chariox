@@ -124,7 +124,7 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         // The label is read before the session, so a state is never older than its revision.
         let agent_activity_revision = self.owned.session_projection.change_sequence();
-        let session = self.owned.session_snapshot(&request.session_id)?;
+        let (session, processes, disk_usage) = self.session_with_resources(&request.session_id)?;
         Ok(LocalDaemonResponse::SessionState {
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
                 &session,
@@ -132,10 +132,28 @@ impl KernelRuntimeState {
             ),
             agent_activity: self.agent_activity_for_session(&session),
             agent_activity_revision,
-            processes: self.session_processes(session.id()),
-            disk_usage: self.session_disk_usage(session.id()),
+            processes,
+            disk_usage,
             session,
         })
+    }
+
+    /// The Room with its processes and disk use; a caller-scoped read projects its own activity.
+    pub(crate) fn session_with_resources(
+        &self,
+        session_id: &str,
+    ) -> Result<
+        (
+            crate::session::RuntimeSession,
+            Vec<crate::runtime::process_resources::SessionProcess>,
+            Vec<crate::runtime::disk_usage::DiskUsageEntry>,
+        ),
+        DaemonError,
+    > {
+        let session = self.owned.session_snapshot(session_id)?;
+        let processes = self.session_processes(session.id());
+        let disk_usage = self.session_disk_usage(session.id());
+        Ok((session, processes, disk_usage))
     }
 
     pub(crate) fn list_agents_response(

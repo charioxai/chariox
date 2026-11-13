@@ -165,10 +165,29 @@ impl DurableKernelStateStore {
         room: Option<&str>,
         agent: Option<&str>,
     ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+        // One literal filter per shape: an `?1 IS NULL OR` term cannot use the (room, agent)
+        // index, so reading one Room scanned every task of the kernel.
+        let (filter, values) = match (room, agent) {
+            (Some(room), Some(agent)) => ("room_id=?1 AND agent_id=?2", vec![room, agent]),
+            (Some(room), None) => ("room_id=?1", vec![room]),
+            (None, Some(agent)) => ("agent_id=?1", vec![agent]),
+            (None, None) => ("1", vec![]),
+        };
         self.read_tasks(
             "agent.lifecycle.tasks",
-            "(?1 IS NULL OR room_id=?1) AND (?2 IS NULL OR agent_id=?2)",
-            params![room, agent],
+            filter,
+            rusqlite::params_from_iter(values),
+        )
+    }
+    /// The tasks of `room` that yielded and wait for a source, through the (room, state) index.
+    pub(crate) fn agent_waiting_tasks(
+        &self,
+        room: &str,
+    ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+        self.read_tasks(
+            "agent.lifecycle.waiting_tasks",
+            "room_id=?1 AND state='waiting'",
+            [room],
         )
     }
     /// One task by its immutable identity, without reading its agent's history.
