@@ -3074,3 +3074,39 @@ async fn small_live_writes_share_one_terminal_reply() {
         b"onetwo"
     );
 }
+
+#[tokio::test]
+async fn a_burst_shares_one_reply_for_up_to_four_frames() {
+    use base64::Engine as _;
+    let root = TempDir::new();
+    let service = Arc::new(service(root.path()));
+    // Twenty parts, one every 8 ms: one frame of gathering takes two or three of them.
+    let terminal = service.open(OpenRoomTerminal {
+        project_environment: Default::default(), session_id: "room-1".into(), working_directory: root.path().into(), cols: 100, rows: 30, title: None, opened_by: TerminalActor::User,
+        command: Some(vec!["python3".into(), "-c".into(), "import os,time\ntime.sleep(.15)\nfor n in range(20):\n os.write(1,b'p%02d' % n); time.sleep(.008)\ntime.sleep(1)".into()]),
+    }).unwrap();
+    let pumping = Arc::clone(&service);
+    let pump = tokio::spawn(async move {
+        loop {
+            pumping.pump_once();
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    });
+    let result = service
+        .read_output("room-1", &terminal.terminal_id, 0, Duration::from_secs(2))
+        .await;
+    pump.abort();
+    let _ = pump.await;
+    service
+        .close("room-1", &terminal.terminal_id, &TerminalActor::User)
+        .unwrap();
+    let parts = base64::engine::general_purpose::STANDARD
+        .decode(result.unwrap().data_base64)
+        .unwrap()
+        .len()
+        / 3;
+    assert!(
+        (6..20).contains(&parts),
+        "a burst that keeps writing is one reply for about four frames, not one frame or until it ends ({parts} parts)"
+    );
+}
