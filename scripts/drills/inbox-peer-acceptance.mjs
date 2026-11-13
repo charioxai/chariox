@@ -21,6 +21,11 @@ const remote = flags.get("--placement") === "other"
 const readRows = () => query(`SELECT payload FROM agent_inbox WHERE room_id='${room.id}' AND agent_id='${room.agent}' ORDER BY sequence`).map(r => JSON.parse(r.payload))
 const readTasks = () => query(`SELECT payload FROM agent_tasks WHERE room_id='${room.id}' AND agent_id='${room.agent}' ORDER BY rowid`).map(r => JSON.parse(r.payload))
 const readInbox = kernel => JSON.parse(execFileSync("sqlite3", ["-readonly", "-json", join(kernel.dir, "chariox/state.db"), "SELECT payload FROM agent_inbox ORDER BY sequence"]).toString() || "[]").map(r => JSON.parse(r.payload))
+function inboxEvents(value, label) {
+  const events = Array.isArray(value) ? value : value?.events
+  assert(Array.isArray(events), `${label} must contain the inbox event array`)
+  return events
+}
 const reportPath = join(work, "report.json")
 const common = `You are a Chariox ROOM agent. Use your real Chariox room and events tools. No owner questions or decision cards. Record exact tool results; never retry a refused command. Use the room command tool (chariox.room.run_command) for agent spawn/prompt/message. You may write files using your official provider shell tool. Never use provider-native helper agents.\n`
 const yieldRule = `Use events_subscriptions to obtain all live registrations. To wait, use events_yield with all of them and a deadline 15 minutes ahead, and end the turn immediately. On each wake read events_inbox once and acknowledge every handled event with events_ack. Do not poll the inbox.`
@@ -76,8 +81,10 @@ On the reply wake, or when the reply already completed:
       const report = JSON.parse(readFileSync(reportPath, "utf8"))
       return report.reply_ack && idle
     }, "parent handles batch and requested reply", 12 * 60000)
-    const report = JSON.parse(readFileSync(reportPath, "utf8")), rows = readRows(), tasks = readTasks()
-    save("agent-report.json", report); save("inbox.json", rows); save("tasks.json", tasks)
+    const rawReport = JSON.parse(readFileSync(reportPath, "utf8")), rows = readRows(), tasks = readTasks()
+    save("agent-report.json", rawReport); save("inbox.json", rows); save("tasks.json", tasks)
+    const report = { ...rawReport, batch_events: inboxEvents(rawReport.batch_events, "batch_events"), reply_events: inboxEvents(rawReport.reply_events, "reply_events") }
+    save("normalized-report.json", report)
     const completions = report.batch_events.filter(e => e.kind === "peer_event")
     assert.equal(new Set(completions.map(e => e.source.id)).size, 3)
     const durable = rows.filter(r => completions.some(e => e.sequence === r.sequence))

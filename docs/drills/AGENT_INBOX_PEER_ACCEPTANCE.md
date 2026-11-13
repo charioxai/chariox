@@ -63,6 +63,8 @@ events are urgent and may steer a running parent; independently finishing child
 providers may therefore produce separate wakes. The pending peer batch tests
 coalescing without altering that urgent behavior.
 
-`result.json`, public history, inbox/task records, account-copy receipts and TUI
+The report reader accepts an inbox response or its event array and validates
+that shape once before checking it against authoritative durable rows.
+`result.json`, public history, complete inbox/task records, account-copy receipts and TUI
 captures are retained as evidence. Private kernels, relay, provider descendants,
 TUI and state are cleaned up on success or failure.

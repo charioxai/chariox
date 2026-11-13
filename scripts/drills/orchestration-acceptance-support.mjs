@@ -52,6 +52,8 @@ export async function createDrill(flags) {
     for (const name of ["a", "b"]) {
       const db = join(root, name, "chariox/history/operational.db")
       if (existsSync(db)) save(`public-history-${name}.json`, JSON.parse(execFileSync("sqlite3", ["-readonly", "-json", db, "SELECT sequence,session_id,agent_id,kind,text,document_json FROM public_history ORDER BY sequence"]).toString() || "[]"))
+      const stateDb = join(root, name, "chariox/state.db")
+      if (existsSync(stateDb)) save(`all-inbox-${name}.json`, JSON.parse(execFileSync("sqlite3", ["-readonly", "-json", stateDb, "SELECT payload FROM agent_inbox ORDER BY sequence"]).toString() || "[]").map(r => JSON.parse(r.payload)))
     }
     if (tui) { await tui.send("exit").catch(() => {}); tui.socket.destroy() }
     for (const c of clients) await c.close().catch(() => {})
