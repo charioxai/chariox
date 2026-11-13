@@ -41,3 +41,19 @@ fn agent_deadline_protocol_shape_and_hash() {
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({"SetAgentDeadline":{"session_id":"room","agent_id":"agent","deadline_ms":100,"extra":true}})).is_err());
 }
+
+#[test]
+fn deadline_clear_is_explicit_and_has_a_stable_shape() {
+    let expected = serde_json::json!({"SetAgentDeadline":{"agent_id":"agent","deadline_ms":null,"session_id":"room"}});
+    let request: LocalDaemonRequest = serde_json::from_value(expected.clone()).unwrap();
+    let actual = serde_json::to_value(request).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&actual).unwrap())),
+        "4b46174a6bf6e6f45eb71c82fe3e9f5afcd7296f7a74edaac27993a5d2bf2560"
+    );
+    assert!(serde_json::from_value::<LocalDaemonRequest>(
+        serde_json::json!({"SetAgentDeadline":{"session_id":"room","agent_id":"agent"}})
+    )
+    .is_err());
+}

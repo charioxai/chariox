@@ -381,17 +381,17 @@ async fn deadline() {
             crate::local::SetAgentDeadlineRequest {
                 session_id: world.room.clone(),
                 agent_id: world.ids[agent].clone(),
-                deadline_ms: now + after_ms,
+                deadline_ms: Some(now + after_ms),
             },
         )
     };
     set("a", 10 * 60_000).await.unwrap();
-    let later = room_command(&world, "a", "agent deadline set b 2h").await;
+    let later = room_command(&world, "a", "agent deadline b 2h").await;
     assert!(
         !later.ok && error_text(&later).contains("parent"),
         "{later:?}"
     );
-    let sooner = room_command(&world, "a", "agent deadline set b 5m").await;
+    let sooner = room_command(&world, "a", "agent deadline b 5m").await;
     assert!(sooner.ok, "{sooner:?}");
     // The user shortens the parent: the child and the grandchild end with it.
     set("a", 60_000).await.unwrap();

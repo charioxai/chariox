@@ -240,7 +240,8 @@ pub(crate) enum Operation {
     SetDeadline {
         room: String,
         agent: String,
-        deadline: u64,
+        deadline: Option<u64>,
+        inherited: Vec<(String, Option<u64>)>,
     },
     ReachDeadline {
         room: String,
@@ -708,7 +709,7 @@ pub(crate) enum Operation {
 }
 #[derive(Debug)]
 pub(crate) enum Outcome {
-    Deadline(crate::local::AgentDeadline),
+    Deadline(Option<crate::local::AgentDeadline>),
     LeasedProcess(Option<super::LeasedProcessReceipt>),
     Task(AgentTaskExecution),
     Event(InboxEvent),

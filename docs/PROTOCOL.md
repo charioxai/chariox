@@ -744,10 +744,11 @@ protocol needs no change for it.
 Relay peer 442 adds `SetLeasedAgentDeadline {leased_agent_id, deadline_ms}`, answered by
 `LeasedAgentDeadlineSet {leased_agent_id}`. The home sends it before it records the
 deadline of an agent it leased to a worker (`agent spawn --kernel K --deadline`, `agent
-deadline set`, or a parent's deadline reaching a remote descendant). The worker arms the
+deadline`, or a parent's deadline reaching a remote descendant). The worker arms the
 deadline on the backing agent of the leased agent, so its own scheduler stops the run with
-the home offline. A deadline only shortens: the worker refuses a later time with
-`agent_deadline_extension_refused`. No local shape changes.
+the home offline. The deadline-edit protocol makes `deadline_ms` required and nullable on both
+local and peer requests: a time extends or shortens, and null clears. The worker
+confirms the edit before the home commits it. Reached deadlines cannot be reset.
 
 Local daemon protocol 1000 makes a
 sub-agent's decision one card with one holder. The kernel keeps the holder (the
@@ -820,7 +821,8 @@ Those lifecycle semantics belong to PR2.
 Allocated local protocol **585** adds `SetAgentDeadline {session_id, agent_id,
 deadline_ms}` and `GetAgentDeadline {session_id, agent_id}`. Both return
 `AgentDeadline {deadline}` with the executing kernel's durable deadline receipt.
-A deadline can shorten, never extend. The kernel rejects new work after it is
+The owner or an authorized coordinator may extend, shorten or clear a deadline
+with the same request; a required null `deadline_ms` clears it. The kernel rejects new work after it is
 reached and retries physical cleanup; `reached_at_ms` and `stopped_at_ms` distinguish
 admission fencing from completed cleanup. The first stopped receipt and the
 outside agent event with `reason:"deadline_reached"` commit together; cleanup

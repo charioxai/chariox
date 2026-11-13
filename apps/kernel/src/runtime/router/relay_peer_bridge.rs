@@ -493,7 +493,7 @@ impl CommandRouter {
     pub(crate) async fn relay_set_leased_agent_deadline(
         &self,
         leased_agent_id: &str,
-        deadline_ms: u64,
+        deadline_ms: Option<u64>,
     ) -> Result<(), DaemonError> {
         relay_peer_runtime::set_relay_leased_agent_deadline(
             &self.runtime_state,

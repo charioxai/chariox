@@ -150,7 +150,7 @@ async fn command_table() {
     );
     let verbs = [
         "agent cancel {}",
-        "agent deadline set {} 30m",
+        "agent deadline {} 30m",
         "agent deadline get {}",
         "agent children {}",
     ];
@@ -164,10 +164,11 @@ async fn command_table() {
         ("peer", "b"),
         ("q", "b"),
     ];
-    // A peer of equal authority may stop a turn; it never reaches the tree's other controls.
+    // A peer of equal authority may stop a turn or edit a deadline.
     let peers = [("b", "s"), ("a", "peer"), ("peer", "b")];
     for verb in verbs {
-        let cancel = verb.starts_with("agent cancel");
+        let cancel = verb.starts_with("agent cancel")
+            || (verb.starts_with("agent deadline") && !verb.starts_with("agent deadline get"));
         for (caller, target) in allowed
             .into_iter()
             .chain(peers.into_iter().filter(|_| cancel))
@@ -457,7 +458,7 @@ async fn spawn_deadline() {
             crate::local::SetAgentDeadlineRequest {
                 session_id: world.room.clone(),
                 agent_id: world.ids["a"].clone(),
-                deadline_ms: crate::session::unix_epoch_ms() + 10 * 60_000,
+                deadline_ms: Some(crate::session::unix_epoch_ms() + 10 * 60_000),
             },
         )
         .await
@@ -713,7 +714,7 @@ async fn local_spawn_deadline() {
             crate::local::SetAgentDeadlineRequest {
                 session_id: world.room.clone(),
                 agent_id: first["agent"]["id"].as_str().unwrap().to_string(),
-                deadline_ms: armed,
+                deadline_ms: Some(armed),
             },
         )
         .await
@@ -884,4 +885,140 @@ async fn remote_refusal() {
     );
     assert!(error.to_string().contains("uncertain dispatch"), "{error}");
     assert!(unresolved(&uncertain));
+}
+
+#[test]
+fn deadline_edits_recompute_inheritance_and_bound_peer_authority() {
+    run_large_stack_async_test("deadline-edit-authority", deadline_edit_authority);
+}
+
+async fn deadline_edit_authority() {
+    let world = world("deadline-edit-authority").await;
+    for command in [
+        "agent deadline b 10m",
+        "agent deadline d 5m",
+        "agent deadline b 30m",
+    ] {
+        let got = room_command(&world, "a", command).await;
+        assert!(got.ok, "{command}: {got:?}");
+    }
+    let read = |who: &'static str| {
+        let world = &world;
+        async move {
+            room_command(world, "a", &format!("agent deadline get {who}"))
+                .await
+                .payload["response"]["deadline"]
+                .clone()
+        }
+    };
+    assert!(
+        read("b").await["deadline_ms"].as_u64().unwrap()
+            > read("d").await["deadline_ms"].as_u64().unwrap()
+    );
+    let cleared = room_command(&world, "a", "agent deadline b none").await;
+    assert!(cleared.ok, "{cleared:?}");
+    assert!(read("b").await.is_null());
+    assert!(
+        read("d").await["deadline_ms"].is_u64(),
+        "child's independent limit survives"
+    );
+    let inherited = room_command(&world, "a", "agent deadline s 20m").await;
+    assert!(inherited.ok, "{inherited:?}");
+    let peer = room_command(
+        &world,
+        "peer",
+        &format!("agent deadline {} 40m", world.ids["a"]),
+    )
+    .await;
+    assert!(peer.ok, "same-owner equal-authority coordinator: {peer:?}");
+    let own = room_command(
+        &world,
+        "a",
+        &format!("agent deadline {} none", world.ids["a"]),
+    )
+    .await;
+    assert!(!own.ok, "agent must not erase its own owner limit");
+    let parent = room_command(
+        &world,
+        "b",
+        &format!("agent deadline {} none", world.ids["a"]),
+    )
+    .await;
+    assert!(!parent.ok, "child must not change its ancestor deadline");
+    let q = world
+        .app
+        .lock()
+        .await
+        .agents()
+        .get_session_agents(&world.other_room)[0]
+        .id()
+        .to_string();
+    let cross = room_command(
+        &world,
+        "a",
+        &format!("agent deadline {} 30m --room {}", q, world.other_room),
+    )
+    .await;
+    assert!(cross.ok, "same-owner cross-room deadline: {cross:?}");
+    let cross_clear = room_command(
+        &world,
+        "a",
+        &format!("agent deadline {} none --room {}", q, world.other_room),
+    )
+    .await;
+    assert!(cross_clear.ok, "{cross_clear:?}");
+}
+
+#[test]
+fn a_guest_keeps_deadline_control_of_its_own_descendants() {
+    run_large_stack_async_test("guest-deadline-subtree", guest_deadline_subtree);
+}
+
+async fn guest_deadline_subtree() {
+    let world = world("guest-deadline-subtree").await;
+    let (guest, child) = {
+        let mut app = world.app.lock().await;
+        let mut room = app.session_state_store().get_session(&world.room).unwrap();
+        room.add_member("guest", None, crate::session::CollaborationLevel::Full);
+        app.sessions_mut().restore_session(room);
+        let guest = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(&world.room, "dev-stub").with_owner_user_id("guest"),
+            )
+            .unwrap();
+        crate::test_support::admit_room_test_turn(&mut app, &world.room, guest.id());
+        let child = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(&world.room, "dev-stub")
+                    .with_owner_user_id("guest")
+                    .with_parent_agent_id(guest.id()),
+            )
+            .unwrap();
+        (guest, child)
+    };
+    let token = world
+        .app
+        .lock()
+        .await
+        .providers()
+        .get_run_for_agent(&world.room, guest.id())
+        .unwrap()
+        .runtime_mcp_auth_token()
+        .unwrap()
+        .to_string();
+    for value in ["30m", "none"] {
+        let result = world
+            .router
+            .dispatch_authenticated_runtime_tool_call(
+                &token,
+                "chariox.room.run_command",
+                serde_json::json!({"command": format!("agent deadline {} {value}", child.id())}),
+            )
+            .await
+            .unwrap();
+        assert!(
+            result.ok,
+            "guest retains its existing subtree authority: {result:?}"
+        );
+    }
 }
