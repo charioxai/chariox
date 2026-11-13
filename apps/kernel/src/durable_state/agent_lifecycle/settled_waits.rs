@@ -18,6 +18,19 @@ pub(super) fn finish(
     let Some(wait) = task.wait.as_ref() else {
         return Ok(false);
     };
+    // A message turn runs beside this task (it never continues the wait), so an outcome it
+    // handled does not mean the agent's work is done: its parent hears the end when the agent
+    // stops working, not while it still does.
+    if tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_tasks WHERE room_id=?1 AND agent_id=?2 AND task_id<>?3 AND state='working')",
+            params![task.room_id, task.agent_id, task.task_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(sql)?
+    {
+        return Ok(false);
+    }
     let regs = registrations(tx, &task.task_id)?;
     if !wait
         .registration_ids
@@ -76,4 +89,19 @@ pub(super) fn finish(
     task.wait = None;
     task.reason = RESOLVED_WAIT_REASON.into();
     Ok(true)
+}
+
+/// A turn that ends may have been the work that held back another task's finished wait.
+pub(super) fn finish_agent_waits(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+) -> Result<(), DaemonError> {
+    for mut task in live_tasks(tx, room, agent)? {
+        if finish(tx, &mut task)? {
+            task.revision += 1;
+            save(tx, &task)?;
+        }
+    }
+    Ok(())
 }
