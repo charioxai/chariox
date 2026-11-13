@@ -521,4 +521,5 @@ pub use workspace::*;
 /// 1009 (Landing 10 peek, provisional): `PeekAgentTranscript` lists an agent's latest transcript rows as
 /// titles (`AgentTranscriptPeek`) with a `before` cursor and `ReadAgentTranscriptEntry` reads one row by
 /// pages (`AgentTranscriptEntryPage`); a wait without a deadline gets `now + 30 min` as `deadline_ms`.
+/// 1010 (Landing 10, provisional): an unconditional idle Stop returns `NothingToStop`.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1027;

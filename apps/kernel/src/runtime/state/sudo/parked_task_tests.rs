@@ -128,6 +128,47 @@ async fn targetless_owner_stop_cancels_waiting_task_and_timer_without_active_pro
         .is_none());
 }
 
+/// An orchestrator that wakes on events leaves one parked task per wait. Stopping it is one
+/// request that ends them all, not an error that asks for the intended task.
+#[tokio::test]
+async fn stop_of_an_idle_agent_with_several_parked_tasks_cancels_them_all() {
+    let f = fixture_with_options(None, true);
+    let first = waiting_task(&f, "waiting-turn-1");
+    let second = waiting_task(&f, "waiting-turn-2");
+    let request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+        session_id: f.request.session_id.clone(),
+        attachment_id: f.request.attachment_id.clone(),
+        target_agent_id: None,
+        expected_prompt_id: None,
+    });
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "stop-several-waiting",
+        None,
+        None,
+        &request,
+    );
+    let response = f.router.dispatch(command, request).await.unwrap();
+    let LocalDaemonResponse::AgentTaskUpdated { task, .. } = response else {
+        panic!("expected task cancellation")
+    };
+    assert_eq!(task.state, ExecutionState::Cancelled);
+    let store = &f.state.owned.durable_state_store;
+    for original in [first, second] {
+        let stopped = store.agent_task(&original.task_id).unwrap().unwrap();
+        assert_eq!(
+            stopped.state,
+            ExecutionState::Cancelled,
+            "{}",
+            original.task_id
+        );
+        let wake = store
+            .agent_wake(&format!("timer-{}", original.task_id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(wake.state, "cancelled", "{}", original.task_id);
+    }
+}
+
 #[tokio::test]
 async fn stop_cancels_parked_task_through_prompt_route() {
     let f = fixture_with_options(None, true);
@@ -902,4 +943,99 @@ async fn waiting_projection_never_marks_a_waiting_turn_unread() {
     );
     assert_eq!(room.unread_idle_agent_count, 0);
     assert!(!session.agent_has_unread_output("local", &task.agent_id));
+// MP-08 / MP-09 / MP-10 / MP-11: repeated unconditional Stop is idempotent.
+#[tokio::test]
+async fn unconditional_stop_of_an_idle_agent_succeeds_with_or_without_room_tools() {
+    for room_tools in [false, true] {
+        let f = fixture_with_options(None, room_tools);
+        for target in [None, f.request.target_agent_id.clone()] {
+            for _ in 0..2 {
+                let request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+                    session_id: f.request.session_id.clone(),
+                    attachment_id: f.request.attachment_id.clone(),
+                    target_agent_id: target.clone(),
+                    expected_prompt_id: None,
+                });
+                let command = crate::runtime::command::KernelCommand::from_local_request(
+                    "stop-idle",
+                    None,
+                    None,
+                    &request,
+                );
+                let response = f
+                    .router
+                    .dispatch(command, request)
+                    .await
+                    .expect("unconditional Stop of an idle agent must succeed");
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({
+                        "NothingToStop": {
+                            "session_id": f.request.session_id,
+                            "agent_id": f.request.target_agent_id,
+                        }
+                    })
+                );
+            }
+        }
+        let request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+            session_id: f.request.session_id.clone(),
+            attachment_id: f.request.attachment_id.clone(),
+            target_agent_id: f.request.target_agent_id.clone(),
+            expected_prompt_id: Some("already-finished-prompt".into()),
+        });
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "stop-exact-idle",
+            None,
+            None,
+            &request,
+        );
+        assert!(matches!(
+            f.router.dispatch(command, request).await,
+            Err(DaemonError::NoActivePrompt { .. })
+        ));
+    }
+}
+
+#[tokio::test]
+async fn idle_stop_still_rejects_an_invalid_attachment() {
+    let f = fixture_with_options(None, true);
+    let request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+        session_id: f.request.session_id.clone(),
+        attachment_id: "missing-terminal".into(),
+        target_agent_id: f.request.target_agent_id.clone(),
+        expected_prompt_id: None,
+    });
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "stop-idle-invalid-attachment",
+        None,
+        None,
+        &request,
+    );
+    assert!(f.router.dispatch(command, request).await.is_err());
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: idle success still requires the right Room.
+#[tokio::test]
+async fn idle_stop_rejects_an_agent_from_another_room() {
+    let f = fixture_with_options(None, true);
+    let worktree = crate::test_support::TestWorktree::new("stop-other-room");
+    let (_, other_agent) = crate::app::KernelSessionService::new(&mut *f.app.lock().await)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+        session_id: f.request.session_id.clone(),
+        attachment_id: f.request.attachment_id.clone(),
+        target_agent_id: Some(other_agent.id().into()),
+        expected_prompt_id: None,
+    });
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "stop-idle-wrong-room",
+        None,
+        None,
+        &request,
+    );
+    assert!(matches!(f.router.dispatch(command, request).await,
+        Err(DaemonError::AgentNotInSession { session_id, agent_id })
+            if session_id == f.request.session_id && agent_id == other_agent.id()));
 }

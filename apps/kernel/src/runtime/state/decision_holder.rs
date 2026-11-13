@@ -80,6 +80,14 @@ pub(crate) fn user_only(
         Some(UserOnly::UserDomain)
     } else if interaction.level() == crate::session::RuntimeInteractionLevel::Critical {
         Some(UserOnly::Critical)
+    } else if super::agent_task_owner_interactions::is_blocked_task_decision(interaction.id()) {
+        // Resume or Cancel of a blocked task is a decision about an agent, so its parent may
+        // hold it. Allowing the person's browser again stays the person's.
+        if interaction.choice("allow_browser").is_some() {
+            Some(UserOnly::UserDomain)
+        } else {
+            None
+        }
     } else if interaction.agent_id().is_none()
         || pending.kernel_operation_owner.is_some()
         || pending.kernel_wide_interaction.is_some()
@@ -367,6 +375,7 @@ impl KernelRuntimeOwnedState {
             let holder = self.decision_holder_above(&session, &pending, &interaction, agent);
             let old_tenure = pending.holder_tenure;
             self.hand_decision_to(session_id, &id, &holder)?;
+            let mut handed_to_user = false;
             match &holder {
                 DecisionHolder::User => {
                     let shown = self.decision_shown_in(session_id, &interaction);
@@ -380,13 +389,33 @@ impl KernelRuntimeOwnedState {
                         InteractionPhase::Pending(&pending),
                     )?;
                     sessions.restore_session(session);
+                    handed_to_user = true;
                 }
                 DecisionHolder::Agent(_) => announce.push(id.clone()),
             }
             drop(sessions);
+            if handed_to_user {
+                self.alert_owner_of_handed_up_task(&id);
+            }
             self.withdraw_child_decision_event(session_id, agent, old_tenure, &id);
         }
         Ok((moved, announce))
+    }
+
+    /// A blocked task's card nobody above could hold reaches the person now, so they are alerted to it.
+    fn alert_owner_of_handed_up_task(&self, interaction_id: &str) {
+        let Some((task_id, _)) = interaction_id
+            .strip_prefix(super::agent_task_owner_interactions::BLOCKED_TASK_DECISION_PREFIX)
+            .and_then(|rest| rest.rsplit_once('-'))
+        else {
+            return;
+        };
+        let Ok(Some(task)) = self.durable_state_store.agent_task(task_id) else {
+            return;
+        };
+        if let Err(error) = self.emit_task_owner_notification(&task, interaction_id) {
+            tracing::warn!(%error, interaction_id, "handed-up task alert failed");
+        }
     }
 
     /// The authority above or of `agent` changed (its permission or mode): every open decision of

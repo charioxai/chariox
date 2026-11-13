@@ -282,9 +282,22 @@ fn settle_source(
 }
 
 fn cancel_settle(tx: &Transaction<'_>, wake: &mut AgentWake, now: u64) -> Result<(), DaemonError> {
+    cancel_settle_because(tx, wake, now, None)
+}
+
+/// `reason` tells the task why its timer ended when no one cancelled it.
+fn cancel_settle_because(
+    tx: &Transaction<'_>,
+    wake: &mut AgentWake,
+    now: u64,
+    reason: Option<&str>,
+) -> Result<(), DaemonError> {
     wake.state = "cancelled".into();
     wake.next_due_ms = None;
-    let answer = serde_json::json!({"wake_id":wake.id,"label":wake.label,"cancelled":true});
+    let mut answer = serde_json::json!({"wake_id":wake.id,"label":wake.label,"cancelled":true});
+    if let Some(reason) = reason {
+        answer["reason"] = reason.into();
+    }
     settle_source(
         tx,
         wake,
@@ -307,10 +320,12 @@ fn fire_one(
         cancel_settle(tx, &mut wake, now)?;
         return Ok(None);
     }
-    // Timer-only turns exhaust the existing no-progress budget. Wait for
-    // explicit owner disposition before emitting another paid check-in.
+    // A blocked task takes no further paid check-in until its owner decides. Its timer
+    // ends here with that reason; left scheduled it would sit past due with no outcome.
     if t.state == ExecutionState::Blocked {
-        return Ok(None);
+        let reason = format!("its task is blocked: {}", t.reason);
+        cancel_settle_because(tx, &mut wake, now, Some(&reason))?;
+        return Ok(Some(wake));
     }
     if wake.interval_ms.is_some() {
         let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed'))", params![wake.room_id,wake.agent_id,wake.id], |r| r.get(0)).map_err(sql)?;

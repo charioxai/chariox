@@ -310,3 +310,25 @@ fn browser_owner_action_shape_is_bound_to_protocol993() {
         "cd35db1bf881fedabdabbc61f17139b6bac679157b7519feb9987b5ecc9d89fa"
     );
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: idle Stop has an explicit successful wire result.
+#[test]
+fn nothing_to_stop_response_snapshot_and_hash() {
+    let response = LocalDaemonResponse::NothingToStop {
+        session_id: "room".into(),
+        agent_id: "agent".into(),
+    };
+    let wire = serde_json::to_value(response).unwrap();
+    assert_eq!(
+        wire,
+        serde_json::json!({"NothingToStop": {
+            "session_id": "room", "agent_id": "agent",
+        }})
+    );
+    let decoded: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), wire);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "8511d69685d01591f2a683023242cf342f23537afe6108c43149fb9cdf8b4892"
+    );
+}

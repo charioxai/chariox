@@ -213,6 +213,11 @@ impl KernelRuntimeState {
                 recipients.insert((wake.room_id, wake.agent_id));
                 continue;
             }
+            if wake.state == "cancelled" {
+                self.wake_notice(&wake, format!("Wake alert: '{}' was due and ended without firing: its task is blocked until its owner resumes or cancels it", wake.label));
+                recipients.insert((wake.room_id, wake.agent_id));
+                continue;
+            }
             let due = due
                 .iter()
                 .find(|d| d.id == wake.id)

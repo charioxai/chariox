@@ -681,3 +681,23 @@ fn mp11_missing_session_reason_is_public_without_echoing_private_reference() {
         assert!(!mapped.message.contains(CANARY));
     }
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: both outside agent paths receive idle success.
+#[test]
+fn nothing_to_stop_is_public_through_typed_and_cached_projection() {
+    let response = LocalDaemonResponse::NothingToStop {
+        session_id: "room".into(),
+        agent_id: "agent".into(),
+    };
+    let expected = serde_json::to_value(&response).unwrap();
+    for class in [
+        KernelConnectionClass::ExternalAgent,
+        KernelConnectionClass::KernelAgent,
+    ] {
+        let projected = finish_response(&command(class), Ok(response.clone())).unwrap();
+        assert_eq!(serde_json::to_value(projected).unwrap(), expected);
+    }
+    let mut cached = expected.clone();
+    project_response_value(&mut cached).unwrap();
+    assert_eq!(cached, expected);
+}

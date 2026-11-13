@@ -434,6 +434,7 @@ response_policies! {
         PromptsSubmitted,
         PromptCompleted,
         PromptCancelled,
+        NothingToStop,
         QueuedPromptSteered,
         QueuedPromptCancelled,
         QueuedPromptUpdated,
