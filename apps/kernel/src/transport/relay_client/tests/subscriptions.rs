@@ -1245,11 +1245,15 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
             if event.1["event"] == "heartbeat" {
                 break event;
             }
-            // Fresh resource samples may follow the reset snapshot; historical
-            // snapshots and other replay events still must not return here.
-            assert_eq!(
-                event.1["event"],
-                serde_json::json!("session_processes_changed")
+            // Fresh resource samples and the current job list may follow the reset
+            // snapshot; historical snapshots and other replay events must not return.
+            assert!(
+                matches!(
+                    event.1["event"].as_str(),
+                    Some("session_processes_changed" | "session_jobs_changed")
+                ),
+                "unexpected event after the reset snapshot: {}",
+                event.1["event"]
             );
             assert_eq!(event.1["session_id"], current_snapshot.1["session"]["id"]);
         }

@@ -182,7 +182,10 @@ mod tests {
     fn initial_projection_supplies_the_full_session_before_output() {
         assert!(matches!(
             session_projection_events(&snapshot(), None, false).as_slice(),
-            [KernelEvent::SessionSnapshot { .. }]
+            [
+                KernelEvent::SessionSnapshot { .. },
+                KernelEvent::SessionJobsChanged { jobs, .. },
+            ] if jobs.is_empty()
         ));
     }
 

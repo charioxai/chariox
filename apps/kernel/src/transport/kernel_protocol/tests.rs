@@ -966,7 +966,11 @@ fn a12_task_change_is_a_compact_projection_event() {
     assert!(payloads.iter().all(|e| e.get("session").is_none()));
     assert!(can_skip_session_snapshot(&current, Some(&previous), true));
     assert!(session_projection_changed_events(&current, Some(&current)).is_empty());
-    assert!(session_projection_changed_events(&current, None).is_empty());
+    // A fresh subscriber gets the current job list, even an empty one, and no task delta.
+    assert!(matches!(
+        session_projection_changed_events(&current, None).as_slice(),
+        [KernelEvent::SessionJobsChanged { jobs, .. }] if jobs.is_empty()
+    ));
 }
 
 // MP-08 / MP-10 A12-S02: both subscription writers use this shared selection.
@@ -1265,7 +1269,11 @@ fn a_changed_agent_task_is_one_small_event_and_skips_the_full_snapshot() {
     let wire = serde_json::to_value(&events[0]).unwrap();
     assert_eq!(wire["event"], "agent_task_updated");
     assert_eq!(wire["task"]["state"], "waiting");
-    assert!(session_projection_changed_events(&current, None).is_empty());
+    // A fresh subscriber gets the current job list, even an empty one, and no task delta.
+    assert!(matches!(
+        session_projection_changed_events(&current, None).as_slice(),
+        [KernelEvent::SessionJobsChanged { jobs, .. }] if jobs.is_empty()
+    ));
 }
 
 #[test]
