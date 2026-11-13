@@ -1089,7 +1089,82 @@ fn a_startup_spike_does_not_keep_a_slow_grower_paused() {
 #[test]
 fn a_steady_fast_grower_stays_paused_once_and_ends_with_the_reason() {
     take_wait_events();
-    let (_a, mut b, _c, _pool) = pressure(false, 100, 200, 9);
+    const RATE: u64 = 200;
+    let pool = pool(1536);
+    let holder = Workload::gated(
+        domain(&pool, "a", false),
+        &[
+            ("big", "python3 \"$0/holder.py\" \"$0/pressure\"".into()),
+            ("idle", "python3 \"$0/alloc.py\" 0 0 0".into()),
+        ],
+    );
+    std::fs::write(holder.dir.join("holder.py"), format!(
+        "{DIE_WITH_PARENT}import os,time\nheld=[bytearray(100*1048576)]\nwhile not os.path.exists(sys.argv[1]): time.sleep(0.02)\nheld.append(bytearray(700*1048576))\ntime.sleep(60)"
+    )).unwrap();
+    holder.go(&["big", "idle"]);
+    let holder_pid = u32::try_from(holder.pid("big")).expect("the holder PID should be positive");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let ready = {
+            let observed = holder.domain.state.lock().unwrap();
+            observed.admission.contains_key(&holder_pid)
+                && observed.commands.iter().any(|command| {
+                    command.pid == holder_pid
+                        && command.resident >= 100 * MIB
+                        && command.measured_growth == 0
+                })
+        };
+        if ready {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the initial holder was never sampled"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _c = Workload::start(domain(&pool, "c", false), &[("small", 20, 0, 0)]);
+    let mut b = Workload::start(
+        domain(&pool, "b", false),
+        &[("idle", 0, 0, 0), ("grow", 100, RATE, 1000)],
+    );
+    // Observe a real steady-rate window before another owner applies pressure.
+    let grower_pid = u32::try_from(b.pid("grow")).expect("the grower PID should be positive");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let ready = b
+            .domain
+            .state
+            .lock()
+            .unwrap()
+            .commands
+            .iter()
+            .any(|command| {
+                command.pid == grower_pid
+                    && command.resident >= 300 * MIB
+                    && (RATE * 3 * MIB / 4..=RATE * 5 * MIB / 4).contains(&command.steady_growth)
+                    && command.measured_growth >= admission::GROWING
+            });
+        if ready && !b.waiting("grow") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the grower never established its steady rate"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Start observing waits once startup has established the test's steady phase.
+    take_wait_events();
+    std::fs::write(holder.dir.join("pressure"), "").unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !b.waiting("grow") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the added holder never caused pressure"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     assert!(b.waiting("grow"), "the fast grower was not paused");
     settle(3);
     assert!(
