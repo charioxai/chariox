@@ -203,13 +203,21 @@ impl PendingTool {
 }
 
 /// Claude's Bash and Agent tools keep a command or a helper agent running after
-/// their launch result when the model asked for `run_in_background`.
+/// their launch result when the model asked for `run_in_background`; its Monitor tool keeps
+/// a script running and reports its events unless the model made it persistent, which ends
+/// only with the session.
 pub(crate) fn launches_background_task(name: &str, input: Option<&Value>) -> bool {
-    matches!(name, "Bash" | "Agent" | "Task")
-        && input
-            .and_then(|input| input.get("run_in_background"))
+    let flag = |field: &str| {
+        input
+            .and_then(|input| input.get(field))
             .and_then(Value::as_bool)
             == Some(true)
+    };
+    match name {
+        "Bash" | "Agent" | "Task" => flag("run_in_background"),
+        "Monitor" => !flag("persistent"),
+        _ => false,
+    }
 }
 
 /// A helper agent Claude started in the background whatever the call asked for:
@@ -222,7 +230,7 @@ fn is_async_helper_launch(structured: Option<&Value>) -> bool {
 }
 
 /// The task id a background launch result names: the structured result's
-/// `backgroundTaskId` or a helper agent's `agentId` (the stream's
+/// `backgroundTaskId`, a Monitor's `taskId` or a helper agent's `agentId` (the stream's
 /// `tool_use_result`, the transcript's `toolUseResult`), else the launch text
 /// "Command running in background with ID: <id>. ...".
 pub(crate) fn launched_task_id(structured: Option<&Value>, output: &str) -> Option<String> {
@@ -230,6 +238,7 @@ pub(crate) fn launched_task_id(structured: Option<&Value>, output: &str) -> Opti
         .and_then(|result| {
             result
                 .get("backgroundTaskId")
+                .or_else(|| result.get("taskId"))
                 .or_else(|| result.get("agentId"))
         })
         .and_then(Value::as_str)
@@ -690,6 +699,47 @@ mod tests {
             transcript.observe_at(&task_notification("br1ml3bl1", first, "completed"), 21_000);
         assert_eq!(first_ended[0]["id"], first);
         assert_eq!(first_ended[0]["finished_at_ms"], 21_000);
+    }
+
+    // Recorded from Claude Code: the Monitor tool keeps a script running past its launch and
+    // reports each event, then the end of the stream, as a task notification.
+    fn monitor_launch(id: &str, persistent: bool) -> Value {
+        let mut input = json!({"command":"sleep 40; echo MONITOR_EVENT_FIRED","description":"drill monitor","timeout_ms":300000});
+        if persistent {
+            input["persistent"] = json!(true);
+        }
+        json!({"type":"assistant","message":{"role":"assistant","content":[{
+            "type":"tool_use","id":id,"name":"Monitor","input":input
+        }]}})
+    }
+
+    fn monitor_launch_result(id: &str, task_id: &str) -> Value {
+        json!({"type":"user","message":{"role":"user","content":[{
+            "tool_use_id":id,"type":"tool_result",
+            "content":format!("Monitor started (task {task_id}, expires in 5m unless the source ends first; you get one notice at expiry \u{2014} re-arm if you still need the watch). You will be notified on each event. Keep working \u{2014} do not poll or sleep.")
+        }]},"tool_use_result":{"taskId":task_id,"timeoutMs":300000,"persistent":false}})
+    }
+
+    #[test]
+    fn a_monitor_runs_past_its_launch_and_its_turn_until_its_stream_ends() {
+        let mut transcript = ClaudeToolTranscript::default();
+        let id = "toolu_01KamQyLbeQDEZ46fKLMXvGg";
+        let launch = transcript.observe_at(&monitor_launch(id, false), 1_000);
+        assert_eq!(launch[0]["background"], true, "{}", launch[0]);
+        let launched = transcript.observe_at(&monitor_launch_result(id, "br087zy1c"), 1_200);
+        assert_eq!(launched[0]["background"], true, "{}", launched[0]);
+        assert!(launched[0]["finished_at_ms"].is_null(), "{}", launched[0]);
+        let ended = transcript.observe_at(&task_notification("br087zy1c", id, "completed"), 41_000);
+        assert_eq!(ended.len(), 1, "{ended:?}");
+        assert_eq!(ended[0]["id"], id);
+        assert_eq!(ended[0]["finished_at_ms"], 41_000);
+    }
+
+    #[test]
+    fn a_persistent_monitor_is_not_held_for_because_it_never_ends() {
+        let mut transcript = ClaudeToolTranscript::default();
+        let launch = transcript.observe_at(&monitor_launch("persistent", true), 1_000);
+        assert!(launch[0].get("background").is_none(), "{}", launch[0]);
     }
 
     // Recorded from Claude Code (Agent tool with `run_in_background`): the launch result is
