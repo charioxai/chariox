@@ -62,8 +62,11 @@ pub(super) enum CancelledLocalPromptRestartOutcome {
 type DurableRestartRecoveryTarget = (String, String, String);
 // Wall clock, not attempts: one attempt can take seconds (a launch that waits on a locked Vault).
 const RESTART_RECOVERY_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
-const UNRECOVERABLE_PROMPT_REASON: &str = "The prompt could not be restored after the restart (the provider could not start, for example because the Chariox Vault stayed locked)";
-const UNIDENTIFIED_PROMPT_REASON: &str = "The prompt could not be resumed after the restart (no provider session or transcript identified the interrupted turn)";
+const UNRECOVERABLE_PROMPT_REASON: &str = "The prompt could not be restored after the restart";
+// Named only when the kernel saw the locked Vault refuse the launch.
+const UNRECOVERABLE_PROMPT_VAULT_REASON: &str =
+    "The prompt could not be restored after the restart because the Chariox Vault stayed locked";
+const UNIDENTIFIED_PROMPT_REASON: &str = "The prompt could not be resumed after the restart: no provider session or transcript identified the interrupted turn";
 const UNANSWERABLE_PROMPT_REASON: &str = "The kernel restarted while this turn waited for an answer to a question, and that answer can no longer reach it. Send the request again to continue the conversation";
 const RESTART_RECOVERY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -284,19 +287,23 @@ impl KernelRuntimeState {
         }
     }
 
-    /// MP-08/MP-09/MP-10 G13: the turn yielded (or its task already settled) before the kernel
-    /// stopped, so no provider turn is owed for this prompt. The ledger refuses to redispatch it,
-    /// and retrying that for the whole recovery window held the task's fired wakes for minutes.
+    /// MP-08/MP-09/MP-10 G13: no provider turn is owed for this prompt, because its turn yielded
+    /// or its task settled before the kernel stopped, or because the task went on under a
+    /// continuation prompt (the ledger names that one now). The ledger refuses to redispatch the
+    /// prompt, and retrying that for the whole recovery window held the task's fired wakes for
+    /// minutes and then ended it with a failure card for a turn that had gone on.
     fn local_prompt_task_handed_off(&self, room: &str, agent: &str, prompt_id: &str) -> bool {
         self.owned
             .durable_state_store
             .agent_tasks(Some(room), Some(agent))
             .is_ok_and(|tasks| {
                 tasks.iter().any(|task| {
-                    task.prompt_id == prompt_id
+                    let settled = task.prompt_id == prompt_id
                         && task.pending_prompt_id.is_none()
                         && task.state
-                            != crate::durable_state::agent_lifecycle::ExecutionState::Working
+                            != crate::durable_state::agent_lifecycle::ExecutionState::Working;
+                    let continued = task.task_id == prompt_id && task.prompt_id != prompt_id;
+                    settled || continued
                 })
             })
     }
@@ -385,9 +392,13 @@ impl KernelRuntimeState {
         &self,
         summary: &mut DurableRestartRecoverySummary,
     ) {
+        let awaiting_vault = summary.agents_awaiting_vault.clone();
         let unrecoverable = std::mem::take(&mut summary.failed_local_prompts)
             .into_iter()
-            .map(|target| (target, UNRECOVERABLE_PROMPT_REASON));
+            .map(|target| {
+                let reason = unrecoverable_reason(&awaiting_vault, &target);
+                (target, reason)
+            });
         let unidentified = std::mem::take(&mut summary.unidentified_local_prompts)
             .into_iter()
             .map(|target| (target, UNIDENTIFIED_PROMPT_REASON));
@@ -1618,6 +1629,18 @@ fn provider_restart_continuation_prompt(operation_id: &str) -> String {
     )
 }
 
+/// The reason names the Vault only for an agent whose launch the kernel saw it refuse.
+fn unrecoverable_reason(
+    awaiting_vault: &BTreeSet<(String, String)>,
+    (session_id, agent_id, _): &DurableRestartRecoveryTarget,
+) -> &'static str {
+    if awaiting_vault.contains(&(session_id.clone(), agent_id.clone())) {
+        UNRECOVERABLE_PROMPT_VAULT_REASON
+    } else {
+        UNRECOVERABLE_PROMPT_REASON
+    }
+}
+
 fn log_restart_recovery_failure(
     session_id: &str,
     agent_id: &str,
@@ -1675,6 +1698,24 @@ mod tests {
     use crate::session::{CreateSessionRequest, PromptQueueItem, PromptStatus};
     use std::sync::Arc;
     use tokio::sync::Mutex;
+
+    #[test]
+    fn only_a_launch_the_locked_vault_refused_names_the_vault() {
+        let target = (
+            "session".to_string(),
+            "agent".to_string(),
+            "prompt".to_string(),
+        );
+        assert!(!unrecoverable_reason(&BTreeSet::new(), &target).contains("Vault"));
+        let awaiting = BTreeSet::from([("session".to_string(), "agent".to_string())]);
+        assert!(unrecoverable_reason(&awaiting, &target).contains("Vault stayed locked"));
+        let other = (
+            "session".to_string(),
+            "other".to_string(),
+            "prompt".to_string(),
+        );
+        assert!(!unrecoverable_reason(&awaiting, &other).contains("Vault"));
+    }
 
     fn runtime_with_active_prompt(
         delivery_phase: crate::session::DurablePromptDeliveryPhase,
@@ -2542,9 +2583,83 @@ mod tests {
             "the task must carry the definitive outcome: {task:?}"
         );
         assert!(
+            !task.reason.contains("Vault"),
+            "the kernel did not see a locked Vault, so the receipt must not name one: {}",
+            task.reason
+        );
+        assert!(
             task.reason.contains("could not be restored"),
             "{}",
             task.reason
+        );
+    }
+
+    /// The turn yields on a one-minute timer, its provider turn settles to the wait, and the
+    /// timer fires, all while the session still holds the prompt active.
+    fn yield_to_a_fired_timer(
+        store: &crate::durable_state::DurableKernelStateStore,
+        session_id: &str,
+        agent_id: &str,
+        task_id: &str,
+        prompt_id: &str,
+        now: u64,
+    ) {
+        use crate::durable_state::agent_lifecycle::Operation;
+        let wake: crate::durable_state::agent_lifecycle::AgentWake =
+            serde_json::from_value(serde_json::json!({
+                "id": "g13-timer", "task_id": task_id, "room_id": session_id,
+                "agent_id": agent_id, "registration_id": "completion-g13-timer",
+                "kind": "timer", "label": "one-minute timer", "state": "",
+                "created_at_ms": now, "verified_at_ms": null, "next_due_ms": now + 1,
+                "interval_ms": null, "command": [], "match_text": null,
+                "matched_at_ms": null, "pid": null, "exit_code": null, "summary": "",
+                "detail": null, "fire_count": 0, "missed_fires": 0,
+                "last_fired_at_ms": null, "last_sequence": null, "last_delivery": null,
+                "last_delivered_at_ms": null, "last_acknowledged_at_ms": null,
+                "alerted_sequence": null
+            }))
+            .expect("wake should parse");
+        store
+            .agent_lifecycle(Operation::CreateWake {
+                task: task_id.into(),
+                prompt: prompt_id.into(),
+                wake,
+            })
+            .expect("wake should register");
+        store
+            .agent_lifecycle(Operation::Yield {
+                task: task_id.into(),
+                prompt: prompt_id.into(),
+                registrations: vec!["completion-g13-timer".into()],
+                cursor: 0,
+                deadline: Some(now + 120_000),
+                reason: "Wait for the one-minute timer".into(),
+                now,
+            })
+            .expect("the turn yields");
+        store
+            .agent_lifecycle(Operation::Settle {
+                room: session_id.into(),
+                agent: agent_id.into(),
+                prompt: prompt_id.into(),
+                run: "provider-run-yielded".into(),
+                has_answer: true,
+                cancelled: false,
+                now,
+            })
+            .expect("the yielded turn settles to its wait");
+        store
+            .agent_lifecycle(Operation::FireWakes { now: now + 1_000 })
+            .expect("the timer fires");
+        assert_eq!(
+            store
+                .agent_wake("g13-timer")
+                .expect("wake should load")
+                .expect("wake exists")
+                .last_delivery
+                .as_deref(),
+            Some("pending"),
+            "the timer fired before the restart"
         );
     }
 
@@ -2635,63 +2750,13 @@ mod tests {
                     })
                     .expect("the task binds to its workflow node");
             }
-            let wake: crate::durable_state::agent_lifecycle::AgentWake =
-                serde_json::from_value(serde_json::json!({
-                    "id": "g13-timer", "task_id": task.task_id, "room_id": session_id,
-                    "agent_id": agent_id, "registration_id": "completion-g13-timer",
-                    "kind": "timer", "label": "one-minute timer", "state": "",
-                    "created_at_ms": now, "verified_at_ms": null, "next_due_ms": now + 1,
-                    "interval_ms": null, "command": [], "match_text": null,
-                    "matched_at_ms": null, "pid": null, "exit_code": null, "summary": "",
-                    "detail": null, "fire_count": 0, "missed_fires": 0,
-                    "last_fired_at_ms": null, "last_sequence": null, "last_delivery": null,
-                    "last_delivered_at_ms": null, "last_acknowledged_at_ms": null,
-                    "alerted_sequence": null
-                }))
-                .expect("wake should parse");
-            store
-                .agent_lifecycle(Operation::CreateWake {
-                    task: task.task_id.clone(),
-                    prompt: prompt_id.clone(),
-                    wake,
-                })
-                .expect("wake should register");
-            store
-                .agent_lifecycle(Operation::Yield {
-                    task: task.task_id.clone(),
-                    prompt: prompt_id.clone(),
-                    registrations: vec!["completion-g13-timer".into()],
-                    cursor: 0,
-                    deadline: Some(now + 120_000),
-                    reason: "Wait for the one-minute timer".into(),
-                    now,
-                })
-                .expect("the turn yields");
-            // The provider turn ended in the ledger; its session prompt was still active
-            // when the kernel stopped.
-            store
-                .agent_lifecycle(Operation::Settle {
-                    room: session_id.clone(),
-                    agent: agent_id.clone(),
-                    prompt: prompt_id.clone(),
-                    run: "provider-run-yielded".into(),
-                    has_answer: true,
-                    cancelled: false,
-                    now,
-                })
-                .expect("the yielded turn settles to its wait");
-            store
-                .agent_lifecycle(Operation::FireWakes { now: now + 1_000 })
-                .expect("the timer fires");
-            assert_eq!(
-                store
-                    .agent_wake("g13-timer")
-                    .expect("wake should load")
-                    .expect("wake exists")
-                    .last_delivery
-                    .as_deref(),
-                Some("pending"),
-                "{phase:?}: the timer fired before the restart"
+            yield_to_a_fired_timer(
+                store,
+                &session_id,
+                &agent_id,
+                &task.task_id,
+                &prompt_id,
+                now,
             );
             let targets = runtime.durable_restart_recovery_targets();
 
@@ -2754,6 +2819,138 @@ mod tests {
                 "{phase:?}: the fired timer is delivered as the task's next turn: {task:?}"
             );
         }
+    }
+
+    // Restart recovery found the prompt a yielded turn left active while the task's fired wake
+    // had already queued its continuation: the task then names the continuation prompt, so
+    // redispatching the old one failed ("superseded turn or conflicting task identity") for the
+    // whole window and ended it as interrupted by the restart, with a card for a turn that went on.
+    #[tokio::test]
+    async fn a_prompt_its_task_continued_without_ends_silently_after_the_restart() {
+        use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
+        let mut config = DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_setup(
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            std::env::current_dir()
+                .expect("test workspace should resolve")
+                .to_string_lossy()
+                .as_ref(),
+            config,
+            false,
+        );
+        let store = &runtime.owned.durable_state_store;
+        let now = crate::session::unix_epoch_ms();
+        let Outcome::Task(task) = store
+            .agent_lifecycle(Operation::Begin {
+                owner: "local".into(),
+                room: session_id.clone(),
+                agent: agent_id.clone(),
+                prompt: prompt_id.clone(),
+                run: None,
+                now,
+            })
+            .expect("task should begin")
+        else {
+            panic!("begin returns the task");
+        };
+        // The owner resumes the blocked task while its prompt is still active: the continuation
+        // queues behind that prompt, and admitting it moves the task onto the continuation.
+        store
+            .agent_lifecycle(Operation::Block {
+                task: task.task_id.clone(),
+                prompt: prompt_id.clone(),
+                reason: "Waiting for the owner".into(),
+            })
+            .expect("the task blocks");
+        let Outcome::Task(blocked) = store
+            .agent_lifecycle(Operation::OwnerResponse {
+                task: task.task_id.clone(),
+                revision: store
+                    .agent_task(&task.task_id)
+                    .expect("task should load")
+                    .expect("task exists")
+                    .blocked_revision,
+                resume: true,
+                now,
+            })
+            .expect("the owner resumes the task")
+        else {
+            panic!("owner response returns the task");
+        };
+        store
+            .agent_lifecycle(Operation::BeginContinuation {
+                task: task.task_id.clone(),
+                room: session_id.clone(),
+                agent: agent_id.clone(),
+                prompt: blocked
+                    .pending_prompt_id
+                    .clone()
+                    .expect("resume names its continuation prompt"),
+                run: None,
+                now,
+            })
+            .expect("the queued continuation is admitted");
+        let continued = store
+            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .expect("tasks should load")
+            .into_iter()
+            .find(|candidate| candidate.task_id == task.task_id)
+            .expect("task should exist");
+        assert!(
+            continued.state == ExecutionState::Working && continued.prompt_id != prompt_id,
+            "the task moved onto its continuation: {continued:?}"
+        );
+        let notices_before = runtime.agent_notices_for_test(&session_id, &agent_id);
+        let targets = runtime.durable_restart_recovery_targets();
+
+        let window = std::time::Duration::from_secs(2);
+        let started = std::time::Instant::now();
+        let summary = runtime
+            .drive_durable_restart_recovery(
+                &targets,
+                &BTreeSet::new(),
+                window,
+                std::time::Duration::from_millis(1),
+            )
+            .await;
+
+        assert!(
+            started.elapsed() < window,
+            "recovery must not spend its window on a prompt its task left: {summary:?}"
+        );
+        assert_eq!(summary.failed_reconciliations, 0, "{summary:?}");
+        assert_eq!(summary.unrecoverable_local_prompts_cancelled, 0);
+        assert_eq!(summary.handed_off_local_prompts_ended, 1, "{summary:?}");
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        assert!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+                .is_none_or(|prompt| prompt.id() != prompt_id),
+            "the superseded prompt ends: {summary:?}"
+        );
+        assert_eq!(
+            runtime.agent_notices_for_test(&session_id, &agent_id),
+            notices_before,
+            "a superseded turn settles without a card"
+        );
+        let task = store
+            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .expect("tasks should load")
+            .into_iter()
+            .find(|candidate| candidate.task_id == task.task_id)
+            .expect("task should exist");
+        assert_eq!(
+            task.state,
+            ExecutionState::Working,
+            "the continuation keeps running: {task:?}"
+        );
     }
 
     /// A runtime whose active turn waits on a pending popup (ORCH-15).
