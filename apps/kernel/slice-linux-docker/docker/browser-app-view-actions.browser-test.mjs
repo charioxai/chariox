@@ -16,7 +16,7 @@ let requests = 0;
 
 before(async () => {
   root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, 'app-view-actions-'));
-  host = new KernelBrowserHost(root);
+  host = new KernelBrowserHost(root, { appStorageRoot: path.join(root, 'apps') });
 });
 after(async () => {
   await host?.stop();
