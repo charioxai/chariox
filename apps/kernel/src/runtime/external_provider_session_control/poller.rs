@@ -131,36 +131,37 @@ pub(super) async fn refresh_external_provider_session_index(
     let discovery_started = Instant::now();
     let discovery_providers = providers_to_refresh.clone();
     let discovery_profile_roots = profile_roots.clone();
-    let discovered = match tokio::task::spawn_blocking(move || {
-        discovery_providers
-            .iter()
-            .flat_map(|provider| {
-                discovery_profile_roots.as_ref().map_or_else(
-                    || crate::app::discover_external_provider_sessions(Some(provider.as_str())),
-                    |profiles| {
-                        crate::app::discover_external_provider_sessions_for_profiles(
-                            profiles,
-                            Some(provider.as_str()),
-                        )
-                    },
-                )
-            })
-            .collect::<Vec<_>>()
-    })
-    .await
-    {
-        Ok(discovered) => discovered,
-        Err(error) => {
-            crate::logging::warn_with_fields(
-                "daemon.external_provider_sessions",
-                "external provider session discovery task failed",
-                serde_json::json!({
-                    "error": error.to_string(),
-                }),
-            );
-            return;
-        }
-    };
+    let discovered =
+        match crate::shutdown::spawn_blocking("external provider session discovery", move || {
+            discovery_providers
+                .iter()
+                .flat_map(|provider| {
+                    discovery_profile_roots.as_ref().map_or_else(
+                        || crate::app::discover_external_provider_sessions(Some(provider.as_str())),
+                        |profiles| {
+                            crate::app::discover_external_provider_sessions_for_profiles(
+                                profiles,
+                                Some(provider.as_str()),
+                            )
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        {
+            Ok(discovered) => discovered,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.external_provider_sessions",
+                    "external provider session discovery task failed",
+                    serde_json::json!({
+                        "error": error.to_string(),
+                    }),
+                );
+                return;
+            }
+        };
     let discovery_ms = discovery_started.elapsed().as_millis();
     let codex_count = count_external_provider_sessions(&discovered, "codex");
     let claude_count = count_external_provider_sessions(&discovered, "claude");
@@ -220,7 +221,7 @@ pub(super) async fn read_external_provider_discovery_signature(
     profile_roots: Option<Vec<crate::app::ExternalProviderSessionProfileRoot>>,
 ) -> Option<ExternalProviderSessionDiscoverySignatureRead> {
     let full_scan = cached_candidate_paths.is_none();
-    match tokio::task::spawn_blocking(move || {
+    match crate::shutdown::spawn_blocking("external provider session discovery", move || {
         let candidate_paths = cached_candidate_paths.unwrap_or_else(|| match profile_roots {
             Some(profiles) => {
                 crate::app::external_provider_session_candidate_paths_for_profiles(&profiles, None)
@@ -441,23 +442,26 @@ pub(super) async fn refresh_attached_external_provider_histories_matching(
                 &account_profile,
             )
         });
-        let read = match tokio::task::spawn_blocking(move || {
-            roots.map_or_else(
-                || {
-                    crate::app::read_external_provider_observed_turns(
-                        &provider,
-                        &provider_session_id,
-                    )
-                },
-                |roots| {
-                    crate::app::read_external_provider_observed_turns_for_profile(
-                        &provider,
-                        &provider_session_id,
-                        &roots,
-                    )
-                },
-            )
-        })
+        let read = match crate::shutdown::spawn_blocking(
+            "external provider session discovery",
+            move || {
+                roots.map_or_else(
+                    || {
+                        crate::app::read_external_provider_observed_turns(
+                            &provider,
+                            &provider_session_id,
+                        )
+                    },
+                    |roots| {
+                        crate::app::read_external_provider_observed_turns_for_profile(
+                            &provider,
+                            &provider_session_id,
+                            &roots,
+                        )
+                    },
+                )
+            },
+        )
         .await
         {
             Ok(turns) => AttachedExternalObserverRead { target, turns },

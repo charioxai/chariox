@@ -367,9 +367,11 @@ fn admit(
 
 async fn read_local<P: Place>(place: &P, path: &str, offset: u64) -> Result<SourceSlice, String> {
     let (place, path) = (place.clone(), path.to_owned());
-    tokio::task::spawn_blocking(move || read_slice(&place, &path, offset))
-        .await
-        .map_err(|_| "The copy stopped unexpectedly; nothing was written".to_owned())?
+    crate::shutdown::spawn_blocking("Files destination I/O", move || {
+        read_slice(&place, &path, offset)
+    })
+    .await
+    .map_err(|_| "The copy stopped unexpectedly; nothing was written".to_owned())?
 }
 
 /// Writes one pulled slice into the caller's place under the same rules a worker applies;
@@ -389,7 +391,7 @@ async fn land<P: Place>(
         sha256.to_owned(),
     );
     let (total_size, overwrite) = (slice.size_bytes, options.overwrite);
-    tokio::task::spawn_blocking(move || {
+    crate::shutdown::spawn_blocking("Files destination I/O", move || {
         write_slice(
             &local,
             &destination,

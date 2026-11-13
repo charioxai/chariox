@@ -57,6 +57,10 @@ impl Recorder {
         self.send(Some(record), Vec::new())
     }
 
+    pub(super) fn flush(&self) -> Pending {
+        self.send(None, Vec::new())
+    }
+
     pub(super) fn forget(&self, job_ids: Vec<String>) {
         drop(self.send(None, job_ids));
     }
@@ -90,7 +94,7 @@ async fn write_in_order(dir: Arc<PathBuf>, mut writes: mpsc::UnboundedReceiver<W
                 done,
             },
         ) = (dir.clone(), write);
-        let outcome = tokio::task::spawn_blocking(move || {
+        let outcome = crate::shutdown::spawn_blocking("Files record writer", move || {
             write_to_disk(&path, record.as_ref(), &forget).map_err(|error| error.to_string())
         })
         .await
