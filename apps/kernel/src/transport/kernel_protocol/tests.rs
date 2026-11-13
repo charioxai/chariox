@@ -491,6 +491,7 @@ fn prompt_runtime_activity_changes_can_skip_session_snapshot() {
             active_prompt_count: 1,
             queued_prompt_count: 0,
             unread_idle_output: false,
+            waiting: false,
             queued_prompt_controls: BTreeMap::new(),
             active_turn: Some(crate::runtime::projection::AgentActiveTurnProjection {
                 prompt_id: "prompt-a".to_string(),
@@ -704,6 +705,7 @@ fn session_snapshot_with_agent() -> SessionSnapshotProjection {
             active_prompt_count: 0,
             queued_prompt_count: 0,
             unread_idle_output: false,
+            waiting: false,
             queued_prompt_controls: BTreeMap::new(),
             active_turn: None,
             last_completed_turn: None,

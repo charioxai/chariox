@@ -512,4 +512,6 @@ pub use workspace::*;
 /// 1027: generic runtime identity observation and opaque enrollment authority evidence.
 /// 1006: the kernel resource feed (`kernel_resources` subscription, `WatchKernelResources`,
 /// `KernelResourcesWatched`, `kernel_resource_changed`) for the Vault, provider accounts and Apps.
+/// 1006 (Landing 10, provisional): the owner ends a wait with `CancelAgentWait` (the agent is not woken), an agent's
+/// `waiting` state is projected on its activity, and a turn the kernel started is marked `system_prompt` in the outline.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1027;

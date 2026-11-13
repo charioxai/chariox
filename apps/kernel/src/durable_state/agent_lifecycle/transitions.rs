@@ -772,6 +772,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::ProcessExited { .. }
         | Operation::CancelWake { .. }
         | Operation::CancelOwnerTimer { .. }
+        | Operation::CancelOwnerWait { .. }
         | Operation::WakeAlerted { .. }
         | Operation::RetireWakes { .. }) => super::wakes::apply(tx, op),
         op @ (Operation::RecordCreatedPeer { .. } | Operation::ReleaseCreatedPeer { .. }) => {

@@ -19,6 +19,7 @@ fn turn() -> crate::local::SessionHistoryOutlineTurn {
         turn_id: "prompt-1".into(),
         prompt_id: Some("prompt-1".into()),
         prompt_origin: crate::session::PromptOrigin::Chariox,
+        system_prompt: false,
         external_provider: None,
         external_provider_session_id: None,
         external_provider_turn_id: None,

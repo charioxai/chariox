@@ -948,6 +948,17 @@ impl KernelRuntimeState {
                     success: task.state == ExecutionState::Done,
                 })?;
         }
+        // A turn that leaves armed work is waiting. Ending that wait later must not resurrect
+        // its output as a completion; a subsequent turn will record its own unread output.
+        if self
+            .owned
+            .session_snapshot_without_projection_update(&task.room_id)?
+            .agent_is_waiting(&task.agent_id)
+        {
+            self.owned
+                .session_store
+                .clear_agent_unread_output(&task.room_id, &task.agent_id)?;
+        }
         // A followed agent's end is owed to its followers on other kernels now.
         self.spawn_peer_agent_outcome_delivery();
         // A retried settlement changed nothing: the sweep that found it would

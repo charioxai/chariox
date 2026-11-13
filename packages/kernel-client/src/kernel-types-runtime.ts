@@ -35,6 +35,8 @@ export type AgentRuntimeActivity = {
   active_prompt_count?: number
   queued_prompt_count?: number
   unread_idle_output: boolean
+  /** The agent has armed waits or events and will be woken by them. */
+  waiting?: boolean
   queued_prompt_controls?: Record<string, AgentQueuedPromptControl>
   active_turn?: AgentActiveTurn | null
   last_completed_turn?: CompletedGitTurnActionProjection | null

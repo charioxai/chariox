@@ -58,6 +58,9 @@ pub struct SessionHistoryOutlineTurn {
     pub prompt_id: Option<String>,
     #[serde(default)]
     pub prompt_origin: crate::session::PromptOrigin,
+    /// The kernel started the turn itself (a wake or a trigger): its prompt is a system prompt.
+    #[serde(default, skip_serializing_if = "crate::session::is_false")]
+    pub system_prompt: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

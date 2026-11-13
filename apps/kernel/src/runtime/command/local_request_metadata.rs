@@ -332,6 +332,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .attachment(&request.attachment_id)
         }
+        LocalDaemonRequest::CancelAgentWait(request) => {
+            LocalRequestMetadata::new("agent_wait.cancel", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+        }
         LocalDaemonRequest::SteerActivePrompt(request) => {
             LocalRequestMetadata::new("prompt.active.steer", Interactive)
                 .session(&request.session_id)
@@ -1175,6 +1180,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::CancelActivePrompt(_)
         | LocalDaemonRequest::CancelAgentTask(_)
         | LocalDaemonRequest::CancelAgentWake(_)
+        | LocalDaemonRequest::CancelAgentWait(_)
         | LocalDaemonRequest::SteerQueuedPrompt(_)
         | LocalDaemonRequest::SteerActivePrompt(_)
         | LocalDaemonRequest::CancelQueuedPrompt(_)

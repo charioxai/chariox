@@ -64,6 +64,9 @@ pub struct AgentRuntimeActivity {
     pub queued_prompt_count: usize,
     #[serde(default)]
     pub unread_idle_output: bool,
+    /// The agent has armed waits or events and will be woken by them.
+    #[serde(default, skip_serializing_if = "crate::session::is_false")]
+    pub waiting: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub queued_prompt_controls: BTreeMap<String, AgentQueuedPromptControlProjection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -348,6 +351,7 @@ pub(crate) fn agent_activity_for_session_projection(
                     && unread_for_user_id.is_some_and(|user_id| {
                         session.agent_has_unread_output(user_id, agent.id())
                     }),
+                waiting: session.agent_is_waiting(agent.id()),
                 queued_prompt_controls: queued_prompt_controls_projection(
                     prompt_state,
                     active_turn.as_ref().and_then(|turn| turn.prompt_origin),

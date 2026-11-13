@@ -603,6 +603,7 @@ mod tests {
                 active_prompt_count: 1,
                 queued_prompt_count: 0,
                 unread_idle_output: false,
+                waiting: false,
                 queued_prompt_controls: std::collections::BTreeMap::new(),
                 active_turn: None,
                 last_completed_turn: None,

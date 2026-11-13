@@ -58,7 +58,7 @@ impl KernelRuntimeOwnedState {
             task,
             &key,
             serde_json::json!({
-                "tool": WAIT_TOOL, "id": key, "status": "running", "background": true,
+                "tool": WAIT_TOOL, "id": key, "task_id": task.task_id, "status": "running", "background": true,
                 "input": {"reason": task.reason, "deadline_ms": wait.deadline_ms},
                 "started_at_ms": wait.started_at_ms, "finished_at_ms": null,
             }),

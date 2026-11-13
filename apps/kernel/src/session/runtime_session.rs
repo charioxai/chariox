@@ -718,7 +718,26 @@ impl RuntimeSession {
         previous != state.latest_output_sequence
     }
 
+    /// The agent has armed work to be woken by: a task in a wait, or a timer or watched source it keeps.
+    pub fn agent_is_waiting(&self, agent_id: &str) -> bool {
+        self.agent_tasks.iter().any(|task| {
+            task.agent_id == agent_id
+                && task.state == crate::durable_state::agent_lifecycle::ExecutionState::Waiting
+                && task.wait.is_some()
+        }) || self.agent_wakes.iter().any(|wake| {
+            wake.agent_id == agent_id
+                && matches!(wake.state.as_str(), "scheduled" | "starting" | "running")
+        })
+    }
+
+    pub(crate) fn clear_agent_unread_output(&mut self, agent_id: &str) {
+        self.agent_output_read_state.remove(agent_id);
+    }
+
     pub fn agent_has_unread_output(&self, user_id: &str, agent_id: &str) -> bool {
+        if self.agent_is_waiting(agent_id) {
+            return false;
+        }
         let Some(state) = self.agent_output_read_state.get(agent_id) else {
             return false;
         };

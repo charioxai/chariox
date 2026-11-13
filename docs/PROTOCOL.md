@@ -7422,3 +7422,15 @@ While a step is pending or running, or `git_init` or `worktree` failed and was n
 `WaitingRoomLaunchTarget.git_available` (always serialized, `false` for readers that lack it) reports whether a `git` executable runs on the kernel's machine; a client offers "Initialize Git" only when it is true.
 
 Focused checks: `cargo test -p chariox-kernel --test kernel_websocket_runtime_integration room_setup`, `cargo test -p chariox-kernel --lib room_setup`.
+
+Landing 10 carries local daemon protocol 1006 and relay peer 445 (provisional: the Landing 10 union restamps). An agent's wait
+can be ended by its owner: `CancelAgentWait { session_id, attachment_id, task_id, started_at_ms }` (the room owner's terminal,
+like `CancelAgentTask`) stops what the wait is on (its timers, watched processes and sources), ends the task and answers
+`AgentTaskUpdated`. The agent is not woken: nothing is delivered to its inbox, and on its next turn it simply is no longer
+registered for the wait. The wait's `provider_tool` row (which now also carries `task_id`) is rewritten in place as
+`"status":"completed"` with `woken_by {kind:"cancelled"}`. A goal's wait is refused (stop the goal), and so is a task that has
+other open work. `WaitingRoomPublicItemActivitySummary.waiting` and `AgentRuntimeActivity.waiting` (omitted when false) say that
+an agent has armed waits or events (a task in a wait, or a scheduled, starting or running timer or source); the Room summary
+carries the count as `waiting_agent_count`. A `SessionHistoryOutlineTurn` the kernel started itself (an inbox wake of a
+waiting agent, or a schedule, HTTP or notification trigger) carries `system_prompt: true`; the outline now keeps the text of a
+wake prompt, which it used to blank. Focused check: `cargo test -p chariox-kernel --lib -- owner_wait system_prompt r16_ protocol_shapes`.

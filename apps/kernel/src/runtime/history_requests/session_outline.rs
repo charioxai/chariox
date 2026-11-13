@@ -746,10 +746,24 @@ fn outline_turn_from_events_with_lifecycle(
     let external_identity = outline_turn_external_identity(&events);
     let prompt_origin = outline_turn_prompt_origin(prompt);
     let mut user_prompt = outline_page_entry_from_event(prompt.clone())?;
-    if prompt
+    // The kernel started this turn itself: a wake of a waiting agent, or a trigger that fired.
+    // Its prompt is shown as what it is, a system prompt, instead of being hidden or taken for the person's.
+    let inbox_wake = prompt
         .prompt_id
         .as_deref()
-        .is_some_and(crate::session::is_internal_prompt_echo_id)
+        .is_some_and(crate::session::is_agent_inbox_prompt_id);
+    let system_prompt = inbox_wake
+        || matches!(
+            prompt_origin,
+            crate::session::PromptOrigin::Schedule
+                | crate::session::PromptOrigin::Http
+                | crate::session::PromptOrigin::Notification
+        );
+    if !inbox_wake
+        && prompt
+            .prompt_id
+            .as_deref()
+            .is_some_and(crate::session::is_internal_prompt_echo_id)
     {
         // Retain the turn and reply attribution without presenting kernel
         // instructions as user input after a reconnect.
@@ -759,7 +773,7 @@ fn outline_turn_from_events_with_lifecycle(
         user_prompt.total_chars = 0;
     }
     project_workflow_user_prompt(&mut user_prompt, prompt_origin);
-    if prompt.is_internal_prompt_echo() {
+    if !inbox_wake && prompt.is_internal_prompt_echo() {
         // Preserve the agent's reply and turn identity without a user instruction row.
         user_prompt.entry.text.clear();
         user_prompt.fragment_start = 0;
@@ -817,6 +831,7 @@ fn outline_turn_from_events_with_lifecycle(
             .unwrap_or_else(|| format!("turn-{}", prompt.sequence)),
         prompt_id: prompt.prompt_id.clone(),
         prompt_origin,
+        system_prompt,
         external_provider: external_identity
             .as_ref()
             .map(|identity| identity.provider.clone()),

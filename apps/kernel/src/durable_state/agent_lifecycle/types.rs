@@ -675,6 +675,14 @@ pub(crate) enum Operation {
         room: String,
         owner: String,
     },
+    /// The owner ends the wait a task is in without waking it: its sources stop, nothing is
+    /// delivered, and the task is done. Wakes that need a physical stop come back as `Wakes`.
+    CancelOwnerWait {
+        task: String,
+        room: String,
+        owner: String,
+        started_at_ms: u64,
+    },
     /// `prompt: Some` is the owning agent's turn; `None` settles a cancelled
     /// task. `pending` means the driver must still stop the source physically
     /// and will report the end; a watched process always settles on its exit.

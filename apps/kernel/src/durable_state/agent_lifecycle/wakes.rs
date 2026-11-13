@@ -839,6 +839,88 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             Ok(Outcome::Wakes(vec![wake]))
         }
+        Operation::CancelOwnerWait {
+            task,
+            room,
+            owner,
+            started_at_ms,
+        } => {
+            let mut t = load(tx, &task)?;
+            if t.room_id != room || t.owner_user_id != owner || owner.is_empty() {
+                return Err(error("stale or foreign owner wait cancellation"));
+            }
+            let wait = match &t.wait {
+                Some(wait)
+                    if t.state == ExecutionState::Waiting
+                        && wait.started_at_ms == started_at_ms =>
+                {
+                    wait.clone()
+                }
+                _ => {
+                    return Err(error(
+                        "the wait has already ended; reload its current state",
+                    ))
+                }
+            };
+            if t.goal.is_some() {
+                return Err(error(
+                    "a goal's wait ends with its goal; stop the goal instead",
+                ));
+            }
+            // Dead registrations are what keep the sources' last outcomes from waking the agent.
+            let mut sources = Vec::new();
+            for mut reg in registrations(tx, &t.task_id)? {
+                if reg.live && wait.registration_ids.contains(&reg.id) {
+                    reg.live = false;
+                    tx.execute(
+                        "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+                        params![reg.id, encode(&reg)?],
+                    )
+                    .map_err(sql)?;
+                    sources.push(reg.source_id);
+                }
+            }
+            for o in &mut t.obligations {
+                if o.requires_resolution()
+                    && o.completion_source()
+                        .is_some_and(|s| sources.iter().any(|x| x == s))
+                {
+                    o.status = "cancelled".into();
+                    o.dispatch_state = "cancelled".into();
+                }
+            }
+            if t.obligations
+                .iter()
+                .any(AgentObligation::requires_resolution)
+            {
+                return Err(error(
+                    "the task has other open work; stop the task to end it",
+                ));
+            }
+            t.wait = None;
+            t.state = ExecutionState::Done;
+            t.revision += 1;
+            save(tx, &t)?;
+            let now = crate::session::unix_epoch_ms();
+            let mut stopped = Vec::new();
+            for source in sources {
+                let Ok(mut wake) = load_wake(tx, &source) else {
+                    continue;
+                };
+                if terminal(&wake) {
+                    continue;
+                }
+                if wake.kind == "process" {
+                    // A watched process settles on its physical exit.
+                    wake.state = "cancelling".into();
+                    save_wake(tx, &wake)?;
+                } else {
+                    cancel_settle(tx, &mut wake, now)?;
+                }
+                stopped.push(wake);
+            }
+            Ok(Outcome::Wakes(stopped))
+        }
         Operation::WakeAlerted { id, sequence } => {
             let mut wake = load_wake(tx, &id)?;
             super::wake_receipts::alerted(tx, &id, sequence)?;
