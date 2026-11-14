@@ -898,12 +898,12 @@ impl KernelRuntimeState {
             // The agent's turn ended (a blocked task waits for its owner, not for a decision to be
             // answered): the decisions it held move up, whatever else it has open.
             ExecutionState::Done | ExecutionState::Cancelled | ExecutionState::Blocked => {
-                self.move_decisions_up(&task.room_id, &task.agent_id)
+                self.move_decisions_up(&task.room_id, &task.agent_id, Some(&task.task_id))
                     .await?;
             }
             ExecutionState::Waiting => {
                 self.owned.record_wait_started(&task);
-                self.move_seen_decisions_up(&task.room_id, &task.agent_id)
+                self.move_seen_decisions_up(&task.room_id, &task.agent_id, Some(&task.task_id))
                     .await?;
             }
             ExecutionState::Working => {}
