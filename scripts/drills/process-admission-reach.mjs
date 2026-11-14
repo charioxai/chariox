@@ -45,11 +45,7 @@ export async function startReach({ relayBinary, kernelBinary, dir, evidence, dri
     await until(async () => (await send({ RelayStatus: null })).RelayStatus.status.connected, "relay connected")
   }
   // The reach kernel's Vault must be open to approve its own follower's grant.
-  const made = (await rpc({ CreateSession: { workspace_id: join(root, "work"), worktree_id: join(root, "work"), alias: "reach", no_subscribe: true } })).SessionCreated
-  const pending = rpc({ ManageCredentialVault: { session_id: made.session.id, agent_id: made.agent.id } }); pending.catch(() => {})
-  const prompt = await until(async () => (await rpc({ GetSessionState: { session_id: made.session.id } })).SessionState.session.active_interactions?.find(x => x.id.startsWith("vault-unlock-")), "reach vault prompt")
-  await rpc({ RespondToInteraction: { session_id: made.session.id, interaction_id: prompt.id, choice_id: "passphrase", custom_reply: passkey } })
-  await pending
+  await rpc({ CreateCredentialVault: { origin: { kind: "passphrase", passphrase: passkey } } })
   client.onKernelEvent(async event => {
     if (event.event !== "passkey_prompts_changed") return
     for (const p of event.prompts || []) if (p.kind === "access_grant") {
@@ -57,6 +53,7 @@ export async function startReach({ relayBinary, kernelBinary, dir, evidence, dri
       await rpc({ RespondToInteraction: { session_id: p.session_id || "kernel-access", interaction_id: p.interaction_id, choice_id: "approve", passkey } }).catch(() => note("reach-approval-failed"))
     }
   })
+  await client.subscribeToWaitingRoomInventory()
   const pairing = (await drillRpc({ CreateTerminalPairingLink: { terminal_type: "cli", alias: null, expires_in_ms: 3_600_000 } })).TerminalPairingLinkCreated.pairing
   const joined = await rpc({ JoinKernelLink: { link: pairing.pairing_link, relay_token: token("reach-client", "client", ["client_connect", "client_metadata_read", "packet_route"], [drillStatus.daemon_id]) } })
   if (!joined.GatewayKernelJoined) throw new Error("reach pairing failed")
