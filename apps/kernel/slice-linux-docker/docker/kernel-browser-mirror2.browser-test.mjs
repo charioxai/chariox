@@ -2432,6 +2432,14 @@ const visitB = async evaluate => {
   await evaluate("document.getElementById('b').click(), true"); await at("/b");
   await evaluate("history.back(), true"); await at("/");
 };
+test("MIRROR-P3-EARLY-PAINT: the viewport records are complete once the document is parsed, not when its slowest subresource has loaded", () => mirrored(
+  '<h1 id="t">Title</h1><p>text</p><img src="/slow.png" width="10" height="10">',
+  async ({ subscribe, evaluate }) => {
+    const first = await (await subscribe({ viewport_first: true })).next();
+    assert.equal(await evaluate("document.readyState"), "interactive", "the slow image still holds the load event");
+    assert.equal(first.snapshot_viewport_complete, true, "the viewer can hand over: the page's DOM is all here");
+  }, { "/slow.png": { type: "image/png", body: "x", delay_ms: 20000 } }));
+
 test("MIRROR-P3-NAV-REATTACH: a link followed while a credit waits answers that credit with the new document's reset, on the same subscription", () => mirrored(visitedPage, async ({ next, evaluate }) => {
   const first = await next(0, true);
   const waiting = next(4000);
