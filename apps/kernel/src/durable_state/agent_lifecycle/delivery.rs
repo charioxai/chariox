@@ -198,6 +198,7 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
                     params![room, agent, sql_integer(sequence)?],
                 )
                 .map_err(sql)?;
+                super::replies::read_in_turn(tx, &room, &agent, sequence)?;
             }
             Ok(Outcome::Saved)
         }
@@ -358,6 +359,7 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
                 ));
             }
             let already_handled = e.state == "handled";
+            super::replies::read_in_turn(tx, &room, &agent, sequence)?;
             // Reading a pending check-in during independent work is not admission
             // of its goal continuation. Keep it deliverable through the shared owner.
             if e.state == "pending"
