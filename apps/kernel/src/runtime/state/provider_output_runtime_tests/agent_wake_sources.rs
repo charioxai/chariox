@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
 
 mod assessment_inbox;
+mod watch_open;
 
 const KIND: &str = "test-source";
 
@@ -71,6 +72,8 @@ struct Fixture {
     driver: Arc<TestDriver>,
     room: String,
     agent: String,
+    /// The agent that spawned `agent`, when it is a sub-agent.
+    parent: Option<String>,
     run: String,
     prompt_id: String,
     app: Arc<Mutex<DaemonApp>>,
@@ -142,6 +145,7 @@ async fn fixture(name: &str, running_prompt: bool) -> Fixture {
         driver,
         room: session.id().into(),
         agent: agent.id().into(),
+        parent: None,
         run: run.id().into(),
         prompt_id,
         _pty: InertPtyCleanup {
