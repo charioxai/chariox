@@ -28,7 +28,7 @@ export class AdmissionFixture extends Fixture {
       await writeFile(path.join(cwd, 'binary-stream.py'), script, {mode: 0o600})
       // This is the ordinary learned-peak input to admission, not a gate override.
       // An impossible predicted peak makes the side-effect assertion red on the old kernel.
-      const peaks = Object.fromEntries(['cancel', 'start', 'revoke', 'peer-start', 'peer-cancel', 'peer-revoke', 'peer-target-revoke', 'ui-start-standard', 'ui-cancel-standard', 'ui-start-retina', 'ui-cancel-retina', 'ui-owner-standard', 'ui-owner-retina'].map(name => [key(command(this.home, name, host), cwd), {memory: 2 ** 52, writes: 0}]))
+      const peaks = Object.fromEntries(['cancel', 'start', 'revoke', 'peer-start', 'peer-cancel', 'peer-revoke', 'peer-target-revoke', 'ui-start-standard', 'ui-cancel-standard', 'ui-start-retina', 'ui-cancel-retina', 'ui-owner-standard', 'ui-owner-retina', 'ui-place-standard', 'ui-place-retina', 'ui-stay-standard', 'ui-stay-retina'].map(name => [key(command(this.home, name, host), cwd), {memory: 2 ** 52, writes: 0}]))
       await writeFile(path.join(root, 'admission-peaks.json'), JSON.stringify(peaks), {mode: 0o600})
     }
     return super.launch(name, executable, env, argv)

@@ -400,7 +400,7 @@ done
   const reach = flags.get("--reach") === "1" ? await startReach({ relayBinary: resolve(need("--relay-binary")), kernelBinary, dir, evidence, drillEnv: kernelEnv, drillRpc: rpc, passkey, own, until, note }) : null
   const followed = []
   const runScriptOwner = (n, template) => new Promise(done => {
-    const scriptDir = join(dir, `script-owner-${n}`)
+    const scriptDir = join(dir, `script-owner-${n}-${Date.now()}`)
     mkdirSync(scriptDir)
     const filled = template.replaceAll("{S}", String(n)), argv = filled.startsWith("[") ? JSON.parse(filled) : filled.split(" ")
     writeFileSync(join(scriptDir, "run.sh"), `#!/bin/bash
@@ -486,7 +486,7 @@ echo $? > ${scriptDir}/rc
       if (!/^\d+$/.test(name)) continue
       try {
         const cmd = readFileSync(`/proc/${name}/cmdline`, "utf8").split("\0")
-        if (!cmd.some(a => a === "build.py" || a === "write.py") || cmd[0] !== "python3") continue
+        if (!cmd.some(a => a === "build.py" || a === "write.py" || a === "buildp1.py") || cmd[0] !== "python3") continue
         if (readlinkSafe(`/proc/${name}/cwd`) !== work) continue
         const stat = readFileSync(`/proc/${name}/stat`, "utf8")
         out.push({ pid: Number(name), cgroup: readFileSync(`/proc/${name}/cgroup`, "utf8").trim().replace("0::", ""), name: cmd[2], state: stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3), rss_mb: Math.round(Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[21]) * 4 / 1024) })
@@ -523,6 +523,8 @@ echo $? > ${scriptDir}/rc
     const templateFor = n => readFileSync(resolve(answersInFile(n) ? file.replace(/\.txt$/, "-codex.txt") : file), "utf8")
     // A script owner is an outside process with its own grant that runs the same build through `chariox exec`.
     const scripts = Array.from({ length: Number(flags.get("--script-owners") ?? 0) }, (_, i) => runScriptOwner(i + 1, flags.get("--script-command") ?? "python3 buildp1.py s{S} 1600 40 5"))
+    // An answer file of an earlier round must not settle this one.
+    for (const [i] of agents.entries()) if (answersInFile(i + 1)) rmSync(join(work, `answer-b${i + 1}.txt`), { force: true })
     await Promise.all(agents.map((target, i) => ask(templateFor(i + 1).replaceAll("{N}", String(i + 1)), target)))
     // A turn still waiting 3 minutes after the prompts: keep what the kernel's process tree looks like (for hangs).
     const hangProbe = setTimeout(async () => {
