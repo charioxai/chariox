@@ -97,8 +97,8 @@ function run(root, provisioner, { loadedLayers = layers, action = "build-image",
 }
 
 const dockerCalls = async root => (await readFile(join(root, "docker.log"), "utf8").catch(() => "")).trim().split("\n").filter(Boolean)
-const withRoot = async body => {
-  const root = await mkdtemp(join(tmpdir(), "chariox-released-image-"))
+const withRoot = async (body, parent = tmpdir()) => {
+  const root = await mkdtemp(join(parent, "chariox-released-image-"))
   try { await body(root) } finally { await rm(root, { recursive: true, force: true }) }
 }
 
@@ -172,6 +172,27 @@ test("a world-writable archive is refused", () => withRoot(async root => {
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /writable by other users/)
 }))
+
+// Rootless Docker runs the provisioner in a user namespace that does not map host root: the installer's
+// root-owned files show as the overflow uid. Needs root on the host to build that view, and a parent every user can enter.
+const rootlessNamespace = ["unshare", "--user", "--map-users=0:65000:1", "--map-groups=0:65000:1", "--setuid", "0", "--setgid", "0"]
+const canEnterRootlessNamespace = process.getuid?.() === 0 && spawnSync(rootlessNamespace[0], [...rootlessNamespace.slice(1), "true"]).status === 0
+
+test("a root-owned shipped image is trusted inside a rootless Docker user namespace", { skip: !canEnterRootlessNamespace }, () => withRoot(async root => {
+  const { chmodSync } = await import("node:fs")
+  await install(root)
+  const script = join(root, "released-slice-image.py")
+  await cp(join(sliceDirectory, "released-slice-image.py"), script)
+  for (const path of [root, join(root, "slice-image")]) chmodSync(path, 0o755)
+  const rootless = (...args) => spawnSync(rootlessNamespace[0], [...rootlessNamespace.slice(1), "python3", "-I", script, ...args], { encoding: "utf8" })
+  const result = rootless("describe", join(root, "slice-image"), revision, "128", "amd64")
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /^chariox-slice-release:fixture\t/)
+  chmodSync(join(root, "slice-image/slice-image.json"), 0o666)
+  const writable = rootless("describe", join(root, "slice-image"), revision, "128", "amd64")
+  assert.notEqual(writable.status, 0)
+  assert.match(writable.stderr, /writable by other users/)
+}, "/run"))
 
 test("a default start without a shipped image refuses instead of building", () => withRoot(async root => {
   const result = run(root, await install(root, { withImage: false }), { action: "provision" })
