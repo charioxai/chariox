@@ -273,6 +273,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-resto
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-drafts.mjs /opt/chariox-slice/browser-app-drafts.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-input-callers.mjs /opt/chariox-slice/browser-app-input-callers.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-view-actions.mjs /opt/chariox-slice/browser-app-view-actions.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-confirmation-views.mjs /opt/chariox-slice/browser-app-confirmation-views.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs /opt/chariox-slice/browser-controller-events.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-page-permissions.mjs \
      apps/kernel/slice-linux-docker/docker/browser-page-permission-shim.mjs \

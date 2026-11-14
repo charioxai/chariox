@@ -1117,6 +1117,7 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         "browser-app-drafts.mjs",
         "browser-app-input-callers.mjs",
         "browser-app-view-actions.mjs",
+        "browser-app-confirmation-views.mjs",
         "browser-cdp.mjs",
         "browser-controller-actions.mjs",
         "browser-controller-apps.mjs",

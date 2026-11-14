@@ -932,6 +932,34 @@ fn every_user_only_kind_is_the_users() {
             ),
             Some(UserOnly::Payment),
         ),
+        // A person-confirmed App action's card is the person's alone, whoever asks.
+        (
+            "app confirmation",
+            pending(),
+            RuntimeInteraction::new(
+                "app-confirm-1",
+                "agent-1",
+                RuntimeInteractionKind::Choice,
+                RuntimeInteractionLevel::Warning,
+                None,
+                "m",
+                vec![RuntimeInteractionChoice::new(
+                    "confirm", "Confirm", "confirm", None,
+                )],
+                None,
+                None,
+                None,
+            )
+            .with_app_confirmation(crate::local::AppConfirmationFrame {
+                installation_id: "campaign".into(),
+                app_id: "com.chariox.campaign".into(),
+                app_name: "Campaign".into(),
+                publisher_id: "com.chariox".into(),
+                publisher_name: "Chariox".into(),
+                action_name: "pay".into(),
+            }),
+            Some(UserOnly::AppConfirmation),
+        ),
         (
             "sign-in",
             pending(),

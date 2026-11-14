@@ -757,6 +757,23 @@ const bindingCall = (tabs, connection, call) => tabs.handle(connection, { method
   params: { name: "__charioxAppCall", payload: JSON.stringify({ params: {}, ...call }) } });
 const takeActors = async (tabs) => (await tabs.takeCalls()).calls.map((call) => call.actor ?? null);
 
+test("a confirmation preview is prepared and cleared as agent calls, and only the first runs App code", async () => {
+  const { tabs, connection } = await opened();
+  const send = connection.send.bind(connection);
+  const expressions = [];
+  connection.send = async (method, params, session) => {
+    if (method === 'Runtime.evaluate' && params.awaitPromise) { expressions.push(params.expression); return { result: { value: { ok: true, value: { selector: '[data-chariox-confirmation]' } } } }; }
+    return send(method, params, session);
+  };
+  const prepared = await tabs.agent({ target_id: 't1', agent: 'agent-7', call: 'prepare_confirmation', name: 'pay', input: { amount: 1200 } });
+  assert.deepEqual(prepared, { ok: true, value: { selector: '[data-chariox-confirmation]' } });
+  assert.match(expressions[0], /view\.prepareConfirmation\("pay", \{"amount":1200\}\)/);
+  assert.equal(tabs.apps.get('s1').invocation ?? null, null, 'a preview never runs as a backend caller');
+  assert.deepEqual(await tabs.agent({ target_id: 't1', agent: 'agent-7', call: 'clear_confirmation' }), { ok: true, value: { selector: '[data-chariox-confirmation]' } });
+  assert.match(expressions[1], /view\.clearConfirmation\(\)/);
+  await assert.rejects(tabs.agent({ target_id: 't1', agent: 'agent-7', call: 'prepare_confirmation', name: 'Bad-Name' }), /invalid action name/);
+});
+
 test("ambient calls stay human while a scoped invocation waits and after it settles", async () => {
   const { tabs, connection } = await opened();
   const send = connection.send.bind(connection);

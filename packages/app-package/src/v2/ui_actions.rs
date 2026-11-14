@@ -11,14 +11,17 @@ use crate::{
 
 /// What running an action costs the person: `read` and `write` never prompt;
 /// `approval` goes through the kernel's shared interaction unless a grant or
-/// `/sudo` already covers it. An effect class grants no capability and does
-/// not bypass a backend action's protected effect routes.
+/// `/sudo` already covers it. `person_confirmed` always asks the person for
+/// this invocation. An effect class grants no capability and does not bypass
+/// a backend action's protected effect routes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UiActionEffect {
     Read,
     Write,
     Approval,
+    /// Every invocation needs the person's decision, including under sudo.
+    PersonConfirmed,
 }
 
 /// One action an agent may run through the view's own function. The view
@@ -36,6 +39,9 @@ pub struct UiActionDeclaration {
     /// Shown in the approval interaction; required for, and only for, `approval`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_reason: Option<String>,
+    /// The App's registered compact view, required only for `person_confirmed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation_view: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -76,6 +82,16 @@ pub(crate) fn read_ui_actions(bytes: &[u8], limits: &Limits) -> Result<Vec<UiAct
         if !reason_ok {
             return invalid("approvalReason is required for, and only for, approval actions");
         }
+        let confirmation_ok = match (&action.effect, &action.confirmation_view) {
+            (UiActionEffect::PersonConfirmed, Some(view)) => valid_function_name(view),
+            (UiActionEffect::PersonConfirmed, None) => false,
+            (_, view) => view.is_none(),
+        };
+        if !confirmation_ok {
+            return invalid(
+                "confirmationView must name a view for, and only for, person-confirmed actions",
+            );
+        }
         validate_schema(&action.input_schema, true, limits)?;
         if let Some(output) = &action.output_schema {
             validate_schema(output, false, limits)?;
@@ -91,6 +107,7 @@ pub(crate) fn read_ui_actions(bytes: &[u8], limits: &Limits) -> Result<Vec<UiAct
 pub enum UiActionField {
     Effect,
     ApprovalReason,
+    ConfirmationView,
     InputSchema,
     OutputSchema,
     Description,
@@ -101,6 +118,7 @@ impl fmt::Display for UiActionField {
         f.write_str(match self {
             Self::Effect => "effect",
             Self::ApprovalReason => "approval reason",
+            Self::ConfirmationView => "confirmation view",
             Self::InputSchema => "input schema",
             Self::OutputSchema => "output schema",
             Self::Description => "description",
@@ -176,6 +194,9 @@ pub fn check_registration(
     }
     if signed.approval_reason != registered.approval_reason {
         return differs(UiActionField::ApprovalReason);
+    }
+    if signed.confirmation_view != registered.confirmation_view {
+        return differs(UiActionField::ConfirmationView);
     }
     if !same_json(&signed.input_schema, &registered.input_schema) {
         return differs(UiActionField::InputSchema);

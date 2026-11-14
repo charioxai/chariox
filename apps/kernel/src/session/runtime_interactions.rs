@@ -262,6 +262,9 @@ pub struct RuntimeInteraction {
     /// An App install, update or reinstall the owner decides on, from the verified package.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     app_install: Option<crate::local::AppInstallPresentation>,
+    /// A person-confirmed App action: the verified App and publisher the person confirms for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    app_confirmation: Option<crate::local::AppConfirmationFrame>,
     /// Protocol 470: structured OS requester for external access decisions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     requester: Option<crate::local::KernelAccessRequester>,
@@ -424,6 +427,7 @@ impl RuntimeInteraction {
             decision_expires_at: None,
             sudo_request: None,
             app_install: None,
+            app_confirmation: None,
         }
     }
 
@@ -491,6 +495,16 @@ impl RuntimeInteraction {
     }
     pub fn app_install(&self) -> Option<&crate::local::AppInstallPresentation> {
         self.app_install.as_ref()
+    }
+    pub fn app_confirmation(&self) -> Option<&crate::local::AppConfirmationFrame> {
+        self.app_confirmation.as_ref()
+    }
+    pub(crate) fn with_app_confirmation(
+        mut self,
+        frame: crate::local::AppConfirmationFrame,
+    ) -> Self {
+        self.app_confirmation = Some(frame);
+        self
     }
     pub(crate) fn with_app_install(
         mut self,
@@ -638,6 +652,7 @@ impl RuntimeInteraction {
             decision_expires_at: None,
             sudo_request: None,
             app_install: None,
+            app_confirmation: None,
         }
     }
 

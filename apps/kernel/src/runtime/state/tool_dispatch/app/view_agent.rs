@@ -93,6 +93,7 @@ fn action_error(error: declared_actions::ViewActionError) -> ViewError {
 }
 
 /// Everything one call needs from a view, fixed when the call begins.
+#[derive(Clone)]
 struct ViewContext {
     agent_id: String,
     /// The agent's Room, retained for approvals and Room-view secret scope.
@@ -108,6 +109,7 @@ struct ViewContext {
     declared: Vec<UiActionDeclaration>,
 }
 
+#[derive(Clone)]
 enum ViewHost {
     Room,
     User {
@@ -131,7 +133,7 @@ pub(super) fn specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: INVOKE.into(),
-            description: "Run one declared action in an open App view, as you, through the same function the App's buttons use. Read and write actions run at once; an approval action asks the user first (unless /sudo or an existing approval covers it). Read the changed state with chariox.app_view_state.".into(),
+            description: "Run one declared action in an open App view, as you, through the same function the App's buttons use. Read and write actions run at once; an approval action asks the user first (unless /sudo or an existing approval covers it); a person_confirmed action runs only after the person confirms this exact input on a card, and nothing else can answer it. Read the changed state with chariox.app_view_state.".into(),
             input_schema: json!({"type": "object", "properties": {"view": view, "action": {"type": "string"}, "input": input}, "required": ["view", "action"], "additionalProperties": false}),
         },
         RuntimeToolSpec {
@@ -147,7 +149,7 @@ pub(super) fn specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: BATCH.into(),
-            description: format!("Run several declared actions in order in one view. Every step is checked before the first runs. It stops at the first error and at the first approval action, which it does not run (run that one with chariox.app_view_invoke); it reports the steps that completed. Nothing is rolled back. At most {MAX_BATCH_STEPS} steps."),
+            description: format!("Run several declared actions in order in one view. Every step is checked before the first runs. It stops at the first error and at the first approval or person_confirmed action, which it does not run (run that one with chariox.app_view_invoke); it reports the steps that completed. Nothing is rolled back. At most {MAX_BATCH_STEPS} steps."),
             input_schema: json!({"type": "object", "properties": {"view": view, "steps": {"type": "array", "maxItems": MAX_BATCH_STEPS,
                 "items": {"type": "object", "properties": {"action": {"type": "string"}, "input": input}, "required": ["action"], "additionalProperties": false}}},
                 "required": ["view", "steps"], "additionalProperties": false}),
@@ -346,6 +348,11 @@ impl KernelRuntimeState {
                 .await?;
         }
         let _turn = self.view_turn(context).await?;
+        // The preview shares the page with the action, so the turn is held from the card to the run.
+        if action.effect == UiActionEffect::PersonConfirmed {
+            self.confirm_view_action(run_id, agent, context, action, &input)
+                .await?;
+        }
         self.run_in_view(context, name, input).await
     }
 
@@ -405,9 +412,12 @@ impl KernelRuntimeState {
                 }
             }
         }
-        let stopped = plan.approval.map(|action| {
-            json!({"at": plan.run, "action": action.name, "reason": "approval",
-            "approvalReason": action.approval_reason})
+        let stopped = plan.approval.map(|action| match action.effect {
+            UiActionEffect::PersonConfirmed => {
+                json!({"at": plan.run, "action": action.name, "reason": "person_confirmation"})
+            }
+            _ => json!({"at": plan.run, "action": action.name, "reason": "approval",
+                "approvalReason": action.approval_reason}),
         });
         Ok(json!({"completed": completed, "stopped": stopped}))
     }
@@ -1045,6 +1055,7 @@ impl KernelRuntimeState {
     }
 }
 
+mod confirmation;
 mod remote;
 
 #[cfg(test)]

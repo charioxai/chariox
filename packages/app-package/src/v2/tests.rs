@@ -517,6 +517,7 @@ fn ui_action_declarations_are_validated() {
     };
     let cases = [
         vec![action("clear", "approval", None)],
+        vec![action("pay", "person_confirmed", None)],
         vec![action("read_it", "read", Some("why"))],
         vec![action("same", "read", None), action("same", "write", None)],
         vec![action("Bad-Name", "read", None)],
@@ -549,6 +550,61 @@ fn ui_action_declarations_are_validated() {
             UiActionEffect::Approval
         ]
     );
+}
+
+#[test]
+fn a_signed_person_confirmed_action_names_its_compact_view() {
+    let mut fixture = base();
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&fixture.files["schemas/ui-actions.json"]).unwrap();
+    let action = document["uiActions"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|action| action["effect"] == "approval")
+        .unwrap();
+    action["effect"] = json!("person_confirmed");
+    action.as_object_mut().unwrap().remove("approvalReason");
+    action["confirmationView"] = json!("review_payment");
+    fixture.files.insert(
+        "schemas/ui-actions.json".into(),
+        serde_json::to_vec(&document).unwrap(),
+    );
+    let bytes = pack(
+        &fixture.manifest,
+        &fixture.files,
+        &key(),
+        &[],
+        &Limits::default(),
+    )
+    .expect("a signed person-confirmed action must declare its confirmation view");
+    let verified = verify(&bytes, &policy()).unwrap();
+    let actions = serde_json::to_value(verified.ui_actions()).unwrap();
+    let action = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["effect"] == "person_confirmed")
+        .unwrap();
+    assert_eq!(action["confirmationView"], "review_payment");
+}
+
+#[test]
+fn a_confirmation_view_cannot_be_replaced_in_the_runtime_registration() {
+    let signed: UiActionDeclaration = serde_json::from_value(json!({
+        "name":"pay", "description":"Pay", "inputSchema":{"type":"object"},
+        "effect":"person_confirmed", "confirmationView":"review_payment"
+    }))
+    .unwrap();
+    let mut registered = signed.clone();
+    registered.confirmation_view = Some("different_payment".into());
+    assert!(matches!(
+        check_registration(&[signed], &registered),
+        Err(UiActionMismatch::Differs {
+            field: UiActionField::ConfirmationView,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -601,6 +657,7 @@ fn a_mismatch_names_the_action_and_the_part_that_differs() {
         output_schema: None,
         effect: UiActionEffect::Write,
         approval_reason: None,
+        confirmation_view: None,
     }];
     let mut registered = declared.clone();
     registered[0].effect = UiActionEffect::Read;

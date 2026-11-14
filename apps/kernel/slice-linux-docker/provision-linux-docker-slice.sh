@@ -586,6 +586,7 @@ refresh_slice_support_files() {
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-app-drafts.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-app-drafts.mjs" "Browser Controller App drafts"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-app-input-callers.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-app-input-callers.mjs" "Browser Controller App input callers"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-app-view-actions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-app-view-actions.mjs" "Browser Controller App view actions"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-app-confirmation-views.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-app-confirmation-views.mjs" "Browser Controller App confirmation views"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-events.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller events"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-files.mjs" \
