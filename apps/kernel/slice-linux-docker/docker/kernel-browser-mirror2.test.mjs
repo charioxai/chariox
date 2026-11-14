@@ -828,6 +828,29 @@ test('MP-11 #1016 @95ed0bdc8 review 1: a protection change retires cached credit
  assert(!JSON.stringify(replayed).includes('old secret'),'the replay carries no pre-protection value');
 });
 
+test('MIRROR-P3-FOLLOWUP the full text of every sheet a delta reports travels in steps of the packet budget, the rest on the quiet credits after', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
+ const host={protection:policy,generation:1,pageSize,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});let reported=false;
+ const sheet=id=>({op:'css',id,css:'x'.repeat(100_000)});
+ mirror.evaluate=async(_,expression)=>{if(expression.startsWith('m.snapshot'))return{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'div',attrs:{}}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true};
+  const sheets=reported||expression!=='m.drain()'?[]:['a','b','c','d'].map(id=>({id,url:id+'.css'}));reported||=expression==='m.drain()';return {ops:[],changed:[],resources:[],sheets,scroll:[0,0],focused:null,selection:null,fragment:null};};
+ mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.tiles=async()=>[];mirror.markClosedHosts=async()=>{};
+ mirror.sheetOps=async(_world,reports=[])=>reports.map(report=>sheet(report.id));mirror.encode=async(_,packet)=>packet;
+ const credit=(after,wait_ms=0)=>mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:after,wait_ms},'scope');
+ const css=packet=>(packet.ops??[]).filter(op=>op.op==='css').map(op=>op.id);
+ const first=await credit(0);
+ const delta=await credit(first.sequence);
+ assert.deepEqual(css(delta),['a','b','c'],'the packet budget (256 KiB) ends after the sheet that crosses it');
+ assert.deepEqual(stream.deferredSheets.map(op=>op.id),['d'],'the rest waits');
+ stream.deferredAt=Date.now()-2000;
+ const rest=await credit(delta.sequence);
+ assert.deepEqual(css(rest),['d'],'and arrives on the next credit');
+});
+
 test('F-5 a page resize during an observation re-snapshots the stream without refusing input as a stale protection policy', async () => {
  const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
  const connection={isOpen:()=>true,send:async()=>({})};

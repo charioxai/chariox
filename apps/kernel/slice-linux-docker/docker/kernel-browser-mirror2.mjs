@@ -597,6 +597,7 @@ export class Mirror2 {
       const replaced = new Set([...source.ops ?? [], ...sheets].filter(op => op.op === 'css').map(op => op.id));
       stream.deferredSheets = (stream.deferredSheets ?? []).filter(op => !replaced.has(op.id));
       if (this.sheetsDue(stream) && (this.emptyDom(stream, source) || Date.now() - stream.deferredAt > 1000)) sheets.push(...await this.dueSheets(world, stream, replaced));
+      sheets = this.sheetsWithinBudget(stream, sheets);
     }
     let tiles = [];
     // Stills, like image bytes, never ride on a DOM change or follow viewer input
@@ -718,6 +719,16 @@ export class Mirror2 {
       if (full && !replaced.has(full.id)) { sheets.push({ op: 'css', id: full.id, css: full.css }); budget -= full.css.length; }
     } while (budget > 0 && this.sheetsDue(stream));
     return sheets;
+  }
+  // The CSS watch reports every cross-origin sheet of a document at once (2.5 MB of text on a large site's first delta): a packet carries
+  // them up to its byte budget (the first always), the rest waits for the quiet credits that follow, so the viewer applies them in steps.
+  sheetsWithinBudget(stream, sheets) {
+    let budget = this.packetBytes(stream); const now = [];
+    for (const op of sheets) {
+      if (now.length && budget <= 0) (stream.deferredSheets ??= []).push({ op: 'css', id: op.id, css: op.css });
+      else { now.push(op); budget -= op.css.length; }
+    }
+    return now;
   }
   packetBytes(stream) { return this.recentInput(stream) ? INPUT_PACKET_BYTES : RESOURCE_PACKET_BYTES; }
   sheetsDue(stream) { return (stream.deferredSheets?.length > 0 || stream.fullPending > 0) && !this.recentInput(stream); }
