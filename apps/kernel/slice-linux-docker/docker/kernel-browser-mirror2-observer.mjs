@@ -257,6 +257,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Sheets the viewer retains (digests it advertised for this snapshot): they arrive by reference, never pruned.
     const FIRST_PAINT_SHEET = 32 * 1024, fullSheets = new Map(); let retained = new Set();
     const viewerRetains = text => retained.size > 0 && retained.has(sha256(text).slice(0, 24));
+    // A sheet of the top document is pruned against that one document (see usedCss): the kernel reads a repeated link once.
+    const topRoot = node => window === window.top && node.getRootNode?.()?.nodeType === 9;
     const firstPaintCss = (node, sheet, base, text) => {
       const root = node.getRootNode?.();
       // Only the top document's own sheets: the kernel asks the top world for full sheets, and a shadow
@@ -469,7 +471,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (media && media.length <= 4096) record.attrs.media = media;
       if (sheet) {
         if (sheet.disabled) record.attrs.media = 'not all';
-        try { record.css = css(sheet, sheet.href ?? node.baseURI); } catch { if (sheet.href) pendingSheets.push({ id: record.id, url: sheet.href }); }
+        try { record.css = css(sheet, sheet.href ?? node.baseURI); } catch { if (sheet.href) pendingSheets.push({ id: record.id, url: sheet.href, top: topRoot(node) }); }
       }
       styleNodes.set(record.id, { node, signature: sheet ? sheetSignature(sheet) : '', text: record.css, media: record.attrs.media ?? null, imports: imports(sheet) });
       if (sheet && record.css) { const used = firstPaintCss(node, sheet, sheet.href ?? node.baseURI, record.css); if (used !== record.css) { fullSheets.set(record.id, record.css); record.css = used; } }

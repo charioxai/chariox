@@ -678,6 +678,20 @@ test('MP-10 independent sheet bodies overlap in batches of at most four and reta
  assert.equal(peak,4);assert.deepEqual(ops.map(op=>op.id),sheets.map(sheet=>sheet.id));
 });
 
+// transport5 (github.com links one 330 KB sheet six times): a first paint prunes it against the same document each time, so one
+// read answers every link of the top document; a sheet in another root is pruned against that root and is read for itself.
+test('MIRROR-P2: a sheet the document links several times is read once for the first paint, per root otherwise',async()=>{
+ const mirror=new Mirror2({host:{}});const reads=[];
+ mirror.crossOriginSheet=async(_world,url,usedBy)=>{reads.push([url,usedBy]);return [`css:${url}`,`used:${usedBy}`];};
+ const sheets=[{id:'n1',url:'s.css',top:true},{id:'n2',url:'s.css',top:true},{id:'n3',url:'s.css'},{id:'n4',url:'t.css',top:true}];
+ const ops=await mirror.sheetOps({},sheets,true);
+ assert.deepEqual(reads.map(([url])=>url).sort(),['s.css','s.css','t.css'],'two top-document links of s.css share one read; the shadow-root link reads again');
+ assert.deepEqual(ops.map(op=>op.id),['n1','n2','n3','n4'],'every link keeps its own op');
+ assert.deepEqual(ops.filter(op=>op.css==='used:n1').map(op=>op.id),['n1','n2']);
+ reads.length=0;await mirror.sheetOps({},[{id:'n1',url:'s.css'},{id:'n2',url:'s.css'}]);
+ assert.equal(reads.length,1,'a later change carries the full text, the same for every root');
+});
+
 test('MP-08/MP-10/MP-11 native navigation preview precedes observer work and retires old input epochs', async () => {
  const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',navigationPreview:true,issued:5,document_id:'old',resetAt:1};
  const host={generation:1,pageSize,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab};
