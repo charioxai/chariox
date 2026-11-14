@@ -1189,6 +1189,11 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
         target_prompt_id: &str,
     ) -> Result<(), DaemonError> {
+        // The steered prompt has no turn of its own, so its answer is read from the receiving one.
+        let target_task_id = self
+            .durable_state_store
+            .agent_turn_or_continuation_task(session_id, agent_id, target_prompt_id)?
+            .map(|task| task.task_id);
         self.durable_state_store.append_event(
             "session.prompt.steered",
             Some(session_id.to_string()),
@@ -1196,6 +1201,7 @@ impl KernelRuntimeOwnedState {
                 "agent_id": agent_id,
                 "prompt_id": prompt_id,
                 "target_prompt_id": target_prompt_id,
+                "target_task_id": target_task_id,
             }),
         )?;
         Ok(())

@@ -355,12 +355,15 @@ impl KernelRuntimeState {
                 request.prompt_id
             )));
         }
-        // A firing that began a task is that task's id for good; a continuation replaces the
-        // task's prompt id, so the prompt id of the firing no longer names it.
-        let reply = self
-            .owned
-            .durable_state_store
-            .agent_task(&request.prompt_id)?
+        // A steered firing is answered by the turn that received it. A firing that began a task
+        // is that task's id for good; a continuation replaces the task's prompt id, so the
+        // prompt id of the firing no longer names it.
+        let store = &self.owned.durable_state_store;
+        let task_id = store
+            .steered_into_task(&request.session_id, &request.prompt_id)?
+            .unwrap_or_else(|| request.prompt_id.clone());
+        let reply = store
+            .agent_task(&task_id)?
             .filter(|task| {
                 task.room_id == request.session_id && task.agent_id == trigger.agent_id()
             })
@@ -1012,6 +1015,102 @@ mod tests {
                     "local",
                 )
                 .unwrap(),
+            LocalDaemonResponse::AgentTriggerReplyRead {
+                reply: crate::local::AgentTriggerReply::Completed { .. }
+            }
+        ));
+    }
+
+    /// A sync firing steered into the running turn has no turn of its own; its reply is the
+    /// answer of the turn that received it, read with the id the firing returned.
+    #[tokio::test]
+    async fn http_trigger_reply_of_a_steered_firing_is_the_receiving_turns_answer() {
+        use crate::durable_state::agent_lifecycle::Operation;
+        let (_root, runtime, session_id, agent_id, _, active_prompt_id, run_id) =
+            runtime_with_active_prompt().await;
+        let trigger = runtime
+            .owned
+            .session_store
+            .write()
+            .create_agent_http_trigger(
+                &session_id,
+                &agent_id,
+                "local",
+                std::num::NonZeroU16::new(32123).unwrap(),
+                default_options(),
+                AgentTriggerBusyPolicy::Steer,
+                Some("Decide what to do".into()),
+            )
+            .unwrap();
+        let owner = runtime
+            .owned
+            .session_snapshot(&session_id)
+            .unwrap()
+            .owner_user_id()
+            .to_string();
+        let store = &runtime.owned.durable_state_store;
+        let now = crate::session::unix_epoch_ms();
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner,
+                room: session_id.clone(),
+                agent: agent_id.clone(),
+                prompt: active_prompt_id.clone(),
+                run: Some(run_id.clone()),
+                now,
+            })
+            .unwrap();
+        let LocalDaemonResponse::AgentTriggerInvoked {
+            invocation: AgentTriggerInvocation::Accepted { prompt_id, outcome },
+        } = runtime
+            .invoke_agent_trigger(
+                invocation(
+                    session_id.clone(),
+                    trigger.id(),
+                    serde_json::json!({"n": 1}),
+                ),
+                "local",
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("the request is accepted");
+        };
+        assert_eq!(outcome, AgentTriggerOutcome::Steered);
+        let read_reply = || {
+            runtime
+                .read_agent_trigger_reply(
+                    crate::local::ReadAgentTriggerReplyRequest {
+                        session_id: session_id.clone(),
+                        trigger_id: trigger.id().into(),
+                        prompt_id: prompt_id.clone(),
+                    },
+                    "local",
+                )
+                .unwrap()
+        };
+        assert!(
+            matches!(
+                read_reply(),
+                LocalDaemonResponse::AgentTriggerReplyRead {
+                    reply: crate::local::AgentTriggerReply::Pending
+                }
+            ),
+            "the receiving turn is still working"
+        );
+        store
+            .agent_lifecycle(Operation::Settle {
+                room: session_id.clone(),
+                agent: agent_id.clone(),
+                prompt: active_prompt_id,
+                run: run_id,
+                has_answer: true,
+                cancelled: false,
+                now,
+            })
+            .unwrap();
+        assert!(matches!(
+            read_reply(),
             LocalDaemonResponse::AgentTriggerReplyRead {
                 reply: crate::local::AgentTriggerReply::Completed { .. }
             }

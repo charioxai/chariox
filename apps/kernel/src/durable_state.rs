@@ -73,6 +73,7 @@ mod writer_fence;
 mod writer_latency_tests;
 use writer_fence::fenced_writer_error;
 pub(crate) mod notification_target;
+mod steered_prompts;
 mod trigger_firings;
 pub(crate) mod trigger_resends;
 pub(crate) mod workflow_dispatch_intents;
@@ -485,6 +486,10 @@ impl DurableKernelStateStore {
         })?;
         trigger_resends::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.trigger_resends",
+            message: error.to_string(),
+        })?;
+        steered_prompts::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.steered_prompts",
             message: error.to_string(),
         })?;
         trigger_firings::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
@@ -1964,6 +1969,13 @@ fn commit_durable_write_batch(
                         app_event_maintenance::agent::record_prompt_state_in(
                             &transaction,
                             &prompt_state,
+                        )?;
+                    }
+                    if kind == steered_prompts::EVENT_KIND {
+                        steered_prompts::record_in(
+                            &transaction,
+                            subject_id.as_deref(),
+                            payload_json,
                         )?;
                     }
                     if kind == "session.updated"
