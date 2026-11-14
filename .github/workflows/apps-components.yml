@@ -27,6 +27,7 @@ on:
       - 'apps/cli/tsconfig.json'
       - 'deploy/runtime-release/**'
       - 'scripts/package-runtime-release.mjs'
+      - 'scripts/release-signing-documents.mjs'
       - 'scripts/test-app-fetch-clients.mjs'
       - 'Cargo.toml'
       - 'Cargo.lock'
