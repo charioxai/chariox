@@ -389,8 +389,7 @@ while :; do
   [ $rc -eq 5 ] && continue
   [ $rc -ne 0 ] && { echo "wait exit $rc" >> loop.log; sleep 1; continue; }
   printf '%s %s\\n' "$received" "$(tr -d '\\n' < wait.json)" >> records.log
-  cursor=$(node -e 'const r=JSON.parse(require("fs").readFileSync("wait.json","utf8"));console.log(r.next_cursor)')
-  chariox events ack $cursor > /dev/null 2>&1
+  cursor=$(sed -n 's/.*"next_cursor": *\\([0-9][0-9]*\\).*/\\1/p' wait.json | tail -1)
 done
 `, { mode: 0o755 })
     const child = own(spawn("bash", ["-c", `bash ${join(from, "holder.sh")}; true`], { env, stdio: "ignore" }))
