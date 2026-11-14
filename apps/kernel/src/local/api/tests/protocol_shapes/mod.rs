@@ -58,6 +58,7 @@ mod provider_auth_recovery;
 mod provider_usage_activity;
 mod provider_vault_login;
 mod publication;
+mod queued_agent_messages;
 mod recall_terminal_metaagent;
 mod released_provider_run;
 mod remote_jobs;
