@@ -107,6 +107,13 @@ impl KernelRuntimeState {
                 "invalid_arguments",
                 "an action call names its action",
             )),
+            // A preview is shown in the App's own Tab; a backend-served view has none.
+            (ViewAgentCallKind::PrepareConfirmation | ViewAgentCallKind::ClearConfirmation, _) => {
+                Err(failure(
+                    "confirmation_unavailable",
+                    "This action needs the person's confirmation in an App Tab: open the App in a Tab first.",
+                ))
+            }
             (ViewAgentCallKind::Changes, _) => {
                 let ViewHost::Backend { changes: true } = context.host else {
                     return Err(failure(
