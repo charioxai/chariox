@@ -22,9 +22,11 @@ a reset or close, or the inactivity or lifetime limit, before any response head
 is `APP_HTTP_OUTCOME_UNCERTAIN`; before it, the failure stays a plain network
 error or deadline. Any response head, a gateway's 5xx included, is the answer.
 Ordinary requests keep plain network errors and deadlines.
-The route's symbolic `connection` class is not enforced yet: no credential is
-attached, and scoped connections arrive with the Slack App (P1.11).
-Connection authority remains unsupported.
+A destination with a `credential` label is reached only as an owner's account
+(`connectionId` `account:<label>`): the call must match one route of the signed
+table, and the kernel adds the account's Vault `Authorization` itself, then
+filters the answer (see `docs/APPS_V2_CONTRACTS.md` §10). Any other
+`connectionId` stays unsupported, and no App-set `Authorization` is accepted.
 
 `HttpTransport` connects directly to a checked numeric address, verifies the
 actual socket peer before sending TLS or HTTP bytes, and uses the original URL

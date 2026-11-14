@@ -260,7 +260,7 @@ there moves it to `approved` or `denied` (undecided operations expire after 10
 minutes, approvals must be used within 10 minutes and are single-use). Passing
 an existing `operationId` returns it only for the identical binding.
 `validation.status {operationId}` reads it for this installation only.
-`connectionId` is not supported yet.
+`connectionId` is not accepted here.
 An approved operation is spent by `http.open {..., operationId}` on one of the
 action's declared `POST`/`PUT`/`PATCH` effect routes (exact origin, method and
 path) with `hasBody: false` and no header but `accept`. The kernel sends the
@@ -304,6 +304,17 @@ or later; certificate revocation is not checked). `APP_HTTP_NETWORK`: DNS, the
 connection or the HTTP exchange did not complete. `APP_DEADLINE`: a kernel time
 limit expired. `APP_HTTP_LIMIT`: a stream or size limit was reached. Earlier
 kernels report a failed handshake as `APP_HTTP_NETWORK`.
+
+`http.open {..., connectionId: "account:<label>"}` calls a credentialed destination as the
+owner's account of that label (kernel protocol `GrantAppAccount`). The App sets no
+`Authorization`; only `accept`, `content-type`, `if-match`, `if-none-match`,
+`if-modified-since` and `x-github-api-version` may be set. The answer is at most 1 MiB of
+UTF-8 text and carries only `content-type`, `etag`, `last-modified`, `link`, `location`,
+`retry-after`, `x-poll-interval`, `x-github-request-id` and `x-ratelimit-*`; the account's
+value never appears in it. Refusals: `APP_HTTP_ACCOUNT_REQUIRED` (a credentialed origin
+without an account), `APP_HTTP_ACCOUNT_UNKNOWN` (no such binding), `APP_HTTP_ROUTE_NOT_DECLARED`,
+`APP_HTTP_ACCOUNT_NOT_ALLOWED` (the owner gave the account less authority than the route's
+`safety`) and `APP_HTTP_ACCOUNT_UNAVAILABLE` (the Vault entry cannot be read).
 
 `host.pick_file {multiple?, accept?}` (Apps whose signed manifest declares
 `capabilities.externalFiles: ["user_selected"]`; others get
