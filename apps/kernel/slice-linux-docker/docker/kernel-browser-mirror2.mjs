@@ -180,7 +180,7 @@ const observerRef = stream => `globalThis.__charioxMirror2.get(${JSON.stringify(
 // text came out that way is kept as its source text. Escapes outside strings (`.content-\[\'\'\]`) are not quotes,
 // and an unterminated last chunk is kept (CSS closes it at the end of the sheet). A copy with fewer rules than the
 // source is never published: the label selects the whole-page video (MIRROR-FIDELITY-GUARD).
-const SERIALIZER = String.raw`const lossy=/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;const rules=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\n';return out};const scan=(text,visit)=>{let quote='';for(let i=0;i<text.length;i++){const c=text[i];if(quote){if(c==='\\')i++;else if(c===quote)quote=''}else if(c==='\\')i++;else if(c==='"'||c==="'")quote=c;else if(c==='/'&&text[i+1]==='*'){i=text.indexOf('*/',i+2);if(i<0)break;i++}else if(visit(c,i))return i}return -1};const chunks=text=>{const out=[];let depth=0,start=0;scan(text,(c,i)=>{if(c==='{')depth++;else if((c==='}'&&!--depth)||(c===';'&&!depth)){out.push(text.slice(start,i+1));start=i+1}});if(text.slice(start).trim())out.push(text.slice(start));return out};const serialize=text=>{const out=rules(text);if(!lossy.test(out))return out;let result='';for(const chunk of chunks(text)){const one=rules(chunk);if(!lossy.test(one)){result+=one;continue}const open=scan(chunk,c=>c==='{');result+=/^\s*@/.test(chunk)?chunk.slice(0,open+1)+serialize(chunk.slice(open+1,chunk.lastIndexOf('}')))+'}\n':chunk+'\n'}return result};const count=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);return sheet.cssRules.length};const parse=text=>{const out=serialize(text);if(count(out)!==count(text))throw new Error('mirror2:css_incomplete');return out};`;
+const SERIALIZER = String.raw`const lossy=/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;const sheetOf=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);return sheet};const dump=sheet=>{let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\n';return out};const rules=text=>dump(sheetOf(text));const scan=(text,visit)=>{let quote='';for(let i=0;i<text.length;i++){const c=text[i];if(quote){if(c==='\\')i++;else if(c===quote)quote=''}else if(c==='\\')i++;else if(c==='"'||c==="'")quote=c;else if(c==='/'&&text[i+1]==='*'){i=text.indexOf('*/',i+2);if(i<0)break;i++}else if(visit(c,i))return i}return -1};const chunks=text=>{const out=[];let depth=0,start=0;scan(text,(c,i)=>{if(c==='{')depth++;else if((c==='}'&&!--depth)||(c===';'&&!depth)){out.push(text.slice(start,i+1));start=i+1}});if(text.slice(start).trim())out.push(text.slice(start));return out};const serialize=(text,sheet)=>{const out=sheet?dump(sheet):rules(text);if(!lossy.test(out))return out;let result='';for(const chunk of chunks(text)){const one=rules(chunk);if(!lossy.test(one)){result+=one;continue}const open=scan(chunk,c=>c==='{');result+=/^\s*@/.test(chunk)?chunk.slice(0,open+1)+serialize(chunk.slice(open+1,chunk.lastIndexOf('}')))+'}\n':chunk+'\n'}return result};const count=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);return sheet.cssRules.length};const parse=text=>{const sheet=sheetOf(text),out=serialize(text,sheet);if(count(out)!==sheet.cssRules.length)throw new Error('mirror2:css_incomplete');return out};`;
 // CSSOM-normalized cross-origin sheet bodies by source (see crossOriginSheet), least recently used first out.
 export class ParsedSheets {
   constructor(entries = 32, chars = 32 * 1024 * 1024) { this.bodies = new Map(); this.entries = entries; this.chars = chars; this.size = 0; }
@@ -846,11 +846,18 @@ export class Mirror2 {
   }
   // `firstPaint` (a reset): a large sheet travels as the rules the document uses now, its full text as `full`.
   async sheetOps(world, sheets = [], firstPaint = false) {
-    const ops = [];
+    const ops = [], reads = new Map();
+    // A page may link one sheet several times (github.com: a 330 KB sheet six times). A first paint prunes it against its
+    // root, so only links of the top document share a read; a later change carries the full text, the same for every root.
+    const read = sheet => {
+      const key = firstPaint && !sheet.top ? sheet.id : sheet.url;
+      if (!reads.has(key)) reads.set(key, this.crossOriginSheet(world, sheet.url, firstPaint ? sheet.id : null));
+      return reads.get(key);
+    };
     for (let at = 0; at < sheets.length; at += 4) {
       const batch = await Promise.all(sheets.slice(at, at + 4).map(async sheet => {
         // An unreadable sheet keeps its last copy; an incomplete one is never published (the stream selects video).
-        const text = await this.crossOriginSheet(world, sheet.url, firstPaint ? sheet.id : null).catch(error => { if (error?.mirrorReason === 'css_incomplete') throw error; return null; });
+        const text = await read(sheet).catch(error => { if (error?.mirrorReason === 'css_incomplete') throw error; return null; });
         if (text === null) return [];
         const [css, used] = Array.isArray(text) ? text : [text, null];
         return [typeof used === 'string' && used.length < css.length ? { op: 'css', id: sheet.id, css: used, full: css } : { op: 'css', id: sheet.id, css }];

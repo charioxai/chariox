@@ -2059,6 +2059,20 @@ test("MP-08/MP-10 CPU: a first paint prunes a large sheet without a document que
     assert(queries < 50, `${queries} document queries for 1500 rules`);
   }, { "/n.css": { type: "text/css", body: narrowCss } }));
 
+// transport5: normalizing a cross-origin sheet parses its source once for the serializer and the rule count together
+// (a 460 KB sheet took three parses, most of the 1 s the sheets of a cold GitHub page cost before the first paint).
+test("MIRROR-P2: a cross-origin sheet's source is parsed once for its normalized text and its rule count", () => mirrored(
+  '<link rel="stylesheet" href="http://localhost:PORT/p.css"><p class="used">text</p>', async ({ next, evaluate, host, subscription_id }) => {
+    await next();
+    const world = host.mirror.streams.get(subscription_id).world;
+    await host.mirror.v2.evaluate(world, "(()=>{const replace=CSSStyleSheet.prototype.replaceSync;globalThis.parses=0;CSSStyleSheet.prototype.replaceSync=function(...args){globalThis.parses++;return replace.apply(this,args)};return true})()");
+    host.mirror.v2.parsedSheets.bodies.clear();
+    await evaluate("document.body.append(document.createElement('i'));true"); await next(300);
+    assert(JSON.stringify(await next(0, true)).includes("rgb(1, 2, 3)"), "the sheet reaches the reset");
+    const parses = await host.mirror.v2.evaluate(world, "globalThis.parses");
+    assert.equal(parses, 2, `${parses} parses of a small sheet`);
+  }, { "/p.css": { type: "text/css", body: "p.used{color:rgb(1, 2, 3)}" } }));
+
 // Review #1016 @c5dfd2e31 item 3: a published node moved into a parent the continuation has not reached yet.
 test('MP-10/MP-11 M2: a published subtree moved into an unvisited parent during a continuation stays mirrored', () => mirrored(
   '<main id="m"><p id="moved">Move me</p>' + '<p>middle</p>'.repeat(10000) + '<section id="destination"></section></main>', async ({ next, evaluate }) => {
