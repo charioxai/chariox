@@ -131,6 +131,7 @@ async fn ending_the_room_of_a_followed_peer_tells_its_follower() {
     let f = Fixture::new(true, false);
     f.runtime.delete_session_id(&f.peer_room).await.unwrap();
     f.assert_told_once("peer_event");
+    assert_eq!(f.inbox()[0].payload["event"], "source_lost");
 }
 
 #[tokio::test]
@@ -138,4 +139,22 @@ async fn deleting_an_agent_followed_in_its_own_room_is_told_the_same_way() {
     let f = Fixture::new(false, true);
     f.runtime.destroy_agent(&f.peer, &f.owner).await.unwrap();
     f.assert_told_once("source_lost");
+}
+
+// A room that ends is not a failed turn: the follower hears the same loss a follower on another
+// kernel hears, whether the room is deleted or its project is archived.
+#[tokio::test]
+async fn archiving_the_project_of_a_followed_peer_ends_the_follow_as_a_lost_source() {
+    let f = Fixture::new(true, false);
+    let project = f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.peer_room)
+        .unwrap()
+        .project_id()
+        .to_string();
+    f.runtime.archive_project(&project, &f.owner).await.unwrap();
+    f.assert_told_once("peer_event");
+    assert_eq!(f.inbox()[0].payload["event"], "source_lost");
 }
