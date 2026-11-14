@@ -44,7 +44,7 @@ fn sent_binding(agent: crate::agent::AgentInstance) -> serde_json::Value {
 fn mp11_remote_agent_binding_worktree_1000_snapshot_and_hash() {
     assert_eq!(
         format!("{:x}", Sha256::digest(FIXTURE)),
-        "c0bca27b4bfdb9548c11f67dbb2a1d2a7ec42b15b5b81245c0eebabb0541fd68"
+        "138200b682e93bb0722e56aadc32128e95aaf9e27ff49db1daef4586fb430918"
     );
     let fixture: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);

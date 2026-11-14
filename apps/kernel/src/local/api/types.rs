@@ -539,5 +539,7 @@ pub use workspace::*;
 /// `read_output` per page (docs/PROTOCOL.md, "Pushed output stream"); 1007 adds native Files interests on the
 /// resource feed, including home-relayed worker invalidations; 1008 adds the person-confirmed App action card
 /// (`app_confirmation` on an `app-confirm-*` interaction, with the App's own preview as its protected browser
-/// `view`), and a `state_wait` that ended without a change answers only `revision` and `unchanged: true`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1008;
+/// `view`), and a `state_wait` that ended without a change answers only `revision` and `unchanged: true`;
+/// 1009 adds `queued_agent_messages` to a session: the messages other agents queued for an agent's next turn,
+/// which the person cancels or sends with `CancelQueuedPrompt` / `SteerQueuedPrompt` on their `agent-message-<n>` id.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1009;
