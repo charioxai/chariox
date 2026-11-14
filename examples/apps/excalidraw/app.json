@@ -2,6 +2,8 @@
   "schema": "chariox.app.v2",
   "appId": "com.chariox.excalidraw",
   "version": "1.0.0",
+  "displayName": "Excalidraw",
+  "icon": "ui/icon.svg",
   "publisher": {
     "id": "com.chariox",
     "keyId": "developer-1",
