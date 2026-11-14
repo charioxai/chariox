@@ -14,6 +14,7 @@ pub(super) struct JobMachine {
     pub(super) machine_label: String,
     pub(super) address: Option<String>,
     pub(super) capability_revision: String,
+    pub(super) kernel_id: String,
     pub(super) grant: Arc<dyn GrantedSend>,
     pub(super) class_id: String,
     pub(super) rate_per_minute: JobMachineRate,
@@ -281,6 +282,27 @@ impl KernelRuntimeState {
             ),
         }
     }
+    /// The owner's own grant to the worker, kept for the whole job so its files can still be fetched
+    /// after the acquiring request has ended.
+    pub(super) fn job_machine_grant(
+        &self,
+        kernel_id: &str,
+        harness: &str,
+    ) -> Result<Arc<dyn GrantedSend>, DaemonError> {
+        let owner = self.owned.config_projection.local_owner_user_id();
+        let retained = Origin {
+            grant_id: format!("{}{}", super::reach::OWNER_GRANT_PREFIX, owner),
+            harness: harness.into(),
+        };
+        let router = self.job_router.as_ref().ok_or_else(|| {
+            acquisition_error("job_router_unavailable", "The job gateway is unavailable")
+        })?;
+        Ok(Arc::new(OriginGrant::new(
+            (**router).clone(),
+            retained,
+            kernel_id,
+        )))
+    }
     async fn wait_for_job_machine(
         &self,
         job_id: &str,
@@ -321,24 +343,13 @@ impl KernelRuntimeState {
                         "The job worker has no verified kernel identity",
                     )
                 })?;
-                let owner = self.owned.config_projection.local_owner_user_id();
-                let retained = Origin {
-                    grant_id: format!("{}{}", super::reach::OWNER_GRANT_PREFIX, owner),
-                    harness: origin.harness.clone(),
-                };
-                let router = self.job_router.as_ref().ok_or_else(|| {
-                    acquisition_error("job_router_unavailable", "The job gateway is unavailable")
-                })?;
                 return Ok(JobMachine {
                     allocation_ref: allocation_ref.into(),
                     machine_label: machine_label.unwrap_or_else(|| "remote job".into()),
                     address,
                     capability_revision: capability_revision.into(),
-                    grant: Arc::new(OriginGrant::new(
-                        (**router).clone(),
-                        retained,
-                        &target.kernel_id,
-                    )),
+                    grant: self.job_machine_grant(&target.kernel_id, &origin.harness)?,
+                    kernel_id: target.kernel_id,
                     class_id: class.class_id,
                     rate_per_minute: class.rate_per_minute,
                 });

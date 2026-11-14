@@ -52,6 +52,7 @@ pub(super) fn remote_record(source: &Path, script: &str, outputs: &[&str]) -> Re
         remote_refusal: None,
         estimated_minutes: None,
         memory_mib: None,
+        return_pending: false,
     }
 }
 
@@ -171,4 +172,211 @@ async fn offload_job_return_applies_a_mode_only_change_and_checks_it_for_conflic
         .unwrap(),
         b"b"
     );
+}
+
+/// Fails one artifact read as a relay outage would, until it is disarmed.
+struct Outage {
+    worker: Arc<Worker>,
+    path: &'static str,
+    cut: std::sync::atomic::AtomicBool,
+}
+impl GrantedSend for Outage {
+    fn send<'a>(
+        &'a self,
+        id: String,
+        request: &'a LocalDaemonRequest,
+    ) -> crate::room_exec::gateway_placement::SendFuture<'a> {
+        if self.cut.load(std::sync::atomic::Ordering::SeqCst)
+            && matches!(request, LocalDaemonRequest::ReadKernelFile(read) if read.path.ends_with(self.path))
+        {
+            return Box::pin(async {
+                Err(crate::runtime::kernel_gateway::GatewayError::Remote {
+                    name: "worker".into(),
+                    code: "relay_outage".into(),
+                    message: "relay outage".into(),
+                    retryable: false,
+                })
+            });
+        }
+        self.worker.send(id, request)
+    }
+}
+
+struct HeldWorker {
+    state: KernelRuntimeState,
+    run: crate::provider::RuntimeProviderRun,
+    task: AgentTaskExecution,
+    workspace: crate::test_support::TestWorktree,
+    _home: crate::test_support::TestWorktree,
+    outage: Arc<Outage>,
+    job_id: String,
+}
+
+/// A command that made two artifacts finished on the worker while the read of the second failed.
+async fn worker_held_after_failed_return() -> HeldWorker {
+    let (state, run, task, workspace) = super::tests::fixture().await;
+    let home = crate::test_support::TestWorktree::new("offload-outage-home");
+    let outage = Arc::new(Outage {
+        worker: worker_kernel(home.path()),
+        path: "target/second.bin",
+        cut: true.into(),
+    });
+    let started = state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.run",
+            &serde_json::json!({"command":["/bin/echo","placeholder"],"wait_s":5}),
+            &task,
+        )
+        .await
+        .unwrap();
+    let driver = state.job_wake_driver.as_ref().unwrap();
+    let mut record = driver.read(started["job_id"].as_str().unwrap()).unwrap();
+    record.request = remote_record(
+        workspace.path(),
+        "mkdir -p target; printf one > target/first.bin; printf two > target/second.bin",
+        &["target/*.bin"],
+    )
+    .request;
+    record.placement = JobPlacement::Remote;
+    record.state = "uploading".into();
+    record.result = None;
+    record.allocation_ref = Some("cleanup-test".into());
+    record.capability_revision = Some("v1".into());
+    record.deleted = false;
+    let machine = super::super::job_compute::JobMachine {
+        allocation_ref: "cleanup-test".into(),
+        machine_label: "offload-test".into(),
+        address: None,
+        capability_revision: "v1".into(),
+        kernel_id: "worker".into(),
+        grant: outage.clone(),
+        class_id: "test-class".into(),
+        rate_per_minute: crate::local::JobMachineRate {
+            amount_micros: 1,
+            currency: "usd".into(),
+        },
+    };
+    let mut output = super::execute::Output::new(&state, &record).unwrap();
+    let (_cancel, mut cancelled) = watch::channel(false);
+    // The worker is told its job started; any later request is the release.
+    let release = super::cleanup_tests::service(
+        &state,
+        vec![
+            ("job_started", 200, super::cleanup_tests::machine("ready")),
+            ("get", 200, super::cleanup_tests::machine("deleted")),
+        ],
+    )
+    .await;
+    let result = state
+        .run_remote_job(
+            &mut record,
+            &machine,
+            &BTreeMap::new(),
+            &mut output,
+            &mut cancelled,
+        )
+        .await;
+    state
+        .complete_remote_job(&mut record, &mut output, result, false)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !release.is_finished(),
+        "the worker was released while a file it produced had not come home"
+    );
+    release.abort();
+    record.state = "finished".into();
+    driver.save(&record).unwrap();
+    let saved = driver.read(&record.job_id).unwrap();
+    assert!(saved.return_pending && !saved.deleted);
+    assert!(saved
+        .result
+        .unwrap()
+        .output_tail
+        .contains("files could not all be returned"));
+    assert_eq!(
+        std::fs::read(workspace.path().join("target/first.bin")).unwrap(),
+        b"one"
+    );
+    assert!(!workspace.path().join("target/second.bin").exists());
+    HeldWorker {
+        state,
+        run,
+        task,
+        workspace,
+        _home: home,
+        outage,
+        job_id: record.job_id,
+    }
+}
+
+async fn release_service(state: &KernelRuntimeState) -> tokio::task::JoinHandle<()> {
+    super::cleanup_tests::service(
+        state,
+        vec![("get", 200, super::cleanup_tests::machine("deleted"))],
+    )
+    .await
+}
+
+impl HeldWorker {
+    async fn job_tool(&self, name: &str) -> serde_json::Value {
+        self.state
+            .dispatch_job_tool(
+                Some(&self.run),
+                name,
+                &serde_json::json!({"job_id":self.job_id}),
+                &self.task,
+            )
+            .await
+            .unwrap()
+    }
+}
+
+#[tokio::test]
+async fn offload_job_keeps_the_worker_until_files_that_could_not_be_returned_are_collected() {
+    let held = worker_held_after_failed_return().await;
+    held.outage
+        .cut
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let release = release_service(&held.state).await;
+    let status = held.job_tool("chariox.jobs.status").await;
+    release.await.unwrap();
+    assert_eq!(
+        std::fs::read(held.workspace.path().join("target/second.bin")).unwrap(),
+        b"two"
+    );
+    assert_eq!(status["deleted"], true);
+    assert_eq!(status["return_pending"], false);
+    assert_eq!(status["result"]["exit_code"], 0);
+    assert_eq!(status["result"]["outcome"], "completed");
+    assert_eq!(
+        status["result"]["files_back"],
+        serde_json::json!(["target/first.bin", "target/second.bin"])
+    );
+}
+
+#[tokio::test]
+async fn offload_job_status_keeps_the_worker_while_its_files_still_cannot_be_returned() {
+    let held = worker_held_after_failed_return().await;
+    let status = held.job_tool("chariox.jobs.status").await;
+    assert_eq!(status["deleted"], false);
+    assert_eq!(status["return_pending"], true);
+    assert!(status["return_error"]
+        .as_str()
+        .unwrap()
+        .contains("relay outage"));
+    assert!(!held.workspace.path().join("target/second.bin").exists());
+}
+
+#[tokio::test]
+async fn offload_job_cancel_gives_up_the_files_and_deletes_the_worker() {
+    let held = worker_held_after_failed_return().await;
+    let release = release_service(&held.state).await;
+    let status = held.job_tool("chariox.jobs.cancel").await;
+    release.await.unwrap();
+    assert_eq!(status["deleted"], true);
+    assert_eq!(status["return_pending"], false);
+    assert!(!held.workspace.path().join("target/second.bin").exists());
 }
