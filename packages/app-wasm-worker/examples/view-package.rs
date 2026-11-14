@@ -35,23 +35,37 @@ fn main() {
         .unwrap();
     let key = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
     let key_id = format!("dev-{:x}", Sha256::digest(key.verifying_key().as_bytes()));
+    let declared: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&ui_actions).unwrap()).unwrap();
+    let declared = declared["uiActions"].as_array().expect("uiActions list");
+    // A declared action is the backend tool of the same name; the SDK's view tools come on top.
+    let mut idempotent: Vec<&str> = declared
+        .iter()
+        .filter(|action| action["effect"] == "read")
+        .map(|action| action["name"].as_str().unwrap())
+        .chain(["view_actions", "view_state", "view_changes"])
+        .collect();
+    idempotent.sort_unstable();
     let manifest: ManifestV2 = serde_json::from_value(json!({
         "schema":"chariox.app.v2", "appId":app_id, "version":"1.0.0",
         "publisher":{"id":"com.example","keyId":key_id,"name":"Native view fixture"},
         "appContractVersion":2, "resourcePolicy":"chariox.app.resources.v1",
-        "world":v2::APP_WORLD, "requiredFeatures":["wasm-component","ui-actions"], "idempotentTools":["list_notes","view_actions","view_state"],
+        "world":v2::APP_WORLD, "requiredFeatures":["wasm-component","ui-actions"], "idempotentTools":idempotent,
         "runtime":{"engine":"wasm","component":"runtime/app.wasm"},
         "build":{"language":"rust","toolchain":"wit-bindgen 0.63.0","sdkVersion":"1.0.0"},
         "ui":{"entry":"ui/index.html"}, "tools":"schemas/tools.json", "uiActions":"schemas/ui-actions.json", "capabilities":{}
     }))
     .unwrap();
-    let tools = json!({"tools":[
-        {"name":"list_notes","description":"Read the saved notes","inputSchema":{"type":"object","additionalProperties":false}},
-        {"name":"add_note","description":"Save one note","inputSchema":{"type":"object","additionalProperties":false,"required":["text"],
-            "properties":{"text":{"type":"string","minLength":1,"maxLength":200}}}},
-        {"name":"view_actions","description":"The actions this backend registers for its view","inputSchema":{"type":"object","additionalProperties":false}},
-        {"name":"view_state","description":"The state of this backend's view","inputSchema":{"type":"object","additionalProperties":false}}
-    ]});
+    let mut tools: Vec<serde_json::Value> = declared
+        .iter()
+        .map(|action| json!({"name":action["name"],"description":action["description"],"inputSchema":action["inputSchema"]}))
+        .collect();
+    tools.extend([
+        json!({"name":"view_actions","description":"The actions this backend registers for its view","inputSchema":{"type":"object","additionalProperties":false}}),
+        json!({"name":"view_state","description":"The state of this backend's view","inputSchema":{"type":"object","additionalProperties":false}}),
+        json!({"name":"view_changes","description":"The changes this backend's view recorded after `since`","inputSchema":{"type":"object","additionalProperties":false,"properties":{"since":{"type":"integer","minimum":0}}}}),
+    ]);
+    let tools = json!({ "tools": tools });
     let files = BTreeMap::from([
         ("runtime/app.wasm".to_string(), component),
         (
@@ -60,7 +74,7 @@ fn main() {
         ),
         (
             "schemas/ui-actions.json".into(),
-            std::fs::read(ui_actions).unwrap(),
+            std::fs::read(&ui_actions).unwrap(),
         ),
         ("ui/index.html".into(), std::fs::read(view).unwrap()),
     ]);
