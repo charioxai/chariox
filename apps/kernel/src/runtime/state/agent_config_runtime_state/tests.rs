@@ -297,8 +297,10 @@ async fn agent_config_update_still_blocks_active_prompt_owner() {
     assert_active_turn_error(error, "update agent config");
 }
 
+// AO-LIMIT-CHAIN: a parent is busy with the event of its child's finished turn when the person
+// raises it; the raise is accepted and the next turn runs under it.
 #[tokio::test]
-async fn the_person_can_lower_a_running_agent_but_not_raise_it() {
+async fn the_person_can_lower_or_raise_a_running_agent() {
     use crate::provider::{
         AgentExecutionMode::Plan,
         AgentPermissionLevel::{Required, Yolo},
@@ -325,10 +327,10 @@ async fn the_person_can_lower_a_running_agent_but_not_raise_it() {
         .expect("a running agent can be lowered");
     assert_eq!(agent.permission_level_override(), Some(Required));
 
-    let error = update(None, Some(Some(Yolo)))
+    let agent = update(None, Some(Some(Yolo)))
         .await
-        .expect_err("a running agent cannot be raised");
-    assert_active_turn_error(error, "update agent config");
+        .expect("a running agent can be raised");
+    assert_eq!(agent.permission_level_override(), Some(Yolo));
 }
 
 #[tokio::test(start_paused = true)]

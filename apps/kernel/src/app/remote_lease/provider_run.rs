@@ -230,7 +230,18 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let mcp_matches = provider_run_mcp_set_matches(run, required_mcps)?;
             let catalog_matches =
                 run.remote_extension_catalog_matches_launch(remote_extension_manifest);
-            if existing_profile_matches && environment_matches && mcp_matches && catalog_matches {
+            let limit_matches = leased_agent
+                .execution_mode
+                .is_none_or(|mode| mode == run.execution_mode())
+                && leased_agent
+                    .permission_level
+                    .is_none_or(|level| level == run.permission_level());
+            if existing_profile_matches
+                && environment_matches
+                && mcp_matches
+                && catalog_matches
+                && limit_matches
+            {
                 if run.remote_extension_manifest() != remote_extension_manifest {
                     let updated = self.app.providers.update_run_remote_extension_manifest(
                         run.id(),

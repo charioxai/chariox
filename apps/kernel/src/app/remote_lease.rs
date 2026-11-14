@@ -1299,25 +1299,18 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
-        if self
+        // A running turn keeps its provider process; the next prompt admission relaunches it at
+        // the limit (`prepare_leased_provider_run_matches_mcps`).
+        let active_turn = self
             .app
             .prompt_owner_active_prompt_for_agent(
                 &leased_agent.backing_session_id,
                 &leased_agent.backing_agent_id,
             )?
-            .is_some()
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "update leased agent config",
-                message: format!(
-                    "leased agent `{leased_agent_id}` has an active turn; update the config after it finishes"
-                ),
-            });
-        }
-
+            .is_some();
         let config_changed = leased_agent.execution_mode != Some(execution_mode)
             || leased_agent.permission_level != Some(permission_level);
-        if config_changed {
+        if config_changed && !active_turn {
             if let Some(run) = self.app.providers.get_run_for_agent(
                 &leased_agent.backing_session_id,
                 &leased_agent.backing_agent_id,
@@ -1609,6 +1602,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
 mod tests {
     use super::*;
     mod catalog_admission;
+    mod limit_admission;
     mod profile_admission;
 
     #[test]
@@ -1966,22 +1960,6 @@ mod tests {
             .is_metaagent());
     }
 
-    #[test]
-    fn leased_agent_config_update_still_blocks_active_prompt_owner() {
-        let (mut app, leased_agent) = leased_agent_fixture(false);
-        sync_active_prompt(&mut app, &leased_agent);
-
-        let error = RemoteLeaseRuntime::new(&mut app)
-            .update_leased_agent_config(
-                &leased_agent.id,
-                crate::provider::AgentExecutionMode::Plan,
-                crate::provider::AgentPermissionLevel::Required,
-            )
-            .expect_err("active prompt ownership should block leased config update");
-
-        assert_active_turn_error(error, "update leased agent config");
-    }
-
     fn leased_agent_fixture(home_agent_metaagent: bool) -> (DaemonApp, LeasedAgent) {
         leased_agent_fixture_with_config(
             home_agent_metaagent,
@@ -2081,18 +2059,5 @@ mod tests {
             Some(prompt),
         )
         .expect("active prompt should sync");
-    }
-
-    fn assert_active_turn_error(error: DaemonError, operation: &'static str) {
-        match error {
-            DaemonError::LocalTransport {
-                operation: actual,
-                message,
-            } => {
-                assert_eq!(actual, operation);
-                assert!(message.contains("has an active turn"));
-            }
-            other => panic!("expected active turn error, got {other:?}"),
-        }
     }
 }

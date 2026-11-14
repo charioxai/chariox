@@ -394,6 +394,118 @@ fn agent_message_can_start_a_human_stopped_target() {
     });
 }
 
+// AO-PEER-LIFECYCLE: a message to a peer the person stopped waits for the person's next prompt;
+// the sender is told so in the tool result instead of seeing a bare "durable".
+#[test]
+fn durable_message_to_an_owner_stopped_peer_tells_the_sender_it_is_held() {
+    run_agent_message_test_with_large_stack("agent-message-owner-stopped-held", || async {
+        let mut config = DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let (session, sender) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "message-owner-stopped",
+                std::env::temp_dir().to_string_lossy(),
+            ))
+            .expect("session should create");
+        let target = spawn_test_agent(&mut app, session.id(), "target", "dev-stub");
+        let sender_run = launch_test_provider(
+            &mut app,
+            session.id(),
+            sender.id(),
+            "dev-stub",
+            "dev-stub",
+            "sender-model",
+        );
+        launch_test_provider(
+            &mut app,
+            session.id(),
+            target.id(),
+            "dev-stub",
+            "dev-stub",
+            "target-model",
+        );
+        let sender_prompt_id = app
+            .sessions()
+            .get_session(session.id())
+            .unwrap()
+            .active_prompt_for_agent(sender.id())
+            .expect("the room fixture turn is running")
+            .id()
+            .to_string();
+        // The fixture runs a turn for the target too; the person stops it.
+        let target_prompt_id = app
+            .sessions()
+            .get_session(session.id())
+            .unwrap()
+            .active_prompt_for_agent(target.id())
+            .expect("the room fixture turn is running")
+            .id()
+            .to_string();
+        app.prompt_owner_cancel_active_prompt_only(session.id(), target.id())
+            .expect("the person's stop should cancel the target");
+        let sender_token = sender_run
+            .runtime_mcp_auth_token()
+            .expect("sender needs runtime MCP auth")
+            .to_string();
+        let store = app.durable_state_store();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let crate::durable_state::agent_lifecycle::Outcome::Task(task) = store
+            .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Begin {
+                owner: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+                room: session.id().into(),
+                agent: target.id().into(),
+                prompt: target_prompt_id,
+                run: None,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .expect("the target's turn should be recorded")
+        else {
+            panic!("begin returns the task");
+        };
+        store
+            .agent_lifecycle(
+                crate::durable_state::agent_lifecycle::Operation::CancelTask {
+                    task: task.task_id,
+                    owner: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+                    revision: task.revision,
+                },
+            )
+            .expect("the person's stop should be recorded");
+        // The agent is told of the stop only when the person next prompts it.
+        store
+            .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Expire {
+                room: session.id().into(),
+                agent: target.id().into(),
+                sequence: 1,
+            })
+            .expect("the stop notice should retire");
+        let result = router
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &sender_token,
+                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                serde_json::json!({
+                    "agent": target.id(),
+                    "message": "status please",
+                    "origin_prompt_id": sender_prompt_id,
+                }),
+            )
+            .await
+            .expect("the message should be accepted");
+        assert!(result.ok);
+        assert_eq!(result.payload["status"], "durable");
+        assert_eq!(result.payload["held"], true, "{}", result.payload);
+        assert!(
+            result.payload["note"].as_str().is_some_and(|note| note
+                .contains("stopped by its owner")
+                && note.contains("next prompt")),
+            "{}",
+            result.payload
+        );
+    });
+}
+
 // MP-08/MP-09/MP-10/MP-11 A12-S04: a message to a peer whose selected account cannot start work is
 // refused to the sender at the tool boundary, never left durable and pending behind its goal.
 #[test]
