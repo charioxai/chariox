@@ -673,6 +673,8 @@ async fn status_message(team: &Team, reply: bool) -> String {
         serde_json::json!({"message": "Report status; keep the original job running"}),
     );
     event.reply_requested = reply;
+    // Only an urgent message starts its idle recipient.
+    event.urgent = true;
     team.runtime
         .owned
         .durable_state_store

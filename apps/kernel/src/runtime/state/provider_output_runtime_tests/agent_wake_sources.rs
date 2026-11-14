@@ -2773,18 +2773,28 @@ impl Fixture {
     }
 
     fn occur(&self, source: &str, id: &str, kind: &str, payload: serde_json::Value) -> u64 {
+        self.occur_urgency(source, id, kind, payload, false)
+    }
+    fn occur_urgency(
+        &self,
+        source: &str,
+        id: &str,
+        kind: &str,
+        payload: serde_json::Value,
+        urgent: bool,
+    ) -> u64 {
+        let mut event = crate::durable_state::agent_lifecycle::occurrence(
+            &self.room,
+            &self.agent,
+            source,
+            id,
+            kind,
+            payload,
+        );
+        event.urgent = urgent;
         let Outcome::Event(event) = self
             .store()
-            .agent_lifecycle(Operation::Occur(
-                crate::durable_state::agent_lifecycle::occurrence(
-                    &self.room,
-                    &self.agent,
-                    source,
-                    id,
-                    kind,
-                    payload,
-                ),
-            ))
+            .agent_lifecycle(Operation::Occur(event))
             .unwrap()
         else {
             panic!("event")
@@ -2824,11 +2834,13 @@ async fn a_message_does_not_end_the_wait_row_of_a_task_that_keeps_waiting() {
         .unwrap();
     assert_eq!(f.wait_rows()[0].2["status"], "running");
 
-    let sequence = f.occur(
+    // Only an urgent message starts a turn of its waiting recipient.
+    let sequence = f.occur_urgency(
         "a-peer",
         "peer-says-hi",
         "message",
         serde_json::json!({"text": "hi"}),
+        true,
     );
     f.runtime.sweep_agent_lifecycle_for_test().await.unwrap();
     f.until_inbox_event(sequence, "accepted").await;

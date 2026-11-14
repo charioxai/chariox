@@ -591,7 +591,13 @@ impl KernelRuntimeState {
             .into_iter()
             .find(|first| first.source_id == sender.id())
         {
-            return self.answer_resent_agent_message(&first, args.urgent).await;
+            return self
+                .answer_resent_agent_message(
+                    &first,
+                    args.urgent,
+                    target.alias().unwrap_or(target.agent_ref()),
+                )
+                .await;
         }
         let mut event = ledger::occurrence(
             target_room,

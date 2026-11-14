@@ -206,21 +206,24 @@ impl KernelRuntimeState {
         Ok(Promotion::Promoted)
     }
 
-    /// A message sent again with the key it first had: it is the same message, promoted if it asks to be urgent.
+    /// A message sent again with the key it first had is the same message: the answer is the first send's,
+    /// unless the repeat is urgent and the message is still queued, which promotes it.
     pub(super) async fn answer_resent_agent_message(
         &self,
         first: &InboxEvent,
         urgent: bool,
+        target_name: &str,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        let promotion = if urgent {
-            self.promote_queued_message(first).await?
+        if urgent && !first.urgent {
+            let promotion = self.promote_queued_message(first).await?;
+            return Ok(promotion_result(first.sequence, &promotion));
+        }
+        let payload = if first.urgent {
+            serde_json::json!({"status":"durable","sequence":first.sequence,"urgent":true,"reply_requested":first.reply_requested})
         } else {
-            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({"status":"duplicate","message_id":first.sequence.to_string(),"sequence":first.sequence}),
-            });
+            serde_json::json!({"status":"queued","message_id":first.sequence.to_string(),"sequence":first.sequence,"urgent":false,"reply_requested":first.reply_requested,"note":queued_note(target_name)})
         };
-        Ok(promotion_result(first.sequence, &promotion))
+        Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
     }
 
     /// `chariox.promote_agent_message`: only the sender promotes its own message.

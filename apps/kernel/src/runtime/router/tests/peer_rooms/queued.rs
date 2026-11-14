@@ -199,7 +199,7 @@ fn sending_the_same_key_again_as_urgent_promotes_the_queued_message() {
         let key = serde_json::json!({"idempotency_key": "notes-1"});
         let queued = send_to(&rooms, "idle", key.clone()).await;
         let plain = send_to(&rooms, "idle", key).await;
-        assert_eq!(plain["status"], "duplicate", "a repeat is the same message");
+        assert_eq!(plain, queued, "a repeat is answered as the first send was");
         assert_eq!(plain["sequence"], queued["sequence"]);
         let promoted = send_to(
             &rooms,

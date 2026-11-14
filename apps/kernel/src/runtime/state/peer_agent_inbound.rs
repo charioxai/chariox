@@ -365,7 +365,12 @@ impl KernelRuntimeState {
             .find(|first| first.source_id == source);
         // The sender asks for the message it queued to be urgent: the same message, with no text of its own.
         if let (true, Some(first)) = (urgent, first.as_ref()) {
-            self.answer_resent_agent_message(first, true).await?;
+            self.answer_resent_agent_message(
+                first,
+                true,
+                target.alias().unwrap_or(target.agent_ref()),
+            )
+            .await?;
             return Ok(RelayPeerResponse::PeerAgentAccepted {
                 protocol_version: VERSION,
                 duplicate: true,
