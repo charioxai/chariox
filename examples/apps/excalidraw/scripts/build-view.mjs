@@ -50,6 +50,7 @@ await cp(join(prod, 'fonts'), join(output, 'ui/fonts'), { recursive: true, filte
 // Upstream ships GPL+font-exception Liberation 1.05. Never distribute it.
 await cp(join(root, 'assets/LiberationSans-Regular.woff2'), join(output, 'ui/fonts/Liberation/LiberationSans-Regular.woff2'));
 await cp(join(root, 'schemas'), join(output, 'schemas'), { recursive: true });
+await cp(join(root, 'ui/icon.svg'), join(output, 'ui/icon.svg'));
 await cp(join(root, 'licenses'), join(output, 'licenses'), { recursive: true });
 await cp(join(root, 'licenses.json'), join(output, 'licenses/inventory.json'));
 await cp(join(root, 'LICENSE'), join(output, 'licenses/APP-LICENSE'));
