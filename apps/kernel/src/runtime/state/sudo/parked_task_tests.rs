@@ -201,16 +201,19 @@ async fn stop_cancels_parked_task_through_prompt_route() {
         .unwrap()
         .contains(&(task.room_id.clone(), task.agent_id.clone())));
     let Outcome::Event(message) = store
-        .agent_lifecycle(Operation::Occur(
-            crate::durable_state::agent_lifecycle::occurrence(
+        .agent_lifecycle(Operation::Occur({
+            let mut event = crate::durable_state::agent_lifecycle::occurrence(
                 &task.room_id,
                 &task.agent_id,
                 "peer",
                 "after-stop",
                 "message",
                 serde_json::json!({"message":"New work for a later turn"}),
-            ),
-        ))
+            );
+            // Only an urgent message starts a turn of its idle recipient.
+            event.urgent = true;
+            event
+        }))
         .unwrap()
     else {
         panic!("message occurrence")

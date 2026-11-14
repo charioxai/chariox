@@ -917,9 +917,12 @@ fn sudo_fence_lets_correlated_wakes_pass_deferred_messages() {
     .unwrap();
     let occur = |id: &str, kind: &str, payload: serde_json::Value| {
         let Outcome::Event(event) = store
-            .agent_lifecycle(Operation::Occur(ledger::occurrence(
-                "room", "agent", "source", id, kind, payload,
-            )))
+            .agent_lifecycle(Operation::Occur({
+                let mut event = ledger::occurrence("room", "agent", "source", id, kind, payload);
+                // Only an urgent message is delivered ahead of a later wake.
+                event.urgent = kind == "message";
+                event
+            }))
             .unwrap()
         else {
             unreachable!()
@@ -997,9 +1000,12 @@ async fn sudo_deferred_events_outlast_the_delivery_timeout_and_run_after_the_win
     let store = &f.state.owned.durable_state_store;
     let occur = |id: &str, kind: &str, payload: serde_json::Value| {
         let Outcome::Event(event) = store
-            .agent_lifecycle(Operation::Occur(ledger::occurrence(
-                &room, &agent, "peer", id, kind, payload,
-            )))
+            .agent_lifecycle(Operation::Occur({
+                let mut event = ledger::occurrence(&room, &agent, "peer", id, kind, payload);
+                // Only an urgent message is delivered once the window ends.
+                event.urgent = kind == "message";
+                event
+            }))
             .unwrap()
         else {
             unreachable!()

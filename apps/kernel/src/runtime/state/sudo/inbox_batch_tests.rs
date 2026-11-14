@@ -17,9 +17,12 @@ fn occur(f: &Fixture, id: &str, kind: &str, payload: serde_json::Value) -> Inbox
         .state
         .owned
         .durable_state_store
-        .agent_lifecycle(Operation::Occur(ledger::occurrence(
-            &room, &agent, "peer", id, kind, payload,
-        )))
+        .agent_lifecycle(Operation::Occur({
+            let mut event = ledger::occurrence(&room, &agent, "peer", id, kind, payload);
+            // Only an urgent message starts a turn of its idle recipient.
+            event.urgent = kind == "message";
+            event
+        }))
         .unwrap()
     else {
         unreachable!()
