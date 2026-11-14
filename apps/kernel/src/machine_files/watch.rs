@@ -1,5 +1,5 @@
 //! Native invalidations only: no timers scan files or read their contents.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -83,15 +83,16 @@ impl FileWatch {
     }
 
     /// Resolves every requested path again and watches the directories that can change what
-    /// it reads: its target, and the nearest existing parent of the path and of the target. The
-    /// parents stay watched when an editor replaces a file, a link is repointed or a directory
-    /// is removed and recreated.
+    /// it reads: its target, the nearest existing parent of the path and of the target, and the
+    /// directory holding each link on the way. The parents stay watched when an editor replaces
+    /// a file, a link is repointed or a directory is removed and recreated.
     fn rearm(&mut self) -> Result<(), String> {
         let mut interests = self.requested.clone();
         let mut directories = BTreeSet::new();
         for path in &self.requested {
             self.guard.check(path)?;
             directories.extend(nearest_parent_directory(path));
+            directories.extend(link_parents(path));
             // A path that is gone, or a link whose target is gone, keeps its parent watched.
             if let Ok(target) = path.canonicalize() {
                 self.guard.check(&target)?;
@@ -143,6 +144,53 @@ impl FileWatch {
         self.pending = false;
         self.rearm()
     }
+}
+
+/// The directories that hold a link on the way to `path`, whatever its depth: repointing one
+/// of them changes what the path reads without any event in the directories watched below it.
+fn link_parents(path: &std::path::Path) -> BTreeSet<PathBuf> {
+    // The longest chain the system itself follows (`MAXSYMLINKS`).
+    const MAX_LINKS: usize = 40;
+    let mut parents = BTreeSet::new();
+    let mut resolved = PathBuf::new();
+    let mut pending: VecDeque<PathBuf> = path
+        .components()
+        .map(|part| PathBuf::from(part.as_os_str()))
+        .collect();
+    let mut followed = 0;
+    while let Some(part) = pending.pop_front() {
+        if part == std::path::Path::new("/") {
+            resolved = part;
+            continue;
+        }
+        if part == std::path::Path::new("..") {
+            resolved.pop();
+            continue;
+        }
+        if part == std::path::Path::new(".") {
+            continue;
+        }
+        let next = resolved.join(&part);
+        let Ok(metadata) = std::fs::symlink_metadata(&next) else {
+            break;
+        };
+        if !metadata.file_type().is_symlink() {
+            resolved = next;
+            continue;
+        }
+        followed += 1;
+        let Ok(target) = std::fs::read_link(&next) else {
+            break;
+        };
+        if followed > MAX_LINKS {
+            break;
+        }
+        parents.insert(resolved.clone());
+        for part in target.components().rev() {
+            pending.push_front(PathBuf::from(part.as_os_str()));
+        }
+    }
+    parents
 }
 
 fn nearest_parent_directory(path: &std::path::Path) -> Option<PathBuf> {
@@ -236,6 +284,48 @@ mod tests {
             .expect("a change in the new target invalidates the listing")
             .unwrap();
         std::fs::write(a.join("old"), "ignored").unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), watch.changed())
+                .await
+                .is_err(),
+            "the previous target is no longer watched"
+        );
+        drop(watch);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_watch_follows_a_link_above_the_file_repointed_after_registration() {
+        let root = std::env::temp_dir().join(format!("files-watch-{}", rand::random::<u64>()));
+        let (a, b, links) = (
+            root.join("releases/a"),
+            root.join("releases/b"),
+            root.join("links"),
+        );
+        for dir in [&a, &b, &links] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("note"), "before").unwrap();
+        }
+        let current = links.join("current");
+        std::os::unix::fs::symlink(&a, &current).unwrap();
+        let mut watch = FileWatch::new(
+            &[current.join("note").display().to_string()],
+            StateGuard::default(),
+        )
+        .unwrap();
+        let next = links.join("current.next");
+        std::os::unix::fs::symlink(&b, &next).unwrap();
+        std::fs::rename(&next, &current).unwrap();
+        tokio::time::timeout(Duration::from_millis(500), watch.changed())
+            .await
+            .expect("repointing the link above the file invalidates it")
+            .unwrap();
+        std::fs::write(b.join("note"), "after").unwrap();
+        tokio::time::timeout(Duration::from_millis(500), watch.changed())
+            .await
+            .expect("an edit of the file in the new target invalidates it")
+            .unwrap();
+        std::fs::write(a.join("note"), "ignored").unwrap();
         assert!(
             tokio::time::timeout(Duration::from_millis(100), watch.changed())
                 .await
