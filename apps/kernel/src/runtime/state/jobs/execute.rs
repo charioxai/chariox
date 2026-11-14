@@ -13,6 +13,8 @@ pub(super) struct Output {
     file: std::fs::File,
     log: String,
     discarding_line: bool,
+    /// Secret Environment values the job was given, longest first so a value inside another is masked whole.
+    masks: Vec<(String, Zeroizing<String>)>,
 }
 
 impl Output {
@@ -34,7 +36,19 @@ impl Output {
             file,
             log: path.to_string_lossy().into_owned(),
             discarding_line: false,
+            masks: vec![],
         })
+    }
+    /// A job that prints a secret it was given must not put it in the log, the status or the history.
+    pub(super) fn mask_secrets(&mut self, selected: &SelectedEnvironment) {
+        self.masks = selected
+            .secret_names
+            .iter()
+            .filter_map(|name| Some((name.clone(), selected.values.get(name)?.clone())))
+            .filter(|(_, value)| !value.trim().is_empty())
+            .collect();
+        self.masks
+            .sort_by_key(|(_, value)| std::cmp::Reverse(value.len()));
     }
     fn push(
         &mut self,
@@ -75,6 +89,13 @@ impl Output {
                 .room_secret_observations
                 .scrub(room, text)
                 .unwrap_or_else(|_| "[sensitive job output withheld]".into());
+            for (name, value) in &self.masks {
+                for value in [value.as_str(), value.trim()] {
+                    if text.contains(value) {
+                        text = text.replace(value, &format!("[vault:{name}]"));
+                    }
+                }
+            }
             text.push('\n');
             self.file
                 .write_all(text.as_bytes())
@@ -117,13 +138,21 @@ impl Output {
     }
 }
 
+pub(super) struct SelectedEnvironment {
+    values: BTreeMap<String, Zeroizing<String>>,
+    secret_names: Vec<String>,
+}
+
 fn selected_environment(
     state: &KernelRuntimeState,
     record: &Record,
-) -> Result<BTreeMap<String, Zeroizing<String>>, DaemonError> {
+) -> Result<SelectedEnvironment, DaemonError> {
     let session = state.owned.session_store.get_session(&record.room_id)?;
     if record.request.env.is_empty() {
-        return Ok(BTreeMap::new());
+        return Ok(SelectedEnvironment {
+            values: BTreeMap::new(),
+            secret_names: vec![],
+        });
     }
     let project = state
         .owned
@@ -145,6 +174,7 @@ fn selected_environment(
             .collect();
     let config = state.owned.config_projection.snapshot();
     let mut selected = BTreeMap::new();
+    let mut secret_names = vec![];
     for name in &record.request.env {
         if crate::project_environment::project_environment_protected_name(name) {
             return Err(ledger::error(
@@ -152,6 +182,7 @@ fn selected_environment(
             ));
         }
         let value = if environment.secrets.iter().any(|secret| secret == name) {
+            secret_names.push(name.clone());
             let vault = crate::secret::project_environment_vault(&config)?;
             vault.find_secret(&crate::project_environment::project_environment_vault_service(project.id()), name)?.ok_or_else(|| ledger::error(format!("Project Environment entry {name} is missing; fill it in the Environment first")))?
         } else {
@@ -164,7 +195,10 @@ fn selected_environment(
         }
         selected.insert(name.to_string(), Zeroizing::new(value));
     }
-    Ok(selected)
+    Ok(SelectedEnvironment {
+        values: selected,
+        secret_names,
+    })
 }
 
 impl KernelRuntimeState {
@@ -176,7 +210,12 @@ impl KernelRuntimeState {
     ) {
         let environment = selected_environment(self, &record);
         let mut output = match Output::new(self, &record) {
-            Ok(output) => output,
+            Ok(mut output) => {
+                if let Ok(selected) = &environment {
+                    output.mask_secrets(selected);
+                }
+                output
+            }
             Err(error) => {
                 let result = failed(&record, error.to_string());
                 self.finish_job(&wake, &mut record, result).await;
@@ -188,7 +227,7 @@ impl KernelRuntimeState {
             Ok(environment) => {
                 self.run_job(
                     &mut record,
-                    &environment,
+                    &environment.values,
                     &mut output,
                     &mut cancelled,
                     false,

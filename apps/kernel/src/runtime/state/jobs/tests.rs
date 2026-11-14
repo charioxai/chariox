@@ -7,8 +7,19 @@ pub(super) async fn fixture() -> (
     AgentTaskExecution,
     crate::test_support::TestWorktree,
 ) {
+    fixture_with(crate::config::DaemonConfig::for_tests()).await
+}
+
+async fn fixture_with(
+    config: crate::config::DaemonConfig,
+) -> (
+    KernelRuntimeState,
+    RuntimeProviderRun,
+    AgentTaskExecution,
+    crate::test_support::TestWorktree,
+) {
     let worktree = crate::test_support::TestWorktree::new("offload-job-entry");
-    let mut app = crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let mut app = crate::DaemonApp::bootstrap(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .unwrap();
@@ -493,4 +504,77 @@ async fn offload_job_duration_estimate_counts_completed_records_once_not_artifac
     second.result.as_mut().unwrap().duration_ms = 1200;
     driver.save(&second).unwrap();
     assert_eq!(state.job_duration_estimate(&next), Some(1100));
+}
+
+#[tokio::test]
+async fn offload_job_masks_its_secret_environment_values_in_output_log_and_status() {
+    let vault = std::env::temp_dir().join(format!("job-mask-vault-{}", rand::random::<u64>()));
+    let mut daemon_config = crate::config::DaemonConfig::for_tests();
+    daemon_config.user_config.credential_vault.path =
+        vault.join("vault.json").display().to_string();
+    let (state, run, task, _worktree) = fixture_with(daemon_config).await;
+    let session = state
+        .owned
+        .session_store
+        .get_session(&task.room_id)
+        .unwrap();
+    let project = state
+        .owned
+        .session_store
+        .environment_project(&session)
+        .unwrap();
+    state
+        .environment_store()
+        .save(
+            project.id(),
+            0,
+            crate::project_environment::ProjectEnvironmentRecord {
+                schema: crate::project_environment::PROJECT_ENVIRONMENT_SCHEMA,
+                variables: "PLAIN=plain-value".into(),
+                secrets: vec!["JOBSECRET".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let config = state.owned.config_projection.snapshot();
+    crate::secret::unlock_chariox_encrypted_vault(
+        &config.user_config.credential_vault.path,
+        "fixture-pass-phrase",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    crate::secret::project_environment_vault(&config)
+        .unwrap()
+        .set_secret(
+            &crate::project_environment::project_environment_vault_service(project.id()),
+            "JOBSECRET",
+            "hunter2-job-secret",
+        )
+        .unwrap();
+    let result = state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.run",
+            &serde_json::json!({"command":["/bin/sh","-c","echo \"got $JOBSECRET and $PLAIN\""],"env":["JOBSECRET","PLAIN"],"wait_s":10}),
+            &task,
+        )
+        .await
+        .unwrap();
+    let tail = result["result"]["output_tail"].as_str().unwrap();
+    assert!(
+        tail.contains("got [vault:JOBSECRET] and plain-value"),
+        "{tail}"
+    );
+    let log = std::fs::read_to_string(result["result"]["log"].as_str().unwrap()).unwrap();
+    assert!(!log.contains("hunter2-job-secret"), "{log}");
+    let status = state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.status",
+            &serde_json::json!({"job_id":result["job_id"]}),
+            &task,
+        )
+        .await
+        .unwrap();
+    assert!(!status.to_string().contains("hunter2-job-secret"));
 }
