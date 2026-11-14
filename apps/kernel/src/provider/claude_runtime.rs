@@ -28,10 +28,12 @@ pub(crate) use plan_exit::publish_claude_plan;
 mod runtime_tool_wait;
 mod session_restart;
 mod state;
+mod task_notification;
+pub(crate) use task_notification::{finished_background_task, BackgroundTaskEnd};
 mod tool_transcript;
 pub(crate) use tool_transcript::{
     bounded_result, bounded_result_images, ended_task_of_result, ends_background_commands,
-    launched_task_id, launches_background_command, RESULT_IMAGE_FILE_BYTES,
+    launched_task_id, launches_background_task, RESULT_IMAGE_FILE_BYTES,
 };
 pub(crate) mod usage;
 mod watchdog;

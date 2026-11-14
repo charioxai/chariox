@@ -96,10 +96,10 @@ impl CommandRouter {
         self.config_projection.snapshot().kernel_runtime_role
     }
 
-    pub(crate) fn confirmed_disposable_worker_home_caller(
+    pub(crate) fn enrolled_lease_worker_home_caller(
         &self,
-    ) -> Result<crate::managed_bootstrap::worker::CloudHomeCaller, DaemonError> {
-        crate::managed_bootstrap::worker::confirmed_disposable_worker_home_caller(
+    ) -> Result<crate::config::LeaseWorkerHomeCaller, DaemonError> {
+        crate::lease_worker_enrollment::enrolled_lease_worker_home_caller(
             &self.config_projection.snapshot(),
         )?
         .ok_or_else(|| DaemonError::KernelRuntimeRoleDenied {
@@ -144,8 +144,17 @@ impl CommandRouter {
 
     pub(crate) async fn relay_machine_files(
         &self,
+        sender: &str,
         request: crate::transport::relay_peer::RelayPeerRequest,
     ) -> Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError> {
+        if matches!(
+            request,
+            crate::transport::relay_peer::RelayPeerRequest::WatchMachineFiles { .. }
+                | crate::transport::relay_peer::RelayPeerRequest::UnwatchMachineFiles { .. }
+                | crate::transport::relay_peer::RelayPeerRequest::MachineFilesChanged { .. }
+        ) {
+            return self.runtime_state.serve_file_watch(sender, request).await;
+        }
         self.runtime_state.serve_machine_files(request).await
     }
 
@@ -493,7 +502,7 @@ impl CommandRouter {
     pub(crate) async fn relay_set_leased_agent_deadline(
         &self,
         leased_agent_id: &str,
-        deadline_ms: u64,
+        deadline_ms: Option<u64>,
     ) -> Result<(), DaemonError> {
         relay_peer_runtime::set_relay_leased_agent_deadline(
             &self.runtime_state,

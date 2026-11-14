@@ -6,7 +6,8 @@ import {DisplayStream,PortableEncoder} from './kernel-browser-display.mjs';
 const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
 const chromeUi=t=>['browser_chrome','browser_auxiliary'].includes(t?.kind);
 export async function createRegionDisplay({host,command,scope,signal,target,lease,args,window,tab,policy,generation,placement,offset={x:0,y:0},overlayTab=null,connection:windowConnection=null,Capture}){
- let source,stream;
+ let source,stream,releaseRender;
+ const closeLease=async()=>{try{await releaseRender?.();}finally{await lease.close();}};
  try {
   const pageTab=overlayTab??tab;
   // A window-scoped display has no page: the browser-level connection carries it and no page session is resolved.
@@ -22,6 +23,9 @@ export async function createRegionDisplay({host,command,scope,signal,target,leas
   const sourceTab=chromeUi(target)?{...pageTab,document_id:lease.document_id}:pageTab;
   const {cachedCurrent,validateCurrent:validateArg,publishCurrent:publishArg,...captureArgs}=args;
   const validateCurrent=timedLease(validateArg),publishCurrent=timedLease(publishArg);
+  // Native pixels do not keep a hidden RenderWidget producing animation.
+  // Share the target-local wake with mirrors, without selecting a physical tab.
+  if(target.kind==='visible_page'||target.kind==='region')releaseRender=await host.browser.inputCapture.hold(connection,sessionId);
   source=new Capture({...captureArgs,validateCurrent,publishCurrent,...(overlayTab?{pageDocument:overlayTab.document_id}:{}),display:host.chromium.display,pid:window.pid??host.chromium.browserPid??host.chromium.child?.pid,connection,sessionId,tab:sourceTab,scale,
    hostScale:host.chromium.scale??1,policy,browser:host.browser,frames:id=>host.browser.frameSession?.(id,connection),
    screenshot:()=>host.displayScreenshot(pageTab,null,false),allowed:p=>host.protection===p&&!p.unknown&&host.generation===generation,timing:host.timing});
@@ -54,7 +58,7 @@ export async function createRegionDisplay({host,command,scope,signal,target,leas
     const results=await Promise.allSettled([close(),source.close()]);
     const errors=results.filter(result=>result.status==='rejected').map(result=>result.reason);
     if(errors.length)throw new AggregateError(errors,'MD-DISPLAY: region teardown failed');
-   }finally{await lease.close();}
+   }finally{await closeLease();}
   })();
   if(target.kind==='region')lease.attachDisplay(stream);else host.displays.set(stream.subscription_id,stream);
   const unwatch=target.kind==='browser_chrome'&&typeof source.windows==='function'?host.chromeWindows.watch?.(()=>source.windows(),undefined,fn=>source.onWindowsChanged?.(fn)):null;
@@ -67,7 +71,7 @@ export async function createRegionDisplay({host,command,scope,signal,target,leas
   // Startup may fail after its admitted display retires; check before cleanup closes the lease.
   let current;
   try{current=window.isCurrent()&&await lease.isCurrent();}
-  finally{if(stream)await stream.close();else{await source?.close();await lease.close();}}
+  finally{if(stream)await stream.close();else{try{await source?.close();}finally{await closeLease();}}}
   if(!current)refuse();
   throw error;
  }

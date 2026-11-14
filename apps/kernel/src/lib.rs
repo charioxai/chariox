@@ -32,6 +32,8 @@ pub mod history_archive;
 #[cfg(unix)]
 pub mod hot_reload;
 pub mod io;
+pub(crate) mod jobs;
+mod lease_worker_enrollment;
 pub mod local;
 pub mod logging;
 pub(crate) mod machine_files;
@@ -62,6 +64,7 @@ pub mod secret;
 pub(crate) mod secret_redaction;
 pub mod session;
 pub mod session_history_page;
+pub mod shutdown;
 pub mod skill;
 pub mod slice;
 pub mod slice_provider_auth;

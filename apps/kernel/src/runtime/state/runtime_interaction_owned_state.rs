@@ -336,8 +336,8 @@ impl KernelRuntimeOwnedState {
         )
     }
 
-    /// `as_holder`: the agent answering as the decision's holder. It must still be the holder,
-    /// by the authority it has now, when the answer reaches the interaction lock.
+    /// An agent answers as the decision's holder or through owner room reach. Its current
+    /// authority is rechecked under the interaction lock before settling the card.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn resolve_runtime_interaction_routed(
         &self,
@@ -351,8 +351,12 @@ impl KernelRuntimeOwnedState {
         take_host: bool,
         terminal_answer: bool,
         answerer: Option<&crate::runtime::command::KernelCaller>,
-        as_holder: Option<&str>,
+        agent_answer: Option<AgentInteractionAnswer<'_>>,
     ) -> Result<(), DaemonError> {
+        let as_holder = match agent_answer {
+            Some(AgentInteractionAnswer::Holder(id)) => Some(id),
+            _ => None,
+        };
         let _mutation = self
             .pending_interactions
             .mutation
@@ -397,8 +401,11 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error(super::decision_holder::HOLDER_CHANGED));
         }
-        let task_owner_answer =
-            self.may_answer_blocked_task_decision(session_id, interaction_id, caller_user_id);
+        // The parent that holds a blocked task's card answers it for the owner; the holder was
+        // checked above and its authority is checked again below.
+        let task_owner_answer = (as_holder.is_some()
+            && super::agent_task_owner_interactions::is_blocked_task_decision(interaction_id))
+            || self.may_answer_blocked_task_decision(session_id, interaction_id, caller_user_id);
         if pending
             .kernel_operation_owner
             .as_deref()
@@ -463,6 +470,14 @@ impl KernelRuntimeOwnedState {
                     .cloned()
             })
             .ok_or_else(|| interaction_error("interaction is not active"))?;
+        if let Some(AgentInteractionAnswer::Owner(id)) = agent_answer {
+            let caller = self.agent_store.get_agent(id)?;
+            let source = sessions.get_session(caller.session_id())?;
+            let target = session
+                .as_ref()
+                .ok_or_else(|| interaction_error("owner-only kernel decision"))?;
+            self.authorize_owner_card(&source, &caller, target, &pending, &interaction)?;
+        }
         // The authority limit is rechecked here, under the interaction lock: an answer from an
         // agent that no longer holds the decision by its current authority is refused.
         if let (Some(agent), Some(session)) = (as_holder, session.as_ref()) {

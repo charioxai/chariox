@@ -11,6 +11,8 @@ use crate::runtime::state::wake_driver::{
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
 
+mod assessment_inbox;
+
 const KIND: &str = "test-source";
 
 struct TestDriver {
@@ -1007,7 +1009,6 @@ async fn refused_wake_after_dispatch_admission_is_retried_by_the_sweep() {
     assert_eq!(restored_wait.deadline_ms, expected_wait.deadline_ms);
     assert_eq!(restored_wait.inbox_cursor, expected_wait.inbox_cursor);
     assert_eq!(restored_wait.started_at_ms, expected_wait.started_at_ms);
-    assert_eq!(restored.no_progress_wakes, 0);
     assert!(restored.pending_prompt_id.is_none());
 
     spawn_inert_pty_for_run(&mut *f.app.lock().await, &f.run);
@@ -1018,7 +1019,6 @@ async fn refused_wake_after_dispatch_admission_is_retried_by_the_sweep() {
     assert!(events[0].submit_epoch.is_some());
     let retried = f.task(&task.task_id);
     assert_eq!(retried.state, ExecutionState::Working);
-    assert_eq!(retried.no_progress_wakes, 1);
     assert!(retried.pending_prompt_id.is_none());
     assert!(
         retried.wait.is_none(),
@@ -1170,7 +1170,7 @@ async fn agent_deadline_stops_an_active_turn_and_fences_later_admission() {
             crate::local::SetAgentDeadlineRequest {
                 session_id: f.room.clone(),
                 agent_id: f.agent.clone(),
-                deadline_ms: now - 1,
+                deadline_ms: Some(now - 1),
             },
         )
         .await
@@ -1260,7 +1260,7 @@ async fn agent_deadline_is_not_stopped_while_an_owned_source_is_still_stopping()
             crate::local::SetAgentDeadlineRequest {
                 session_id: f.room.clone(),
                 agent_id: f.agent.clone(),
-                deadline_ms: now - 1,
+                deadline_ms: Some(now - 1),
             },
         )
         .await
@@ -1313,7 +1313,7 @@ async fn pending_deadline_cleanup_does_not_stop_the_sweep_for_other_wakes() {
             crate::local::SetAgentDeadlineRequest {
                 session_id: f.room.clone(),
                 agent_id: f.agent.clone(),
-                deadline_ms: now - 1,
+                deadline_ms: Some(now - 1),
             },
         )
         .await
@@ -1348,6 +1348,44 @@ async fn pending_deadline_cleanup_does_not_stop_the_sweep_for_other_wakes() {
         f.wake_state("wake-other"),
         "lost",
         "the unrelated wake is still supervised"
+    );
+}
+
+/// A kernel that starts with a scheduled timer gives its scheduler the fire tolerance to tick
+/// before the dead-man sweep calls it stalled; a scheduler that stays silent is still reported.
+#[tokio::test]
+async fn a_fresh_kernel_with_a_scheduled_timer_raises_no_false_stall_alert() {
+    let f = fixture("fresh-kernel-stall", false).await;
+    let task = f.begin("turn-1");
+    let mut timer = f.wake(&task, "wake-timer");
+    timer.kind = "timer".into();
+    timer.next_due_ms = Some(crate::session::unix_epoch_ms() + 600_000);
+    f.store()
+        .agent_lifecycle(Operation::CreateWake {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            wake: timer,
+        })
+        .unwrap();
+    let started = f.runtime.owned.agent_wakes.started_at_ms;
+
+    f.runtime.sweep_agent_wakes(started + 1_000).await.unwrap();
+    assert!(
+        !f.notices().contains("scheduler stalled"),
+        "a scheduler that has not had its first tick yet is not stalled: {}",
+        f.notices()
+    );
+    f.runtime
+        .sweep_agent_wakes(
+            started + crate::runtime::state::agent_wake_scheduler::WAKE_FIRE_TOLERANCE_MS + 1_000,
+        )
+        .await
+        .unwrap();
+    assert!(
+        f.notices()
+            .contains("scheduler stalled (no tick since kernel start)"),
+        "a scheduler silent past the tolerance is reported: {}",
+        f.notices()
     );
 }
 
@@ -2479,9 +2517,9 @@ async fn a_yield_writes_one_wait_row_and_the_wake_updates_it_in_place() {
 }
 
 // A wait the owner stops does not stay a running row in the transcript: the same row says it was cancelled.
-// #1338 lets a yield carry no deadline; the wait row of that wait reports it as `null`, not as a missing key.
+// A yield without an explicit deadline reports the kernel's default deadline in its wait row.
 #[tokio::test]
-async fn a_yield_without_a_deadline_writes_a_wait_row_with_a_null_deadline() {
+async fn a_yield_without_a_deadline_writes_a_wait_row_with_the_default_deadline() {
     let f = fixture("wait-row-no-deadline", true).await;
     let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
     let prompt = f
@@ -2522,8 +2560,12 @@ async fn a_yield_without_a_deadline_writes_a_wait_row_with_a_null_deadline() {
     let row = &waiting[0].2;
     assert_eq!(row["status"], "running", "{row}");
     assert!(
-        row["input"].get("deadline_ms").is_some_and(|d| d.is_null()),
-        "the row names a null deadline: {row}"
+        row["input"]["deadline_ms"]
+            .as_u64()
+            .is_some_and(|deadline| deadline
+                >= row["started_at_ms"].as_u64().unwrap()
+                    + crate::durable_state::agent_lifecycle::DEFAULT_WAIT_TIMEOUT_MS),
+        "the row names the default deadline: {row}"
     );
 }
 
@@ -2873,4 +2915,40 @@ async fn a_wake_between_settlement_and_its_finish_leaves_no_running_wait_row() {
         .filter(|(_, _, row)| row["status"] == "running")
         .collect();
     assert!(running.is_empty(), "a wait that already ended: {running:?}");
+}
+
+#[tokio::test]
+async fn kwait_timer_fires_when_an_older_finished_wake_cannot_be_decoded() {
+    let f = fixture("kwait-old-wake-timer", false).await;
+    let old = f.begin("older-turn");
+    let old_wake = f.arm(&old, "old-wake").unwrap();
+    f.runtime
+        .wake_sink(KIND)
+        .occurred(f.occurrence(&old_wake.id, "old-ended", Some(WakeEnd::Succeeded)))
+        .unwrap();
+    let now = crate::session::unix_epoch_ms();
+    let task = f.begin("later-event-turn");
+    let mut timer = f.wake(&task, "timer-after-old-wake");
+    timer.kind = "timer".into();
+    timer.state = "scheduled".into();
+    timer.next_due_ms = Some(now + 1_000);
+    f.store()
+        .agent_lifecycle(Operation::CreateWake {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            wake: timer,
+        })
+        .unwrap();
+    // A prior driver's malformed terminal detail must not stop unrelated timers.
+    let db = rusqlite::Connection::open(f.store().path()).unwrap();
+    db.execute("UPDATE agent_wakes SET payload=json_set(payload,'$.fire_count','invalid') WHERE id='old-wake'", []).unwrap();
+    drop(db);
+    let _ = f.runtime.sweep_agent_wakes(now + 60_000).await;
+    let timer = f
+        .store()
+        .agent_wake("timer-after-old-wake")
+        .unwrap()
+        .unwrap();
+    assert_eq!(timer.state, "fired", "{timer:?}");
+    assert_eq!(timer.fire_count, 1);
 }

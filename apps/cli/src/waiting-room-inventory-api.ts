@@ -1,3 +1,4 @@
+import type { MachineAllocationCapability } from "./machine-allocation-api.js"
 import { listProviderAccountCopyOffers } from "./provider-api.js"
 import type { ProviderAccountCopyOffer } from "@chariox/kernel-client"
 import { externalProviderSessionPage } from "@chariox/kernel-client/external-provider-sessions"
@@ -17,7 +18,6 @@ import { expectVariant } from "./ipc-response.js"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import { listSlices } from "./slice-api.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
-import type { ManagedEnvironmentCatalog } from "@chariox/kernel-client/ipc-managed-environment-requests"
 
 export type RemoteMachineView = WaitingRoomRemoteMachineView & { displayFreshness?: "cached/refreshing" | "reconnecting" }
 
@@ -53,17 +53,17 @@ export type WaitingRoomInventory = {
   providerAccountCopyUnavailable?: boolean
   providerAccounts?: ProviderAccountProfile[]
   gitCredentials?: WaitingRoomGitCredentialSummary[]
-  managedEnvironmentCatalog?: ManagedEnvironmentCatalog
+  machineAllocationCapability?: MachineAllocationCapability | null
 }
 
-export async function getWaitingRoomInventory(client: LocalIpcClient, getManagedCatalog?: () => Promise<ManagedEnvironmentCatalog | undefined>): Promise<WaitingRoomInventory> {
+export async function getWaitingRoomInventory(client: LocalIpcClient, getMachineCapability?: () => Promise<MachineAllocationCapability | null | undefined>): Promise<WaitingRoomInventory> {
   const response = await client.send<Record<string, unknown>>(getWaitingRoomPublicSnapshotRequest())
   const payload = expectVariant<{
     snapshot: WaitingRoomPublicSnapshot
   }>(response, "WaitingRoomPublicSnapshot").snapshot
-  const [slices, managedEnvironmentCatalog, accountCopy] = await Promise.all([
+  const [slices, machineAllocationCapability, accountCopy] = await Promise.all([
     listSlices(client).catch(() => []),
-    getManagedCatalog?.(),
+    getMachineCapability?.(),
     payload.relay_status.connected && payload.relay_status.capabilities?.includes("provider_account_copy_pull_v1")
       ? listProviderAccountCopyOffers(client).then(offers => ({ offers, unavailable: false }), () => ({ offers: [], unavailable: true }))
       : Promise.resolve({ offers: [], unavailable: false }),
@@ -110,6 +110,6 @@ export async function getWaitingRoomInventory(client: LocalIpcClient, getManaged
     providerAccountCopyUnavailable: accountCopy.unavailable,
     providerAccounts: payload.provider_accounts ?? [],
     gitCredentials: payload.git_credentials ?? [],
-    ...(managedEnvironmentCatalog ? { managedEnvironmentCatalog } : {}),
+    ...(machineAllocationCapability !== undefined ? { machineAllocationCapability } : {}),
   }
 }

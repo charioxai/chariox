@@ -6,6 +6,7 @@ pub(crate) mod gateway_identity;
 pub(crate) mod home_audit_feed;
 pub(crate) mod kernel_browser_display;
 pub(crate) mod kernel_protocol;
+pub(crate) mod kernel_resource_feed;
 pub(crate) mod listener_admission;
 pub(crate) mod mcp_server;
 pub(crate) mod passkey_prompt_feed;
@@ -21,6 +22,7 @@ pub(crate) mod room_browser_controller;
 pub(crate) mod runtime_tools;
 pub(crate) mod secure_display;
 pub(crate) mod selkies_stream;
+pub(crate) mod terminal_output_wire;
 
 use crate::app::provider_output::{ProviderOutputPump, ProviderOutputPumpRequest};
 use crate::app::DaemonApp;

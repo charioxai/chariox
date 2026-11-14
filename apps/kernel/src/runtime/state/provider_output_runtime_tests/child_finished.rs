@@ -17,7 +17,6 @@ pub(super) struct Family {
     pub(super) parent: String,
     pub(super) parent_run: String,
     pub(super) kids: Vec<Kid>,
-    pub(super) config: crate::config::DaemonConfig,
     pub(super) _worktree: crate::test_support::TestWorktree,
 }
 
@@ -132,7 +131,7 @@ async fn family_in(
     if let Some(root) = history_root {
         config = config.with_session_history_root(root);
     }
-    let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+    let mut app = DaemonApp::bootstrap(config).unwrap();
     let (session, parent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .unwrap();
@@ -253,7 +252,6 @@ async fn family_in(
         parent_run: parent_run.id().into(),
         kids,
         runtime,
-        config,
         _worktree: worktree,
     }
 }
@@ -302,7 +300,8 @@ async fn a_child_stopped_by_its_deadline_says_so() {
         .agent_lifecycle(Operation::SetDeadline {
             room: team.room.clone(),
             agent: team.child.clone(),
-            deadline: deadline_ms,
+            deadline: Some(deadline_ms),
+            inherited: Vec::new(),
         })
         .unwrap();
     store
@@ -494,7 +493,8 @@ async fn a_deadline_that_stops_a_working_child_tells_the_parent() {
         .agent_lifecycle(Operation::SetDeadline {
             room: team.room.clone(),
             agent: team.child.clone(),
-            deadline: deadline_ms,
+            deadline: Some(deadline_ms),
+            inherited: Vec::new(),
         })
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
@@ -519,7 +519,8 @@ async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
         .agent_lifecycle(Operation::SetDeadline {
             room: team.room.clone(),
             agent: team.parent.clone(),
-            deadline: crate::session::unix_epoch_ms() + 30,
+            deadline: Some(crate::session::unix_epoch_ms() + 30),
+            inherited: Vec::new(),
         })
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;

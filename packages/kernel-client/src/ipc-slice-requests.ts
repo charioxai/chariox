@@ -1,5 +1,5 @@
 import type { SliceDisplayBackend } from "./kernel-types-cloud.js"
-import type { ManagedEnvironmentDevelopmentSetup } from "./ipc-managed-environment-requests.js"
+import type { ContextDevelopmentSetup } from "./context-transfer-types.js"
 
 export function listSlicesRequest() {
   return { ListSlices: null }
@@ -17,7 +17,7 @@ export function createSliceRequest(options: {
   worktreeId?: string | null
   workspaceMount?: string | null
   sourceSliceRef?: string | null
-  developmentSetup?: ManagedEnvironmentDevelopmentSetup | null
+  developmentSetup?: ContextDevelopmentSetup | null
   workerKernelRef?: string | null
   displayUrl?: string | null
   providerAuth?: unknown[]
@@ -52,7 +52,7 @@ export function createSliceRequest(options: {
 }
 
 function serializeSliceDevelopment(
-  development: ManagedEnvironmentDevelopmentSetup,
+  development: ContextDevelopmentSetup,
 ) {
   if (development.kind === "empty") return { kind: "empty" } as const
   return {

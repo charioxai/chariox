@@ -1,0 +1,26 @@
+{
+  "local": 1008,
+  "peer": 447,
+  "response": {
+    "room_id": "room-other",
+    "cards": [
+      {
+        "id": "xroom-perm",
+        "agent_id": "asker",
+        "kind": "choice",
+        "level": "warning",
+        "title": "Allow command?",
+        "message": "Run `ls`?",
+        "choices": [
+          {
+            "id": "allow",
+            "label": "Allow"
+          }
+        ],
+        "custom_choice": null,
+        "answerable": true,
+        "reason": null
+      }
+    ]
+  }
+}

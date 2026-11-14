@@ -538,9 +538,11 @@ pub(super) async fn decrypt_relay_event_from_channel(
             let decrypted =
                 relay_crypto::decrypt_payload_for_private_key(client_private_key, &encrypted_event)
                     .expect("event should decrypt");
+            let plaintext = crate::transport::terminal_output_wire::open(&decrypted.plaintext)
+                .expect("terminal output should decode");
             (
                 event_id,
-                serde_json::from_slice(&decrypted.plaintext).expect("event should deserialize"),
+                serde_json::from_slice(&plaintext).expect("event should deserialize"),
             )
         }
         other => panic!("unexpected relay envelope: {other:?}"),

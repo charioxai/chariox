@@ -8,8 +8,8 @@ use crate::account_profile::{
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::local::{
-    LocalDaemonResponse, ManagedEnvironmentProviderAccounts,
-    PreflightProviderAccountPortabilityRequest,
+    LocalDaemonResponse, PreflightProviderAccountPortabilityRequest,
+    ProviderAccountTransferSelection,
 };
 use crate::runtime::command::KernelCommand;
 
@@ -64,9 +64,9 @@ pub(super) fn preflight_selection(
     config: &DaemonConfig,
     profiles: &ProviderAccountProfileRegistry,
     runtime_owner: &str,
-    selection: &ManagedEnvironmentProviderAccounts,
+    selection: &ProviderAccountTransferSelection,
 ) -> Result<bool, DaemonError> {
-    let ManagedEnvironmentProviderAccounts::Selected { accounts } = selection else {
+    let ProviderAccountTransferSelection::Selected { accounts } = selection else {
         return Ok(false);
     };
     let owner = provider_account_authority_owner_user_id(config, runtime_owner);

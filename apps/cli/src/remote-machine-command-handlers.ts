@@ -45,10 +45,6 @@ export type RemoteMachineCommandHandlerDeps = {
   approveRemoteMachine?: (machineRef: string) => Promise<RemoteMachineRegistration>
   forgetRemoteMachine?: (machineRef: string) => Promise<RemoteMachineRegistration>
   listRemoteMachineKernels?: (machineRef: string) => Promise<RemoteMachineKernelSummary[]>
-  reimageManagedEnvironment?: (
-    environmentId: string,
-    action: "prepare" | "confirm" | "cancel",
-  ) => Promise<{ message: string; tone: FooterTone }>
 }
 
 export async function handleRemoteMachineSlashCommand(
@@ -77,33 +73,7 @@ export async function handleRemoteMachineSlashCommand(
     await forgetRemoteMachine(deps, args[1])
     return
   }
-  if (subcommand === "reimage") {
-    await reimageManagedEnvironment(deps, args[1], args[2], args.length)
-    return
-  }
-  deps.flashFooter("usage: /machine add | /machine linked | /machine unlink <name> | /machine list | /machine kernels <machine-ref> | /machine approve <machine-ref> | /machine forget <machine-ref> | /machine reimage <environment-id> [confirm|cancel]", "error", "toast")
-}
-
-async function reimageManagedEnvironment(
-  deps: RemoteMachineCommandHandlerDeps,
-  environmentId: string | undefined,
-  rawAction: string | undefined,
-  argumentCount: number,
-): Promise<void> {
-  if (!deps.reimageManagedEnvironment) {
-    deps.flashFooter("managed-machine reimage is unavailable in this build", "error", "toast")
-    return
-  }
-  const action = rawAction ?? "prepare"
-  if (!environmentId || argumentCount > 3 || !["prepare", "confirm", "cancel"].includes(action)) {
-    deps.flashFooter("usage: /machine reimage <environment-id> [confirm|cancel]", "error", "toast")
-    return
-  }
-  const result = await deps.reimageManagedEnvironment(
-    environmentId,
-    action as "prepare" | "confirm" | "cancel",
-  )
-  deps.flashFooter(result.message, result.tone, "toast")
+  deps.flashFooter("usage: /machine add | /machine linked | /machine unlink <name> | /machine list | /machine kernels <machine-ref> | /machine approve <machine-ref> | /machine forget <machine-ref>", "error", "toast")
 }
 
 async function listRemoteMachines(deps: RemoteMachineCommandHandlerDeps): Promise<void> {

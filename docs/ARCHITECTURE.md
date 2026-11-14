@@ -486,7 +486,8 @@ Current implementation note:
 
 ### 4.3 Client Copies and the Resource Feed
 
-Status: proposed for Landing 9 (Cloud `docs/CLIENT_DATA_PLANE.md`); not implemented.
+Status: the feed exists from protocol 1006 for the Vault, provider accounts and App
+installations (`docs/PROTOCOL.md` §4.1.1); the other resources follow.
 
 - The kernel is the authority for every value a client shows. A client keeps the
   last copy it was given, with the kernel's revision, and shows that copy until

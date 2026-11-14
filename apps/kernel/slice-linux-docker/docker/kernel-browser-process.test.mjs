@@ -181,14 +181,23 @@ test('MP-08/MP-10 a Linux host with a usable VA-API render node launches the bro
  const gpu={'/dev/dri':['by-path','card0','renderD128'],'/usr/lib/x86_64-linux-gnu/dri':['iHD_drv_video.so']};
  const decode=videoDecodeArguments({},host(gpu));
  assert.deepEqual(decode,['--enable-features=AcceleratedVideoDecodeLinuxGL']);
- assert(launchArguments('/private',false,true,1,decode).includes('--enable-features=AcceleratedVideoDecodeLinuxGL'));
+ assert(launchArguments('/private',false,true,1,decode).includes('--enable-features=AcceleratedVideoDecodeLinuxGL,OverlayScrollbar'));
  for(const [files,denied,environment] of [
   [{'/dev/dri':['by-path','card0'],'/usr/lib/x86_64-linux-gnu/dri':['iHD_drv_video.so']},[],{}], // a display controller without a render node
   [gpu,['/dev/dri/renderD128'],{}], // a render node this user cannot open
   [{'/dev/dri':['renderD128']},[],{}], // no VA-API driver
   [gpu,[],{LIBVA_DRIVERS_PATH:'/opt/empty'}], // the configured driver path has none
  ])assert.deepEqual(videoDecodeArguments(environment,host(files,denied)),[]);
- assert(!launchArguments('/private',false,true).some(arg=>arg.startsWith('--enable-features')),'the default launch is unchanged');
+ assert.deepEqual(launchArguments('/private',false,true).filter(arg=>arg.startsWith('--enable-features')),['--enable-features=OverlayScrollbar'],'the default launch only adds overlay scrollbars');
+});
+// 2026-11-13 (elpais.com in the Room Browser view): classic Linux scrollbars take 15 px, so a banner or ad sized to 100vw overflowed the
+// window by a gutter: the page scrolled sideways with nothing there and the ad's close control sat under the vertical bar.
+test('MP-08/10/11 the browser launches with overlay scrollbars in one --enable-features flag, with or without hardware decode',async()=>{
+ const {launchArguments}=await import('./kernel-browser-process.mjs');
+ for(const headless of [false,true])for(const display of [false,true]){
+  assert.deepEqual(launchArguments('/p',headless,display).filter(arg=>arg.startsWith('--enable-features')),['--enable-features=OverlayScrollbar']);
+  assert.deepEqual(launchArguments('/p',headless,display,1,['--enable-features=AcceleratedVideoDecodeLinuxGL']).filter(arg=>arg.startsWith('--enable-features')),['--enable-features=AcceleratedVideoDecodeLinuxGL,OverlayScrollbar']);
+ }
 });
 // 2026-10-31: on a Mac the kernel browser was a headed Chrome window on the person's desktop (nothing captures it there).
 test('the kernel browser is headless on macOS whatever the environment says, and only the Linux owned desktop shows a window',async()=>{
@@ -211,4 +220,29 @@ test('MP-08/10/11 every launch flag states what a page can observe of it',async(
  assert.deepEqual(unlisted,[],'a new launch flag must say what pages can observe of it (launchFlagVisibility) and be covered by the signal test');
  const stale=Object.keys(launchFlagVisibility).filter(flag=>!used.has(flag));
  assert.deepEqual(stale,[],'a removed launch flag must leave the table');
+});
+
+// MP-08/MP-10 (transport3, 2026-11-13): on a busy host a cold Chromium answered its first CDP
+// command after more than five seconds, the request bound of a running browser, so the first
+// Browser open failed with browser_startup_timeout although the next attempt started fine.
+test('MP-08/MP-10 a cold browser that answers its first command slowly still starts',async()=>{
+ const {writeFile,chmod}=await import('node:fs/promises');
+ // The browser lives beside, not inside, the root: Chromium's namespace sees no file of the App storage's parents.
+ const root=await mkdtemp(tmpdir()+'/chariox-slow-cold-start-'),bin=await mkdtemp(tmpdir()+'/chariox-slow-browser-'),getuid=process.getuid,browser=path.join(bin,'slow-browser');
+ await writeFile(browser,`#!${process.execPath}
+const fs=require('node:fs');
+if(process.argv.includes('--version')){console.log('Google Chrome 155.0.8059.79');process.exit(0)}
+const out=fs.createWriteStream(null,{fd:4});let buffer='';
+fs.createReadStream(null,{fd:3}).on('data',chunk=>{buffer+=chunk;let end;while((end=buffer.indexOf('\\0'))>=0){const {id,method}=JSON.parse(buffer.slice(0,end));buffer=buffer.slice(end+1);
+ const result=method==='SystemInfo.getProcessInfo'?{processInfo:[{type:'browser',id:process.pid}]}:{product:'Chrome/155.0.8059.79'};
+ setTimeout(()=>out.write(JSON.stringify({id,result})+'\\0'),method==='Browser.getVersion'?6500:0)}});
+setInterval(()=>{},1000);
+`);await chmod(browser,0o755);await chmod(bin,0o755);
+ process.getuid=()=>1000;
+ const host=new HostChromium(root,{appStorageRoot:path.join(root,'app-wasm-state-test'),environment:{...process.env,CHARIOX_KERNEL_BROWSER_EXECUTABLE:browser,CHARIOX_KERNEL_BROWSER_HEADLESS:'1'}});
+ host.desktop=null;
+ try{
+  const connection=await host.start();
+  assert.match((await connection.send('Browser.getVersion',{},undefined,{timeoutMs:10_000})).product,/Chrome/);
+ }finally{process.getuid=getuid;await host.stop();await rm(root,{recursive:true,force:true});await rm(bin,{recursive:true,force:true});}
 });

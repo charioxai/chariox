@@ -33,7 +33,7 @@ test('MP-08/MP-10/MP-11 visible-page lease uses the shared region pump and retir
  const tab={tab_id:'t',target_id:'target',document_id:'d'},window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async target=>target==='target'&&active};
  const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),displayTarget:async()=>tab,
   chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window}),inWindowOverNow:async rect=>{checkedRect=rect;return covered;}},arbiter:{isActiveTab:async()=>active},
-  browser:{resolvePageTarget:async()=>({connection:{send:async()=>({cssLayoutViewport:{clientWidth:1280,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}})},sessionId:'s'})},timing:()=>{},armDisplayExpiry:()=>{}};
+  browser:{inputCapture:{hold:async()=>async()=>{}},resolvePageTarget:async()=>({connection:{send:async()=>({cssLayoutViewport:{clientWidth:1280,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}})},sessionId:'s'})},timing:()=>{},armDisplayExpiry:()=>{}};
  class Capture {constructor(options){this.options=options;this.region=visiblePageGeometry(options.window,options.viewport);}async start(){return this;}async close(){closed++;}}
  const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8_000_000,device_scale_factor:2};
  active=false;await assert.rejects(subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture}));assert.equal(host.displays.size,0);
@@ -94,7 +94,7 @@ test('A-L13 visible-page capture is served at the Tab scale inside the kernel vi
  const {captureVisiblePage}=await import('./kernel-browser-page-display.mjs');
  const tab={tab_id:'t',target_id:'target',document_id:'d'};let captured=0,clip;const scales=new Map([['t',1]]);
  let page={width:1280,height:800};
- const host={generation:1,protection:{unknown:false},displays:new Map(),mirror:{streams:new Map()},tabs:new Map([['t',tab]]),scales,browser:{resolvePageTarget:async()=>assert.fail('no page read before the shot')},
+ const host={generation:1,protection:{unknown:false},displays:new Map(),mirror:{streams:new Map()},tabs:new Map([['t',tab]]),scales,browser:{inputCapture:{hold:async()=>async()=>{}},resolvePageTarget:async()=>assert.fail('no page read before the shot')},
   pageSize:id=>{assert.equal(id,'t');return page;},
   displayScreenshot:async(t,c)=>{captured++;clip=c;assert.equal(t,tab);const s=scales.get('t');return{width:c.width*s,height:c.height*s,[displayMaskRegions]:[{x:12,y:6,width:20,height:10}]};}};
  // The viewer's frame may be any size up to the viewport (a mirror viewport is the page area, scrollbar column included).
@@ -124,4 +124,31 @@ test('MP-11 an attestation refusal serves the page from the CDP display, any oth
  assert.deepEqual(png.codecs,['png','chariox-video-dependencies-v1','chariox-relay-binary-v96']);assert.equal(png.tab_id,'t');
  assert.deepEqual(pngFallbackCommand(Error('MD-DISPLAY: native readback unavailable'),command).codecs,png.codecs,'a readback that never starts degrades too');
  for(const message of ['MP-11: visible page binding retired','native attestation retired','Capture protection unavailable','stale_document_reference'])assert.equal(pngFallbackCommand(Error(message),command),null,message);
+});
+
+// A native readback alone does not wake a hidden RenderWidget after the host unfreezes.
+for(const failure of [null,'start','close'])test(`native page display owns renderer wake through ${failure??'last viewer close'}`,async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const {BrowserInputCapture}=await import('./browser-controller-input.mjs');
+ let awake=false,starts=0;
+ const connection={send:async(method,params)=>{
+  if(method==='Emulation.setFocusEmulationEnabled'){awake=params.enabled;return {};}
+  if(method==='Runtime.evaluate')return {result:{value:false}};
+  if(method==='Page.getLayoutMetrics')return {cssLayoutViewport:{clientWidth:1280,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}};
+  throw Error('unexpected browser mutation '+method);
+ }};
+ const tab={tab_id:'t',target_id:'target',document_id:'d'},window={...binding(),window_generation:2,pid:42,isPageCurrent:async()=>true};
+ const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),displayTarget:async()=>tab,
+  chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},
+  browser:{inputCapture:new BrowserInputCapture(),resolvePageTarget:async()=>({connection,sessionId:'s'})},timing:()=>{},armDisplayExpiry:()=>{}};
+ const original=Error('capture '+failure);
+ class Capture {constructor(options){this.region=visiblePageGeometry(options.window,options.viewport);}async start(){starts++;assert(awake,'hidden renderer must be awake before native capture starts');if(failure==='start')throw original;return this;}async close(){if(failure==='close')throw original;}}
+ const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8000000,device_scale_factor:1};
+ if(failure==='start'){await assert.rejects(subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture}),e=>e===original);}
+ else{
+  const a=await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture}),b=await subscribeVisiblePage(host,command,'terminal:b',undefined,{Capture});
+  const close=async id=>{const s=host.displays.get(id);if(failure==='close')await assert.rejects(s.close(),AggregateError);else await s.close();};
+  await close(a.subscription_id);assert(awake,'another viewer still owns the renderer wake');await close(b.subscription_id);
+ }
+ assert.equal(awake,false);assert.equal(host.browser.inputCapture.displayLeases.size,0);assert.equal(host.displays.size,0);assert(starts>0);
 });

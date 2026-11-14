@@ -318,6 +318,37 @@ impl LocalRouterTestHarness {
         });
     }
 
+    /// Block until the provider has received the agent's active prompt. A
+    /// cancel that lands earlier finds nothing delivered to interrupt and
+    /// settles the prompt at once, so tests that expect an interrupt wait here.
+    pub(crate) fn wait_for_prompt_delivery(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) {
+        self.runtime.block_on(async {
+            for _ in 0..1000 {
+                let delivered = {
+                    let app = self.app.lock().await;
+                    app.prompt_owner_active_prompt_for_agent_snapshot(session_id, agent_id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|prompt| {
+                            prompt.id() == prompt_id
+                                && prompt.durable_delivery_phase()
+                                    == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                        })
+                };
+                if delivered {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("prompt `{prompt_id}` should be delivered to agent `{agent_id}`");
+        });
+    }
+
     pub(crate) fn add_workflow_test_node(
         &self,
         session_id: &str,

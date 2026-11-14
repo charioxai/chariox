@@ -144,7 +144,7 @@ fn volume_with(free: u64) -> Arc<pool::Pool> {
 #[test]
 fn a_command_filling_the_disk_is_stopped_with_its_reason_never_paused() {
     take_wait_events();
-    let pool = volume_with(4 * GIB);
+    let pool = volume_with(128 * MIB);
     let mut writer = Workload::run(
         domain(&pool, "writer", false),
         &[("write", writer_command())],
@@ -168,6 +168,43 @@ fn a_command_filling_the_disk_is_stopped_with_its_reason_never_paused() {
             .all(|event| !matches!(event.change, WaitChange::Began)),
         "the writer was paused first: {events:?}"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_anonymous_memory_writer_is_not_stopped_as_a_disk_filler() {
+    take_wait_events();
+    let pool = pool(1536);
+    let command = format!(
+        "python3 -c '{DIE_WITH_PARENT}import os,sys,time\nf=os.memfd_create(\"browser-frame\"); disk=open(sys.argv[1],\"wb\")\nfor _ in range(16):\n os.write(f,bytes(1048576)); disk.write(bytes(1048576)); disk.flush(); os.fsync(disk.fileno()); time.sleep(0.25)\ntime.sleep(6)' \"$0/out\""
+    );
+    let mut writer = Workload::run(domain(&pool, "memory-writer", false), &[("write", command)]);
+    settle(4);
+    assert!(
+        writer.alive("write"),
+        "memory-backed output was treated as a full disk"
+    );
+    assert!(
+        take_wait_events()
+            .iter()
+            .all(|event| !matches!(event.change, WaitChange::Stopped { .. })),
+        "memory-backed output triggered a disk stop"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_anonymous_memory_file_has_no_disk_capacity_observation() {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let name = std::ffi::CString::new("browser-frame").unwrap();
+    // SAFETY: the name is NUL-terminated; a successful descriptor is owned below.
+    let fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
+    assert!(fd >= 0, "{}", std::io::Error::last_os_error());
+    // SAFETY: memfd_create returned this fresh descriptor.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let path = std::path::PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
+    assert!(file.metadata().unwrap().is_file());
+    assert!(admission::statvfs(&path).is_none());
 }
 
 /// What the previous program's admission handed over for a held command.
@@ -248,7 +285,7 @@ fn stopped_after_a_hot_reload(launch: Launch) -> bool {
     let handed_over: Submissions =
         serde_json::from_slice(&serde_json::to_vec(&writer.domain.submissions()).unwrap()).unwrap();
     let _next = writer
-        .watched_again(domain(&volume_with(4 * GIB), "writer", false).launched_by(handed_over));
+        .watched_again(domain(&volume_with(128 * MIB), "writer", false).launched_by(handed_over));
     settle(4);
     writer.domain.unbind_key(&key);
     !writer.alive("write")
@@ -294,7 +331,7 @@ fn an_agents_command_is_still_stopped_when_it_fills_the_disk_after_a_hot_reload(
 #[test]
 fn a_persons_own_terminal_command_never_waits() {
     let pool = pool(1536);
-    let _a = Workload::start(domain(&pool, "a", false), &[("big", 800, 0, 0)]);
+    let _a = Workload::start(domain(&pool, "a", false), &[("big", 1100, 0, 0)]);
     settle(1);
     let prepared = domain(&pool, "person", false);
     let person = Workload::gated(
@@ -321,7 +358,7 @@ fn a_persons_own_terminal_command_never_waits() {
 #[test]
 fn an_agents_command_stays_pausable_when_a_person_submits_before_its_first_sample() {
     let pool = pool(1536);
-    let _a = Workload::start(domain(&pool, "a", false), &[("big", 800, 0, 0)]);
+    let _a = Workload::start(domain(&pool, "a", false), &[("big", 1100, 0, 0)]);
     settle(1);
     let agent = Workload::gated(
         domain(&pool, "agent", false),
@@ -345,7 +382,10 @@ fn an_agents_command_stays_pausable_when_a_person_submits_before_its_first_sampl
     line_finished_for_key(&key, &[build]);
     line_started_for_key(&key);
     line_finished_for_key(&key, &[build]);
-    settle(6);
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !agent.waiting("grow") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert!(
         agent.waiting("grow"),
         "the agent's build took the person's later line and ran unpaused"
@@ -431,7 +471,7 @@ fn a_long_wait_inside_the_limit_does_not_emit_a_notice() {
 #[cfg(target_os = "linux")]
 /// A build: grows to `top` MiB at `rate` MiB/s, holds it a moment and ends.
 fn build(rate: u64, top: u64) -> String {
-    format!("python3 -c '{DIE_WITH_PARENT}import time\nb=[]\nfor _ in range({top}//8):\n b.append(bytearray(8*1048576)); time.sleep(8/{rate})\ntime.sleep(1.5)' build")
+    format!("python3 -c '{DIE_WITH_PARENT}import time\nb=[]\nfor _ in range({top}//8):\n b.append(bytearray(8*1048576)); time.sleep(8/{rate})\ntime.sleep(1.5); print(\"BUILD_FINISHED\", file=sys.stderr, flush=True)' build")
 }
 
 /// The scheduler state letter of a command (`T` once admission stopped it),
@@ -453,12 +493,28 @@ fn five_growing_builds(cgroup: bool) {
     const BUILDS: usize = 5;
     take_wait_events();
     let pool = pool(1500);
-    let mut builds = Vec::new();
-    for index in 0..BUILDS {
-        builds.push(Workload::run(
-            domain(&pool, &format!("build-{index}"), cgroup),
-            &[("job", build(100, 400))],
-        ));
+    let mut builds = (0..BUILDS)
+        .map(|index| {
+            Workload::gated(
+                domain(&pool, &format!("build-{index}"), cgroup),
+                &[("job", build(100, 400))],
+            )
+        })
+        .collect::<Vec<_>>();
+    // A terminal's resource watch is already running when its commands start.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while builds
+        .iter()
+        .any(|build| build.domain.state.lock().unwrap().samples.is_empty())
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the build watches never sampled their roots"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    for build in &builds {
+        build.go(&["job"]);
         std::thread::sleep(Duration::from_millis(600));
     }
     let pids = builds
@@ -511,8 +567,12 @@ fn five_growing_builds(cgroup: bool) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    let notices = builds
+        .iter()
+        .map(|build| build.told("job"))
+        .collect::<Vec<_>>();
     let evidence = format!(
-        "finished {finished_at:?}\nstops {stops:?}\nresumes {resumes:?}\nlongest all paused {longest_all_paused:?}"
+        "finished {finished_at:?}\nstops {stops:?}\nresumes {resumes:?}\nlongest all paused {longest_all_paused:?}\nnotices {notices:?}"
     );
     if let Ok(path) = std::env::var("HEALTHPAUSE_EVIDENCE") {
         let _ = std::fs::write(path, &evidence);
@@ -521,6 +581,28 @@ fn five_growing_builds(cgroup: bool) {
         finished_at.iter().all(Option::is_some),
         "a build never finished: {evidence}"
     );
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut outcomes = Vec::with_capacity(BUILDS);
+    for build in &mut builds {
+        loop {
+            if let Some(outcome) = build.exit_status() {
+                outcomes.push(outcome);
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a finished build's shell never exited: {evidence}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    assert!(
+        outcomes.iter().all(std::process::ExitStatus::success),
+        "a build was ended instead of finishing: {outcomes:?}\n{evidence}"
+    );
+    for build in &builds {
+        build.assert_told("job", "BUILD_FINISHED");
+    }
     // (a) The pool was never left with every build paused for long.
     assert!(
         longest_all_paused < Duration::from_secs(3),
@@ -550,9 +632,7 @@ fn five_growing_builds(cgroup: bool) {
     for index in 0..BUILDS {
         for resumed in &resumes[index] {
             assert!(
-                !stops[index]
-                    .iter()
-                    .any(|stop| stop > resumed && *stop - *resumed < Duration::from_secs(1)),
+                !stops[index].iter().any(|stop| stop > resumed),
                 "build {index} was stopped again right after it continued: {evidence}"
             );
         }

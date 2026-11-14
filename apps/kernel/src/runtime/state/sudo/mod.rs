@@ -111,4 +111,6 @@ const SUDO_WARNING: Duration = Duration::from_secs(10 * 60);
 const SUDO_TIMER_TOLERANCE: Duration = Duration::from_secs(5);
 
 #[cfg(all(test, target_os = "linux"))]
+mod watched_process_grant_tests;
+#[cfg(all(test, target_os = "linux"))]
 mod watched_process_tests;

@@ -11,7 +11,7 @@ import {
   OWNER_MANAGED_EVENT_CONNECTIONS_MINIMUM_PROTOCOL_VERSION,
   OWNER_MANAGED_EVENT_CONNECTIONS_MINIMUM_RELAY_PROTOCOL_VERSION,
 } from "./ipc-managed-context-requests.js"
-import type { ManagedContextTransferTicket } from "./ipc-managed-environment-requests.js"
+import type { ManagedContextTransferTicket } from "./context-transfer-types.js"
 
 test("managed context transfer requests use the shared local daemon shape", () => {
   const ticket: ManagedContextTransferTicket = {

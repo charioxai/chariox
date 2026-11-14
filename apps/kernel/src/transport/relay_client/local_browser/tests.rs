@@ -2182,3 +2182,42 @@ fn a_hot_reload_tells_a_direct_browser_it_is_a_reload() {
         }
     });
 }
+
+#[test]
+fn a_hot_reload_delivers_its_close_frame_over_webrtc_before_stopping_udp() {
+    large_stack(async {
+        for reload in [false, true] {
+            let kernel = Kernel::new();
+            let browser = Browser::new();
+            let (mut client, offer) = RtcClient::offer();
+            let issued = kernel.mint_rtc(&browser, &offer).await;
+            client.accept(issued["answer"].as_str().unwrap());
+            let grant = issued["grant"].as_str().unwrap().to_owned();
+            let verdict = rtc_handshake(&kernel, &browser, &mut client, &issued, &grant).await;
+            assert_eq!(verdict["kind"], "local_connected");
+            let prepared = reload.then(crate::hot_reload::PreparedForTests::new);
+            kernel._shutdown.send(true).unwrap();
+            client
+                .pump(|client| client.frames.iter().any(|frame| frame["kind"] == "close"))
+                .await;
+            let close = client
+                .frames
+                .iter()
+                .find(|frame| frame["kind"] == "close")
+                .unwrap();
+            assert_eq!(close["reason"], "daemon shutting down");
+            assert_eq!(close["kernel_reload"].as_bool().unwrap_or(false), reload);
+            // Keep acknowledging SCTP while the driver drains, then join it as
+            // the relay connector does before the process can exec.
+            let drain = kernel.direct.wait_stopped();
+            tokio::pin!(drain);
+            loop {
+                tokio::select! {
+                    _ = &mut drain => break,
+                    _ = client.step() => {}
+                }
+            }
+            drop(prepared);
+        }
+    });
+}

@@ -1,5 +1,7 @@
 # MP-08 / MP-09 / MP-10 / MP-11: current boot image boundary
 
+Kernel deployment tools and service units are maintained in [the Cloud deployment directory](https://github.com/charioxai/chariox-cloud/tree/main/deploy/providers/managed-kernel). Follow its README for current packaging, installation and upgrade commands. The procedures below are retained as operational history.
+
 Reusable preinstall images now live in Cloud; the release-coupled OSS image builder is removed. Use [authenticated kernel boot](AUTHENTICATED_KERNEL_BOOT.md) for new managed VMs. The installed release/update details below apply to existing consumers until their lifecycle slice replaces them.
 
 # Managed remote-kernel image

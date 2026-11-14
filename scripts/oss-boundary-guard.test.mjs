@@ -79,7 +79,7 @@ test('CamelCase identifiers built from banned words are caught, whole words only
 test('control-plane path literals are normalized and exclude file names and test code', () => {
   const found = (path, text) => controlPlanePaths(path, text).map(f => f.path)
   assert.deepEqual(found('a.ts', 'get(`/managed-environments/${encodeURIComponent(id)}/lifecycle?x=1`)'), ['/managed-environments/{}/lifecycle'])
-  assert.deepEqual(found('a.rs', 'format!("{}/v1/subscriptions/reconcile", url); let p = "/v1/managed-kernels/activity";'), ['/v1/subscriptions/reconcile', '/v1/managed-kernels/activity'])
+  assert.deepEqual(found('a.rs', 'format!("{}/v1/subscriptions/reconcile", url); let p = "/v1/kernels/activity";'), ['/v1/subscriptions/reconcile', '/v1/kernels/activity'])
   assert.deepEqual(found('a.rs', 'const V: &str = "/managed-vault.json";\n// "/v1/x"\n#[cfg(test)]\nmod tests { const P: &str = "/v1/y"; }'), [])
   assert.deepEqual(found('a.ts', 'const u = "/auth/device/start"'), [])
 })
@@ -356,7 +356,7 @@ test('OSB-07: the hosted trigger ingress in apps/server names no connected-servi
   // An empty or truncated file list would pass the check below without scanning anything.
   assert.ok(files.length >= 10 && files.includes('apps/server/src/agent-trigger-admission.ts'), `OSB-07 scanned ${files.length} files: ${files.slice(0, 3).join(', ')}`)
   const scan = (list, read) => list.flatMap(f => controlPlanePaths(f, read(f)).map(c => `${f}:${c.line}: ${c.path}`))
-  assert.deepEqual(scan(['apps/server/src/planted.ts'], () => 'await fetch(`${base}/v1/managed-kernels/activity`)'), ['apps/server/src/planted.ts:1: /v1/managed-kernels/activity'], 'the scan reports a planted route')
+  assert.deepEqual(scan(['apps/server/src/planted.ts'], () => 'await fetch(`${base}/v1/kernels/activity`)'), ['apps/server/src/planted.ts:1: /v1/kernels/activity'], 'the scan reports a planted route')
   const calls = scan(files, f => readFileSync(join(root, f), 'utf8'))
   assert.ok(calls.length === 0, `apps/server calls a control-plane route; configure an admission URL instead:\n${calls.join('\n')}`)
   const listed = JSON.parse(readFileSync(join(root, 'scripts/control-plane-paths.allow.json'), 'utf8')).filter(e => e.callers.some(c => c.startsWith('apps/server/')))
@@ -455,4 +455,33 @@ test('a planted-violation commit turns the guard CLI red and removing it turns i
     const green = guard()
     assert.equal(green.status, 0, green.stderr)
   } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+// Exercise the CLI on a tracked source outside src/: server entry points and helpers
+// are product code too. A vocabulary allowlist never authorizes an API call.
+test('server entry points and helpers cannot add an unlisted admission path', () => {
+  const repo = baselineRepo({}, [])
+  try {
+    repo.git('update-ref', 'refs/remotes/origin/main', repo.base)
+    for (const file of ['apps/server/admission.mjs', 'apps/server/lib/admission.ts', 'apps/server/src/admission.ts']) {
+      repo.write(file, 'await fetch(`${base}/browser/agent-trigger-deployments/${id}/admission`)\n')
+      repo.git('add', file)
+      repo.git('commit', '-q', '-m', 'plant server admission path')
+      const red = repo.guard({})
+      assert.equal(red.status, 1, `${file} escaped the path scan: ${red.stdout}${red.stderr}`)
+      assert.match(red.stderr, /unlisted control-plane path: \/browser\/agent-trigger-deployments\/\{\}\/admission/)
+      repo.git('rm', '-q', file)
+      repo.git('commit', '-q', '-m', 'remove server admission path')
+      const green = repo.guard({})
+      assert.equal(green.status, 0, green.stderr)
+    }
+  } finally { repo.done() }
+})
+
+test('enrollment authority policy cannot return to the kernel bootstrap implementation', () => {
+  for (const field of ['provider_rebuild_action_id', 'expected_data_volume_serial', 'expected_data_volume_size_gb', 'freshness_evidence']) {
+    const findings = vocabularyFindings('apps/kernel/src/managed_bootstrap/state.rs', `pub ${field}: String,`)
+    assert.ok(findings.some(row => row.kind === 'enrollment authority policy'), `${field} escaped the bootstrap boundary`)
+  }
+  assert.deepEqual(vocabularyFindings('apps/kernel/src/managed_bootstrap/state.rs', 'pub confirmation_evidence: Option<serde_json::Value>,'), [])
 })

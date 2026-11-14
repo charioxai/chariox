@@ -78,6 +78,7 @@ pub(crate) fn redact_response_for_user(
             agent_activity,
             agent_activity_revision,
             processes,
+            jobs,
             disk_usage,
         } => {
             let room_workflows =
@@ -92,6 +93,10 @@ pub(crate) fn redact_response_for_user(
                 agent_activity: redact_agent_activity_for_session(agent_activity, &session),
                 agent_activity_revision,
                 processes,
+                jobs: jobs
+                    .into_iter()
+                    .filter(|job| session.agents().iter().any(|a| a.id() == job.agent_id))
+                    .collect(),
                 disk_usage,
                 session,
             }
@@ -891,16 +896,18 @@ mod tests {
             None,
             GridPosition::new(0, 0, 1, 1),
         )]);
-        session.add_agent_trigger(AgentTrigger::schedule(
-            "trigger",
-            "agent",
-            DEFAULT_LOCAL_USER_ID,
-            60,
-            AgentTriggerRepeat::Every,
-            AgentTriggerBusyPolicy::Queue,
-            "the owner's private prompt",
-            1,
-        ));
+        session.add_agent_trigger(
+            AgentTrigger::schedule(
+                "trigger",
+                "agent",
+                DEFAULT_LOCAL_USER_ID,
+                crate::session::AgentSchedule::interval(60, AgentTriggerRepeat::Every),
+                AgentTriggerBusyPolicy::Queue,
+                "the owner's private prompt",
+                1,
+            )
+            .expect("schedule should be valid"),
+        );
         session.note_unconfirmed_trigger_delivery(TriggerDelivery::not_confirmed(
             "prompt",
             "trigger",
@@ -925,6 +932,7 @@ mod tests {
             agent_activity: Default::default(),
             agent_activity_revision: 0,
             processes: Vec::new(),
+            jobs: Vec::new(),
             disk_usage: Vec::new(),
         }
     }

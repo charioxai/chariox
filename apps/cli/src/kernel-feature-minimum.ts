@@ -1,3 +1,4 @@
+import { machineAllocationMinimumProtocolVersion } from "@chariox/kernel-client/ipc-control-plane-requests"
 import { OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION } from "@chariox/kernel-client/ipc-managed-context-requests"
 import * as requests from "@chariox/kernel-client/ipc-requests"
 import { KernelProtocolMinimumError } from "./protocol-minimum-diagnostic.js"
@@ -5,6 +6,7 @@ import { KernelProtocolMinimumError } from "./protocol-minimum-diagnostic.js"
 type FeatureMinimum = { feature: string; minimum: number }
 
 const features: Record<string, FeatureMinimum> = {
+  ControlPlane: { feature: "Machine acquisition", minimum: machineAllocationMinimumProtocolVersion },
   ListProviderAccountCopyOffers: { feature: "Provider account copy", minimum: requests.providerAccountCopyMinimumProtocolVersion },
   CopyProviderAccountFromKernel: { feature: "Provider account copy", minimum: requests.providerAccountCopyMinimumProtocolVersion },
   IssueOwnMachineEnrollment: { feature: "own machine enrollment", minimum: requests.ownMachineEnrollmentMinimumProtocolVersion },

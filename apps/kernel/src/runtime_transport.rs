@@ -47,7 +47,9 @@ mod subscription_projection;
 mod subscriptions;
 pub(crate) use subscriptions::await_subscription_work_with_heartbeats;
 
-pub(crate) use subscription_projection::session_projection_events;
+pub(crate) use subscription_projection::{
+    session_projection_events, session_projection_events_for_scope,
+};
 
 pub(crate) use command_cache::COMMAND_RESULT_CACHE_LIMIT;
 use command_cache::{
@@ -65,7 +67,9 @@ use subscriptions::{
 pub(crate) const WATCH_INTERVAL_MS: u64 = 100;
 pub(crate) const WAITING_ROOM_ROW_COALESCE_MS: u64 = 500;
 const PUMP_INTERVAL_MS: u64 = 500;
-const PROVIDER_OUTPUT_PUMP_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// At most half the process shutdown budget: the subsystem cleanup after it withdraws cards and
+/// stops provider utilities, and must still run before the watchdog ends the process.
+const PROVIDER_OUTPUT_PUMP_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 const IDLE_PUMP_INTERVAL_MS: u64 = 5_000;
 pub(crate) const SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS: u64 = 20;
 const HEARTBEAT_INTERVAL_TICKS: u64 = 50;
@@ -750,9 +754,6 @@ where
                 .await;
     });
     let (quiescence_shutdown_tx, quiescence_shutdown_rx) = tokio::sync::watch::channel(false);
-    let release_update_task = router
-        .runtime_state()
-        .spawn_managed_release_update(quiescence_shutdown_rx.clone());
     let quiescence_task = router
         .runtime_state()
         .spawn_managed_kernel_quiescence(quiescence_shutdown_rx);
@@ -761,6 +762,9 @@ where
     let wake_state = router.runtime_state();
     let wake_scheduler_task =
         tokio::spawn(async move { wake_state.run_agent_wake_scheduler().await });
+    let claim_state = router.runtime_state();
+    let contended_claim_task =
+        tokio::spawn(async move { claim_state.run_contended_claim_retries().await });
     let created_peer_router = Arc::clone(&router);
     let created_peer_release_task =
         tokio::spawn(async move { created_peer_router.run_created_peer_release().await });
@@ -772,13 +776,12 @@ where
                 if let Some(task) = quiescence_task {
                     task.abort();
                 }
-                if let Some(task) = release_update_task {
-                    task.abort();
-                }
                 drop(_restart_recovery_task);
                 wake_scheduler_task.abort();
+                contended_claim_task.abort();
                 created_peer_release_task.abort();
                 pump_task.abort();
+                crate::shutdown::stage("provider output pump");
                 // Output already taken from a provider must reach history:
                 // a hot-reloaded turn continues after it in the new program.
                 let _ = stop_provider_output_pump.send(());
@@ -797,8 +800,15 @@ where
                     task.abort();
                 }
                 mcp_task.abort();
+                crate::shutdown::stage("subsystem cleanup");
                 let _ = router.runtime_state().end_kernel_access_for_shutdown();
-                let _ = router.shutdown_cleanup().await;
+                if let Err(error) = router.shutdown_cleanup().await {
+                    crate::logging::error_with_fields(
+                        "daemon.shutdown",
+                        "kernel subsystem cleanup failed",
+                        serde_json::json!({"error": error.to_string()}),
+                    );
+                }
                 return Ok(());
             },
             (stream, _) = crate::transport::listener_admission::accept_unix_with_backoff(
@@ -1246,7 +1256,7 @@ async fn record_connection_subscription_heartbeat(
         return;
     }
     if let Err(error) = router
-        .record_terminal_attachment_heartbeat(
+        .record_subscription_attachment_heartbeat(
             &subscription.session_id,
             &subscription.attachment_id,
             crate::session::unix_epoch_ms(),
@@ -1824,6 +1834,14 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 }
             };
             let scope = kernel_subscription_scope(subscription_scope.as_deref());
+            if scope == KernelSubscriptionScope::KernelResources {
+                refuse(KernelTransportError {
+                    code: "kernel_resources_relay_only".into(),
+                    message: "kernel_resources subscriptions are served over the relay; on a direct socket read the resources with their list requests".into(),
+                    retryable: false,
+                });
+                return;
+            }
             crate::logging::info_with_fields(
                 "daemon.runtime_transport",
                 "kernel websocket subscribed",

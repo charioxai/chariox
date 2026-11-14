@@ -32,7 +32,7 @@ def owner_identity(connection):
 
 def clipboard_source(connection, processes, tree, accessibility):
     # X selections have no provenance by default. Only a live owned native app
-    # whose accessibility nodes are all public may supply an agent clipboard.
+    # with a proved process identity may supply an agent-requested clipboard.
     identity=owner_identity(connection)
     if identity is None or identity[1] is None:return None
     # MP-11 #904 review 1: retained public nodes of a truncated walk can hide
@@ -41,7 +41,7 @@ def clipboard_source(connection, processes, tree, accessibility):
     pid=identity[1]
     process=next((p for p in processes if p['pid']==pid),None)
     nodes=[n for n in tree.get('nodes',[]) if n.get('pid')==pid]
-    if not process or not accessibility.alive(process) or not nodes or any(n.get('protected') for n in nodes):return None
+    if not process or not accessibility.alive(process) or not nodes:return None
     return (identity[0],pid,process['started'])
 
 
@@ -53,9 +53,9 @@ def display_module():
     return display
 
 
-def public_clipboard(processes, accessibility, mask=False, browser_processes=None):
+def public_clipboard(processes, accessibility, browser_processes=None):
     before=accessibility.snapshot(processes,browser_processes)
-    if mask or not before['available'] or not before['complete'] or before['protected'] or before.get('uncovered') or any(n.get('protected') for n in before.get('nodes',[])):return None
+    if not before['available'] or not before['complete'] or before.get('uncovered'):return None
     if not processes or not before.get('nodes'):return None
     connection=None
     try:

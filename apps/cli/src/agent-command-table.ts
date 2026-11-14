@@ -16,6 +16,7 @@ const TERMINAL: Flag = { name: "--terminal", value: "TERMINAL_ID" }
 const HOST_AGENT: Flag = { name: "--host-agent", value: "AGENT_ID" }
 
 export const COMMANDS: readonly CommandSpec[] = [
+  { name: "agent deadline", flags: [KERNEL, SESSION, SOCKET], args: ["AGENT", "DURATION|none"], summary: "extend, shorten or clear an agent deadline; duration starts now (90s, 30m, 2h, 1d)" },
   { name: "exec", flags: [KERNEL, SESSION, { name: "--workspace", value: "PATH" }, HOST_AGENT, SOCKET],
     summary: "run argv after -- without a PTY; streams binary stdin/stdout/stderr live, returns the command exit code; --workspace makes a temporary Room" },
   {
@@ -199,7 +200,6 @@ export function guideText(): string {
   const exits = EXIT_CODES.map(entry => `  ${entry.exit} ${entry.meaning}`)
   return [
     "Chariox guide for agents. You talk only to your local kernel; nothing is installed in your harness.",
-    "",
     "1. Ask once: chariox access request --until-exit",
     "   It waits while the user decides; exit 0 and a printed grant mean approved: go on to step 2.",
     "   If a command prints a pointer or says the user must approve, show it to the user verbatim and wait.",
@@ -224,7 +224,6 @@ export function guideText(): string {
     "Or add chariox events mcp as an MCP server: its tool chariox_next_choice waits, asks and answers. A subscription lasts until its grant ends or you cancel it.",
     "Commands:",
     ...commands,
-    "",
     "Requests for chariox request (replace the UPPERCASE values; ids come from earlier answers):",
     ...REQUEST_EXAMPLES.map(({ body, note }) => `  ${JSON.stringify(body)}  | ${note}`),
     "A request the kernel cannot parse comes back with a message naming the expected variants and fields: read it and fix the request.",

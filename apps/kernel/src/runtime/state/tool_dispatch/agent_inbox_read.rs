@@ -80,6 +80,29 @@ impl KernelRuntimeState {
         }))
     }
 
+    /// A decision event needs an answer only while its card is open: pending in this kernel or
+    /// shown in its room. A card that ended without one (its asker stopped, or the kernel that
+    /// held it stopped) leaves nothing to answer, so its event can be acknowledged.
+    fn decision_open(&self, room: &str, event: &InboxEvent) -> bool {
+        if !ledger::needs_answer(event) {
+            return false;
+        }
+        let Some(card) = event.payload["interaction_id"].as_str() else {
+            return true;
+        };
+        self.owned.pending_interactions.write().contains_key(card)
+            || self
+                .owned
+                .session_store
+                .get_session(room)
+                .is_ok_and(|session| {
+                    session
+                        .active_interactions()
+                        .iter()
+                        .any(|open| open.id() == card)
+                })
+    }
+
     fn inbox_event_view(
         &self,
         room: &str,
@@ -150,7 +173,7 @@ impl KernelRuntimeState {
             "sequence": event.sequence,
             "kind": event.kind,
             "urgent": event.urgent,
-            "needs_answer": ledger::needs_answer(event),
+            "needs_answer": self.decision_open(room, event),
             "reply_requested": event.reply_requested,
             "source": {
                 "kind": source_kind,
@@ -169,8 +192,6 @@ impl KernelRuntimeState {
         (relation, view)
     }
 
-    /// A handled `child_finished` receipt also ends the sub-agent it reports, so the
-    /// parent has no separate delete step to forget.
     pub(crate) async fn ack_agent_inbox(
         &self,
         room: &str,
@@ -180,33 +201,17 @@ impl KernelRuntimeState {
     ) -> Result<serde_json::Value, DaemonError> {
         let handled = args["handled"].as_bool().unwrap_or(false);
         let work = self.owned.sudo_work_task(room, actor);
-        let mut finished_children = Vec::new();
-        let mut ack = |event: &InboxEvent| {
-            let subtree = if handled && event.kind == "child_finished" {
-                self.finished_child_subtree(room, actor, &event.payload)?
-            } else {
-                None
-            };
-            // The deletion is recorded in the write that handles the receipt.
-            let operation = match subtree.clone() {
-                Some(subtree) => Operation::AckHandledChild {
-                    room: room.into(),
-                    agent: actor.into(),
-                    sequence: event.sequence,
-                    subtree,
-                    now,
-                },
-                None => Operation::Ack {
+        let ack = |event: &InboxEvent| {
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::Ack {
                     room: room.into(),
                     agent: actor.into(),
                     sequence: event.sequence,
                     handled,
                     now,
-                },
-            };
-            self.owned.durable_state_store.agent_lifecycle(operation)?;
-            finished_children.extend(subtree);
-            Ok::<_, DaemonError>(())
+                })
+                .map(|_| ())
         };
         if let Some(through) = args["through"].as_u64() {
             let (mut acknowledged, mut skipped) = (Vec::new(), Vec::new());
@@ -237,7 +242,7 @@ impl KernelRuntimeState {
                         skipped.push(
                             serde_json::json!({"sequence": event.sequence, "reason": "not_read"}),
                         );
-                    } else if ledger::needs_answer(event) {
+                    } else if self.decision_open(room, event) {
                         skipped.push(serde_json::json!({"sequence": event.sequence, "reason": "needs_answer"}));
                     } else if matches!(event.state.as_str(), "submitting" | "uncertain" | "blocked")
                     {
@@ -252,7 +257,6 @@ impl KernelRuntimeState {
                 }
                 cursor = last;
             }
-            self.end_handled_children(&finished_children).await;
             return Ok(serde_json::json!({"acknowledged": acknowledged, "skipped": skipped}));
         }
         let seq = args["sequence"]
@@ -271,13 +275,12 @@ impl KernelRuntimeState {
                     "event unavailable in this inbox"
                 })
             })?;
-        if ledger::needs_answer(&event) {
+        if self.decision_open(room, &event) {
             return Err(ledger::error(
                 "this event needs an answer: answer or pass the decision first, then it can be acknowledged",
             ));
         }
         ack(&event)?;
-        self.end_handled_children(&finished_children).await;
         Ok(serde_json::json!({"acknowledged": seq}))
     }
 }

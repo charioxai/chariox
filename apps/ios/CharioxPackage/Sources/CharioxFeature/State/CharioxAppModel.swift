@@ -397,6 +397,8 @@ public final class CharioxAppModel {
       switch response {
       case .promptCancelled:
         return "Cancellation requested."
+      case .nothingToStop:
+        return "Nothing to stop."
       case .agentTaskUpdated(let taskID):
         return "Cancelled task \(taskID)."
       default:

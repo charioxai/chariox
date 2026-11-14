@@ -266,11 +266,11 @@ fn a12_failed_eof_malformed_oversize_and_timeout_block_once() {
 }
 
 #[test]
-fn a12_immediate_no_progress_guard_survives_restart() {
+fn repeated_goal_continuations_remain_live_across_restart() {
     let f = Fixture::new();
     goal(&f, 10);
     let mut id = "p".to_string();
-    for n in 0..4 {
+    for _ in 0..6 {
         f.settle(&id, true);
         let t = check(&f, assessment("continue"));
         let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
@@ -278,10 +278,7 @@ fn a12_immediate_no_progress_guard_survives_restart() {
             reopened.agent_tasks(Some("room"), Some("parent")).unwrap()[0],
             t
         );
-        if n == 3 {
-            assert_eq!(t.state, ExecutionState::Blocked);
-            break;
-        }
+        assert_eq!(t.state, ExecutionState::Working);
         id = t.pending_prompt_id.unwrap();
         f.begin(&id);
     }
@@ -442,7 +439,6 @@ fn a12_progressing_goals_have_no_turn_cap_and_evaluations_cannot_mutate_work() {
             panic!()
         };
         assert_eq!(task.state, ExecutionState::Working);
-        assert_eq!(task.progress_sequence, n + 1);
         id = task.pending_prompt_id.unwrap();
         f.begin(&id);
     }
@@ -636,7 +632,6 @@ fn a12_blocked_fifo_delivery_cannot_hide_a_goal_check_in() {
                 "registration_ids":["reg"],"deadline_ms":60_004
             }),
         );
-        assert_eq!(waiting.no_progress_wakes, 1);
         f.begin("independent");
         let sweep = |now| {
             f.apply(Operation::Sweep {
@@ -681,7 +676,6 @@ fn a12_blocked_fifo_delivery_cannot_hide_a_goal_check_in() {
             ExecutionState::Blocked,
             "an unresolved recipient delivery must surface the undeliverable Goal check-in"
         );
-        assert_eq!(task.no_progress_wakes, 1);
         assert_eq!(
             task.goal.as_ref().unwrap().id,
             waiting.goal.as_ref().unwrap().id
@@ -701,11 +695,7 @@ fn a12_blocked_fifo_delivery_cannot_hide_a_goal_check_in() {
             .contains(&format!("delivery {}", event.sequence)));
         assert!(task.goal.as_ref().unwrap().next_check_in_ms.is_none());
         sweep(240_006);
-        assert_eq!(
-            f.task(),
-            task,
-            "a repeat sweep cannot re-block or reset the guard"
-        );
+        assert_eq!(f.task(), task, "a repeat sweep cannot re-block the task");
         f.apply(Operation::Receipt {
             room: "room".into(),
             agent: "parent".into(),
@@ -941,7 +931,6 @@ fn a12_unadmitted_checkin_ack_cannot_consume_a_waiting_goal_deadline() {
         assert!(f.store.agent_lifecycle(Operation::Ack {room:"room".into(),agent:"parent".into(),sequence:event.sequence,handled,now:60006}).is_err(),"an independent turn reading the inbox cannot swallow a not-yet-delivered goal check-in");
     }
     assert_eq!(f.task().state, waiting.state);
-    assert_eq!(f.task().no_progress_wakes, waiting.no_progress_wakes);
     assert_eq!(
         f.store
             .agent_delivery_front("room", "parent")
@@ -976,22 +965,16 @@ fn a12_unadmitted_checkin_ack_cannot_consume_a_waiting_goal_deadline() {
         now: 60009,
     });
     assert_eq!(f.task().state, ExecutionState::Working);
-    assert_eq!(
-        f.task().no_progress_wakes,
-        waiting.no_progress_wakes,
-        "an admitted check-in on a live source does not spend the guard"
-    );
 }
 
 #[test]
-fn a12_handled_paused_goal_outcome_preserves_nonzero_guard() {
+fn a12_handled_paused_goal_outcome_preserves_owner_disposition() {
     let f = Fixture::new();
     goal(&f, 1);
     f.register();
     f.subscribe();
     f.settle("p", true);
     let continued = check(&f, assessment("continue"));
-    assert_eq!(continued.no_progress_wakes, 1);
     let work = continued.pending_prompt_id.unwrap();
     f.begin(&work);
     f.settle(&work, true);
@@ -1057,7 +1040,6 @@ fn a12_handled_paused_goal_outcome_preserves_nonzero_guard() {
         sequence: event.sequence,
     });
     let before = f.task();
-    assert_eq!(before.no_progress_wakes, 1);
     f.apply(Operation::Ack {
         room: "room".into(),
         agent: "parent".into(),
@@ -1069,8 +1051,6 @@ fn a12_handled_paused_goal_outcome_preserves_nonzero_guard() {
     assert_eq!(after.obligations[0].status, "satisfied");
     assert_eq!(after.state, ExecutionState::Blocked);
     assert!(after.goal.unwrap().paused);
-    assert_eq!(after.no_progress_wakes, 1);
-    assert_eq!(after.progress_sequence, before.progress_sequence);
     assert_eq!(after.blocked_revision, before.blocked_revision);
 }
 // MP-08 / MP-09 / MP-10 / MP-11 A12 (accam r3): a workflow node's goal
@@ -1266,7 +1246,7 @@ fn a12_settling_obligation_never_saves_done_on_repeated_verdicts() {
 
 // A12-S02/S07: a continuation that made no handled progress and yielded again on
 // live sources covering every obligation keeps that wait; a repeated continue
-// must not discard it and spend the guard while the build is still running.
+// must retain it while the build is still running.
 #[test]
 fn a12_repeated_continue_keeps_the_agents_covered_wait() {
     let f = Fixture::new();
@@ -1293,7 +1273,6 @@ fn a12_repeated_continue_keeps_the_agents_covered_wait() {
     f.settle(&id, true);
     let t = check(&f, assessment("continue"));
     assert_eq!(t.state, ExecutionState::Waiting, "{t:?}");
-    assert_eq!(t.no_progress_wakes, first.no_progress_wakes);
     let wait = t.wait.clone().unwrap();
     assert_eq!(wait.registration_ids, vec!["reg".to_string()]);
     assert_eq!(t.goal.as_ref().unwrap().next_check_in_ms, Some(4 + 60_000));
@@ -1320,27 +1299,25 @@ fn a12_first_continue_honours_an_already_accepted_live_wait() {
     f.settle("p", true);
     let t = check(&f, assessment("continue"));
     assert_eq!(t.state, ExecutionState::Waiting);
-    assert_eq!(t.no_progress_wakes, 0);
     assert!(t.pending_prompt_id.is_none());
     assert_eq!(t.goal.as_ref().unwrap().next_check_in_ms, Some(60_004));
 }
 
-// The kept wait never bypasses the guard: at the limit a covered wait still blocks.
+// A continued goal may accept a covered wait after any number of work turns.
 #[test]
-fn a12_kept_wait_still_ends_at_the_progress_guard() {
+fn covered_goal_wait_survives_repeated_continuations() {
     let f = Fixture::new();
     goal(&f, 1);
     f.register();
     f.subscribe();
     f.settle("p", true);
     let mut t = check(&f, assessment("continue"));
-    for _ in 1..NO_PROGRESS_LIMIT {
+    for _ in 1..6 {
         let id = t.pending_prompt_id.clone().unwrap();
         f.begin(&id);
         f.settle(&id, true);
         t = check(&f, assessment("continue"));
     }
-    assert_eq!(t.no_progress_wakes, NO_PROGRESS_LIMIT);
     let id = t.pending_prompt_id.clone().unwrap();
     f.begin(&id);
     f.apply(Operation::Yield {
@@ -1355,7 +1332,7 @@ fn a12_kept_wait_still_ends_at_the_progress_guard() {
     f.settle(&id, true);
     assert_eq!(
         check(&f, assessment("continue")).state,
-        ExecutionState::Blocked
+        ExecutionState::Waiting
     );
 }
 
@@ -1544,18 +1521,20 @@ fn yield_op(deadline: Option<u64>) -> Operation {
 }
 
 #[test]
-fn a_goal_yield_needs_a_deadline() {
+fn a_goal_yield_without_a_deadline_times_out_by_default() {
     let f = Fixture::new();
     goal(&f, 1);
     f.register();
     f.subscribe();
-    let error = f.store.agent_lifecycle(yield_op(None)).unwrap_err();
-    assert!(error.to_string().contains("goal yield requires"), "{error}");
-    f.apply(yield_op(Some(10_000)));
+    f.apply(yield_op(None));
+    assert_eq!(
+        f.task().wait.unwrap().deadline_ms,
+        Some(2 + super::DEFAULT_WAIT_TIMEOUT_MS)
+    );
 }
 
 #[test]
-fn a_plain_yield_without_a_deadline_waits_for_its_sources() {
+fn a_plain_yield_without_a_deadline_waits_the_default_timeout() {
     let f = Fixture::new();
     f.begin("p");
     f.register();
@@ -1564,5 +1543,8 @@ fn a_plain_yield_without_a_deadline_waits_for_its_sources() {
     f.settle("p", true);
     let task = f.task();
     assert_eq!(task.state, ExecutionState::Waiting);
-    assert_eq!(task.wait.unwrap().deadline_ms, None);
+    assert_eq!(
+        task.wait.unwrap().deadline_ms,
+        Some(2 + super::DEFAULT_WAIT_TIMEOUT_MS)
+    );
 }

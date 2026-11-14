@@ -577,9 +577,25 @@ fn route(
             if decrypted.sender_public_key != target_public_key {
                 return;
             }
+            let plaintext = match crate::transport::terminal_output_wire::open(&decrypted.plaintext)
+            {
+                Ok(plaintext) => plaintext,
+                Err(reason) => {
+                    tracing::warn!(
+                        event_id,
+                        reason,
+                        "gateway refused a malformed terminal event"
+                    );
+                    subscriptions
+                        .lock()
+                        .expect("subscriptions poisoned")
+                        .remove(&subscription_id);
+                    return;
+                }
+            };
             let events = subscriptions.lock().expect("subscriptions poisoned");
             if let Some(channel) = events.get(&subscription_id) {
-                let _ = channel.send((event_id, decrypted.plaintext.to_vec()));
+                let _ = channel.send((event_id, plaintext.into_owned()));
             }
         }
         RelayEnvelope::ClientResponse {
@@ -618,7 +634,9 @@ fn settle(
         (None, Some(payload)) => {
             match relay_crypto::decrypt_payload_for_private_key(client_private_key, &payload) {
                 Ok(decrypted) if decrypted.sender_public_key == target_public_key => {
-                    Ok(decrypted.plaintext.to_vec())
+                    crate::transport::terminal_output_wire::open(&decrypted.plaintext)
+                        .map(|plaintext| plaintext.into_owned())
+                        .map_err(|reason| relay_failure("invalid_terminal_output", reason.into()))
                 }
                 Ok(_) => Err(LinkFailure::IdentityMismatch),
                 Err(error) => Err(relay_failure("decrypt_failed", error.to_string())),
@@ -642,6 +660,69 @@ fn relay_failure(code: &str, message: String) -> LinkFailure {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn terminal_events_restore_the_ordinary_record_shape_at_the_gateway() {
+        let target_private = relay_crypto::generate_private_key_base64();
+        let target_public =
+            relay_crypto::public_key_from_private_key_base64(&target_private).unwrap();
+        let client_private = relay_crypto::generate_private_key_base64();
+        let client_public =
+            relay_crypto::public_key_from_private_key_base64(&client_private).unwrap();
+        let header = br#"{"event":"terminal_output","records":[{"record_id":42,"bytes":[0,3]}]}"#;
+        let wire = [
+            b"CXT1".as_slice(),
+            &(header.len() as u32).to_be_bytes(),
+            header,
+            &[0, 255, 27],
+        ]
+        .concat();
+        let encrypted_event =
+            relay_crypto::encrypt_payload_for_peer(&target_private, &client_public, &wire).unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let subscriptions: Subscriptions =
+            Arc::new(Mutex::new(HashMap::from([("terminal".to_string(), tx)])));
+        let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+        route(
+            &pending,
+            &subscriptions,
+            &client_private,
+            &target_public,
+            RelayEnvelope::ClientEvent {
+                subscription_id: "terminal".into(),
+                event_id: 7,
+                encrypted_event,
+            },
+        );
+        let (id, body) = rx.recv().await.unwrap();
+        assert_eq!(id, 7);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!({"event":"terminal_output","records":[{"record_id":42,"bytes":[0,255,27]}]})
+        );
+        let malformed = b"CXT1\0\0\0\x02{}unreferenced";
+        let encrypted_event =
+            relay_crypto::encrypt_payload_for_peer(&target_private, &client_public, malformed)
+                .unwrap();
+        route(
+            &pending,
+            &subscriptions,
+            &client_private,
+            &target_public,
+            RelayEnvelope::ClientEvent {
+                subscription_id: "terminal".into(),
+                event_id: 8,
+                encrypted_event,
+            },
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .unwrap()
+                .is_none(),
+            "a malformed event must end the subscription instead of silently skipping its id"
+        );
+    }
+
     use super::*;
     use tokio::net::TcpListener;
 

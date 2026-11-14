@@ -33,7 +33,9 @@ mod socket_path;
 mod storage;
 pub(crate) use paths::{default_state_dir, kernel_state_roots};
 pub(crate) use socket_path::validate_local_socket_path;
+mod resource_protection;
 mod totp;
+pub use resource_protection::ResourceProtection;
 mod user_config_mutation;
 mod user_config_schema;
 mod validation;
@@ -620,9 +622,9 @@ pub struct UserUiConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserAgentsConfig {
-    /// On by default: an agent of the kernel owner needs the person's yes before each acquisition.
+    /// Off by default: the owner may allow agents to offload jobs and acquire machines without a decision each time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ask_before_acquiring_machines: Option<bool>,
+    pub offload_without_asking: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -635,6 +637,8 @@ pub struct UserRelayConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserKernelConfig {
+    #[serde(default)]
+    pub resource_protection: ResourceProtection,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub websocket_host: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -269,6 +269,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
                 turn_id: "turn-1".to_string(),
                 prompt_id: Some("prompt-1".to_string()),
                 prompt_origin: crate::session::PromptOrigin::External,
+                system_prompt: false,
                 external_provider: Some("codex".to_string()),
                 external_provider_session_id: Some("thread-1".to_string()),
                 external_provider_turn_id: Some("turn-1".to_string()),
@@ -1046,6 +1047,7 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             }],
             session_id: "room-1".into(),
             processes: vec![SessionProcess {
+                remote_available: false, remote_refusal: None, estimate: None, placement: None,
                 owner: SessionProcessOwner::Agent("agent-1".into()),
                 process: ProcessSample {
                     process_id: "process-issued-1".into(),
@@ -1062,6 +1064,7 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
                 },
                 state: SessionProcessState::Running,
             }, SessionProcess {
+                remote_available: false, remote_refusal: None, estimate: None, placement: None,
                 owner: SessionProcessOwner::Agent("agent-1".into()),
                 process: ProcessSample {
                     process_id: "process-issued-2".into(),
@@ -1086,6 +1089,7 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
                     since_ms: 9000,
                 }),
             }, SessionProcess {
+                remote_available: false, remote_refusal: None, estimate: None, placement: None,
                 owner: SessionProcessOwner::Agent("agent-2".into()),
                 process: ProcessSample {
                     process_id: "process-issued-3".into(),
@@ -1183,6 +1187,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "42e34b4ee0a623519c60330e8bcf9fe4853a598713adfc4add0dd35c0fa92b75"
+        "7ef801b74f003e27504be203d267659109f9effd0eba7169bc432815686dfaad"
     );
 }

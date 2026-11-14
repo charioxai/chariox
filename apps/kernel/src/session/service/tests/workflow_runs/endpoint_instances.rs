@@ -1099,3 +1099,58 @@ fn pool_prefers_idle_clone_reuse_and_queues_when_full() {
         .expect("third prompt should start");
     assert_eq!(third_run.runtime_instance_id(), Some("instance-primary"));
 }
+
+#[test]
+fn restoring_a_rejected_completion_reclaims_its_endpoint_instance() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .unwrap();
+    seed_agents(&mut service, session.id(), &["agent-1"]);
+    let TestWorkflowEndpoint { workflow, endpoint } =
+        workflow_with_endpoint(&mut service, session.id(), "review", "agent-1");
+    let workflow = service
+        .resolve_workflow_ref(session.id(), workflow.id())
+        .unwrap();
+    register_primary_instance(
+        &mut service,
+        session.id(),
+        &workflow,
+        &endpoint,
+        "instance-1",
+    );
+    enqueue(
+        &mut service,
+        session.id(),
+        workflow.id(),
+        endpoint.id(),
+        "complete then roll back",
+    );
+    let (_, run, _, _) = service
+        .dequeue_next_workflow_prompt_and_create_run(session.id())
+        .unwrap()
+        .unwrap();
+    let update = service
+        .complete_workflow_node_run(session.id(), run.id(), run.node_runs()[0].id(), None, None)
+        .unwrap();
+    assert!(update.workflow_run.status().is_terminal());
+    assert_eq!(
+        service
+            .get_session(session.id())
+            .unwrap()
+            .workflow_runtime_instance("instance-1")
+            .unwrap()
+            .active_run_id(),
+        None
+    );
+    service
+        .restore_active_workflow_runs(session.id(), vec![run.clone()])
+        .unwrap();
+    let restored = service.get_session(session.id()).unwrap();
+    let instance = restored.workflow_runtime_instance("instance-1").unwrap();
+    assert_eq!(instance.active_run_id(), Some(run.id()));
+    assert_eq!(
+        instance.status(),
+        crate::session::WorkflowEndpointRuntimeInstanceStatus::Busy
+    );
+}

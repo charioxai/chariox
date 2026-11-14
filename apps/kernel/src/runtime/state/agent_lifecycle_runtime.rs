@@ -405,7 +405,8 @@ impl KernelRuntimeOwnedState {
         let has_answer = self.provider_run_projection.get(run).is_some_and(|run| {
             run.client_interface() == crate::provider::ProviderClientInterface::NativeTui
         }) || Self::entries_answer_prompt(&entries, prompt.id(), answer_run);
-        if !cancelled {
+        // Only a goal-check prompt evaluates a task; other turns do not read the agent's history.
+        if !cancelled && ledger::goals::is_completion_check_prompt_id(prompt.id()) {
             if let Some(task) = self
                 .durable_state_store
                 .agent_tasks(Some(room), Some(agent))?
@@ -876,10 +877,11 @@ impl KernelRuntimeState {
         }
         let resources_unsettled = self.owned.agent_task_resources_unsettled(&task)?;
         if correction {
-            let text = match self.owned.goal_continuation_context(&task)? {
-                Some(text) => text,
-                None => super::agent_task_projection::task_correction_text(&task),
-            };
+            let mut text = self.owned.task_correction_text(&task)?;
+            if let Some(goal) = self.owned.goal_continuation_context(&task)? {
+                text.push('\n');
+                text.push_str(&goal);
+            }
             if let Err(e) = Box::pin(self.dispatch_task_continuation(
                 &task,
                 source.source_attachment_id(),
@@ -895,58 +897,65 @@ impl KernelRuntimeState {
                     .map_or_else(|| task.prompt_id.clone(), |t| t.prompt_id);
                 self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id.clone(),prompt,reason:format!("Correction delivery failed or uncertain: {e}; reconcile before owner resume")})?;
             }
-        } else if (task.state == ExecutionState::Done || task.state == ExecutionState::Cancelled)
+        } else if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
             && !resources_unsettled
         {
-            let other_unfinished = self
+            // A receipt turn can finish an older wait. Publish that exact task
+            // before this turn's child_finished lets its parent delete the agent.
+            let handled = self
                 .owned
                 .durable_state_store
-                .agent_has_other_unfinished_task(&task.room_id, &task.agent_id, &task.task_id)?;
-            if !other_unfinished {
-                self.owned
-                    .durable_state_store
-                    .agent_lifecycle(Operation::SourceOutcome {
-                        now: crate::session::unix_epoch_ms(),
-                        public_answer: public_answer.clone(),
-                        room: task.room_id.clone(),
-                        source: task.agent_id.clone(),
-                        occurrence: format!("task-terminal-{}", task.task_id),
-                        success: task.state == ExecutionState::Done,
-                    })?;
-            }
-            self.owned
+                .agent_handled_source_events_for_turn(
+                    &task.room_id,
+                    &task.agent_id,
+                    &task.prompt_id,
+                )?;
+            for retained in self
+                .owned
                 .durable_state_store
-                .agent_lifecycle(Operation::SourceOutcome {
-                    now: crate::session::unix_epoch_ms(),
-                    public_answer: public_answer.clone(),
-                    room: task.room_id.clone(),
-                    source: task.prompt_id.clone(),
-                    occurrence: format!("task-terminal-{}", task.task_id),
-                    success: task.state == ExecutionState::Done,
-                })?;
-            // The parent hears of every ended task, whatever else the child still has open.
-            if let Err(error) = self
-                .announce_child_finished(&task, failure, public_answer.as_ref())
-                .await
+                .agent_unpublished_done_tasks(&task.room_id, &task.agent_id)?
+                .into_iter()
+                .filter(|retained| {
+                    retained.task_id != task.task_id
+                        && retained.goal.is_none()
+                        && retained.reason == ledger::RESOLVED_WAIT_REASON
+                })
             {
-                tracing::warn!(%error, agent_id=%task.agent_id,
-                    "child_finished retained for the inbox sweep");
+                if self.owned.agent_task_resources_unsettled(&retained)? {
+                    continue;
+                }
+                let registrations = self
+                    .owned
+                    .durable_state_store
+                    .agent_registrations(&retained.task_id)?;
+                if !registrations.iter().any(|registration| {
+                    handled
+                        .iter()
+                        .any(|event| event.reports_source(&registration.source_id))
+                }) {
+                    continue;
+                }
+                let answer = if task.state == ExecutionState::Done {
+                    public_answer.clone()
+                } else {
+                    self.owned.public_agent_task_answer(&retained)?
+                };
+                self.publish_agent_task_completion(&retained, None, answer)
+                    .await?;
             }
+            self.publish_agent_task_completion(&task, failure, public_answer)
+                .await?;
         }
-        if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
-            && !resources_unsettled
-            && task.task_id != task.prompt_id
+        // A turn that leaves armed work is waiting. Ending that wait later must not resurrect
+        // its output as a completion; a subsequent turn will record its own unread output.
+        if self
+            .owned
+            .session_snapshot_without_projection_update(&task.room_id)?
+            .agent_is_waiting(&task.agent_id)
         {
             self.owned
-                .durable_state_store
-                .agent_lifecycle(Operation::SourceOutcome {
-                    now: crate::session::unix_epoch_ms(),
-                    public_answer: public_answer.clone(),
-                    room: task.room_id.clone(),
-                    source: task.task_id.clone(),
-                    occurrence: format!("task-terminal-{}", task.task_id),
-                    success: task.state == ExecutionState::Done,
-                })?;
+                .session_store
+                .clear_agent_unread_output(&task.room_id, &task.agent_id)?;
         }
         // A followed agent's end is owed to its followers on other kernels now.
         self.spawn_peer_agent_outcome_delivery();
@@ -1240,6 +1249,22 @@ impl KernelRuntimeState {
                 continue;
             };
             self.reconcile_failed_workflow_tasks(&task)?;
+            if task.state == ExecutionState::Done
+                && !self
+                    .owned
+                    .durable_state_store
+                    .agent_task_terminal_recorded(&task)?
+                && self
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &task.agent_id)
+                    .is_none()
+                && !self.owned.agent_task_resources_unsettled(&task)?
+            {
+                let answer = self.owned.public_agent_task_answer(&task)?;
+                self.publish_agent_task_completion(&task, None, answer)
+                    .await?;
+            }
             if let Some(check) = ledger::completion::evaluation(&task).filter(|e| {
                 task.state == ExecutionState::Working
                     && e.result.is_none()

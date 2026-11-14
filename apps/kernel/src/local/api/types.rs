@@ -10,8 +10,10 @@ use crate::slice::{
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 use chariox_relay::protocol::RelayKernelPresence;
 
+mod account_transfer;
 mod agent_deadline;
 mod agent_lifecycle;
+mod agent_peek;
 mod agent_tree;
 mod agent_triggers;
 mod agent_utility;
@@ -28,13 +30,14 @@ mod event_publication;
 mod external_provider_session;
 mod file_transfer;
 mod history;
+mod job;
 mod kernel_access;
 mod kernel_browser;
 mod kernel_computer;
 mod kernel_files;
 mod kernel_gateway;
+mod kernel_resources;
 mod managed_context;
-mod managed_environment;
 mod metaagent;
 mod notes;
 mod outside_events;
@@ -44,11 +47,13 @@ mod prompt_control;
 mod prompt_settings;
 mod provider_control;
 mod remote_access;
+mod remote_jobs;
 mod request;
 mod resource_telemetry;
 mod response;
 mod room_environment;
 mod room_terminal;
+mod runtime_identity;
 mod screenshot;
 mod session_control;
 mod slice;
@@ -62,8 +67,10 @@ mod workflow;
 mod workflow_notification;
 mod workspace;
 
+pub use account_transfer::*;
 pub use agent_deadline::*;
 pub use agent_lifecycle::*;
+pub use agent_peek::*;
 pub use agent_tree::*;
 pub use agent_triggers::*;
 pub use agent_utility::*;
@@ -80,13 +87,14 @@ pub use event_publication::*;
 pub use external_provider_session::*;
 pub use file_transfer::*;
 pub use history::*;
+pub use job::*;
 pub use kernel_access::*;
 pub use kernel_browser::*;
 pub use kernel_computer::*;
 pub use kernel_files::*;
 pub use kernel_gateway::*;
+pub use kernel_resources::*;
 pub use managed_context::*;
-pub use managed_environment::*;
 pub use metaagent::*;
 pub use notes::*;
 pub use outside_events::*;
@@ -96,11 +104,13 @@ pub use prompt_control::*;
 pub use prompt_settings::*;
 pub use provider_control::*;
 pub use remote_access::*;
+pub use remote_jobs::*;
 pub use request::*;
 pub use resource_telemetry::*;
 pub use response::*;
 pub use room_environment::*;
 pub use room_terminal::*;
+pub use runtime_identity::*;
 pub use screenshot::*;
 pub use session_control::*;
 pub use slice::*;
@@ -134,11 +144,7 @@ pub use workspace::*;
 /// Version 334 carries kernel-authoritative managed-target resource telemetry.
 /// Version 335 adds measured CPU utilization and its sample window to that telemetry.
 /// Version 336 adds kernel-verified installed release identity to resource telemetry.
-/// Version 337 adds authenticated managed-environment reimage control and receipt evidence.
-/// Version 338 adds deliberate, generation-bound pre-reimage observation reporting.
-/// Version 339 requires a fresh managed-context selection for every reimage request.
 /// Version 340 coordinates the signed managed-activity transition-time contract.
-/// Version 341 adds the authenticated managed-environment reimage preflight read.
 /// Version 342 carries the create-selected trusted managed repository root and
 /// returns the persisted root in managed-environment summaries.
 /// Version 343 carries the originating home prompt in forwarded worker tool context.
@@ -421,8 +427,6 @@ pub use workspace::*;
 /// Landing union 923 carries 913 (`SessionState` `processes`), 917 (direct browser sessions over WebRTC),
 /// 919 (user-side browser frame stream removed, `display_ack` `paused`), 920 (mirror `document_mode`,
 /// `pointer_cursor`) and 923 (session-less Vault unlock).
-/// Allocated 924 makes the managed-environment reimage preflight `desiredRelease.providerId` an opaque
-/// string that Cloud defines (it was a one-value enum); the wire value is unchanged.
 /// MP-08/MP-09/MP-10/MP-11: 925 marks a hot reload's relay close (`kernel_reload`), which the relay
 /// forwards to the kernel's subscribed clients so they retry within the swap.
 /// Version 926 makes the direct data channel's liveness a contract: the kernel pings
@@ -436,7 +440,7 @@ pub use workspace::*;
 /// Allocated 930 adds agent triggers; `/wait-in` and `/wait-every` become schedule triggers.
 /// Allocated 931 adds trigger deliveries the person can resend and removes the `/wait` schedule shape.
 /// Allocated 932 adds the HTTP trigger source and `InvokeAgentTrigger`/`ReadAgentTriggerTranscript`.
-/// Landing union 932 carries 924 (opaque reimage `providerId`), 925 (hot reload `kernel_reload`), 926 (direct
+/// Landing union 932 carries 925 (hot reload `kernel_reload`), 926 (direct
 /// data channel liveness), 927 (process admission), 928 (outside interaction `question`/`resolution`), 929 (Vault
 /// secret requests) and 930 to 932 (agent triggers).
 /// Browser header 933 adds the portable active Tab, history bounds and bounded favicon PNGs to the
@@ -511,4 +515,29 @@ pub use workspace::*;
 /// reports `wait.deadline_ms` as `null`. A sub-agent tree node carries its `account_profile`,
 /// `workspace_id`, `worktree_id` and `worker_kernel_id`, and an agent's wait is a `provider_tool` row of its
 /// transcript.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1005;
+/// 1006 (Landing 10): generic runtime identity observation (`ObserveKernelRuntimeIdentity`) and opaque
+/// enrollment authority evidence; the kernel resource feed (`kernel_resources` subscription,
+/// `WatchKernelResources`, `KernelResourcesWatched`, `kernel_resource_changed`) for the Vault, provider
+/// accounts and Apps; the owner ends a wait with `CancelAgentWait` (the agent is not woken), an agent's
+/// `waiting` state is projected on its activity, and a turn the kernel started is marked `system_prompt` in
+/// the outline; an active interaction carries `asker_name` and a sub-agent's card is shown in its top
+/// parent's panel whoever holds it; `PeekAgentTranscript` lists an agent's latest transcript rows as titles
+/// (`AgentTranscriptPeek`) with a `before` cursor and `ReadAgentTranscriptEntry` reads one row by pages
+/// (`AgentTranscriptEntryPage`), and a wait without a deadline gets `now + 30 min` as `deadline_ms`; an
+/// unconditional idle Stop returns `NothingToStop`; encrypted relay terminal output uses CXT1 metadata and
+/// raw byte segments, including replay, and Room subscriptions name their view interests; agent triggers take
+/// the Workflows panel's trigger options (a schedule's cron or interval `trigger`, `overlap_policy` and
+/// `max_runs`; an HTTP trigger's `route`, `methods`, `parser`, `mode`, `sync_timeout_ms`, `poll_ms` and
+/// `input_schema`; `InvokeAgentTrigger` carries the parsed `input`; `ReadAgentTriggerHttpOptions` and
+/// `ReadAgentTriggerReply` serve the gateways); owner room agent and card commands, including non-secret
+/// cross-room answers; `SetAgentDeadline.deadline_ms` is required and nullable (extend, shorten or clear);
+/// task snapshots carry no idle-wake counters; shared machine-local memory, disk and CPU resource-protection
+/// settings; durable jobs,
+/// job-only command admission and outcomes, placement policies, process estimates, session job feeds and
+/// the owner's global offload decision; a `room_terminal` relay subscription pushes a Room terminal's output
+/// (CXT1, raw bytes) from the viewer's offset, with the Room's terminals when they change, instead of one
+/// `read_output` per page (docs/PROTOCOL.md, "Pushed output stream"); 1007 adds native Files interests on the
+/// resource feed, including home-relayed worker invalidations; 1008 adds the person-confirmed App action card
+/// (`app_confirmation` on an `app-confirm-*` interaction, with the App's own preview as its protected browser
+/// `view`), and a `state_wait` that ended without a change answers only `revision` and `unchanged: true`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1008;

@@ -263,6 +263,16 @@ impl SessionService {
         Ok(session)
     }
 
+    pub(crate) fn clear_agent_unread_output(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "clear waiting output")?;
+        session.clear_agent_unread_output(agent_id);
+        Ok(())
+    }
+
     pub fn note_agent_output_sequence(
         &mut self,
         session_id: &str,

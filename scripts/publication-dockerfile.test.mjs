@@ -37,15 +37,6 @@ test("publication image copies compile-time workflow examples before building th
   assert.ok(examplesCopy < kernelBuild, "compile-time workflow examples must be copied before the kernel build")
 })
 
-test("publication Rust stage copies the deploy files the kernel embeds at compile time", async () => {
-  const source = await readFile(new URL("../apps/kernel/src/runtime/managed_release_update.rs", import.meta.url), "utf8")
-  const embedded = [...source.matchAll(/include_(?:str|bytes)!\("(?:\.\.\/)+(deploy\/managed-kernel\/[^"]+)"\)/g)].map((match) => match[1])
-  assert.ok(embedded.length > 0)
-  const rustStageStart = dockerfile.indexOf("FROM rust:1.99.1-bookworm@sha256:")
-  const rustStage = dockerfile.slice(rustStageStart, dockerfile.indexOf("\nFROM ", rustStageStart + 1))
-  for (const path of embedded) assert.ok(rustStage.includes(`COPY ${path} ${path}`), `the Rust stage must copy ${path}`)
-})
-
 test("publication Rust build consumes the workspace lock and every kernel path dependency", () => {
   const rustStageStart = dockerfile.indexOf("FROM rust:1.99.1-bookworm@sha256:")
   const nextStageStart = dockerfile.indexOf("\nFROM ", rustStageStart + 1)

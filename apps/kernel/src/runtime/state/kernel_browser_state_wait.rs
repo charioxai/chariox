@@ -8,7 +8,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 
-const MAX_WAIT_MS: u32 = 2_000;
+/// An idle viewer parks this long, so a shown Browser costs one request per wait, not one every two seconds.
+const MAX_WAIT_MS: u32 = 10_000;
 /// A woken read repeats no sooner than this, so a busy page cannot turn the wait into a poll.
 const MIN_GAP: Duration = Duration::from_millis(100);
 const NO_SIGNAL_POLL: Duration = Duration::from_millis(250);
@@ -17,6 +18,10 @@ const NO_SIGNAL_POLL: Duration = Duration::from_millis(250);
 fn revision(state: &Value, signal: Option<u64>) -> String {
     let digest = Sha256::digest(state.to_string().as_bytes());
     format!("{}.{}", hex_prefix(&digest), signal.unwrap_or(0))
+}
+/// A wait that ended without a change: the caller keeps the state it read last.
+fn unchanged(revision: String) -> Value {
+    serde_json::json!({"revision": revision, "unchanged": true})
 }
 fn hex_prefix(digest: &[u8]) -> String {
     digest[..8]
@@ -95,7 +100,11 @@ impl KernelRuntimeState {
             }
             let current = revision(&state, signal);
             let changed = known.is_none_or(|(digest, _)| !current.starts_with(digest));
-            if changed || Instant::now() >= deadline {
+            if !changed && Instant::now() >= deadline {
+                // The viewer holds this content: only the revision to wait after travels.
+                return Ok(unchanged(current));
+            }
+            if changed {
                 state["revision"] = current.into();
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 self.restore_user_app_tabs(&user);

@@ -1523,6 +1523,12 @@ pub(crate) fn command_from_provider_launch(
         environment.remove(*name);
     }
     command.envs(environment);
+    // A utility that outlives its kernel (a shutdown that ran out of time) is ended by the next
+    // kernel, which finds it by this pid.
+    command.env(
+        crate::provider::PROVIDER_OWNER_PID_ENV,
+        std::process::id().to_string(),
+    );
     if let Some(directory) = launch.working_directory {
         command.current_dir(directory);
     }
@@ -2296,6 +2302,27 @@ mod tests {
     include!("managed_isolation/protected_account_tests.rs");
 
     use super::*;
+
+    #[test]
+    fn a_managed_utility_names_its_kernel_so_a_later_kernel_can_end_it() {
+        let command = command_from_provider_launch(ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "codex:app-server".into(),
+            pty_target: None,
+            pty_program: Some("/bin/true".into()),
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        })
+        .unwrap();
+        let kernel = std::process::id().to_string();
+        assert!(command.get_envs().any(|(name, value)| {
+            name == crate::provider::PROVIDER_OWNER_PID_ENV
+                && value == Some(std::ffi::OsStr::new(&kernel))
+        }));
+    }
 
     fn kernel_preparation_home_fixture(root: &Path) -> PathBuf {
         let kernel_home = root.join("kernel-home");
@@ -3515,8 +3542,30 @@ mod tests {
             std::process::id(),
             crate::session::unix_epoch_ms()
         );
-        let home_root =
-            PathBuf::from("/home").join(format!("chariox-managed-runtime-home-ancestor-{nonce}"));
+        // HOME is replaced by isolated_env_test. Use the caller's account home
+        // to keep this fixture below /home, outside the private-temp exception.
+        let uid = unsafe { libc::geteuid() };
+        let home_parent = if uid == 0 {
+            PathBuf::from("/home")
+        } else {
+            let account = crate::process_spawn::command("getent")
+                .args(["passwd", &uid.to_string()])
+                .output()
+                .expect("test account home should resolve through getent");
+            assert!(account.status.success(), "test account should exist");
+            PathBuf::from(
+                String::from_utf8(account.stdout)
+                    .expect("test account should be UTF-8")
+                    .split(':')
+                    .nth(5)
+                    .expect("test account should have a home directory"),
+            )
+        };
+        assert!(
+            home_parent.starts_with("/home"),
+            "runtime-home fixture needs the test account's writable /home directory"
+        );
+        let home_root = home_parent.join(format!("chariox-managed-runtime-home-ancestor-{nonce}"));
         let scratch =
             std::env::temp_dir().join(format!("chariox-managed-runtime-home-ancestor-{nonce}"));
         let provider_home = scratch.join("provider-home");
@@ -3548,25 +3597,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         std::fs::create_dir_all(&provider_home).expect("provider home should exist");
-        let uid = unsafe { libc::getuid() }.to_string();
-        let gid = unsafe { libc::getgid() }.to_string();
-        let mut install = if uid == "0" {
-            crate::process_spawn::command("install")
-        } else {
-            let mut command = crate::process_spawn::command("sudo");
-            command.args(["-n", "--", "install"]);
-            command
-        };
-        let created = install
-            .args(["-d", "-m", "0755", "-o", &uid, "-g", &gid])
-            .arg(&home_root)
-            .output()
-            .expect("owned runtime-home fixture root should install");
-        assert!(
-            created.status.success(),
-            "runtime-home fixture root setup failed: {}",
-            String::from_utf8_lossy(&created.stderr)
-        );
+        std::fs::create_dir_all(&home_root).expect("owned runtime-home fixture root should exist");
         std::fs::create_dir_all(&home).expect("runtime user home should exist");
         std::fs::create_dir_all(&protected_state).expect("protected runtime state should exist");
         std::fs::create_dir_all(&openbox).expect("runtime Openbox directory should exist");

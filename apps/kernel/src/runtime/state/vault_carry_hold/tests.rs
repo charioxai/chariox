@@ -92,8 +92,8 @@ impl Fixture {
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
         let request = crate::local::PreflightProviderAccountPortabilityRequest {
-            provider_accounts: crate::local::ManagedEnvironmentProviderAccounts::Selected {
-                accounts: vec![crate::local::ManagedEnvironmentProviderAccountSelection {
+            provider_accounts: crate::local::ProviderAccountTransferSelection::Selected {
+                accounts: vec![crate::local::ProviderAccountTransferProfile {
                     provider: "claude".into(),
                     account_profile: profile.profile_id.clone(),
                 }],

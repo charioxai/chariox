@@ -2,6 +2,118 @@
 use super::support::*;
 use crate::transport::relay_client::subscriptions::run_relay_subscription_loop;
 
+#[tokio::test]
+async fn terminal_output_is_raw_on_live_and_replayed_encrypted_relay_events() {
+    let _guard = relay_client_test_guard().await;
+    let config = DaemonConfig::for_tests();
+    let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+    let session_id = create_test_session(&mut app, "workspace", "worktree");
+    let attachment_id = attach_test_client(
+        &mut app,
+        &session_id,
+        "terminal-wire",
+        ClientCapabilityLevel::MessageTransport,
+    );
+    let records = app.terminal_stream_store().fan_out_output(
+        &session_id,
+        "run-1",
+        None,
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        None,
+        vec![attachment_id.clone()],
+        &vec![b'x'; 65536],
+    );
+    let event = KernelEvent::TerminalOutput {
+        records: vec![records],
+    };
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        4,
+    ));
+    let runtime = Arc::new(RelayEventRuntime::for_tests(64));
+    let stream = subscription_event_stream_id(&session_id, &attachment_id);
+    let cursor = runtime
+        .event_log
+        .append(
+            stream.clone(),
+            KernelEvent::Heartbeat {
+                session_id: session_id.clone(),
+            },
+        )
+        .await
+        .unwrap()
+        .event_id;
+    let key = relay_crypto::generate_private_key_base64();
+    let public = relay_crypto::public_key_from_private_key_base64(&key).unwrap();
+    approve_test_terminal(&config, &public);
+    let (tx, _priority, mut rx) = RelayOutgoingSender::channel(64);
+    super::super::events::emit_relay_event(
+        &router,
+        &tx,
+        "terminal-wire",
+        &public,
+        &runtime,
+        &stream,
+        event,
+    )
+    .await
+    .unwrap();
+    async fn raw(rx: &mut mpsc::Receiver<RelayEnvelope>, key: &str) -> Vec<u8> {
+        let RelayEnvelope::DaemonEvent {
+            encrypted_event, ..
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("expected event")
+        };
+        let decrypted =
+            relay_crypto::decrypt_payload_for_private_key(key, &encrypted_event).unwrap();
+        assert!(
+            decrypted.plaintext.starts_with(b"CXT1"),
+            "terminal output is still a JSON byte array"
+        );
+        assert!(
+            decrypted.plaintext.len() < 65536 + 2048,
+            "terminal output expands on the wire"
+        );
+        decrypted.plaintext.to_vec()
+    }
+    let live = raw(&mut rx, &key).await;
+    replay_recent_relay_events(
+        &runtime,
+        &router,
+        &tx,
+        "terminal-wire",
+        &public,
+        &session_id,
+        &attachment_id,
+        Some(cursor),
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(raw(&mut rx, &key).await, live);
+    let (_, resumed) = decrypt_relay_event_from_channel(&mut rx, &key).await;
+    assert_eq!(resumed["event"], "transport_resumed");
+    replay_recent_relay_events(
+        &runtime,
+        &router,
+        &tx,
+        "metadata-replay",
+        &public,
+        &session_id,
+        &attachment_id,
+        Some(cursor),
+        false,
+    )
+    .await
+    .unwrap();
+    let (_, metadata) = decrypt_relay_event_from_channel(&mut rx, &key).await;
+    assert_eq!(
+        metadata["event"], "transport_resumed",
+        "metadata replay must skip the terminal record"
+    );
+}
+
 // MP-08 / MP-10 A12-S02: encrypted relay delivery uses the same snapshot rule.
 #[tokio::test]
 async fn review971c_relay_subscription_keeps_mixed_task_changes() {
@@ -885,6 +997,7 @@ async fn relay_subscription_emits_replay_gap_and_snapshot_for_stale_cursor() {
         &created_session_id,
         &attachment_id,
         Some(first.event_id),
+        true,
     )
     .await
     .expect("stale replay should emit recovery events");
@@ -1041,6 +1154,7 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
         &session_id,
         &attachment_id,
         Some(cursor.event_id),
+        true,
     )
     .await
     .expect("persisted events should replay after runtime recreation");
@@ -1131,11 +1245,15 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
             if event.1["event"] == "heartbeat" {
                 break event;
             }
-            // Fresh resource samples may follow the reset snapshot; historical
-            // snapshots and other replay events still must not return here.
-            assert_eq!(
-                event.1["event"],
-                serde_json::json!("session_processes_changed")
+            // Fresh resource samples and the current job list may follow the reset
+            // snapshot; historical snapshots and other replay events must not return.
+            assert!(
+                matches!(
+                    event.1["event"].as_str(),
+                    Some("session_processes_changed" | "session_jobs_changed")
+                ),
+                "unexpected event after the reset snapshot: {}",
+                event.1["event"]
             );
             assert_eq!(event.1["session_id"], current_snapshot.1["session"]["id"]);
         }
@@ -1740,4 +1858,150 @@ async fn relay_slow_turn_history_reads_keep_subscription_heartbeats_running() {
     let _ = task.await;
     router.runtime_state().shutdown_cleanup().await.unwrap();
     result.expect("slow history never reached the relay client");
+}
+
+#[tokio::test]
+async fn metadata_subscriptions_drain_bytes_without_sending_them_and_keep_room_events() {
+    let _guard = relay_client_test_guard().await;
+    for metadata in [false, true] {
+        let config = DaemonConfig::for_tests();
+        let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+        let session_id = create_test_session(&mut app, "workspace", "worktree");
+        let attachment_id = attach_test_client(
+            &mut app,
+            &session_id,
+            "metadata-view",
+            ClientCapabilityLevel::MessageTransport,
+        );
+        app.terminal_stream_store().fan_out_output(
+            &session_id,
+            "run-1",
+            None,
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            None,
+            vec![attachment_id.clone()],
+            b"one raw terminal record",
+        );
+        let app = Arc::new(Mutex::new(app));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 4));
+        let (tx, _priority, mut rx) = RelayOutgoingSender::channel(64);
+        let private_key = relay_crypto::generate_private_key_base64();
+        let public_key = relay_crypto::public_key_from_private_key_base64(&private_key).unwrap();
+        approve_test_terminal(&config, &public_key);
+        let task = tokio::spawn(run_relay_subscription_loop(
+            router.clone(),
+            tx,
+            "metadata-test".into(),
+            public_key,
+            session_id.clone(),
+            attachment_id.clone(),
+            metadata.then(|| "session_metadata".into()),
+            Arc::new(RelayEventRuntime::for_tests(64)),
+            false,
+            crate::transport::relay_client::subscriptions::RelaySubscriber {
+                user_id: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+                connection_class: crate::local::KernelConnectionClass::Terminal,
+                caller: crate::runtime::command::KernelCaller::for_relay_request(None),
+                heartbeat_interval: Duration::from_millis(500),
+            },
+        ));
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut heartbeats = 0;
+            let mut snapshots = 0;
+            let mut output = 0;
+            while heartbeats < 2 {
+                let (_, event) = decrypt_relay_event_from_channel(&mut rx, &private_key).await;
+                match event["event"].as_str() {
+                    Some("terminal_output") => output += 1,
+                    Some("session_snapshot") => snapshots += 1,
+                    Some("heartbeat") => heartbeats += 1,
+                    _ => {}
+                }
+            }
+            (snapshots, output)
+        })
+        .await;
+        task.abort();
+        let _ = task.await;
+        let pending = app
+            .lock()
+            .await
+            .terminal_mut()
+            .drain_output_records(&session_id, &attachment_id);
+        router.runtime_state().shutdown_cleanup().await.unwrap();
+        let (snapshots, output) = result.expect("the Room event stream must stay live");
+        assert!(snapshots > 0, "metadata retains the Room state");
+        assert_eq!(
+            output,
+            usize::from(!metadata),
+            "only the terminal subscription sends bytes"
+        );
+        assert!(
+            pending.is_empty(),
+            "metadata must still drain its attachment queue"
+        );
+    }
+}
+
+#[tokio::test]
+async fn shared_snapshot_encoding_still_encrypts_for_each_admitted_subscriber() {
+    let _guard = relay_client_test_guard().await;
+    let config = DaemonConfig::for_tests();
+    let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+    let session_id = create_test_session(&mut app, "workspace", "worktree");
+    let event = KernelEvent::SessionSnapshot {
+        room_workflows: crate::runtime::projection::RoomWorkflowInventory {
+            session_id: session_id.clone(),
+            home_kernel_id: "kernel".into(),
+            revision: "1".into(),
+            workflow_count: 0,
+            workflows: vec![],
+        },
+        session: Box::new(app.sessions().get_session(&session_id).unwrap()),
+        provider_run: Box::new(None),
+        agent_activity: Box::default(),
+        agent_activity_revision: 1,
+    };
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        4,
+    ));
+    let runtime = Arc::new(RelayEventRuntime::for_tests(8));
+    let (tx, _priority, mut rx) = RelayOutgoingSender::channel(8);
+    let mut earlier = None;
+    for n in 0..2 {
+        let private = relay_crypto::generate_private_key_base64();
+        let public = relay_crypto::public_key_from_private_key_base64(&private).unwrap();
+        approve_test_terminal(&config, &public);
+        super::super::events::emit_relay_event(
+            &router,
+            &tx,
+            &format!("subscriber-{n}"),
+            &public,
+            &runtime,
+            &format!("room:{n}"),
+            event.clone(),
+        )
+        .await
+        .unwrap();
+        let RelayEnvelope::DaemonEvent {
+            encrypted_event,
+            event_id,
+            ..
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("expected event")
+        };
+        let decoded =
+            relay_crypto::decrypt_payload_for_private_key(&private, &encrypted_event).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<KernelEvent>(&decoded.plaintext).unwrap(),
+            event
+        );
+        if let Some((last_id, last_ciphertext)) = earlier {
+            assert!(event_id > last_id);
+            assert!(encrypted_event.ciphertext != last_ciphertext);
+        }
+        earlier = Some((event_id, encrypted_event.ciphertext));
+    }
 }

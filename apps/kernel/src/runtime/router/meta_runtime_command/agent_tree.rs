@@ -15,6 +15,10 @@ fn room_option(args: &[String]) -> Option<&str> {
         .map(String::as_str)
 }
 
+/// The standing approval of an agent's watched commands, as `agent children` lists it and `agent revoke` names it.
+const WATCHED_PROCESS_GRANT: &str = "watched-process";
+const REVOKE_USAGE: &str = "usage: agent revoke <agent-ref> watched-process";
+
 /// `agent children` lists at most this many descendants.
 const CHILDREN_LISTED_LIMIT: usize = 64;
 
@@ -36,6 +40,59 @@ impl CommandRouter {
         }
         let args = tokens.get(2..).unwrap_or_default();
         Ok(match tokens.get(1).map(String::as_str) {
+            Some("deadline") if args.iter().any(|arg| arg == "--room") => {
+                let result = async {
+                    // A read names no time; a set names the new one or `none`.
+                    let (reference, value, room) = match args {
+                        [verb, reference, flag, room] if verb == "get" && flag == "--room" => {
+                            (reference, None, room)
+                        }
+                        [reference, value, flag, room] if flag == "--room" => {
+                            (reference, Some(value), room)
+                        }
+                        _ => return Err(meta_command_error(super::request::DEADLINE_USAGE)),
+                    };
+                    let room = self
+                        .runtime_state
+                        .resolve_session_ref_id(room, None)
+                        .await?;
+                    let target = self.runtime_state.resolve_message_target(
+                        session,
+                        caller,
+                        Some(&room),
+                        reference,
+                    )?;
+                    let request = match value {
+                        None => LocalDaemonRequest::GetAgentDeadline(
+                            crate::local::GetAgentDeadlineRequest {
+                                session_id: target.session_id().into(),
+                                agent_id: target.id().into(),
+                            },
+                        ),
+                        Some(value) => LocalDaemonRequest::SetAgentDeadline(
+                            crate::local::SetAgentDeadlineRequest {
+                                session_id: target.session_id().into(),
+                                agent_id: target.id().into(),
+                                deadline_ms: super::request::deadline_edit_time(value)?,
+                            },
+                        ),
+                    };
+                    Box::pin(
+                        self.dispatch(meta_kernel_command(provider_run, caller, &request), request),
+                    )
+                    .await
+                }
+                .await;
+                Some(match result {
+                    Ok(response) => super::result::meta_command_success_result(
+                        command,
+                        &response,
+                        caller,
+                        self.runtime_state.room_agent_tools_enabled(),
+                    ),
+                    Err(error) => meta_command_failure_result(command, error),
+                })
+            }
             Some("cancel") => Some(
                 self.dispatch_meta_agent_cancel_command(
                     provider_run,
@@ -81,9 +138,39 @@ impl CommandRouter {
                     meta_command_error(message),
                 ))
             }
+            Some("delete" | "destroy" | "remove")
+                if args.len() == 1 && self.runtime_state.room_agent_tools_enabled() =>
+            {
+                let agents = self.runtime_state.session_agents(session.id());
+                if agents.iter().any(|agent| {
+                    agent.id() == args[0]
+                        || agent.agent_ref() == args[0]
+                        || agent.alias() == Some(args[0].as_str())
+                }) {
+                    None
+                } else {
+                    self.runtime_state
+                        .durable_state_store()
+                        .deleted_spawned_child(caller, &args[0])?
+                        .map(|deleted| RuntimeToolResult {
+                            ok: true,
+                            payload: serde_json::json!({
+                                "command":command,
+                                "response": {
+                                    "type":"AgentDestroyed",
+                                    "agent":super::summary::summarize_meta_agent(&deleted.agent),
+                                    "already_deleted":true,
+                                    "deleted_at_ms":deleted.deleted_at_ms,
+                                    "reason":"The kernel already deleted this sub-agent.",
+                                },
+                            }),
+                        })
+                }
+            }
             Some("children") => {
                 Some(self.meta_agent_children_result(session, caller, command, args))
             }
+            Some("revoke") => Some(self.meta_agent_revoke_result(session, caller, command, args)),
             Some("answer" | "pass") => Some(
                 self.dispatch_meta_child_decision_command(session, caller, command, tokens)
                     .await?,
@@ -115,7 +202,7 @@ impl CommandRouter {
         {
             deadline_ms = deadline_ms.min(parent_deadline.deadline_ms);
         }
-        // A retried spawn finds its child already bounded; a deadline only ever shortens.
+        // A retried spawn finds its child already bounded; keep the earlier limit on a spawn retry.
         if let LocalDaemonResponse::AgentDeadline {
             deadline: Some(current),
         } = self
@@ -132,7 +219,7 @@ impl CommandRouter {
         let request = LocalDaemonRequest::SetAgentDeadline(crate::local::SetAgentDeadlineRequest {
             session_id: session.id().to_string(),
             agent_id: child.id().to_string(),
-            deadline_ms,
+            deadline_ms: Some(deadline_ms),
         });
         if let Err(error) =
             Box::pin(self.dispatch(meta_kernel_command(provider_run, parent, &request), request))
@@ -231,6 +318,14 @@ impl CommandRouter {
         match Box::pin(self.dispatch(meta_kernel_command(provider_run, parent, &request), request))
             .await
         {
+            // An uncorrelated Stop of an idle agent succeeds with NothingToStop.
+            Ok(LocalDaemonResponse::NothingToStop { .. }) => Ok(RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({"command":command,"response":{
+                    "agent_id":target.id(),"already_idle":true,"cancelled":false,
+                    "message":"The agent is already idle; there is no active turn to cancel."
+                }}),
+            }),
             Ok(response) => Ok(super::result::meta_command_success_result(
                 command,
                 &response,
@@ -266,6 +361,46 @@ impl CommandRouter {
         Ok(
             serde_json::json!({"cancelled": true, "duplicate": duplicate, "kernel": target.kernel_id, "room": target.room_id, "agent": target.agent_id}),
         )
+    }
+
+    /// `agent revoke <agent> watched-process` withdraws the standing approval a person gave an agent
+    /// below the caller with "Allow for this agent": its next watched command asks again.
+    fn meta_agent_revoke_result(
+        &self,
+        session: &crate::session::RuntimeSession,
+        caller: &crate::agent::AgentInstance,
+        command: &str,
+        args: &[String],
+    ) -> RuntimeToolResult {
+        let result = (|| {
+            let [reference, grant] = args else {
+                return Err(meta_command_error(REVOKE_USAGE));
+            };
+            if grant != WATCHED_PROCESS_GRANT {
+                return Err(meta_command_error(REVOKE_USAGE));
+            }
+            let agents = self.runtime_state.session_agents(session.id());
+            let agent = crate::runtime::room_tool_admission::resolve_agent(
+                &agents,
+                caller.session_id(),
+                reference,
+            )?;
+            crate::runtime::room_tool_admission::in_subtree(caller, agent, &agents)?;
+            let was_held = self.runtime_state.revoke_watched_process_grant(agent.id());
+            Ok(RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "command": command,
+                    "response": {
+                        "type": "AgentGrantRevoked",
+                        "agent": super::summary::summarize_meta_agent(agent),
+                        "grant": grant,
+                        "was_held": was_held,
+                    },
+                }),
+            })
+        })();
+        result.unwrap_or_else(|error| meta_command_failure_result(command, error))
     }
 
     /// `agent children [agent]` lists everything below the caller, or below one of its descendants.
@@ -335,6 +470,11 @@ impl CommandRouter {
                     "is_processing": agent.is_processing(),
                     "has_active_prompt": session.active_prompt_for_agent(agent.id()).is_some(),
                     "deadline": deadline,
+                    "grants": if self.runtime_state.holds_watched_process_grant(agent.id()) {
+                        vec![WATCHED_PROCESS_GRANT]
+                    } else {
+                        Vec::new()
+                    },
                 }));
                 frontier.push((agent.id().to_string(), depth + 1));
             }
@@ -350,9 +490,8 @@ impl CommandRouter {
 }
 
 impl CommandRouter {
-    /// `agent answer <interaction> <choice|text>` and `agent pass <interaction>`: only the
-    /// agent that holds a sub-agent's decision may settle or hand it on. The result carries a
-    /// typed status and no text.
+    /// The holder answers or passes a child decision; `answer --room` uses owner room reach.
+    /// Both routes settle the same kernel interaction.
     async fn dispatch_meta_child_decision_command(
         &self,
         session: &crate::session::RuntimeSession,
@@ -361,17 +500,38 @@ impl CommandRouter {
         tokens: &[String],
     ) -> Result<RuntimeToolResult, DaemonError> {
         use crate::runtime::state::ChildDecisionStatus;
-        if tokens
+        let mut args = tokens.get(2..).unwrap_or_default().to_vec();
+        let mut room = None;
+        if let Some(index) = args.iter().position(|arg| arg == "--room") {
+            if tokens.get(1).map(String::as_str) != Some("answer")
+                || index + 2 != args.len()
+                || index < 2
+            {
+                return Ok(meta_command_failure_result(command, meta_command_error("usage: agent answer <interaction> <choice|text> [--room <room-id>]; agent pass stays in this room")));
+            }
+            room = args.pop();
+            args.pop();
+        }
+        if args
             .iter()
-            .skip(2)
-            .any(|token| matches!(token.as_str(), "--room" | "--kernel" | "--machine"))
+            .any(|arg| matches!(arg.as_str(), "--room" | "--kernel" | "--machine"))
         {
-            return Ok(meta_command_failure_result(
-                command,
-                meta_command_error(
-                    "peer_decision_refused: a decision is answered or passed only by the agent that holds it in its own room; a peer never settles it, send the agent a message instead",
-                ),
-            ));
+            return Ok(meta_command_failure_result(command, meta_command_error("peer_decision_refused: cards on another kernel are unavailable; --room addresses rooms on this kernel")));
+        }
+        if let Some(room) = room {
+            let result = self.runtime_state.answer_owner_room_card(
+                caller.id(),
+                &room,
+                &args[0],
+                &args[1..].join(" "),
+            );
+            return Ok(match result {
+                Ok(status) => RuntimeToolResult {
+                    ok: status == ChildDecisionStatus::Answered,
+                    payload: serde_json::json!({"command":super::result::redacted_meta_command_for_payload(command),"response":{"type":"ChildDecision","status":status}}),
+                },
+                Err(error) => meta_command_failure_result(command, error),
+            });
         }
         let status = match (
             tokens.get(1).map(String::as_str),

@@ -34,8 +34,7 @@ pub(crate) fn message(code: &str) -> Option<&'static str> {
         "too_many_open_files" => "too many open files in this kernel; close a terminal and try again",
         "agent_deadline_reached" => "agent deadline reached; this agent cannot start another turn. Start a new agent for new work",
         "agent_deadline_requires_executor" => "arm an agent deadline on its executing kernel; an agent with a deadline cannot move to a leased worker without worker enforcement",
-        "agent_deadline_extension_refused" => "an agent deadline cannot be extended; start a new agent for new work",
-        "agent_deadline_invalid" => "deadline must be a positive bounded epoch millisecond; supply deadline_ms to SetAgentDeadline",
+        "agent_deadline_invalid" => "deadline must be a positive bounded epoch millisecond, or null to clear; supply deadline_ms to SetAgentDeadline",
         "agent_deadline_cleanup_pending" => "deadline reached; physical cleanup is pending and will retry. Read GetAgentDeadline for the stopping receipt",
         _ => return None,
     })

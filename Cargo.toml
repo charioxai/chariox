@@ -38,5 +38,11 @@ exclude = [
 [profile.dev.package.sha2]
 opt-level = 3
 
+# Person cards verify the typed passkey with the Vault's full Argon2 workload.
+# Keep that workload optimized in debug kernels too, so approval does not wait
+# seconds on unoptimized crypto. The KDF parameters and checks stay the same.
+[profile.dev.package.argon2]
+opt-level = 3
+
 [patch.crates-io]
 ureq = { path = "patches/ureq" }

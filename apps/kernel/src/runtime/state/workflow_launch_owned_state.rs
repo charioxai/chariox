@@ -11,6 +11,34 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         workflow_run: &crate::session::WorkflowRun,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
+        let result = self.workflow_prepare_and_submit_entry(session_id, workflow_run);
+        if result.is_err() {
+            if let Ok(intent) = self.workflow_entry_intent(session_id, workflow_run.id()) {
+                // A submitted or uncertain entry belongs to prompt recovery.
+                // A definite failure before admission owns no provider work.
+                if !intent.as_ref().is_some_and(|intent| intent.submitted) {
+                    let node_id = intent
+                        .as_ref()
+                        .map(|intent| intent.node_id.as_str())
+                        .or_else(|| workflow_run.node_runs().first().map(|node| node.id()));
+                    if let Some(node_id) = node_id {
+                        self.release_workflow_node_workspace_claim(
+                            session_id,
+                            workflow_run.id(),
+                            node_id,
+                        );
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    fn workflow_prepare_and_submit_entry(
+        &self,
+        session_id: &str,
+        workflow_run: &crate::session::WorkflowRun,
+    ) -> Result<WorkflowPromptDispatches, DaemonError> {
         self.durable_state_store.require_writer_healthy()?;
         let intent = self.workflow_entry_intent(session_id, workflow_run.id())?;
         if intent.as_ref().is_some_and(|intent| intent.submitted) {

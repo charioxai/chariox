@@ -34,6 +34,9 @@ pub(super) struct RelaySubscriptionTask {
     /// Keeps the viewer's browser actor registered; the relay ends the viewer by ending its
     /// subscriptions (a goodbye or a lost connection alike), so releasing the last one releases it.
     pub(super) _terminal_lease: Option<crate::runtime::kernel_browser_host::TerminalLease>,
+    /// Protocol 1006: the watch inbox of a `kernel_resources` subscription.
+    pub(super) resource_watch:
+        Option<crate::transport::kernel_resource_feed::KernelResourceWatchSender>,
     pub(super) handle: JoinHandle<()>,
 }
 
@@ -151,6 +154,41 @@ pub(super) async fn handle_relay_subscribe(
             return Ok(());
         }
     };
+    if subscription_scope.as_deref()
+        == Some(crate::transport::kernel_resource_feed::KERNEL_RESOURCES_SUBSCRIPTION_SCOPE)
+    {
+        return super::kernel_resources::handle_subscribe(
+            router,
+            outgoing_tx,
+            subscription_tasks,
+            event_runtime,
+            super::kernel_resources::KernelResourcesSubscription {
+                relay_request_id,
+                relay_subscription_id,
+                client_public_key,
+                heartbeat_interval,
+            },
+        )
+        .await;
+    }
+    if subscription_scope.as_deref() == Some(super::room_terminal_stream::ROOM_TERMINAL_SCOPE) {
+        return super::room_terminal_stream::handle_subscribe(
+            router,
+            outgoing_tx,
+            subscription_tasks,
+            super::room_terminal_stream::RoomTerminalSubscription {
+                request_id: relay_request_id,
+                relay_id: relay_subscription_id,
+                session_id,
+                address: attachment_id,
+                identity: caller_identity,
+                public_key: client_public_key,
+                from_offset: resume_from_event_id,
+                heartbeat_interval,
+            },
+        )
+        .await;
+    }
     let subscriber = RelaySubscriber {
         heartbeat_interval,
         caller: crate::runtime::command::KernelCaller::for_relay_request(caller_identity.clone()),
@@ -345,6 +383,10 @@ pub(super) async fn handle_relay_subscribe(
             &session_id,
             &attachment_id,
             resume_from_event_id,
+            !matches!(
+                subscription_scope.as_deref(),
+                Some("session_metadata" | "session_metadata_processes")
+            ),
         )
         .await
         {
@@ -380,6 +422,7 @@ pub(super) async fn handle_relay_subscribe(
             _terminal_lease: terminal_lease,
             relay_subscription_id,
             client_public_key,
+            resource_watch: None,
             handle: task,
         },
     );
@@ -592,10 +635,11 @@ pub(super) async fn run_relay_subscription_loop(
                 // backlog. Publish its authoritative projection before that backlog.
                 let projection_events = (*snapshot)
                     .map(|snapshot| {
-                        let events = crate::runtime_transport::session_projection_events(
+                        let events = crate::runtime_transport::session_projection_events_for_scope(
                             &snapshot,
                             previous_snapshot.as_ref(),
                             !workflow_run_updates.is_empty(),
+                            subscription_scope.as_deref(),
                         );
                         agent_turns.observe_snapshot(&snapshot);
                         previous_snapshot = Some(snapshot);
@@ -624,7 +668,11 @@ pub(super) async fn run_relay_subscription_loop(
                 {
                     agent_turns.mark_changed(agent_id);
                 }
-                if !records.is_empty() {
+                if !matches!(
+                    subscription_scope.as_deref(),
+                    Some("session_metadata" | "session_metadata_processes")
+                ) && !records.is_empty()
+                {
                     let mut terminal_output_failed = false;
                     for records in terminal_output_event_batches(records) {
                         if emit_relay_event(
@@ -907,7 +955,7 @@ async fn record_relay_subscription_attachment_heartbeat(
     phase: &str,
 ) {
     if let Err(error) = router
-        .record_terminal_attachment_heartbeat(
+        .record_subscription_attachment_heartbeat(
             session_id,
             attachment_id,
             crate::session::unix_epoch_ms(),
@@ -1335,6 +1383,7 @@ mod tests {
                 _terminal_lease: None,
                 relay_subscription_id: "relay-subscription-1".to_string(),
                 client_public_key: "client-public-key-1".to_string(),
+                resource_watch: None,
                 handle: first_handle,
             },
         );
@@ -1350,6 +1399,7 @@ mod tests {
                 _terminal_lease: None,
                 relay_subscription_id: "relay-subscription-2".to_string(),
                 client_public_key: "client-public-key-2".to_string(),
+                resource_watch: None,
                 handle: second_handle,
             },
         );
@@ -1398,6 +1448,7 @@ mod tests {
             _terminal_lease: None,
             relay_subscription_id: "relay-subscription-1".to_string(),
             client_public_key: "client-public-key-1".to_string(),
+            resource_watch: None,
             handle,
         };
 

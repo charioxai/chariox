@@ -7,6 +7,7 @@ use crate::local::{
 };
 use crate::runtime::agent_utility_executor::run_agent_utility;
 use crate::runtime::history_requests::{
+    execute_agent_transcript_entry_read, execute_agent_transcript_peek,
     execute_prompt_input_history_request as execute_prompt_input_history,
     execute_query_recall_request as execute_query_recall,
     execute_record_prompt_input_history_request as execute_record_prompt_input_history,
@@ -47,6 +48,8 @@ pub(crate) async fn authorize_history_request(
         LocalDaemonRequest::GetSessionHistoryOutline(outline) => &outline.session_id,
         LocalDaemonRequest::GetSessionHistoryBlobContent(blob) => &blob.session_id,
         LocalDaemonRequest::GetSessionHistoryBlobContents(blobs) => &blobs.session_id,
+        LocalDaemonRequest::PeekAgentTranscript(peek) => &peek.session_id,
+        LocalDaemonRequest::ReadAgentTranscriptEntry(read) => &read.session_id,
         _ => return Ok(request),
     };
     let session = runtime_state.session_snapshot(session_id).await?;
@@ -63,6 +66,8 @@ pub(crate) async fn authorize_history_request(
     let hidden_blob_agent = match &request {
         LocalDaemonRequest::GetSessionHistoryBlobContent(blob) => Some(&blob.agent_id),
         LocalDaemonRequest::GetSessionHistoryBlobContents(blobs) => Some(&blobs.agent_id),
+        LocalDaemonRequest::PeekAgentTranscript(peek) => Some(&peek.agent_id),
+        LocalDaemonRequest::ReadAgentTranscriptEntry(read) => Some(&read.agent_id),
         _ => None,
     }
     .filter(|agent_id| !visible(agent_id));
@@ -188,6 +193,43 @@ pub(crate) async fn execute_history_request(
                 agent_import,
             )
             .await
+        }
+        LocalDaemonRequest::PeekAgentTranscript(request) => {
+            runtime_state
+                .flush_session_provider_history(&request.session_id)
+                .await?;
+            let agent_import =
+                agent_external_import(runtime_state, &request.session_id, &request.agent_id)
+                    .await?;
+            let room = request.session_id.clone();
+            let peek = execute_agent_transcript_peek(
+                operational_history_store,
+                request,
+                agent_import,
+                crate::session::unix_epoch_ms(),
+                runtime_state.agent_peek_text_protector(&room),
+            )
+            .await?;
+
+            Ok(LocalDaemonResponse::AgentTranscriptPeek { peek })
+        }
+        LocalDaemonRequest::ReadAgentTranscriptEntry(request) => {
+            runtime_state
+                .flush_session_provider_history(&request.session_id)
+                .await?;
+            let agent_import =
+                agent_external_import(runtime_state, &request.session_id, &request.agent_id)
+                    .await?;
+            let room = request.session_id.clone();
+            let page = execute_agent_transcript_entry_read(
+                operational_history_store,
+                request,
+                agent_import,
+                runtime_state.agent_peek_text_protector(&room),
+            )
+            .await?;
+
+            Ok(LocalDaemonResponse::AgentTranscriptEntryPage { page })
         }
         LocalDaemonRequest::QueryRecall(request) => {
             execute_query_recall_request(

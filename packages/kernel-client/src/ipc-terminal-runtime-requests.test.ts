@@ -44,8 +44,10 @@ test("MP-08/MP-10/MP-11: HTTP trigger client contracts preserve payload and hist
   assert.deepEqual(r.createAgentHttpTriggerRequest({ sessionId: "s", agentId: "a", busyPolicy: "steer", prompt: " Input " }), {
     CreateAgentTrigger: { session_id: "s", agent_id: "a", source: { kind: "http" }, busy_policy: "steer", prompt: "Input" },
   })
-  const payload = { prompt: "λ </script>", query: { repeated: ["one", "two"] } }
-  assert.deepEqual(r.invokeAgentTriggerRequest("s", "t", payload), { InvokeAgentTrigger: { session_id: "s", trigger_id: "t", payload } })
+  const input = { prompt: "λ </script>", query: { repeated: ["one", "two"] } }
+  assert.deepEqual(r.invokeAgentTriggerRequest("s", "t", input), { InvokeAgentTrigger: { session_id: "s", trigger_id: "t", input } })
+  const http = { body_base64: "e30=", content_type: "application/json" }
+  assert.deepEqual(r.invokeAgentTriggerRequest("s", "t", input, http), { InvokeAgentTrigger: { session_id: "s", trigger_id: "t", input, http } })
   assert.deepEqual(r.readAgentTriggerTranscriptRequest("s", "t", { before_sequence: 100 }), {
     ReadAgentTriggerTranscript: { session_id: "s", trigger_id: "t", cursor: { before_sequence: 100 } },
   })

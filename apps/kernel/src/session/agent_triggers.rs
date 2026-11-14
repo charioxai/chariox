@@ -2,6 +2,8 @@
 //! `/wait-in` and `/wait-every` are schedule triggers.
 use serde::{Deserialize, Serialize};
 
+use super::{WorkflowScheduleOverlapPolicy, WorkflowScheduleTrigger};
+
 /// What a firing does while its agent is running a turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -15,8 +17,31 @@ pub enum AgentTriggerBusyPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentTriggerRepeat {
+    /// `/wait-in`: one firing, then the trigger is removed.
     Once,
     Every,
+}
+
+/// When a schedule trigger fires: the Workflows panel's schedule options.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSchedule {
+    pub trigger: WorkflowScheduleTrigger,
+    pub repeat: AgentTriggerRepeat,
+    pub overlap_policy: WorkflowScheduleOverlapPolicy,
+    /// Firings after which a repeating trigger is done; `None` never stops.
+    pub max_runs: Option<u64>,
+}
+
+impl AgentSchedule {
+    /// A `/wait-in` or `/wait-every` schedule.
+    pub fn interval(every_seconds: u64, repeat: AgentTriggerRepeat) -> Self {
+        Self {
+            trigger: WorkflowScheduleTrigger::interval(every_seconds),
+            repeat,
+            overlap_policy: WorkflowScheduleOverlapPolicy::Skip,
+            max_runs: None,
+        }
+    }
 }
 
 /// What a notification trigger listens to: one exit of a workflow, or one
@@ -39,10 +64,18 @@ pub enum AgentTriggerSource {
     Http {
         ingress_id: String,
         port: std::num::NonZeroU16,
+        #[serde(flatten)]
+        options: super::AgentHttpOptions,
+        /// The latest firings this trigger delivered: a sync response reads only their replies.
+        #[serde(default, skip_serializing_if = "std::collections::VecDeque::is_empty")]
+        recent_firings: std::collections::VecDeque<String>,
     },
     Schedule {
-        interval_seconds: u64,
+        trigger: WorkflowScheduleTrigger,
         repeat: AgentTriggerRepeat,
+        overlap_policy: WorkflowScheduleOverlapPolicy,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_runs: Option<u64>,
         next_run_at_ms: u64,
     },
     /// Every occurrence of the source is queued as a prompt of the agent.
@@ -176,29 +209,26 @@ pub struct AgentTrigger {
 }
 
 impl AgentTrigger {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Every field of a new schedule trigger is required and distinct."
-    )]
     pub fn schedule(
         id: impl Into<String>,
         agent_id: impl Into<String>,
         created_by_user_id: impl Into<String>,
-        interval_seconds: u64,
-        repeat: AgentTriggerRepeat,
+        schedule: AgentSchedule,
         busy_policy: AgentTriggerBusyPolicy,
         prompt: impl Into<String>,
         created_at_ms: u64,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, String> {
+        let next_run_at_ms = schedule.trigger.next_run_after_ms(created_at_ms)?;
+        Ok(Self {
             id: id.into(),
             agent_id: agent_id.into(),
             created_by_user_id: Some(created_by_user_id.into()),
             source: AgentTriggerSource::Schedule {
-                interval_seconds,
-                repeat,
-                next_run_at_ms: created_at_ms
-                    .saturating_add(interval_seconds.saturating_mul(1_000)),
+                trigger: schedule.trigger,
+                repeat: schedule.repeat,
+                overlap_policy: schedule.overlap_policy,
+                max_runs: schedule.max_runs,
+                next_run_at_ms,
             },
             busy_policy,
             prompt: prompt.into(),
@@ -211,14 +241,19 @@ impl AgentTrigger {
             last_error: None,
             dispatch_in_flight: false,
             dispatch_generation: 0,
-        }
+        })
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Every field of a new HTTP trigger is required and distinct."
+    )]
     pub(crate) fn http(
         id: String,
         agent_id: &str,
         owner: &str,
         port: std::num::NonZeroU16,
+        options: super::AgentHttpOptions,
         policy: AgentTriggerBusyPolicy,
         prompt: String,
         now_ms: u64,
@@ -230,6 +265,8 @@ impl AgentTrigger {
             source: AgentTriggerSource::Http {
                 ingress_id: id,
                 port,
+                options,
+                recent_firings: std::collections::VecDeque::new(),
             },
             busy_policy: policy,
             prompt,
@@ -375,6 +412,25 @@ impl AgentTrigger {
         )
     }
 
+    /// A repeating schedule that reached its max runs: it stays, shown done, and never fires again.
+    pub fn done(&self) -> bool {
+        match &self.source {
+            AgentTriggerSource::Schedule {
+                max_runs: Some(max_runs),
+                ..
+            } => self.fired >= *max_runs,
+            _ => false,
+        }
+    }
+
+    /// While the trigger's previous firing is still queued or running.
+    pub(crate) fn overlap_policy(&self) -> Option<WorkflowScheduleOverlapPolicy> {
+        match &self.source {
+            AgentTriggerSource::Schedule { overlap_policy, .. } => Some(*overlap_policy),
+            _ => None,
+        }
+    }
+
     pub(crate) fn dispatch_in_flight(&self) -> bool {
         self.dispatch_in_flight
     }
@@ -382,6 +438,7 @@ impl AgentTrigger {
     pub(crate) fn claim_dispatch(&mut self, now_ms: u64) -> bool {
         if !matches!(self.source, AgentTriggerSource::Schedule { .. })
             || !self.enabled
+            || self.done()
             || self.dispatch_in_flight
             || now_ms < self.next_run_at_ms()
         {
@@ -451,7 +508,14 @@ impl AgentTrigger {
             // A re-enabled schedule counts a full interval from now instead of
             // firing at once for the time it was off.
             if enabled && !self.enabled {
-                self.schedule_next_run(now_ms, 0);
+                if let AgentTriggerSource::Schedule {
+                    trigger,
+                    next_run_at_ms,
+                    ..
+                } = &mut self.source
+                {
+                    *next_run_at_ms = trigger.next_run_after_ms(now_ms).unwrap_or(u64::MAX);
+                }
             }
             if !enabled {
                 self.dispatch_in_flight = false;
@@ -459,6 +523,28 @@ impl AgentTrigger {
             }
             self.enabled = enabled;
         }
+    }
+
+    pub fn http_options(&self) -> Option<&super::AgentHttpOptions> {
+        match &self.source {
+            AgentTriggerSource::Http { options, .. } => Some(options),
+            _ => None,
+        }
+    }
+
+    /// Remembers an HTTP firing so its caller can read the reply; older ones are forgotten.
+    pub(crate) fn note_http_firing(&mut self, prompt_id: &str) {
+        if let AgentTriggerSource::Http { recent_firings, .. } = &mut self.source {
+            if recent_firings.len() == HTTP_FIRINGS_KEPT {
+                recent_firings.pop_front();
+            }
+            recent_firings.push_back(prompt_id.to_string());
+        }
+    }
+
+    pub(crate) fn fired_over_http(&self, prompt_id: &str) -> bool {
+        matches!(&self.source, AgentTriggerSource::Http { recent_firings, .. }
+            if recent_firings.iter().any(|known| known == prompt_id))
     }
 
     /// Records whether a notification trigger's source can reach this kernel; true when it changed.
@@ -474,22 +560,38 @@ impl AgentTrigger {
         }
     }
 
-    fn schedule_next_run(&mut self, now_ms: u64, minimum_interval_seconds: u64) {
+    fn schedule_next_run(&mut self, now_ms: u64, minimum_delay_seconds: u64) {
         let AgentTriggerSource::Schedule {
-            interval_seconds,
+            trigger,
             next_run_at_ms,
             ..
         } = &mut self.source
         else {
             return;
         };
-        *next_run_at_ms = now_ms.saturating_add(
-            (*interval_seconds)
-                .max(minimum_interval_seconds)
-                .saturating_mul(1_000),
-        );
+        let earliest = now_ms.saturating_add(minimum_delay_seconds.saturating_mul(1_000));
+        *next_run_at_ms = match trigger {
+            WorkflowScheduleTrigger::Interval { every_seconds } => {
+                // Advance along the existing schedule's grid, skipping missed beats. Delivery
+                // latency must not shift every subsequent firing (including after a restart).
+                let interval_ms = every_seconds.saturating_mul(1_000);
+                let threshold = earliest.max(now_ms.saturating_add(1));
+                let steps = threshold
+                    .saturating_sub(*next_run_at_ms)
+                    .div_ceil(interval_ms)
+                    .max(1);
+                next_run_at_ms.saturating_add(steps.saturating_mul(interval_ms))
+            }
+            // The trigger was validated at creation; a time beyond the calendar never comes.
+            WorkflowScheduleTrigger::Cron { .. } => trigger
+                .next_run_after_ms(now_ms)
+                .map_or(u64::MAX, |next| next.max(earliest)),
+        };
     }
 }
+
+/// HTTP firings whose replies a sync response can still read.
+const HTTP_FIRINGS_KEPT: usize = 64;
 
 /// A session's triggers, serialized as `agent_triggers`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

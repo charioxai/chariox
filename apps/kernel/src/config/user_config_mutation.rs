@@ -121,11 +121,9 @@ impl CharioxUserConfig {
                 self.relay.accept_remote_leases =
                     Some(parse_config_bool("relay.accept_remote_leases", &value)?)
             }
-            "agents.ask_before_acquiring_machines" => {
-                self.agents.ask_before_acquiring_machines = Some(parse_config_bool(
-                    "agents.ask_before_acquiring_machines",
-                    &value,
-                )?)
+            "agents.offload_without_asking" => {
+                self.agents.offload_without_asking =
+                    Some(parse_config_bool("agents.offload_without_asking", &value)?)
             }
             "history.operational.backend" => {
                 self.history.operational.backend =
@@ -356,6 +354,18 @@ impl CharioxUserConfig {
                     true,
                 )?)
             }
+            "kernel.resource_protection.memory" => {
+                self.kernel.resource_protection.memory =
+                    parse_config_bool("kernel.resource_protection.memory", &value)?;
+            }
+            "kernel.resource_protection.disk" => {
+                self.kernel.resource_protection.disk =
+                    parse_config_bool("kernel.resource_protection.disk", &value)?;
+            }
+            "kernel.resource_protection.cpu" => {
+                self.kernel.resource_protection.cpu =
+                    parse_config_bool("kernel.resource_protection.cpu", &value)?;
+            }
             "kernel.websocket_host" => {
                 self.kernel.websocket_host =
                     Some(non_empty_config_string("kernel.websocket_host", value)?)
@@ -554,9 +564,7 @@ impl CharioxUserConfig {
             "relay.url" => self.relay.url = None,
             "secret_link.page_url" => self.secret_link.page_url = None,
             "relay.accept_remote_leases" => self.relay.accept_remote_leases = None,
-            "agents.ask_before_acquiring_machines" => {
-                self.agents.ask_before_acquiring_machines = None
-            }
+            "agents.offload_without_asking" => self.agents.offload_without_asking = None,
             "history.operational.backend" => {
                 return Err(DaemonError::InvalidConfig {
                     field: "history.operational.backend",
@@ -640,6 +648,9 @@ impl CharioxUserConfig {
             "slices.linux.idle_timeout_minutes" => self.slices.linux.idle_timeout_minutes = None,
             "slices.linux.screen_width" => self.slices.linux.screen_width = None,
             "slices.linux.screen_height" => self.slices.linux.screen_height = None,
+            "kernel.resource_protection.memory" => self.kernel.resource_protection.memory = true,
+            "kernel.resource_protection.disk" => self.kernel.resource_protection.disk = true,
+            "kernel.resource_protection.cpu" => self.kernel.resource_protection.cpu = true,
             "kernel.websocket_host" => self.kernel.websocket_host = None,
             "kernel.websocket_port" => self.kernel.websocket_port = None,
             "kernel.runtime_mcp_host" => self.kernel.runtime_mcp_host = None,

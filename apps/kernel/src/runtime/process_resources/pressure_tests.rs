@@ -202,7 +202,10 @@ impl Workload {
             .is_some_and(|state| state == "T")
     }
     pub(super) fn root_alive(&mut self) -> bool {
-        self.child.try_wait().unwrap().is_none()
+        self.exit_status().is_none()
+    }
+    pub(super) fn exit_status(&mut self) -> Option<std::process::ExitStatus> {
+        self.child.try_wait().unwrap()
     }
     /// What the command was told on its own error stream.
     #[cfg(target_os = "linux")]
@@ -423,7 +426,31 @@ fn pressure_in(
         &[("big", 800, 0, 0), ("idle", 0, 0, 0)],
     );
     let c = Workload::start(domain(&pool, "c", cgroup), &[("small", 20, 0, 0)]);
-    settle(1);
+    // The holder's startup allocation must not contribute pressure attributed to the grower.
+    let big_pid = u32::try_from(a.pid("big")).expect("the holder PID should be positive");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let ready = a
+            .domain
+            .state
+            .lock()
+            .unwrap()
+            .commands
+            .iter()
+            .any(|command| {
+                command.pid == big_pid
+                    && command.resident >= 800 * MIB
+                    && command.measured_growth == 0
+            });
+        if ready {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the holder never finished its startup allocation"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let b = Workload::start(
         domain(&pool, "b", cgroup),
         &[("idle", 0, 0, 0), ("grow", start, rate, 1000)],
@@ -1062,7 +1089,82 @@ fn a_startup_spike_does_not_keep_a_slow_grower_paused() {
 #[test]
 fn a_steady_fast_grower_stays_paused_once_and_ends_with_the_reason() {
     take_wait_events();
-    let (_a, mut b, _c, _pool) = pressure(false, 100, 200, 9);
+    const RATE: u64 = 200;
+    let pool = pool(1536);
+    let holder = Workload::gated(
+        domain(&pool, "a", false),
+        &[
+            ("big", "python3 \"$0/holder.py\" \"$0/pressure\"".into()),
+            ("idle", "python3 \"$0/alloc.py\" 0 0 0".into()),
+        ],
+    );
+    std::fs::write(holder.dir.join("holder.py"), format!(
+        "{DIE_WITH_PARENT}import os,time\nheld=[bytearray(100*1048576)]\nwhile not os.path.exists(sys.argv[1]): time.sleep(0.02)\nheld.append(bytearray(700*1048576))\ntime.sleep(60)"
+    )).unwrap();
+    holder.go(&["big", "idle"]);
+    let holder_pid = u32::try_from(holder.pid("big")).expect("the holder PID should be positive");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let ready = {
+            let observed = holder.domain.state.lock().unwrap();
+            observed.admission.contains_key(&holder_pid)
+                && observed.commands.iter().any(|command| {
+                    command.pid == holder_pid
+                        && command.resident >= 100 * MIB
+                        && command.measured_growth == 0
+                })
+        };
+        if ready {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the initial holder was never sampled"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _c = Workload::start(domain(&pool, "c", false), &[("small", 20, 0, 0)]);
+    let mut b = Workload::start(
+        domain(&pool, "b", false),
+        &[("idle", 0, 0, 0), ("grow", 100, RATE, 1000)],
+    );
+    // Observe a real steady-rate window before another owner applies pressure.
+    let grower_pid = u32::try_from(b.pid("grow")).expect("the grower PID should be positive");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let ready = b
+            .domain
+            .state
+            .lock()
+            .unwrap()
+            .commands
+            .iter()
+            .any(|command| {
+                command.pid == grower_pid
+                    && command.resident >= 300 * MIB
+                    && (RATE * 3 * MIB / 4..=RATE * 5 * MIB / 4).contains(&command.steady_growth)
+                    && command.measured_growth >= admission::GROWING
+            });
+        if ready && !b.waiting("grow") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the grower never established its steady rate"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Start observing waits once startup has established the test's steady phase.
+    take_wait_events();
+    std::fs::write(holder.dir.join("pressure"), "").unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !b.waiting("grow") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the added holder never caused pressure"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     assert!(b.waiting("grow"), "the fast grower was not paused");
     settle(3);
     assert!(
@@ -1112,19 +1214,67 @@ fn a_pool_full_by_accounting_alone_pauses_nothing_while_the_machine_has_memory()
     assert!(a.root_alive() && b.root_alive() && c.root_alive());
 }
 
-/// Plenty of host memory does not hide the workloads' own finite allocation
-/// boundary. The kernel must pause before that cgroup reaches memory.max.
+/// Accounting cgroups must not manufacture pressure or throttles while the
+/// host has headroom, even when their observed charge exceeds the old pool.
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires a writable cgroup-v2 delegated parent"]
-fn a_full_budget_pauses_even_when_the_host_reports_no_pressure() {
+fn resset_accounting_cgroup_does_not_limit_a_healthy_host() {
     let pool =
         Arc::new(pool::Pool::new(1536 * MIB, true).with_machine_pressure(Box::new(|| false)));
-    let (mut a, mut b, mut c, _pool) = pressure_in(pool, true, 300, 48, 10);
+    let (mut a, mut b, mut c, pool) = pressure_in(pool, true, 300, 48, 10);
+    let budget = pool.budget().unwrap();
+    for name in ["memory.max", "memory.high", "memory.swap.max"] {
+        assert_eq!(
+            std::fs::read_to_string(budget.path().join(name))
+                .unwrap()
+                .trim(),
+            "max"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(budget.path().join("cpu.weight"))
+            .unwrap()
+            .trim(),
+        "100"
+    );
+    assert!(!b.waiting("grow"));
+    assert!(a.alive("big") && b.alive("grow") && c.alive("small"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn resset_memory_off_never_pauses_and_releases_a_live_paused_command() {
+    let pool = pool(1536);
+    let (mut a, mut b, mut c, pool) = pressure_in(pool, false, 300, 48, 10);
     assert!(
         b.waiting("grow"),
-        "the finite cgroup's pressure was ignored"
+        "fixture must reach real admission SIGSTOP"
     );
+    pool.configure(crate::config::ResourceProtection {
+        memory: false,
+        ..Default::default()
+    });
+    settle(3);
+    assert!(!b.waiting("grow"), "memory off left a live command stopped");
+    settle(4);
+    assert!(!b.waiting("grow"), "memory off allowed a fresh SIGSTOP");
     assert!(a.alive("big") && b.alive("grow") && c.alive("small"));
-    assert!(a.root_alive() && b.root_alive() && c.root_alive());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn resset_memory_off_disables_an_explicit_owner_cap() {
+    let pool = pool(512);
+    pool.configure(crate::config::ResourceProtection {
+        memory: false,
+        ..Default::default()
+    });
+    let mut work = Workload::start(
+        PreparedDomain::watchdog("off-cap", Some(32 * MIB), pool),
+        &[("big", 128, 0, 0)],
+    );
+    settle(3);
+    assert!(work.alive("big"));
+    assert_eq!(work.domain.memory_limit_bytes(), None);
 }

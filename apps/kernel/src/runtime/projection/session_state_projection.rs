@@ -1056,6 +1056,7 @@ mod tests {
                 active_prompt_count: 0,
                 queued_prompt_count: 1,
                 unread_idle_output: true,
+                waiting: false,
                 queued_prompt_controls: BTreeMap::from([(
                     "queued-1".to_string(),
                     crate::runtime::projection::AgentQueuedPromptControlProjection {

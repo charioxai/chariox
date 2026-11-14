@@ -1,4 +1,4 @@
-import type { ManagedContextTransferTicket } from "./ipc-managed-environment-requests.js"
+import type { ManagedContextTransferTicket, ProviderAccountTransferSelection } from "./context-transfer-types.js"
 
 export type ManagedContextTransferPhase =
   | "preparing"
@@ -103,4 +103,11 @@ export function getManagedContextTransferStatusRequest(contextId: string) {
 
 export function getManagedContextLaunchTargetRequest(contextId: string, planDigest: string) {
   return { GetManagedContextLaunchTarget: { contextId, planDigest } } as const
+}
+
+// MP-08 / MP-11: kernel-owned portability check returns acknowledgement only.
+export const providerAccountPortabilityPreflightMinimumProtocolVersion = 491
+/** `launchId` names the launch, so its transfer start finds the Vault unlock this preflight holds. */
+export function preflightProviderAccountPortabilityRequest(providerAccounts: ProviderAccountTransferSelection, launchId?: string) {
+  return {PreflightProviderAccountPortability: {providerAccounts, ...(launchId ? {launchId} : {})}} as const
 }

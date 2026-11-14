@@ -32,7 +32,7 @@ import { createWaitingRoomPromptBootstrapController } from "./waiting-room-promp
 import { handleWaitingRoomSlashCommand } from "./waiting-room-slash-command-policy.js"
 import { createWorkspaceShellSubmitController } from "./workspace-shell-controller.js"
 import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-controller.js"
-import { waitingRoomManagedCatalogRemoteState } from "./waiting-room-managed-environments.js"
+import { waitingRoomAllocationRemoteState } from "./waiting-room-machine-allocation.js"
 
 type AnyFn = (...args: any[]) => any
 
@@ -243,11 +243,11 @@ export type CliInputRoutingCompositionDeps = {
 export function createCliInputRoutingComposition(deps: CliInputRoutingCompositionDeps) {
   const waitingRoomRemoteTargets = () => {
     const targets = deps.waitingRoomTargets()
-    const managedEnvironmentCatalog = targets.managedEnvironmentCatalog
+    const machineAllocationCapability = targets.machineAllocationCapability
     return {
       ...(targets.workspaceId ? { workspaceId: targets.workspaceId } : {}),
       ...(targets.worktreeId ? { worktreeId: targets.worktreeId } : {}),
-      ...waitingRoomManagedCatalogRemoteState(managedEnvironmentCatalog),
+      ...waitingRoomAllocationRemoteState(machineAllocationCapability),
     }
   }
   const computerCommands = createComputerCommandController({client: deps.client, appendNotice: deps.appendNotice})
@@ -319,7 +319,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const workspaceShellSubmitController = createWorkspaceShellSubmitController({
     client: deps.client,
     clientId: deps.options.clientId,
-    cloudAccountClient: cloudShellClient(deps.cloudClient),
+    cloudAccountClient: cloudShellClient(deps.cloudClient, deps.client),
     ...(deps.openRoomViewer ? { openRoomViewer: deps.openRoomViewer } : {}),
     ...(deps.readSecret ? { readSecret: deps.readSecret } : {}),
     workspaceShellContext: deps.workspaceShellContext,

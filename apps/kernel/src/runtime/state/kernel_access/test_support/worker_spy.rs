@@ -13,12 +13,14 @@ use tokio::sync::Notify;
 use tokio::time::timeout;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
+type DeadlineRequests = Arc<std::sync::Mutex<Vec<(String, Option<u64>)>>>;
+
 pub(in crate::runtime) struct WorkerSpy {
     pub(in crate::runtime) id: String,
     pub(in crate::runtime) url: String,
     pub(in crate::runtime) requests: Arc<AtomicUsize>,
     /// The `(leased agent, deadline)` pairs the worker was asked to enforce.
-    pub(in crate::runtime) deadlines: Arc<std::sync::Mutex<Vec<(String, u64)>>>,
+    pub(in crate::runtime) deadlines: DeadlineRequests,
     pub(in crate::runtime) discovery_started: Arc<Notify>,
     pub(in crate::runtime) release_discovery: Arc<Notify>,
     pub(in crate::runtime) native_recovery: Arc<std::sync::atomic::AtomicBool>,

@@ -147,6 +147,7 @@ fn assert_external_active_prompt_and_queued_chariox_prompt(
     );
 }
 
+mod agent_peek;
 mod agent_tree_state;
 mod agent_wake_sources;
 mod app_quiet_tool_guard;
@@ -175,6 +176,7 @@ mod leased_output;
 mod leased_refused_checkout;
 mod mcp_catalog_reload;
 mod peer_events;
+mod peer_task_follow;
 mod process_tool_settlement;
 #[cfg(unix)]
 mod project_environment_shell;

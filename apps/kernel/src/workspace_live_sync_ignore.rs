@@ -191,7 +191,7 @@ fn workspace_live_sync_normalize_ignore_pattern(line: &str) -> Option<String> {
     Some(pattern)
 }
 
-fn workspace_live_sync_ignore_pattern_matches(pattern: &str, path: &str) -> bool {
+pub(crate) fn workspace_live_sync_ignore_pattern_matches(pattern: &str, path: &str) -> bool {
     let directory_pattern = pattern.ends_with('/');
     let pattern = pattern.trim_end_matches('/');
     if pattern.is_empty() {

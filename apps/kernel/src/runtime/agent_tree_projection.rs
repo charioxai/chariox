@@ -166,7 +166,11 @@ pub(crate) fn project_agent_tree(
     let mut nodes = Vec::new();
     for (agent, depth) in members {
         let turn = turn_of(agent.id());
-        let state = node_state(agent, pending(agent.id()), turn);
+        let state = node_state(
+            agent,
+            pending(agent.id()) || (!agent.is_processing() && session.agent_is_waiting(agent.id())),
+            turn,
+        );
         // The value approval gating reads, after the limit of the parent chain.
         let effective = effective_agent_execution_config_in_tree(session, agent, agents);
         nodes.push(AgentTreeNode {
@@ -242,6 +246,35 @@ mod tests {
             RuntimeSession::new("room", None, "workspace", "worktree", "machine", "daemon");
         session.set_agents(agents);
         session
+    }
+
+    #[test]
+    fn an_idle_sub_agent_with_an_armed_timer_is_waiting_in_the_tree() {
+        let mut session = session(vec![
+            agent("root", None, 1),
+            agent("child", Some("root"), 2),
+        ]);
+        session.set_agent_wakes(vec![serde_json::from_value(serde_json::json!({
+            "id": "wake", "task_id": "task", "room_id": "room", "agent_id": "child",
+            "registration_id": "reg", "kind": "timer", "label": "tick", "state": "scheduled",
+            "created_at_ms": 1, "verified_at_ms": 1, "next_due_ms": 9, "interval_ms": null,
+            "command": [], "match_text": null, "matched_at_ms": null, "pid": null, "exit_code": null,
+            "fire_count": 0, "missed_fires": 0, "last_fired_at_ms": null, "last_sequence": null,
+            "last_delivery": null, "last_delivered_at_ms": null, "last_acknowledged_at_ms": null,
+            "alerted_sequence": null,
+        })).unwrap()]);
+        let tree = project_agent_tree(
+            &session,
+            session.agents(),
+            "root",
+            &|_| false,
+            &|_| None,
+            &|_| None,
+        )
+        .unwrap();
+        assert_eq!(tree.nodes[0].state, AgentTreeState::Waiting);
+        assert_eq!(tree.totals.live, 1);
+        assert_eq!(tree.totals.running, 0);
     }
 
     // MP-08/MP-09/MP-10/MP-11 A4: creation order, depth from the edge, no holder or card.

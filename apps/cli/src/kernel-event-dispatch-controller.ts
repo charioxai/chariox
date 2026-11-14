@@ -41,6 +41,7 @@ type KernelEventDispatchControllerDeps = {
     session: RuntimeSession,
     providerRun: RuntimeProviderRun | null,
   ) => Promise<void> | void
+  applySessionJobs?: (sessionId: string, jobs: import("@chariox/kernel-client/kernel-events").JobView[]) => Promise<void> | void
   applySessionProcesses?: (sessionId: string, processes: import("@chariox/kernel-client/kernel-events").SessionProcess[]) => Promise<void> | void
   applyAgentTaskUpdated?: (sessionId: string, task: Extract<KernelEvent, { event: "agent_task_updated" }>["task"]) => Promise<void> | void
   applyAgentActivityChanged: (
@@ -55,7 +56,7 @@ type KernelEventDispatchControllerDeps = {
   applySessionMetadataChanged: (
     sessionId: string,
     metadata: Record<string, unknown>,
-  ) => Promise<void> | void
+  ) => Promise<boolean> | boolean
   applyRuntimeInteractionsChanged: (
     sessionId: string,
     activeInteractions: Record<string, unknown>[],
@@ -99,6 +100,16 @@ export function createKernelEventDispatchController(
     turnId: string
     result: Promise<boolean>
   }>()
+  let resyncInFlight: Promise<unknown> | null = null
+  const restoreBaseline = async (restore: () => unknown) => {
+    const pending = Promise.resolve().then(restore)
+    resyncInFlight = pending
+    try { await pending } finally {
+      if (resyncInFlight === pending) resyncInFlight = null
+    }
+  }
+
+  const resync = (reason: string) => restoreBaseline(() => deps.resyncAttachedKernelState(reason))
 
   const applySessionSnapshot = async (event: KernelEventSessionSnapshot) => {
     deps.recordDaemonActivity("kernel_session_snapshot")
@@ -121,6 +132,9 @@ export function createKernelEventDispatchController(
     switch (event.event) {
       case "terminal_output":
         deps.recordDaemonActivity("kernel_terminal_output")
+        // The new event stream can lead the history read after a reload. Its
+        // deltas only make sense once that baseline fills the disconnected gap.
+        if (resyncInFlight) await resyncInFlight
         deps.queueTerminalOutputRecords(event.records as TerminalOutputRecord[])
         return
       case "runtime_notices":
@@ -137,6 +151,9 @@ export function createKernelEventDispatchController(
       case "agent_turn_changed":
       case "home_extension_audit_appended":
       case "home_extension_audit_lagged":
+        return
+      case "session_jobs_changed":
+        await deps.applySessionJobs?.(event.session_id, event.jobs)
         return
       case "session_processes_changed":
         await deps.applySessionProcesses?.(event.session_id, event.processes)
@@ -210,6 +227,9 @@ export function createKernelEventDispatchController(
       case "waiting_room_inventory_changed":
         void deps.refreshWaitingRoomData()
         return
+      case "kernel_resource_changed":
+        // The TUI reads the Vault, accounts and Apps by request; it never watches kernel resources.
+        return
       case "relay_status_changed":
         deps.recordDaemonActivity("kernel_relay_status_changed")
         await applyRelayStatusChanged(event)
@@ -230,19 +250,20 @@ export function createKernelEventDispatchController(
         await applyWorkflowRunUpdated(event)
         return
       case "transport_resumed":
+        if (resyncInFlight) await resyncInFlight
         deps.applyTransportResumed()
         deps.scheduleSharedPromptInputHistoryRefresh()
-        await deps.resyncAttachedKernelState("transport_resumed")
+        await resync("transport_resumed")
         return
       case "replay_gap":
         deps.recordDaemonActivity("kernel_replay_gap")
         deps.appendNotice("Missed retained kernel events, refreshed session state.", "warning")
         deps.flashFooter("Missed retained kernel events, refreshed session state.", "info")
-        void deps.resyncAttachedKernelState("replay_gap")
+        void resync("replay_gap")
         return
       case "transport_closed":
         deps.applyTransportClosed(event.message)
-        void deps.recoverAttachedSessionAfterKernelRestart()
+        await restoreBaseline(() => deps.recoverAttachedSessionAfterKernelRestart())
         return
     }
   }
@@ -330,9 +351,9 @@ export function createKernelEventDispatchController(
       deps.appendNotice(`Kernel sent malformed metadata for session ${event.session_id}.`, "warning")
       return
     }
-    await deps.applySessionMetadataChanged(event.session_id, event.metadata)
-    if (Object.prototype.hasOwnProperty.call(event.metadata, "focused_agent_id")) {
-      await deps.resyncAttachedKernelState("focused_agent_changed")
+    const focusChanged = await deps.applySessionMetadataChanged(event.session_id, event.metadata)
+    if (focusChanged) {
+      await resync("focused_agent_changed")
     }
   }
 

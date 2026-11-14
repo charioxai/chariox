@@ -403,6 +403,40 @@ test("relay connections never discover a private local kernel token, even on loo
   assert.deepEqual(authorizations, [undefined])
 })
 
+for (const credentialKind of ["token", "file"] as const) {
+  test(`relay attach leaves inherited local ${credentialKind} credentials for the local issuer`, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), "chariox-relay-inherited-auth-"))
+    const tokenFile = join(root, "one-shot-token")
+    await writeFile(tokenFile, "must-stay-local", { mode: 0o600 })
+    const relay = await startKernelServer({ rejectRelayHandshake: true })
+    const local = await startKernelServer()
+    t.after(async () => {
+      await closeKernelServer(relay.server)
+      await closeKernelServer(local.server)
+      await rm(root, { recursive: true, force: true })
+    })
+    const credential = credentialKind === "file"
+      ? { CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE: tokenFile }
+      : { CHARIOX_KERNEL_LOCAL_AUTH_TOKEN: "must-stay-local" }
+    const result = await runClientScript(`
+      const relay = new LocalIpcClient(${JSON.stringify(relay.endpoint)}, {
+        relayAuthToken: "test-relay-token", targetDaemonAlias: "test-kernel",
+        controlRequestRetryDeadlineMs: 0,
+      })
+      try { await relay.send({ ListSessions: null }).catch(() => {}) }
+      finally { relay.destroy() }
+      if (!process.env[${JSON.stringify(Object.keys(credential)[0])}]) throw Error("relay consumed local credentials")
+      const local = new LocalIpcClient(${JSON.stringify(local.endpoint)})
+      try { await local.send({ ListSessions: null }) }
+      finally { local.destroy() }
+    `, credential)
+    assert.equal(result.code, 0, result.stderr)
+    assert.deepEqual(relay.authorizations, [undefined])
+    assert.deepEqual(local.authorizations, ["Bearer must-stay-local"])
+    if (credentialKind === "file") await assert.rejects(stat(tokenFile), { code: "ENOENT" })
+  })
+}
+
 async function writeLaptopKernelToken(charioxHome: string, port: string, token: string) {
   const directory = join(charioxHome, "state", "kernel-local-auth")
   await mkdir(directory, { recursive: true, mode: 0o700 })

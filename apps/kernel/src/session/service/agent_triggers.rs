@@ -1,5 +1,5 @@
 use super::*;
-use crate::session::{TriggerDelivery, TriggerDeliveryState};
+use crate::session::{AgentSchedule, TriggerDelivery, TriggerDeliveryState};
 
 impl SessionService {
     pub fn next_scheduled_runtime_wake_at_ms(&self) -> Option<u64> {
@@ -24,6 +24,7 @@ impl SessionService {
                             trigger.source(),
                             crate::session::AgentTriggerSource::Schedule { .. }
                         ) && trigger.enabled()
+                            && !trigger.done()
                             && !trigger.dispatch_in_flight()
                     })
                     .map(|trigger| trigger.next_run_at_ms());
@@ -32,25 +33,32 @@ impl SessionService {
             .min()
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "A schedule trigger is created from distinct request fields and the caller identity."
-    )]
     pub fn create_agent_schedule_trigger(
         &mut self,
         session_id: &str,
         agent_id: &str,
         created_by_user_id: &str,
-        interval_seconds: u64,
-        repeat: AgentTriggerRepeat,
+        schedule: AgentSchedule,
         busy_policy: AgentTriggerBusyPolicy,
         prompt: Option<String>,
     ) -> Result<AgentTrigger, DaemonError> {
-        if interval_seconds == 0 {
-            return Err(DaemonError::LocalTransport {
-                operation: "agent trigger create",
-                message: "wait duration must be greater than zero".to_string(),
-            });
+        let refuse = |message: String| DaemonError::LocalTransport {
+            operation: "agent trigger create",
+            message,
+        };
+        schedule.trigger.validate().map_err(refuse)?;
+        match (schedule.repeat, schedule.max_runs) {
+            (_, Some(0)) => {
+                return Err(refuse(
+                    "Max runs must be a positive integer or null.".to_string(),
+                ))
+            }
+            (AgentTriggerRepeat::Once, Some(_)) => {
+                return Err(refuse(
+                    "a one-time schedule fires once; it takes no max runs".to_string(),
+                ))
+            }
+            _ => {}
         }
         self.get_session(session_id)?;
         let prompt = prompt
@@ -70,23 +78,28 @@ impl SessionService {
             self.next_agent_trigger_id(),
             agent_id,
             created_by_user_id,
-            interval_seconds,
-            repeat,
+            schedule,
             busy_policy,
             prompt,
             unix_epoch_ms(),
-        );
+        )
+        .map_err(refuse)?;
         Ok(self
             .agent_trigger_session_mut(session_id)?
             .add_agent_trigger(trigger))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "An HTTP trigger is created from distinct request fields and the caller identity."
+    )]
     pub(crate) fn create_agent_http_trigger(
         &mut self,
         session_id: &str,
         agent_id: &str,
         owner: &str,
         port: std::num::NonZeroU16,
+        options: crate::session::AgentHttpOptions,
         policy: AgentTriggerBusyPolicy,
         prompt: Option<String>,
     ) -> Result<AgentTrigger, DaemonError> {
@@ -97,6 +110,7 @@ impl SessionService {
             agent_id,
             owner,
             port,
+            options,
             policy,
             prompt,
             unix_epoch_ms(),
@@ -286,6 +300,23 @@ impl SessionService {
         })
     }
 
+    pub(crate) fn note_agent_trigger_http_firing(
+        &mut self,
+        session_id: &str,
+        trigger_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        if let Some(trigger) = self
+            .agent_trigger_session_mut(session_id)?
+            .agent_triggers_mut()
+            .iter_mut()
+            .find(|trigger| trigger.id() == trigger_id)
+        {
+            trigger.note_http_firing(prompt_id);
+        }
+        Ok(())
+    }
+
     pub fn mark_agent_trigger_failed(
         &mut self,
         session_id: &str,
@@ -433,8 +464,7 @@ mod tests {
                 session.id(),
                 "agent-1",
                 "user-1",
-                interval_seconds,
-                repeat,
+                crate::session::AgentSchedule::interval(interval_seconds, repeat),
                 AgentTriggerBusyPolicy::Queue,
                 Some("Check once.".to_string()),
             )
@@ -461,6 +491,56 @@ mod tests {
         assert_eq!(
             service.next_scheduled_runtime_wake_at_ms(),
             Some(due_at_ms.saturating_add(1_000))
+        );
+    }
+
+    #[test]
+    fn interval_agent_trigger_stays_anchored_over_ten_delayed_firings() {
+        let (mut service, session_id, trigger) =
+            service_with_schedule(3, AgentTriggerRepeat::Every);
+        let first_due = trigger.next_run_at_ms();
+        for beat in 0..10 {
+            let due = first_due + beat * 3_000;
+            assert_eq!(service.claim_due_agent_triggers(due).len(), 1);
+            service
+                .mark_agent_trigger_fired(
+                    &session_id,
+                    trigger.id(),
+                    due + 2_000,
+                    AgentTriggerOutcome::Queued,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                service.next_scheduled_runtime_wake_at_ms(),
+                Some(due + 3_000),
+                "delivery delay must not move beat {beat}"
+            );
+        }
+    }
+
+    #[test]
+    fn interval_agent_trigger_skips_missed_beats_without_changing_phase() {
+        let (mut service, session_id, trigger) =
+            service_with_schedule(3, AgentTriggerRepeat::Every);
+        let due = trigger.next_run_at_ms();
+        assert_eq!(service.claim_due_agent_triggers(due + 10_000).len(), 1);
+        service
+            .mark_agent_trigger_coalesced(&session_id, trigger.id(), due + 10_000)
+            .unwrap();
+        assert_eq!(
+            service.next_scheduled_runtime_wake_at_ms(),
+            Some(due + 12_000)
+        );
+        assert!(service.claim_due_agent_triggers(due + 11_999).is_empty());
+        assert_eq!(service.claim_due_agent_triggers(due + 12_000).len(), 1);
+        service
+            .mark_agent_trigger_failed(&session_id, trigger.id(), due + 14_500, "retry".into())
+            .unwrap();
+        // A failure keeps the phase and leaves at least a second before retrying.
+        assert_eq!(
+            service.next_scheduled_runtime_wake_at_ms(),
+            Some(due + 18_000)
         );
     }
 
@@ -537,8 +617,7 @@ mod tests {
                 &session_id,
                 "agent-1",
                 "user-1",
-                5,
-                AgentTriggerRepeat::Every,
+                crate::session::AgentSchedule::interval(5, AgentTriggerRepeat::Every),
                 AgentTriggerBusyPolicy::Steer,
                 None,
             )
@@ -548,8 +627,7 @@ mod tests {
                 &session_id,
                 "agent-2",
                 "user-1",
-                5,
-                AgentTriggerRepeat::Every,
+                crate::session::AgentSchedule::interval(5, AgentTriggerRepeat::Every),
                 AgentTriggerBusyPolicy::Queue,
                 None,
             )

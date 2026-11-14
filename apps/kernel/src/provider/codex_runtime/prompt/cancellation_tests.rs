@@ -104,7 +104,11 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str, idl
     });
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            worktree.session_request(),
+            worktree.session_request().with_agent_defaults(
+                crate::session::SessionAgentDefaults::new("codex")
+                    .with_model("gpt-test")
+                    .with_effort("low"),
+            ),
         ))
         .unwrap()
     {

@@ -10,6 +10,21 @@ pub(crate) fn session_projection_events(
     previous: Option<&SessionSnapshotProjection>,
     has_terminal_workflow_update: bool,
 ) -> Vec<KernelEvent> {
+    let same_public = previous.is_some_and(|before| {
+        before.session.equivalent_except_presence(&snapshot.session)
+            && public_run(before) == public_run(snapshot)
+            && before.agent_activity == snapshot.agent_activity
+            && before.room_workflows == snapshot.room_workflows
+    });
+    if same_public
+        && previous.is_some_and(|before| {
+            before.processes == snapshot.processes
+                && before.disk_usage == snapshot.disk_usage
+                && before.jobs == snapshot.jobs
+        })
+    {
+        return Vec::new();
+    }
     let mut events = session_projection_changed_events(snapshot, previous);
     let workflow_events = workflow_run_updated_events(snapshot, previous)
         .into_iter()
@@ -21,8 +36,10 @@ pub(crate) fn session_projection_events(
     // A full hot-session snapshot would immediately erase that archive in clients.
     // Room inventory alone still needs the full snapshot for canvas consumers.
     let processes_only_changed = previous.is_some_and(|previous| {
-        previous.session == snapshot.session
-            && previous.provider_run == snapshot.provider_run
+        previous
+            .session
+            .equivalent_except_presence(&snapshot.session)
+            && public_run(previous) == public_run(snapshot)
             && previous.agent_activity == snapshot.agent_activity
             && previous.room_workflows == snapshot.room_workflows
     });
@@ -60,6 +77,82 @@ pub(crate) fn session_projection_events(
     events
 }
 
+fn public_run(snapshot: &SessionSnapshotProjection) -> Option<crate::provider::PublicProviderRun> {
+    snapshot
+        .provider_run
+        .as_ref()
+        .map(|run| crate::provider::PublicProviderRun::from(run).without_activity_timestamp())
+}
+
+/// Ordinary views need admission waits; per-process samples belong to Health.
+pub(crate) fn session_projection_events_for_scope(
+    snapshot: &SessionSnapshotProjection,
+    previous: Option<&SessionSnapshotProjection>,
+    has_terminal_workflow_update: bool,
+    scope: Option<&str>,
+) -> Vec<KernelEvent> {
+    let events = session_projection_events(snapshot, previous, has_terminal_workflow_update);
+    if scope == Some("session_terminal") {
+        return Vec::new();
+    }
+    let same_waits =
+        previous.is_some_and(|before| waiting_processes(before).eq(waiting_processes(snapshot)));
+    events
+        .into_iter()
+        .filter(|event| {
+            !(scope == Some("session_metadata")
+                && same_waits
+                && matches!(event, KernelEvent::SessionProcessesChanged { .. }))
+        })
+        .map(|mut event| {
+            if scope == Some("session_metadata") {
+                if let KernelEvent::SessionProcessesChanged {
+                    processes,
+                    disk_usage,
+                    ..
+                } = &mut event
+                {
+                    processes.retain(|process| {
+                        !matches!(
+                            process.state,
+                            crate::runtime::process_resources::SessionProcessState::Running
+                        )
+                    });
+                    disk_usage.clear();
+                }
+            }
+            event
+        })
+        .collect()
+}
+
+fn waiting_processes(
+    snapshot: &SessionSnapshotProjection,
+) -> impl Iterator<
+    Item = (
+        &crate::runtime::process_resources::SessionProcessOwner,
+        &str,
+        &crate::runtime::process_resources::SessionProcessState,
+    ),
+> {
+    snapshot
+        .processes
+        .iter()
+        .filter(|process| {
+            !matches!(
+                process.state,
+                crate::runtime::process_resources::SessionProcessState::Running
+            )
+        })
+        .map(|process| {
+            (
+                &process.owner,
+                process.process.process_id.as_str(),
+                &process.state,
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,6 +167,7 @@ mod tests {
             "kernel",
         );
         SessionSnapshotProjection {
+            jobs: Vec::new(),
             processes: Vec::new(),
             disk_usage: Vec::new(),
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
@@ -92,7 +186,35 @@ mod tests {
     fn initial_projection_supplies_the_full_session_before_output() {
         assert!(matches!(
             session_projection_events(&snapshot(), None, false).as_slice(),
-            [KernelEvent::SessionSnapshot { .. }]
+            [
+                KernelEvent::SessionSnapshot { .. },
+                KernelEvent::SessionJobsChanged { jobs, .. },
+            ] if jobs.is_empty()
+        ));
+    }
+
+    #[test]
+    fn a_jobs_only_change_reaches_subscribers() {
+        let before = snapshot();
+        let mut after = before.clone();
+        after.jobs.push(crate::local::JobView {
+            job_id: "job".into(),
+            agent_id: "agent".into(),
+            command: "cargo build".into(),
+            state: "running".into(),
+            placement: crate::local::JobPlacement::Local,
+            started_at_ms: 1,
+            machine_label: None,
+            address: None,
+            class_id: None,
+            rate_per_minute: None,
+            estimate_micros: None,
+            deleted: false,
+            result: None,
+        });
+        assert!(matches!(
+            session_projection_events(&after, Some(&before), false).as_slice(),
+            [KernelEvent::SessionJobsChanged { jobs, .. }] if jobs.len() == 1
         ));
     }
 
@@ -157,6 +279,36 @@ mod tests {
         );
     }
 
+    // MP-08 / MP-09 / MP-10 / MP-11 (transport3): every client attach, detach and reaped attachment
+    // resent the whole session (4.6 KB with 50 attachment ids) to each subscription of every viewer,
+    // although no view shows who is attached.
+    #[test]
+    fn attachment_churn_sends_no_session_snapshot() {
+        let mut before = snapshot();
+        before.session.add_attachment("attachment-a");
+        let mut after = before.clone();
+        after.session.add_attachment("attachment-b");
+        assert!(session_projection_events(&after, Some(&before), false).is_empty());
+        let mut used = before.clone();
+        used.session.touch();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        used.session.touch();
+        assert_ne!(
+            used.session.last_used_at_ms(),
+            before.session.last_used_at_ms()
+        );
+        assert!(
+            session_projection_events(&used, Some(&before), false).is_empty(),
+            "the last use alone is presence, not a Room change"
+        );
+        after.session.remove_attachment("attachment-a");
+        after.session.set_alias(Some("after".into()));
+        assert!(matches!(
+            session_projection_events(&after, Some(&before), false).as_slice(),
+            [KernelEvent::SessionMetadataChanged { .. }]
+        ));
+    }
+
     #[test]
     fn metadata_delta_does_not_repeat_the_full_session() {
         let before = snapshot();
@@ -173,6 +325,10 @@ mod tests {
             ProcessSample, SessionProcess, SessionProcessOwner, SessionProcessState,
         };
         snapshot.processes.push(SessionProcess {
+            remote_available: false,
+            remote_refusal: None,
+            estimate: None,
+            placement: None,
             owner: SessionProcessOwner::Agent("agent".into()),
             process: ProcessSample {
                 process_id: "process".into(),
@@ -217,6 +373,22 @@ mod tests {
     fn process_delta_does_not_repeat_the_full_session() {
         let before = snapshot();
         let mut after = before.clone();
+        add_process(&mut after);
+        assert!(matches!(
+            session_projection_events(&after, Some(&before), false).as_slice(),
+            [KernelEvent::SessionProcessesChanged { .. }]
+        ));
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (transport4): a resource sample that lands in the same pass as a reaped
+    // attachment compared the whole session, presence included, and sent the full snapshot to each subscription.
+    #[test]
+    fn process_sample_beside_attachment_churn_sends_only_the_sample() {
+        let mut before = snapshot();
+        before.session.add_attachment("attachment-a");
+        let mut after = before.clone();
+        after.session.remove_attachment("attachment-a");
+        after.session.add_attachment("attachment-b");
         add_process(&mut after);
         assert!(matches!(
             session_projection_events(&after, Some(&before), false).as_slice(),
@@ -277,8 +449,7 @@ mod tests {
             "task_id":"task", "room_id":after.session.id(), "owner_user_id":"local",
             "agent_id":"agent", "prompt_id":"prompt", "provider_run_id":null,
             "revision":2, "blocked_revision":0, "state":"working", "reason":"work",
-            "obligations":[], "wait":null, "last_progress_at_ms":1, "progress_sequence":0,
-            "no_progress_wakes":0, "correction_used":false, "pending_prompt_id":null
+            "obligations":[], "wait":null, "last_progress_at_ms":1, "correction_used":false, "pending_prompt_id":null
         }))
         .unwrap();
         after.session.set_agent_tasks(vec![task]);
@@ -330,5 +501,169 @@ mod tests {
                 .any(|event| matches!(event, KernelEvent::SessionSnapshot { .. })),
             "an interaction delta cannot hide the newly opened sudo window"
         );
+    }
+    #[test]
+    fn notification_trigger_availability_survives_tree_delta() {
+        let mut before = snapshot();
+        let trigger = crate::session::AgentTrigger::notification(
+            "trigger".into(),
+            "agent",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::session::AgentTriggerNotificationSource::Workflow {
+                source_id: "source".into(),
+            },
+            "subscription".into(),
+            "source display".into(),
+            "review source".into(),
+            1,
+        );
+        before.session.add_agent_trigger(trigger);
+
+        let mut after = before.clone();
+        assert!(after.session.agent_triggers_mut()[0].set_notification_source_available(false));
+        after.agent_tree_revs.insert("root".into(), 2);
+
+        let events = session_projection_events(&after, Some(&before), false);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            KernelEvent::AgentTreeChanged { root, rev: 2, .. } if root == "root"
+        )));
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                KernelEvent::SessionSnapshot { session, .. }
+                    if session.agent_triggers().iter().any(|trigger| matches!(
+                        trigger.source(),
+                        crate::session::AgentTriggerSource::Notification {
+                            source_available: false,
+                            ..
+                        }
+                    ))
+            )),
+            "the tree delta cannot carry notification availability"
+        );
+    }
+
+    #[test]
+    fn private_provider_updates_do_not_repeat_public_state() {
+        let mut before = snapshot();
+        before.provider_run = Some(
+            crate::provider::RuntimeProviderRun::from_control_capability_inference(
+                "run",
+                before.session.id().into(),
+                Some("agent".into()),
+                "codex".into(),
+            ),
+        );
+        let mut after = before.clone();
+        after
+            .provider_run
+            .as_mut()
+            .unwrap()
+            .set_terminal_diagnostic("synthetic private diagnostic");
+        assert!(session_projection_events(&after, Some(&before), false).is_empty());
+    }
+
+    #[test]
+    fn metadata_keeps_admission_waits_while_health_keeps_samples() {
+        let before = snapshot();
+        let mut running = before.clone();
+        add_process(&mut running);
+        assert!(session_projection_events_for_scope(
+            &running,
+            Some(&before),
+            false,
+            Some("session_metadata")
+        )
+        .is_empty());
+        assert!(matches!(
+            session_projection_events_for_scope(
+                &running,
+                Some(&before),
+                false,
+                Some("session_metadata_processes")
+            )
+            .as_slice(),
+            [KernelEvent::SessionProcessesChanged { .. }]
+        ));
+        let mut held = running.clone();
+        held.processes[0].state = crate::runtime::process_resources::SessionProcessState::Held(
+            crate::runtime::process_resources::Waiting {
+                reason: crate::runtime::process_resources::WaitReason::Memory,
+                position: 1,
+                need_bytes: 100,
+                free_bytes: 10,
+                command_line: "build".into(),
+                cwd: None,
+                since_ms: 1,
+            },
+        );
+        assert!(matches!(
+            session_projection_events_for_scope(
+                &held,
+                Some(&running),
+                false,
+                Some("session_metadata")
+            )
+            .as_slice(),
+            [KernelEvent::SessionProcessesChanged { .. }]
+        ));
+        assert!(matches!(
+            session_projection_events_for_scope(
+                &running,
+                Some(&held),
+                false,
+                Some("session_metadata")
+            )
+            .as_slice(),
+            [KernelEvent::SessionProcessesChanged { .. }]
+        ));
+        assert!(session_projection_events_for_scope(
+            &held,
+            Some(&running),
+            false,
+            Some("session_terminal")
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn provider_activity_timestamp_alone_does_not_resend_run_metadata() {
+        let mut before = snapshot();
+        before.provider_run = Some(
+            crate::provider::RuntimeProviderRun::from_control_capability_inference(
+                "run",
+                before.session.id().into(),
+                Some("agent".into()),
+                "codex".into(),
+            ),
+        );
+        let mut after = before.clone();
+        let mut value = serde_json::to_value(after.provider_run.take().unwrap()).unwrap();
+        value["last_activity_at_ms"] =
+            serde_json::json!(before.provider_run.as_ref().unwrap().last_activity_at_ms() + 1);
+        after.provider_run = Some(serde_json::from_value(value).unwrap());
+        assert!(session_projection_events(&after, Some(&before), false).is_empty());
+        after.provider_run.as_mut().unwrap().mark_running();
+        assert!(
+            !session_projection_events(&after, Some(&before), false).is_empty(),
+            "state changes still reach the view"
+        );
+    }
+
+    #[test]
+    fn ordinary_metadata_initial_samples_contain_only_admission_waits() {
+        let mut current = snapshot();
+        add_process(&mut current);
+        let events =
+            session_projection_events_for_scope(&current, None, false, Some("session_metadata"));
+        assert!(events.iter().all(|event| !matches!(event, KernelEvent::SessionProcessesChanged { processes, disk_usage, .. } if !processes.is_empty() || !disk_usage.is_empty())));
+        let health = session_projection_events_for_scope(
+            &current,
+            None,
+            false,
+            Some("session_metadata_processes"),
+        );
+        assert!(health.iter().any(|event| matches!(event, KernelEvent::SessionProcessesChanged { processes, .. } if !processes.is_empty())));
     }
 }

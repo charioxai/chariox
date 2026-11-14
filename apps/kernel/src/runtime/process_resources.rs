@@ -30,6 +30,13 @@ pub use launch::LaunchWait;
 pub(crate) use launch::{LaunchAdmission, LaunchPermit};
 mod handover;
 mod pool;
+#[cfg(unix)]
+mod process_environment;
+
+pub(crate) fn configure(settings: crate::config::ResourceProtection) {
+    pool::Pool::shared().configure(settings);
+}
+
 mod projection;
 mod sampling;
 mod session_sweep;
@@ -103,7 +110,7 @@ pub(crate) struct PreparedDomain {
     cgroup: Option<Arc<cgroup::Domain>>,
     /// Without a cgroup, what every process of the workload inherits, so a
     /// job that detached from its parent is still found.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     marker: Option<String>,
     /// Who launched what, as the watch's first sample finds it: an agent's
     /// unless the workload is an adopted terminal.
@@ -127,7 +134,7 @@ impl PreparedDomain {
         #[cfg(target_os = "linux")]
         let cgroup = pool
             .budget()
-            .and_then(|budget| cgroup::Domain::create(&budget, unit, cap))
+            .and_then(|budget| cgroup::Domain::create(&budget, unit))
             .map(Arc::new);
         #[cfg(target_os = "linux")]
         if cgroup.is_none() {
@@ -142,13 +149,16 @@ impl PreparedDomain {
         }
         #[cfg(target_os = "linux")]
         let marker = cgroup.is_none().then(sampling::new_marker);
+        // Only Linux has cgroups to tell a workload's processes by.
+        #[cfg(all(unix, not(target_os = "linux")))]
+        let marker = Some(sampling::new_marker());
         Self {
             unit: unit.to_string(),
             cap,
             pool,
             #[cfg(target_os = "linux")]
             cgroup,
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             marker,
             submissions: Submissions::new(true),
         }
@@ -163,7 +173,7 @@ impl PreparedDomain {
             pool,
             #[cfg(target_os = "linux")]
             cgroup: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             marker: Some(sampling::new_marker()),
             submissions: Submissions::new(true),
         }
@@ -213,39 +223,64 @@ impl PreparedDomain {
     /// Join before executing the workload, so even its first fork inherits the
     /// domain. Positional arguments preserve the original argv without quoting.
     pub(crate) fn command(&self, program: String, args: Vec<String>) -> (String, Vec<String>) {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
-            // Kernel services may be OOM-protected. Workloads must be killable
-            // by their own controller; inheriting -1000 makes memory.max loop.
-            let admission = match &self.marker {
-                None => {
-                    "printf '%s\\n' \"$$\" > \"$1/cgroup.procs\" || exit 125; shift; exec \"$@\""
-                        .to_string()
-                }
-                Some(marker) => format!(
-                    "export {}; shift; exec \"$@\"",
-                    sampling::marker_entry(marker)
-                ),
-            };
-            let script = format!(
-                "{} {admission}",
-                crate::process_spawn::KILLABLE_SHELL_PREFIX
-            );
             let mut wrapped = vec![
                 "-c".into(),
-                script,
+                self.entry_script(),
                 "chariox-resource-domain".into(),
-                self.cgroup
-                    .as_ref()
-                    .map(|group| group.path().to_string_lossy().into_owned())
-                    .unwrap_or_default(),
+                self.domain_path(),
                 program,
             ];
             wrapped.extend(args);
             ("/bin/sh".into(), wrapped)
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         (program, args)
+    }
+
+    /// What the wrapping shell runs before executing the workload (`$1` is
+    /// the domain path, which it drops).
+    #[cfg(target_os = "linux")]
+    fn entry_script(&self) -> String {
+        // Kernel services may be OOM-protected. Workloads must be killable
+        // by their own controller; inheriting -1000 makes memory.max loop.
+        let admission = match &self.marker {
+            None => "printf '%s\\n' \"$$\" > \"$1/cgroup.procs\" || exit 125; shift; exec \"$@\""
+                .to_string(),
+            Some(marker) => format!(
+                "export {}; shift; exec \"$@\"",
+                sampling::marker_entry(marker)
+            ),
+        };
+        format!(
+            "{} {admission}",
+            crate::process_spawn::KILLABLE_SHELL_PREFIX
+        )
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn entry_script(&self) -> String {
+        let marker = self
+            .marker
+            .as_ref()
+            .expect("a domain without cgroups carries a marker");
+        format!(
+            "export {}; shift; exec \"$@\"",
+            sampling::marker_entry(marker)
+        )
+    }
+
+    #[cfg(unix)]
+    fn domain_path(&self) -> String {
+        #[cfg(target_os = "linux")]
+        return self
+            .cgroup
+            .as_ref()
+            .map(|group| group.path().to_string_lossy().into_owned())
+            .unwrap_or_default();
+        #[cfg(not(target_os = "linux"))]
+        String::new()
     }
 
     pub(crate) fn start(self, pid: u32) -> std::io::Result<ProcessDomain> {
@@ -283,7 +318,7 @@ impl PreparedDomain {
         if let Some(group) = &self.cgroup {
             tree.set_cgroup(group.clone());
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         if let Some(marker) = &self.marker {
             tree.set_marker(marker);
         }
@@ -355,7 +390,9 @@ impl PreparedDomain {
                         Some(group) => group.pids().is_ok_and(|pids| pids.is_empty()),
                         None => tree.left_nothing_running(),
                     };
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(all(unix, not(target_os = "linux")))]
+                let ended = released && samples.is_empty() && tree.left_nothing_running();
+                #[cfg(not(unix))]
                 let ended = released && samples.is_empty();
                 // Rates use the process table's own time: watches share a
                 // cached table, so a tick can see the same table again.
@@ -476,7 +513,11 @@ impl PreparedDomain {
                 #[cfg(not(target_os = "linux"))]
                 let unit_charged = None;
                 self.pool.enforce(&watched, unit_charged);
-                        admit(&tree, &watched);
+                        {
+                            let protection = self.pool.protection();
+                            drop(admission::release_unprotected(std::slice::from_ref(&watched), protection.memory, protection.disk));
+                            admit(&tree, &watched);
+                        }
                         ended
                     }
                     // The kernel is short of descriptors or memory for a
@@ -522,6 +563,8 @@ impl PreparedDomain {
                         limit_bytes,
                         notice,
                     }) => {
+                        let protection = self.pool.protection();
+                        if !protection.memory { continue; }
                         if tree.is_root(pid) {
                             // The workload itself is the command: its owner
                             // reports the typed memory outcome.
@@ -543,6 +586,8 @@ impl PreparedDomain {
                         tree.kill(pid);
                     }
                     Ok(WatchCommand::DiskStop { pid, notice }) => {
+                        let protection = self.pool.protection();
+                        if !protection.disk { continue; }
                         announce(pid, &notice);
                         tell_stopped(&watched, pid, notice);
                         tree.kill(pid);
@@ -574,14 +619,23 @@ impl PreparedDomain {
                                 .get_mut(&command)
                                 .is_some_and(admission::Entry::force)
                         });
-                        admit(&tree, &watched);
+                        {
+                            let protection = self.pool.protection();
+                            drop(admission::release_unprotected(std::slice::from_ref(&watched), protection.memory, protection.disk));
+                            admit(&tree, &watched);
+                        }
                         let _ = reply.send(if started {
                             Ok(vec![process_id])
                         } else {
                             Err("the process is not waiting; refresh Health".into())
                         });
                     }
-                    Ok(WatchCommand::Apply) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Ok(WatchCommand::Apply) => {
+                        let protection = self.pool.protection();
+                        drop(admission::release_unprotected(std::slice::from_ref(&watched), protection.memory, protection.disk));
+                        admit(&tree, &watched);
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
                     _ => {
                         tree.terminate();
                         break;
@@ -660,7 +714,6 @@ fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
                 }),
                 _ => None,
             };
-            entry.stopped = waiting;
             if let Some(change) = change {
                 let process_id = observation
                     .samples
@@ -672,8 +725,10 @@ fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
         }
         (signals, changes)
     };
-    #[cfg(unix)]
+    #[cfg(not(unix))]
+    let _ = tree;
     for (command, waiting) in signals {
+        #[cfg(unix)]
         tree.signal(
             command,
             if waiting {
@@ -682,9 +737,15 @@ fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
                 libc::SIGCONT
             },
         );
+        let mut observation = watched.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = observation.admission.get_mut(&command) {
+            if waiting {
+                entry.stopped = true;
+            } else {
+                entry.continued();
+            }
+        }
     }
-    #[cfg(not(unix))]
-    let _ = (tree, signals);
     for (command, process_id, change, state) in changes {
         let line = match change {
             waits::WaitChange::Began => waits::began_line(&state),

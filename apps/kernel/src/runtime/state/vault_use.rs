@@ -42,6 +42,7 @@ pub(super) struct VaultPayment {
 
 /// One approved card payment, for the task that asked.
 pub(super) struct VaultPaymentGrant {
+    approval_id: String,
     payment: VaultPayment,
     task_id: String,
     pub(super) expires_at: std::time::Instant,
@@ -472,6 +473,34 @@ impl KernelRuntimeState {
             .map(|task| task.task_id)
     }
 
+    /// Private browser authority is re-read on each action, never supplied by a tool caller.
+    pub(super) fn vault_browser_payment_approvals(&self, agent_id: &str) -> Vec<serde_json::Value> {
+        let Ok(agent) = self.owned.agent_store.get_agent(agent_id) else {
+            return Vec::new();
+        };
+        let Some(task) = self.live_vault_task(agent.session_id(), agent_id) else {
+            return Vec::new();
+        };
+        let now = std::time::Instant::now();
+        let wall = crate::session::unix_epoch_ms();
+        self.vault_payment_grants()
+            .iter()
+            .filter(|grant| grant.payment.actor == agent_id && grant.task_id == task && grant.expires_at > now)
+            .filter_map(|grant| {
+                let VaultUseTarget::Site { origin } = &grant.payment.target else {
+                    return None;
+                };
+                Some(serde_json::json!({
+                    "id": grant.approval_id,
+                    "credential_id": grant.payment.credential_id,
+                    "origin": origin,
+                    "claim": grant.payment.claim,
+                    "expires_at_ms": wall.saturating_add(grant.expires_at.saturating_duration_since(now).as_millis() as u64)
+                }))
+            })
+            .collect()
+    }
+
     /// A replaced or deleted card ends the payments approved for it.
     pub(super) fn forget_vault_payment_grants(&self, credential_id: &str) {
         self.vault_payment_grants()
@@ -513,6 +542,7 @@ impl KernelRuntimeOwnedState {
         };
         if resolution.status == "answered" && resolution.choice_id.as_deref() == Some("allow") {
             self.vault_payment_grants().push(VaultPaymentGrant {
+                approval_id: interaction.id().to_owned(),
                 payment,
                 task_id: task_id.to_owned(),
                 expires_at: std::time::Instant::now() + VAULT_PAYMENT_APPROVAL_WINDOW,

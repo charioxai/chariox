@@ -80,6 +80,9 @@ impl KernelGateway {
     /// The one kernel `name` means; unknown and ambiguous are errors. Whether it is
     /// online is found out by talking to it, with a definitive code when it is not.
     pub(super) async fn resolve(&self, name: &str) -> Result<RelayKernelPresence, GatewayError> {
+        if let Some(target) = self.job_targets.get(name) {
+            return Ok(target);
+        }
         if !self.is_self_hosted() {
             return self.directory.resolve(name).await;
         }

@@ -49,6 +49,32 @@ impl SessionService {
         max_turns: Option<usize>,
         fail_on_missing_output: bool,
     ) -> Result<WorkflowCompletionUpdate, DaemonError> {
+        let update = self.apply_workflow_node_run_completion(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+            completion,
+            max_turns,
+            fail_on_missing_output,
+        )?;
+        if update.workflow_run.status().is_terminal() {
+            // Persist the terminal run and its freed endpoint instance together.
+            // A later in-memory release would make notification admission's
+            // durable hot-state comparison fail until an unrelated write.
+            self.release_workflow_runtime_instance_for_run(session_id, workflow_run_id)?;
+        }
+        Ok(update)
+    }
+
+    fn apply_workflow_node_run_completion(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+        completion: Option<WorkflowCompletionSnapshot>,
+        max_turns: Option<usize>,
+        fail_on_missing_output: bool,
+    ) -> Result<WorkflowCompletionUpdate, DaemonError> {
         let context = self.load_workflow_completion_context(
             session_id,
             workflow_run_id,

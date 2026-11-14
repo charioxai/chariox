@@ -30,14 +30,13 @@ test("OF-04 a command waiting for room shows as a queued-job row in its agent's 
   render()
   await harness.renderOnce()
   const rows = harness.captureCharFrame().split("\n").map(row => row.trimEnd())
-  assert.ok(rows.some(row => /Queued waiting for memory, 2nd in line · cargo build --release/.test(row)), rows.join("\n"))
-  // A long command clips its own end, never the place in line.
+  assert.ok(rows.some(row => /Queued cargo build --release · waiting for memory, 2nd in line/.test(row)), rows.join("\n"))
+  // A long command wraps without losing its wait details.
   const long = "cargo build --release --workspace --all-targets --features native-display --target-dir /var/tmp/very/long/target/directory"
   processes = [held(42, 1, long)]
   render()
   await harness.renderOnce()
-  const first = harness.captureCharFrame().split("\n").find(row => row.includes("Queued"))
-  assert.ok(first?.includes("waiting for memory, 1st in line"), first)
+  assert.match(harness.captureCharFrame().replaceAll("\n", " "), /waiting for memory, needs 6 GB/)
   // The command starts: its row leaves the stack.
   processes = [{ ...processes[0]!, state: { kind: "running" } }]
   render()
@@ -45,4 +44,61 @@ test("OF-04 a command waiting for room shows as a queued-job row in its agent's 
   assert.ok(!harness.captureCharFrame().includes("Queued"))
   assert.equal(box.visible, false)
   harness.renderer.destroy()
+})
+
+
+test("OF-22 the queued job stripe shows its rate and invokes VM and Stop actions", async () => {
+  const harness = await createTestRenderer({ width: 140, height: 12, useThread: false })
+  const box = new BoxRenderable(harness.renderer, { width: 140 }); harness.renderer.root.add(box)
+  const store = createInteractionChoiceStoreController(), actions: string[] = []
+  const render = (remote: boolean) => renderAgentInteractionStrips({
+    renderer: harness.renderer, primaryBox: box, auxiliaryBoxes: [], visibleAgents: [{ id: "agent-1" }] as never,
+    maxAgentsPerScreen: 1, focusedAgentId: "agent-1", activeInteractionForAgent: () => null,
+    selectedChoiceIndex: store.selectedChoiceIndex, setSelectedChoiceIndex: store.setSelectedIndex,
+    customReply: store.customReply, customEditing: store.isCustomEditing,
+    queuedPromptStripItemsForAgent: () => [], selectedQueuedPromptIndexForAgent: () => -1, onQueuedPromptAction: () => {}, agentTriggerStripItemsForAgent: () => [],
+    queuedJobsForAgent: () => [{ processId: "j", command: "cargo build", wait: "waiting for memory, 2nd in line", detail: null, remoteAvailable: remote, rate: "≈ $0.04" }],
+    onQueuedJobAction: (job, action) => actions.push(`${job.processId}:${action}`),
+  })
+  try {
+    render(true); await harness.renderOnce()
+    let frame = harness.captureCharFrame()
+    assert.match(frame, /Queued cargo build · waiting for memory, 2nd in line/)
+    assert.match(frame, /≈ \$0.04/)
+    const click = async (label: string) => {
+      const lines = harness.captureCharFrame().split("\n"), y = lines.findIndex(line => line.includes(label)), x = lines[y]!.indexOf(label)
+      assert.ok(x >= 0 && y >= 0, label)
+      await harness.mockMouse.click(x + 2, y)
+      await new Promise(done => setTimeout(done, 10))
+    }
+    await click("[Run on a VM]"); await click("[Stop]")
+    assert.deepEqual(actions, ["j:remote", "j:stop"])
+    render(false); await harness.renderOnce(); frame = harness.captureCharFrame()
+    assert.ok(!frame.includes("$0.04") && !frame.includes("Run on a VM"))
+    assert.ok(frame.includes("[Stop]"))
+  } finally { harness.renderer.destroy() }
+})
+
+test("unchanged work strips keep their renderables and changed queue controls repaint", async () => {
+  const harness = await createTestRenderer({ width: 100, height: 12, useThread: false })
+  const box = new BoxRenderable(harness.renderer, { width: 100 }); harness.renderer.root.add(box)
+  const store = createInteractionChoiceStoreController()
+  let prompt = "queued work"
+  const render = () => renderAgentInteractionStrips({
+    renderer: harness.renderer, primaryBox: box, auxiliaryBoxes: [], visibleAgents: [{ id: "agent-1" }] as never,
+    maxAgentsPerScreen: 1, focusedAgentId: "agent-1", activeInteractionForAgent: () => null,
+    selectedChoiceIndex: store.selectedChoiceIndex, setSelectedChoiceIndex: store.setSelectedIndex,
+    customReply: store.customReply, customEditing: store.isCustomEditing,
+    queuedPromptStripItemsForAgent: () => [{ promptId: "q", agentId: "agent-1", prompt, status: "queued", canCancel: true, canSteer: true }] as never,
+    selectedQueuedPromptIndexForAgent: () => 0, onQueuedPromptAction: () => {}, agentTriggerStripItemsForAgent: () => [],
+  })
+  try {
+    render(); await harness.renderOnce()
+    const children = box.getChildren()
+    render(); await harness.renderOnce()
+    assert.equal(box.getChildren().every((child, index) => child === children[index]), true, "unchanged work does not rebuild the strip")
+    prompt = "edited work"; render(); await harness.renderOnce()
+    assert.match(harness.captureCharFrame(), /edited work/)
+    assert.ok(!harness.captureCharFrame().includes("queued work"))
+  } finally { harness.renderer.destroy() }
 })

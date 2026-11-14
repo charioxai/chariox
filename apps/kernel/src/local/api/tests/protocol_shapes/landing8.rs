@@ -1,4 +1,4 @@
-//! MP-08 / MP-09 / MP-10 / MP-11: the shapes a client at local 1003 / relay peer 442 reads, from the
+//! MP-08 / MP-09 / MP-10 / MP-11: the Landing 8 shapes at the current local / relay pair, from the
 //! fixture the kernel-client test reads too (`landing8-protocol.test.ts`).
 use super::*;
 use crate::transport::relay_peer::{RelayPeerRequest, RELAY_PEER_PROTOCOL_VERSION};
@@ -39,7 +39,7 @@ fn landing8_1003_442_shapes_round_trip() {
     for wire in fixture["retiredRequests"].as_array().unwrap() {
         assert!(
             serde_json::from_value::<LocalDaemonRequest>(wire.clone()).is_err(),
-            "{wire} is gone at 1003"
+            "{wire} is retired"
         );
     }
 }

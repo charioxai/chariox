@@ -411,21 +411,20 @@ async fn room_boundaries() {
     };
     let grandchild = room_command(&router, &auth_b, "agent spawn d --provider dev-stub").await;
     assert!(grandchild.ok, "grandchild admission: {grandchild:?}");
-    // A01-S03: control is subtree membership at any depth, so the grandparent
-    // may rename d; a peer outside the subtree stays out of reach.
-    for command in ["agent delete peer", "agent focus peer"] {
+    // A peer outside the subtree stays out of reach, and a rename or delete
+    // needs a direct child: the grandparent may not rename d, its parent may.
+    for command in [
+        "agent delete peer",
+        "agent focus peer",
+        "agent alias d by-grandparent",
+    ] {
         assert!(
             !room_command(&router, &auth_a, command).await.ok,
             "{command}"
         );
     }
     assert!(
-        room_command(&router, &auth_a, "agent alias d by-grandparent")
-            .await
-            .ok
-    );
-    assert!(
-        room_command(&router, &auth_b, "agent alias by-grandparent direct-child")
+        room_command(&router, &auth_b, "agent alias d direct-child")
             .await
             .ok
     );
@@ -1440,8 +1439,7 @@ async fn room_notification_subscription() {
             session.id(),
             peer.id(),
             &owner,
-            60,
-            crate::session::AgentTriggerRepeat::Every,
+            crate::session::AgentSchedule::interval(60, crate::session::AgentTriggerRepeat::Every),
             crate::session::AgentTriggerBusyPolicy::Queue,
             None,
         )
@@ -1675,4 +1673,135 @@ async fn teardown_with_tools_off() {
             "{value} reached its handler"
         );
     }
+}
+
+// L10-RECURRING-SCHEDULE: an agent sets up its own heartbeat as one recurring schedule trigger.
+#[test]
+fn room_admission_agent_sets_up_its_own_recurring_schedule() {
+    run_large_stack_async_test("room-own-schedule", room_own_schedule);
+}
+
+async fn room_own_schedule() {
+    let env = TestMetaRuntimeEnv::new("room-own-schedule");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, a) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let peer = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("peer"))
+        .unwrap();
+    let auth = launch_test_provider(
+        &mut app,
+        session.id(),
+        a.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    )
+    .runtime_mcp_auth_token()
+    .unwrap()
+    .to_string();
+    let prompt_owner = app.prompt_state_owner();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let triggers = |agent: String| {
+        let app = Arc::clone(&app);
+        let room = session.id().to_string();
+        async move {
+            app.lock()
+                .await
+                .sessions()
+                .get_session(&room)
+                .unwrap()
+                .agent_triggers()
+                .iter()
+                .filter(|t| t.agent_id() == agent)
+                .cloned()
+                .collect::<Vec<_>>()
+        }
+    };
+
+    let every = room_command(
+        &router,
+        &auth,
+        "trigger add schedule --every 2m --prompt 'Heartbeat: check the build'",
+    )
+    .await;
+    assert!(every.ok, "{:?}", every.payload);
+    assert_eq!(every.payload["response"]["type"], "AgentTriggerCreated");
+    let cron = room_command(
+        &router,
+        &auth,
+        "trigger add schedule --cron '0 */5 * * * *' --timezone Europe/Berlin",
+    )
+    .await;
+    assert!(cron.ok, "{:?}", cron.payload);
+    let own = triggers(a.id().to_string()).await;
+    assert_eq!(own.len(), 2);
+    let heartbeat = serde_json::to_value(&own[0]).unwrap();
+    assert_eq!(heartbeat["prompt"], "Heartbeat: check the build");
+    assert_eq!(
+        heartbeat["source"],
+        serde_json::json!({
+            "kind": "schedule", "trigger": {"kind": "interval", "every_seconds": 120},
+            "repeat": "every", "overlap_policy": "skip",
+            "next_run_at_ms": own[0].next_run_at_ms(),
+        }),
+        "until it is deleted: no max runs"
+    );
+    assert_eq!(
+        serde_json::to_value(&own[1]).unwrap()["source"]["trigger"],
+        serde_json::json!({"kind": "cron", "expression": "0 */5 * * * *", "timezone": "Europe/Berlin"})
+    );
+    assert!(triggers(peer.id().to_string()).await.is_empty());
+
+    for refused in [
+        "trigger add schedule --every 0m",
+        "trigger add schedule --every 2x",
+        "trigger add schedule --cron '0 9 * * *'",
+        "trigger add schedule --cron '0 0 9 * * *' --timezone Mars/Olympus",
+        "trigger add schedule --every 2m --cron '0 0 9 * * *'",
+        "trigger add schedule --every 2m --agent peer",
+        "trigger add schedule",
+        "trigger add http",
+    ] {
+        let result = room_command(&router, &auth, refused).await;
+        assert!(!result.ok, "{refused}: {:?}", result.payload);
+    }
+    assert_eq!(triggers(a.id().to_string()).await.len(), 2);
+
+    let listed = room_command(&router, &auth, "trigger list").await;
+    assert!(listed.ok, "{:?}", listed.payload);
+    let rows = listed.payload["response"]["triggers"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["id"], own[0].id());
+    assert_eq!(rows[0]["schedule"], "every 120s");
+    assert_eq!(rows[1]["schedule"], "0 */5 * * * * · Europe/Berlin");
+
+    // Each firing is one prompt of the agent that set it up, queued behind its running turn.
+    router
+        .runtime_state()
+        .fire_due_agent_triggers(own[0].next_run_at_ms())
+        .await;
+    let (active, queued) = prompt_owner.state_parts(&session, a.id());
+    let firings = active
+        .iter()
+        .chain(queued.iter())
+        .filter(|prompt| prompt.agent_trigger_id() == Some(own[0].id()))
+        .count();
+    assert_eq!(firings, 1);
+    assert!(prompt_owner.state_parts(&session, peer.id()).1.is_empty());
+
+    let removed = room_command(&router, &auth, &format!("trigger remove {}", own[0].id())).await;
+    assert!(removed.ok, "{:?}", removed.payload);
+    let left = triggers(a.id().to_string()).await;
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].id(), own[1].id());
 }

@@ -141,6 +141,18 @@ impl KernelRuntimeState {
             .record_heartbeat(session_id, attachment_id, now_ms)
     }
 
+    /// The heartbeat of the subscription an attachment is watched through: it expires with that subscription.
+    pub(crate) async fn record_subscription_attachment_heartbeat(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        self.owned
+            .attachment_store
+            .record_subscription_heartbeat(session_id, attachment_id, now_ms)
+    }
+
     pub(crate) async fn sweep_stale_terminal_attachments(&self, now_ms: u64) {
         let stale_attachment_ids = self
             .owned
@@ -434,9 +446,16 @@ impl KernelRuntimeState {
             );
             self.hand_over_reach_revocations();
         }
+        crate::shutdown::stage("Files transfers and records");
+        self.peer_file_watches.shutdown();
+        let files = self.file_transfers.clone();
+        let files_shutdown = tokio::spawn(async move { files.shutdown().await });
+        crate::shutdown::stage("room execs");
         self.owned.room_execs.shutdown();
+        crate::shutdown::stage("room terminals");
         self.owned.room_terminals.shutdown();
         // A hot reload keeps what workloads left running: the next program owns it.
+        crate::shutdown::stage("released processes");
         if !crate::hot_reload::handing_over() {
             tokio::task::spawn_blocking(|| {
                 crate::runtime::process_resources::end_owner(None, None)
@@ -452,6 +471,7 @@ impl KernelRuntimeState {
             self.app_control().views().forget_session(&id);
             self.app_control().views().keep_pumping(&id);
         }
+        crate::shutdown::stage("kernel browser");
         let browser_host = self.owned.kernel_browser_host.clone();
         let browser_result = tokio::task::spawn_blocking(move || browser_host.shutdown())
             .await
@@ -465,14 +485,17 @@ impl KernelRuntimeState {
                     message,
                 })
             });
+        crate::shutdown::stage("watched processes");
         let wakes = self.owned.agent_wakes.clone();
         let _ = tokio::task::spawn_blocking(move || wakes.processes.shutdown()).await;
+        crate::shutdown::stage("session interactions");
         let sessions = self.owned.session_store.read().list_sessions();
         for session in sessions {
             self.owned
                 .withdraw_agent_interactions_for_shutdown(session.id())?;
         }
         {
+            crate::shutdown::stage("App publishers");
             let publishers = self.app_control().publishers().clone();
             let runtime = tokio::runtime::Handle::current();
             tokio::task::spawn_blocking(move || publishers.shutdown_blocking(runtime))
@@ -484,6 +507,7 @@ impl KernelRuntimeState {
         }
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         {
+            crate::shutdown::stage("App installations");
             let installs = self.app_control().installs().clone();
             let dev_push = self.app_control().dev_push().clone();
             let runtime = tokio::runtime::Handle::current();
@@ -500,6 +524,7 @@ impl KernelRuntimeState {
         self.owned.sweep_kernel_operation_interactions(true);
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         {
+            crate::shutdown::stage("App workers");
             let lifecycle = self.app_control().lifecycle().clone();
             // The blocking owner survives cancellation of this await and keeps
             // every worker/broker lease until actual shutdown finishes.
@@ -515,11 +540,25 @@ impl KernelRuntimeState {
                         .into(),
                 })?;
         }
+        crate::shutdown::stage("browser controller");
         let controller_result = self.shutdown_browser_controller_process().await;
+        crate::shutdown::stage("provider sessions");
         let app_result = self
             .with_app_side_effect(|app| app.shutdown_cleanup())
             .await;
+        crate::shutdown::stage("provider history");
         let history_result = self.provider_history_appends.flush_all().await;
+        crate::shutdown::stage("Files transfer records");
+        files_shutdown
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "file_transfer.shutdown",
+                message: error.to_string(),
+            })?
+            .map_err(|message| DaemonError::LocalTransport {
+                operation: "file_transfer.shutdown",
+                message,
+            })?;
         browser_result?;
         controller_result?;
         app_result?;
@@ -539,11 +578,13 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
     ) -> Vec<crate::runtime::process_resources::SessionProcess> {
-        crate::runtime::process_resources::for_session(
+        let mut rows = crate::runtime::process_resources::for_session(
             session_id,
             &self.owned.provider_store,
             &self.owned.room_terminals,
-        )
+        );
+        rows.extend(self.queued_job_processes(session_id));
+        rows
     }
 
     fn session_snapshot_projection_for_user(
@@ -565,6 +606,7 @@ impl KernelRuntimeState {
         let agent_activity =
             self.agent_activity_for_session_with_unread(&session, unread_for_user_id);
         Ok(crate::runtime::projection::SessionSnapshotProjection {
+            jobs: self.session_jobs(session_id),
             disk_usage: self.session_disk_usage(session_id),
             processes: self.session_processes(session_id),
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(

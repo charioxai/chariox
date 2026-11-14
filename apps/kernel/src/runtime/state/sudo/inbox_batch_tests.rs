@@ -526,3 +526,97 @@ async fn the_wake_cursor_starts_before_a_held_message_beyond_the_first_page() {
         held.sequence
     );
 }
+
+// A peer follow outlives the turn that created it. The task id on its event
+// identifies that subscription, rather than work whose wake became obsolete.
+#[tokio::test]
+async fn peer_completions_pending_at_or_after_the_followers_turn_end_make_one_wake() {
+    for arrive_after_end in [false, true] {
+        let f = fixture_with_options(None, true);
+        let (room, agent) = ids(&f);
+        let store = &f.state.owned.durable_state_store;
+        let prompt = "follow-turn";
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: "local".into(),
+                room: room.clone(),
+                agent: agent.clone(),
+                prompt: prompt.into(),
+                run: Some(f.run.id().into()),
+                now: 1,
+            })
+            .unwrap();
+        for source in ["peer-a", "peer-b", "peer-c"] {
+            store
+                .agent_lifecycle(Operation::Subscribe {
+                    task: prompt.into(),
+                    prompt: prompt.into(),
+                    registration: ledger::Registration {
+                        id: format!("follow-{source}"),
+                        task_id: prompt.into(),
+                        source_id: source.into(),
+                        obligation_id: None,
+                        source_cursor: 0,
+                        live: true,
+                        peer: true,
+                    },
+                })
+                .unwrap();
+        }
+        let finish_peers = || {
+            for source in ["peer-a", "peer-b", "peer-c"] {
+                store
+                    .agent_lifecycle(Operation::SourceOutcome {
+                        room: "peer-room".into(),
+                        source: source.into(),
+                        occurrence: format!("completed-{source}"),
+                        success: true,
+                        public_answer: None,
+                        now: 2,
+                    })
+                    .unwrap();
+            }
+        };
+        if !arrive_after_end {
+            finish_peers();
+        }
+        store
+            .agent_lifecycle(Operation::Settle {
+                room: room.clone(),
+                agent: agent.clone(),
+                prompt: prompt.into(),
+                run: f.run.id().into(),
+                has_answer: true,
+                cancelled: false,
+                now: 3,
+            })
+            .unwrap();
+        if arrive_after_end {
+            finish_peers();
+        }
+        assert_eq!(rows(&f).len(), 3);
+        f.state.deliver_agent_inbox(&room, &agent).await.unwrap();
+        let wake =
+            active_prompt(&f).expect("a finished subscriber turn does not retire peer events");
+        assert!(wake.prompt().contains("3 peer event"), "{}", wake.prompt());
+        let batch = store
+            .agent_events_for_prompt(&room, &agent, wake.id())
+            .unwrap();
+        assert_eq!(batch.len(), 3);
+        let read = f
+            .state
+            .read_agent_inbox(&room, &agent, &serde_json::json!({"after": 0}))
+            .unwrap();
+        assert_eq!(read["events"].as_array().unwrap().len(), 3);
+        f.state
+            .ack_agent_inbox(
+                &room,
+                &agent,
+                &serde_json::json!({"through": batch[2].sequence, "handled": true}),
+                4,
+            )
+            .await
+            .unwrap();
+        assert!(rows(&f).iter().all(|e| e.state == "handled"));
+    }
+}

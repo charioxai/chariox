@@ -38,6 +38,8 @@ Use `/provider accounts import-native <provider>` to register the kernel host's 
 
 Chariox does not ask for a login the machine already has, and it does not keep a second copy of one. When the kernel starts, and again when a client opens the waiting room (at most once a minute), it looks for the installed `codex`, `claude` and `opencode` CLIs (on `PATH` and in the usual user install directories such as `~/.local/bin` and `~/.opencode/bin`) and asks each CLI about the machine-level login of the default profile. A valid login marks the profile authenticated with its identity, the model catalog is rebuilt and warmed, and every client is told, so the first model picker already lists models.
 
+Automatic catalog warm-up skips default-origin profiles until they are authenticated. An explicit provider or account catalog request still starts its server on demand. Codex discovery leaves an empty native default unprobed until its native login file exists, so an idle kernel does not keep an unauthenticated app-server alive. A later discovery can find a new CLI login.
+
 The default profile points at the provider-native location in place. A second kernel of the same OS user therefore finds the same logins at its first start with no step for the user. Two further kinds of provider-native location are registered the same way, once per kernel and only when the CLI reports a valid login for an account no profile has yet:
 
 - roots a kernel of this OS user linked with `LinkProviderAccountProfile` outside its own home (the paths, never credentials, are listed in `~/.config/chariox/provider-locations.json`);

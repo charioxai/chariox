@@ -202,10 +202,10 @@ test("upload staging is included in the slice image, recovery overlay and native
   const name = "browser-controller-upload-staging.mjs";
   const dockerfile = await readFile(new URL("./Dockerfile", import.meta.url), "utf8");
   const provisioner = await readFile(new URL("../provision-linux-docker-slice.sh", import.meta.url), "utf8");
-  const packager = await readFile(new URL("../../../../scripts/package-managed-kernel-release.mjs", import.meta.url), "utf8");
+  const roots = await readFile(new URL("../runtime-source-roots.txt", import.meta.url), "utf8");
   assert.ok(dockerfile.includes(`docker/${name} /opt/chariox-slice/${name}`));
   assert.ok(provisioner.includes(`docker/${name}" "$SLICE_NAME:/opt/chariox-slice/${name}"`));
-  assert.match(packager, /const SLICE_BUILD_CONTEXT_SOURCES = \[[\s\S]*?"apps\/kernel"/);
+  assert.ok(roots.split("\n").includes("apps/kernel"));
   for (const helper of ["browser-lifecycle.py", "browser-upload-store.py"]) {
     assert.ok(dockerfile.includes(`docker/${helper} /opt/chariox-slice/${helper}`));
     assert.ok(provisioner.includes(`docker/${helper}" "$SLICE_NAME:/opt/chariox-slice/${helper}"`));

@@ -4,7 +4,7 @@ import { createEffect, onCleanup } from "solid-js"
 import { captureTranscriptFrame, type CachedTranscriptFrame } from "./client-view-frame.js"
 import type { LocalIpcClient } from "./ipc.js"
 import type { RuntimeSession, TranscriptEntry } from "./cli-types.js"
-import { cliViewScope, cliViewClient, clientViewEpoch, writeClientView } from "./client-view-cache.js"
+import { cliViewScope, cliViewClient, cliViewClientEndpoint, clientViewEpoch, writeClientView } from "./client-view-cache.js"
 
 export function createCliViewPersistence(deps: {
   client: LocalIpcClient
@@ -17,7 +17,7 @@ export function createCliViewPersistence(deps: {
   attached(): boolean
 }): void {
   let timer: ReturnType<typeof setTimeout> | undefined
-  let save: ((frame: CachedTranscriptFrame) => void) | undefined
+  let save: ((frame: CachedTranscriptFrame | undefined) => void) | undefined
   let previous = "", revision = 0, latestBuffer: OptimizedBuffer | undefined
   const sample = (buffer: OptimizedBuffer) => {
     latestBuffer = buffer
@@ -29,10 +29,10 @@ export function createCliViewPersistence(deps: {
       if (requestedRevision !== revision || !save || !viewport || !latestBuffer || deps.covered()) return
       // Read the most recently composed buffer between frames. In particular,
       // asynchronous Markdown formatting can finish after the first mounted row.
+      // Without a picture of its rows (none drawn yet, or the capture failed) the view is still remembered by its entries.
       let frame: CachedTranscriptFrame | undefined
-      try { frame = captureTranscriptFrame(latestBuffer, viewport) } catch { return }
-      if (!frame) return
-      const identity = JSON.stringify(frame)
+      try { frame = captureTranscriptFrame(latestBuffer, viewport) } catch { frame = undefined }
+      const identity = JSON.stringify(frame ?? null)
       if (identity === previous) return
       previous = identity
       save(frame)
@@ -52,8 +52,9 @@ export function createCliViewPersistence(deps: {
       const scope = await cliViewScope(viewClient)
       if (capturedRevision !== revision || !scope || cliViewClient(deps.client) !== viewClient
         || generation !== clientViewEpoch() || deps.session().id !== session.id || deps.agentId() !== agentId) return
+      const endpoint = cliViewClientEndpoint(viewClient)
       await writeClientView({ scope, sessionId: session.id, agentId, alias: session.alias ?? session.id,
-        sequence, savedAt: Date.now(), entries: presentation, frame })
+        sequence, savedAt: Date.now(), entries: presentation, ...(endpoint ? { endpoint } : {}), ...(frame ? { frame } : {}) })
     })() }
     deps.renderer.requestRender()
   })

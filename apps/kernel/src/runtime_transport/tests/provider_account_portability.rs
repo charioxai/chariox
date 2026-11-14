@@ -2,7 +2,7 @@
 //! ordinary kernel router and provider-native export with synthetic credentials.
 use super::*;
 use crate::config::PersistedCloudRelayProfile;
-use crate::local::ManagedEnvironmentProviderAccountSelection;
+use crate::local::ProviderAccountTransferProfile;
 
 #[test]
 fn provider_account_portability_websocket_drill() {
@@ -64,7 +64,7 @@ fn provider_account_portability_websocket_drill() {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, bytes).unwrap();
             paths.push(path);
-            accounts.push(ManagedEnvironmentProviderAccountSelection {provider: provider.into(), account_profile: profile.profile_id});
+            accounts.push(ProviderAccountTransferProfile {provider: provider.into(), account_profile: profile.profile_id});
         }
         let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(Arc::new(Mutex::new(app)), 16));
         let (stop, stopped) = oneshot::channel();

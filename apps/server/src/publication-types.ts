@@ -3,30 +3,9 @@ import type {
   WorkflowPublicationDeploymentNetworkDestination,
 } from "@chariox/kernel-client/workflow-publication-deployment-contract"
 
-export type ParserKind =
-  | "json"
-  | "query_params"
-  | "headers"
-  | "regex"
-  | "path_template"
-  | "webhook"
-  | "custom_command"
+import type { GatewayRequest, InputSchema, ParserConfig, ParserKind } from "@chariox/agent-trigger-gateway/publication-parser"
 
-export type ParserConfig = {
-  kind: ParserKind
-  source?: "body" | "path" | "query" | "headers" | "request"
-  pattern?: string
-  template?: string
-  command?: string
-  args?: string[]
-}
-
-export type InputSchema = {
-  type?: "object"
-  required?: string[]
-  properties?: Record<string, { type?: "string" | "integer" | "number" | "boolean" | "object" | "array" }>
-  additionalProperties?: boolean
-}
+export type { GatewayRequest, InputSchema, ParserConfig, ParserKind }
 
 export type TlsConfig = {
   enabled?: boolean
@@ -372,12 +351,4 @@ export type KernelLookupClient = {
   close?: () => Promise<void>
 }
 
-export type GatewayRequest = {
-  method: string
-  url: string
-  headers: Record<string, string | string[] | undefined>
-  body?: unknown
-  query?: unknown
-  raw: unknown
-}
 import type { WorkflowPublicationSnapshot as KernelWorkflowPublicationSnapshot } from "@chariox/kernel-client/kernel-types"

@@ -124,7 +124,7 @@ for (const {action, kind, nonowner, rejectAt} of cloudCommandCases) {
         "/collaborators/recent": {collaborators: [{userId: "friend", email: "friend@example.test", sharedSessionCount: 2}]},
       }
       assert.ok(url.pathname in results, "expected client control-plane route")
-      if (url.pathname === "/sessions/invites") {assert.equal(body.sessionId, session.id); assert.equal(body.collaborationLevel, "full")}
+      if (url.pathname === "/sessions/invites") {assert.equal(body.sessionId, session.id); assert.equal(body.collaborationLevel, "full"); assert.equal(body.kernelId, "kernel")}
       if (init?.method !== "POST") assert.equal(url.searchParams.get("accountId"), profile.accountId)
       if (rejectAt === "cloud") return new Response(JSON.stringify({error: {code: "collaboration_denied"}}), {status: 403})
       return new Response(JSON.stringify(results[url.pathname]), {status: 200})
@@ -135,6 +135,8 @@ for (const {action, kind, nonowner, rejectAt} of cloudCommandCases) {
         if (nonowner) throw new Error("CloudRelayStatus requires the kernel owner")
         return {CloudRelayStatus: {profile: {api_url: profile.apiUrl, account_id: "account", kernel_id: "kernel", kernel_enrolled: true}}}
       }
+      // Cloud records the Room's actual kernel, which the terminal reads from the kernel it is connected to.
+      if (variant === "RelayStatus") return {RelayStatus: {status: {daemon_id: "kernel"}}}
       if (variant === "CreateSessionInvite") return {SessionInviteCreated: {session, invite: {invite_token: "local-invite-token", invite: {invite_id: "local-invite"}}}}
       if (variant === "JoinSessionInvite") {
         assert.equal(request.JoinSessionInvite.user_id, profile.userId)

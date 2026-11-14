@@ -388,24 +388,19 @@ async fn a_call_that_is_still_running_does_not_end_the_hold_at_a_completed_turn(
 }
 
 #[tokio::test]
-async fn a_call_that_never_ends_releases_a_child_without_a_deadline_after_half_an_hour() {
-    let team = child_with_a_call_running("background-hold-limit").await;
-    team.runtime
+async fn a_running_call_has_no_implicit_deadline() {
+    let team = child_with_a_call_running("background-hold-no-limit").await;
+    assert!(!team
+        .runtime
         .owned
-        .background_holds
-        .held_since_for_test(&team.task.task_id, 1);
+        .held_task_due(
+            &team.task,
+            crate::session::unix_epoch_ms() + 120 * MINUTE_MS,
+        )
+        .unwrap());
     sweep(&team).await;
-    let events = child_finished(&team);
-    assert_eq!(events.len(), 1, "{events:?}");
-    assert_eq!(events[0].payload["success"], true);
-    let excerpt = events[0].payload["public_answer"]["excerpt"]
-        .as_str()
-        .unwrap();
-    assert!(excerpt.contains("started the server"), "{excerpt}");
-    assert!(
-        excerpt.contains("background command was still running"),
-        "{excerpt}"
-    );
+    assert!(working(&team));
+    assert!(child_finished(&team).is_empty());
 }
 
 #[tokio::test]
@@ -418,15 +413,15 @@ async fn a_deadline_keeps_the_hold_until_it_fires_and_then_says_the_call_still_r
         .agent_lifecycle(Operation::SetDeadline {
             room: team.room.clone(),
             agent: team.child.clone(),
-            deadline: deadline_ms,
+            deadline: Some(deadline_ms),
+            inherited: Vec::new(),
         })
         .unwrap();
-    team.runtime
-        .owned
-        .background_holds
-        .held_since_for_test(&team.task.task_id, 1);
     sweep(&team).await;
-    assert!(working(&team), "the deadline decides, not the half hour");
+    assert!(
+        working(&team),
+        "the explicit deadline keeps the task until it fires"
+    );
     assert!(child_finished(&team).is_empty());
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -442,4 +437,368 @@ async fn a_deadline_keeps_the_hold_until_it_fires_and_then_says_the_call_still_r
         .as_str()
         .unwrap()
         .contains("background command was still running"));
+}
+
+#[tokio::test]
+async fn kwait_native_helpers_keep_the_child_working_through_interim_notifications() {
+    let team = team_with("kwait-native-helper", None, false).await;
+    let dir = std::env::temp_dir().join(format!("kwait-native-helper-{}", std::process::id()));
+    let run = native_child(&team, &dir).await;
+    let transcript = dir.join("session.jsonl");
+    let lines = vec![
+        serde_json::json!({"type":"assistant", "uuid":"helper-start", "message":{"content":[{
+            "type":"tool_use", "id":"helper", "name":"Agent", "input":{"prompt":"Inspect the project", "run_in_background":true}
+        }]}}),
+        serde_json::json!({"type":"user", "uuid":"helper-launched", "message":{"content":[{
+            "type":"tool_result", "tool_use_id":"helper", "content":"Async agent launched successfully. agentId: a123"
+        }]}, "toolUseResult":{"isAsync":true,"agentId":"a123"}}),
+        serde_json::json!({"type":"assistant", "uuid":"interim-answer", "message":{"content":[{"type":"text","text":"My helper is still inspecting."}]}}),
+    ];
+    read_native_transcript(&team, &run, &transcript, &lines).await;
+    team.runtime
+        .flush_provider_history(&team.child_run)
+        .await
+        .unwrap();
+    team.runtime
+        .owned
+        .complete_local_prompt_without_advance(&team.room, &team.child, Some(&team.child_run))
+        .unwrap();
+    let settlement = team
+        .runtime
+        .owned
+        .settle_agent_task(
+            &team.room,
+            &team.child,
+            &team.child_prompt,
+            &team.child_run,
+            false,
+        )
+        .unwrap();
+    assert!(
+        settlement.is_none(),
+        "a provider helper still runs: {settlement:?}"
+    );
+    assert!(working(&team));
+    assert!(child_finished(&team).is_empty());
+    let mut lines = lines;
+    lines.push(serde_json::json!({"type":"user","uuid":"helper-progress", "message":{"content":
+        "<task-notification><task-id>a123</task-id><tool-use-id>helper</tool-use-id><status>running</status><summary>Still inspecting</summary></task-notification>"}}));
+    read_native_transcript(&team, &run, &transcript, &lines).await;
+    team.runtime
+        .flush_provider_history(&team.child_run)
+        .await
+        .unwrap();
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, false)
+        .await
+        .unwrap();
+    assert!(
+        working(&team),
+        "an interim notification cannot finish the child"
+    );
+    assert!(child_finished(&team).is_empty());
+    lines.push(serde_json::json!({"type":"user","uuid":"helper-done", "message":{"content":
+        "<task-notification><task-id>a123</task-id><tool-use-id>helper</tool-use-id><status>completed</status><summary>Inspection complete</summary></task-notification>"}}));
+    lines.push(serde_json::json!({"type":"assistant","uuid":"final-answer", "message":{"content":[{"type":"text","text":"The helper completed its inspection."}]}}));
+    read_native_transcript(&team, &run, &transcript, &lines).await;
+    team.runtime
+        .flush_provider_history(&team.child_run)
+        .await
+        .unwrap();
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, false)
+        .await
+        .unwrap();
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(events[0].payload["public_answer"]["excerpt"]
+        .as_str()
+        .unwrap()
+        .contains("helper completed"));
+    let child_run = team.child_run.clone();
+    team.runtime
+        .with_app_side_effect(move |app| {
+            let _ = app.pty_mut().remove_process(&child_run);
+        })
+        .await;
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn kwait_held_background_work_keeps_the_provider_in_the_output_pump() {
+    let team = child_with_a_call_running("kwait-held-output-pump").await;
+    let owned = &team.runtime.owned;
+    let session = owned.session_store.get_session(&team.room).unwrap();
+    assert!(owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &team.child)
+        .is_none());
+    assert!(
+        !owned
+            .git_turn_snapshots
+            .provider_run_ids_for_session(&team.room)
+            .contains(&team.child_run),
+        "the fixture must exercise held work, not a pending snapshot"
+    );
+    let run = owned.provider_store.get_run(&team.child_run).unwrap();
+    assert!(run.client_interface().is_chariox());
+    assert!(!crate::provider::provider_run_uses_claude_native_bridge(
+        &run
+    ));
+    let selected = super::super::provider_output_runtime::provider_run_ids_for_owned_output_pump(
+        owned, &session,
+    );
+    assert!(
+        selected.contains(&team.child_run),
+        "the held child's completion frames must still be drained: {selected:?}"
+    );
+    apply(
+        &team,
+        vec![
+            ended_at(crate::session::unix_epoch_ms()),
+            text_chunk("the background work completed"),
+        ],
+    )
+    .await;
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, false)
+        .await
+        .unwrap();
+    assert!(!team
+        .runtime
+        .owned
+        .is_held_for_background_calls(&team.task.task_id));
+}
+
+#[tokio::test]
+async fn kwait_parked_background_work_is_selected_and_resumed_by_both_output_pumps() {
+    for structured in [false, true] {
+        let team = child_with_a_call_running(&format!("kwait-parked-output-{structured}")).await;
+        let owned = &team.runtime.owned;
+        let parked = owned
+            .provider_store
+            .park_run_provider_only(&team.room, &team.child_run)
+            .unwrap()
+            .into_run();
+        owned.provider_run_projection.update(parked);
+        let session = owned.session_store.get_session(&team.room).unwrap();
+        let selected =
+            super::super::provider_output_runtime::provider_run_ids_for_owned_output_pump(
+                owned, &session,
+            );
+        assert!(selected.contains(&team.child_run));
+        if structured {
+            team.runtime
+                .pump_owned_structured_provider_output(&team.room, &team.child_run, Vec::new())
+                .await
+                .unwrap();
+        } else {
+            team.runtime
+                .pump_owned_provider_output(&team.room, &team.child_run, Vec::new(), false)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            owned
+                .provider_store
+                .get_run(&team.child_run)
+                .unwrap()
+                .state(),
+            crate::provider::ProviderRunState::Running,
+            "parked background work still needs output polling"
+        );
+        assert!(owned.is_held_for_background_calls(&team.task.task_id));
+        apply(
+            &team,
+            vec![
+                ended_at(crate::session::unix_epoch_ms()),
+                text_chunk("the parked background work completed"),
+            ],
+        )
+        .await;
+        team.runtime
+            .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, false)
+            .await
+            .unwrap();
+        assert!(!owned.is_held_for_background_calls(&team.task.task_id));
+    }
+}
+
+#[tokio::test]
+async fn a_long_running_background_job_stays_working_after_a_message_turn() {
+    let team = child_with_a_call_running("background-hold-long-message").await;
+    let message = crate::session::PromptQueueItem::new(
+        "housekeeping-message",
+        "message-attachment",
+        &team.child,
+        "Report status and keep the original job running",
+        crate::session::PromptStatus::Completed,
+    );
+    team.runtime
+        .owned
+        .ensure_agent_task(&team.room, &team.child, &message, Some(&team.child_run))
+        .unwrap();
+    team.runtime
+        .owned
+        .settle_agent_task(&team.room, &team.child, &message, &team.child_run, false)
+        .unwrap();
+    assert!(
+        !team
+            .runtime
+            .owned
+            .held_task_due(
+                &team.task,
+                crate::session::unix_epoch_ms() + 120 * MINUTE_MS,
+            )
+            .unwrap(),
+        "a live command has no implicit half-hour deadline",
+    );
+    sweep(&team).await;
+    assert!(
+        working(&team),
+        "a status message cannot finish the original background job"
+    );
+    assert!(child_finished(&team)
+        .iter()
+        .all(|event| { event.payload["child_task_id"] != team.task.task_id }));
+}
+
+async fn status_message(team: &Team, reply: bool) -> String {
+    let mut event = crate::durable_state::agent_lifecycle::occurrence(
+        &team.room,
+        &team.child,
+        &team.parent,
+        "status-message",
+        "message",
+        serde_json::json!({"message": "Report status; keep the original job running"}),
+    );
+    event.reply_requested = reply;
+    team.runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Occur(event))
+        .unwrap();
+    team.runtime
+        .deliver_agent_inbox_for_test(&team.room, &team.child)
+        .await
+        .unwrap();
+    let event = team
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_inbox(&team.room, &team.child, 0)
+        .unwrap()
+        .remove(0);
+    event.prompt_id.expect("message starts its own turn")
+}
+
+#[tokio::test]
+async fn a_message_reply_does_not_wait_for_an_earlier_tasks_background_command() {
+    let team = child_with_a_call_running("background-hold-message-reply").await;
+    let prompt = status_message(&team, true).await;
+    apply(
+        &team,
+        vec![text_chunk("The original command is still running")],
+    )
+    .await;
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, true)
+        .await
+        .unwrap();
+    let reply = team
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_turn_task(&team.room, &team.child, &prompt)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reply.state,
+        ExecutionState::Done,
+        "a reply does not own the earlier command"
+    );
+    assert!(
+        working(&team),
+        "the message reply preserves the original job"
+    );
+}
+
+#[tokio::test]
+async fn a_status_message_is_not_the_background_completion_notification() {
+    let team = child_with_a_call_running("background-hold-message-notification").await;
+    status_message(&team, false).await;
+    apply(
+        &team,
+        vec![text_chunk("The original command is still running")],
+    )
+    .await;
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, true)
+        .await
+        .unwrap();
+    // No completion notification followed the call's end. The unrelated status reply must not
+    // suppress the normal grace-period recovery of the original task.
+    apply(
+        &team,
+        vec![ended_at(crate::session::unix_epoch_ms() - 2 * MINUTE_MS)],
+    )
+    .await;
+    sweep(&team).await;
+    assert!(
+        !working(&team),
+        "the status reply was not an executing completion notification"
+    );
+    assert!(child_finished(&team)
+        .iter()
+        .any(|event| event.payload["child_task_id"] == team.task.task_id));
+}
+
+#[tokio::test]
+async fn a_messages_own_background_command_holds_only_its_own_task() {
+    let team = child_with_a_call_running("background-hold-message-own-call").await;
+    let prompt = status_message(&team, false).await;
+    let mut launched = lifecycle("claude_background_launched");
+    launched["id"] = "message-job".into();
+    apply(
+        &team,
+        vec![tool_chunk(&launched), text_chunk("started the second job")],
+    )
+    .await;
+    team.runtime
+        .settle_owned_provider_prompt(&team.room, &team.child_run, true, false, true)
+        .await
+        .unwrap();
+    let message_task = || {
+        team.runtime
+            .owned
+            .durable_state_store
+            .agent_turn_task(&team.room, &team.child, &prompt)
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(message_task().state, ExecutionState::Working);
+    assert!(working(&team));
+
+    apply(
+        &team,
+        vec![ended_at(crate::session::unix_epoch_ms() - 2 * MINUTE_MS)],
+    )
+    .await;
+    sweep(&team).await;
+    assert!(
+        !working(&team),
+        "a newer command cannot hold the older task"
+    );
+    assert_eq!(
+        message_task().state,
+        ExecutionState::Working,
+        "the message still owns its own running command"
+    );
+
+    let mut ended = lifecycle("claude_background_finished");
+    ended["id"] = "message-job".into();
+    ended["finished_at_ms"] = (crate::session::unix_epoch_ms() - 2 * MINUTE_MS).into();
+    apply(&team, vec![tool_chunk(&ended)]).await;
+    sweep(&team).await;
+    assert_eq!(message_task().state, ExecutionState::Done);
 }

@@ -160,3 +160,74 @@ fn a_member_who_may_view_the_trace_still_cannot_arm_the_deadline() {
         }
     });
 }
+
+#[test]
+fn agent_peek_obeys_trace_visibility_and_confines_entries_to_the_requested_room() {
+    run_remote_authorization_large_stack_test("agent-peek-visibility", || async {
+        let room = room_with_armed_deadline("agent-peek-visibility", false).await;
+        let peek =
+            LocalDaemonRequest::PeekAgentTranscript(crate::local::PeekAgentTranscriptRequest {
+                session_id: room.session_id.clone(),
+                agent_id: room.agent_id.clone(),
+                limit: None,
+                before: None,
+            });
+        for user in [DEFAULT_LOCAL_USER_ID, "transparent-user", "full-user"] {
+            assert!(matches!(
+                room.router
+                    .dispatch(terminal_command(&peek, Some(user)), peek.clone())
+                    .await
+                    .unwrap(),
+                LocalDaemonResponse::AgentTranscriptPeek { .. }
+            ));
+        }
+        let read = LocalDaemonRequest::ReadAgentTranscriptEntry(
+            crate::local::ReadAgentTranscriptEntryRequest {
+                session_id: room.session_id.clone(),
+                agent_id: room.agent_id.clone(),
+                entry_id: "history:1:1".into(),
+                offset: 0,
+                limit: None,
+            },
+        );
+        for request in [peek.clone(), read] {
+            assert_ownership_denied(
+                room.router
+                    .dispatch(terminal_command(&request, Some("private-user")), request)
+                    .await
+                    .unwrap_err(),
+                "private-user",
+                DEFAULT_LOCAL_USER_ID,
+            );
+        }
+        let grant = room
+            .router
+            .runtime_state()
+            .insert_access_grant_for_test(&room.session_id);
+        for agent in [room.agent_id.as_str(), "agent-from-another-room"] {
+            let mut request = peek.clone();
+            if let LocalDaemonRequest::PeekAgentTranscript(peek) = &mut request {
+                peek.agent_id = agent.into();
+            }
+            let mut command = terminal_command(&request, Some(DEFAULT_LOCAL_USER_ID));
+            command.caller.connection_class =
+                Some(crate::local::KernelConnectionClass::ExternalAgent);
+            command.caller.caller_id = grant.clone();
+            room.router
+                .authorize_external_request(&command, &request)
+                .unwrap();
+            let response = room.router.dispatch(command, request).await;
+            if agent == room.agent_id.as_str() {
+                assert!(matches!(
+                    response.unwrap(),
+                    LocalDaemonResponse::AgentTranscriptPeek { .. }
+                ));
+            } else {
+                assert!(
+                    response.is_err(),
+                    "a grant must not resolve an agent from outside the requested room"
+                );
+            }
+        }
+    });
+}

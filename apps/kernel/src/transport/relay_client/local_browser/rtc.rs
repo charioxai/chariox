@@ -59,6 +59,8 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
 /// feeding a dead carrier. On a slow link the keepalive can wait behind a
 /// megabyte already in SCTP; the browser acknowledging that data is alive.
 const SILENCE_LIMIT: Duration = Duration::from_secs(3);
+/// Let session writers deliver their reload close frame before UDP stops.
+const SHUTDOWN_DRAIN: Duration = Duration::from_secs(1);
 
 const FRAME_LAST: u8 = 0;
 const FRAME_MORE: u8 = 1;
@@ -87,6 +89,7 @@ struct Bound {
     addresses: Vec<SocketAddr>,
     commands: mpsc::UnboundedSender<Command>,
     stun: Arc<StunWaits>,
+    stopped: watch::Receiver<bool>,
 }
 
 enum Command {
@@ -175,6 +178,31 @@ impl RtcEndpoint {
         Ok((answer.to_sdp_string(), bound.epoch))
     }
 
+    pub(super) async fn wait_stopped(&self) {
+        let Some(mut stopped) = self
+            .state
+            .lock()
+            .await
+            .as_ref()
+            .map(|bound| bound.stopped.clone())
+        else {
+            return;
+        };
+        if timeout(
+            SHUTDOWN_DRAIN + Duration::from_millis(100),
+            stopped.wait_for(|done| *done),
+        )
+        .await
+        .is_err()
+        {
+            crate::logging::warn_with_fields(
+                "daemon.local_browser",
+                "direct WebRTC shutdown did not finish before its deadline",
+                serde_json::json!({}),
+            );
+        }
+    }
+
     /// The endpoint for the interfaces the machine has now. A changed
     /// interface list (a laptop moving between networks) rebinds: sockets of
     /// addresses that remain keep serving their peers, vanished addresses are
@@ -241,7 +269,12 @@ impl RtcEndpoint {
                     .ok_or_else(|| unavailable("direct WebRTC endpoint is shutting down"))?;
                 let (commands, new_commands) = mpsc::unbounded_channel();
                 let stun = Arc::new(StunWaits::default());
-                tokio::spawn(drive(Arc::clone(&stun), new_commands, shutdown));
+                let (done, stopped) = watch::channel(false);
+                let driver_stun = Arc::clone(&stun);
+                tokio::spawn(async move {
+                    drive(driver_stun, new_commands, shutdown).await;
+                    let _ = done.send(true);
+                });
                 Bound {
                     epoch: random_token(),
                     interfaces,
@@ -249,6 +282,7 @@ impl RtcEndpoint {
                     addresses,
                     commands,
                     stun,
+                    stopped,
                 }
             }
         };
@@ -509,9 +543,28 @@ async fn drive(
     let mut readers: HashMap<SocketAddr, tokio::task::AbortHandle> = HashMap::new();
     let mut tasks = tokio::task::JoinSet::new();
     let mut peers: Vec<Peer> = Vec::new();
+    let mut draining = None;
     loop {
         let now = std::time::Instant::now();
-        let mut next = now + Duration::from_millis(500);
+        if draining.is_none() && *shutdown.borrow() {
+            draining = Some(now + SHUTDOWN_DRAIN);
+        }
+        if let Some(deadline) = draining {
+            if peers.is_empty() || now >= deadline {
+                if !peers.is_empty() {
+                    crate::logging::warn_with_fields(
+                        "daemon.local_browser",
+                        "direct WebRTC shutdown drain timed out",
+                        serde_json::json!({"peers": peers.len()}),
+                    );
+                }
+                for peer in &mut peers {
+                    peer.rtc.disconnect();
+                }
+                return;
+            }
+        }
+        let mut next = draining.unwrap_or(now + Duration::from_millis(500));
         for peer in &mut peers {
             if let Some(deadline) = poll_peer(peer, &sockets, &wake).await {
                 next = next.min(deadline);
@@ -520,24 +573,23 @@ async fn drive(
         peers.retain_mut(|peer| {
             let alive = peer.rtc.is_alive()
                 && (peer.channel.is_some() || peer.created.elapsed() < OPEN_DEADLINE)
-                && !peer
-                    .channel
-                    .as_ref()
-                    .is_some_and(|channel| channel.session_done && channel.pending.is_empty());
+                && !peer.channel.as_ref().is_some_and(|channel| {
+                    channel.session_done && channel.pending.is_empty() && channel.buffered == 0
+                });
             if !alive {
                 peer.rtc.disconnect();
                 forget_grant(peer);
             }
             alive
         });
+        if draining.is_some() && peers.is_empty() {
+            return;
+        }
         let sleep_for = next.saturating_duration_since(std::time::Instant::now());
         tokio::select! {
-            _ = shutdown.changed() => {
-                if *shutdown.borrow() {
-                    for peer in &mut peers {
-                        peer.rtc.disconnect();
-                    }
-                    return;
+            changed = shutdown.changed(), if draining.is_none() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    draining = Some(std::time::Instant::now() + SHUTDOWN_DRAIN);
                 }
             }
             command = commands.recv() => match command {
@@ -567,7 +619,7 @@ async fn drive(
                     while tasks.try_join_next().is_some() {}
                     sockets = current;
                 }
-                Some(Command::Peer(peer)) if peers.len() < MAX_PEERS => peers.push(Peer {
+                Some(Command::Peer(peer)) if draining.is_none() && peers.len() < MAX_PEERS => peers.push(Peer {
                     rtc: peer.rtc,
                     grant: peer.grant,
                     direct: peer.direct,

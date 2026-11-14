@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { installAppDrafts } from "./browser-app-drafts.mjs";
 import { createInputCallers } from "./browser-app-input-callers.mjs";
 import { createViewActions } from "./browser-app-view-actions.mjs";
+import { createConfirmationViews } from "./browser-app-confirmation-views.mjs";
 // App views: one tab per installation on its own https origin. The controller
 // serves the kernel-verified UI assets through CDP Fetch interception, so no
 // port is opened and the page is a secure context. Every other request from
@@ -94,7 +95,8 @@ const BRIDGE_SOURCE = `(() => {
   } });
   const inputCallers = (${createInputCallers.toString()})();
   Object.defineProperty(globalThis, "__charioxViewInput", { value: inputCallers });
-  const viewActions = (${createViewActions.toString()})(request, inputCallers);
+  const confirmationViews = (${createConfirmationViews.toString()})();
+  const viewActions = (${createViewActions.toString()})(request, inputCallers, confirmationViews);
   Object.defineProperty(globalThis, "__charioxViewAgent", { value: viewActions.agent });
   Object.defineProperty(globalThis, "chariox", { value: Object.freeze({
     call(method, params = {}) { return request(method, params); },
@@ -172,12 +174,14 @@ function agentCall(params, token) {
     expression = call("registrations", [], `answer.length === 0 && view.inlineScriptBlocked()
       ? { ok: false, code: "action_not_registered", message: ${JSON.stringify(INLINE_SCRIPT_BLOCKED)} }
       : { ok: true, value: answer }`);
-  } else if (params.call === "invoke") {
+  } else if (params.call === "invoke" || params.call === "prepare_confirmation") {
     if (typeof params.name !== "string" || !AGENT_NAME.test(params.name)) throw invalid("invalid action name");
     const input = params.input ?? {};
     if (typeof input !== "object" || input === null || Array.isArray(input)
       || Buffer.byteLength(JSON.stringify(input)) > MAX_CALL_BYTES) throw invalid("invalid action input");
-    expression = call("invoke", [params.name, input, token]);
+    expression = params.call === "invoke" ? call("invoke", [params.name, input, token]) : call("prepareConfirmation", [params.name, input]);
+  } else if (params.call === "clear_confirmation") {
+    expression = call("clearConfirmation", []);
   } else if (params.call === "changes") {
     const since = params.since ?? 0;
     const wait = params.wait_ms ?? 0;
@@ -188,7 +192,7 @@ function agentCall(params, token) {
   } else {
     throw invalid("unknown view agent call");
   }
-  return { agent: params.agent, expression, deadline, runsAppCode: params.call === "invoke" || params.call === "state" };
+  return { agent: params.agent, expression, deadline, runsAppCode: ["invoke", "state", "prepare_confirmation"].includes(params.call) };
 }
 
 export class AppTabs {

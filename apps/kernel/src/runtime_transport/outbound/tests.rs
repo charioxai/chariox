@@ -140,7 +140,7 @@ fn outbound_generated_every_event_variant_hides_worker_credentials() {
     }
     assert_eq!(
         delivered.len(),
-        24,
+        26,
         "MP-11 current public events remain deliverable"
     );
     assert!(

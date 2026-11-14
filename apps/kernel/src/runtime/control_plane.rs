@@ -22,20 +22,18 @@ pub(crate) async fn execute(
     request: &ControlPlaneRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let capabilities = matches!(request, ControlPlaneRequest::Capabilities {});
-    // The same process-bound grant used for Rooms, exec and the gateway. A Room
-    // invite or provider bearer alone cannot use the owner's kernel enrollment.
+    // People use their authenticated owner connection; agents use the same process-bound
+    // grant as Rooms, exec and the gateway. A Room bearer alone spends no enrollment.
     let request_shape = crate::local::LocalDaemonRequest::ControlPlane(request.clone());
     let grant = command.external_grant_id();
     if let Some(grant) = &grant {
         state.authorize_external_request(grant, &request_shape)?;
     } else if let Some(reach) = command.reach_caller_id() {
         state.authorize_gateway_request(&reach, &request_shape)?;
-    } else if !capabilities
-        || !crate::runtime::cloud_relay_authorization::kernel_cloud_owner(config, command)
-    {
+    } else if !crate::runtime::cloud_relay_authorization::kernel_cloud_owner(config, command) {
         return Err(unavailable(
             "control_plane_grant_required",
-            "Use the owner's Chariox access grant for machine requests",
+            "Use the kernel owner or the owner's Chariox access grant for machine requests",
         ));
     }
     let profile = crate::runtime::cloud_relay_control::active_cloud_profile(config);
@@ -56,6 +54,51 @@ pub(crate) async fn execute(
             ))
         };
     };
+    if matches!(
+        request,
+        ControlPlaneRequest::Acquire { .. } | ControlPlaneRequest::AcquireJob { .. }
+    ) {
+        let offered = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
+            profile.api_url.clone(),
+            "/control-plane",
+            cloud_request_body(
+                &profile.account_id,
+                credential,
+                &ControlPlaneRequest::Capabilities {},
+            ),
+        )
+        .await?;
+        let ControlPlaneResponse::Capabilities { machine_allocation } = offered else {
+            return Err(unavailable(
+                "control_plane_binding_invalid",
+                "The connected service did not return its machine offer",
+            ));
+        };
+        state
+            .approve_machine_acquisition(command, request, machine_allocation.as_ref())
+            .await?;
+        if let Some(grant) = &grant {
+            state.authorize_external_request(grant, &request_shape)?;
+        } else if let Some(reach) = command.reach_caller_id() {
+            state.authorize_gateway_request(&reach, &request_shape)?;
+        }
+        if let (ControlPlaneRequest::AcquireJob { job_ref, .. }, Some(job_id)) =
+            (request, command.caller.caller_id.strip_prefix("job:"))
+        {
+            let (room, agent, owner) = state.job_acquisition_subject(job_id)?;
+            if job_ref != job_id
+                || command.session_id.as_deref() != Some(room.as_str())
+                || command.agent_id.as_deref() != Some(agent.as_str())
+                || command.caller.metaagent_id.as_deref() != Some(agent.as_str())
+                || command.caller.user_id.as_deref() != Some(owner.as_str())
+            {
+                return Err(unavailable(
+                    "control_plane_binding_invalid",
+                    "The accepted job no longer matches its Room, agent and owner",
+                ));
+            }
+        }
+    }
     let mut result = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
         profile.api_url.clone(),
         "/control-plane",
@@ -76,6 +119,9 @@ pub(crate) async fn execute(
     let response_matches = matches!(
         (&result, request),
         (
+            ControlPlaneResponse::JobCancelled { .. },
+            ControlPlaneRequest::CancelJob { .. }
+        ) | (
             ControlPlaneResponse::Capabilities { .. },
             ControlPlaneRequest::Capabilities {}
         ) | (
@@ -85,7 +131,9 @@ pub(crate) async fn execute(
     ) || (matches!(result, ControlPlaneResponse::Machine { .. })
         && !matches!(
             request,
-            ControlPlaneRequest::Capabilities {} | ControlPlaneRequest::List {}
+            ControlPlaneRequest::Capabilities {}
+                | ControlPlaneRequest::List {}
+                | ControlPlaneRequest::CancelJob { .. }
         ));
     if !response_matches {
         return Err(unavailable(
@@ -99,11 +147,13 @@ pub(crate) async fn execute(
         access_state,
         access_reason,
         state: machine_state,
+        purpose,
         ..
     } = &mut result
     {
         let expected = match request {
             ControlPlaneRequest::Get { allocation_ref }
+            | ControlPlaneRequest::JobStarted { allocation_ref, .. }
             | ControlPlaneRequest::Release { allocation_ref, .. }
             | ControlPlaneRequest::Start { allocation_ref, .. }
             | ControlPlaneRequest::Stop { allocation_ref, .. }
@@ -126,23 +176,53 @@ pub(crate) async fn execute(
         *access_state = "pending".into();
         *access_reason = None;
         if let Some(target) = kernel_target.as_ref().filter(|_| machine_state == "ready") {
-            let grant = grant.or_else(|| command.reach_caller_id()).ok_or_else(|| {
-                unavailable(
-                    "control_plane_grant_required",
-                    "Machine attachment requires the owner's Chariox access grant",
-                )
-            })?;
+            let grant = grant
+                .or_else(|| command.reach_caller_id())
+                .or_else(|| {
+                    crate::runtime::cloud_relay_authorization::kernel_cloud_owner(config, command)
+                        .then(|| {
+                            format!(
+                                "{}{}",
+                                crate::runtime::state::reach::OWNER_GRANT_PREFIX,
+                                state.kernel_owner_user_id()
+                            )
+                        })
+                })
+                .unwrap_or_else(|| {
+                    let user_id = command
+                        .caller
+                        .user_id
+                        .as_deref()
+                        .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID);
+                    format!(
+                        "{}{user_id}",
+                        crate::runtime::state::reach::OWNER_GRANT_PREFIX
+                    )
+                });
             let origin = state.gateway_origin(&grant).ok_or_else(|| {
-                unavailable("kernel_access_ended", "The Chariox access grant ended")
-            })?;
-            match gateway
-                .attach_machine(
-                    target,
-                    &origin,
-                    &format!("{}:machine-access", command.command_id),
+                unavailable(
+                    "kernel_access_ended",
+                    "The machine caller's kernel access ended",
                 )
-                .await
-            {
+            })?;
+            let attached = if purpose.as_deref() == Some("offload_job") {
+                gateway
+                    .attach_job_machine(
+                        target,
+                        &origin,
+                        &format!("{}:machine-access", command.command_id),
+                    )
+                    .await
+            } else {
+                gateway
+                    .attach_machine(
+                        target,
+                        &origin,
+                        &format!("{}:machine-access", command.command_id),
+                    )
+                    .await
+            };
+            match attached {
                 Ok(()) => *access_state = "available".into(),
                 Err(error) => *access_reason = Some(error.code().to_string()),
             }
@@ -176,7 +256,7 @@ mod tests {
         let state = router.runtime_state();
         let request =
             crate::local::LocalDaemonRequest::ControlPlane(ControlPlaneRequest::Capabilities {});
-        let command = KernelCommand::from_local_request("discover", None, None, &request);
+        let mut command = KernelCommand::from_local_request("discover", None, None, &request);
         let result = execute(
             &config,
             &state,
@@ -198,6 +278,13 @@ mod tests {
             capability_revision: "forged".into(),
             request_id: "one".into(),
         };
+        let error = execute(&config, &state, &command, router.kernel_gateway(), &acquire)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("control_plane_unavailable"), "the owner reaches the connected-service boundary without a separate agent grant: {error}");
+        command.source = crate::runtime::command::KernelCommandSource::RelayClient;
+        command.caller.caller_kind = crate::runtime::command::KernelCallerKind::RemoteClient;
+        command.caller.user_id = Some("another-user".into());
         let error = execute(&config, &state, &command, router.kernel_gateway(), &acquire)
             .await
             .unwrap_err();

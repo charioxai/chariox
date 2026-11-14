@@ -5,9 +5,7 @@ const GIB: u64 = 1024 * MIB;
 
 #[tokio::test]
 async fn a_live_agent_can_first_use_its_temp_root_after_a_sweep() {
-    if crate::test_support::isolate_environment_test() {
-        return;
-    }
+    crate::test_support::isolated_env_test!();
     let state = crate::test_support::allocation::runtime_with_rooms(1);
     let room = state.owned.session_store.list_all_sessions().pop().unwrap();
     let agent = state
@@ -78,9 +76,7 @@ fn queued_prompts(state: &KernelRuntimeState, room: &str, agent: &str) -> usize 
 /// below its floor, and the trim has nothing to free.
 #[tokio::test]
 async fn a_volume_below_its_floor_sends_no_prompt_to_any_agent() {
-    if crate::test_support::isolate_environment_test() {
-        return;
-    }
+    crate::test_support::isolated_env_test!();
     let mut state = crate::test_support::allocation::runtime_with_rooms(3);
     state.disk_volume_probe = Some(|_| Some((1, GIB, 10 * GIB)));
     let holders: Vec<_> = (0..3)
@@ -111,9 +107,7 @@ async fn a_volume_below_its_floor_sends_no_prompt_to_any_agent() {
 /// with and without pressure, and what was just written stays.
 #[tokio::test]
 async fn idle_scratch_is_still_trimmed_with_and_without_pressure() {
-    if crate::test_support::isolate_environment_test() {
-        return;
-    }
+    crate::test_support::isolated_env_test!();
     let mut state = crate::test_support::allocation::runtime_with_rooms(2);
     let scratch = |index: usize| {
         let room = state.owned.session_store.list_all_sessions().remove(index);
@@ -186,9 +180,7 @@ impl tracing::Subscriber for Warnings {
 /// at most once a minute, and no line while the trim still frees something.
 #[tokio::test]
 async fn a_volume_below_its_floor_that_the_trim_cannot_help_is_logged_once_a_minute() {
-    if crate::test_support::isolate_environment_test() {
-        return;
-    }
+    crate::test_support::isolated_env_test!();
     let mut state = crate::test_support::allocation::runtime_with_rooms(1);
     state.disk_volume_probe = Some(|_| Some((1, GIB, 10 * GIB)));
     let warnings = Warnings::default();

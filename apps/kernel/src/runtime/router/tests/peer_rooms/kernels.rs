@@ -244,12 +244,7 @@ fn a_retried_cancel_after_a_lost_answer_returns_its_receipt_and_spares_a_later_t
         assert!(!rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await);
         // The answer to kernel A was lost; meanwhile the cancelled turn settles and the peer
         // starts its next turn.
-        rooms
-            .router
-            .runtime_state
-            .end_agent_turn_for_tests(&rooms.peer_room, rooms.peer.id(), true)
-            .await
-            .expect("the cancelled turn settles");
+        rooms.settle_cancelled_turn().await;
         crate::test_support::admit_room_test_turn(
             &mut *rooms.app.lock().await,
             &rooms.peer_room,
@@ -290,12 +285,7 @@ fn a_message_from_another_kernel_after_its_cancel_runs_on_the_cancelled_agent() 
             matches!(cancelled, RelayPeerResponse::PeerAgentAccepted { .. }),
             "{cancelled:?}"
         );
-        rooms
-            .router
-            .runtime_state
-            .end_agent_turn_for_tests(&rooms.peer_room, rooms.peer.id(), true)
-            .await
-            .expect("the cancelled turn settles");
+        rooms.settle_cancelled_turn().await;
         let later = rooms
             .request_from_kernel_a(message(&rooms, "after-cancel", "peer", false))
             .await;
@@ -305,7 +295,7 @@ fn a_message_from_another_kernel_after_its_cancel_runs_on_the_cancelled_agent() 
         );
         assert!(
             rooms
-                .message_was_delivered(&rooms.peer_room, rooms.peer.id())
+                .wait_for_message_delivery(&rooms.peer_room, rooms.peer.id())
                 .await,
             "a cancel ends the current task, not the agent: the later message runs"
         );
@@ -497,5 +487,60 @@ fn a_peer_spawn_from_another_kernel_into_a_room_it_cannot_address_is_refused() {
             let response = rooms.request_from_kernel_a(spawn("spawn-2", room)).await;
             assert_eq!(refusal(response), PeerAgentRefusal::RoomUnavailable);
         }
+    });
+}
+
+#[test]
+fn kwait_idle_cancel_from_another_kernel_stays_a_noop_on_retry() {
+    run_peer_test("kwait-idle-cancel-kernel", || async {
+        let rooms = Rooms::new(
+            AgentPermissionLevel::Required,
+            AgentPermissionLevel::Required,
+        );
+        rooms
+            .router
+            .runtime_state
+            .end_agent_turn_for_tests(&rooms.peer_room, rooms.peer.id(), true)
+            .await
+            .unwrap();
+        assert!(
+            !rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await,
+            "the target must be idle before cancellation"
+        );
+        let response = rooms
+            .request_from_kernel_a(cancel(&rooms, AgentExecutionMode::Build))
+            .await;
+        assert!(
+            matches!(
+                response,
+                RelayPeerResponse::PeerAgentAccepted {
+                    duplicate: false,
+                    ..
+                }
+            ),
+            "{response:?}"
+        );
+        crate::test_support::admit_room_test_turn(
+            &mut *rooms.app.lock().await,
+            &rooms.peer_room,
+            rooms.peer.id(),
+        );
+        let response = rooms
+            .request_from_kernel_a(cancel(&rooms, AgentExecutionMode::Build))
+            .await;
+        assert!(
+            matches!(
+                response,
+                RelayPeerResponse::PeerAgentAccepted {
+                    duplicate: true,
+                    ..
+                }
+            ),
+            "{response:?}"
+        );
+        assert!(
+            rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await,
+            "an idle cancel's retry cannot cancel later work"
+        );
     });
 }

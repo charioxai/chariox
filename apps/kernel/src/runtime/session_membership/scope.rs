@@ -43,6 +43,15 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::StartSessionProcessNow(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::GetRemoteJobPolicy(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::SetRemoteJobPolicy(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::RunSessionProcessRemotely(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::IssueOwnMachineEnrollment(_) => None,
         LocalDaemonRequest::PrepareBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.selection.session_id.clone()),
@@ -166,6 +175,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ReadAgentTriggerTranscript(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::ReadAgentTriggerReply(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ReadAgentTriggerHttpOptions(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::CompletePrompt(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -176,6 +191,9 @@ pub(crate) fn request_session_scope(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::CancelAgentWake(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CancelAgentWait(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::SteerActivePrompt(request) => Some(SessionMembershipScope::SessionId(
@@ -338,6 +356,12 @@ pub(crate) fn request_session_scope(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::GetSessionHistoryBlobContents(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::PeekAgentTranscript(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ReadAgentTranscriptEntry(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::GetPromptInputHistory(request) => Some(
@@ -757,6 +781,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetProviderRun(_)
         | LocalDaemonRequest::GetProviderCatalog(_)
         | LocalDaemonRequest::GetClientCatalogSnapshot(_)
+        | LocalDaemonRequest::WatchKernelResources(_)
         | LocalDaemonRequest::GetClientCatalogRevisions(_)
         | LocalDaemonRequest::GetProviderCommandCatalogs(_)
         | LocalDaemonRequest::GetProviderUsageSnapshot(_)
@@ -836,7 +861,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::SealCredentialVaultKey(_)
         | LocalDaemonRequest::ManageCredentialVault(_)
         | LocalDaemonRequest::PreflightProviderAccountPortability(_)
-        | LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(_)
+        | LocalDaemonRequest::ObserveKernelRuntimeIdentity(_)
         | LocalDaemonRequest::StartManagedContextTransfer(_)
         | LocalDaemonRequest::GetManagedContextTransferStatus(_)
         | LocalDaemonRequest::GetManagedContextLaunchTarget(_)

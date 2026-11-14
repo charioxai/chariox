@@ -19,6 +19,7 @@ fn turn() -> crate::local::SessionHistoryOutlineTurn {
         turn_id: "prompt-1".into(),
         prompt_id: Some("prompt-1".into()),
         prompt_origin: crate::session::PromptOrigin::Chariox,
+        system_prompt: false,
         external_provider: None,
         external_provider_session_id: None,
         external_provider_turn_id: None,
@@ -91,7 +92,7 @@ fn session_feed_596_shapes_are_pinned() {
     let bytes = include_bytes!("session-feed-596.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "0f93125bdc1867896c1805c5f56669f05028f60cdc4fa5d7a62352832cd3d01b"
+        "bb2d1478726abebb4deab1759efaf4364d76ca389205398ac564ec7d855cb6be"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture, fixture_events());

@@ -294,7 +294,7 @@ fn claude_transcript_chunks(
     let Some(kind) = value.get("type").and_then(Value::as_str) else {
         return Vec::new();
     };
-    if let Some(notification) = claude_task_notification(value) {
+    if let Some(notification) = crate::provider::finished_background_task(value) {
         return finish_background_call(cursor, notification, now_ms)
             .into_iter()
             .collect();
@@ -308,39 +308,10 @@ fn claude_transcript_chunks(
     }
 }
 
-/// Claude tells the model a background task ended with a
-/// `<task-notification>`: first queued (`queue-operation` enqueue), then as
-/// the user turn it starts. A command the session stopped on exit is only queued.
-fn claude_task_notification(value: &Value) -> Option<ClaudeTaskEnd<'_>> {
-    let text = match value.get("type").and_then(Value::as_str)? {
-        "queue-operation" => value.get("content")?.as_str()?,
-        "user" => value.get("message")?.get("content")?.as_str()?,
-        _ => return None,
-    };
-    let notification = text.trim_start().strip_prefix("<task-notification>")?;
-    let tag = |name: &str| {
-        let open = format!("<{name}>");
-        let close = format!("</{name}>");
-        let rest = notification.split_once(open.as_str())?.1;
-        Some(rest.split_once(close.as_str())?.0.trim())
-    };
-    Some(ClaudeTaskEnd {
-        tool_use_id: tag("tool-use-id"),
-        task_id: tag("task-id"),
-    })
-}
-
-/// The background command a task notification or a stop result is about.
-#[derive(Clone, Copy)]
-struct ClaudeTaskEnd<'a> {
-    tool_use_id: Option<&'a str>,
-    task_id: Option<&'a str>,
-}
-
 /// The ended background call's launch snapshot, now with its end time.
 fn finish_background_call(
     cursor: &mut ClaudeTranscriptCursor,
-    end: ClaudeTaskEnd<'_>,
+    end: crate::provider::BackgroundTaskEnd<'_>,
     now_ms: u64,
 ) -> Option<ClaudeTranscriptChunk> {
     let id = end
@@ -409,7 +380,7 @@ fn claude_background_end_chunks(
     cursor: &mut ClaudeTranscriptCursor,
     now_ms: u64,
 ) -> Vec<ClaudeTranscriptChunk> {
-    if let Some(notification) = claude_task_notification(value) {
+    if let Some(notification) = crate::provider::finished_background_task(value) {
         return finish_background_call(cursor, notification, now_ms)
             .into_iter()
             .collect();
@@ -486,7 +457,7 @@ fn finish_ended_tasks(
     ended_tasks
         .iter()
         .filter_map(|task_id| {
-            let end = ClaudeTaskEnd {
+            let end = crate::provider::BackgroundTaskEnd {
                 tool_use_id: None,
                 task_id: Some(task_id),
             };
@@ -547,7 +518,7 @@ fn claude_assistant_transcript_chunks(
             "tool_use" => {
                 let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
                 let input = block.get("input").cloned().unwrap_or(Value::Null);
-                let background = crate::provider::launches_background_command(name, Some(&input));
+                let background = crate::provider::launches_background_task(name, Some(&input));
                 if let Some(id) = block.get("id").and_then(Value::as_str) {
                     track_pending_call(pending_tool_calls, id, name, &input, background, now_ms);
                 }

@@ -37,6 +37,7 @@ export type SessionViewAttachedResponse = {
       agent_activity_revision: number
       room_workflows: RoomWorkflowInventory
       processes: SessionProcess[]
+      jobs?: import("./kernel-events.js").JobView[]
     } }
     history: { SessionHistoryOutline: SessionHistoryOutline }
   }
@@ -143,10 +144,25 @@ export type AgentTriggerNotificationSource =
   | { workflow: { source_id: string } }
   | { app: { installation_id: string; event_name: string } }
 
-export type AgentTriggerSource = { kind: "http"; ingress_id: string; port: number } | {
+/** Protocol 1006: the Workflows panel's HTTP trigger options. */
+export type AgentHttpTriggerOptions = {
+  route: string
+  methods: Array<"GET" | "POST">
+  parser: { kind: "path_template"; template: string } | { kind: "json" | "query_params" | "webhook" }
+  mode: "async" | "sync"
+  sync_timeout_ms?: number
+  poll_ms?: number
+  input_schema?: unknown
+}
+
+export type AgentTriggerSource = AgentHttpTriggerOptions & { kind: "http"; ingress_id: string; port: number; recent_firings?: string[] } | {
   kind: "schedule"
-  interval_seconds: number
+  /** Protocol 1006: the Workflows panel's schedule: an interval, or a six-field cron in a timezone. */
+  trigger: { kind: "interval"; every_seconds: number } | { kind: "cron"; expression: string; timezone: string }
   repeat: "once" | "every"
+  overlap_policy: "skip" | "queue"
+  /** Firings after which a repeating trigger is done; absent never stops. */
+  max_runs?: number | null
   next_run_at_ms: number
 } | {
   kind: "notification"
@@ -456,7 +472,7 @@ export type AgentTaskExecution = {
   reason: string
   obligations: { id: string; kind: string; resource_id: string | null; completion_task_id: string | null; status: string; dispatch_state: string }[]
   wait: { registration_ids: string[]; deadline_ms: number | null; started_at_ms: number; inbox_cursor: number; long_wait_notified: boolean; last_checked_at_ms: number } | null
-  last_progress_at_ms: number; progress_sequence: number; no_progress_wakes: number
+  last_progress_at_ms: number
   correction_used: boolean; pending_prompt_id: string | null
 }
 // MP-08 / MP-09 / MP-10 / MP-11 A03: one kernel-owned wake source with its receipts.

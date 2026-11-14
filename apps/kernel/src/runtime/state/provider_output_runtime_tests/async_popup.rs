@@ -996,6 +996,7 @@ async fn async_popup_review_wait_deadline_follows_the_latest_question() {
             .agent_wake(result["interaction_id"].as_str().unwrap())
             .unwrap()
             .unwrap();
+        let now = crate::session::unix_epoch_ms();
         let Outcome::Settled { task, .. } = f
             .store()
             .agent_lifecycle(Operation::Settle {
@@ -1005,15 +1006,20 @@ async fn async_popup_review_wait_deadline_follows_the_latest_question() {
                 run: f.run.clone(),
                 has_answer: true,
                 cancelled: false,
-                now: crate::session::unix_epoch_ms(),
+                now,
             })
             .unwrap()
         else {
             panic!("settlement outcome")
         };
+        // A question without a timeout waits the default wait timeout, like every wait.
         assert_eq!(
             task.wait.unwrap().deadline_ms,
-            Some(wake.next_due_ms.unwrap_or(253_402_300_799_999))
+            Some(
+                wake.next_due_ms.unwrap_or(
+                    now + crate::durable_state::agent_lifecycle::DEFAULT_WAIT_TIMEOUT_MS
+                )
+            )
         );
     }
 }

@@ -8,6 +8,7 @@ import type {
 } from "./cli-types.js"
 import {
   refreshAgentPaneState,
+  shouldPreferCurrentPaneEntries,
   shouldRefreshAgentPanesForSessionChange,
 } from "@chariox/kernel-client/agent-pane-state"
 import {
@@ -91,10 +92,14 @@ export function createAgentPaneRefreshController(
       preserveCollapsedTurnIds: true,
     })
 
-    // Read current notices after history I/O: events may arrive while it loads.
-    const paneEntries = Object.fromEntries(Object.entries(nextPaneState.paneEntries).map(([agentId, entries]) => [
-      agentId, retainKernelProjectionNotices(entries, deps.currentAgentPaneEntries(agentId), session.id),
-    ]))
+    // Events keep arriving during history I/O. Reconcile against the current
+    // stream at commit time, so an older page cannot cut off a received chunk.
+    const paneEntries = Object.fromEntries(Object.entries(nextPaneState.paneEntries).map(([agentId, entries]) => {
+      const current = deps.currentAgentPaneEntries(agentId)
+      const next = sessionAgentHasTurnWork(session, agentId) && shouldPreferCurrentPaneEntries(current, entries)
+        ? current.map(entry => ({ ...entry })) : entries
+      return [agentId, retainKernelProjectionNotices(next, current, session.id)]
+    }))
     return { ...nextPaneState, paneEntries,
       visibleEntries: nextPaneState.visibleAgentId ? paneEntries[nextPaneState.visibleAgentId] ?? [] : [],
       previews: Object.fromEntries(Object.entries(paneEntries).map(([id, entries]) => [id, formatTranscriptPreview(entries)])),

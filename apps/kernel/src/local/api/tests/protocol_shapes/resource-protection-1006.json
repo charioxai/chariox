@@ -1,0 +1,32 @@
+{
+  "defaults": {
+    "memory": true,
+    "disk": true,
+    "cpu": true
+  },
+  "mixed": {
+    "memory": false,
+    "disk": true,
+    "cpu": false
+  },
+  "requests": [
+    {
+      "SetUserConfigValue": {
+        "path": "kernel.resource_protection.memory",
+        "value": "false"
+      }
+    },
+    {
+      "SetUserConfigValue": {
+        "path": "kernel.resource_protection.disk",
+        "value": "false"
+      }
+    },
+    {
+      "SetUserConfigValue": {
+        "path": "kernel.resource_protection.cpu",
+        "value": "false"
+      }
+    }
+  ]
+}

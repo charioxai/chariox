@@ -206,10 +206,6 @@ export function createWaitingRoomKernelConnectionController(deps: {
       }
     },
     getDirectTargetKernelId: () => directTargetKernelId,
-    assertLocalReimageAuthority: () => {
-      if (directTargetKernelId) {
-        throw new Error("Return to the local kernel before controlling a managed-machine reimage.")
-      }
-    },
+
   }
 }

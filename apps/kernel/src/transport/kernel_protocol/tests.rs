@@ -491,6 +491,7 @@ fn prompt_runtime_activity_changes_can_skip_session_snapshot() {
             active_prompt_count: 1,
             queued_prompt_count: 0,
             unread_idle_output: false,
+            waiting: false,
             queued_prompt_controls: BTreeMap::new(),
             active_turn: Some(crate::runtime::projection::AgentActiveTurnProjection {
                 prompt_id: "prompt-a".to_string(),
@@ -704,6 +705,7 @@ fn session_snapshot_with_agent() -> SessionSnapshotProjection {
             active_prompt_count: 0,
             queued_prompt_count: 0,
             unread_idle_output: false,
+            waiting: false,
             queued_prompt_controls: BTreeMap::new(),
             active_turn: None,
             last_completed_turn: None,
@@ -711,6 +713,7 @@ fn session_snapshot_with_agent() -> SessionSnapshotProjection {
         },
     );
     SessionSnapshotProjection {
+        jobs: Vec::new(),
         processes: Vec::new(),
         disk_usage: Vec::new(),
         room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
@@ -747,6 +750,7 @@ fn session_snapshot_with_workflow_status(status: WorkflowRunStatus) -> SessionSn
     workflow_run.set_status(status);
     session.create_workflow_run(workflow_run);
     SessionSnapshotProjection {
+        jobs: Vec::new(),
         processes: Vec::new(),
         disk_usage: Vec::new(),
         room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
@@ -946,8 +950,7 @@ fn a12_task_change_is_a_compact_projection_event() {
         "task_id":"task", "room_id":current.session.id(), "owner_user_id":"local",
         "agent_id":"agent-a", "prompt_id":"prompt", "provider_run_id":null,
         "revision":2, "blocked_revision":0, "state":"working", "reason":"work",
-        "obligations":[], "wait":null, "last_progress_at_ms":1, "progress_sequence":0,
-        "no_progress_wakes":0, "correction_used":false, "pending_prompt_id":null
+        "obligations":[], "wait":null, "last_progress_at_ms":1, "correction_used":false, "pending_prompt_id":null
     }))
     .unwrap();
     current.session.set_agent_tasks(vec![task]);
@@ -963,7 +966,11 @@ fn a12_task_change_is_a_compact_projection_event() {
     assert!(payloads.iter().all(|e| e.get("session").is_none()));
     assert!(can_skip_session_snapshot(&current, Some(&previous), true));
     assert!(session_projection_changed_events(&current, Some(&current)).is_empty());
-    assert!(session_projection_changed_events(&current, None).is_empty());
+    // A fresh subscriber gets the current job list, even an empty one, and no task delta.
+    assert!(matches!(
+        session_projection_changed_events(&current, None).as_slice(),
+        [KernelEvent::SessionJobsChanged { jobs, .. }] if jobs.is_empty()
+    ));
 }
 
 // MP-08 / MP-10 A12-S02: both subscription writers use this shared selection.
@@ -973,8 +980,7 @@ fn review971c_task_snapshot() -> SessionSnapshotProjection {
         "task_id":"task-a", "room_id":"session-a", "owner_user_id":"local",
         "agent_id":"agent-a", "prompt_id":"prompt-a", "provider_run_id":null,
         "revision":1, "blocked_revision":0, "state":"working", "reason":"work",
-        "obligations":[], "wait":null, "last_progress_at_ms":1, "progress_sequence":0,
-        "no_progress_wakes":0, "correction_used":false, "pending_prompt_id":null
+        "obligations":[], "wait":null, "last_progress_at_ms":1, "correction_used":false, "pending_prompt_id":null
     }))
     .unwrap();
     snapshot.session.set_agent_tasks(vec![task]);
@@ -1216,8 +1222,7 @@ fn ledger_task(
     serde_json::from_value(serde_json::json!({
         "task_id": task_id, "room_id": "session-a", "agent_id": "agent-a", "prompt_id": task_id,
         "provider_run_id": null, "revision": revision, "state": state, "reason": "",
-        "obligations": [], "wait": null, "last_progress_at_ms": 1, "progress_sequence": 0,
-        "no_progress_wakes": 0, "correction_used": false, "pending_prompt_id": null,
+        "obligations": [], "wait": null, "last_progress_at_ms": 1, "correction_used": false, "pending_prompt_id": null,
     }))
     .unwrap()
 }
@@ -1264,7 +1269,11 @@ fn a_changed_agent_task_is_one_small_event_and_skips_the_full_snapshot() {
     let wire = serde_json::to_value(&events[0]).unwrap();
     assert_eq!(wire["event"], "agent_task_updated");
     assert_eq!(wire["task"]["state"], "waiting");
-    assert!(session_projection_changed_events(&current, None).is_empty());
+    // A fresh subscriber gets the current job list, even an empty one, and no task delta.
+    assert!(matches!(
+        session_projection_changed_events(&current, None).as_slice(),
+        [KernelEvent::SessionJobsChanged { jobs, .. }] if jobs.is_empty()
+    ));
 }
 
 #[test]
@@ -1423,4 +1432,87 @@ fn agent_tree_changed_is_one_event_per_changed_tree() {
         &events[0],
         "any-attachment"
     ));
+}
+
+// Snapshot projection/redaction sorts JSON keys; a direct frame must agree.
+#[test]
+fn turn_outcome_field_order_survives_snapshot_projection() {
+    let mut projection = session_snapshot_with_agent();
+    projection.agent_activity.get_mut("agent-a").unwrap().last_completed_turn = Some(serde_json::from_value(serde_json::json!({
+        "turn_id": "turn-a", "prompt_id": "prompt-a", "provider_run_id": "run-a", "agent_id": "agent-a",
+        "completed_at_ms": 1, "outcome": {"kind": "completed", "retryable": false, "reason": ""}
+    })).unwrap());
+    let frame = KernelOutgoingFrame::Event {
+        kernel: None,
+        event_id: 1,
+        event: Box::new(KernelEvent::SessionSnapshot {
+            room_workflows: projection.room_workflows,
+            session: Box::new(projection.session),
+            provider_run: Box::new(None),
+            agent_activity: Box::new(projection.agent_activity),
+            agent_activity_revision: 0,
+        }),
+    };
+    let direct = serialize_frame(&frame).unwrap();
+    let projected = serialize_frame_value(serde_json::to_value(&frame).unwrap()).unwrap();
+    let outcome_json = |wire: &str| {
+        let start = wire.find("\"outcome\":{").unwrap() + "\"outcome\":".len();
+        wire[start..].split('}').next().unwrap().to_string()
+    };
+    assert_eq!(outcome_json(&direct), outcome_json(&projected));
+}
+
+#[test]
+fn touched_queue_announces_activity_before_its_complete_snapshot() {
+    for provider_clock in [false, true] {
+        let mut previous = session_snapshot_with_agent();
+        if provider_clock {
+            let mut run =
+                serde_json::to_value(RuntimeProviderRun::from_control_capability_inference(
+                    "provider-run-a",
+                    "session-a".into(),
+                    Some("agent-a".into()),
+                    "codex".into(),
+                ))
+                .unwrap();
+            run["last_activity_at_ms"] = serde_json::json!(1);
+            previous.provider_run = Some(serde_json::from_value(run).unwrap());
+        }
+        let mut current = previous.clone();
+        let prompt = PromptQueueItem::new(
+            "q",
+            "attachment",
+            "agent-a",
+            "queued text",
+            PromptStatus::Queued,
+        );
+        let mut session = serde_json::to_value(&current.session).unwrap();
+        session["last_used_at_ms"] = serde_json::json!(1);
+        previous.session = serde_json::from_value(session.clone()).unwrap();
+        session["last_used_at_ms"] = serde_json::json!(2);
+        session["queued_prompts"] = serde_json::json!([prompt]);
+        session["prompt_states"] = serde_json::json!({"agent-a": {"queued_prompts": [prompt]}});
+        current.session = serde_json::from_value(session).unwrap();
+        assert_eq!(current.session.queued_prompts().len(), 1);
+        current
+            .agent_activity
+            .get_mut("agent-a")
+            .unwrap()
+            .queued_prompt_count = 1;
+        if provider_clock {
+            let mut run = serde_json::to_value(current.provider_run.as_ref().unwrap()).unwrap();
+            run["last_activity_at_ms"] = serde_json::json!(2);
+            current.provider_run = Some(serde_json::from_value(run).unwrap());
+        }
+        let events =
+            crate::runtime_transport::session_projection_events(&current, Some(&previous), false);
+        assert!(
+            matches!(
+                events.first(),
+                Some(KernelEvent::AgentActivityChanged { .. })
+            ),
+            "queue activity must precede its full snapshot"
+        );
+        assert!(events.iter().any(|event| matches!(event, KernelEvent::SessionSnapshot { session, .. } if session.queued_prompts().len() == 1)), "queue text must still reach every client");
+    }
 }

@@ -39,10 +39,17 @@ async fn kernel_access_executor_errors_keep_codes_and_retryability_over_unix() {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ExpectedSnapshot {
+    Initial,
+    AgentCount(usize),
+    Replay(u64),
+}
+
 async fn snapshot<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     socket: &mut WebSocketStream<S>,
     reply_id: &str,
-    replay_id: Option<u64>,
+    expected: ExpectedSnapshot,
 ) -> Value {
     timeout(Duration::from_secs(10), async {
         let mut acknowledged = false;
@@ -68,7 +75,11 @@ async fn snapshot<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                         assert!(agents
                             .iter()
                             .any(|a| a["remote_execution"]["worker_kernel_id"] == "worker"));
-                        if replay_id.is_none_or(|id| value["event_id"].as_u64() == Some(id)) {
+                        if match expected {
+                            ExpectedSnapshot::Initial => true,
+                            ExpectedSnapshot::AgentCount(count) => agents.len() == count,
+                            ExpectedSnapshot::Replay(id) => value["event_id"].as_u64() == Some(id),
+                        } {
                             snapshot = Some(value);
                         }
                     }
@@ -87,7 +98,7 @@ async fn snapshot<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         }
     })
     .await
-    .unwrap()
+    .unwrap_or_else(|_| panic!("snapshot {expected:?} for {reply_id} never arrived"))
 }
 
 pub(super) async fn check_subscription(root: &str) {
@@ -115,20 +126,30 @@ pub(super) async fn check_subscription(root: &str) {
         .send(Message::Text(subscribe(None).to_string().into()))
         .await
         .unwrap();
-    let initial = snapshot(&mut socket, "sub", None).await;
+    let initial = snapshot(&mut socket, "sub", ExpectedSnapshot::Initial).await;
     let cursor = initial["event_id"].as_u64().unwrap() - 1;
+    let updated_agents = initial["event"]["session"]["agents"]
+        .as_array()
+        .unwrap()
+        .len()
+        + 1;
     // Change agent structure so the watcher emits a new complete snapshot.
     socket
         .send(Message::Text(
             frame(serde_json::json!({"SpawnAgent":{
-                "session_id":"credential-session", "provider":"codex", "model":"default"
+                "session_id":"credential-session", "provider":"codex", "model":"default", "effort":"low"
             }}))
             .to_string()
             .into(),
         ))
         .await
         .unwrap();
-    let updated = snapshot(&mut socket, "request", None).await;
+    let updated = snapshot(
+        &mut socket,
+        "request",
+        ExpectedSnapshot::AgentCount(updated_agents),
+    )
+    .await;
     socket
         .send(Message::Text(
             serde_json::json!({"type":"unsubscribe","request_id":"unsub"})
@@ -142,7 +163,12 @@ pub(super) async fn check_subscription(root: &str) {
         .send(Message::Text(subscribe(Some(cursor)).to_string().into()))
         .await
         .unwrap();
-    let replay = snapshot(&mut socket, "sub", updated["event_id"].as_u64()).await;
+    let replay = snapshot(
+        &mut socket,
+        "sub",
+        ExpectedSnapshot::Replay(updated["event_id"].as_u64().unwrap()),
+    )
+    .await;
     assert_eq!(
         replay["event_id"], updated["event_id"],
         "MP-11 must exercise retained replay"
@@ -189,7 +215,7 @@ async fn kernel_access_subscription_initial_updated_replay_hide_worker_credentia
         ))
         .await
         .unwrap();
-    snapshot(&mut kernel.tcp, "owner-sub", None).await;
+    snapshot(&mut kernel.tcp, "owner-sub", ExpectedSnapshot::Initial).await;
     holder.command("credential-subscribe");
     assert_eq!(holder.result()["credential_subscription"], true);
     let owner = kernel

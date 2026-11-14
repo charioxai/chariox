@@ -718,7 +718,26 @@ impl RuntimeSession {
         previous != state.latest_output_sequence
     }
 
+    /// The agent has armed work to be woken by: a task in a wait, or a timer or watched source it keeps.
+    pub fn agent_is_waiting(&self, agent_id: &str) -> bool {
+        self.agent_tasks.iter().any(|task| {
+            task.agent_id == agent_id
+                && task.state == crate::durable_state::agent_lifecycle::ExecutionState::Waiting
+                && task.wait.is_some()
+        }) || self.agent_wakes.iter().any(|wake| {
+            wake.agent_id == agent_id
+                && matches!(wake.state.as_str(), "scheduled" | "starting" | "running")
+        })
+    }
+
+    pub(crate) fn clear_agent_unread_output(&mut self, agent_id: &str) {
+        self.agent_output_read_state.remove(agent_id);
+    }
+
     pub fn agent_has_unread_output(&self, user_id: &str, agent_id: &str) -> bool {
+        if self.agent_is_waiting(agent_id) {
+            return false;
+        }
         let Some(state) = self.agent_output_read_state.get(agent_id) else {
             return false;
         };
@@ -1045,7 +1064,7 @@ impl RuntimeSession {
     }
 
     /// The pending interactions a client lists for `agent_id`: its own, except those it
-    /// does not show (a sub-agent's decision the user holds), plus the ones shown here.
+    /// does not show (a sub-agent's decision), plus the ones shown here.
     pub fn interactions_listed_for(&self, agent_id: &str) -> Vec<&RuntimeInteraction> {
         self.active_interactions
             .iter()
@@ -1054,6 +1073,21 @@ impl RuntimeSession {
                 None => interaction.agent_id() == Some(agent_id),
             })
             .collect()
+    }
+
+    /// Names each agent's card by its asker as the session's agents name it now, so a client
+    /// shows who asks without a lookup.
+    pub(crate) fn name_interaction_askers(&mut self) {
+        let agents = &self.agents;
+        for interaction in &mut self.active_interactions {
+            let name = interaction.agent_id().and_then(|asker| {
+                agents
+                    .iter()
+                    .find(|agent| agent.id() == asker)
+                    .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned())
+            });
+            interaction.set_asker_name(name);
+        }
     }
 
     /// Moves where the user sees an active interaction; the interaction itself stays one object.
@@ -1254,9 +1288,19 @@ impl RuntimeSession {
         self.workspace_live_sync_mode
     }
 
+    /// Attachments and the last use are presence: who is connected and when. No Room view
+    /// shows them, so attach, detach and use alone never need a whole session sent to every viewer.
+    pub fn equivalent_except_presence(&self, other: &Self) -> bool {
+        let mut left = self.clone();
+        left.attachment_ids = other.attachment_ids.clone();
+        left.last_used_at_ms = other.last_used_at_ms;
+        left == *other
+    }
+
     pub fn equivalent_except_session_metadata(&self, other: &Self) -> bool {
         let mut left = self.clone();
         let right = other.clone();
+        left.attachment_ids = right.attachment_ids.clone();
         left.alias = right.alias.clone();
         left.last_used_at_ms = right.last_used_at_ms;
         left.last_activity_at_ms = right.last_activity_at_ms;
@@ -1267,11 +1311,14 @@ impl RuntimeSession {
         left == right
     }
 
-    pub fn equivalent_except_prompt_runtime(&self, other: &Self) -> bool {
+    pub fn same_prompt_runtime(&self, other: &Self) -> bool {
+        self.prompt_runtime == other.prompt_runtime
+    }
+
+    pub fn equivalent_except_prompt_runtime_and_session_metadata(&self, other: &Self) -> bool {
         let mut left = self.clone();
-        let right = other.clone();
-        left.prompt_runtime = right.prompt_runtime.clone();
-        left == right
+        left.prompt_runtime = other.prompt_runtime.clone();
+        left.equivalent_except_session_metadata(other)
     }
 
     pub fn equivalent_except_runtime_interactions(&self, other: &Self) -> bool {

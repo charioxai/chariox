@@ -1,3 +1,4 @@
+import { sendWithRecoveredAttachment, type RemoteAttachmentRecovery } from "./remote-attachment-recovery.js"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import type { RuntimeProviderRun } from "../cli-types.js"
@@ -21,6 +22,7 @@ export async function handleCodexNativeTurnStart(
     client: LocalIpcClient
     sessionId: string
     attachmentId: string
+    recovery?: RemoteAttachmentRecovery
     agentId: string
     bindState: CodexNativeBindingState
     inlineLocalAttachments: boolean
@@ -39,11 +41,11 @@ export async function handleCodexNativeTurnStart(
     const attachments = await preparePromptAttachmentsForSubmit(extractCodexAttachments(message.params), {
       inlineLocalFiles: options.inlineLocalAttachments,
     })
-    const response = await options.client.send<{ PromptSubmitted: { outcome: {
+    const response = await sendWithRecoveredAttachment(() => options.client.send<{ PromptSubmitted: { outcome: {
       Started?: { prompt: { id: string } }, Queued?: { prompt: { id: string } },
     } } }>(
       submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, attachments),
-    )
+    ), options.recovery)
     const outcome = response.PromptSubmitted?.outcome
     const promptId = (outcome?.Started ?? outcome?.Queued)?.prompt.id
     const threadId = message.params?.threadId
@@ -82,7 +84,7 @@ export async function handleCodexNativeTurnStart(
 // resolve the display binding, then compare it atomically on the kernel.
 export async function handleCodexNativeTurnInterrupt(
   message: CodexJsonRpcMessage,
-  options: { client: LocalIpcClient, sessionId: string, attachmentId: string, agentId: string, bindState: CodexNativeBindingState },
+  options: { client: LocalIpcClient, sessionId: string, attachmentId: string, recovery?: RemoteAttachmentRecovery, agentId: string, bindState: CodexNativeBindingState },
   sendClient: (message: unknown) => void,
 ) {
   try {
@@ -91,9 +93,9 @@ export async function handleCodexNativeTurnInterrupt(
     if (!bound || bound.threadId !== message.params?.threadId) {
       throw new Error("Codex display turn is not bound to a Chariox prompt")
     }
-    const response = await options.client.send<Record<string, unknown>>(
+    const response = await sendWithRecoveredAttachment(() => options.client.send<Record<string, unknown>>(
       cancelActivePromptRequest(options.sessionId, options.attachmentId, options.agentId, bound.promptId),
-    )
+    ), options.recovery)
     if (!("PromptCancelled" in response)) throw new Error("kernel did not admit exact-prompt cancellation")
     sendClient({ id: message.id, result: {} })
   } catch (error) {

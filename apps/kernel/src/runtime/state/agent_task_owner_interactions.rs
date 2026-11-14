@@ -50,31 +50,30 @@ impl KernelRuntimeOwnedState {
         let Ok(session) = self.session_store.get_session(room) else {
             return Ok(());
         };
-        let tasks = self.durable_state_store.agent_tasks(Some(room), None)?;
-        let stale = session
-            .active_interactions()
-            .iter()
-            .map(|i| i.id())
-            .filter(|id| {
-                let Some(rest) = id.strip_prefix(BLOCKED_TASK_DECISION_PREFIX) else {
-                    return false;
-                };
-                let Some((task_id, revision)) = rest.rsplit_once('-') else {
-                    return true;
-                };
-                let Ok(revision) = revision.parse::<u64>() else {
-                    return true;
-                };
-                tasks
-                    .iter()
-                    .find(|task| task.task_id == task_id)
-                    .is_none_or(|task| {
-                        !self.task_needs_owner_interaction(task)
-                            || revision != task.blocked_revision
-                    })
-            })
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
+        // Each decision names its task; only those are read, not the Room's finished turns.
+        let mut stale = Vec::new();
+        for id in session.active_interactions().iter().map(|i| i.id()) {
+            let Some(rest) = id.strip_prefix(BLOCKED_TASK_DECISION_PREFIX) else {
+                continue;
+            };
+            let current = match rest
+                .rsplit_once('-')
+                .and_then(|(task, revision)| Some((task, revision.parse::<u64>().ok()?)))
+            {
+                Some((task, revision)) => self
+                    .durable_state_store
+                    .agent_task(task)?
+                    .filter(|task| task.room_id == room)
+                    .is_some_and(|task| {
+                        self.task_needs_owner_interaction(&task)
+                            && revision == task.blocked_revision
+                    }),
+                None => false,
+            };
+            if !current {
+                stale.push(id.to_owned());
+            }
+        }
         for id in stale {
             self.timeout_runtime_interaction(room, &id)?;
             tracing::debug!(interaction_id=%id, room_id=room, "resolved task owner decision withdrawn");
@@ -89,6 +88,25 @@ impl KernelRuntimeState {
             tracing::warn!(%error, room_id=room, "task owner decision withdrawal failed; interaction admission will retry");
         }
     }
+    /// The person is alerted to a card they hold; a card an agent holds alerts them only when it is
+    /// handed up to them.
+    fn notify_owner_if_theirs(
+        &self,
+        task: &AgentTaskExecution,
+        id: &str,
+    ) -> Result<(), DaemonError> {
+        let theirs = self
+            .owned
+            .pending_interactions
+            .write()
+            .get(id)
+            .is_none_or(|pending| pending.holder == super::DecisionHolder::User);
+        if theirs {
+            self.owned.emit_task_owner_notification(task, id)?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn ensure_task_owner_interaction(
         &self,
         task: AgentTaskExecution,
@@ -120,12 +138,14 @@ impl KernelRuntimeState {
             "Browser access ended. Allow this agent to use your browser tabs and continue?"
                 .to_owned()
         } else {
-            let reason = crate::terminal::public_task_failure_reason(&task.reason);
             // The card shows in the room agent's pane, so it says which agent needs the person.
-            match self.owned.agent_store.get_agent(&task.agent_id) {
-                Ok(agent) => format!("{}: {reason}", agent.alias().unwrap_or(agent.agent_ref())),
-                Err(_) => reason,
-            }
+            let agent = self.owned.agent_store.get_agent(&task.agent_id).ok();
+            self.owned.blocked_card_message(
+                agent
+                    .as_ref()
+                    .map(|agent| agent.alias().unwrap_or(agent.agent_ref())),
+                &task,
+            )
         };
         if let Some(existing) = session.active_interactions().iter().find(|i| i.id() == id) {
             let live = self
@@ -164,7 +184,7 @@ impl KernelRuntimeState {
                         .terminal_stream
                         .notify_terminal_projection_change(&task.room_id);
                 }
-                self.owned.emit_task_owner_notification(&task, &id)?;
+                self.notify_owner_if_theirs(&task, &id)?;
                 return Ok(());
             }
             // Hot reload retains the task's decision, but an in-memory reply channel must be reattached.
@@ -207,7 +227,9 @@ impl KernelRuntimeState {
                 interaction,
             )
             .await?;
-        let notification = self.owned.emit_task_owner_notification(&task, &id);
+        // The agent that holds the card is told; a card nobody above can hold is the person's.
+        self.announce_child_decision(&task.room_id, &id).await?;
+        let notification = self.notify_owner_if_theirs(&task, &id);
         let state = self.as_kernel();
         tokio::spawn(async move {
             if let Ok(answer) = rx.await {
@@ -248,7 +270,7 @@ impl KernelRuntimeState {
         for task in self
             .owned
             .durable_state_store
-            .agent_tasks(Some(room), Some(prompt.target_agent_id()))?
+            .agent_unfinished_tasks(room, Some(prompt.target_agent_id()))?
             .into_iter()
             .filter(|task| {
                 task.prompt_id != prompt.id()

@@ -609,7 +609,7 @@ impl KernelRuntimeState {
         self.authorize_current_external_command()?;
         request.kernel_ref = self.settle_kernel_ref(request.kernel_ref.take()).await?;
         if request.kernel_ref.is_none() {
-            self.keep_child_folder_inside_parent(&request)?;
+            self.check_child_directory(&request)?;
             let (request, checkout) = self.prepare_local_agent_worktree_placement(request)?;
             #[cfg(test)]
             crate::agent::authority_limit::run_hook_before_spawn_commit(&request.session_id);
@@ -626,8 +626,8 @@ impl KernelRuntimeState {
         .await
     }
 
-    /// A sub-agent's explicit folder lies inside its parent's folders (A5).
-    fn keep_child_folder_inside_parent(
+    /// A sub-agent's explicit folder stays in its parent's folders or Git repository (A5).
+    fn check_child_directory(
         &self,
         request: &crate::agent::CreateAgentRequest,
     ) -> Result<(), DaemonError> {
@@ -696,7 +696,10 @@ impl KernelRuntimeState {
             "agent.spawn",
             |target| match &parent {
                 Some(parent) => crate::agent::authority_limit::check_directory_to_create(
-                    parent, &session, target,
+                    parent,
+                    &session,
+                    target,
+                    std::path::Path::new(base_worktree),
                 ),
                 None => Ok(()),
             },
@@ -1100,7 +1103,7 @@ impl KernelRuntimeState {
             .await;
         for agent in owned.agent_store.get_session_agents(session_id) {
             self.revoke_agent_app_capability_grants(&agent).await?;
-            self.terminal_input_grants.forget(agent.id());
+            self.forget_agent_grants(agent.id());
         }
         let worker_agents = self.agents_leased_to_workers(session_id);
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
@@ -1109,6 +1112,8 @@ impl KernelRuntimeState {
         self.sweep_kernel_access();
         owned.clear_session_prompt_runtime_state(session_id);
         let session = owned.publish_session_after_durable_mutation(session);
+        // Listener refresh errors must not bypass the source Room's process cleanup.
+        let notification_availability = self.sync_agent_notification_trigger_availability();
         for provider_run_id in terminated_run_ids {
             let (_, process_key) = self
                 .with_app_side_effect(|app| {
@@ -1122,6 +1127,7 @@ impl KernelRuntimeState {
         self.detach_session_slices(&session).await?;
         owned.terminal_stream.remove_session(session_id);
         owned.session_store.retire_ended_session(session_id);
+        notification_availability?;
         Ok(session)
     }
 
@@ -1181,6 +1187,7 @@ impl KernelRuntimeState {
         );
         owned.clear_session_prompt_runtime_state(&session_id);
         owned.remove_session_projection_after_durable_mutation(&session_id);
+        let notification_availability = self.sync_agent_notification_trigger_availability();
         // MP-08/MP-10/MP-11: after commit, upgrade retirement to a worker wipe.
         // A missed write is reconstructed from the orphaned slice on start/reconnect.
         if let Some(slice) = owned.slice_store.environment_slice(&session_id) {
@@ -1219,6 +1226,7 @@ impl KernelRuntimeState {
                 "MP-08/MP-10/MP-11: Room deleted; observation cleanup remains fenced"
             ),
         }
+        notification_availability?;
         Ok(session)
     }
 

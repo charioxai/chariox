@@ -15,7 +15,7 @@ mod environment;
 #[cfg(unix)]
 pub(crate) use claude_executable::TestClaudeExecutable;
 #[cfg(unix)]
-pub(crate) use detached_job::{detached_job, process_alive, session_job};
+pub(crate) use detached_job::{detached_job, detached_sleeper_running, process_alive, session_job};
 #[cfg(unix)]
 mod pre_exec_child;
 mod room_turn;
@@ -26,6 +26,8 @@ mod task_subscription;
 #[cfg(target_os = "linux")]
 mod thread_stack;
 pub(crate) mod working_agent_ages;
+#[cfg(unix)]
+pub(crate) use environment::end_claimed_descendants;
 pub(crate) use environment::{environment_test_isolated, isolate_environment_test};
 #[cfg(unix)]
 pub(crate) use pre_exec_child::PreExecChild;
@@ -42,7 +44,10 @@ pub(crate) use thread_stack::{
 /// Place this first in any test that mutates env or calls an env-mutating fixture.
 macro_rules! isolated_env_test {
     () => {
-        if $crate::test_support::isolate_environment_test() {
+        $crate::test_support::isolated_env_test!(std::time::Duration::from_secs(180));
+    };
+    ($timeout:expr) => {
+        if $crate::test_support::isolate_environment_test($timeout) {
             return;
         }
     };
@@ -70,6 +75,34 @@ pub(crate) async fn bootstrap_after_test_owner_exit(config: DaemonConfig) -> Dae
     })
     .await
     .expect("the dropped kernel's background owners should exit")
+}
+
+/// Unix socket paths must fit sun_path even when the executor sets a long TMPDIR.
+#[cfg(unix)]
+pub(crate) struct TestSocketDirectory(PathBuf);
+
+#[cfg(unix)]
+impl TestSocketDirectory {
+    pub(crate) fn new() -> Self {
+        let path = PathBuf::from("/tmp").join(format!("cx-sock-{:032x}", rand::random::<u128>()));
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&path)
+            .expect("create private test socket directory");
+        Self(path)
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TestSocketDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 /// A real, disposable working directory for provider-launch fixtures.

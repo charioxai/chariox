@@ -73,9 +73,11 @@
   {
     "id": "trigger",
     "label": "/trigger",
-    "description": "Usage: /trigger [list] | every|in <minutes> [--steer|--queue] <prompt> | notification <source> [prompt] | on|off|queue|steer <id> | remove <id> | resend <prompt-id> · prompts that fire into this agent",
+    "description": "Usage: /trigger [list] | add schedule (--every <N>s|m|h | --cron '<expr>' [--timezone <zone>]) [--prompt <text>] | add http [--route <path>] [--methods GET|POST|GET,POST] [--parser <parser>] [--mode async|sync] | every|in <minutes> [--steer|--queue] <prompt> | notification <source> [prompt] | on|off|queue|steer <id> | remove <id> | resend <prompt-id> · prompts that fire into this agent",
     "value": "/trigger ",
     "examples": [
+      "/trigger add schedule --cron '0 30 9 * * 1-5' --timezone Europe/Berlin --prompt 'Morning review'",
+      "/trigger add http --route /build --methods POST --parser json --mode async",
       "/trigger every 30 --steer Check the build",
       "/trigger notification Release pipeline-2 Summarize what failed",
       "/trigger list"

@@ -96,6 +96,74 @@ impl KernelRuntimeState {
         };
         self.agent_cancellation_response(&request.session_id, &wakes[0].task_id)
     }
+
+    /// The owner ends the wait of a task from the agent's pane: its sources stop, the wait row
+    /// says cancelled, and the agent is not woken.
+    pub(crate) async fn cancel_owner_agent_wait(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        request: crate::local::CancelAgentWaitRequest,
+    ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+        let owner = self.ensure_owner_agent_cancellation(
+            command,
+            &request.session_id,
+            &request.attachment_id,
+        )?;
+        let task = self
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&request.session_id), None)?
+            .into_iter()
+            .find(|task| task.task_id == request.task_id)
+            .ok_or_else(|| {
+                crate::durable_state::agent_lifecycle::error("task unavailable in this room")
+            })?;
+        let Outcome::Wakes(stopped) =
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::CancelOwnerWait {
+                    task: task.task_id.clone(),
+                    room: request.session_id.clone(),
+                    owner,
+                    started_at_ms: request.started_at_ms,
+                })?
+        else {
+            unreachable!()
+        };
+        self.owned.record_wait_cancelled(&task);
+        for wake in &stopped {
+            self.stop_cancelled_wait_source(wake).await;
+        }
+        self.owned
+            .session_store
+            .clear_agent_unread_output(&task.room_id, &task.agent_id)?;
+        self.agent_cancellation_response(&request.session_id, &task.task_id)
+    }
+
+    /// The ledger already settled the wake; this stops what still runs for it. A source that does
+    /// not stop reports its end to a task that is no longer registered, so nobody is woken.
+    async fn stop_cancelled_wait_source(
+        &self,
+        wake: &crate::durable_state::agent_lifecycle::AgentWake,
+    ) {
+        let stopped = if wake.kind == "process" {
+            self.cancel_agent_watched_process(&wake.id).await.map(drop)
+        } else if wake.kind == "timer" {
+            // The ledger owns the clock; settling the wake stopped it.
+            Ok(())
+        } else {
+            self.owned
+                .agent_wakes
+                .drivers
+                .get(&wake.kind)
+                .and_then(|driver| driver.cancel(wake))
+                .map(drop)
+        };
+        if let Err(error) = stopped {
+            tracing::warn!(%error, wake = %wake.id, "cancelled wait source not stopped");
+        }
+        self.close_cards_following(wake);
+    }
 }
 
 #[cfg(test)]

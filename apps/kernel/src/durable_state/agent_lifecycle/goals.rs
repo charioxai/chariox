@@ -13,13 +13,6 @@ const VAULT_WAIT_REASON: &str = "Waiting for the Vault unlock";
 pub(super) const CHECK_IN_OCCURRENCE_PREFIX: &str = "goal-check-in-";
 pub(crate) const RESULT_LIMIT: usize = 8_192;
 
-pub(super) fn is_check_in_event(task: &AgentTaskExecution, event: &InboxEvent) -> bool {
-    task.goal.is_some()
-        && event.kind == "deadline_reached"
-        && event.source_id == task.task_id
-        && event.occurrence_id.starts_with(CHECK_IN_OCCURRENCE_PREFIX)
-}
-
 fn schedule_wait_check_in(task: &mut AgentTaskExecution, now: u64) {
     if let (Some(goal), Some(wait)) = (&mut task.goal, &task.wait) {
         let check_in = now.saturating_add(u64::from(goal.check_in_minutes) * 60_000);
@@ -383,11 +376,8 @@ pub(super) fn evaluate(
             }
         }
         Some(Assessment::Continue { reason, .. }) if !reason.trim().is_empty() => {
-            // A continuation already made no handled progress and the agent yielded
-            // again on live sources covering every obligation: honour that wait.
-            if t.no_progress_wakes >= NO_PROGRESS_LIMIT && covered_wait(tx, &t, now)? {
-                blocked(&mut t, "Goal check-ins made no progress; owner must inspect and explicitly resume");
-            } else if covered_wait(tx, &t, now)? {
+            // Honour a wait on live sources covering every obligation.
+            if covered_wait(tx, &t, now)? {
                 t.reason = reason;
                 t.state = ExecutionState::Waiting;
                 schedule_wait_check_in(&mut t, now);
@@ -414,8 +404,6 @@ pub(super) fn evaluate(
                 } else {
                     blocked(&mut t, "Goal waiting needs live sources covering all obligations and a finite deadline");
                 }
-            } else if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
-                blocked(&mut t, "Goal check-ins made no progress; owner must inspect and explicitly resume");
             } else {
                 let prior = t.wait.take();
                 t.wait = Some(AgentWait {
@@ -477,11 +465,6 @@ fn covered_wait(
 }
 
 fn continue_work(t: &mut AgentTaskExecution, reason: &str) -> bool {
-    if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
-        blocked(t, "Goal repeated continuation without handled progress; owner must inspect and explicitly resume");
-        return false;
-    }
-    t.no_progress_wakes += 1;
     t.wait = None;
     t.reason = reason.into();
     let g = t.goal.as_mut().unwrap();

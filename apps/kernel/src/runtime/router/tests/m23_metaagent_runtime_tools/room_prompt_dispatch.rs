@@ -241,7 +241,7 @@ async fn spawn_keeps_claude_account() {
         .dispatch_authenticated_runtime_tool_call(
             &auth,
             "chariox.room.run_command",
-            serde_json::json!({"command":"agent spawn child --provider claude"}),
+            serde_json::json!({"command":"agent spawn child --provider claude --model room-model --effort low"}),
         )
         .await
         .unwrap();

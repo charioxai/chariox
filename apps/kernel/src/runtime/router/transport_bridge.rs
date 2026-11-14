@@ -75,6 +75,17 @@ impl CommandRouter {
             .await
     }
 
+    pub(crate) async fn record_subscription_attachment_heartbeat(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        self.runtime_state
+            .record_subscription_attachment_heartbeat(session_id, attachment_id, now_ms)
+            .await
+    }
+
     pub(crate) async fn detach_terminal_attachment(
         &self,
         attachment_id: &str,
@@ -271,6 +282,12 @@ impl CommandRouter {
     pub(crate) fn transport_remote_machines_snapshot(&self) -> Vec<RemoteMachineRecord> {
         let (machines, _) = self.remote_relay_inventory_projection.snapshot();
         machines
+    }
+
+    pub(crate) fn kernel_resource_changes(
+        &self,
+    ) -> &crate::transport::kernel_resource_feed::KernelResourceChanges {
+        &self.kernel_resource_changes
     }
 
     pub(crate) fn client_catalog_change_sequence(&self) -> u64 {
