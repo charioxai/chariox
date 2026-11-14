@@ -292,7 +292,20 @@ impl KernelRuntimeState {
     /// continuation prompt (the ledger names that one now). The ledger refuses to redispatch the
     /// prompt, and retrying that for the whole recovery window held the task's fired wakes for
     /// minutes and then ended it with a failure card for a turn that had gone on.
-    fn local_prompt_task_handed_off(&self, room: &str, agent: &str, prompt_id: &str) -> bool {
+    fn local_prompt_task_handed_off(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> bool {
+        let prompt_id = prompt.id();
+        // A continuation prompt names its task in its durable `task:<task>:<revision>` fingerprint,
+        // so it is found after the task went on under a later continuation as well.
+        let continued_task = prompt
+            .durable_operation_fingerprint()
+            .and_then(|fingerprint| fingerprint.strip_prefix("task:"))
+            .and_then(|value| value.rsplit_once(':'))
+            .map(|(task, _)| task);
         self.owned
             .durable_state_store
             .agent_tasks(Some(room), Some(agent))
@@ -302,7 +315,10 @@ impl KernelRuntimeState {
                         && task.pending_prompt_id.is_none()
                         && task.state
                             != crate::durable_state::agent_lifecycle::ExecutionState::Working;
-                    let continued = task.task_id == prompt_id && task.prompt_id != prompt_id;
+                    let continued = (task.task_id == prompt_id
+                        || continued_task == Some(task.task_id.as_str()))
+                        && task.prompt_id != prompt_id
+                        && task.pending_prompt_id.as_deref() != Some(prompt_id);
                     settled || continued
                 })
             })
@@ -803,7 +819,7 @@ impl KernelRuntimeState {
                     }
                     continue;
                 }
-                if self.local_prompt_task_handed_off(session.id(), agent_id, prompt.id()) {
+                if self.local_prompt_task_handed_off(session.id(), agent_id, &prompt) {
                     match self
                         .end_handed_off_local_prompt_after_restart(session.id(), agent_id, &prompt)
                         .await
@@ -1750,6 +1766,22 @@ mod tests {
         config: DaemonConfig,
         workflow_node: bool,
     ) -> (KernelRuntimeState, String, String, String) {
+        runtime_with_active_prompt_named(
+            delivery_phase,
+            worktree,
+            config,
+            workflow_node,
+            ("pending-restart-recovery", "fingerprint-restart-recovery"),
+        )
+    }
+
+    fn runtime_with_active_prompt_named(
+        delivery_phase: crate::session::DurablePromptDeliveryPhase,
+        worktree: &str,
+        config: DaemonConfig,
+        workflow_node: bool,
+        (prompt_name, fingerprint): (&str, &str),
+    ) -> (KernelRuntimeState, String, String, String) {
         let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
         let (session, _default_agent) = KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new(
@@ -1780,13 +1812,13 @@ mod tests {
             )
             .expect("provider should launch");
         let prompt = PromptQueueItem::new(
-            "pending-restart-recovery",
+            prompt_name,
             attachment.id(),
             agent.id(),
             "continue after restart",
             PromptStatus::Queued,
         )
-        .with_durable_operation("command-restart-recovery", "fingerprint-restart-recovery");
+        .with_durable_operation("command-restart-recovery", fingerprint);
         let prompt = if workflow_node {
             let (workflow_run_id, node_run_id) =
                 start_restart_workflow_node(&mut app, session.id(), &agent, true);
@@ -2901,7 +2933,143 @@ mod tests {
             continued.state == ExecutionState::Working && continued.prompt_id != prompt_id,
             "the task moved onto its continuation: {continued:?}"
         );
-        let notices_before = runtime.agent_notices_for_test(&session_id, &agent_id);
+        assert_recovery_retires_the_superseded_prompt(
+            &runtime,
+            &session_id,
+            &agent_id,
+            &prompt_id,
+            &task.task_id,
+        )
+        .await;
+    }
+
+    // The task continued under C1, then blocked and was resumed again: C2 is admitted while C1
+    // is still the session's active prompt, so the task names C2 and C1 is neither the task's
+    // id nor its prompt. C1 still carries the `task:T:revision` fingerprint of the task that
+    // handed it off, and recovery must retire it instead of redispatching it as a new task.
+    #[tokio::test]
+    async fn a_continuation_its_task_resumed_past_ends_silently_after_the_restart() {
+        use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
+        let mut config = DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let task_id = "origin-prompt-1";
+        let first_continuation = format!("task-resume-{task_id}-3");
+        let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_named(
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            std::env::current_dir()
+                .expect("test workspace should resolve")
+                .to_string_lossy()
+                .as_ref(),
+            config,
+            false,
+            (&first_continuation, &format!("task:{task_id}:3")),
+        );
+        let store = &runtime.owned.durable_state_store;
+        let now = crate::session::unix_epoch_ms();
+        let Outcome::Task(task) = store
+            .agent_lifecycle(Operation::Begin {
+                owner: "local".into(),
+                room: session_id.clone(),
+                agent: agent_id.clone(),
+                prompt: task_id.into(),
+                run: None,
+                now,
+            })
+            .expect("task should begin")
+        else {
+            panic!("begin returns the task");
+        };
+        let resume_and_continue = |blocked_prompt: &str| {
+            store
+                .agent_lifecycle(Operation::Block {
+                    task: task.task_id.clone(),
+                    prompt: blocked_prompt.into(),
+                    reason: "Waiting for the owner".into(),
+                })
+                .expect("the task blocks");
+            let Outcome::Task(resumed) = store
+                .agent_lifecycle(Operation::OwnerResponse {
+                    task: task.task_id.clone(),
+                    revision: store
+                        .agent_task(&task.task_id)
+                        .expect("task should load")
+                        .expect("task exists")
+                        .blocked_revision,
+                    resume: true,
+                    now,
+                })
+                .expect("the owner resumes the task")
+            else {
+                panic!("owner response returns the task");
+            };
+            let continuation = resumed
+                .pending_prompt_id
+                .clone()
+                .expect("resume names its continuation prompt");
+            store
+                .agent_lifecycle(Operation::BeginContinuation {
+                    task: task.task_id.clone(),
+                    room: session_id.clone(),
+                    agent: agent_id.clone(),
+                    prompt: continuation.clone(),
+                    run: None,
+                    now,
+                })
+                .expect("the queued continuation is admitted");
+            continuation
+        };
+        assert_eq!(resume_and_continue(task_id), prompt_id);
+        let second_continuation = resume_and_continue(&prompt_id);
+        let current = store
+            .agent_task(&task.task_id)
+            .expect("task should load")
+            .expect("task exists");
+        assert!(
+            current.state == ExecutionState::Working
+                && current.prompt_id == second_continuation
+                && current.prompt_id != prompt_id,
+            "the task moved past the continuation the session still holds: {current:?}"
+        );
+        let tasks_before = store
+            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .expect("tasks should load")
+            .len();
+
+        assert_recovery_retires_the_superseded_prompt(
+            &runtime,
+            &session_id,
+            &agent_id,
+            &prompt_id,
+            &task.task_id,
+        )
+        .await;
+        assert_eq!(
+            store
+                .agent_tasks(Some(&session_id), Some(&agent_id))
+                .expect("tasks should load")
+                .len(),
+            tasks_before,
+            "retiring the obsolete turn admits no new task"
+        );
+        let task = store
+            .agent_task(&task.task_id)
+            .expect("task should load")
+            .expect("task exists");
+        assert_eq!(task.prompt_id, second_continuation, "{task:?}");
+    }
+
+    /// Restarts recovery over the session and asserts that the prompt its task went on from ends
+    /// without a card, a redispatch or a spent window, and that the task keeps working.
+    async fn assert_recovery_retires_the_superseded_prompt(
+        runtime: &KernelRuntimeState,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        task_id: &str,
+    ) {
+        use crate::durable_state::agent_lifecycle::ExecutionState;
+        let store = &runtime.owned.durable_state_store;
+        let notices_before = runtime.agent_notices_for_test(session_id, agent_id);
         let targets = runtime.durable_restart_recovery_targets();
 
         let window = std::time::Duration::from_secs(2);
@@ -2919,32 +3087,34 @@ mod tests {
             started.elapsed() < window,
             "recovery must not spend its window on a prompt its task left: {summary:?}"
         );
+        assert_eq!(summary.accepted_local_redispatched, 0, "{summary:?}");
+        assert_eq!(summary.uncertain_original_redispatched, 0, "{summary:?}");
         assert_eq!(summary.failed_reconciliations, 0, "{summary:?}");
         assert_eq!(summary.unrecoverable_local_prompts_cancelled, 0);
         assert_eq!(summary.handed_off_local_prompts_ended, 1, "{summary:?}");
         let session = runtime
             .owned
             .session_store
-            .get_session(&session_id)
+            .get_session(session_id)
             .expect("session should load");
         assert!(
             runtime
                 .owned
                 .prompt_state_owner
-                .active_prompt_for_agent(&session, &agent_id)
+                .active_prompt_for_agent(&session, agent_id)
                 .is_none_or(|prompt| prompt.id() != prompt_id),
             "the superseded prompt ends: {summary:?}"
         );
         assert_eq!(
-            runtime.agent_notices_for_test(&session_id, &agent_id),
+            runtime.agent_notices_for_test(session_id, agent_id),
             notices_before,
             "a superseded turn settles without a card"
         );
         let task = store
-            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .agent_tasks(Some(session_id), Some(agent_id))
             .expect("tasks should load")
             .into_iter()
-            .find(|candidate| candidate.task_id == task.task_id)
+            .find(|candidate| candidate.task_id == task_id)
             .expect("task should exist");
         assert_eq!(
             task.state,
