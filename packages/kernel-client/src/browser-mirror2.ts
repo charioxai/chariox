@@ -1,6 +1,7 @@
 import { mirror2AbsentFont, mirror2PendingFontSource, Mirror2FontStyle, mirror2RenderedFontReady, mirror2DocumentFontsReady } from './browser-mirror2-fonts.js'
 import { Mirror2SheetCache } from './browser-mirror2-sheets.js'
 import { Mirror2FontCache } from './browser-mirror2-font-cache.js'
+import { Mirror2Retention } from './browser-mirror2-retention.js'
 import { rememberMirror2Range, restoreMirror2Range } from './browser-mirror2-selection.js'
 // MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 517). The page's own
 // sanitized stylesheets and attributes are rebuilt in a script-free sandbox;
@@ -11,6 +12,7 @@ import { Mirror2Navigation } from './browser-mirror2-navigation.js'
 import type { Mirror2Action, Mirror2Form, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2State, Mirror2Tile, Mirror2WirePacket } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
+export { Mirror2Retention } from './browser-mirror2-retention.js'
 /** MP-08/MP-10/MP-11: protocol 550 versions the v2 wire (preview, fonts, sheets, flush, completion). */
 export const browserMirror2MinimumProtocolVersion = 550
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
@@ -101,7 +103,8 @@ export class BrowserMirror2Renderer {
   private wheel = new Mirror2Wheel(fn => requestAnimationFrame(fn), handle => cancelAnimationFrame(handle))
   // MP-08/MP-10/MP-11: a completed empty page can paint without another packet.
   onEmptyPaint: (() => void) | undefined
-  constructor(private container: HTMLElement, private send: (action: Mirror2Input, epoch: { sequence: number; document_id: string }, onWritten?: () => void) => Promise<unknown>, _failure?: (error: unknown) => void) {
+  constructor(private container: HTMLElement, private send: (action: Mirror2Input, epoch: { sequence: number; document_id: string }, onWritten?: () => void) => Promise<unknown>, _failure?: (error: unknown) => void, private retention?: Mirror2Retention) {
+    this.sheetCache = retention?.sheets ?? new Mirror2SheetCache(); this.fontCache = retention?.fonts ?? new Mirror2FontCache()
     this.empty = URL.createObjectURL(new Blob([]))
     this.absentFont = URL.createObjectURL(mirror2AbsentFont())
     this.navigation = new Mirror2Navigation(container, () => { if (!this.disposed) { this.navigationPaint(); this.onEmptyPaint?.() } })
@@ -666,8 +669,9 @@ export class BrowserMirror2Renderer {
     const meta = doc.createElement('meta'); meta.httpEquiv = 'Content-Security-Policy'; meta.content = mirror2SandboxCsp; head.prepend(meta)
   }
   private sheets = new Map<string, string>()
-  private sheetCache = new Mirror2SheetCache()
-  private fontCache = new Mirror2FontCache()
+  // A view hands its caches to every renderer of its navigations; a renderer without one keeps and clears its own.
+  private sheetCache: Mirror2SheetCache
+  private fontCache: Mirror2FontCache
   // MP-08/MP-10/MP-11: hidden preparation never steals focus or emits input.
   setInteractive(enabled: boolean, focus = false): void {
     this.interactive = enabled; this.frame.inert = !enabled
@@ -961,7 +965,7 @@ export class BrowserMirror2Renderer {
     style.setProperty('background-position', `${tile.x}px ${tile.y}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
   }
   close(options?:{preserveFrame?:boolean}): void {
-    this.disposed = true; this.onEmptyPaint = undefined; this.onTiming = undefined; this.sheetCache.clear(); this.fontCache.clear(); this.sheets.clear(); this.releasePointer(); this.queue=[]; this.pendingInputs=0; this.wheel.close()
+    this.disposed = true; this.onEmptyPaint = undefined; this.onTiming = undefined; if (!this.retention) { this.sheetCache.clear(); this.fontCache.clear() } this.sheets.clear(); this.releasePointer(); this.queue=[]; this.pendingInputs=0; this.wheel.close()
     const owner = this.container.ownerDocument
     owner.removeEventListener('pointerup', this.releasePointer, true)
     owner.removeEventListener('pointercancel', this.releasePointer, true)
@@ -1001,7 +1005,7 @@ type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'fram
 // A failure streak that outlives this with no packet is terminal (the runtime then
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
-export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; preparing?(packet: Mirror2Packet): void; prepareReset?(packet: Mirror2Packet): boolean; inputFailure?(error: unknown): void; packet?(packet: Mirror2Packet): void; presented?(packet: Mirror2Packet): void; timing?(sample:Mirror2Timing):void; diagnostic?(stage:string,error:unknown,sequence?:number):void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, preserveFrameOnFailure=false, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
+export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; preparing?(packet: Mirror2Packet): void; prepareReset?(packet: Mirror2Packet): boolean; inputFailure?(error: unknown): void; packet?(packet: Mirror2Packet): void; presented?(packet: Mirror2Packet): void; timing?(sample:Mirror2Timing):void; diagnostic?(stage:string,error:unknown,sequence?:number):void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, preserveFrameOnFailure=false, retention = undefined as Mirror2Retention | undefined, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1], retained?: Mirror2Retention): Renderer => new BrowserMirror2Renderer(container, send, undefined, retained) } = {}) {
   if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 550')
   const request = async (command: unknown, onWritten?:()=>void): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } },onWritten?{onWritten}:undefined) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const releaseHold = transport.prioritize?.() ?? (() => {})
@@ -1036,9 +1040,10 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), selection: header('selection'), fragment: header('fragment'), snapshot_complete: header('snapshot_complete'), font_failures: header('font_failures') } as Mirror2Packet)
   }
   // MP-08/MP-11: undo/redo keep the mirror's frame, focus and epoch admission.
-  const renderer = createRenderer(container, async (action, epoch, onWritten) => { activeAt = performance.now(); fill(); try { return await request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action: 'modifiers' in action ? { kind: 'key', key: action.modifiers & 8 ? 'Ctrl+Shift+Z' : 'Ctrl+Z' } : action },onWritten) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } })
+  const renderer = createRenderer(container, async (action, epoch, onWritten) => { activeAt = performance.now(); fill(); try { return await request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action: 'modifiers' in action ? { kind: 'key', key: action.modifiers & 8 ? 'Ctrl+Shift+Z' : 'Ctrl+Z' } : action },onWritten) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } }, retention)
   renderer.requireNativeFonts?.(subscribed.font_requirements === true)
   renderer.onTiming = sample => { if (sample.stage === 'mirror_navigation_paint') releasePriority(); handlers.timing?.(sample) }
+  retention?.begin()
   try { await renderer.ready() } catch (error) { releasePriority(); renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}); throw error }
   // Notify consumers when the empty-page timer presents the last applied
   // frame. A silent/stalled credit must not keep the previous View attached.

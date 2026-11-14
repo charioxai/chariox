@@ -12,5 +12,12 @@ export class Mirror2FontCache {
   }
   take(resourceId: string): Blob | undefined { return this.blobs.get(resourceId.slice(0, 24)) }
   digests(): string[] { return [...this.blobs.keys()] }
+  // Before a new subscription of the same view lists the cache, the oldest fonts make room for the next page's.
+  makeRoom(): void {
+    for (const [digest, blob] of this.blobs) {
+      if (this.blobs.size <= MAX_FONTS / 2 && this.bytes <= MAX_BYTES / 2) break
+      this.blobs.delete(digest); this.bytes -= blob.size
+    }
+  }
   clear(): void { this.blobs.clear(); this.bytes = 0 }
 }
