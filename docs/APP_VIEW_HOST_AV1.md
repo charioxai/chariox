@@ -243,17 +243,28 @@ kernel ends it when nothing renews it (`UserAppViews::lease/renew`, one watcher 
 view); a client whose renewal is refused opens a new view, which is also how a reload
 re-attaches. Kernel-browser views have no lease: their Tab owns their lifetime.
 
-An App whose active release exports the reserved tools `view_actions` (its registered
-actions, in the shape of the signed `ui-actions` declarations) and `view_state` serves its
-view from its backend. `app_view_catalog/invoke/state/batch` for an installation the agent
-holds then run with no page, Tab or browser: the declared name and input schema and the
-approval effect are checked from the signed declarations, the backend's `view_actions`
-answer must equal the signed declaration of that action on every call
-(`view_mismatch` / `action_not_registered`), and the action runs as the backend tool of
-the same name under the agent's own App grant. `app_view_changes` answers
-`changes_unavailable`: the revisioned feed (1 MiB / 128 events), the WIT or SDK export that
-replaces the reserved tool names, other Apps' action logic in their backends and removal
-of the page-registration path are the rest of AV3.
+An App whose backend serves its view declares its actions once, in the signed `ui-actions`
+document, and hands that document to the Rust SDK's `view::View` (`View::declare(..)`;
+`register()` in `Guest::register`, `serve(..)` in `call_tool`). The SDK registers and answers the
+tools the kernel reads the view through (`view_actions`: the registered actions in the shape of the
+signed declarations; `view_state`: the state the App builds when asked; `view_changes` when the App
+offers the feed), so the App never names them; the packer lists them in the manifest beside the
+declared actions. `app_view_catalog/invoke/state/batch` for an installation the agent holds then run
+with no page, Tab or browser: the declared name and input schema and the approval effect are
+checked from the signed declarations, the backend's `view_actions` answer must equal the signed
+declaration of that action on every call (`view_mismatch` / `action_not_registered`), and the
+action runs as the backend tool of the same name under the agent's own App grant.
+
+`app_view_changes` reads the backend's feed (AV3-AV6 slice 3). The App commits each change with
+`view::transact_with_change(tx, delta)`, in the same transaction as its own writes: the SDK keeps
+the head revision and the last 128 changes (8 KiB each, so the feed stays within 1 MiB) in the
+App's durable state. `view_changes {since}` answers `{latest, dropped, changes: [{seq, delta}]}`
+like a page's feed (`dropped` when the reader missed evicted changes: read the state again). The
+kernel hands a reader at most 128 changes in at most 1 MiB, in revision order and not past the
+head, whatever a backend answers (`view_error` otherwise); `wait_ms` makes it ask again every
+250 ms until a change exists or the wait ends. An App that offers no `view_changes` tool answers
+`changes_unavailable`. Other Apps' action logic in their backends and removal of the
+page-registration path are the rest of AV3.
 
 ## CSP frozen as one layer of containment
 

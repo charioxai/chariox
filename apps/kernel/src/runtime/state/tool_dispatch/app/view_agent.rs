@@ -112,8 +112,11 @@ struct ViewContext {
 #[derive(Clone)]
 enum ViewHost {
     Room,
-    /// The App's backend serves its actions and state: no page, Tab or browser.
-    Backend,
+    /// The App's backend serves its actions and state: no page, Tab or browser. `changes` when it
+    /// also keeps the revisioned change feed.
+    Backend {
+        changes: bool,
+    },
     User {
         owner: String,
         view_id: String,
@@ -753,7 +756,7 @@ impl KernelRuntimeState {
         context: &ViewContext,
     ) -> Result<Option<tokio::sync::OwnedMutexGuard<()>>, ViewError> {
         // A backend serves its own calls in order; there is no page to take turns on.
-        if matches!(context.host, ViewHost::Backend) {
+        if matches!(context.host, ViewHost::Backend { .. }) {
             context.authority.check()?;
             return Ok(None);
         }
@@ -774,7 +777,7 @@ impl KernelRuntimeState {
     fn view_still_bound(&self, context: &ViewContext) -> Result<(), ViewError> {
         context.authority.check()?;
         match &context.host {
-            ViewHost::Backend => Ok(()),
+            ViewHost::Backend { .. } => Ok(()),
             ViewHost::Room => match self
                 .app_control()
                 .views()
@@ -873,7 +876,7 @@ impl KernelRuntimeState {
         answer: Result<Value, ViewError>,
     ) -> Result<Value, ViewError> {
         let (protection, scope) = match &context.host {
-            ViewHost::Room | ViewHost::Backend => (
+            ViewHost::Room | ViewHost::Backend { .. } => (
                 &self.owned.room_secret_observations,
                 context.session.clone(),
             ),
@@ -900,7 +903,10 @@ impl KernelRuntimeState {
 
     async fn ensure_context_current(&self, context: &ViewContext) -> Result<(), ViewError> {
         self.view_still_bound(context)?;
-        if matches!(&context.host, ViewHost::User { .. } | ViewHost::Backend) {
+        if matches!(
+            &context.host,
+            ViewHost::User { .. } | ViewHost::Backend { .. }
+        ) {
             let (_, signed_actions) = self
                 .check_inspected_release(None, &context.binding)
                 .await
@@ -929,8 +935,8 @@ impl KernelRuntimeState {
         changes: Option<(u64, u64)>,
     ) -> Result<Value, ViewError> {
         self.ensure_context_current(context).await?;
-        if matches!(context.host, ViewHost::Backend) {
-            return self.backend_view_call(context, kind, invoke).await;
+        if matches!(context.host, ViewHost::Backend { .. }) {
+            return self.backend_view_call(context, kind, invoke, changes).await;
         }
         let (name, input) = invoke.map_or((None, None), |(name, input)| {
             (Some(name.to_owned()), Some(input))
@@ -939,7 +945,9 @@ impl KernelRuntimeState {
             target_id: match &context.host {
                 ViewHost::Room => context.target.clone(),
                 ViewHost::User { browser_target, .. } => browser_target.clone(),
-                ViewHost::Backend => unreachable!("a backend view answers before the controller"),
+                ViewHost::Backend { .. } => {
+                    unreachable!("a backend view answers before the controller")
+                }
             },
             agent: context.agent_id.clone(),
             call: kind,
@@ -952,7 +960,7 @@ impl KernelRuntimeState {
         let reply = tokio::select! {
             reply = async {
                 match &context.host {
-                    ViewHost::Backend => unreachable!("a backend view answers before the controller"),
+                    ViewHost::Backend { .. } => unreachable!("a backend view answers before the controller"),
                     ViewHost::Room => self.app_view_command::<Value>(&context.session, request).await,
                     ViewHost::User { owner, browser_generation, .. } => {
                         use crate::runtime::state::app_view_host::{
