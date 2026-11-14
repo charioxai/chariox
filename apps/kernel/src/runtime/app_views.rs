@@ -176,6 +176,8 @@ pub(crate) struct ViewCall {
     number: u64,
     cancelled: tokio::sync::watch::Receiver<()>,
     browser_grant: Option<super::kernel_browser_host::KernelBrowserResourceGrant>,
+    /// A call that no Tab hosts is cancelled by its caller dropping it, never by a Tab going away.
+    _detached: Option<tokio::sync::watch::Sender<()>>,
 }
 
 impl ViewCall {
@@ -869,6 +871,20 @@ impl AppViews {
             number,
             cancelled,
             browser_grant: None,
+            _detached: None,
+        }
+    }
+
+    /// A view call made by something with no Tab: it lives until dropped.
+    pub(crate) fn detached_call(&self) -> ViewCall {
+        let (keep, cancelled) = tokio::sync::watch::channel(());
+        ViewCall {
+            views: self.clone(),
+            session: String::new(),
+            number: self.2.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
+            cancelled,
+            browser_grant: None,
+            _detached: Some(keep),
         }
     }
 

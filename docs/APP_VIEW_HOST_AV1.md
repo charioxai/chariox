@@ -233,6 +233,28 @@ file grants, exports, host clipboard service admission or Vault filling. Those
 need the declared, gesture-bound host/broker paths. AV6 must add trusted field
 identities/masking before any model capture claim; this round implements none.
 
+## View lease and backend-served views (AV3-AV6 slice 2)
+
+A view a client renders itself (`OpenUserAppView` without `kernel_browser`) is leased to
+that client for 60 s. Any owner `CallUserAppView` renews it; the built-in method
+`chariox.lease` renews it and answers `{lease_ms}`, which Web calls every quarter of the
+lease while the window lives. A closed or crashed tab never closes its view, so the
+kernel ends it when nothing renews it (`UserAppViews::lease/renew`, one watcher task per
+view); a client whose renewal is refused opens a new view, which is also how a reload
+re-attaches. Kernel-browser views have no lease: their Tab owns their lifetime.
+
+An App whose active release exports the reserved tools `view_actions` (its registered
+actions, in the shape of the signed `ui-actions` declarations) and `view_state` serves its
+view from its backend. `app_view_catalog/invoke/state/batch` for an installation the agent
+holds then run with no page, Tab or browser: the declared name and input schema and the
+approval effect are checked from the signed declarations, the backend's `view_actions`
+answer must equal the signed declaration of that action on every call
+(`view_mismatch` / `action_not_registered`), and the action runs as the backend tool of
+the same name under the agent's own App grant. `app_view_changes` answers
+`changes_unavailable`: the revisioned feed (1 MiB / 128 events), the WIT or SDK export that
+replaces the reserved tool names, other Apps' action logic in their backends and removal
+of the page-registration path are the rest of AV3.
+
 ## CSP frozen as one layer of containment
 
 Both documents use:
