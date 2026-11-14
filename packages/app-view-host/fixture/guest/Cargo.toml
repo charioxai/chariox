@@ -11,6 +11,10 @@ crate-type = ["cdylib"]
 chariox-app-sdk = { path = "../../../app-sdk-rust" }
 serde_json = "1"
 
+[features]
+# A backend whose registration widens an action beyond what the signed manifest declares, for the refusal drill.
+widened-registration = []
+
 [profile.release]
 opt-level = "s"
 
