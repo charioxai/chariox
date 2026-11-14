@@ -176,6 +176,23 @@ export function listAppConnectionsRequest(installationId: string) {
   return { ListAppConnections: { installation_id: installationId } }
 }
 
+export type AppAccountAllow = "read" | "write" | "destructive"
+
+/** The owner binds one of their Vault entries to a credentialed destination of the App's manifest. */
+export function grantAppAccountRequest(
+  installationId: string, account: string, credential: string, vaultCredentialId: string, allow: AppAccountAllow,
+) {
+  return { GrantAppAccount: { installation_id: installationId, account, credential, vault_credential_id: vaultCredentialId, allow } }
+}
+
+export function revokeAppAccountRequest(installationId: string, account: string) {
+  return { RevokeAppAccount: { installation_id: installationId, account } }
+}
+
+export function listAppAccountsRequest(installationId: string) {
+  return { ListAppAccounts: { installation_id: installationId } }
+}
+
 export function removeAppInboxRouteRequest(installationId: string, routeId: string) {
   return { RemoveAppInboxRoute: { installation_id: installationId, route_id: routeId } }
 }

@@ -5,9 +5,10 @@ import {
   type AppInboxConnection,
   removeAppInboxRouteRequest, testAppInboxRouteRequest,
   grantAppConnectionRequest, revokeAppConnectionRequest, listAppConnectionsRequest, getAppSetRequest,
+  grantAppAccountRequest, revokeAppAccountRequest, listAppAccountsRequest, type AppAccountAllow,
   revokeAppFileGrantsRequest, inspectAppViewRequest,
 } from "./ipc-app-requests.js"
-import type { AppViewCatalog, AppViewInspection, AppAutomationSummary, AppConnectionSummary, AppInboxRouteSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
+import type { AppViewCatalog, AppViewInspection, AppAutomationSummary, AppAccountSummary, AppConnectionSummary, AppCredentialSummary, AppInboxRouteSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
 import { LocalIpcError } from "./local-ipc-error.js"
 import type { ShellCommandResult } from "./shell-core.js"
 
@@ -25,6 +26,7 @@ const usage = [
   "       app inbox add <installation-id> <route-id> <event> <source-event-type> [--version <n>] [--connection <generator>/<connection-id>/<scope>] [--filter-json <object>]",
   "       app inbox test <installation-id> <route-id> <occurrence-id> '<json-payload>'",
   "       app connection list <installation-id> | grant <installation-id> <generator>/<connection-id> | revoke <installation-id> <connection-id>",
+  "       app account list <installation-id> | grant <installation-id> <account> <credential> <vault-entry-id> [--allow read|write|destructive] | revoke <installation-id> <account>",
   "       app file revoke <installation-id> [<operation-id>]",
 ].join("\n")
 
@@ -111,6 +113,14 @@ export async function executeAppCommand(
       const [generatorId = "", connectionId = ""] = target.split("/")
       request = grantAppConnectionRequest(installation, generatorId, connectionId)
     } else return { ok: false, message: usage }
+  } else if (action === "account") {
+    const [verb, installation, account, credential, entry, ...flags] = rest
+    const allow = flags.length === 0 ? "read" : flags.length === 2 && flags[0] === "--allow" ? flags[1] : undefined
+    if (verb === "list" && installation && rest.length === 2) request = listAppAccountsRequest(installation)
+    else if (verb === "revoke" && installation && account && rest.length === 3) request = revokeAppAccountRequest(installation, account)
+    else if (verb === "grant" && installation && account && credential && entry && (allow === "read" || allow === "write" || allow === "destructive")) {
+      request = grantAppAccountRequest(installation, account, credential, entry, allow as AppAccountAllow)
+    } else return { ok: false, message: usage }
   } else if (action === "file" && rest[0] === "revoke" && rest[1] && rest.length <= 3) {
     request = revokeAppFileGrantsRequest(rest[1], rest[2])
   } else if (action === "automation") {
@@ -129,7 +139,7 @@ export async function executeAppCommand(
     const check = action === "uninstall" ? `app status ${rest[0]}` : `app worker ${rest[0]}`
     return { ok: false, message: `The kernel did not answer, so the ${action} may still happen. Check with ${check} before trying again.` }
   }
-  if (response.AppRequestFailed) return appFailure(response, action === "connection" || action === "file" ? `${action} ${rest[0]}` : action)
+  if (response.AppRequestFailed) return appFailure(response, action === "connection" || action === "account" || action === "file" ? `${action} ${rest[0]}` : action)
   if (response.AppLogs) {
     const data = expect<{ installation_id: string; entries: AppLogEntry[] }>(response, "AppLogs")
     const lines = data.entries.map(formatLogEntry)
@@ -168,6 +178,12 @@ export async function executeAppCommand(
     const lines = data.connections.map((connection) =>
       `${connection.connection_id} · ${connection.generator_id} · actions: ${connection.actions.join(", ") || "none declared"}`)
     return { ok: true, message: lines.join("\n") || "No connections granted to this App.", data }
+  }
+  if (response.AppAccounts) {
+    const data = expect<{ installation_id: string; credentials: AppCredentialSummary[]; accounts: AppAccountSummary[] }>(response, "AppAccounts")
+    const wants = data.credentials.map((c) => `${c.credential} · ${c.origin} · ${c.routes} routes up to ${c.safety}`)
+    const bound = data.accounts.map((a) => `${a.account} · ${a.credential} · entry ${a.vault_credential_id} · allows ${a.allow}`)
+    return { ok: true, message: [...wants.map((line) => `needs ${line}`), ...bound].join("\n") || "This App declares no credentialed destination.", data }
   }
   if (response.AppFileGrantsRevoked) {
     const data = expect<{ installation_id: string; requests: number; files: number }>(response, "AppFileGrantsRevoked")
@@ -349,10 +365,13 @@ function appFailure(response: Record<string, unknown>, action?: string): ShellCo
       ? "Not found: check the App installation, session, workflow or automation."
       : action === "inbox" ? "Not found: check the App installation and route."
       : action?.startsWith("connection") ? "Not found: check the App installation and the connection id."
+      : action?.startsWith("account") ? "Not found: check the App installation and the account name."
       : action === "file revoke" ? "Not found: check the App installation and the file request id."
       : "App installation not found.",
     invalid_request: action === "inbox"
       ? "Invalid App request: the event must be one the App declares as incoming, and a payload must match its schema."
+      : action === "account grant"
+        ? "Invalid App request: the App must declare this credential, and the Vault entry must be made for HTTP use at its origin (chariox.vault.copy_for_use makes one)."
       : action === "connection grant"
         ? "Invalid App request: the App's signed manifest must declare this generator under capabilities.connections."
         : "Invalid App request.",

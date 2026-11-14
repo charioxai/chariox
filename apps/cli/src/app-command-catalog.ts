@@ -39,6 +39,7 @@ export const appCommandCatalog: readonly AppCommandEntry[] = [
   both("automation", "list|add|disable INSTALLATION …", "manage an App's automations"),
   both("inbox", "list|add|remove|test INSTALLATION …", "manage an App's inbox routes"),
   both("connection", "list|grant|revoke INSTALLATION …", "manage an App's connections"),
+  both("account", "list|grant|revoke INSTALLATION …", "manage the accounts an App calls a service with"),
   { verb: "file", cli: "file revoke INSTALLATION [OPERATION]", tui: 'file grant OPERATION "FILE"… | file save OPERATION "PATH" | file revoke INSTALLATION [OPERATION]', summary: "answer or revoke an App's file request" },
 ]
 

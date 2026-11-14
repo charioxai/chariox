@@ -124,6 +124,23 @@ export interface AppConnectionSummary {
   actions: string[]
 }
 
+/** An account the owner bound to an App: the Vault entry is named by id, never by value. */
+export interface AppAccountSummary {
+  account: string
+  credential: string
+  vault_credential_id: string
+  allow: "read" | "write" | "destructive"
+  bound_at_ms: number
+}
+
+/** A credentialed destination the App's release declares, with the most authority one of its routes needs. */
+export interface AppCredentialSummary {
+  credential: string
+  origin: string
+  routes: number
+  safety: "read" | "write" | "destructive"
+}
+
 /** Protocol 367: the owner's consent to deploy a workflow with the Apps of its
  * publication's pinned App plan. Replaying the same `request_id` reports the answer. */
 export type DeploymentAppsConsentStatus = "awaiting_approval" | "approved" | "declined" | "expired"

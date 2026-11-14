@@ -789,6 +789,10 @@ mod tests {
                 "app-connection-list",
                 "app-connection-grant",
                 "app-connection-revoke",
+                "app-account",
+                "app-account-list",
+                "app-account-grant",
+                "app-account-revoke",
                 "app-file-revoke",
             ]
         );
@@ -978,6 +982,30 @@ mod tests {
             (
                 "app-connection-revoke",
                 "/app connection revoke ",
+                Kernel,
+                vec![Session, WaitingRoom],
+            ),
+            (
+                "app-account",
+                "/app account ",
+                Kernel,
+                vec![Session, WaitingRoom],
+            ),
+            (
+                "app-account-list",
+                "/app account list ",
+                Kernel,
+                vec![Session, WaitingRoom],
+            ),
+            (
+                "app-account-grant",
+                "/app account grant ",
+                Kernel,
+                vec![Session, WaitingRoom],
+            ),
+            (
+                "app-account-revoke",
+                "/app account revoke ",
                 Kernel,
                 vec![Session, WaitingRoom],
             ),
