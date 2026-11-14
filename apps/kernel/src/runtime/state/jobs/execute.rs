@@ -1,3 +1,4 @@
+use super::pending_return::PendingReturn;
 use super::remote::Remote;
 use super::*;
 use crate::local::OffloadPolicy;
@@ -412,6 +413,10 @@ impl KernelRuntimeState {
         // Execution and file return are complete. A service restart during
         // deletion must not erase their result, including after kernel recovery.
         record.result = Some(result.clone());
+        if record.return_pending {
+            save_record(self, record)?;
+            return Ok(result);
+        }
         record.state = "deleting".into();
         save_record(self, record)?;
         match self
@@ -537,7 +542,7 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn run_remote_job(
+    pub(super) async fn run_remote_job(
         &self,
         record: &mut Record,
         machine: &super::super::job_compute::JobMachine,
@@ -647,10 +652,40 @@ impl KernelRuntimeState {
         };
         let mut result = result_from_exit(record, outcome, stopped);
         record.state = "returning".into();
+        // From here the worker may hold the only copy of the outputs: keep what collecting them
+        // again needs before the first attempt, and release the worker only once they are home.
+        let plan = PendingReturn {
+            root,
+            kernel_id: machine.kernel_id.clone(),
+            base,
+            uploaded: upload,
+            outcome: result.outcome,
+        };
+        plan.save(self, &record.job_id)?;
+        record.return_pending = true;
         save_record(self, record)?;
-        let (files, conflicts) = remote.return_files(&root, record, &base, &upload).await?;
-        result.files_back = files;
-        result.conflicts = conflicts;
+        if let Some(driver) = &self.job_wake_driver {
+            driver
+                .return_grants
+                .lock()
+                .expect("job return grants")
+                .insert(record.job_id.clone(), machine.grant.clone());
+        }
+        match remote
+            .return_files(&plan.root, record, &plan.base, &plan.uploaded)
+            .await
+        {
+            Ok((files, conflicts)) => {
+                result.files_back = files;
+                result.conflicts = conflicts;
+                self.settle_pending_return(record);
+            }
+            Err(error) => {
+                let notice = format!("The command finished, but its files could not all be returned: {error}. The remote machine is kept so none are lost. Check this job with chariox.jobs.status to collect them; chariox.jobs.cancel gives them up. The machine is deleted once they are home, or when its lease ends.\n");
+                output.push(self, &record.room_id, notice.as_bytes(), true)?;
+                result.outcome = JobOutcome::OutsideEnd;
+            }
+        }
         Ok(result)
     }
 }

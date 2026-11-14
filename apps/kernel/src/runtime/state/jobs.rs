@@ -14,10 +14,13 @@ mod cleanup_tests;
 mod control;
 mod driver;
 mod execute;
+mod pending_return;
 mod projection;
 mod record;
 mod remote;
 mod requests;
+#[cfg(test)]
+mod return_tests;
 #[cfg(test)]
 mod tests;
 
@@ -44,4 +47,8 @@ pub(super) struct JobDriver {
     remote_samples:
         std::sync::Mutex<BTreeMap<String, Vec<crate::runtime::process_resources::SessionProcess>>>,
     remote_origins: std::sync::Mutex<BTreeMap<String, crate::runtime::kernel_gateway::Origin>>,
+    /// Grants to workers that still hold files not yet returned; rebuilt from the saved plan after a restart.
+    return_grants: std::sync::Mutex<
+        BTreeMap<String, Arc<dyn crate::room_exec::gateway_placement::GrantedSend>>,
+    >,
 }
