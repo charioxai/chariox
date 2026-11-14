@@ -49,7 +49,7 @@ fn success(frame: KernelOutgoingFrame) -> serde_json::Value {
 }
 
 #[test]
-fn mdnotes_two_local_connections_keep_observation_and_takeover_private() {
+fn mdnotes_two_local_connections_keep_observation_private_and_share_the_takeover() {
     let root = RuntimeTransportTempDir::new("mdnotes-two-terminals");
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("slice-linux-docker/docker/kernel-browser-terminal-fixture.mjs");
@@ -406,25 +406,21 @@ async fn mdnotes_two_local_connections_child() {
             )
             .await,
         );
-        let blocked = request(
-            &mut b.0,
-            "MP-mirror-b-input",
-            Browser::MirrorInput {
-                tab_id: tab.clone(),
-                generation,
-                document_id: b_packet["document_id"].as_str().unwrap().into(),
-                subscription_id: b_subscription.clone(),
-                sequence: 1,
-                action: KernelBrowserMirrorAction::Key { key: "Tab".into() },
-            },
-        )
-        .await;
-        assert!(
-            matches!(
-                blocked,
-                KernelOutgoingFrame::Response { error: Some(_), .. }
-            ),
-            "MP-11: mirror input uses video takeover ledger"
+        // The takeover belongs to the person: their other connection types on, through the same ledger.
+        success(
+            request(
+                &mut b.0,
+                "MP-mirror-b-input",
+                Browser::MirrorInput {
+                    tab_id: tab.clone(),
+                    generation,
+                    document_id: b_packet["document_id"].as_str().unwrap().into(),
+                    subscription_id: b_subscription.clone(),
+                    sequence: 1,
+                    action: KernelBrowserMirrorAction::Key { key: "Tab".into() },
+                },
+            )
+            .await,
         );
         success(
             request(
