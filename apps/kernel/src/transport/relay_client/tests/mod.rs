@@ -14,6 +14,7 @@ mod registration;
 mod remote_agents;
 mod remote_queue;
 mod room_terminal_stream;
+mod shared_heartbeat;
 mod subscriptions;
 mod support;
 mod terminal_actors;

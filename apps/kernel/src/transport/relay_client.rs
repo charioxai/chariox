@@ -79,7 +79,7 @@ use envelope_io::{
     encrypt_json_response, encrypt_peer_payload, send_outgoing_envelope,
     send_outgoing_event_envelope,
 };
-use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
+use events::{emit_relay_event, replay_recent_relay_events, HeartbeatLane, RelayEventRuntime};
 use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext, RelayReconnectGate};
 use local_browser::LocalBrowserDirect;
 pub(crate) use metadata_client::MainConnection;

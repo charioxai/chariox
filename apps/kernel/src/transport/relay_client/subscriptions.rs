@@ -794,7 +794,11 @@ pub(super) async fn run_relay_subscription_loop(
                         &mut next_heartbeat_at,
                         subscriber.heartbeat_interval,
                         || async {
-                            emit_relay_event(
+                            !event_runtime.claim_heartbeat(
+                                &client_public_key,
+                                HeartbeatLane::Session,
+                                subscriber.heartbeat_interval,
+                            ) || emit_relay_event(
                                 &router,
                                 &outgoing_tx,
                                 &subscription_id,
@@ -836,7 +840,11 @@ pub(super) async fn run_relay_subscription_loop(
                 }
 
                 if Instant::now() >= next_heartbeat_at {
-                    if emit_relay_event(
+                    if event_runtime.claim_heartbeat(
+                        &client_public_key,
+                        HeartbeatLane::Session,
+                        subscriber.heartbeat_interval,
+                    ) && emit_relay_event(
                         &router,
                         &outgoing_tx,
                         &subscription_id,
@@ -1106,7 +1114,11 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
             }
         }
         if Instant::now() >= next_heartbeat_at {
-            if emit_relay_event(
+            if event_runtime.claim_heartbeat(
+                &client_public_key,
+                HeartbeatLane::Inventory,
+                subscriber.heartbeat_interval,
+            ) && emit_relay_event(
                 &router,
                 &outgoing_tx,
                 &subscription_id,

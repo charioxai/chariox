@@ -84,6 +84,15 @@ pub(super) async fn handle_subscribe(
                     let subscription_id = subscription_id.clone();
                     let client_public_key = client_public_key.clone();
                     async move {
+                        if matches!(event, KernelEvent::Heartbeat { .. })
+                            && !event_runtime.claim_heartbeat(
+                                &client_public_key,
+                                super::events::HeartbeatLane::Inventory,
+                                heartbeat_interval,
+                            )
+                        {
+                            return true;
+                        }
                         super::events::emit_relay_event(
                             &router,
                             &outgoing_tx,
