@@ -359,11 +359,17 @@ fn package_build(
         incoming,
         clipboard_write,
         false,
+        0,
     )
 }
 pub(super) fn browser_tool_package() -> (Vec<u8>, TrustedPublisher) {
-    package_build_ui(true, false, "1.0.0", 0, false, false, true)
+    package_build_ui(true, false, "1.0.0", 0, false, false, true, 0)
 }
+/// An App whose view holds `view_bytes` of files that do not compress.
+pub(super) fn large_view_package(view_bytes: usize) -> (Vec<u8>, TrustedPublisher) {
+    package_build_ui(false, false, "1.0.0", 0, false, false, false, view_bytes)
+}
+#[allow(clippy::too_many_arguments)]
 fn package_build_ui(
     with_tools: bool,
     with_network: bool,
@@ -372,6 +378,7 @@ fn package_build_ui(
     incoming: bool,
     clipboard_write: bool,
     browser_ui: bool,
+    view_bytes: usize,
 ) -> (Vec<u8>, TrustedPublisher) {
     let mut manifest: Manifest=serde_json::from_value(json!({
         "schema":"chariox.app.v1","appId":"com.example.state","version":version,
@@ -453,6 +460,18 @@ fn package_build_ui(
     if browser_ui {
         files.insert("ui/index.html".into(), b"<!doctype html><title>MD integration App</title><h1>Kernel-hosted App</h1><p id='result'>Loading</p><form id='action'><input id='message' aria-label='Message'><button>Call App</button></form><p id='keyboard'>No keyboard action</p><script src='app.js'></script>".to_vec());
         files.insert("ui/app.js".into(), b"window.chariox.call('echo',{text:'kernel browser page'}).then(result=>document.getElementById('result').textContent='App channel '+JSON.stringify(result)).catch(()=>document.getElementById('result').textContent='App channel refused');window.chariox.form(document.getElementById('action'),async(_input,caller)=>{await caller.call('echo',{text:document.getElementById('message').value}).then(result=>document.getElementById('keyboard').textContent='Keyboard App channel '+JSON.stringify(result)).catch(error=>document.getElementById('keyboard').textContent='Keyboard App channel refused '+error.code);});".to_vec());
+    }
+    let mut noise = 0x9e37_79b9_7f4a_7c15u64;
+    for (index, start) in (0..view_bytes).step_by(512 * 1024).enumerate() {
+        let bytes = (0..(view_bytes - start).min(512 * 1024))
+            .map(|_| {
+                noise ^= noise << 13;
+                noise ^= noise >> 7;
+                noise ^= noise << 17;
+                (noise >> 24) as u8
+            })
+            .collect();
+        files.insert(format!("ui/data-{index}.bin"), bytes);
     }
     let bytes = pack(
         &manifest,
