@@ -301,6 +301,9 @@ impl KernelBrowserActors {
         self.reclaim_idle_takeovers(Instant::now());
         self.register(actor.clone())?;
         self.adopt_orphaned_takeovers(&actor.actor_id);
+        if let Some(host_tab) = params["tab_id"].as_str() {
+            self.follow_person_takeover(&actor.actor_id, host_tab);
+        }
         self.note_person_input(&actor.actor_id);
         let mut request = if let Some(host_tab) = params["tab_id"].as_str() {
             let tab = self.tab(host_tab)?;
@@ -533,6 +536,7 @@ impl KernelBrowserActors {
         self.reclaim_idle_takeovers(Instant::now());
         self.register(actor.clone())?;
         self.adopt_orphaned_takeovers(&actor.actor_id);
+        self.follow_person_takeover(&actor.actor_id, host_tab);
         self.takeover_input
             .insert(actor.actor_id.clone(), Instant::now());
         let effect = self
@@ -757,6 +761,32 @@ impl KernelBrowserActors {
             self.end_takeover_bookkeeping(&orphan);
         }
     }
+    /// The takeover belongs to the person, not to the window that took it: input from another viewer
+    /// of the person on a Tab the person holds continues that takeover there.
+    fn follow_person_takeover(&mut self, actor_id: &str, host_tab: &str) {
+        if !self.is_human(actor_id) {
+            return;
+        }
+        let Ok(tab) = self.tab(host_tab) else {
+            return;
+        };
+        let target = InputTarget::BrowserTab(tab);
+        let holder = self
+            .ledger
+            .ownership()
+            .into_iter()
+            .map(|owner| (owner.target, owner.actor_id))
+            .chain(
+                self.ledger
+                    .pending_takeovers()
+                    .into_iter()
+                    .map(|pending| (pending.target, pending.human_actor_id)),
+            )
+            .find(|(held, owner)| *held == target && owner != actor_id && self.is_human(owner));
+        if let Some((_, holder)) = holder {
+            self.transfer_takeover(&holder, actor_id);
+        }
+    }
     /// A replacement viewer inherits the person's input time; connecting never renews it.
     fn transfer_takeover(&mut self, from: &str, to: &str) {
         self.ledger.transfer_tab_ownership(from, to);
@@ -926,6 +956,40 @@ mod tests {
             (json!(false), json!(false)),
             "an agent acting is not a person's takeover"
         );
+    }
+    #[test]
+    fn a_second_viewer_of_the_person_keeps_typing_while_the_first_holds_the_takeover() {
+        let mut model = ready();
+        model
+            .takeover(human("terminal:first"), "host-tab-a", 1)
+            .unwrap();
+        let (action, _) = model
+            .begin(human("terminal:second"), &input("host-tab-a"))
+            .expect("the person's other viewer is not fenced by the person's own takeover");
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+        assert!(
+            model.begin(agent(), &input("host-tab-a")).is_err(),
+            "the agent stays fenced while the person holds the Tab"
+        );
+        let (action, _) = model
+            .begin(human("terminal:first"), &input("host-tab-a"))
+            .expect("the first viewer types again");
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+        model.release("terminal:second", "host-tab-a", 1).unwrap();
+        let (action, _) = model.begin(agent(), &input("host-tab-a")).unwrap();
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+    }
+    #[test]
+    fn a_second_viewer_can_take_over_a_tab_the_first_viewer_holds() {
+        let mut model = ready();
+        model
+            .takeover(human("terminal:first"), "host-tab-a", 1)
+            .unwrap();
+        model
+            .takeover(human("terminal:second"), "host-tab-a", 1)
+            .expect("the takeover follows the person to the viewer that asks");
+        model.release("terminal:first", "host-tab-a", 1).unwrap();
+        assert!(model.begin(agent(), &input("host-tab-a")).is_ok());
     }
     #[test]
     fn mp10_takeover_survives_the_viewer_disconnect_and_follows_the_person_to_a_new_connection() {
