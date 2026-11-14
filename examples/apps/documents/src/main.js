@@ -1,7 +1,10 @@
 // Documents view. It talks to the App only through window.chariox.call, which
 // runs the App's own tools as the signed-in person; agents use the same tools.
+import { follower } from "./feed.js"
 import { markdownToHtml, sanitizeHtmlInto } from "./preview.js"
+import { skeleton } from "./skeleton.js"
 
+document.getElementById("app").innerHTML = skeleton
 const $ = (id) => document.getElementById(id)
 let documents = []
 let current = null // { id, revision, kind, content } of the loaded document
@@ -148,14 +151,19 @@ async function save() {
   }
 }
 
-// The owner chooses files in the terminal's trusted prompt, outside this view;
-// imported documents then appear through the regular list refresh.
+// The owner chooses files in the terminal's trusted prompt, outside this view; the call returns
+// when they have chosen and imported documents are listed by the feed.
 $("import-docs").addEventListener("click", async () => {
   const button = $("import-docs")
-  await call("import_documents")
   button.textContent = "Choose files in the prompt…"
   button.disabled = true
-  setTimeout(() => { button.textContent = "Import"; button.disabled = false }, 8000)
+  try {
+    const { skipped } = await call("import_documents")
+    if (skipped.length) say(`Not imported: ${skipped.map((file) => file.name ?? "a file").join(", ")}.`, true)
+  } catch {} finally {
+    button.textContent = "Import"
+    button.disabled = false
+  }
 })
 
 $("export").addEventListener("click", async () => {
@@ -230,32 +238,7 @@ document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key === "s") { event.preventDefault(); save() }
 })
 
-// The kernel reloads an open view when the App updates (or after a kernel
-// restart). Unsaved edits survive in this origin's session storage and come
-// back on the revision they started from, so a conflicting save is refused.
-const DRAFT = "chariox-documents-draft"
-addEventListener("pagehide", () => {
-  try {
-    if (current && dirty) sessionStorage.setItem(DRAFT, JSON.stringify({ id: current.id, revision: current.revision, ...fields() }))
-    else sessionStorage.removeItem(DRAFT)
-  } catch {}
-})
-async function restoreDraft() {
-  let draft = null
-  try {
-    draft = JSON.parse(sessionStorage.getItem(DRAFT) ?? "null")
-    sessionStorage.removeItem(DRAFT)
-  } catch {}
-  if (!draft || !documents.some((doc) => doc.id === draft.id)) return
-  await open(draft.id)
-  $("title").value = draft.title
-  $("folder").value = draft.folder
-  $("content").value = draft.content
-  current.revision = draft.revision
-  dirty = true
-  renderPreview()
-  say("Restored your unsaved changes after the App reloaded.")
-}
-
-refreshList().then(restoreDraft).catch(() => {})
-setInterval(() => { if (!document.hidden) refreshList().catch(() => {}) }, 2000)
+const feed = follower(call, refreshList)
+const follow = () => { if (!document.hidden) feed.poll().catch(() => {}) }
+follow()
+setInterval(follow, 1000)

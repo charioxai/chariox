@@ -149,7 +149,7 @@
     },
     {
       "name": "import_documents",
-      "description": "Ask the owner to choose Markdown, HTML or text files to import as new documents. Returns at once; the documents appear after the owner chooses the files in their terminal.",
+      "description": "Ask the owner to choose Markdown, HTML or text files to import as new documents. Waits for the owner's choice in their prompt, then returns the new documents and any file that could not be imported.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -163,7 +163,7 @@
     },
     {
       "name": "export_document",
-      "description": "Offer the owner a copy of a document to save on their computer. Returns at once; the owner saves it from their terminal.",
+      "description": "Offer the owner a copy of a document to save on their computer. Returns the offered file name; the owner saves it from their prompt.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -190,6 +190,36 @@
           }
         },
         "additionalProperties": false
+      }
+    },
+    {
+      "name": "view_actions",
+      "description": "The actions this backend registers for its view",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "view_state",
+      "description": "The state of this backend's view",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "view_changes",
+      "description": "The changes this backend's view recorded after `since`",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "since": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
       }
     }
   ]

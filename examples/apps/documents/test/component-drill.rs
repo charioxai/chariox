@@ -1,0 +1,636 @@
+//! The Documents App's real WASM component on a real WASI `data` directory. State is an in-memory
+//! fixture with the kernel's version checks; the file broker (replace, import, export, snapshot) and
+//! the picker are fixtures. The kernel path is covered by the hosted drills. Build the component with
+//! the pinned SDK tools and pass it as `CHARIOX_DOCUMENTS_COMPONENT`.
+use serde_json::{json, Value};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    fs,
+    path::PathBuf,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::{Context, Poll},
+};
+use wasmtime::component::{
+    Accessor, Component, FutureReader, HasSelf, Linker, ResourceTable, Source, StreamConsumer,
+    StreamReader, StreamResult,
+};
+use wasmtime::{Config, Engine, Store, StoreContextMut};
+use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxView, WasiView};
+
+wasmtime::component::bindgen!({
+    path: "../app-wit/wit",
+    inline: r#"package chariox:documents-drill;
+      world drill {
+        import chariox:app/registry@1.0.0;
+        import chariox:app/files@1.0.0;
+        import chariox:app/state@1.0.0;
+        import chariox:app/host@1.0.0;
+        export chariox:app/handlers@1.0.0;
+      }"#,
+    world: "drill",
+    exports: { "chariox:app/handlers.register": async },
+});
+use chariox::app::{
+    app_types::{AppError, InvocationContext},
+    files, host, registry, state,
+};
+
+struct Host {
+    wasi: WasiCtx,
+    table: ResourceTable,
+    data: PathBuf,
+    records: BTreeMap<String, state::StateRecord>,
+    tools: Vec<String>,
+    /// What the person chooses next: (file name, bytes) per grant.
+    chosen: Vec<(String, Vec<u8>)>,
+    offers: Vec<(String, Vec<u8>)>,
+    snapshots: Vec<String>,
+    /// Commits of the index the kernel refuses with a version conflict, as a concurrent writer would.
+    conflicts: VecDeque<()>,
+}
+impl WasiView for Host {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
+    }
+}
+impl chariox::app::app_types::Host for Host {}
+impl registry::Host for Host {
+    fn tool(&mut self, name: String) {
+        self.tools.push(name);
+    }
+    fn event(&mut self, _: String) {
+        panic!("unexpected event")
+    }
+    fn lifecycle(&mut self, _: String) {
+        panic!("unexpected lifecycle")
+    }
+}
+fn error(code: &str, message: &str) -> AppError {
+    AppError {
+        code: code.into(),
+        message: message.into(),
+        retryable: None,
+    }
+}
+impl state::Host for Host {}
+impl<T: Send> state::HostWithStore<T> for HasSelf<Host> {
+    async fn get(
+        accessor: &Accessor<T, Self>,
+        key: String,
+    ) -> Result<Option<state::StateRecord>, AppError> {
+        Ok(accessor.with(|mut access| access.get().records.get(&key).cloned()))
+    }
+    async fn transact(
+        accessor: &Accessor<T, Self>,
+        tx: state::Transaction,
+    ) -> Result<state::Committed, AppError> {
+        accessor.with(|mut access| {
+            let host = access.get();
+            if tx
+                .writes
+                .iter()
+                .any(|w| matches!(w, state::Write::Put((key, _)) if key == "index"))
+                && host.conflicts.pop_front().is_some()
+            {
+                return Err(error("CONFLICT", "App state version check failed"));
+            }
+            for check in tx.checks {
+                if host.records.get(&check.key).map(|record| record.version) != check.version {
+                    return Err(error("CONFLICT", &check.key));
+                }
+            }
+            for write in tx.writes {
+                match write {
+                    state::Write::Put((key, value)) => {
+                        let version = host
+                            .records
+                            .get(&key)
+                            .map_or(1, |record| record.version + 1);
+                        host.records
+                            .insert(key, state::StateRecord { value, version });
+                    }
+                    state::Write::Delete(key) => {
+                        host.records.remove(&key);
+                    }
+                }
+            }
+            Ok(state::Committed {
+                revision: 1,
+                receipts: vec![],
+            })
+        })
+    }
+}
+impl host::Host for Host {}
+impl<T: Send> host::HostWithStore<T> for HasSelf<Host> {
+    async fn notify(
+        _: &Accessor<T, Self>,
+        _: String,
+        _: Option<String>,
+    ) -> Result<String, AppError> {
+        panic!("unexpected notification")
+    }
+    async fn open_link(_: &Accessor<T, Self>, _: String) -> Result<host::Offer, AppError> {
+        panic!("unexpected link")
+    }
+    async fn write_clipboard(_: &Accessor<T, Self>, _: String) -> Result<host::Offer, AppError> {
+        panic!("unexpected clipboard")
+    }
+    async fn pick_file(
+        accessor: &Accessor<T, Self>,
+        request: host::Pick,
+    ) -> Result<Vec<String>, AppError> {
+        assert!(request.multiple && request.accept.contains(&".md".to_owned()));
+        Ok(accessor.with(|mut access| {
+            (0..access.get().chosen.len())
+                .map(|n| format!("grant-{n}"))
+                .collect()
+        }))
+    }
+}
+
+struct Contents(
+    Arc<Mutex<Vec<u8>>>,
+    Option<tokio::sync::oneshot::Sender<()>>,
+);
+impl Drop for Contents {
+    fn drop(&mut self) {
+        if let Some(done) = self.1.take() {
+            let _ = done.send(());
+        }
+    }
+}
+impl<D> StreamConsumer<D> for Contents {
+    type Item = u8;
+    fn poll_consume(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        mut store: StoreContextMut<D>,
+        mut source: Source<'_, u8>,
+        finish: bool,
+    ) -> Poll<wasmtime::Result<StreamResult>> {
+        let mut bytes = Vec::with_capacity(4096);
+        source.read(&mut store, &mut bytes)?;
+        self.0.lock().unwrap().extend(bytes);
+        if finish {
+            if let Some(done) = self.get_mut().1.take() {
+                let _ = done.send(());
+            }
+        }
+        Poll::Ready(Ok(StreamResult::Completed))
+    }
+}
+impl files::Host for Host {}
+impl<T: Send> files::HostWithStore<T> for HasSelf<Host> {
+    async fn atomic_replace(
+        accessor: &Accessor<T, Self>,
+        path: String,
+        contents: StreamReader<u8>,
+    ) -> Result<u64, AppError> {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let (done, completed) = tokio::sync::oneshot::channel();
+        accessor
+            .with(|mut access| contents.pipe(&mut access, Contents(bytes.clone(), Some(done))))
+            .unwrap();
+        completed.await.unwrap();
+        let bytes = bytes.lock().unwrap();
+        // The broker never creates parents.
+        accessor
+            .with(|mut access| fs::write(access.get().data.join(path), &*bytes))
+            .unwrap();
+        Ok(bytes.len() as u64)
+    }
+    async fn export(accessor: &Accessor<T, Self>, path: String) -> Result<String, AppError> {
+        accessor.with(|mut access| {
+            let host = access.get();
+            let bytes = fs::read(host.data.join(&path)).unwrap();
+            host.offers.push((path, bytes));
+        });
+        Ok("offer-1".into())
+    }
+    async fn import(
+        accessor: &Accessor<T, Self>,
+        grant: String,
+        destination: String,
+    ) -> Result<(u64, String), AppError> {
+        accessor.with(|mut access| {
+            let host = access.get();
+            let n: usize = grant.trim_start_matches("grant-").parse().unwrap();
+            let (name, bytes) = host.chosen[n].clone();
+            fs::write(host.data.join(destination), &bytes).unwrap();
+            Ok((bytes.len() as u64, name))
+        })
+    }
+    async fn snapshot(
+        accessor: &Accessor<T, Self>,
+        name: String,
+        consistency: files::Consistency,
+    ) -> Result<files::SnapshotInfo, AppError> {
+        assert!(matches!(consistency, files::Consistency::Quiescent));
+        accessor.with(|mut access| access.get().snapshots.push(name));
+        Ok(files::SnapshotInfo {
+            snapshot_id: "snap-1".into(),
+            consistency,
+            files: 3,
+            bytes: 99,
+        })
+    }
+}
+
+struct Scratch(PathBuf);
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+async fn runtime(label: &str) -> wasmtime::Result<(Scratch, Store<Host>, Drill)> {
+    let root = Scratch(
+        PathBuf::from(std::env::var("TMPDIR")?)
+            .join(format!("documents-{label}-{}", std::process::id())),
+    );
+    fs::create_dir(&root.0)?;
+    let mut config = Config::new();
+    config.wasm_component_model_async(true);
+    let engine = Engine::new(&config)?;
+    let component = Component::from_file(&engine, std::env::var("CHARIOX_DOCUMENTS_COMPONENT")?)?;
+    let mut linker = Linker::<Host>::new(&engine);
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi::p3::add_to_linker(&mut linker)?;
+    Drill::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host)?;
+    let mut wasi = WasiCtx::builder();
+    wasi.inherit_stderr()
+        .preopened_dir(&root.0, "data", FsPerms::ReadWrite)?;
+    let mut store = Store::new(
+        &engine,
+        Host {
+            wasi: wasi.build(),
+            table: ResourceTable::new(),
+            data: root.0.clone(),
+            records: BTreeMap::new(),
+            tools: vec![],
+            chosen: vec![],
+            offers: vec![],
+            snapshots: vec![],
+            conflicts: VecDeque::new(),
+        },
+    );
+    let app = Drill::instantiate_async(&mut store, &component, &linker).await?;
+    app.chariox_app_handlers()
+        .call_register(&mut store)
+        .await?
+        .unwrap();
+    Ok((root, store, app))
+}
+
+async fn call(
+    store: &mut Store<Host>,
+    app: &Drill,
+    name: &str,
+    input: Value,
+) -> Result<Value, AppError> {
+    let result = store
+        .run_concurrent(async |accessor| {
+            let cancel = accessor.with(|mut access| {
+                FutureReader::new(
+                    &mut access,
+                    std::future::pending::<wasmtime::Result<String>>(),
+                )
+            })?;
+            let context = InvocationContext {
+                deadline_ms: u64::MAX,
+                installation_id: None,
+                room_id: None,
+                operation_id: None,
+                agent_id: None,
+                task_id: None,
+                turn_id: None,
+                actor: None,
+            };
+            app.chariox_app_handlers()
+                .call_call_tool(accessor, name.into(), input.to_string(), context, cancel)
+                .await
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    result.map(|text| serde_json::from_str(&text).unwrap())
+}
+
+async fn ok(store: &mut Store<Host>, app: &Drill, name: &str, input: Value) -> Value {
+    call(store, app, name, input)
+        .await
+        .unwrap_or_else(|e| panic!("{name}: {} {}", e.code, e.message))
+}
+
+fn folder(root: &Scratch, id: &str) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(root.0.join("documents").join(id))
+        .map(|dir| {
+            dir.map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_view_and_the_tools_are_what_the_signed_manifest_lists() -> wasmtime::Result<()> {
+    let (_root, store, _) = runtime("manifest").await?;
+    let listed: Value = serde_json::from_str(include_str!("../schemas/tools.json"))?;
+    let mut listed: Vec<String> = listed["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().into())
+        .collect();
+    let mut registered = store.data().tools.clone();
+    listed.sort();
+    registered.sort();
+    assert_eq!(registered, listed);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_document_lives_through_edits_history_restore_and_delete() -> wasmtime::Result<()> {
+    let (root, mut store, app) = runtime("lifecycle").await?;
+    let (store, app) = (&mut store, &app);
+    let made = ok(
+        store,
+        app,
+        "create_document",
+        json!({"title": "Plan", "folder": "work", "content": "v1"}),
+    )
+    .await;
+    let id = made["id"].as_str().unwrap().to_owned();
+    assert_eq!(made["revision"], 1);
+    assert_eq!(folder(&root, &id).len(), 1);
+    assert!(folder(&root, &id)[0].starts_with("1-") && folder(&root, &id)[0].ends_with(".md"));
+
+    let saved = ok(
+        store,
+        app,
+        "update_document",
+        json!({"id": id, "expected_revision": 1, "content": "v2"}),
+    )
+    .await;
+    assert_eq!(saved["revision"], 2);
+    // A human and an agent that both started from revision 1: the second is refused, not merged.
+    let stale = call(
+        store,
+        app,
+        "update_document",
+        json!({"id": id, "expected_revision": 1, "content": "stale"}),
+    )
+    .await;
+    assert_eq!(stale.unwrap_err().code, "CONFLICT");
+    assert_eq!(
+        ok(store, app, "read_document", json!({"id": id})).await["content"],
+        "v2"
+    );
+    assert_eq!(
+        ok(
+            store,
+            app,
+            "read_document",
+            json!({"id": id, "revision": 1})
+        )
+        .await["content"],
+        "v1"
+    );
+
+    // A rename is a revision of its own and restores nothing visible.
+    let renamed = ok(
+        store,
+        app,
+        "update_document",
+        json!({"id": id, "expected_revision": 2, "title": "Plan B"}),
+    )
+    .await;
+    assert_eq!(
+        (renamed["revision"].as_u64(), renamed["title"].as_str()),
+        (Some(3), Some("Plan B"))
+    );
+    let restored = ok(
+        store,
+        app,
+        "restore_version",
+        json!({"id": id, "revision": 1, "expected_revision": 3}),
+    )
+    .await;
+    assert_eq!(restored["revision"], 4);
+    assert_eq!(
+        ok(store, app, "read_document", json!({"id": id})).await["content"],
+        "v1"
+    );
+    assert_eq!(
+        ok(store, app, "list_documents", json!({"folder": "work"})).await["documents"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        ok(store, app, "list_documents", json!({"folder": "none"})).await["documents"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+
+    // Ten revisions are kept and older files are pruned.
+    for expected in 4..16u64 {
+        ok(
+            store,
+            app,
+            "update_document",
+            json!({"id": id, "expected_revision": expected, "content": format!("r{expected}")}),
+        )
+        .await;
+    }
+    let read = ok(store, app, "read_document", json!({"id": id})).await;
+    assert_eq!(read["revision"], 16);
+    assert_eq!(read["versions"].as_array().unwrap().len(), 10);
+    assert_eq!(read["versions"][0], 7);
+    assert_eq!(
+        call(
+            store,
+            app,
+            "read_document",
+            json!({"id": id, "revision": 1})
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "NOT_FOUND"
+    );
+    let kept = folder(&root, &id);
+    assert!(
+        kept.iter()
+            .all(|name| name.split('-').next().unwrap().parse::<u64>().unwrap() >= 7),
+        "{kept:?}"
+    );
+
+    ok(store, app, "delete_document", json!({"id": id})).await;
+    assert!(folder(&root, &id).is_empty() && !root.0.join("documents").join(&id).exists());
+    assert_eq!(
+        call(store, app, "read_document", json!({"id": id}))
+            .await
+            .unwrap_err()
+            .code,
+        "NOT_FOUND"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_lost_race_retries_and_leaves_no_stray_file() -> wasmtime::Result<()> {
+    let (root, mut store, app) = runtime("race").await?;
+    store.data_mut().conflicts.push_back(());
+    let made = ok(
+        &mut store,
+        &app,
+        "create_document",
+        json!({"title": "Raced", "content": "x"}),
+    )
+    .await;
+    let id = made["id"].as_str().unwrap();
+    assert_eq!(
+        folder(&root, id).len(),
+        1,
+        "the file the lost attempt wrote is removed"
+    );
+    store.data_mut().conflicts.extend([(); 5]);
+    let refused = call(
+        &mut store,
+        &app,
+        "create_document",
+        json!({"title": "Never", "content": "x"}),
+    )
+    .await;
+    assert_eq!(refused.unwrap_err().code, "CONFLICT");
+    assert_eq!(
+        ok(&mut store, &app, "list_documents", json!({})).await["documents"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let entries: Vec<_> = fs::read_dir(root.0.join("documents"))?.collect();
+    assert_eq!(
+        entries.len(),
+        1,
+        "a create that never committed leaves no folder"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_view_serves_its_state_and_the_feed_of_every_change() -> wasmtime::Result<()> {
+    let (_root, mut store, app) = runtime("feed").await?;
+    let (store, app) = (&mut store, &app);
+    let declared: Value = serde_json::from_str(include_str!("../schemas/ui-actions.json"))?;
+    assert_eq!(
+        ok(store, app, "view_actions", json!({})).await,
+        declared["uiActions"]
+    );
+    let made = ok(store, app, "create_document", json!({"title": "A"})).await;
+    let id = made["id"].as_str().unwrap().to_owned();
+    ok(
+        store,
+        app,
+        "update_document",
+        json!({"id": id, "expected_revision": 1, "content": "x"}),
+    )
+    .await;
+    ok(store, app, "delete_document", json!({"id": id})).await;
+    let feed = ok(store, app, "view_changes", json!({"since": 0})).await;
+    assert_eq!(feed["latest"], 3);
+    let deltas: Vec<Value> = feed["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["delta"].clone())
+        .collect();
+    assert_eq!(
+        deltas,
+        [
+            json!({"id": id, "revision": 1}),
+            json!({"id": id, "revision": 2}),
+            json!({"id": id, "deleted": true})
+        ]
+    );
+    assert_eq!(
+        ok(store, app, "view_changes", json!({"since": 2})).await["changes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        ok(store, app, "view_state", json!({})).await,
+        json!({"documents": []})
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_owner_chooses_files_to_import_and_is_offered_a_copy_to_export() -> wasmtime::Result<()>
+{
+    let (root, mut store, app) = runtime("files").await?;
+    let (store, app) = (&mut store, &app);
+    store.data_mut().chosen = vec![
+        ("Meeting notes.MD".into(), b"# Notes\n".to_vec()),
+        ("page.html".into(), b"<p>hi</p>".to_vec()),
+        ("photo.txt".into(), vec![0xff, 0xfe, 0x00]),
+    ];
+    let imported = ok(store, app, "import_documents", json!({"folder": "inbox"})).await;
+    let titles: Vec<&str> = imported["imported"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["Meeting notes", "page"]);
+    assert_eq!(imported["imported"][1]["kind"], "html");
+    assert_eq!(imported["imported"][0]["folder"], "inbox");
+    assert_eq!(
+        imported["skipped"],
+        json!([{"name": "photo.txt", "reason": "photo.txt is not UTF-8 text"}])
+    );
+    assert!(
+        !root.0.join("imports").read_dir()?.any(|_| true),
+        "the staged copies are removed"
+    );
+
+    let id = imported["imported"][0]["id"].as_str().unwrap();
+    assert_eq!(
+        ok(store, app, "export_document", json!({"id": id})).await,
+        json!({"offered": "Meeting notes.md"})
+    );
+    let (path, bytes) = store.data().offers[0].clone();
+    assert!(
+        path.starts_with("exports/") && path.ends_with("/Meeting notes.md"),
+        "{path}"
+    );
+    assert_eq!(bytes, b"# Notes\n");
+    assert!(
+        !root.0.join("exports").read_dir()?.any(|_| true),
+        "the staged export is removed"
+    );
+
+    let snapshot = ok(
+        store,
+        app,
+        "snapshot_documents",
+        json!({"name": "before-cleanup"}),
+    )
+    .await;
+    assert_eq!(snapshot["snapshotId"], "snap-1");
+    assert_eq!(store.data().snapshots, ["before-cleanup"]);
+    Ok(())
+}

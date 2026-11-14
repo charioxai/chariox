@@ -1,13 +1,5 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Documents</title>
-  <link rel="stylesheet" href="style.css">
-  <script type="module" src="app.js"></script>
-</head>
-<body>
+// The page's markup: the client view carries script and style only, so the layout is built here.
+export const skeleton = `
   <div class="layout">
     <nav aria-label="Documents">
       <div class="nav-head">
@@ -48,5 +40,4 @@
     <p id="empty" class="muted">Choose or create a document.</p>
     </main>
   </div>
-</body>
-</html>
+`

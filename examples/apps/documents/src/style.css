@@ -1,7 +1,7 @@
 :root { color-scheme: light dark; --accent: #3b6cf6; --muted: #5f6670; --line: #d0d4da; --danger: #d33; }
 @media (prefers-color-scheme: dark) { :root { --line: #3a3f47; --muted: #9ba1aa; } }
 * { box-sizing: border-box; }
-body { margin: 0; font: 15px/1.5 system-ui, sans-serif; height: 100vh; }
+#app { font: 15px/1.5 system-ui, sans-serif; }
 .layout { display: grid; grid-template-columns: minmax(200px, 280px) 1fr; height: 100%; }
 nav { border-right: 1px solid var(--line); padding: 16px 12px; overflow: auto; }
 .nav-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
