@@ -145,6 +145,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     t.provider_run_id = None;
                     t.revision += 1;
                     t
+                } else if let Some(task) = continued_past(tx, &room, &agent, &prompt)? {
+                    // The owner resumed the task while this turn was still ending: the
+                    // continuation owns the task now, and this turn begins nothing.
+                    return Ok(Outcome::Task(task));
                 } else {
                     new_admitted_task(tx, room, agent, prompt, run.clone(), now)?
                 }
@@ -601,7 +605,19 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         } => {
             let mut t = match for_turn(tx, &room, &agent, &prompt)? {
                 Some(task) => task,
-                None => new_admitted_task(tx, room, agent, prompt.clone(), Some(run.clone()), now)?,
+                None => {
+                    // The owner continued the task while this turn was still ending: the task
+                    // moved on to its continuation, so this turn has nothing left to settle.
+                    // Refusing it would keep the ended turn "settling" and the continuation
+                    // queued behind it for good.
+                    if let Some(task) = continued_past(tx, &room, &agent, &prompt)? {
+                        return Ok(Outcome::Settled {
+                            task,
+                            correction: false,
+                        });
+                    }
+                    new_admitted_task(tx, room, agent, prompt.clone(), Some(run.clone()), now)?
+                }
             };
             if t.provider_run_id.as_deref().is_some_and(|r| r != run) {
                 return Err(error("stale provider settlement"));
