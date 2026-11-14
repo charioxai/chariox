@@ -5195,7 +5195,7 @@ MP-08 / MP-10: allocated 556/164 adds the `KernelBrowser` command `state_wait {a
 viewer no longer polls `state` every 250 ms. Its reply is the `state` reply plus
 `revision`, an opaque string the viewer sends back as `after` (empty or invalid:
 read at once). The kernel answers when the state, as the caller sees it, differs
-from `after`, or after `wait_ms` (at most 2000), and re-reads Chromium once per
+from `after`, or after `wait_ms` (at most 2000; at most 10000 from 1008), and re-reads Chromium once per
 wake, not per tick. The host raises a signal on Tab creation, destruction, retitle
 and navigation, loads, native window/active-Tab/zoom/resize events, popup and
 window changes, Tab or agent requests and a policy change; a person's keys and
@@ -5205,6 +5205,13 @@ Vault insertion never waits on a parked viewer. `state` itself is unchanged.
 `browser-state-wait-556.json` pins the shape (Rust hash test
 `mp08_mp10_browser_state_wait_556_snapshot`). Viewers feature-detect 556 and poll
 older kernels as before; no client floor moves.
+
+Local 1008: a `state_wait` that reaches `wait_ms` without a change answers only
+`{"revision": ..., "unchanged": true}` (an idle Browser view re-read the whole state, Tabs with their
+icons, every two seconds). The viewer keeps the state it read last and waits after the same revision.
+`browser-state-wait-unchanged-1008.json` pins the reply (`mp08_browser_state_wait_unchanged_1008_snapshot`).
+The same release lets an idle viewer park one `state_wait` and one `mirror_next` credit for up to 10000 ms (2000 before), so a quiet
+Browser view asks the kernel once per wait; a change still answers the parked request at once.
 
 MP-08 / MP-10 / MP-11: allocated 560/168 adds the `display_subscribe` target
 `{kind:"browser_window", window_generation}`: the owner's view of the Chrome window's page area. It
@@ -7386,6 +7393,26 @@ An active interaction carries `asker_name`, the asking agent's alias (else its r
 the session and never stored, so a client names who asks in the card's first paint. A sub-agent's
 card is shown in its top parent's panel (`shown_in_agent_id`) whoever holds it (above). Focused check: `cargo test -p chariox-kernel --lib --
 a_sub_agent_card_carries a_projected_card_names_its_asker the_user_answers_a_decision protocol_shapes`.
+
+### APP-CONFIRM-01: person-confirmed App actions — local 1008 / relay peer 447
+
+A signed `schemas/ui-actions.json` action may have `effect: "person_confirmed"` with a
+`confirmationView` (the name of the compact view the App registers with
+`chariox.view.confirmation`); every other effect refuses the field. The kernel runs such an action only after
+the person confirms the exact input on one card. The card is an agent interaction (`app-confirm-*`, kind
+`choice`, `Confirm` / `Cancel`, 300 s, default `cancel`) with two additions a client reads:
+
+- `app_confirmation`: `{installation_id, app_id, app_name, publisher_id, publisher_name, action_name}`,
+  written by the kernel from the verified release (all six present, none other). A client frames the
+  preview with these words and never with text the App supplied.
+- `view.browser_region`: the App's own preview, found by the browser host (not the App or the agent) in the
+  App's Tab, shown through the existing protected card region. A client that cannot show it offers no
+  Confirm; the card's `message` carries the exact input (at most 2000 characters) for clients that read text.
+
+Only the person answers: no agent holder or owner agent, `/sudo`, session approval or earlier answer stands
+in for it. `AppViewAction.effect` in a catalog may be `person_confirmed`, with `confirmationView`. Relay peer
+447 forwards `app_confirmation` with its interaction. Focused check: `cargo test -p chariox-kernel --lib --
+view_agent protocol_shapes::app_confirmation user_only`. Contracts: `docs/APPS_V2_CONTRACTS.md`.
 
 ### MP-08 / MP-09 / MP-10 / MP-11: Files on the owner's machines — local 1005 / relay peer 444
 

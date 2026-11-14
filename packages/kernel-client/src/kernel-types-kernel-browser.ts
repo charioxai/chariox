@@ -102,7 +102,7 @@ export type KernelBrowserResult = {
   reachable_by_focused_agent?: boolean;
   // Protocol 556: a `state_wait` reply's opaque revision, echoed back as the next `after`.
   revision?: string
-  // Protocol 1055: a `state_wait` that ended without a change answers only `revision` and
+  // Protocol 1008: a `state_wait` that ended without a change answers only `revision` and
   // `unchanged: true`; the caller keeps the state it read last.
   unchanged?: true
   // Protocol 630/233: absent on older kernels.

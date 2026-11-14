@@ -537,5 +537,7 @@ pub use workspace::*;
 /// the owner's global offload decision; a `room_terminal` relay subscription pushes a Room terminal's output
 /// (CXT1, raw bytes) from the viewer's offset, with the Room's terminals when they change, instead of one
 /// `read_output` per page (docs/PROTOCOL.md, "Pushed output stream"); 1007 adds native Files interests on the
-/// resource feed, including home-relayed worker invalidations.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1007;
+/// resource feed, including home-relayed worker invalidations; 1008 adds the person-confirmed App action card
+/// (`app_confirmation` on an `app-confirm-*` interaction, with the App's own preview as its protected browser
+/// `view`), and a `state_wait` that ended without a change answers only `revision` and `unchanged: true`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1008;

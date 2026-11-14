@@ -1,0 +1,34 @@
+{
+  "local": 1008,
+  "peer": 447,
+  "interaction": {
+    "id": "app-confirm-1",
+    "agent_id": "agent",
+    "kind": "choice",
+    "level": "warning",
+    "title": "Confirm pay",
+    "message": "Campaign by Chariox asks you to confirm pay.\nInput: {\"amount\":1200}",
+    "choices": [
+      { "id": "confirm", "label": "Confirm", "reply": "confirm", "style": "primary" },
+      { "id": "cancel", "label": "Cancel", "reply": "cancel", "style": "danger" }
+    ],
+    "timeout_sec": 300,
+    "default_on_timeout": "cancel",
+    "requested_at_ms": 1,
+    "app_confirmation": {
+      "installation_id": "campaign",
+      "app_id": "com.chariox.campaign",
+      "app_name": "Campaign",
+      "publisher_id": "com.chariox",
+      "publisher_name": "Chariox",
+      "action_name": "pay"
+    }
+  },
+  "action": {
+    "name": "pay",
+    "description": "Pay for the campaign",
+    "inputSchema": { "type": "object" },
+    "effect": "person_confirmed",
+    "confirmationView": "review_payment"
+  }
+}

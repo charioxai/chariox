@@ -12,12 +12,13 @@ update("fixtures/protocol-versions.json", JSON.stringify({ local: localProtocolV
 // These snapshots compare their allocation with the current runtime pair.
 // Their shape hashes remain explicit in the focused protocol tests.
 const currentSnapshots = [
-  "apps/kernel/src/local/api/tests/protocol_shapes/files-watch-1007.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/files-watch-1008.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/agent-browser-owner-action-993.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-dev-push-933.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-dev-register-933.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-view-inspection-933.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-completion-550.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/browser-state-wait-unchanged-1008.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-font-absent-567.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-font-failures-550.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-font-requirements-550.json",
@@ -41,6 +42,7 @@ const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/web-bot-auth-946.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/workflow-gate-1002.json",
   "fixtures/aggregate-agent-model-protocol.json",
+  "fixtures/app-confirmation-protocol.json",
   "fixtures/async-questions-protocol.json",
   "fixtures/historical-workflow-protocol.json",
   "fixtures/landing8-protocol.json",

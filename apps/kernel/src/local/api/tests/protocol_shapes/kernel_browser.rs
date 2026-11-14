@@ -548,6 +548,24 @@ fn mp08_mp10_browser_state_wait_556_snapshot() {
     );
 }
 
+// 1008: a `state_wait` that ended without a change answers only its revision.
+#[test]
+fn mp08_browser_state_wait_unchanged_1008_snapshot() {
+    let bytes = include_bytes!("browser-state-wait-unchanged-1008.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "72fb0f5add7e6661e5ba493e0247ee5f3852f06445dbde63f3af70582713fb88"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(snapshot["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
+}
+
 #[test]
 fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
     const {
@@ -586,7 +604,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "5bb313c7deeb49b316e1a47aa65be90fca6ce4a4979c36762fa4036e45c677d9"
+        "7dc0c71c510abf18948d2d59f55715a55170697eee054481f370ee988c7029a3"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -689,7 +707,7 @@ fn browser_resize_protocol629_snapshot() {
     let bytes = include_bytes!("browser-resize-629.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "d67dc2b49f8db47efa060f7fe88200ff3225f06a108969ab40e50766389637dd"
+        "917a164832c7cff3cce03bfaa0a0e3ebb659ab677d45e650db86f738ccbfc960"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
@@ -730,7 +748,7 @@ fn mp08_mp10_browser_header_937_shape_and_hash() {
     let bytes = include_bytes!("browser-header-937.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "58405fdbdfaca1965319c70a7596b8b33994942b65969764a63be668a347a4f8"
+        "6bd7af124fb6d008dfba0c3ef115f06d5aef02a09f414b00aee32569c12b22bc"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let response: LocalDaemonResponse =
@@ -753,7 +771,7 @@ fn mp08_mp11_vault_fill_941_shape_and_hash() {
     let bytes = include_bytes!("kernel-browser-vault-fill-941.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "94fef0459774dbbb109e971714d1b1cce943ec18b7b5057ed15e7785211fbfd1"
+        "630be5db3f9fb9d984d23a12a7751bff68f47487277db7c6328a3fc27356c57b"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(fixture["request"].clone()).unwrap();

@@ -5,11 +5,11 @@ use crate::transport::relay_peer::{
 };
 
 #[test]
-fn files_watch_1007_446_snapshot_and_hash() {
-    let bytes = include_bytes!("files-watch-1007.json");
+fn files_watch_1008_447_snapshot_and_hash() {
+    let bytes = include_bytes!("files-watch-1008.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "fc8f782e253e678a346ab0349fc7f2cfdd4a963407925784138530905725a088"
+        "8b646a87e55f274c25c24328c6f0754cb6fe095a6ea5dcabb4e55add2b133bf4"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
