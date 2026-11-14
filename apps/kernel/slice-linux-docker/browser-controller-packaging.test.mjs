@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 
 const dockerRoot = path.resolve(fileURLToPath(new URL("./docker/", import.meta.url)))
 const controllerEntry = path.join(dockerRoot, "browser-controller.mjs")
+const kernelBrowserHostEntry = path.join(dockerRoot, "kernel-browser-host.mjs")
 const dockerfilePath = path.join(dockerRoot, "Dockerfile")
 const provisionerPath = fileURLToPath(new URL("./provision-linux-docker-slice.sh", import.meta.url))
 
@@ -29,6 +30,19 @@ test("slice packaging installs every browser controller runtime module", async (
       && provisioner.includes('copy_required_slice_overlay "$shared_display_asset" "$SLICE_NAME:/opt/chariox-slice/$(basename "$shared_display_asset")"')
     assert.ok(namedRefresh || sharedRefresh, `live slice refresh should install ${name}`)
   }
+})
+
+// The image build imports both entries, so a module either one needs and the image lacks fails every image build.
+test("the image build installs every module its two import checks reach", async () => {
+  const [controllerModules, hostModules, dockerfile] = await Promise.all([
+    reachableControllerModules(controllerEntry),
+    reachableControllerModules(kernelBrowserHostEntry),
+    readFile(dockerfilePath, "utf8"),
+  ])
+  const copied = [...dockerfile.replace(/\\\r?\n\s*/g, " ").matchAll(/^COPY(?: --(?:chown|chmod)=\S+)* (?!-)(.+?) (\/opt\/chariox-slice\/\S*)$/gm)]
+    .flatMap(([, sources]) => sources.split(/\s+/).map(source => path.basename(source)))
+  const missing = [...new Set([...controllerModules, ...hostModules])].map(modulePath => path.basename(modulePath)).filter(name => !copied.includes(name))
+  assert.deepEqual(missing, [], "Dockerfile should install every module the image build imports")
 })
 
 test("slice packaging installs the Computer text finder", async () => {
