@@ -137,6 +137,9 @@ pub struct RuntimeSession {
     sudo_windows: Vec<crate::local::KernelSudoTurn>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     agent_wakes: Vec<crate::durable_state::agent_lifecycle::AgentWake>,
+    /// Messages from other agents waiting for their recipients' next turn, projected from the inbox; never stored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    queued_agent_messages: Vec<super::QueuedAgentMessage>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     queued_metaagent_tasks: VecDeque<QueuedMetaagentTask>,
     #[serde(default, skip_serializing_if = "AgentTriggers::is_empty")]
@@ -211,6 +214,12 @@ impl RuntimeSession {
     }
     pub fn room_setup(&self) -> Option<&RoomSetupState> {
         self.room_setup.as_ref()
+    }
+    pub fn queued_agent_messages(&self) -> &[super::QueuedAgentMessage] {
+        &self.queued_agent_messages
+    }
+    pub(crate) fn set_queued_agent_messages(&mut self, messages: Vec<super::QueuedAgentMessage>) {
+        self.queued_agent_messages = messages;
     }
     pub(crate) fn agent_wakes(&self) -> &[crate::durable_state::agent_lifecycle::AgentWake] {
         &self.agent_wakes
@@ -309,6 +318,7 @@ impl RuntimeSession {
             agent_tasks: Vec::new(),
             sudo_windows: Vec::new(),
             agent_wakes: Vec::new(),
+            queued_agent_messages: Vec::new(),
             queued_metaagent_tasks: VecDeque::new(),
             agent_triggers: AgentTriggers::default(),
             trigger_deliveries: Vec::new(),

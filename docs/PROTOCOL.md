@@ -733,7 +733,7 @@ permission level or mode. Only the user changes the edge, with
 `SetAgentParent {session_id, agent_id, parent_agent_id}` (answered by
 `AgentParentChanged {agent}`); every agent caller, a sudo window included, is
 refused. A Room agent controls its subtree with `agent cancel`, `agent deadline
-set|get`, `agent children`, `agent steer`, `agent message` and `agent spawn`, and reads `agent usage` and
+set|get`, `agent children`, `agent steer`, `agent message`, `agent promote` and `agent spawn`, and reads `agent usage` and
 `agent profiles`. `agent spawn` takes `--account-profile`, `--permission
 required|yolo`, `--deadline 90s|30m|2h|1d` and `--command-id`; a child never
 has a higher permission level or mode than its parent, and a retry with the

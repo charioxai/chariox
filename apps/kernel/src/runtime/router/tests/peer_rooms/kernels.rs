@@ -287,7 +287,7 @@ fn a_message_from_another_kernel_after_its_cancel_runs_on_the_cancelled_agent() 
         );
         rooms.settle_cancelled_turn().await;
         let later = rooms
-            .request_from_kernel_a(message(&rooms, "after-cancel", "peer", false))
+            .request_from_kernel_a(message(&rooms, "after-cancel", "peer", true))
             .await;
         assert!(
             matches!(later, RelayPeerResponse::PeerAgentAccepted { .. }),

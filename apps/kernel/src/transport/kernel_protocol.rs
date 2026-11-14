@@ -865,6 +865,11 @@ pub(crate) fn can_skip_session_snapshot(
             if previous.session.agent_wakes() != snapshot.session.agent_wakes() {
                 return false;
             }
+            // Neither have the messages queued for an agent's next turn.
+            if previous.session.queued_agent_messages() != snapshot.session.queued_agent_messages()
+            {
+                return false;
+            }
             if previous.session.agent_tasks() == snapshot.session.agent_tasks() {
                 return true;
             }

@@ -136,14 +136,19 @@ async fn a02_review_non_structured_delivery_is_accepted_not_escalated() {
     let runtime = owned_runtime_state(&app).await;
     let store = &runtime.owned.durable_state_store;
     let Outcome::Event(event) = store
-        .agent_lifecycle(Operation::Occur(occurrence(
-            session.id(),
-            agent.id(),
-            "peer",
-            "plain-message",
-            "message",
-            serde_json::json!({"message":"Review the PTY finding"}),
-        )))
+        .agent_lifecycle(Operation::Occur({
+            // Only an urgent message starts its idle recipient.
+            let mut message = occurrence(
+                session.id(),
+                agent.id(),
+                "peer",
+                "plain-message",
+                "message",
+                serde_json::json!({"message":"Review the PTY finding"}),
+            );
+            message.urgent = true;
+            message
+        }))
         .unwrap()
     else {
         panic!()
@@ -287,14 +292,19 @@ async fn a02_r3_pre_io_rejection_retries_without_tasks_or_client_notice() {
     let runtime = owned_runtime_state(&app).await;
     let store = &runtime.owned.durable_state_store;
     let Outcome::Event(e) = store
-        .agent_lifecycle(Operation::Occur(occurrence(
-            session.id(),
-            agent.id(),
-            "peer",
-            "first-message",
-            "message",
-            serde_json::json!({"message":"Review the rejected launch"}),
-        )))
+        .agent_lifecycle(Operation::Occur({
+            // Only an urgent message starts its idle recipient.
+            let mut message = occurrence(
+                session.id(),
+                agent.id(),
+                "peer",
+                "first-message",
+                "message",
+                serde_json::json!({"message":"Review the rejected launch"}),
+            );
+            message.urgent = true;
+            message
+        }))
         .unwrap()
     else {
         panic!()

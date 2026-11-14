@@ -664,6 +664,7 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::PEEK_AGENT_TOOL
                     | crate::transport::runtime_tools::READ_AGENT_ENTRY_TOOL
                     | crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
+                    | crate::transport::runtime_tools::PROMOTE_AGENT_MESSAGE_TOOL
                     | crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL
                     | crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL
                     | crate::transport::runtime_tools::REGISTER_MCP_TOOL
@@ -1022,6 +1023,7 @@ fn is_metaagent_direct_runtime_tool_allowed(tool_name: &str, slice_available: bo
             | crate::transport::runtime_tools::PEEK_AGENT_TOOL
             | crate::transport::runtime_tools::READ_AGENT_ENTRY_TOOL
             | crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
+            | crate::transport::runtime_tools::PROMOTE_AGENT_MESSAGE_TOOL
             | crate::transport::runtime_tools::READ_ARTIFACT_TOOL
             | crate::transport::runtime_tools::SEARCH_RECALL_TOOL
             | crate::transport::runtime_tools::QUERY_RECALL_TOOL
