@@ -830,7 +830,7 @@ export class Mirror2 {
     }
     return out;
   }
-  async cached(world, url) {
+  async cached(world, url, limit = RESOURCE_BYTES) {
     const { resource } = await world.connection.send('Network.loadNetworkResource', { frameId: world.frame.id, url, options: { disableCache: false, includeCredentials: false } }, world.sessionId);
     if (!resource?.success || !resource.stream || resource.httpStatusCode && (resource.httpStatusCode < 200 || resource.httpStatusCode >= 300)) { if (resource?.stream) await world.connection.send('IO.close', { handle: resource.stream }, world.sessionId).catch(() => {}); return null; }
     const chunks = []; let size = 0;
@@ -838,7 +838,7 @@ export class Mirror2 {
       for (;;) {
         const chunk = await world.connection.send('IO.read', { handle: resource.stream, size: 1 << 20 }, world.sessionId);
         const part = chunk.base64Encoded ? Buffer.from(chunk.data, 'base64') : Buffer.from(chunk.data, 'utf8');
-        size += part.length; if (size > RESOURCE_BYTES) return null;
+        size += part.length; if (size > limit) return null;
         chunks.push(part); if (chunk.eof) break;
       }
     } finally { await world.connection.send('IO.close', { handle: resource.stream }, world.sessionId).catch(() => {}); }
@@ -880,6 +880,10 @@ export class Mirror2 {
       const requested = href.split('#')[0];
       const body = await this.resourceBody(world, requested, 16 * 1024 * 1024);
       let text = body?.toString('utf8');
+      // The network buffer had let go of it: the HTTP cache holds the exact bytes. The frame's own text decodes a response
+      // without a charset as Latin-1, on most navigations, so the same sheet differed from page to page and the viewer's
+      // retained copy never matched.
+      text ??= (await this.cached(world, requested, 16 * 1024 * 1024).catch(() => null))?.toString('utf8');
       if (text === undefined) {
         // A document's own sheet can be missing from its resource tree (Stripe's 3.6 MB login sheet); its frame still has it.
         const frameId = (await frames()).get(requested) ?? world.frame?.id; if (!frameId) return false;

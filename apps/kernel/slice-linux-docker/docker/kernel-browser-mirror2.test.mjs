@@ -527,11 +527,29 @@ test('MP-10 M2: completed stylesheet bodies do not wait for Page resource-conten
 // still has the content.
 test('a cross-origin stylesheet missing from the network buffer and the resource tree is read from its document frame',async()=>{
  const body='body{color:green}',asked=[];
- const world={connection:{async send(method,params){asked.push([method,params?.frameId]);if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'F'},resources:[{url:'https://public.example/other.css'}]}};if(method==='Page.getResourceContent'&&params.frameId==='F'&&params.url==='https://public.example/big.css')return {content:body,base64Encoded:false};throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
+ const world={connection:{async send(method,params){asked.push([method,params?.frameId]);if(method==='Network.loadNetworkResource')return {resource:{success:false}};if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'F'},resources:[{url:'https://public.example/other.css'}]}};if(method==='Page.getResourceContent'&&params.frameId==='F'&&params.url==='https://public.example/big.css')return {content:body,base64Encoded:false};throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(){return null}}}}});
  mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;assert(expression.includes(body));return {css:body,parsed:[body],used:null}};
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/big.css'),body);
- assert.deepEqual(asked,[['Page.getResourceTree',undefined],['Page.getResourceContent','F']]);
+ assert.deepEqual(asked,[['Network.loadNetworkResource','F'],['Page.getResourceTree',undefined],['Page.getResourceContent','F']]);
+});
+
+// transport5 (github.com sheets with `content: "⇛"`): a response without a charset decodes as Latin-1 in the frame's own text and
+// was read that way on most navigations (the network buffer had let go of it), so the same sheet had a different digest on
+// the next page and the viewer's retained copy never matched. The HTTP cache holds the exact bytes.
+test('a cross-origin stylesheet that left the network buffer is read as its exact bytes from the cache, not as the frame text',async()=>{
+ const exact='a::after{content:"\u21db"}',latin1=Buffer.from(exact,'utf8').toString('latin1'),asked=[];
+ const world={connection:{async send(method,params){asked.push(method);
+  if(method==='Network.loadNetworkResource')return {resource:{success:true,stream:'H',httpStatusCode:200}};
+  if(method==='IO.read')return {data:Buffer.from(exact,'utf8').toString('base64'),base64Encoded:true,eof:true};
+  if(method==='IO.close')return {};
+  if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'F'},resources:[{url:'https://public.example/s.css'}]}};
+  if(method==='Page.getResourceContent')return {content:latin1,base64Encoded:false};
+  throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(){return null}}}}});
+ mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;const sheets=JSON.parse(expression.slice(expression.lastIndexOf('})(')+3,-1));return {css:sheets[0].text,parsed:[sheets[0].text],used:null}};
+ assert.equal(await mirror.crossOriginSheet(world,'https://public.example/s.css'),exact);
+ assert(!asked.includes('Page.getResourceContent'),'the frame text is only the last resort');
 });
 
 // mirrorfix F2 (Amazon search mirrored unstyled): every Amazon sheet href ends in `#<revision>`, which CDP never reports.
