@@ -5,6 +5,8 @@
 // Disk cells (OF-37..OF-42): --scenario temp (every agent's TMPDIR is its own short folder inside the kernel's home),
 // trim (idle scratch goes, what is open or busy stays, an ended Room clears at once), runaway (the orphaned writer filling the disk is attributed and
 // stopped, other owners' builds are never paused).
+// --reach 1 --relay-binary R: a second kernel reaches this one over a private relay and a follower on it also follows the Room (OF-32).
+// --script-owners N [--script-command "python3 buildp1.py s{S} 1600 40 5" or a JSON argv array]: N outside scripts (own grant, `chariox exec`) join the --task round.
 // Usage: node process-admission-live.mjs --scenario memory|disk|temp|room-isolation|trim|trim-live|disk-volumes|disk-waits|disk-replay|stop-cycles|runaway --kernel-binary K --state-root DIR --evidence-dir DIR
 //   --login-file F [--agents 5] [--mem 7G] [--disk-gb 12] [--task a.txt:marker,b.txt:marker2] [--tui 1]
 //   [--codex-agents 5 --codex-profile-dir DIR] [--work-dir DIR] [--seed-peaks FILE]
@@ -24,6 +26,7 @@ import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import { LocalIpcClient } from "../../packages/kernel-client/dist/ipc.js"
 import { runDiskCells } from "./process-admission-disk-cells.mjs"
+import { startReach } from "./process-admission-reach.mjs"
 
 const flags = new Map()
 for (let i = 2; i < process.argv.length; i++) flags.set(process.argv[i], process.argv[++i])
@@ -162,8 +165,8 @@ const kernelEvents = []
 let pump
 let sampling = true
 let following = true
-const holderDir = join(dir, "holder")
-const readFollowed = () => existsSync(join(holderDir, "records.log")) ? readFileSync(join(holderDir, "records.log"), "utf8").split("\n").filter(Boolean).map(line => { const i = line.indexOf(" "); return { received_ms: Number(line.slice(0, i)), wait: JSON.parse(line.slice(i + 1)) } }) : []
+const reachHolderDir = join(dir, "holder-reach")
+const readFollowed = (from = reachHolderDir) => existsSync(join(from, "records.log")) ? readFileSync(join(from, "records.log"), "utf8").split("\n").filter(Boolean).map(line => { const i = line.indexOf(" "); return { received_ms: Number(line.slice(0, i)), wait: JSON.parse(line.slice(i + 1)) } }) : []
 const tmuxName = `admission-${process.pid}`
 let tui = false
 const tuiScreens = join(evidence, "tui")
@@ -185,7 +188,9 @@ const transcripts = () => {
   return out.map(f => readFileSync(f, "utf8")).join("\n")
 }
 
+let capturePeeks = async () => {}
 const runCleanup = async () => {
+  await capturePeeks().catch(() => {})
   sampling = false; following = false; clearInterval(pump)
   // A fixture that outlived its agent (the orphan writers) is asked to stop, then ended by exact pid.
   try { writeFileSync(join(work, "STOP"), "") } catch { /* the folder is gone */ }
@@ -193,8 +198,9 @@ const runCleanup = async () => {
   const fixtureNames = [...Object.keys(fixtures), "occupancy.py"]
   for (const name of fixtureNames) for (const { pid } of osProcesses(name)) if (pid > 1) { try { process.kill(pid, "SIGKILL") } catch { /* gone */ } }
   writeFileSync(join(evidence, "os-trace.json"), JSON.stringify(osTrace))
-  writeFileSync(join(evidence, "followed.json"), JSON.stringify(readFollowed(), null, 1))
-  for (const f of ["grant.err", "subscribe.err", "wait.err", "loop.log"]) if (existsSync(join(holderDir, f))) appendFileSync(join(evidence, "holder-logs.txt"), `== ${f}\n${readFileSync(join(holderDir, f), "utf8")}`)
+  if (existsSync(reachHolderDir)) writeFileSync(join(evidence, "followed.json"), JSON.stringify(readFollowed(), null, 1))
+  if (existsSync(join(reachHolderDir, "watch.log"))) writeFileSync(join(evidence, "watch.log"), readFileSync(join(reachHolderDir, "watch.log")))
+  for (const f of ["grant.err", "subscribe.err", "wait.err", "loop.log", "watch.err"]) if (existsSync(join(reachHolderDir, f))) appendFileSync(join(evidence, "holder-logs.txt"), `== ${f}\n${readFileSync(join(reachHolderDir, f), "utf8")}`)
   writeFileSync(join(evidence, "transcript.jsonl"), transcripts())
   if (tui) { try { writeFileSync(join(tuiScreens, "final.txt"), tmux("capture-pane", "-p", "-t", tmuxName)); tmux("kill-session", "-t", tmuxName) } catch { /* gone */ } }
   stopOwned()
@@ -295,10 +301,7 @@ try {
   }
   const att = (await rpc({ AttachToSession: { session_id: sessionId, client_id: alias, capability_level: "FullTerminal" } })).SessionAttached
   await client.subscribeToKernelEvents(sessionId, att.attachment.id)
-  const unlock = rpc({ ManageCredentialVault: { session_id: sessionId, agent_id: made.agent.id } }); unlock.catch(() => {})
-  const vaultPrompt = await until(async () => (await rpc({ GetSessionState: { session_id: sessionId } })).SessionState.session.active_interactions?.find(x => x.id.startsWith("vault-unlock-")), "vault prompt")
-  await rpc({ RespondToInteraction: { session_id: sessionId, interaction_id: vaultPrompt.id, choice_id: "passphrase", custom_reply: passkey } })
-  await unlock
+  await rpc({ CreateCredentialVault: { origin: { kind: "passphrase", passphrase: passkey } } })
   note("vault-unlocked")
   client.onKernelEvent(async event => {
     if (event.event === "passkey_prompts_changed") {
@@ -343,6 +346,8 @@ try {
   }
   const agent = agents[0]
   report.agent_ids = agents.map(a => a.id)
+  // What each agent's transcript shows at the end (the non-Claude ones leave no file of their own).
+  capturePeeks = async () => { for (const [i, a] of agents.entries()) writeFileSync(join(evidence, `peek-${i + 1}.json`), JSON.stringify(await rpc({ PeekAgentTranscript: { session_id: sessionId, agent_id: a.id, limit: 40 } }), null, 1)) }
   let tuiInputQueue = Promise.resolve()
   const ask = async (text, target = agent) => {
     if (flags.get("--tui-input") === "1") {
@@ -368,11 +373,14 @@ try {
 
   // The follower: an outside holder (its own process tree, the `chariox` command) that gets a grant, follows the
   // agents and logs every record with the time it received it.
-  mkdirSync(holderDir)
-  writeFileSync(join(holderDir, "holder.sh"), `#!/bin/bash
+  // The follower runs on the second kernel (--reach 1) and names this one with --kernel: `events subscribe` always follows another kernel.
+  const startHolder = (from, env, kernelName) => {
+    mkdirSync(from)
+    writeFileSync(join(from, "holder.sh"), `#!/bin/bash
 cd "$(dirname "$0")"
 chariox access request --until-exit > grant.json 2> grant.err || exit 2
-chariox events subscribe --kernel ${alias} --session ${sessionId} > subscribe.json 2> subscribe.err || exit 3
+chariox events subscribe --kernel ${kernelName} --session ${sessionId} > subscribe.json 2> subscribe.err || exit 3
+( chariox watch --kernel ${kernelName} --session ${sessionId} --attachment ${att.attachment.id} 2> watch.err | while IFS= read -r line; do printf '%s %s\\n' "$(date +%s%3N)" "$line"; done >> watch.log ) &
 echo subscribed > ready
 cursor=0
 while :; do
@@ -381,14 +389,36 @@ while :; do
   [ $rc -eq 5 ] && continue
   [ $rc -ne 0 ] && { echo "wait exit $rc" >> loop.log; sleep 1; continue; }
   printf '%s %s\\n' "$received" "$(tr -d '\\n' < wait.json)" >> records.log
-  cursor=$(node -e 'const r=JSON.parse(require("fs").readFileSync("wait.json","utf8"));console.log(r.next_cursor)')
-  chariox events ack $cursor > /dev/null 2>&1
+  cursor=$(sed -n 's/.*"next_cursor": *\\([0-9][0-9]*\\).*/\\1/p' wait.json | tail -1)
 done
 `, { mode: 0o755 })
-  const holder = own(spawn("bash", ["-c", `bash ${join(holderDir, "holder.sh")}; true`], { env: kernelEnv, stdio: "ignore" }))
-  note("holder-start", { pid: holder.pid })
+    const child = own(spawn("bash", ["-c", `bash ${join(from, "holder.sh")}; true`], { env, stdio: "ignore" }))
+    note("holder-start", { pid: child.pid, kernel: kernelName })
+    return until(() => existsSync(join(from, "ready")), `follower ${kernelName} subscribed`, 120000).then(() => note("follower-ready", { kernel: kernelName })).catch(e => note("follower-failed", { kernel: kernelName, error: String(e) }))
+  }
+  const reach = flags.get("--reach") === "1" ? await startReach({ relayBinary: resolve(need("--relay-binary")), kernelBinary, dir, evidence, drillEnv: kernelEnv, drillRpc: rpc, passkey, own, until, note }) : null
   const followed = []
-  const followerLoop = until(() => existsSync(join(holderDir, "ready")), "follower subscribed", 120000).then(() => note("follower-ready")).catch(e => note("follower-failed", { error: String(e) }))
+  const runScriptOwner = (n, template) => new Promise(done => {
+    const scriptDir = join(dir, `script-owner-${n}-${Date.now()}`)
+    mkdirSync(scriptDir)
+    const filled = template.replaceAll("{S}", String(n)), argv = filled.startsWith("[") ? JSON.parse(filled) : filled.split(" ")
+    writeFileSync(join(scriptDir, "run.sh"), `#!/bin/bash
+cd ${JSON.stringify(work)}
+chariox access request --until-exit > ${scriptDir}/grant.json 2> ${scriptDir}/grant.err || exit 2
+chariox exec --session ${sessionId} -- ${argv.map(a => JSON.stringify(a)).join(" ")} > ${scriptDir}/out.txt 2> ${scriptDir}/err.txt
+echo $? > ${scriptDir}/rc
+`, { mode: 0o755 })
+    const child = own(spawn("bash", [join(scriptDir, "run.sh")], { env: kernelEnv, stdio: "ignore" }))
+    note("script-owner-start", { n, pid: child.pid, command: argv.join(" ") })
+    const started = Date.now()
+    child.once("close", () => {
+      const read = f => existsSync(join(scriptDir, f)) ? readFileSync(join(scriptDir, f), "utf8") : null
+      const row = { n, exit_code: Number(read("rc")), seconds: (Date.now() - started) / 1000, stderr: read("err.txt")?.slice(0, 2000), stdout: read("out.txt")?.slice(0, 500) }
+      note("script-owner-done", row)
+      done(row)
+    })
+  })
+  const followerLoop = reach ? startHolder(reachHolderDir, reach.env, reach.target) : Promise.resolve()
 
   // --tui: the real terminal client attached to the Room in tmux; every changed screen is kept.
   if (flags.has("--tui")) {
@@ -426,12 +456,18 @@ done
 
   // The one waiting row, sampled twice a second, and the same processes as the OS sees them.
   const rows = new Map()
+  const answeredCards = new Set()
   let latestRows = []
   const sample = async () => {
     while (sampling) {
       try {
         const state = (await rpc({ GetSessionState: { session_id: sessionId } })).SessionState
         latestRows = state.processes ?? []
+        // A person's "Allow once" on the kernel's watched-command question (Claude runs jobs only after it).
+        for (const card of state.session.active_interactions ?? []) if (card.id.startsWith("watched-process-") && !answeredCards.has(card.id)) {
+          answeredCards.add(card.id)
+          await rpc({ RespondToInteraction: { session_id: sessionId, interaction_id: card.id, choice_id: "allow_once" } }).then(() => note("allow-once", { card: card.id }), e => note("allow-once-failed", { error: String(e).slice(0, 160) }))
+        }
         for (const p of state.processes ?? []) {
           const key = String(p.pid ?? p.process_id)
           const view = JSON.stringify({ kind: p.state?.kind, position: p.state?.position, reason: p.state?.reason })
@@ -449,7 +485,7 @@ done
       if (!/^\d+$/.test(name)) continue
       try {
         const cmd = readFileSync(`/proc/${name}/cmdline`, "utf8").split("\0")
-        if (!cmd.some(a => a === "build.py" || a === "write.py") || cmd[0] !== "python3") continue
+        if (!cmd.some(a => a === "build.py" || a === "write.py" || a === "buildp1.py") || cmd[0] !== "python3") continue
         if (readlinkSafe(`/proc/${name}/cwd`) !== work) continue
         const stat = readFileSync(`/proc/${name}/stat`, "utf8")
         out.push({ pid: Number(name), cgroup: readFileSync(`/proc/${name}/cgroup`, "utf8").trim().replace("0::", ""), name: cmd[2], state: stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3), rss_mb: Math.round(Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[21]) * 4 / 1024) })
@@ -457,7 +493,15 @@ done
     }
     return out
   }
-  const osLoop = (async () => { while (sampling) { osTrace.push({ t: (Date.now() - t0) / 1000, procs: osState() }); await delay(1000) } })()
+  // --trace-all 1 also keeps every process of the Room's folder (parent, state, command line), twice a second.
+  const everyProcess = () => readdirSync("/proc").filter(name => /^\d+$/.test(name)).flatMap(name => {
+    try {
+      if (readlinkSafe(`/proc/${name}/cwd`) !== work) return []
+      const stat = readFileSync(`/proc/${name}/stat`, "utf8"), tail = stat.slice(stat.lastIndexOf(")") + 2).split(" ")
+      return [{ pid: Number(name), ppid: Number(tail[1]), state: tail[0], args: readFileSync(`/proc/${name}/cmdline`, "utf8").split("\0").join(" ").slice(0, 120) }]
+    } catch { return [] }
+  })
+  const osLoop = (async () => { while (sampling) { osTrace.push({ t: (Date.now() - t0) / 1000, procs: osState(), ...(flags.get("--trace-all") === "1" ? { all: everyProcess() } : {}) }); await delay(flags.get("--trace-all") === "1" ? 500 : 1000) } })()
 
   await followerLoop
   if (scenario === "ui") {
@@ -474,10 +518,31 @@ done
     const [file, marker] = spec.split(":")
     const started = Date.now()
     // A Codex agent gets <name>-codex.txt and ends by writing answer-bN.txt (its transcripts are not read).
-    const templateFor = n => readFileSync(resolve(codexNumbers.includes(n) ? file.replace(/\.txt$/, "-codex.txt") : file), "utf8")
+    const answersInFile = n => providerOf(n) !== "claude"
+    const templateFor = n => readFileSync(resolve(answersInFile(n) ? file.replace(/\.txt$/, "-codex.txt") : file), "utf8")
+    // A script owner is an outside process with its own grant that runs the same build through `chariox exec`.
+    const scripts = Array.from({ length: Number(flags.get("--script-owners") ?? 0) }, (_, i) => runScriptOwner(i + 1, flags.get("--script-command") ?? "python3 buildp1.py s{S} 1600 40 5"))
+    // An answer file of an earlier round must not settle this one.
+    for (const [i] of agents.entries()) if (answersInFile(i + 1)) rmSync(join(work, `answer-b${i + 1}.txt`), { force: true })
     await Promise.all(agents.map((target, i) => ask(templateFor(i + 1).replaceAll("{N}", String(i + 1)), target)))
-    await Promise.all(agents.map((_, i) => until(() => codexNumbers.includes(i + 1) ? existsSync(join(work, `answer-b${i + 1}.txt`)) : transcripts().includes(`${marker}_b${i + 1}`), `agent ${i + 1} answer ${marker}`, Number(flags.get("--wait-s") ?? 900) * 1000)
+    // A turn still waiting 3 minutes after the prompts: keep what the kernel's process tree looks like (for hangs).
+    const hangProbe = setTimeout(async () => {
+      try {
+        const tree = execFileSync("ps", ["-o", "pid,ppid,stat,wchan:20,etimes,args", "-p", [kernel.pid, ...descendants(kernel.pid)].join(",")], { encoding: "utf8" })
+        const inWork = readdirSync("/proc").filter(name => /^\d+$/.test(name) && readlinkSafe(`/proc/${name}/cwd`) === work)
+        writeFileSync(join(evidence, "hang-ps.txt"), tree + "\n-- every process whose folder is the Room's:\n" + (inWork.length ? execFileSync("ps", ["-o", "pid,ppid,pgid,sid,stat,wchan:20,etimes,args", "-p", inWork.join(",")], { encoding: "utf8" }) : "none\n"))
+        // What each OpenCode server believes its tool call is doing.
+        for (const port of [...tree.matchAll(/opencode serve --hostname 127\.0\.0\.1 --port (\d+)/g)].map(m => m[1])) {
+          const sessions = await (await fetch(`http://127.0.0.1:${port}/session`)).json()
+          const messages = await Promise.all(sessions.map(async session => (await fetch(`http://127.0.0.1:${port}/session/${session.id}/message`)).json()))
+          writeFileSync(join(evidence, `hang-opencode-${port}.json`), JSON.stringify({ sessions, messages }, null, 1))
+        }
+      } catch (e) { writeFileSync(join(evidence, "hang-probe-error.txt"), String(e)) }
+    }, 180000)
+    await Promise.all(agents.map((_, i) => until(() => answersInFile(i + 1) ? existsSync(join(work, `answer-b${i + 1}.txt`)) : transcripts().includes(`${marker}_b${i + 1}`), `agent ${i + 1} answer ${marker}`, Number(flags.get("--wait-s") ?? 900) * 1000)
       .then(() => note("answered", { agent: i + 1, marker, seconds: ((Date.now() - started) / 1000).toFixed(1) }))))
+    clearTimeout(hangProbe)
+    report.script_owners = await Promise.all(scripts)
     report[`round_${marker}_s`] = (Date.now() - started) / 1000
   }
   report.peaks_file = join(dir, "chariox/state/admission-peaks.json")

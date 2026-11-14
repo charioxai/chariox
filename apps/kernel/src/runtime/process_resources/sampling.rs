@@ -716,6 +716,13 @@ impl ProcessTree {
             .collect()
     }
 
+    /// Ends the work a pool stop is about, not the shell a harness wrapped
+    /// around it (`effective`): the shell still reads the end and reports it,
+    /// where a harness that never sees its shell exit waits for ever.
+    pub fn kill_work(&self, command: u32, samples: &[ProcessSample]) -> Vec<String> {
+        self.kill(self.effective(command, samples))
+    }
+
     pub fn is_root(&self, pid: u32) -> bool {
         pid == self.root
     }

@@ -54,7 +54,9 @@ export class Fixture {
 
   async launch(name, executable, env, args = []) {
     const log = await open(path.join(this.evidence, `${name}.log`), 'w', 0o600)
-    const child = spawn(executable, args, { env, stdio: ['ignore', log.fd, log.fd] })
+    // A kernel's default Room folder is its working directory: keep it inside the disposable home.
+    const cwd = name.startsWith('kernel-') ? path.join(this.home, name.at(-1), 'work') : this.home
+    const child = spawn(executable, args, { env, cwd, stdio: ['ignore', log.fd, log.fd] })
     if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw new Error('invalid owned process PID')
     child.done = new Promise((resolve, reject) => {
       child.once('error', reject)
@@ -124,17 +126,7 @@ export class Fixture {
   }
 
   async unlock() {
-    const work = path.join(this.home, 'A/work')
-    const made = (await this.A.send({ CreateSession: { workspace_id: work, worktree_id: work, alias: null, no_subscribe: true } })).SessionCreated
-    const pending = this.A.send({ ManageCredentialVault: { session_id: made.session.id, agent_id: made.agent.id } })
-    pending.catch(() => undefined)
-    const prompt = await until(async () => {
-      const state = await this.A.send({ GetSessionState: { session_id: made.session.id } })
-      return state.SessionState.session.active_interactions?.find(item => item.id.startsWith('vault-unlock-'))
-    }, 'disposable Vault setup')
-    await this.A.send({ RespondToInteraction: { session_id: made.session.id, interaction_id: prompt.id, choice_id: 'passphrase', custom_reply: this.passphrase } })
-    await pending
-    await this.A.send({ EndSession: { session_id: made.session.id } })
+    await this.A.send({ CreateCredentialVault: { origin: { kind: 'passphrase', passphrase: this.passphrase } } })
   }
 
   async grant() {
