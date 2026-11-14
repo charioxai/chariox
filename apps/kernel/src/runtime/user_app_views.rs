@@ -5,13 +5,21 @@ use crate::local::{AppRequestErrorCode, UserAppView};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, Mutex},
+    time::Duration,
 };
+use tokio::time::Instant;
+
+/// A view a client renders itself ends when its client stops renewing: a
+/// closed or crashed tab never gets to close its view.
+pub(crate) const CLIENT_LEASE: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 struct Registry {
     views: BTreeMap<String, (AppViewBinding, UserAppView)>,
     cursors: HashMap<String, u64>,
     browser_targets: HashMap<String, String>,
+    /// View id to the instant its client lease lapses; kernel-browser views have none.
+    leases: HashMap<String, Instant>,
     pumping: BTreeSet<String>,
     stopped: bool,
     /// MP-08/MP-11: Apps an owner left open when the browser or kernel went
@@ -42,6 +50,7 @@ impl Registry {
         }
         let (binding, _) = self.views.remove(id)?;
         self.browser_targets.remove(id);
+        self.leases.remove(id);
         *self.cursors.entry(owner.into()).or_default() += 1;
         Some(binding)
     }
@@ -114,6 +123,38 @@ impl UserAppViews {
         drop(registry);
         self.changed.notify_waiters();
         Ok(view)
+    }
+
+    /// Starts the client lease of a view the client renders itself.
+    pub(crate) fn lease(&self, owner: &str, id: &str, now: Instant) -> bool {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        if registry.views.get(id).is_none_or(|(b, _)| b.owner != owner) {
+            return false;
+        }
+        registry.leases.insert(id.into(), now + CLIENT_LEASE);
+        true
+    }
+
+    /// Extends a leased view for its owner; a view without a lease keeps none.
+    pub(crate) fn renew(&self, owner: &str, id: &str, now: Instant) -> bool {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        if registry.views.get(id).is_none_or(|(b, _)| b.owner != owner) {
+            return false;
+        }
+        registry
+            .leases
+            .get_mut(id)
+            .map(|deadline| *deadline = now + CLIENT_LEASE)
+            .is_some()
+    }
+
+    /// When the view's client lease lapses; `None` once the view is gone or unleased.
+    pub(crate) fn lease_deadline(&self, id: &str) -> Option<Instant> {
+        let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        registry
+            .views
+            .contains_key(id)
+            .then(|| registry.leases.get(id).copied())?
     }
 
     pub(crate) fn get(&self, owner: &str, id: &str) -> Option<(AppViewBinding, UserAppView)> {
@@ -404,6 +445,7 @@ impl UserAppViews {
             *registry.cursors.entry(binding.owner.clone()).or_default() += 1;
         }
         registry.browser_targets.clear();
+        registry.leases.clear();
         registry.pumping.clear();
         drop(registry);
         self.changed.notify_waiters();
@@ -446,6 +488,43 @@ mod tests {
         let (bound, listed) = views.get("alice", &view.view_id).unwrap();
         assert_eq!((bound.generation, listed.generation.as_str()), (9, "9"));
         assert_eq!(views.cursor("alice"), before + 1);
+    }
+    #[test]
+    fn a_leased_view_lapses_unless_its_client_renews_it() {
+        let views = UserAppViews::default();
+        let start = Instant::now();
+        let view = views.open("alice", binding("alice"), "a").unwrap();
+        assert_eq!(
+            views.lease_deadline(&view.view_id),
+            None,
+            "a view has no lease until its client takes one"
+        );
+        assert!(
+            !views.renew("alice", &view.view_id, start),
+            "renewing never creates a lease"
+        );
+        assert!(
+            !views.lease("bob", &view.view_id, start),
+            "only the owner leases the view"
+        );
+        assert!(views.lease("alice", &view.view_id, start));
+        assert_eq!(
+            views.lease_deadline(&view.view_id),
+            Some(start + CLIENT_LEASE)
+        );
+        let later = start + CLIENT_LEASE / 2;
+        assert!(!views.renew("bob", &view.view_id, later));
+        assert!(views.renew("alice", &view.view_id, later));
+        assert_eq!(
+            views.lease_deadline(&view.view_id),
+            Some(later + CLIENT_LEASE)
+        );
+        assert!(views.close("alice", &view.view_id));
+        assert_eq!(views.lease_deadline(&view.view_id), None);
+        assert!(
+            !views.renew("alice", &view.view_id, later),
+            "a closed view cannot be renewed"
+        );
     }
     #[test]
     fn shutdown_revokes_instances_and_refuses_new_open() {
