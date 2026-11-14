@@ -322,6 +322,9 @@ export class Mirror2 {
     if (command.known_sheets !== undefined && (!Array.isArray(command.known_sheets) || command.known_sheets.length > 128 || command.known_sheets.some(digest => typeof digest !== 'string' || !/^[a-f0-9]{24}$/.test(digest)))) throw new Error('MP-11: invalid mirror sheet dictionary');
     // A viewer lists its retained sheets with a reset credit and again only when the list changes: a reset the kernel starts itself uses the last list.
     if (command.known_sheets !== undefined || command.after_sequence === 0) stream.knownSheets = command.known_sheets ?? [];
+    // The same for the fonts it keeps across documents: a retained font is named, not sent again.
+    if (command.known_fonts !== undefined && (!Array.isArray(command.known_fonts) || command.known_fonts.length > 128 || command.known_fonts.some(digest => typeof digest !== 'string' || !/^[a-f0-9]{24}$/.test(digest)))) throw new Error('MP-11: invalid mirror font dictionary');
+    if (command.known_fonts !== undefined || command.after_sequence === 0) stream.knownFonts = new Set(command.known_fonts ?? []);
     if (command.wait_ms !== undefined && (!Number.isInteger(command.wait_ms) || command.wait_ms < 0 || command.wait_ms > MAX_WAIT_MS)) throw new Error('MP-11: invalid mirror wait');
     // Credits are answered in order; each packet's base is its predecessor.
     // A queued credit's wait starts when its predecessor is answered (expired
@@ -820,6 +823,12 @@ export class Mirror2 {
           out.push({ key: entry.key, resource_id: createHash('sha256').update(data).digest('hex'), mime_type: 'image/svg+xml', data_base64: data.toString('base64') });
           continue;
         }
+      }
+      // A font the viewer kept from an earlier document is named by its digest; its bytes stay with the viewer.
+      if (entry.kind === 'font' && stream?.knownFonts?.has(entry.resource.resource_id.slice(0, 24))) {
+        entry.sent = true; entry.sentAt = stream.issued + 1;
+        out.push({ key: entry.key, resource_id: entry.resource.resource_id, mime_type: entry.resource.mime_type, data_base64: '', retained: true });
+        continue;
       }
       // Within the budget whole; otherwise the next slice (offset/total in base64 characters).
       const data = entry.resource.data_base64, offset = entry.offset ?? 0, room = budget - bytes;

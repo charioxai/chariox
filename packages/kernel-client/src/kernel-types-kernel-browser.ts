@@ -27,7 +27,7 @@ export type KernelBrowserCommand =
   | { op: "state_wait"; after: string; wait_ms: number }
   | { op: "revoke_grants"; agent_id: string | null }
   | { op: "mirror_subscribe"; tab_id: string; generation: number; device_scale_factor: 1 | 2; wire?: 2; navigation_preview?: true; viewport_first?: true; visited_links?: true; font_requirements?: true; font_absent?: true; layout_width?: number; layout_height?: number }
-  | { op: "mirror_next"; subscription_id: string; generation: number; after_sequence: number; drift_nodes: string[]; known_sheets?: string[]; wait_ms?: number; resend?: true; flush?: true }
+  | { op: "mirror_next"; subscription_id: string; generation: number; after_sequence: number; drift_nodes: string[]; known_sheets?: string[]; known_fonts?: string[]; wait_ms?: number; resend?: true; flush?: true }
   | { op: "mirror_close"; subscription_id: string; generation: number }
   | { op: "mirror_input"; tab_id: string; generation: number; document_id: string; subscription_id: string; sequence: number; action: KernelBrowserMirrorAction }
   | { op: "display_capture" | "display_takeover" | "display_release"; tab_id: string; generation: number }

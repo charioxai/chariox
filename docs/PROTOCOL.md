@@ -5122,6 +5122,16 @@ renderer discards both dictionaries. This extends mirror's own unreleased
 number or client floor is introduced. `browser-mirror2-sheet-cache-550.json` pins
 the request extension and its hash, including legacy omission/round-trip coverage.
 
+MIRROR-P2: provisional local 1055 lets a `mirror_next` credit carry `known_fonts`, at most 128 lowercase
+24-digit hexadecimal digests (the first 24 characters of a font resource's `resource_id`) of fonts this viewer keeps
+for its subscription across documents. A reset credit lists them and the kernel keeps the list until a credit lists
+another (a reset credit without one means none). A font whose digest is listed travels as a resource without bytes,
+`{key, resource_id, mime_type, data_base64: "", retained: true}`; the viewer binds its retained bytes to that key for the
+new document and refuses an unknown digest, a non-font MIME type or a retained resource with bytes or slice fields.
+Images and every other resource keep their per-document delivery. The viewer keeps at most 64 fonts and 16 MiB, never
+evicts a listed entry before close and takes new fonts by ordinary delivery once full.
+`browser-mirror2-font-cache-1055.json` pins the request and the resource shape (`browser_mirror2_font_cache_1055_shape_is_pinned`).
+
 MP-08 / MP-10 / MP-11 — 539/147 native navigation preview (same unreleased allocation):
 `mirror_subscribe.navigation_preview: true` opts into a `wire:2`, reset,
 `fallback:"navigation_preview"`, `snapshot_complete:false` notification before

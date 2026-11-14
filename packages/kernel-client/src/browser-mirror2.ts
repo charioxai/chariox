@@ -1,5 +1,6 @@
 import { mirror2AbsentFont, mirror2PendingFontSource, Mirror2FontStyle, mirror2RenderedFontReady, mirror2DocumentFontsReady } from './browser-mirror2-fonts.js'
 import { Mirror2SheetCache } from './browser-mirror2-sheets.js'
+import { Mirror2FontCache } from './browser-mirror2-font-cache.js'
 import { rememberMirror2Range, restoreMirror2Range } from './browser-mirror2-selection.js'
 // MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 517). The page's own
 // sanitized stylesheets and attributes are rebuilt in a script-free sandbox;
@@ -401,11 +402,22 @@ export class BrowserMirror2Renderer {
   private async addResource(resource: Mirror2Resource): Promise<void> {
     const bytes = bytesOf(resource.data_base64)
     if (await digest(bytes) !== resource.resource_id) throw Error('MP-11: mirror resource digest')
+    const blob = new Blob([bytes as Uint8Array<ArrayBuffer>], { type: resource.mime_type })
+    if (resource.mime_type.startsWith('font/')) this.fontCache.remember(resource.resource_id, blob)
+    this.setResource(resource, resource.mime_type === 'image/svg+xml' ? `data:image/svg+xml;base64,${resource.data_base64}` : URL.createObjectURL(blob))
+  }
+  // A font named by digest: the bytes this subscription already holds, under this document's key.
+  private addRetained(resource: Mirror2Resource): void {
+    const blob = this.fontCache.take(resource.resource_id)
+    if (!blob || blob.type !== resource.mime_type) throw Error('MP-11: mirror retained font unknown')
+    this.setResource(resource, URL.createObjectURL(blob))
+  }
+  private setResource(resource: Mirror2Resource, url: string): void {
     const old = this.resources.get(resource.key); if (old?.startsWith('blob:')) URL.revokeObjectURL(old)
     const sprite = this.sprites.get(resource.key); if (sprite) URL.revokeObjectURL(sprite); this.sprites.delete(resource.key)
     // SVG stays an image: data: URLs have an opaque origin if ever opened top-level.
     this.resourceAt = performance.now()
-    this.resources.set(resource.key, resource.mime_type === 'image/svg+xml' ? `data:image/svg+xml;base64,${resource.data_base64}` : URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: resource.mime_type })))
+    this.resources.set(resource.key, url)
   }
   // Slices of one resource arrive in order; the digest covers the whole.
   private assemble(resource: Mirror2Resource): Mirror2Resource | null {
@@ -655,6 +667,7 @@ export class BrowserMirror2Renderer {
   }
   private sheets = new Map<string, string>()
   private sheetCache = new Mirror2SheetCache()
+  private fontCache = new Mirror2FontCache()
   // MP-08/MP-10/MP-11: hidden preparation never steals focus or emits input.
   setInteractive(enabled: boolean, focus = false): void {
     this.interactive = enabled; this.frame.inert = !enabled
@@ -715,6 +728,7 @@ export class BrowserMirror2Renderer {
     return ready
   }
   knownSheets(): string[] { return this.sheetCache.digests() }
+  knownFonts(): string[] { return this.fontCache.digests() }
   async apply(wire: Mirror2Packet): Promise<void> {
     const started = performance.now()
     // MP-08/MP-10/MP-11: attribute reset long tasks before slicing the work.
@@ -746,7 +760,10 @@ export class BrowserMirror2Renderer {
     }
     if (packet.reset) this.slices.clear()
     const complete: Mirror2Resource[] = []
-    for (const slice of packet.resources) { const resource = this.assemble(slice); if (resource) { await this.addResource(resource); complete.push(resource) } }
+    for (const slice of packet.resources) {
+      if (slice.retained) { this.addRetained(slice); complete.push(slice); continue }
+      const resource = this.assemble(slice); if (resource) { await this.addResource(resource); complete.push(resource) }
+    }
     if (this.disposed || !this.doc) throw Error('MP-08: mirror closed during validation')
     // A bounded loading-document resnapshot changes node ids, not the user's
     // root wheel intent. Preserve it and submit only under the new epoch.
@@ -944,7 +961,7 @@ export class BrowserMirror2Renderer {
     style.setProperty('background-position', `${tile.x}px ${tile.y}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
   }
   close(options?:{preserveFrame?:boolean}): void {
-    this.disposed = true; this.onEmptyPaint = undefined; this.onTiming = undefined; this.sheetCache.clear(); this.sheets.clear(); this.releasePointer(); this.queue=[]; this.pendingInputs=0; this.wheel.close()
+    this.disposed = true; this.onEmptyPaint = undefined; this.onTiming = undefined; this.sheetCache.clear(); this.fontCache.clear(); this.sheets.clear(); this.releasePointer(); this.queue=[]; this.pendingInputs=0; this.wheel.close()
     const owner = this.container.ownerDocument
     owner.removeEventListener('pointerup', this.releasePointer, true)
     owner.removeEventListener('pointercancel', this.releasePointer, true)
@@ -980,7 +997,7 @@ const GAP_MS = 500
 const LOST_MS = 1000
 // Credit-gated push: `credits` long-poll requests stay outstanding; packets
 // apply strictly in sequence. A lasting gap or repeated failure asks for a fresh snapshot.
-type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'> & Partial<Pick<BrowserMirror2Renderer,'settleInput' | 'painted' | 'acceptsInput' | 'onEmptyPaint' | 'onTiming' | 'knownSheets' | 'setInteractive' | 'readyForHandover' | 'holdForHandover' | 'handover' | 'requireNativeFonts'>>
+type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'> & Partial<Pick<BrowserMirror2Renderer,'settleInput' | 'painted' | 'acceptsInput' | 'onEmptyPaint' | 'onTiming' | 'knownSheets' | 'knownFonts' | 'setInteractive' | 'readyForHandover' | 'holdForHandover' | 'handover' | 'requireNativeFonts'>>
 // A failure streak that outlives this with no packet is terminal (the runtime then
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
@@ -1081,7 +1098,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     const entry = { reset, oldestAt: outstanding.length ? 0 : performance.now() }; outstanding.push(entry)
     const overdue = (): void => { if (closed || !outstanding.includes(entry)) return; if (outstanding[0] !== entry || entry.reset || transport.receiving?.()) { setTimeout(overdue, LOST_MS); return } const left = entry.oldestAt + waitMs + LOST_MS - performance.now(); if (left > 0) { setTimeout(overdue, left); return } if (!resendOutstanding && applied) { wantResend = true; fill() } }
     setTimeout(overdue, waitMs + LOST_MS)
-    request({ op: 'mirror_next', subscription_id, generation: binding.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], ...(renderer.knownSheets?.().length ? { known_sheets: renderer.knownSheets() } : {}), wait_ms: waitMs, ...(resend ? { resend: true } : {}) })
+    request({ op: 'mirror_next', subscription_id, generation: binding.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], ...(renderer.knownSheets?.().length ? { known_sheets: renderer.knownSheets() } : {}), ...(renderer.knownFonts?.().length ? { known_fonts: renderer.knownFonts() } : {}), wait_ms: waitMs, ...(resend ? { resend: true } : {}) })
       .then(async (packet: Mirror2WirePacket) => {
         answered = true
         if (!packet || packet.wire !== 2 || !Number.isSafeInteger(packet.sequence) || packet.sequence <= 0) throw Error('MP-11: foreign mirror packet')

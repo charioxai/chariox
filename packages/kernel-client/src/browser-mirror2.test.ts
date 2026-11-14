@@ -30,6 +30,13 @@ const base = (nodes: Mirror2Record[], extra: Partial<Mirror2Packet> = {}): Mirro
 const tree = (...rest: Mirror2Record[]): Mirror2Record[] => [{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, ...rest]
 const element = (tag: string, attrs: Record<string, string> = {}, extra: Partial<Mirror2Record> = {}): Mirror2Record => ({ id: 'n3', parent: 'n2', kind: 'element', tag, attrs, ...extra })
 
+test('MIRROR-P2: a retained resource is a font named by its digest alone', () => {
+  const previous = new Map()
+  const named = (extra: Record<string, unknown> = {}) => base(tree(), { resources: [{ key: 'r1', resource_id: 'a'.repeat(64), mime_type: 'font/woff2', data_base64: '', retained: true, ...extra }] })
+  assert.doesNotThrow(() => validateMirror2Packet(named(), previous))
+  for (const extra of [{ data_base64: 'AAAA' }, { mime_type: 'image/png' }, { offset: 0, total: 4 }, { retained: false }]) assert.throws(() => validateMirror2Packet(named(extra), previous), /executable/, JSON.stringify(extra))
+})
+
 test('MP-10: protocol 629 mirror accepts the full shared resize range', () => {
   for (const [css_width, css_height] of [[320, 200], [900, 600], [1920, 1080]] as const)
     assert.doesNotThrow(() => validateMirror2Packet(base(tree(), { css_width, css_height }), new Map()))
