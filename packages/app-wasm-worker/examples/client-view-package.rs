@@ -33,7 +33,10 @@ fn main() {
         ),
         (manifest.ui.entry.clone(), std::fs::read(view).unwrap()),
     ]);
-    for declared in [&manifest.tools, &manifest.ui_actions].into_iter().flatten() {
+    for declared in [&manifest.tools, &manifest.ui_actions]
+        .into_iter()
+        .flatten()
+    {
         files.insert(declared.clone(), std::fs::read(app.join(declared)).unwrap());
     }
     std::fs::create_dir_all(&output).unwrap();
@@ -43,5 +46,10 @@ fn main() {
         v2::pack(&manifest, &files, &key.key, &[], &Limits::default()).unwrap(),
     )
     .unwrap();
-    view_signing::write_publisher(&output, &manifest.publisher.id, &manifest.publisher.name, &key);
+    view_signing::write_publisher(
+        &output,
+        &manifest.publisher.id,
+        &manifest.publisher.name,
+        &key,
+    );
 }
