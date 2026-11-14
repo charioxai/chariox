@@ -8,7 +8,9 @@ import { createApp } from '../handler.mjs';
 
 const refusal = (code, message = code) => ({ code, message, retryable: false });
 
-function fakeKernel({ automation = true, automations = [], scheduled = false } = {}) {
+const due = (automationId, state = 'active', lastReceipt = null) => ({ automationId, event: 'todo_due', eventVersion: 1, state, lastReceipt });
+
+function fakeKernel({ automation = true, automations = [due('reminders')], scheduled = false } = {}) {
   const records = new Map();
   const wakes = new Map();
   const occurrences = [];
@@ -145,13 +147,31 @@ test('an incoming request creates one Todo even when it is delivered twice', asy
   assert.equal((await kernel.tools.view_changes({})).latest, 1, 'the repeated delivery wrote nothing');
 });
 
-test('reminder status reports the reminders automation without naming its workflow', async () => {
+test('reminder status reports whether a todo_due automation is active without naming its target', async () => {
   const status = options => fakeKernel(options).tools.reminder_status({});
-  const reminders = { automationId: 'reminders', event: 'todo_due', eventVersion: 1, state: 'broken',
-    lastReceipt: { receiptId: 'receipt-1', state: 'failed' } };
-  const other = { ...reminders, automationId: 'other', state: 'active', lastReceipt: null };
-  assert.deepEqual(await status({ automations: [other, reminders] }), { state: 'broken', last_delivery: 'failed' });
+  const other = { ...due('unrelated', 'active'), event: 'other_event' };
+  assert.deepEqual(await status({ automations: [other, due('a', 'broken', { receiptId: 'r1', state: 'failed' })] }), { state: 'broken', last_delivery: 'failed' });
+  assert.deepEqual(await status({ automations: [due('a', 'paused'), due('b', 'active', { receiptId: 'r2', state: 'delivered' })] }), { state: 'active', last_delivery: 'delivered' }, 'one active automation is enough');
   assert.deepEqual(await status({ automations: [other] }), { state: 'missing', last_delivery: null });
+});
+
+test('a due reminder goes once to every active todo_due automation, whatever its name', async () => {
+  const kernel = fakeKernel({ automations: [due('reminders'), due('subscription-agent-7'), due('old', 'paused'), { ...due('x'), event: 'other_event' }] });
+  const todo = await kernel.tools.create_todo({ title: 'Call back', due_at_ms: 1000 }, person);
+  const wake = kernel.wakes.get(`todo-${todo.id}`);
+  await kernel.wake(wake);
+  await kernel.wake(wake);
+  assert.deepEqual(kernel.occurrences.map(event => event.automationId), ['reminders', 'subscription-agent-7']);
+  assert.equal(kernel.occurrences[0].occurrenceId, kernel.occurrences[1].occurrenceId);
+  assert.equal((await kernel.tools.list_todos({})).todos[0].reminded, true);
+});
+
+test('a reminder with no active todo_due automation is recorded without asking the kernel to deliver it', async () => {
+  const kernel = fakeKernel({ automations: [due('old', 'paused')] });
+  const todo = await kernel.tools.create_todo({ title: 'Nobody listens', due_at_ms: 1000 }, person);
+  await kernel.wake(kernel.wakes.get(`todo-${todo.id}`));
+  assert.equal(kernel.occurrences.length, 0);
+  assert.equal((await kernel.tools.list_todos({})).todos[0].reminded, true);
 });
 
 // MP-08/MP-10/MP-11: the App sees who called (human owner vs agent) and treats them differently.

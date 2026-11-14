@@ -5,9 +5,9 @@
 const KEY = 'todos';
 // The package's data schema version: 0 until it declares migrations.
 const SCHEMA = 0;
-// One App automation routes `todo_due` to the workflow the user chose with
-// `/app automation add <installation> reminders todo_due …`.
-const AUTOMATION = 'reminders';
+// A due reminder goes to every active automation of this outgoing event: the workflow a person chose with
+// `/app automation add <installation> <name> todo_due …` and any agent that subscribed to it.
+const DUE_EVENT = 'todo_due';
 // An installation has at most 256 wakes; MAX_TODOS keeps due Todos below that. The single `todos`
 // value is at most 256 KiB of UTF-8, checked before each write so the App reports its own limit.
 const MAX_TODOS = 150;
@@ -78,10 +78,12 @@ export function createApp({ state, events, feed }) {
   // operating this App's own page. Agents may delete only Todos an agent created; people may delete any.
   const byAgent = context => context?.actor?.kind === 'agent';
 
-  function occurrence(todo, scheduled) {
+  const dueAutomations = async () => (await events.automations()).filter(automation => automation.event === DUE_EVENT);
+
+  function occurrence(todo, scheduled, automationId) {
     const dueAt = BigInt(todo.due_at_ms);
     return {
-      automationId: AUTOMATION,
+      automationId,
       occurrenceId: events.occurrenceId(`todo:${todo.id}:${todo.revision}`, dueAt),
       eventVersion: 1,
       occurredAtMs: dueAt,
@@ -98,10 +100,11 @@ export function createApp({ state, events, feed }) {
         return { todos: openOnly ? todos.filter(todo => !todo.done) : todos };
       },
 
-      // Whether due reminders reach the workflow: the reminders automation's state as Chariox shows it
-      // ('missing' when none is configured). The workflow itself is never revealed.
+      // Whether due reminders reach anyone: 'active' when one automation of `todo_due` is, otherwise the
+      // state of the first as Chariox shows it, or 'missing' when there is none. The target is never revealed.
       async reminder_status() {
-        const reminders = (await events.automations()).find(automation => automation.automationId === AUTOMATION);
+        const automations = await dueAutomations();
+        const reminders = automations.find(automation => automation.state === 'active') ?? automations[0];
         return { state: reminders?.state ?? 'missing', last_delivery: reminders?.lastReceipt?.state ?? null };
       },
 
@@ -158,16 +161,21 @@ export function createApp({ state, events, feed }) {
     async wake(wake) {
       if (!wake.id.startsWith('todo-')) return;
       const id = wake.id.slice('todo-'.length);
+      const targets = (await dueAutomations()).filter(automation => automation.state === 'active');
       const remind = (withOccurrence, scheduled = true) => change(todos => {
         const todo = todos.find(item => item.id === id);
         if (!todo || todo.done || todo.reminded || String(todo.revision) !== wake.revision) return null;
         todo.reminded = true;
         return todo;
-      }, todo => withOccurrence ? { occurrences: [occurrence(todo, scheduled)] } : {});
+      }, todo => withOccurrence ? { occurrences: targets.map(target => occurrence(todo, scheduled, target.automationId)) } : {});
       // A wake's revision and an automation's scheduled admission are distinct. The ordinary
       // `/app automation add` binding rejects a schedule revision; retry that canonical shape only after
       // the first transaction rolled back. Both keep the same occurrence identity (including the Todo
       // revision), so both binding modes retain atomic reminder marking and redelivery deduplication.
+      if (!targets.length) {
+        await remind(false);
+        return;
+      }
       for (const scheduled of [true, false]) {
         try {
           await remind(true, scheduled);
