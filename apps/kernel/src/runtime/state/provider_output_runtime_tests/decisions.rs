@@ -657,7 +657,10 @@ async fn the_last_holder_ending_hands_the_same_interaction_to_the_user() {
         1,
         "p is Required, so g holds it"
     );
-    t.runtime.move_decisions_up(&t.room, &t.g).await.unwrap();
+    t.runtime
+        .move_decisions_up(&t.room, &t.g, None)
+        .await
+        .unwrap();
     assert!(t.all_closed(&t.g));
     let session = t.session();
     assert_eq!(session.interactions_listed_for(&t.g)[0].id(), "perm-9");
@@ -1125,12 +1128,18 @@ async fn a_decision_an_ancestor_holds_is_not_listed_to_the_user_until_it_reaches
         Follower::follow(&t).told(&t).is_empty(),
         "nor replayed to a later follower"
     );
-    t.runtime.move_decisions_up(&t.room, &t.p).await.unwrap();
+    t.runtime
+        .move_decisions_up(&t.room, &t.p, None)
+        .await
+        .unwrap();
     assert!(
         before.told(&t).is_empty(),
         "g holds it now: still not the user's"
     );
-    t.runtime.move_decisions_up(&t.room, &t.g).await.unwrap();
+    t.runtime
+        .move_decisions_up(&t.room, &t.g, None)
+        .await
+        .unwrap();
     assert_eq!(
         before.told(&t),
         [(
@@ -1296,7 +1305,10 @@ async fn a_decision_that_moves_up_to_the_user_makes_the_node_need_the_user() {
         t.needs().0.contains(&("c".into(), Waiting, false)),
         "g holds it"
     );
-    t.runtime.move_decisions_up(&t.room, &t.g).await.unwrap();
+    t.runtime
+        .move_decisions_up(&t.room, &t.g, None)
+        .await
+        .unwrap();
     let (nodes, users) = t.needs();
     assert!(nodes.contains(&("c".into(), Waiting, true)), "{nodes:?}");
     assert_eq!(users, 1);
@@ -1597,6 +1609,7 @@ mod asked_without_waiting;
 mod blocked_card;
 mod detail;
 mod holder_inbox_reads;
+mod other_turns;
 mod reparent;
 mod restored;
 mod tenure;
