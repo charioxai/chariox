@@ -5124,12 +5124,14 @@ the request extension and its hash, including legacy omission/round-trip coverag
 
 MIRROR-P2: provisional local 1055 lets a `mirror_next` credit carry `known_fonts`, at most 128 lowercase
 24-digit hexadecimal digests (the first 24 characters of a font resource's `resource_id`) of fonts this viewer keeps
-for its subscription across documents. A reset credit lists them and the kernel keeps the list until a credit lists
+across documents (a view keeps them across the subscriptions of its navigations: its page runtime ends a
+subscription when a document is retired and attaches the next). A reset credit lists them and the kernel keeps the list until a credit lists
 another (a reset credit without one means none). A font whose digest is listed travels as a resource without bytes,
 `{key, resource_id, mime_type, data_base64: "", retained: true}`; the viewer binds its retained bytes to that key for the
 new document and refuses an unknown digest, a non-font MIME type or a retained resource with bytes or slice fields.
 Images and every other resource keep their per-document delivery. The viewer keeps at most 64 fonts and 16 MiB, never
-evicts a listed entry before close and takes new fonts by ordinary delivery once full.
+evicts a listed entry while a subscription that listed it runs (it frees the oldest half before a new subscription lists) and takes
+new fonts by ordinary delivery once full. The sheet dictionary above follows the same view lifetime.
 `browser-mirror2-font-cache-1055.json` pins the request and the resource shape (`browser_mirror2_font_cache_1055_shape_is_pinned`).
 
 MP-08 / MP-10 / MP-11 — 539/147 native navigation preview (same unreleased allocation):
@@ -5219,6 +5221,7 @@ icons, every two seconds). The viewer keeps the state it read last and waits aft
 `browser-state-wait-unchanged-1055.json` pins the reply (`mp08_browser_state_wait_unchanged_1055_snapshot`).
 The same release lets an idle viewer park one `state_wait` and one `mirror_next` credit for up to 10000 ms (2000 before), so a quiet
 Browser view asks the kernel once per wait; a change still answers the parked request at once.
+The same release lets `mirror_next` carry `known_fonts` and a resource be sent as `retained` (see MIRROR-P2 below), and a view keeps its retained sheets and fonts across the subscriptions of its navigations.
 
 MP-08 / MP-10 / MP-11: allocated 560/168 adds the `display_subscribe` target
 `{kind:"browser_window", window_generation}`: the owner's view of the Chrome window's page area. It
