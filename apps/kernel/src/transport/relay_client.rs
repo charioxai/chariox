@@ -42,6 +42,8 @@ mod connection_state;
 mod connector;
 pub(crate) use connector::relay_refusal;
 mod daemon_requests;
+#[cfg(test)]
+pub(crate) use daemon_requests::MAX_REPLY_BYTES;
 mod display_admission;
 mod display_delivery;
 mod display_ingress;

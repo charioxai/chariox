@@ -578,7 +578,7 @@ pub(super) async fn handle_prepared_daemon_request(
 
 /// A reply is never bigger than this once serialized; one that is would hold the relay (and the
 /// client's link) for the whole answer, so the client is told to ask for it in pages.
-const MAX_REPLY_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_REPLY_BYTES: usize = 1024 * 1024;
 /// The answers a caller cannot ask for in pages: a terminal snapshot and a captured image have
 /// no offset, length or cursor, so refusing them at the ceiling would leave no way to get them.
 /// They travel as bounded chunks like any bulk reply and stay below what one transfer carries.

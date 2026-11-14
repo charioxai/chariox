@@ -524,6 +524,13 @@ pub(crate) fn fixture_neighbour_catalog(store: &DurableKernelStateStore) -> Arc<
 pub(crate) fn fixture_host_package() -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
     tests::host_package()
 }
+/// An installed App whose signed view holds `view_bytes` of incompressible files.
+#[cfg(test)]
+pub(crate) fn fixture_large_view_package(
+    view_bytes: usize,
+) -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
+    tests::large_view_package(view_bytes)
+}
 #[cfg(test)]
 pub(crate) fn fixture_event_catalog_from_package(
     store: &DurableKernelStateStore,
