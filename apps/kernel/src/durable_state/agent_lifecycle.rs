@@ -53,6 +53,8 @@ mod quarantine;
 mod replies;
 #[cfg(test)]
 mod reply_terminal_tests;
+#[cfg(test)]
+mod running_source_wait_tests;
 mod settled_waits;
 mod subscriptions;
 mod supervision;
