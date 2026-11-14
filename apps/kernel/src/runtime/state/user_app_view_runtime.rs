@@ -117,7 +117,7 @@ impl KernelRuntimeState {
                     return Ok(failed(AppRequestErrorCode::NotFound));
                 };
                 let (current, frontend) = match self
-                    .user_app_frontend(owner, &binding.installation, true)
+                    .user_app_frontend(owner, &binding.installation, false)
                     .await
                 {
                     Ok(view) => view,
@@ -297,7 +297,8 @@ impl KernelRuntimeState {
         {
             return Ok(Err(AppRequestErrorCode::Conflict));
         }
-        let with_files = host != Some(UserAppViewHost::ClientNative);
+        // Only the kernel browser is handed the files, inside the kernel: a reply never carries them.
+        let with_files = host == Some(UserAppViewHost::KernelBrowser);
         let (binding, frontend) = match self
             .user_app_frontend(owner, installation, with_files)
             .await
@@ -309,7 +310,7 @@ impl KernelRuntimeState {
             if let Some(view) =
                 Box::pin(self.focus_user_app_browser(owner, &binding, &frontend)).await
             {
-                return Ok(Ok((view, frontend)));
+                return Ok(Ok((view, without_files(frontend))));
             }
         }
         let mut view =
@@ -348,7 +349,7 @@ impl KernelRuntimeState {
                 .await;
             return Ok(Err(AppRequestErrorCode::Conflict));
         }
-        Ok(Ok((view, frontend)))
+        Ok(Ok((view, without_files(frontend))))
     }
 
     /// A client-rendered view ends when its client stops renewing the lease.
@@ -450,9 +451,10 @@ impl KernelRuntimeState {
         .unwrap_or(false)
     }
 
-    /// `with_files` is false for a client that fetches and verifies its own view
-    /// (`ClientAppViewRequest`): the reply then names the entry and holds no files, so it stays
-    /// within one relay reply whatever the size of the view.
+    /// `with_files` is true only for the kernel browser, which is handed the files inside the
+    /// kernel. A client fetches and verifies its own view (`ClientAppViewRequest`): every reply
+    /// names the entry and holds no files, so it stays within one relay reply whatever the size
+    /// of the view.
     pub(super) async fn user_app_frontend(
         &self,
         owner: &str,
@@ -496,6 +498,14 @@ impl KernelRuntimeState {
             content_security_policy: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; sandbox allow-scripts allow-same-origin allow-forms".into(),
             iframe_sandbox: "allow-scripts allow-same-origin allow-forms".into(),
         }))
+    }
+}
+
+/// What a reply carries of the frontend: the entry and the policy, never the files.
+fn without_files(frontend: AppFrontendBundle) -> AppFrontendBundle {
+    AppFrontendBundle {
+        assets: Vec::new(),
+        ..frontend
     }
 }
 
