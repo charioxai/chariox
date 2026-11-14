@@ -288,14 +288,12 @@
     },
     {
       "name": "export_file",
-      "description": "Export the current diagram as PNG, SVG or JSON through the kernel file broker. Returns an export grant.",
+      "description": "Export the current diagram as an Excalidraw JSON copy through the kernel file broker. Returns an export grant. PNG and SVG are exported from the open window's menu.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "format": {
             "enum": [
-              "png",
-              "svg",
               "json"
             ]
           },

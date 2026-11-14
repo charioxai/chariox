@@ -1,164 +1,72 @@
 use chariox_app_sdk::{
     app_types::{AppError, InvocationContext, Wake},
-    cancellable, error, files, host, registry, state, FutureReader, Guest,
+    cancellable, error, registry,
+    view::View,
+    FutureReader, Guest,
 };
 use serde_json::{json, Value};
-use std::{fs::File, io::Read};
 
 mod actions;
+mod binding;
+mod diagram;
+mod draw;
+mod element;
 mod export_cleanup;
+mod file_io;
+mod label;
+mod saved;
 mod scene;
+mod stamp;
+mod text;
+mod update;
+
+#[cfg(test)]
+mod golden;
 
 struct Excalidraw;
 chariox_app_sdk::bindings::export!(Excalidraw with_types_in chariox_app_sdk::bindings);
 
-struct ImportFile(String);
-impl ImportFile {
-    fn reserve() -> Result<Self, AppError> {
-        for index in 0..1024 {
-            let name = format!("import-{index}.excalidraw");
-            match File::create_new(format!("data/{name}")) {
-                Ok(_) => return Ok(Self(name)),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(_) => {
-                    return Err(error(
-                        "IMPORT_FAILED",
-                        "cannot reserve a private import file",
-                    ))
-                }
-            }
-        }
-        Err(error(
-            "IMPORT_FAILED",
-            "too many concurrent imports; retry after they finish",
-        ))
-    }
-}
-impl Drop for ImportFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(format!("data/{}", self.0));
-    }
+/// The App's view: the actions of the signed declarations, served from the saved scene with no
+/// page, and a change feed that the window and the agent's actions both write.
+fn view() -> Result<View, AppError> {
+    Ok(View::declare(include_str!("../../schemas/ui-actions.json"))?.with_changes())
 }
 
-fn reserve_export(name: &str) -> Result<String, AppError> {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| error("EXPORT_FAILED", "cannot read the export staging clock"))?
-        .as_nanos();
-    for index in 0..1024 {
-        // Named saves cannot contain paths or start with a dot. Reserve a
-        // directory so the broker still offers the person's chosen filename.
-        let directory = format!(".export-{stamp:x}-{index}");
-        match std::fs::create_dir(format!("data/{directory}")) {
-            Ok(_) => return Ok(format!("{directory}/{name}")),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(_) => {
-                return Err(error(
-                    "EXPORT_FAILED",
-                    "cannot reserve a private export file",
-                ))
-            }
-        }
-    }
-    Err(error(
-        "EXPORT_FAILED",
-        "too many concurrent exports; retry after they finish",
-    ))
-}
+/// The tools that are not declared actions of the view.
+const OWN_TOOLS: [&str; 5] = [
+    "load_scene",
+    "save_scene",
+    "write_file",
+    "read_file",
+    "pick_file",
+];
 
-struct ExportFile(String);
-impl ExportFile {
-    fn reserve(name: &str) -> Result<Self, AppError> {
-        reserve_export(name).map(Self)
-    }
+/// The declared actions that move files; the rest of the declared actions run on the saved scene.
+const FILE_ACTIONS: [&str; 3] = ["save_file", "open_file", "export_file"];
 
-    fn remove(&self) -> Result<(), AppError> {
-        std::fs::remove_file(format!("data/{}", self.0)).map_err(|_| {
-            error(
-                "FILE_CLEANUP_FAILED",
-                "copy was offered but its private staging file could not be removed",
-            )
-        })?;
-        std::fs::remove_dir(format!("data/{}", self.0.rsplit_once('/').unwrap().0)).map_err(|_| {
-            error(
-                "FILE_CLEANUP_FAILED",
-                "copy was offered but its private staging directory could not be removed",
-            )
-        })
-    }
-}
-impl Drop for ExportFile {
-    fn drop(&mut self) {
-        // Failed writes, failed offers and cancellation must release their reservation too.
-        let _ = export_cleanup::remove(std::path::Path::new(&format!("data/{}", self.0)));
-    }
-}
+/// The declared actions the backend runs on the saved scene.
+const DIAGRAM_ACTIONS: [&str; 7] = [
+    "scene_summary",
+    "select_elements",
+    "delete_elements",
+    "group_elements",
+    "add_elements",
+    "connect_elements",
+    "update_elements",
+];
 
-async fn replace(name: String, bytes: Vec<u8>) -> Result<u64, AppError> {
-    let (mut writer, reader) = chariox_app_sdk::bindings::wit_stream::new();
-    let (result, remaining) = futures::join!(files::atomic_replace(name, reader), async move {
-        writer.write_all(bytes).await
-    });
-    let written = result?;
-    if !remaining.is_empty() {
-        return Err(error("FILE_WRITE_FAILED", "file broker stopped reading"));
+fn version_of(value: &Value) -> Result<Option<u64>, AppError> {
+    match value {
+        Value::Null => Ok(None),
+        Value::String(version) => version
+            .parse::<u64>()
+            .map(Some)
+            .map_err(|_| error("INVALID_ARGUMENT", "version must be a decimal string")),
+        _ => Err(error(
+            "INVALID_ARGUMENT",
+            "version must be a string or null",
+        )),
     }
-    Ok(written)
-}
-
-async fn save(scene: &Value, version: Option<u64>) -> Result<u64, AppError> {
-    let committed = state::transact(state::Transaction {
-        schema_version: 0,
-        checks: vec![state::Check {
-            key: "scene".into(),
-            version,
-        }],
-        writes: vec![state::Write::Put(("scene".into(), scene.to_string()))],
-        occurrences: vec![],
-        wakes: vec![],
-    })
-    .await?;
-    Ok(committed.revision)
-}
-
-/// One of the diagram actions of `actions.rs` on the saved scene; the answer is the new summary.
-async fn diagram_action(name: &str, input: &Value) -> Result<Value, AppError> {
-    let record = state::get("scene".into()).await?;
-    let (mut scene, version) = match record {
-        Some(record) => (scene::parse(&record.value)?, Some(record.version)),
-        None => (scene::empty(), None),
-    };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| error("INVALID_STATE", "cannot read the clock"))?;
-    let mut stamp = actions::Stamp::new(now.as_nanos() as u64, now.as_millis() as u64);
-    match name {
-        "scene_summary" => {
-            let count = |key: &str, default: u64| match &input[key] {
-                Value::Null => Ok(default as usize),
-                value => value.as_u64().map(|n| n as usize).ok_or_else(|| {
-                    error("INVALID_ARGUMENT", format!("{key} must be a whole number"))
-                }),
-            };
-            return Ok(actions::summary(
-                &scene,
-                count("offset", 0)?,
-                count("limit", 50)?,
-            ));
-        }
-        "select_elements" => actions::select(&mut scene, &actions::ids(input)?)?,
-        "delete_elements" => actions::delete(&mut scene, &actions::ids(input)?, &mut stamp)?,
-        _ => actions::group(
-            &mut scene,
-            &actions::ids(input)?,
-            &format!("group-{:x}", now.as_nanos()),
-            &mut stamp,
-        )?,
-    }
-    // The saved scene stays within the limit of a save from the page.
-    scene::parse(&scene.to_string())?;
-    save(&scene, version).await?;
-    Ok(actions::summary(&scene, 0, 50))
 }
 
 async fn call(name: &str, input: &str) -> Result<Value, AppError> {
@@ -166,117 +74,42 @@ async fn call(name: &str, input: &str) -> Result<Value, AppError> {
         serde_json::from_str(input).map_err(|e| error("INVALID_ARGUMENT", e.to_string()))?;
     match name {
         "load_scene" => {
-            let record = state::get("scene".into()).await?;
-            Ok(match record {
-                Some(record) => json!({
-                    "scene": scene::parse(&record.value)?, "version": record.version.to_string()
-                }),
+            let saved = saved::load().await?;
+            Ok(match saved.version {
+                Some(version) => json!({"scene": saved.scene, "version": version.to_string()}),
                 None => json!({"scene": null, "version": null}),
             })
         }
         "save_scene" => {
             let scene = scene::parse(&input["scene"].to_string())?;
-            let version =
-                match &input["version"] {
-                    Value::Null => None,
-                    Value::String(v) => Some(v.parse::<u64>().map_err(|_| {
-                        error("INVALID_ARGUMENT", "version must be a decimal string")
-                    })?),
-                    _ => {
-                        return Err(error(
-                            "INVALID_ARGUMENT",
-                            "version must be a string or null",
-                        ))
-                    }
-                };
-            Ok(json!({"version": save(&scene, version).await?.to_string()}))
-        }
-        "scene_summary" | "select_elements" | "delete_elements" | "group_elements" => {
-            diagram_action(name, &input).await
-        }
-        "write_file" => {
-            let name = scene::filename(&input["name"])?;
-            let bytes = scene::file_bytes(&input)?;
-            if name.ends_with(".excalidraw") || name.ends_with(".json") {
-                scene::parse(
-                    std::str::from_utf8(&bytes)
-                        .map_err(|_| error("INVALID_SCENE", "diagram must be UTF-8"))?,
-                )?;
-            }
-            let offer = input["offer"].as_bool().unwrap_or(false);
-            let staging = offer.then(|| ExportFile::reserve(&name)).transpose()?;
-            let destination = staging
-                .as_ref()
-                .map_or_else(|| name.clone(), |file| file.0.clone());
-            let length = replace(destination.clone(), bytes).await?;
-            let grant = if let Some(staging) = staging.as_ref() {
-                let grant = files::export(destination).await?;
-                // The broker owns the offered bytes after export succeeds.
-                staging.remove()?;
-                Some(grant)
-            } else {
-                None
-            };
-            Ok(json!({"name": name, "bytes": length, "grantId": grant}))
-        }
-        "read_file" => {
-            if input.get("name").is_some() == input.get("grantId").is_some() {
-                return Err(error(
-                    "INVALID_ARGUMENT",
-                    "provide exactly one of name or grantId",
-                ));
-            }
-            let mut imported = None;
-            let name = if let Some(grant) = input["grantId"].as_str() {
-                // Exclusive reservation also separates concurrent worker instances.
-                imported = Some(ImportFile::reserve()?);
-                let destination = imported.as_ref().unwrap().0.clone();
-                files::import(grant.into(), destination.clone()).await?;
-                destination
-            } else {
-                scene::filename(&input["name"])?
-            };
-            // R6 supplies only the installation's data/tmp preopens. The input
-            // is one validated filename, never a host path or a directory.
-            let file = File::open(format!("data/{name}")).map_err(|_| {
-                error(
-                    "FILE_NOT_FOUND",
-                    "save a private diagram or pick a file first",
-                )
-            })?;
-            let mut bytes = String::new();
-            file.take((scene::MAX_BYTES + 1) as u64)
-                .read_to_string(&mut bytes)
-                .map_err(|_| error("INVALID_SCENE", "diagram must be readable UTF-8"))?;
-            let result = json!({"name": name, "scene": scene::parse(&bytes)?});
-            drop(imported);
-            Ok(result)
-        }
-        "pick_file" => {
-            let grants = host::pick_file(host::Pick {
-                multiple: false,
-                accept: vec![".excalidraw".into(), ".json".into()],
-            })
+            let version = saved::save(
+                &scene,
+                version_of(&input["version"])?,
+                json!({"tool": "save_scene"}),
+            )
             .await?;
-            Ok(json!({"grants": grants}))
+            Ok(json!({"version": version.to_string()}))
         }
+        "write_file" => file_io::write(&input).await,
+        "read_file" => file_io::read(&input).await,
+        "pick_file" => file_io::pick().await,
+        "save_file" => diagram::save_file(&input).await,
+        "open_file" => diagram::open_file(&input).await,
+        "export_file" => diagram::export_file(&input).await,
+        name if DIAGRAM_ACTIONS.contains(&name) => diagram::run(name, &input).await,
         _ => Err(error("TOOL_NOT_FOUND", name)),
     }
 }
 
 impl Guest for Excalidraw {
     fn register() -> Result<(), AppError> {
-        for name in [
-            "load_scene",
-            "save_scene",
-            "write_file",
-            "read_file",
-            "pick_file",
-            "scene_summary",
-            "select_elements",
-            "delete_elements",
-            "group_elements",
-        ] {
+        let view = view()?;
+        view.register();
+        for name in OWN_TOOLS
+            .iter()
+            .chain(&DIAGRAM_ACTIONS)
+            .chain(&FILE_ACTIONS)
+        {
             registry::tool(name);
         }
         Ok(())
@@ -287,7 +120,13 @@ impl Guest for Excalidraw {
         _: InvocationContext,
         cancel: FutureReader<String>,
     ) -> Result<String, AppError> {
-        cancellable(cancel, async { Ok(call(&name, &input).await?.to_string()) }).await
+        cancellable(cancel, async {
+            if let Some(answer) = view()?.serve(&name, &input, saved::view_state).await {
+                return answer;
+            }
+            Ok(call(&name, &input).await?.to_string())
+        })
+        .await
     }
     async fn deliver_event(
         _: String,
@@ -313,5 +152,47 @@ impl Guest for Excalidraw {
         _: FutureReader<String>,
     ) -> Result<(), AppError> {
         Err(error("WAKE_NOT_FOUND", "no wakes declared"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn document(text: &str, key: &str) -> Vec<Value> {
+        serde_json::from_str::<Value>(text).unwrap()[key]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn the_manifest_lists_the_tools_the_backend_registers_and_the_declared_actions_it_runs() {
+        let tools = document(include_str!("../../schemas/tools.json"), "tools");
+        let actions = document(include_str!("../../schemas/ui-actions.json"), "uiActions");
+        let listed: BTreeSet<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        let registered: BTreeSet<&str> = OWN_TOOLS
+            .iter()
+            .chain(&DIAGRAM_ACTIONS)
+            .chain(&FILE_ACTIONS)
+            .chain(&["view_actions", "view_state", "view_changes"])
+            .copied()
+            .collect();
+        assert_eq!(
+            listed, registered,
+            "schemas/tools.json is what register() registers"
+        );
+        for action in &actions {
+            let name = action["name"].as_str().unwrap();
+            assert!(
+                DIAGRAM_ACTIONS.contains(&name) || FILE_ACTIONS.contains(&name),
+                "the backend runs {name}"
+            );
+            let tool = tools.iter().find(|t| t["name"] == action["name"]).unwrap();
+            assert_eq!(tool["inputSchema"], action["inputSchema"], "{name}");
+            assert_eq!(tool["description"], action["description"], "{name}");
+        }
+        assert_eq!(actions.len(), DIAGRAM_ACTIONS.len() + FILE_ACTIONS.len());
     }
 }

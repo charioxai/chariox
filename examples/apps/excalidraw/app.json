@@ -27,6 +27,13 @@
     "entry": "ui/index.html"
   },
   "tools": "schemas/tools.json",
+  "idempotentTools": [
+    "load_scene",
+    "scene_summary",
+    "view_actions",
+    "view_changes",
+    "view_state"
+  ],
   "capabilities": {
     "externalFiles": [
       "user_selected"
