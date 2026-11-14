@@ -365,6 +365,44 @@ impl RuntimeSecretService {
         Ok((credential, target))
     }
 
+    /// An owner may bind a Vault entry to an App's credentialed destination
+    /// only when it was created for HTTP use at exactly that origin and sends
+    /// its value as the `Authorization` header.
+    pub(crate) fn validate_app_account(
+        &self,
+        credential_id: &str,
+        origin: &str,
+    ) -> Result<&UserCredentialConfig, DaemonError> {
+        let (credential, _) =
+            self.validate_http_request_target(credential_id, &format!("{origin}/"))?;
+        match &credential.injection {
+            UserCredentialInjectionConfig::Header { name, .. }
+                if name.eq_ignore_ascii_case("authorization") =>
+            {
+                Ok(credential)
+            }
+            _ => Err(secret_error(
+                "app_account",
+                format!("credential `{credential_id}` must send its value as the Authorization header"),
+            )),
+        }
+    }
+
+    /// The `Authorization` header value an account's entry sends to `origin`.
+    /// The kernel adds it to the App's request; the App never sees it.
+    pub(crate) fn app_account_authorization(
+        &self,
+        credential_id: &str,
+        origin: &str,
+    ) -> Result<Zeroizing<String>, DaemonError> {
+        let credential = self.validate_app_account(credential_id, origin)?;
+        let UserCredentialInjectionConfig::Header { value, .. } = &credential.injection else {
+            unreachable!("validate_app_account checked the injection");
+        };
+        let secret = Zeroizing::new(self.resolve_secret(credential)?);
+        Ok(Zeroizing::new(value.replace("${secret}", &secret)))
+    }
+
     pub(crate) fn prepare_http_request_with_credential(
         &self,
         request: CredentialHttpRequest,

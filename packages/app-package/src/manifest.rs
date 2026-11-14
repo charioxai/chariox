@@ -124,12 +124,44 @@ pub struct ConnectionAccess {
 
 /// Destinations are exact HTTP(S) origins. Paths, redirects, connected IPs and
 /// credential authority are enforced by the kernel broker at request time.
+///
+/// A destination with a `credential` is reached only through its `routes`: the
+/// owner binds an account to the credential label, and the kernel adds that
+/// account's Vault value to the request. The App never holds the value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkDestination {
     pub origin: String,
     pub methods: Vec<HttpMethod>,
+    /// The label the owner's account binding answers to (for example `github`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<CredentialRoute>,
 }
+
+/// One REST call a credentialed destination allows: the method, a path
+/// template (`{name}` stands for one path segment) and how much authority it
+/// needs. An owner binding that allows less than `safety` refuses the call.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialRoute {
+    pub method: HttpMethod,
+    pub path: String,
+    pub safety: RouteSafety,
+}
+
+/// Ordered: a binding that allows `Write` also allows `Read`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteSafety {
+    Read,
+    Write,
+    Destructive,
+}
+
+/// Routes one destination may declare.
+const MAX_CREDENTIAL_ROUTES: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -254,6 +286,7 @@ impl Capabilities {
                 ));
             }
             unique(&destination.methods)?;
+            destination.validate_credential()?;
         }
         Ok(())
     }
@@ -289,6 +322,74 @@ impl Migrations {
         }
         Ok(())
     }
+}
+
+impl NetworkDestination {
+    fn validate_credential(&self) -> Result<()> {
+        let Some(credential) = &self.credential else {
+            return if self.routes.is_empty() {
+                Ok(())
+            } else {
+                Err(invalid_manifest("routes need a credential label"))
+            };
+        };
+        let label = !credential.is_empty()
+            && credential.len() <= 64
+            && credential
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        if !label
+            || !self.origin.starts_with("https://")
+            || self.routes.is_empty()
+            || self.routes.len() > MAX_CREDENTIAL_ROUTES
+        {
+            return Err(invalid_manifest(
+                "a credential needs a label, an https origin and bounded routes",
+            ));
+        }
+        let mut seen = BTreeSet::new();
+        for route in &self.routes {
+            if !route_path(&route.path) || !seen.insert((route.method, &route.path)) {
+                return Err(invalid_manifest(
+                    "credential routes must be unique, exact path templates",
+                ));
+            }
+        }
+        let methods: BTreeSet<_> = self.routes.iter().map(|route| route.method).collect();
+        if methods != self.methods.iter().copied().collect() {
+            return Err(invalid_manifest(
+                "a credentialed destination's methods must be the methods of its routes",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// `/a/{b}/c`: segments are literal or one `{name}`; no query, fragment,
+/// encoding, empty or dot segments, so a route names exactly one path shape.
+fn route_path(path: &str) -> bool {
+    path.len() <= 256
+        && path.starts_with('/')
+        && path[1..].split('/').all(|segment| {
+            let literal = |text: &str| {
+                !text.is_empty()
+                    && text != "."
+                    && text != ".."
+                    && text
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
+            };
+            segment
+                .strip_prefix('{')
+                .and_then(|rest| rest.strip_suffix('}'))
+                .map_or_else(
+                    || literal(segment),
+                    |inner| {
+                        !inner.is_empty()
+                            && inner.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    },
+                )
+        })
 }
 
 fn invalid_manifest(message: &'static str) -> PackageError {
@@ -421,4 +522,63 @@ fn unique<T: Ord>(values: &[T]) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    fn destination(routes: &[(HttpMethod, &str, RouteSafety)]) -> NetworkDestination {
+        NetworkDestination {
+            origin: "https://api.github.com".into(),
+            methods: routes
+                .iter()
+                .map(|route| route.0)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            credential: Some("github".into()),
+            routes: routes
+                .iter()
+                .map(|(method, path, safety)| CredentialRoute {
+                    method: *method,
+                    path: (*path).into(),
+                    safety: *safety,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_credentialed_destination_is_a_bounded_set_of_exact_routes() {
+        let read = (HttpMethod::Get, "/repos/{owner}/{repo}/pulls/{number}", RouteSafety::Read);
+        let merge = (
+            HttpMethod::Put,
+            "/repos/{owner}/{repo}/pulls/{number}/merge",
+            RouteSafety::Destructive,
+        );
+        destination(&[read, merge]).validate_credential().unwrap();
+        assert!(RouteSafety::Read < RouteSafety::Write && RouteSafety::Write < RouteSafety::Destructive);
+
+        let refused = [
+            // Routes without a credential label.
+            NetworkDestination { credential: None, ..destination(&[read]) },
+            // A bearer token over plain HTTP.
+            NetworkDestination { origin: "http://api.github.com".into(), ..destination(&[read]) },
+            // Methods that no route uses.
+            NetworkDestination { methods: vec![HttpMethod::Get, HttpMethod::Delete], ..destination(&[read]) },
+            // A credential with no route at all.
+            NetworkDestination { routes: Vec::new(), ..destination(&[read]) },
+            destination(&[read, read]),
+            destination(&[(HttpMethod::Get, "/repos/%2e%2e", RouteSafety::Read)]),
+            destination(&[(HttpMethod::Get, "/repos/../x", RouteSafety::Read)]),
+            destination(&[(HttpMethod::Get, "/repos?x=1", RouteSafety::Read)]),
+            destination(&[(HttpMethod::Get, "/repos/{}", RouteSafety::Read)]),
+            destination(&[(HttpMethod::Get, "/repos//x", RouteSafety::Read)]),
+            destination(&[(HttpMethod::Get, "repos", RouteSafety::Read)]),
+        ];
+        for destination in refused {
+            assert!(destination.validate_credential().is_err(), "{destination:?}");
+        }
+    }
 }

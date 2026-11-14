@@ -238,4 +238,23 @@ impl DurableKernelStateStore {
         let verified = release.verify()?;
         Ok(verified.manifest().capabilities.connections.clone())
     }
+
+    /// The active release's credentialed destinations: where an owner may bind
+    /// an account, and the signed routes the broker enforces.
+    pub(crate) fn active_app_credentials(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<Vec<chariox_app_package::NetworkDestination>, ActiveReleaseError> {
+        let release = self.active_app_release(owner, installation)?;
+        let verified = release.verify()?;
+        Ok(verified
+            .manifest()
+            .capabilities
+            .network
+            .iter()
+            .filter(|destination| destination.credential.is_some())
+            .cloned()
+            .collect())
+    }
 }

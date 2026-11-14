@@ -1,7 +1,9 @@
 //! Typed work admitted by the one durable writer; no arbitrary App callbacks.
 use super::*;
 use crate::durable_state::app_validations::EffectReceipt;
-use crate::runtime::app_http::{decode::Command, encode, policy::AppHttpPolicy};
+use crate::runtime::app_http::{
+    account::Accounts, decode::Command, encode, policy::AppHttpPolicy,
+};
 use chariox_app_runtime::worker_peer::{BrokerCancellation, ResponsePublication};
 use serde_json::Value;
 use std::sync::atomic::Ordering;
@@ -134,36 +136,38 @@ impl HttpStreams {
         cancellation: BrokerCancellation,
         permit: OwnedSemaphorePermit,
         approved: &dyn Fn(&str, &str) -> Result<(String, EffectReceipt)>,
+        accounts: &Accounts,
     ) -> Result<(HttpJob, oneshot::Receiver<Result<HttpReply>>)> {
         budget.check().map_err(|_| HttpError::Cancelled)?;
         let is_headers = matches!(&command, Command::Headers(_));
         let operation = match command {
             Command::Open(open) => {
                 let mut receipt = None;
-                let target = match open.operation.as_deref() {
+                let target = match (open.operation.as_deref(), open.connection.as_deref()) {
                     // A protected effect: the exact declared route and the
                     // approved parameters as the whole body. The writer spends
                     // the approval after admission and before any I/O.
-                    Some(operation) => {
+                    (Some(_), Some(_)) => return Err(HttpError::ConnectionAuthority),
+                    (Some(operation), None) => {
                         if open.has_body {
                             return Err(HttpError::ProtectedEffect);
                         }
-                        let (target, action) = policy.protected_target(
-                            &open.url,
-                            &open.method,
-                            &open.headers,
-                            open.connection.as_deref(),
-                        )?;
+                        let (target, action) =
+                            policy.protected_target(&open.url, &open.method, &open.headers)?;
                         let (parameters, approval) = approved(&action, operation)?;
                         receipt = Some(approval);
                         target.with_approved_body(parameters)
                     }
-                    None => policy.anonymous_target(
+                    (None, Some(connection)) => accounts.target(
+                        policy,
+                        connection,
                         &open.url,
                         &open.method,
                         &open.headers,
-                        open.connection.as_deref(),
                     )?,
+                    (None, None) => {
+                        policy.anonymous_target(&open.url, &open.method, &open.headers)?
+                    }
                 };
                 let pending = self.prepare(target, open.has_body)?;
                 let gate = PortGate::acquire(pending.entry.opening.clone())?;

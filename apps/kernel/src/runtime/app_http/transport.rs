@@ -2,6 +2,7 @@
 //! pool, environment proxy, ambient cookie jar, or implicit redirect/retry.
 mod body;
 mod progress;
+pub(super) mod scrub;
 
 use super::{
     dns::DnsConfig, limits::LifetimeLease, policy::ApprovedTarget, HttpError, Result, CHUNK_BYTES,
@@ -328,6 +329,18 @@ impl Exchange {
             )
             .map_err(|_| HttpError::Invalid)?,
         );
+        // The kernel's own header, after the App's: it names the destination's
+        // account, which the App can only ask for.
+        if let Some(authorization) = target.authorization() {
+            let mut value = hyper::header::HeaderValue::from_str(authorization)
+                .map_err(|_| HttpError::Invalid)?;
+            value.set_sensitive(true);
+            request.headers_mut().insert(header::AUTHORIZATION, value);
+            request.headers_mut().insert(
+                header::USER_AGENT,
+                hyper::header::HeaderValue::from_static("chariox-app"),
+            );
+        }
         request.headers_mut().insert(
             header::ACCEPT_ENCODING,
             hyper::header::HeaderValue::from_static("identity"),
@@ -351,11 +364,17 @@ impl Exchange {
         if response.status().as_u16() == 101 {
             return Err(HttpError::Invalid);
         }
+        let scrub = target.authorization().map(scrub::Scrub::of);
+        let cap = if scrub.is_some() {
+            scrub::ANSWER_BYTES
+        } else {
+            MAX_RESPONSE_BYTES
+        };
         if response
             .body()
             .size_hint()
             .upper()
-            .is_some_and(|bytes| bytes > MAX_RESPONSE_BYTES)
+            .is_some_and(|bytes| bytes > cap)
         {
             return Err(HttpError::Limit);
         }
@@ -372,14 +391,16 @@ impl Exchange {
             if matches!(
                 name.as_str(),
                 "set-cookie" | "proxy-authenticate" | "proxy-authorization"
-            ) {
+            ) || (scrub.is_some() && !scrub::answer_header(name.as_str()))
+            {
                 continue;
             }
             // Header values are Latin-1 bytes, not arbitrary UTF-8. Preserve
             // their byte values in the bounded SDK string representation.
+            let text: String = value.as_bytes().iter().map(|b| char::from(*b)).collect();
             headers.push((
                 name.to_string(),
-                value.as_bytes().iter().map(|b| char::from(*b)).collect(),
+                scrub.as_ref().map_or(text.clone(), |scrub| scrub.text(&text)),
             ));
         }
         let head = ResponseHead {
@@ -392,7 +413,31 @@ impl Exchange {
             .ok_or(HttpError::Invalid)?
             .send(Ok(head))
             .map_err(|_| HttpError::Cancelled)?;
-        self.download(response.into_body()).await
+        match scrub {
+            Some(scrub) => self.download_scrubbed(response.into_body(), &scrub).await,
+            None => self.download(response.into_body()).await,
+        }
+    }
+    /// An account's answer is read whole (at most `ANSWER_BYTES`), scrubbed,
+    /// and only then handed on, so the credential cannot straddle two chunks.
+    async fn download_scrubbed(&self, mut body: Incoming, scrub: &scrub::Scrub) -> Result<()> {
+        let mut answer = Vec::new();
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(|_| HttpError::Network)?;
+            if let Ok(bytes) = frame.into_data() {
+                if (answer.len() + bytes.len()) as u64 > scrub::ANSWER_BYTES {
+                    return Err(HttpError::Limit);
+                }
+                answer.extend_from_slice(&bytes);
+            }
+        }
+        for chunk in scrub.bytes(&answer).chunks(CHUNK_BYTES) {
+            self.chunks
+                .send(Ok(Bytes::copy_from_slice(chunk)))
+                .await
+                .map_err(|_| HttpError::Cancelled)?;
+        }
+        Ok(())
     }
     async fn download(&self, mut body: Incoming) -> Result<()> {
         let mut received = 0u64;

@@ -239,6 +239,7 @@ response_policies! {
         AppLogs,
         AppInboxRoutes,
         AppConnections,
+        AppAccounts,
         AppSet,
         DeploymentAppsPreview,
         DeploymentAppsConsent,

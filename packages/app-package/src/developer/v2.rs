@@ -66,6 +66,7 @@ fn policy(publisher: TrustedPublisher, limits: &Limits) -> PolicyV2 {
             RequiredFeature::AgentPanel,
             RequiredFeature::Connections,
             RequiredFeature::DirectedEvents,
+            RequiredFeature::CredentialedHttp,
         ]),
         vec![
             SupportedWorld {

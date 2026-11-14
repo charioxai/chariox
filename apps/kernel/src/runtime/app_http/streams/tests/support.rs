@@ -41,7 +41,18 @@ impl Drop for Scratch {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+static NO_VAULT: crate::runtime::app_http::FixtureVault =
+    crate::runtime::app_http::FixtureVault(None);
 impl Fixture {
+    /// Accounts of an installation that has none and a Vault that holds nothing.
+    pub(super) fn accounts(&self) -> crate::runtime::app_http::account::Accounts<'_> {
+        crate::runtime::app_http::account::Accounts {
+            store: &self.store,
+            owner: "owner",
+            installation: "installation",
+            vault: &NO_VAULT,
+        }
+    }
     pub(super) fn new() -> Self {
         let scratch = Scratch(
             std::env::temp_dir().join(format!("chariox-http-owner-{:016x}", rand::random::<u64>())),
@@ -78,6 +89,7 @@ impl Fixture {
             crate::runtime::app_http::HttpContext {
                 limits: Arc::new(crate::runtime::app_http::HttpLimits::default()),
                 runtime: runtime.handle().clone(),
+                vault: Arc::new(crate::runtime::app_http::FixtureVault(None)),
             },
             Default::default(),
         )
@@ -144,7 +156,7 @@ impl Fixture {
     }
     pub(super) fn target(&self) -> ApprovedTarget {
         self.policy
-            .anonymous_target("https://api.example.com/fixture", "POST", &[], None)
+            .anonymous_target("https://api.example.com/fixture", "POST", &[])
             .unwrap()
     }
     pub(super) fn start<F, Fut>(
@@ -224,6 +236,7 @@ impl Fixture {
             cancellation,
             Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
             &|_, _| Err(HttpError::ProtectedEffect),
+            &self.accounts(),
         )?;
         {
             let mut connection =

@@ -262,7 +262,8 @@ pub use api::{
 };
 pub use api::{
     AcceptAppHostActionRequest, AnswerUserDomainInteractionRequest, AppAutomationStatus,
-    AppAutomationSummary, AppCapabilityDecisionStatus, AppConnectionSummary, AppEventSummary,
+    AppAccountSummary, AppAutomationSummary, AppCapabilityDecisionStatus, AppConnectionSummary,
+    AppCredentialSummary, AppEventSummary,
     AppFileContents, AppFrontendAsset, AppFrontendBundle, AppHostAction, AppInboxConnection,
     AppInboxRouteRequest, AppInboxRouteSummary, AppInstallationRequest, AppInstallationSummary,
     AppLogEntrySummary, AppReleaseSummary, AppRequestErrorCode, AppSetInstallation, AppUpdatePhase,
@@ -271,10 +272,10 @@ pub use api::{
     ClientAppViewResponse, ClientAppViewTrust, ConfigureAppAutomationRequest,
     ControlAppWorkerRequest, CreateAppInboxRouteRequest, DeploymentAppsConsent,
     DeploymentAppsConsentStatus, DisableAppAutomationRequest, GetAppLogsRequest, GetAppSetRequest,
-    GrantAppConnectionRequest, GrantAppFileRequest, InspectAppViewRequest,
+    GrantAppAccountRequest, GrantAppConnectionRequest, GrantAppFileRequest, InspectAppViewRequest,
     ListAppAutomationsRequest, ListAppInstallationsRequest, ListUserAppViewsRequest,
     OpenAppViewRequest, OpenUserAppViewRequest, PrepareDeploymentAppsRequest,
-    PreviewDeploymentAppsRequest, RestoreAppDataSnapshotRequest, RevokeAppConnectionRequest,
+    PreviewDeploymentAppsRequest, RestoreAppDataSnapshotRequest, RevokeAppAccountRequest, RevokeAppConnectionRequest,
     RevokeAppFileGrantsRequest, SaveAppFileExportRequest, SetAppViewPanelRequest,
     SubscribeUserAppViewsRequest, TestAppInboxRouteRequest, UninstallAppRequest, UserAppView,
     UserAppViewBrowser, UserAppViewHost, UserAppViewRequest, APP_SET_SCHEMA,

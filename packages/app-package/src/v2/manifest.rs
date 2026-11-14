@@ -17,6 +17,7 @@ pub enum RequiredFeature {
     AgentPanel,
     Connections,
     DirectedEvents,
+    CredentialedHttp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +107,14 @@ impl ManifestV2 {
                 .as_ref()
                 .map(|_| RequiredFeature::DirectedEvents),
         );
+        if self
+            .capabilities
+            .network
+            .iter()
+            .any(|destination| destination.credential.is_some())
+        {
+            features.push(RequiredFeature::CredentialedHttp);
+        }
         features.sort_unstable();
         features
     }

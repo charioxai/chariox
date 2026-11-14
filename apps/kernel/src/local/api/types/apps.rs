@@ -414,6 +414,48 @@ pub struct RevokeAppConnectionRequest {
     pub connection_id: String,
 }
 
+/// Lets one installation call a credentialed destination of its signed
+/// manifest as the owner's account: `credential` is the manifest's label, the
+/// Vault entry must be bound to that destination's origin, and `allow` bounds
+/// the routes the App may use (a route needing more is refused).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantAppAccountRequest {
+    pub installation_id: String,
+    /// The owner's name for this account, for example `work`.
+    pub account: String,
+    pub credential: String,
+    pub vault_credential_id: String,
+    pub allow: chariox_app_package::RouteSafety,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevokeAppAccountRequest {
+    pub installation_id: String,
+    pub account: String,
+}
+
+/// An account bound to an installation. The Vault entry is named by id only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppAccountSummary {
+    pub account: String,
+    pub credential: String,
+    pub vault_credential_id: String,
+    pub allow: chariox_app_package::RouteSafety,
+    pub bound_at_ms: u64,
+}
+
+/// A credentialed destination the active release declares, with the most
+/// authority one of its routes needs, so a client can offer the right levels.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppCredentialSummary {
+    pub credential: String,
+    pub origin: String,
+    pub routes: u32,
+    pub safety: chariox_app_package::RouteSafety,
+}
+
 /// A connection an installation may use, with the actions its manifest
 /// declares for that generator.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

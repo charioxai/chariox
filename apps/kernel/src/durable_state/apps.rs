@@ -462,6 +462,7 @@ pub(crate) fn forget_uninstalled(
         rusqlite::params![owner_id, installation_id],
     )?;
     super::app_connections::forget_inactive(connection, owner_id, installation_id)?;
+    super::app_accounts::forget_inactive(connection, owner_id, installation_id)?;
     chariox_app_runtime::app_outbox::AppOutbox::disable_all_in(
         connection,
         owner_id,

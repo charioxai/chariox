@@ -210,6 +210,7 @@ pub fn verify_app<'a>(
                 v2::RequiredFeature::AgentPanel,
                 v2::RequiredFeature::Connections,
                 v2::RequiredFeature::DirectedEvents,
+                v2::RequiredFeature::CredentialedHttp,
             ]
             .into(),
             ["chariox:app/app", "chariox:app/migration"]

@@ -189,6 +189,7 @@ mod tests {
             v2::RequiredFeature::AgentPanel,
             v2::RequiredFeature::Connections,
             v2::RequiredFeature::DirectedEvents,
+            v2::RequiredFeature::CredentialedHttp,
         ]);
         assert_eq!(
             v2::verify(&signed, &policy)

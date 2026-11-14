@@ -1,5 +1,6 @@
 //! HTTP transport below the existing worker broker. This module does not mint
 //! installation grants, connection credentials or critical-operation receipts.
+mod account;
 mod broker;
 mod decode;
 mod dns;
@@ -10,6 +11,9 @@ mod limits;
 mod policy;
 mod streams;
 mod transport;
+pub(crate) use account::{AccountVault, KernelAccountVault};
+#[cfg(test)]
+pub(crate) use account::FixtureVault;
 pub(crate) use broker::{AppHttpBroker, HttpContext};
 pub(crate) use limits::HttpLimits;
 pub(crate) use streams::HttpJob;
@@ -34,6 +38,21 @@ pub(crate) enum HttpError {
     ConnectionAuthority,
     #[error("app_http_protected_effect_unavailable")]
     ProtectedEffect,
+    /// A credentialed destination was called without an account.
+    #[error("app_http_account_required")]
+    AccountRequired,
+    /// The account is not bound for this installation and credential label.
+    #[error("app_http_account_unknown")]
+    AccountUnknown,
+    /// Not a method and path of the signed route table.
+    #[error("app_http_route_not_declared")]
+    RouteNotDeclared,
+    /// The route needs more authority than the owner gave the account.
+    #[error("app_http_account_not_allowed")]
+    AccountNotAllowed,
+    /// The account's Vault entry could not be read.
+    #[error("app_http_account_unavailable")]
+    AccountUnavailable,
     #[error("app_http_validation_required")]
     ValidationRequired,
     #[error("app_http_provenance")]
