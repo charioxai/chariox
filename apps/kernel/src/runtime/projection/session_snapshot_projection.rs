@@ -102,6 +102,20 @@ pub struct AgentActiveTurnProjection {
 }
 
 impl SessionSnapshotProjection {
+    /// Whether clients that hold `self` learn nothing from `other`: equal, or different only in
+    /// resource samples that moved their time or memory within noise.
+    pub(crate) fn same_to_clients(&self, other: &Self) -> bool {
+        if self == other {
+            return true;
+        }
+        if !crate::runtime::process_resources::same_to_clients(&self.processes, &other.processes) {
+            return false;
+        }
+        let mut published = self.clone();
+        published.processes.clone_from(&other.processes);
+        &published == other
+    }
+
     // MP-08 / MP-10 / MP-11: one policy for local, hosted and replay snapshots.
     pub(crate) fn redacted_for_user(
         mut self,
