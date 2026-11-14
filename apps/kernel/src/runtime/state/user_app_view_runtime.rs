@@ -3,6 +3,8 @@ use super::{
     app_view_runtime::{origin_label, view_assets},
     KernelRuntimeState,
 };
+use tokio::time::Instant;
+
 use crate::{
     error::DaemonError,
     local::*,
@@ -133,6 +135,7 @@ impl KernelRuntimeState {
                 let Some((binding, _)) = instances.get(owner, &request.view_id) else {
                     return Ok(failed(AppRequestErrorCode::NotFound));
                 };
+                instances.renew(owner, &request.view_id, Instant::now());
                 let mut tracked =
                     self.app_control()
                         .views()
@@ -311,6 +314,12 @@ impl KernelRuntimeState {
         self.app_control()
             .views()
             .register(&view.view_id, &view.view_id, binding.clone());
+        if host != Some(UserAppViewHost::KernelBrowser) {
+            instances.lease(owner, &view.view_id, Instant::now());
+            let state = self.clone();
+            let (owner, id) = (owner.to_owned(), view.view_id.clone());
+            tokio::spawn(async move { state.close_user_app_view_at_lapse(&owner, &id).await });
+        }
         if host == Some(UserAppViewHost::KernelBrowser) {
             match self
                 .open_user_app_browser(owner, &view, &frontend, restoring)
@@ -334,6 +343,21 @@ impl KernelRuntimeState {
             return Ok(Err(AppRequestErrorCode::Conflict));
         }
         Ok(Ok((view, frontend)))
+    }
+
+    /// A client-rendered view ends when its client stops renewing the lease.
+    pub(super) async fn close_user_app_view_at_lapse(&self, owner: &str, id: &str) {
+        let instances = self.app_control().user_views();
+        while let Some(deadline) = instances.lease_deadline(id) {
+            tokio::time::sleep_until(deadline).await;
+            if instances
+                .lease_deadline(id)
+                .is_some_and(|renewed| renewed <= Instant::now())
+            {
+                self.close_user_app_view(owner, id).await;
+                break;
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -390,6 +414,11 @@ impl KernelRuntimeState {
                     }
                 })?;
             tracked.retain_browser_grant(grant);
+        }
+        if method == "chariox.lease" {
+            return Ok(
+                serde_json::json!({"lease_ms": crate::runtime::user_app_views::CLIENT_LEASE.as_millis()}),
+            );
         }
         if method == "chariox.panel" {
             return Ok(serde_json::json!({"placement": "none", "minimized": false}));
@@ -455,3 +484,7 @@ impl KernelRuntimeState {
         }))
     }
 }
+
+#[cfg(test)]
+#[path = "user_app_view_lease_tests.rs"]
+mod lease_tests;
