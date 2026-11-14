@@ -41,7 +41,7 @@ fn intersection(a: (Point, Point), b: (Point, Point)) -> Option<Point> {
     let t = (qp0 * s.1 - qp1 * s.0) / denominator;
     let u = (qp0 * r.1 - qp1 * r.0) / denominator;
     ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u))
-        .then(|| (a.0 .0 + t * r.0, a.0 .1 + t * r.1))
+        .then_some((a.0 .0 + t * r.0, a.0 .1 + t * r.1))
 }
 
 /// `determineFocusDistance`: where on the shape's focus image the line through `a` and `b` (`b`

@@ -6,9 +6,11 @@ dependencies; the backend is a portable Rust component using the L1 SDK.
 Rust supplies private-file reads through R6's `data` preopen without adding a
 host interface or a second bridge.
 
-The kernel installs the signed package and supplies `window.chariox` to its
-normal App view. The view registers exactly `schemas/ui-actions.json` through
-A1's `chariox.action`, `view.state` and `view.changed`. No developer server,
+The kernel installs the signed package. The backend serves the App's view itself:
+it declares exactly `schemas/ui-actions.json` through the SDK's `View`, runs
+every declared action on the saved scene and keeps the change feed, so an agent
+works on a diagram with no window, Tab or browser. The page only draws and edits
+that same saved scene through `window.chariox.call`. No developer server,
 remote CDN or provider SDK is involved.
 
 ## Build and sign
@@ -51,15 +53,25 @@ install approval flow.
 
 The signed actions add labelled shapes/text/arrows, move or resize shapes, delete,
 group, connect and select elements; read a paginated summary; and save, open or
-export files. All operate on Excalidraw's own scene store. Its native toolbar,
-pointer editing and undo history remain available. File menu entries and native
-Open/Save shortcuts call the same broker functions as declared actions. Dropped
-files also request a kernel file grant.
+export files. They run in the backend (`backend/src`) on the saved scene and make
+what Excalidraw's own converter and text layout make: `scripts/golden.mjs` runs the
+real library in Chrome for 78 requests and `backend/tests/golden.json` holds what it
+returned, which the backend's tests must match (ids, versions, positions, bound text,
+arrow bindings). Text is measured with the Virgil advances in `backend/src/virgil.json`,
+the face the actions use. An agent exports `json` copies; PNG and SVG need the window's
+renderer and are exported from its menu. A deleted element stays in the saved scene,
+marked, for an hour, so an open window merges the deletion instead of drawing it again.
+The window's native toolbar, pointer editing and undo history remain available. File menu
+entries and native Open/Save shortcuts call the broker functions directly. Dropped files
+also request a kernel file grant.
 Opening a diagram keeps the previous canvas in native Undo history. Use Undo
 before closing or reloading the view to restore it; the restored scene auto-saves.
 
 The current scene auto-saves after 300 ms without an edit, with an optimistic
-state version check. Explicit private files use `files.atomic_replace`; imports
+state version check. The window asks the change feed once a second; when an agent
+(or another window) saved meanwhile it merges the saved scene into its canvas with
+Excalidraw's reconciliation and saves what is still its own, so neither side's edit is
+lost. An agent's selection is shown once. Explicit private files use `files.atomic_replace`; imports
 use `host.pick_file` and `files.import`, and exports use `files.export`. Inputs
 are filenames, never host paths. Only WASI's installation-private `data` preopen
 is read directly. Named private saves survive worker/view restarts independently
@@ -74,15 +86,11 @@ to keep the offered file, then choose that file with Open to restore it. The
 current Web interaction only offers Decline; use the text terminal to save it.
 An agent can still save/open an explicitly
 named private file; a repeated explicit name replaces that file.
-A concurrent-view conflict appears in a dismissible toast. Automatic saving
+A failed save that is not a conflict appears in a dismissible toast. Automatic saving
 does not repeat an active notice; another edit after dismissal or an explicit
 action can report it again. Use Save a copy and keep the offered file before
 reloading, then Open it to recover edits.
 Reloading clears the automatic-save error and loads the latest durable scene.
-When an update reloads the view, an edit still waiting for its automatic save is
-kept in the view's web storage and restored by the new page, unless another
-view saved a newer scene meanwhile (the old page can no longer call the App
-once the update is active).
 
 The component file-cleanup regression uses the built backend and a real WASI
 `data` directory, with a fixture file broker. After building `app.wasm`, run:
@@ -95,7 +103,7 @@ CHARIOX_EXCALIDRAW_COMPONENT="$app_out/runtime/app.wasm" \
 
 Keep `TMPDIR` outside the checkout and use the shared builder's Cargo slot.
 
-`scene_summary` reads actual canvas elements, with IDs, geometry, labels,
+`scene_summary` reads the saved scene's elements, with IDs, geometry, labels,
 selection, groups and arrow bindings. Follow `nextOffset` until null. The state
 snapshot uses the same summary and stays inside A1's 64 KiB limit; long text
 and free-draw point lists explicitly report truncation. Supported inline scenes
@@ -145,10 +153,13 @@ CHARIOX_EXCALIDRAW_EVIDENCE="$HOME/.chariox/dev/excalidraw-build/evidence" \
   node --test --test-concurrency=1 examples/apps/excalidraw/test/*.test.mjs
 ```
 
-The browser regression uses real Chromium, Excalidraw and A1 at DPR 1 and 2.
-It draws through native pointer input, invokes declarations, verifies the
-snapshot, moves/connects/groups/deletes, exercises brokered shortcuts, reloads
-saved state and independently checks JSON, SVG text and PNG dimensions. Its
-storage adapter is a fixture. These checks do not establish S1-04 or S1-12;
+The browser regression uses real Chromium and Excalidraw at DPR 1 and 2. It draws
+through native pointer input, exercises brokered shortcuts, reloads saved state,
+independently checks JSON, SVG text and PNG dimensions, and follows a fake backend
+that edits the saved scene the way the Rust backend does (additions, deletions,
+selection, concurrent edits, refused saves). The backend itself is checked by
+`cargo test` against the golden file. These checks do not establish S1-04 or S1-12;
 those require the real installed App, kernel, client, provider and file broker
 drills on the integrated R4/R6 validation head. MP-09 shutdown policy is unchanged.
+`scripts/build-package.sh` signs the App with its page as a self-contained client view
+for the hosted window drill (`apps/web/scripts/app-view-native-live-drill.mjs`).
