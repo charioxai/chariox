@@ -74,6 +74,36 @@ impl KernelRuntimeState {
             .await
     }
 
+    pub(super) async fn handle_promote_agent_message_runtime_tool(
+        &self,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let args =
+            serde_json::from_value::<crate::transport::runtime_tools::PromoteAgentMessageArgs>(
+                arguments,
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "runtime_tool.promote_agent_message",
+                message: format!("invalid promote-agent-message arguments: {error}"),
+            })?;
+        self.promote_agent_message(session, sender, args).await
+    }
+
+    /// A room command's promotion: the tool's own path, on behalf of the provider run that ran it.
+    pub(crate) async fn promote_agent_message_for_provider_run(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.with_room_provider_origin(provider_run.agent_instance_id(), Some(provider_run.id()))
+            .handle_promote_agent_message_runtime_tool(session, sender, arguments)
+            .await
+    }
+
     pub(super) async fn handle_send_agent_message_runtime_tool(
         &self,
         session: &crate::session::RuntimeSession,

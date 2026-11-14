@@ -715,6 +715,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::Expire { .. }
         | Operation::MarkShown { .. }
         | Operation::Defer { .. }
+        | Operation::ReleaseQueuedMessage { .. }
+        | Operation::CancelQueuedMessage { .. }
         | Operation::BindSubmission { .. }
         | Operation::Receipt { .. }
         | Operation::Ack { .. }) => super::delivery::apply(tx, op),

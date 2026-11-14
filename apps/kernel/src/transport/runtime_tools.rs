@@ -82,6 +82,7 @@ pub const GET_SESSION_AGENT_TOOL: &str = "chariox.get_session_agent";
 pub const PEEK_AGENT_TOOL: &str = "chariox.peek_agent";
 pub const READ_AGENT_ENTRY_TOOL: &str = "chariox.read_agent_entry";
 pub const SEND_AGENT_MESSAGE_TOOL: &str = "chariox.send_agent_message";
+pub const PROMOTE_AGENT_MESSAGE_TOOL: &str = "chariox.promote_agent_message";
 pub const SLICE_ACCESSIBILITY_TOOL: &str = "chariox.slice_accessibility";
 pub const SLICE_TARGET_ACTION_TOOL: &str = "chariox.slice_target_action";
 pub const SLICE_SCREEN_STATUS_TOOL: &str = "chariox.slice_screen_status";

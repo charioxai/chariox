@@ -119,4 +119,44 @@ impl CommandRouter {
             Err(error) => meta_command_failure_result(command, error),
         }
     }
+
+    /// `agent promote <message-id>`: the sender makes a message it queued urgent.
+    pub(super) async fn dispatch_meta_agent_promote_command(
+        &self,
+        provider_run: Option<&crate::provider::RuntimeProviderRun>,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        command: &str,
+        args: &[String],
+    ) -> RuntimeToolResult {
+        let [message_id] = args else {
+            return meta_command_failure_result(
+                command,
+                meta_command_error("usage: agent promote <message-id>"),
+            );
+        };
+        let Some(provider_run) = provider_run else {
+            return meta_command_failure_result(
+                command,
+                meta_command_error("a message is promoted from a running turn of the sender"),
+            );
+        };
+        let result = self
+            .runtime_state
+            .promote_agent_message_for_provider_run(
+                provider_run,
+                session,
+                sender,
+                serde_json::json!({ "message_id": message_id }),
+            )
+            .await;
+        match result {
+            Ok(promoted) if promoted.ok => RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({"command": command, "response": promoted.payload}),
+            },
+            Ok(refused) => meta_command_failure_result(command, refused.payload),
+            Err(error) => meta_command_failure_result(command, error),
+        }
+    }
 }

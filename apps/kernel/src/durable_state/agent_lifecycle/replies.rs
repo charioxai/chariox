@@ -238,6 +238,14 @@ pub(super) fn recipient_removed(
 ) -> Result<(), DaemonError> {
     recipient_unavailable(tx, event, now, DelegateGoneReason::Deleted)
 }
+/// The person declined a message before its recipient read it.
+pub(super) fn recipient_declined(
+    tx: &Transaction<'_>,
+    event: &InboxEvent,
+    now: u64,
+) -> Result<(), DaemonError> {
+    recipient_unavailable(tx, event, now, DelegateGoneReason::SourceLost)
+}
 fn recipient_unavailable(
     tx: &Transaction<'_>,
     event: &InboxEvent,

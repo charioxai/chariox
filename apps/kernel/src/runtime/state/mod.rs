@@ -1688,6 +1688,7 @@ mod agent_lifecycle_runtime;
 #[cfg(test)]
 mod agent_membership_read_tests;
 mod agent_parent_runtime;
+mod agent_queued_messages;
 mod agent_subtree_cascade;
 mod agent_task_completion;
 mod agent_tree_runtime;

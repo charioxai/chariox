@@ -103,6 +103,16 @@ impl CommandRouter {
                 )
                 .await?,
             ),
+            Some("promote") => Some(
+                self.dispatch_meta_agent_promote_command(
+                    provider_run,
+                    session,
+                    caller,
+                    command,
+                    args,
+                )
+                .await,
+            ),
             Some(verb @ ("steer" | "message")) => Some(
                 self.dispatch_meta_agent_message_command(
                     provider_run,

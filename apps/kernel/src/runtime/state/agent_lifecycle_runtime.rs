@@ -166,6 +166,10 @@ impl KernelRuntimeOwnedState {
                     .map_err(|_| ledger::error("task cancellation context encoding failed"))?;
                 context.push_str(&format!("\n<chariox-owner-cancellations>The tasks below were cancelled. Keep their work cancelled. After handling each notice, use chariox.events.ack with its sequence and handled:true; do not restart that work or send a courtesy reply.\n{notices}\n</chariox-owner-cancellations>"));
             }
+            if let Some(queued) = self.queued_messages_notice(room, agent)? {
+                context.push('\n');
+                context.push_str(&queued);
+            }
         }
         if let Some(goal_context) = self.goal_continuation_context(&task)? {
             context = format!("{context}\n{goal_context}");
@@ -484,15 +488,12 @@ impl KernelRuntimeOwnedState {
 static SWEEP_COMMIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl KernelRuntimeState {
-    pub(in crate::runtime::state) async fn send_durable_agent_message(
+    /// The provider run that speaks for `sender` is the current one: a stale credential sends nothing.
+    pub(in crate::runtime::state) fn require_message_authority(
         &self,
         session: &crate::session::RuntimeSession,
         sender: &crate::agent::AgentInstance,
-        args: crate::transport::runtime_tools::SendAgentMessageArgs,
-    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        if args.message.trim().is_empty() && args.attachments.is_empty() {
-            return Err(ledger::error("message is empty"));
-        }
+    ) -> Result<(), DaemonError> {
         let (actor, origin_run) = self.room_provider_origin.as_ref().ok_or_else(|| {
             ledger::error("durable messages require authenticated provider origin")
         })?;
@@ -515,6 +516,18 @@ impl KernelRuntimeState {
         {
             return Err(ledger::error("stale provider message authority"));
         }
+        Ok(())
+    }
+    pub(in crate::runtime::state) async fn send_durable_agent_message(
+        &self,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        args: crate::transport::runtime_tools::SendAgentMessageArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if args.message.trim().is_empty() && args.attachments.is_empty() {
+            return Err(ledger::error("message is empty"));
+        }
+        self.require_message_authority(session, sender)?;
         let current = self
             .owned
             .prompt_state_owner
@@ -557,17 +570,34 @@ impl KernelRuntimeState {
             return Err(error);
         }
         // Admission precedes resource lookup; another room reveals only its ordinary agents.
+        // A key the sender chose names the message across turns, so it can promote the message by
+        // sending it again; a key the kernel chose belongs to this turn.
+        let named = args.idempotency_key.is_some();
         let id = args
             .idempotency_key
             .unwrap_or_else(|| format!("{:032x}", rand::random::<u128>()));
         if id.trim().is_empty() || id.len() > 128 {
             return Err(ledger::error("invalid message occurrence"));
         }
+        let occurrence = if named {
+            id.clone()
+        } else {
+            format!("{}:{id}", current.id())
+        };
+        if let Some(first) = self
+            .owned
+            .durable_state_store
+            .agent_inbox_occurrence(target_room, target.id(), &occurrence)?
+            .into_iter()
+            .find(|first| first.source_id == sender.id())
+        {
+            return self.answer_resent_agent_message(&first, args.urgent).await;
+        }
         let mut event = ledger::occurrence(
             target_room,
             target.id(),
             sender.id(),
-            &format!("{}:{id}", current.id()),
+            &occurrence,
             "message",
             serde_json::json!({"message":args.message,"sender_agent_id":sender.id(),"sender_room_id":session.id(),"sender_prompt_id":current.id(),"no_reply":!args.reply_requested,"attachments":args.attachments}),
         );
@@ -627,6 +657,14 @@ impl KernelRuntimeState {
                 if args.urgent { "urgent" } else { "next turn" }
             ),
         );
+        // Only an urgent message acts on its recipient's turn; any other waits for the next one.
+        if !event.urgent {
+            self.publish_task_change(target_room);
+            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({"status":"queued","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":false,"reply_requested":event.reply_requested,"note":super::agent_queued_messages::queued_note(target.alias().unwrap_or(target.agent_ref()))}),
+            });
+        }
         if let Err(error) = Box::pin(self.deliver_agent_inbox(target_room, target.id())).await {
             self.owned.record_notice_for_agent(
                 target_room,
@@ -644,7 +682,7 @@ impl KernelRuntimeState {
         }
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
-            payload: serde_json::json!({"status":"durable","sequence":event.sequence,"urgent":event.urgent,"reply_requested":event.reply_requested}),
+            payload: serde_json::json!({"status":"durable","sequence":event.sequence,"urgent":true,"reply_requested":event.reply_requested}),
         })
     }
     /// A message or steer to an agent on another kernel lands there as a stamped inbox message.
@@ -678,12 +716,16 @@ impl KernelRuntimeState {
                     urgent: args.urgent,
                     reply_requested: args.reply_requested,
                 },
-                request_id,
+                request_id.clone(),
             )
             .await?;
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
-            payload: serde_json::json!({"status":if duplicate {"duplicate"} else {"delivered"},"kernel":target.kernel_id,"room":target.room_id,"agent":target.agent_id,"urgent":args.urgent,"reply_requested":args.reply_requested}),
+            payload: if args.urgent {
+                serde_json::json!({"status":if duplicate {"duplicate"} else {"delivered"},"kernel":target.kernel_id,"room":target.room_id,"agent":target.agent_id,"urgent":true,"reply_requested":args.reply_requested})
+            } else {
+                serde_json::json!({"status":if duplicate {"duplicate"} else {"queued"},"message_id":format!("peer:{}:{}:{}:{request_id}", target.kernel_id, target.room_id, target.agent_id),"kernel":target.kernel_id,"room":target.room_id,"agent":target.agent_id,"urgent":false,"reply_requested":args.reply_requested,"note":super::agent_queued_messages::queued_note(&args.agent)})
+            },
         })
     }
     /// Native TUI turns end at the provider Stop event, which completes the prompt without the

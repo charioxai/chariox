@@ -1,4 +1,5 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: inbox ordering and exact receipt policy.
+use super::QUEUED_MESSAGE;
 use super::*;
 /// A receipt or submission binding for one row settles every row of its
 /// batch: they share one prompt, so they share its exact outcome.
@@ -65,6 +66,27 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         apply_row(tx, op)?;
     }
     Ok(lead)
+}
+
+/// A message still waiting for its recipient's next turn: neither urgent nor read.
+fn queued_message(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+    sequence: u64,
+) -> Result<InboxEvent, DaemonError> {
+    let e = get_event(tx, room, agent, sequence)?;
+    let read: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_inbox_shown WHERE sequence=?1)",
+            [sql_integer(sequence)?],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    if e.kind != "message" || e.state != "pending" || e.urgent || read {
+        return Err(error("this message is no longer queued"));
+    }
+    Ok(e)
 }
 
 fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
@@ -142,7 +164,7 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
             }
             let urgent_steer = e.urgent && target.is_some() && e.attempted_at_ms.is_none();
             let correlated = super::WORK_CORRELATED.replace("?3", "?5");
-            let earlier:i64=tx.query_row(&format!("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence<>?3 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (sequence<?3 AND json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled' AND (?5 IS NULL OR {correlated}) AND (?4=0 OR (json_extract(payload,'$.urgent')=1 AND json_extract(payload,'$.attempted_at_ms') IS NULL))) ELSE 1 END"),params![room,agent,sql_integer(sequence)?,urgent_steer,work],|r|r.get(0)).map_err(sql)?;
+            let earlier:i64=tx.query_row(&format!("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence<>?3 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (sequence<?3 AND json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled' AND NOT ({QUEUED_MESSAGE}) AND (?5 IS NULL OR {correlated}) AND (?4=0 OR (json_extract(payload,'$.urgent')=1 AND json_extract(payload,'$.attempted_at_ms') IS NULL))) ELSE 1 END"),params![room,agent,sql_integer(sequence)?,urgent_steer,work],|r|r.get(0)).map_err(sql)?;
             if earlier != 0 {
                 return Err(error("earlier recipient delivery must settle first"));
             }
@@ -214,6 +236,35 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
             e.state = "expired".into();
             save_event(tx, &e)?;
             super::wakes::record_delivery(tx, &e)?;
+            Ok(Outcome::Event(e))
+        }
+        Operation::ReleaseQueuedMessage {
+            room,
+            agent,
+            sequence,
+        } => {
+            let mut e = queued_message(tx, &room, &agent, sequence)?;
+            e.urgent = true;
+            save_event(tx, &e)?;
+            Ok(Outcome::Event(e))
+        }
+        Operation::CancelQueuedMessage {
+            room,
+            agent,
+            sequence,
+            now,
+        } => {
+            let mut e = queued_message(tx, &room, &agent, sequence)?;
+            apply_row(
+                tx,
+                Operation::Expire {
+                    room,
+                    agent,
+                    sequence,
+                },
+            )?;
+            e.state = "expired".into();
+            super::replies::recipient_declined(tx, &e, now)?;
             Ok(Outcome::Event(e))
         }
         Operation::Defer {

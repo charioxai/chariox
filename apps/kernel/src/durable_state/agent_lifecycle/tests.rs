@@ -1265,7 +1265,7 @@ fn a02_urgent_steers_past_nonurgent_queue_but_never_uncertain_receipts() {
         "parent",
         "sender",
         "normal",
-        "message",
+        "peer_event",
         serde_json::json!({}),
     ))) else {
         panic!()
@@ -2232,7 +2232,7 @@ fn a02_r5_idle_refusal_clock_starts_at_receipt() {
         "child",
         "parent",
         "idle-refusal",
-        "message",
+        "peer_event",
         serde_json::json!({}),
     ))) else {
         panic!()
@@ -2428,7 +2428,7 @@ fn a02_r6_delivery_clocks_tolerate_sweep_receipt_race() {
                 "child",
                 "parent",
                 "sweep-race",
-                "message",
+                "peer_event",
                 serde_json::json!({}),
             ))) else {
                 panic!()

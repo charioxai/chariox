@@ -204,6 +204,7 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
                 || spec.name == crate::transport::runtime_tools::PEEK_AGENT_TOOL
                 || spec.name == crate::transport::runtime_tools::READ_AGENT_ENTRY_TOOL
                 || spec.name == crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
+                || spec.name == crate::transport::runtime_tools::PROMOTE_AGENT_MESSAGE_TOOL
                 || spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL
                 || spec.name == crate::transport::runtime_tools::SEARCH_RECALL_TOOL
                 || spec.name == crate::transport::runtime_tools::QUERY_RECALL_TOOL),

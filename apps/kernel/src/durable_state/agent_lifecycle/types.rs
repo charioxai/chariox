@@ -496,6 +496,21 @@ pub(crate) enum Operation {
         sequence: u64,
         now: u64,
     },
+    /// The person sends a queued message now: it becomes urgent, so it starts its recipient's
+    /// turn or steers the running one.
+    ReleaseQueuedMessage {
+        room: String,
+        agent: String,
+        sequence: u64,
+    },
+    /// The person cancels a queued message: it is never delivered, and a sender that asked for a
+    /// reply is told the message was lost.
+    CancelQueuedMessage {
+        room: String,
+        agent: String,
+        sequence: u64,
+        now: u64,
+    },
     // Internal writer command, not a serialized client protocol shape.
     BindSubmission {
         room: String,

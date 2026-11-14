@@ -1501,7 +1501,13 @@ mod tests {
     // inbox admission and request no reply unless asked.
     #[test]
     fn mp11_review_runtime_instructions_describe_durable_room_messages() {
-        for expected in ["`durable`", "`urgent`", "`reply_requested`", "courtesy"] {
+        for expected in [
+            "`durable`",
+            "`queued`",
+            "`urgent`",
+            "`reply_requested`",
+            "courtesy",
+        ] {
             assert!(RUNTIME_BASE.contains(expected), "missing {expected}");
         }
         assert!(!RUNTIME_BASE.contains("may ask that agent to reply"));

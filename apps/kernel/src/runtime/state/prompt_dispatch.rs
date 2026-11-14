@@ -1158,6 +1158,11 @@ impl KernelRuntimeState {
         let authorized_state = self.with_external_command_authority(authority);
         let self_state = &authorized_state;
         self.authorize_prompt_command(authority)?;
+        if let Some(sequence) = crate::session::QueuedAgentMessage::sequence_of(prompt_id) {
+            return self
+                .send_queued_agent_message(session_id, target_agent_id, sequence)
+                .await;
+        }
         let owned = &self.owned;
         if owned
             .agent_store
@@ -1522,6 +1527,9 @@ impl KernelRuntimeState {
         attachment_id: &str,
         prompt_id: &str,
     ) -> Result<crate::app::KernelQueuedPromptCancellation, DaemonError> {
+        if let Some(sequence) = crate::session::QueuedAgentMessage::sequence_of(prompt_id) {
+            return self.cancel_queued_agent_message(session_id, target_agent_id, sequence);
+        }
         {
             self.owned
                 .cancel_queued_prompt(session_id, target_agent_id, attachment_id, prompt_id)
