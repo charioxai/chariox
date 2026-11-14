@@ -92,7 +92,12 @@ impl FileWatch {
         for path in &self.requested {
             self.guard.check(path)?;
             directories.extend(nearest_parent_directory(path));
-            directories.extend(link_parents(path));
+            // The links themselves are interests too: repointing one raises its event in the
+            // directory that holds it, and that event must rearm the watch.
+            for link in traversed_links(path) {
+                directories.extend(link.parent().map(std::path::Path::to_path_buf));
+                interests.insert(link);
+            }
             // A path that is gone, or a link whose target is gone, keeps its parent watched.
             if let Ok(target) = path.canonicalize() {
                 self.guard.check(&target)?;
@@ -146,12 +151,13 @@ impl FileWatch {
     }
 }
 
-/// The directories that hold a link on the way to `path`, whatever its depth: repointing one
-/// of them changes what the path reads without any event in the directories watched below it.
-fn link_parents(path: &std::path::Path) -> BTreeSet<PathBuf> {
+/// The links on the way to `path`, whatever their depth and including those reached through
+/// another link: repointing one of them changes what the path reads without any event in the
+/// directories watched below it.
+fn traversed_links(path: &std::path::Path) -> BTreeSet<PathBuf> {
     // The longest chain the system itself follows (`MAXSYMLINKS`).
     const MAX_LINKS: usize = 40;
-    let mut parents = BTreeSet::new();
+    let mut links = BTreeSet::new();
     let mut resolved = PathBuf::new();
     let mut pending: VecDeque<PathBuf> = path
         .components()
@@ -185,12 +191,12 @@ fn link_parents(path: &std::path::Path) -> BTreeSet<PathBuf> {
         if followed > MAX_LINKS {
             break;
         }
-        parents.insert(resolved.clone());
+        links.insert(next);
         for part in target.components().rev() {
             pending.push_front(PathBuf::from(part.as_os_str()));
         }
     }
-    parents
+    links
 }
 
 fn nearest_parent_directory(path: &std::path::Path) -> Option<PathBuf> {
@@ -319,6 +325,50 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(500), watch.changed())
             .await
             .expect("repointing the link above the file invalidates it")
+            .unwrap();
+        std::fs::write(b.join("note"), "after").unwrap();
+        tokio::time::timeout(Duration::from_millis(500), watch.changed())
+            .await
+            .expect("an edit of the file in the new target invalidates it")
+            .unwrap();
+        std::fs::write(a.join("note"), "ignored").unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), watch.changed())
+                .await
+                .is_err(),
+            "the previous target is no longer watched"
+        );
+        drop(watch);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_watch_follows_a_chain_of_links_repointed_at_the_middle() {
+        let root = std::env::temp_dir().join(format!("files-watch-{}", rand::random::<u64>()));
+        let (a, b, entry, aliases) = (
+            root.join("releases/a"),
+            root.join("releases/b"),
+            root.join("entry"),
+            root.join("aliases"),
+        );
+        for dir in [&a, &b, &entry, &aliases] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("note"), "before").unwrap();
+        }
+        let (selected, current) = (aliases.join("selected"), entry.join("current"));
+        std::os::unix::fs::symlink(&a, &selected).unwrap();
+        std::os::unix::fs::symlink(&selected, &current).unwrap();
+        let mut watch = FileWatch::new(
+            &[current.join("note").display().to_string()],
+            StateGuard::default(),
+        )
+        .unwrap();
+        let next = aliases.join("selected.next");
+        std::os::unix::fs::symlink(&b, &next).unwrap();
+        std::fs::rename(&next, &selected).unwrap();
+        tokio::time::timeout(Duration::from_millis(500), watch.changed())
+            .await
+            .expect("repointing the middle link invalidates the file")
             .unwrap();
         std::fs::write(b.join("note"), "after").unwrap();
         tokio::time::timeout(Duration::from_millis(500), watch.changed())
