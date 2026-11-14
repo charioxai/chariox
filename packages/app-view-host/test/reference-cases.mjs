@@ -33,8 +33,12 @@ export async function referenceCases({ chromium, launchOptions, server, evidence
         await server.open(page, packed, true);
         row.builtRequests = requests.filter(url => url.startsWith(server.origin + '/assets/'));
         const frame = await server.frame(page);
-        // Excalidraw's page has no agent surface: its backend serves the actions, so it is ready when its canvas is.
-        if (name === 'excalidraw') await frame.locator('.excalidraw__canvas.interactive').waitFor({ timeout: 25000 });
+        // Excalidraw's page has no agent surface: its backend serves the actions. It is ready when its canvas is up and it
+        // has asked the change feed once (its first call after the two it makes before it renders).
+        if (name === 'excalidraw') {
+          await frame.locator('.excalidraw__canvas.interactive').waitFor({ timeout: 25000 });
+          await frame.waitForFunction(() => globalThis.__standInBackend.calls() > 2, null, { timeout: 25000 });
+        }
         else await frame.waitForFunction(() => globalThis.__charioxViewAgent?.registrations().length > 0, null, { timeout: 25000 });
         await delay(500);
         row.reportedDpr = await frame.evaluate(() => devicePixelRatio);
@@ -44,12 +48,13 @@ export async function referenceCases({ chromium, launchOptions, server, evidence
           const canvas = frame.locator('.excalidraw__canvas.interactive');
           await canvas.click({ position: { x: 150, y: 180 } }); await page.keyboard.press('r');
           const bounds = await canvas.boundingBox();
-          await page.mouse.move(bounds.x + 180, bounds.y + 180); await page.mouse.down();
-          await page.mouse.move(bounds.x + 400, bounds.y + 310, { steps: 8 }); await page.mouse.up();
+          // Clear of the property panel that opens over the canvas's left edge once a tool is chosen.
+          await page.mouse.move(bounds.x + 400, bounds.y + 300); await page.mouse.down();
+          await page.mouse.move(bounds.x + 640, bounds.y + 430, { steps: 8 }); await page.mouse.up();
           await frame.waitForFunction(() => globalThis.__standInBackend.scene()?.elements.length > 0);
           row.nativeDrawing = await frame.evaluate(() => globalThis.__standInBackend.scene().elements.length);
           // Text typed into the rectangle is a bound label in the page's own font.
-          await page.mouse.dblclick(bounds.x + 290, bounds.y + 245);
+          await page.mouse.dblclick(bounds.x + 520, bounds.y + 365);
           await page.keyboard.type('Native App fonts');
           await page.keyboard.press('Escape');
           await frame.waitForFunction(() => globalThis.__standInBackend.scene()?.elements.some(element => element.text === 'Native App fonts'));
