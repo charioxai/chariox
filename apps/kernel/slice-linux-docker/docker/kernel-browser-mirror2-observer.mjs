@@ -1311,6 +1311,30 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       visit(document, 0);
       return { mirrored: mirroredText, total };
     };
+    // Every character the document can show now, for the font subsetter: text nodes (shadow roots too), the values
+    // and placeholders of fields, and the text pseudo-elements generate (an icon font's glyphs). Bounded: past the
+    // budget the rest of the text is not read.
+    const textCodePoints = () => {
+      const seen = new Set(); let budget = 2_000_000;
+      const take = text => { if (typeof text !== 'string') return; budget -= text.length; for (const char of text) seen.add(char.codePointAt(0)); };
+      const visit = (node, depth) => {
+        if (depth > DEPTH || budget <= 0) return;
+        if (node.nodeType === 3) { take(node.data); return; }
+        if (node.nodeType === 1) {
+          if (['script', 'style', 'noscript', 'template'].includes(node.localName)) return;
+          if (node.localName === 'input' || node.localName === 'textarea') { take(node.value); take(node.placeholder); }
+        }
+        for (const child of node.childNodes) visit(child, depth + 1);
+        if (node.shadowRoot) visit(node.shadowRoot, depth + 1);
+      };
+      visit(document, 0);
+      const all = document.getElementsByTagName('*'), deadline = performance.now() + 40;
+      for (let at = 0; at < all.length && at < 6000; at++) {
+        if ((at & 63) === 63 && performance.now() > deadline) break;
+        for (const pseudo of ['::before', '::after']) { const content = getComputedStyle(all[at], pseudo).content; if (content !== 'none' && content !== 'normal') take(content); }
+      }
+      return [...seen];
+    };
     const sheetChanged = owner => {
       if (owner === 'adopted') adoptedDirty = true;
       else if (owner === 'imports') { for (const entry of styleNodes.values()) if (entry.imports) dirty.sheets.add(entry.node); }
@@ -1399,6 +1423,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, visited, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, visited, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, textCodePoints, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
   }
 }
