@@ -303,6 +303,51 @@ impl KernelRuntimeState {
             kernel_id,
         )))
     }
+    /// After a restart the gateway no longer knows the private worker a job kept for its files.
+    /// The service names the saved allocation again, which binds its pinned target exactly as when
+    /// it was acquired; only that kernel is then granted.
+    pub(super) async fn job_machine_reattach(
+        &self,
+        job_id: &str,
+        allocation_ref: &str,
+        kernel_id: &str,
+        harness: &str,
+    ) -> Result<Arc<dyn GrantedSend>, DaemonError> {
+        let origin = Origin {
+            grant_id: format!(
+                "{}{}",
+                super::reach::OWNER_GRANT_PREFIX,
+                self.owned.config_projection.local_owner_user_id()
+            ),
+            harness: harness.into(),
+        };
+        let response = self
+            .job_control_plane(
+                &origin,
+                &ControlPlaneRequest::Get {
+                    allocation_ref: allocation_ref.into(),
+                },
+                &format!("job:{job_id}:return"),
+            )
+            .await?;
+        match response {
+            ControlPlaneResponse::Machine {
+                purpose,
+                access_state,
+                kernel_target: Some(target),
+                ..
+            } if purpose.as_deref() == Some("offload_job")
+                && access_state == "available"
+                && target.kernel_id == kernel_id =>
+            {
+                self.job_machine_grant(kernel_id, harness)
+            }
+            _ => Err(acquisition_error(
+                "job_target_unavailable",
+                "The kept remote machine has no reachable worker kernel. Retry later; chariox.jobs.cancel gives its files up",
+            )),
+        }
+    }
     async fn wait_for_job_machine(
         &self,
         job_id: &str,

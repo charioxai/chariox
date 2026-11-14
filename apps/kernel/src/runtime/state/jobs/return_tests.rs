@@ -490,3 +490,35 @@ async fn offload_job_does_not_run_its_command_when_its_return_plan_cannot_be_kep
     assert!(result.output_tail.contains("return plan"));
     assert!(job.record.deleted && !job.record.return_pending);
 }
+
+#[tokio::test]
+async fn offload_job_after_a_restart_reconciles_the_kept_worker_with_the_service_before_collecting()
+{
+    let held = worker_held_after_failed_return().await;
+    // A restarted kernel has no live grant and its gateway does not know the private worker.
+    held.state
+        .job_wake_driver
+        .as_ref()
+        .unwrap()
+        .return_grants
+        .lock()
+        .unwrap()
+        .remove(&held.job_id);
+    // The service names the allocation but has no reachable target for it.
+    let service = super::cleanup_tests::service(
+        &held.state,
+        vec![("get", 200, super::cleanup_tests::machine("ready"))],
+    )
+    .await;
+    let status = held.job_tool("chariox.jobs.status").await;
+    tokio::time::timeout(Duration::from_secs(5), service)
+        .await
+        .expect("the saved allocation was never reconciled through the control plane")
+        .unwrap();
+    assert_eq!(status["return_pending"], true);
+    assert_eq!(status["deleted"], false);
+    assert!(status["return_error"]
+        .as_str()
+        .unwrap()
+        .contains("no reachable"));
+}

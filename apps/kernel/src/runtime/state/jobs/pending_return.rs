@@ -80,12 +80,20 @@ impl KernelRuntimeState {
             .cloned();
         let grant = match live {
             Some(grant) => grant,
-            None => self.job_machine_grant(
-                &plan.kernel_id,
-                &self
-                    .agent_harness_name(&record.room_id, &record.agent_id)
-                    .unwrap_or_else(|| "Chariox".into()),
-            )?,
+            None => {
+                self.job_machine_reattach(
+                    &record.job_id,
+                    record
+                        .allocation_ref
+                        .as_deref()
+                        .ok_or_else(|| ledger::error("The kept job has no allocation"))?,
+                    &plan.kernel_id,
+                    &self
+                        .agent_harness_name(&record.room_id, &record.agent_id)
+                        .unwrap_or_else(|| "Chariox".into()),
+                )
+                .await?
+            }
         };
         let remote = Remote::new(grant, String::new(), record.job_id.clone());
         let (files, conflicts) = remote
