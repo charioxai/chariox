@@ -725,8 +725,11 @@ mod tests {
         let held = sampled(100 * MIB, 10_000);
         let step_one = sampled(100 * MIB + 3 * MIB, 12_000);
         let step_two = sampled(100 * MIB + 6 * MIB, 14_000);
-        assert!(held.same_to_clients(&step_one));
-        assert!(!held.same_to_clients(&step_two));
+        let same = |a: &SessionSnapshotProjection, b: &SessionSnapshotProjection| {
+            crate::runtime::process_resources::same_to_clients(&a.processes, &b.processes)
+        };
+        assert!(same(&held, &step_one));
+        assert!(!same(&held, &step_two));
         assert!(matches!(
             session_projection_events(&step_two, Some(&held), false).as_slice(),
             [KernelEvent::SessionProcessesChanged { .. }]
