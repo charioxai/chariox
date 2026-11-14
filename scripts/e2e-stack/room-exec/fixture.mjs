@@ -54,7 +54,9 @@ export class Fixture {
 
   async launch(name, executable, env, args = []) {
     const log = await open(path.join(this.evidence, `${name}.log`), 'w', 0o600)
-    const child = spawn(executable, args, { env, stdio: ['ignore', log.fd, log.fd] })
+    // A kernel's default Room folder is its working directory: keep it inside the disposable home.
+    const cwd = name.startsWith('kernel-') ? path.join(this.home, name.at(-1), 'work') : this.home
+    const child = spawn(executable, args, { env, cwd, stdio: ['ignore', log.fd, log.fd] })
     if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw new Error('invalid owned process PID')
     child.done = new Promise((resolve, reject) => {
       child.once('error', reject)
