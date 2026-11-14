@@ -28,6 +28,10 @@ pub fn parse(text: &str) -> Result<Value, AppError> {
     Ok(scene)
 }
 
+pub fn empty() -> Value {
+    serde_json::json!({"type": "excalidraw", "version": 2, "elements": [], "appState": {}, "files": {}})
+}
+
 pub fn filename(value: &Value) -> Result<String, AppError> {
     let name = value
         .as_str()
