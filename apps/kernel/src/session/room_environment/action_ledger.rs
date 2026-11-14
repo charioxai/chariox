@@ -593,6 +593,11 @@ impl EnvironmentActionLedger {
                 *owner = to.to_string();
             }
         }
+        for (target, owner) in &mut self.pending_takeovers {
+            if owner == from && matches!(target, InputTarget::BrowserTab(_)) {
+                *owner = to.to_string();
+            }
+        }
     }
 
     pub(crate) fn owns_tab(&self, actor_id: &str) -> bool {
