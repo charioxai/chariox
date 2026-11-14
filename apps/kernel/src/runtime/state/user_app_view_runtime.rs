@@ -116,11 +116,13 @@ impl KernelRuntimeState {
                 let Some((binding, view)) = instances.get(owner, &request.view_id) else {
                     return Ok(failed(AppRequestErrorCode::NotFound));
                 };
-                let (current, frontend) =
-                    match self.user_app_frontend(owner, &binding.installation, true).await {
-                        Ok(view) => view,
-                        Err(code) => return Ok(failed(code)),
-                    };
+                let (current, frontend) = match self
+                    .user_app_frontend(owner, &binding.installation, true)
+                    .await
+                {
+                    Ok(view) => view,
+                    Err(code) => return Ok(failed(code)),
+                };
                 if current.generation != binding.generation
                     || instances.get(owner, &request.view_id).is_none()
                 {
@@ -296,7 +298,10 @@ impl KernelRuntimeState {
             return Ok(Err(AppRequestErrorCode::Conflict));
         }
         let with_files = host != Some(UserAppViewHost::ClientNative);
-        let (binding, frontend) = match self.user_app_frontend(owner, installation, with_files).await {
+        let (binding, frontend) = match self
+            .user_app_frontend(owner, installation, with_files)
+            .await
+        {
             Ok(view) => view,
             Err(code) => return Ok(Err(code)),
         };
