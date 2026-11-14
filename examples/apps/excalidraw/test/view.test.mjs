@@ -1,250 +1,274 @@
-// MP-08/MP-10/MP-11: real Excalidraw/A1 browser regression. The storage adapter
-// is a fixture; this does not claim the kernel/provider acceptance legs.
-import test from 'node:test';
+// The Excalidraw window against a fake backend: what a person draws is saved with the
+// backend's version check, and what an agent does in the backend shows up in the open window.
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
-import { readFile, mkdir, writeFile } from 'node:fs/promises';
-import { join, resolve, extname } from 'node:path';
-import { chromium } from 'playwright-core';
-import { createViewActions } from '../../../../apps/kernel/slice-linux-docker/docker/browser-app-view-actions.mjs';
+import { openApp, closeEnvironment, labelled, rect, sceneOf, waitUntil } from './window.mjs';
 
-const output = process.env.CHARIOX_EXCALIDRAW_BUNDLE;
-const evidence = process.env.CHARIOX_EXCALIDRAW_EVIDENCE;
-assert(output && evidence, 'set CHARIOX_EXCALIDRAW_BUNDLE and CHARIOX_EXCALIDRAW_EVIDENCE outside the repository');
-const manifest = JSON.parse(await readFile(new URL('../schemas/ui-actions.json', import.meta.url)));
+after(closeEnvironment);
 
-test('canvas, declarations, persistence, native shortcuts and three exports round trip at DPR1 and DPR2', { timeout: 120_000 }, async () => {
-  const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2' };
-  const server = createServer(async (req, res) => {
-    try {
-      const file = resolve(output, 'ui', '.' + new URL(req.url, 'http://localhost').pathname);
-      if (!file.startsWith(resolve(output, 'ui') + '/')) throw Error('invalid path');
-      res.setHeader('Content-Type', types[extname(file)] ?? 'application/octet-stream');
-      res.end(await readFile(file));
-    } catch { res.statusCode = 404; res.end(); }
-  });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const origin = `http://127.0.0.1:${server.address().port}`;
-  const browser = await chromium.launch({ executablePath: process.env.CHARIOX_TEST_CHROME ?? '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
-  try {
-    for (const dpr of [1, 2]) {
-      const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: dpr });
-      await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-      const page = await context.newPage();
-      const errors = [], network = [], calls = [];
-      page.on('pageerror', error => errors.push(error.message));
-      await context.route('**/*', route => {
-        if (route.request().url().startsWith(origin)) return route.continue();
-        network.push(route.request().url());
-        return route.abort();
-      });
-      let scene = null, version = null, failSave = false, holdSave = null, saveStarted;
-      const files = new Map();
-      await page.exposeFunction('broker', async (name, input) => {
-        calls.push(name);
-        if (name === 'load_scene') return { scene, version };
-        if (name === 'save_scene') {
-          if (holdSave && input.scene.elements.some(element => element.id === 'stale-action')) { saveStarted(); await holdSave; }
-          if (failSave) { failSave = false; throw Error('Concurrent view changed the scene; reload.'); }
-          assert.equal(input.version, version);
-          scene = input.scene; version = String(Number(version) + 1);
-          return { version };
-        }
-        if (name === 'write_file') {
-          const bytes = input.base64 ? Buffer.from(input.base64, 'base64') : Buffer.from(input.text);
-          files.set(input.name, bytes);
-          return { name: input.name, bytes: bytes.length, grantId: input.offer ? 'export-fixture' : null };
-        }
-        if (name === 'read_file') return { name: input.name, scene: JSON.parse(files.get(input.name).toString()) };
-        if (name === 'pick_file') return { grants: [] };
-        throw Error('unknown backend tool: ' + name);
-      });
-      await page.addInitScript(`const sdk = (${createViewActions.toString()})((...args) => window.broker(...args)); window.chariox = { action: sdk.action, view: sdk.view, call: (...args) => window.broker(...args) }; window.__charioxViewAgent = sdk.agent;`);
-      await page.goto(origin + '/index.html');
-      await page.waitForFunction(() => window.__charioxViewAgent.registrations().length === 10);
-      const invoke = async (name, input = {}) => {
-        const result = await page.evaluate(async ({ name, input }) => window.__charioxViewAgent.invoke(name, input), { name, input });
-        assert.equal(result.ok, true, JSON.stringify(result)); return result.value;
-      };
-      const registrations = await page.evaluate(() => window.__charioxViewAgent.registrations());
-      assert.deepEqual(registrations, manifest.uiActions);
-      const parallel = await page.evaluate(() => Promise.all(['parallel-a', 'parallel-b'].map(id => window.__charioxViewAgent.invoke('add_elements', { elements: [{ id, type: 'rectangle', x: 20, y: 20 }] }))));
-      assert(parallel.every(result => result.ok));
-      assert.equal((await invoke('scene_summary')).total, 2, 'overlapping actions must retain both additions');
-      await invoke('delete_elements', { ids: ['parallel-a', 'parallel-b'] });
-      await page.waitForSelector('.excalidraw__canvas.interactive');
-      // A person draws using Excalidraw's real toolbar/keys and pointer path.
-      await page.keyboard.press('r');
-      await page.mouse.move(80, 160); await page.mouse.down(); await page.mouse.move(240, 250, { steps: 5 }); await page.waitForTimeout(100); await page.mouse.up();
-      await page.waitForFunction(() => window.__charioxViewAgent.state().then(r => r.value?.total > 0));
-      await invoke('add_elements', { elements: [
-        { id: 'client', type: 'rectangle', x: 300, y: 200, label: 'Client' },
-        { id: 'kernel', type: 'ellipse', x: 650, y: 200, label: 'Kernel' },
-      ] });
-      await invoke('connect_elements', { from: 'client', to: 'kernel', label: 'Actions' });
-      const drawn = await invoke('scene_summary');
-      const client = drawn.elements.find(e => e.id === 'client'), arrow = drawn.elements.find(e => e.type === 'arrow');
-      assert(arrow.x >= client.x + client.width - 1 && arrow.x <= client.x + client.width + 1, 'a new connector starts on the facing edge of its source, not at the origin');
-      assert(arrow.y > client.y && arrow.y < client.y + client.height, 'a new connector leaves the source at its mid-height');
-      assert.equal(drawn.elements.filter(e => e.type === 'text').length, 3);
-      assert(drawn.elements.some(e => e.type === 'arrow' && e.from === 'client' && e.to === 'kernel'));
-      await invoke('update_elements', { ids: ['client'], dx: 30, dy: 10, width: 190 });
-      await invoke('group_elements', { ids: ['client', 'kernel'] });
-      const moved = await invoke('select_elements', { ids: ['client', 'kernel'] });
-      assert.equal(moved.elements.find(e => e.id === 'client').x, 330);
-      assert.equal(moved.elements.find(e => e.id === 'client').width, 190);
-      assert(moved.elements.find(e => e.type === 'arrow').x > 520, 'arrow must start outside the moved box and its label');
-      assert.deepEqual(moved.elements.find(e => e.id === 'client').groups, moved.elements.find(e => e.id === 'kernel').groups);
-      await invoke('save_file', { name: 'roundtrip' });
-      for (const format of ['json', 'svg', 'png']) await invoke('export_file', { format, name: 'proof' });
-      const json = JSON.parse(files.get('proof.excalidraw'));
-      assert.equal(json.elements.length, moved.total);
-      assert.deepEqual(json.elements.filter(e => e.type === 'text').map(e => e.text).sort(), ['Actions', 'Client', 'Kernel']);
-      const svg = files.get('proof.svg').toString();
-      assert(svg.includes('<svg') && svg.includes('Client') && svg.includes('Kernel'));
-      const png = files.get('proof.png');
-      assert.equal(png.subarray(1, 4).toString(), 'PNG');
-      assert(png.readUInt32BE(16) > 300 && png.readUInt32BE(20) > 50);
-      const cjk = structuredClone(json);
-      const text = cjk.elements.find(element => element.type === 'text');
-      cjk.elements = [{ ...text, id: 'cjk', text: '你好世界', originalText: '你好世界', fontFamily: 5, containerId: null, boundElements: null, groupIds: [], x: 100, y: 100 }];
-      files.set('cjk.excalidraw', Buffer.from(JSON.stringify(cjk)));
-      await invoke('open_file', { name: 'cjk' });
-      await invoke('export_file', { format: 'svg', name: 'cjk' });
-      assert(files.get('cjk.svg').toString().includes('你好世界'));
-      await page.locator('.excalidraw__canvas.interactive').click({ position: { x: 50, y: 450 } });
-      await page.evaluate(() => navigator.clipboard.writeText('flowchart LR\nA --> B'));
-      await page.keyboard.press('Control+v');
-      await page.waitForFunction(() => window.__charioxViewAgent.state().then(result => result.value.elements.some(element => element.text?.includes('flowchart LR'))));
-      await invoke('open_file', { name: 'roundtrip' });
-      await page.evaluate(() => document.fonts.ready);
-      await page.waitForTimeout(400);
-      await invoke('delete_elements', { ids: ['client'] });
-      const deleted = await invoke('scene_summary');
-      assert(!deleted.elements.some(e => e.id === 'client' || e.containerId === 'client'));
-      assert.equal(deleted.elements.find(e => e.type === 'arrow').from, null);
-      await invoke('open_file', { name: 'roundtrip' });
-      assert.equal((await invoke('scene_summary')).total, moved.total);
-      await page.keyboard.press('Control+s');
-      await page.waitForTimeout(500);
-      assert([...files.keys()].some(name => /^diagram-[a-f0-9-]+\.excalidraw$/.test(name)), 'Ctrl+S must use the broker with a unique copy name');
-      await page.keyboard.press('Control+o');
-      await page.waitForTimeout(200);
-      assert(calls.includes('pick_file'), 'Ctrl+O must use the broker');
-      await page.reload();
-      await page.waitForFunction(() => window.__charioxViewAgent.registrations().length === 10);
-      assert.equal((await invoke('scene_summary')).total, moved.total);
-      assert.equal((await page.evaluate(() => window.__charioxViewAgent.changes(0))).ok, true);
-      await mkdir(evidence, { recursive: true });
-      await page.screenshot({ path: join(evidence, `canvas-dpr${dpr}.png`) });
-      for (const name of ['proof.excalidraw', 'proof.svg', 'proof.png']) await writeFile(join(evidence, `dpr${dpr}-${name}`), files.get(name));
-      await writeFile(join(evidence, `browser-dpr${dpr}.json`), JSON.stringify({ errors, network, calls, drawn, moved, png: { width: png.readUInt32BE(16), height: png.readUInt32BE(20) } }, null, 2));
-      let release;
-      await page.locator('.excalidraw__canvas.interactive').click({ position: { x: 50, y: 450 } });
-      await page.keyboard.press('Escape');
-      await page.keyboard.press('v');
-      await invoke('select_elements', { ids: ['client'] });
-      await page.waitForTimeout(500);
-      holdSave = new Promise(resolve => { release = resolve; });
-      const saving = new Promise(resolve => { saveStarted = resolve; });
-      await page.evaluate(() => { window.pendingAction = window.__charioxViewAgent.invoke('add_elements', { elements: [{ id: 'stale-action', type: 'rectangle', x: 30, y: 30 }] }); });
-      await saving;
-      await page.keyboard.press('Delete');
-      await page.waitForFunction(total => window.__charioxViewAgent.state().then(result => result.value.total === total - 2), moved.total);
-      await page.waitForTimeout(200);
-      holdSave = null; release();
-      const raced = await page.evaluate(() => window.pendingAction);
-      assert.equal(raced.ok, false, 'a pending action must preserve a concurrent human edit');
-      const afterHuman = await invoke('scene_summary');
-      assert.equal(afterHuman.total, moved.total - 2);
-      assert(!afterHuman.elements.some(element => element.id === 'client'));
-      assert(!afterHuman.elements.some(element => element.id === 'stale-action'));
-      // A failed receipt must leave the visible scene unchanged. Private copies
-      // remain available so a person can recover edits after a CAS conflict.
-      await page.waitForTimeout(500);
-      const beforeFailure = await invoke('scene_summary');
-      failSave = true;
-      const failed = await page.evaluate(() => window.__charioxViewAgent.invoke('add_elements', { elements: [{ id: 'must-not-appear', type: 'rectangle', x: 10, y: 10 }] }));
-      assert.equal(failed.ok, false);
-      assert.equal((await invoke('scene_summary')).total, beforeFailure.total, 'failed action must not alter the canvas');
-      const recovered = await invoke('save_file', { name: 'recovery' });
-      assert.match(recovered.automaticSaveError, /Concurrent view/);
-      assert.equal(JSON.parse(files.get('recovery.excalidraw')).elements.length, beforeFailure.total);
-      assert.deepEqual(errors, []);
-      assert.deepEqual(network, [], 'all fonts, workers and code must load from App assets');
-      await context.close();
-    }
-  } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
-});
+const idle = ms => new Promise(done => setTimeout(done, ms));
 
-// An update reloads the view after the kernel has switched generations, so the
-// old page can no longer call the App: its pending edit must wait in the view's
-// own web storage and come back with the new page.
-async function updateTest(name, body, beforePrepare = async () => {}) {
-  test(name, { timeout: 60_000 }, async () => {
-    const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2' };
-    const server = createServer(async (req, res) => {
-      try {
-        const file = resolve(output, 'ui', '.' + new URL(req.url, 'http://localhost').pathname);
-        if (!file.startsWith(resolve(output, 'ui') + '/')) throw Error('invalid path');
-        res.setHeader('Content-Type', types[extname(file)] ?? 'application/octet-stream');
-        res.end(await readFile(file));
-      } catch { res.statusCode = 404; res.end(); }
-    });
-    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-    const browser = await chromium.launch({ executablePath: process.env.CHARIOX_TEST_CHROME ?? '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
-    try {
-      const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
-      const backend = { scene: null, version: '1' };
-      await page.exposeFunction('broker', async (call, input) => {
-        if (call === 'load_scene') return { scene: backend.scene, version: backend.version };
-        if (call === 'save_scene') { backend.scene = input.scene; backend.version = String(Number(backend.version) + 1); if (backend.delaySaveReply) await new Promise(() => {}); return { version: backend.version }; }
-        throw Error('unknown backend tool: ' + call);
-      });
-      // A slow save: the App's 300 ms automatic save timer does not fire during the test.
-      await page.addInitScript(`const sdk = (${createViewActions.toString()})((...args) => window.broker(...args)); window.chariox = { action: sdk.action, view: sdk.view, call: (...args) => window.broker(...args) }; window.__charioxViewAgent = sdk.agent;
-        const setTimer = window.setTimeout.bind(window); window.setTimeout = (fn, ms, ...rest) => setTimer(fn, ms === 300 && /\\.save\\(\\)/.test(String(fn)) ? 600000 : ms, ...rest);`);
-      const url = `http://127.0.0.1:${server.address().port}/index.html`;
-      const open = async () => {
-        await page.goto(url);
-        await page.waitForFunction(() => window.__charioxViewAgent.registrations().length === 10);
-        await page.waitForSelector('.excalidraw__canvas.interactive');
-      };
-      const total = () => page.evaluate(() => window.__charioxViewAgent.state().then(r => r.value.total));
-      await open();
-      await page.mouse.click(300, 600);
-      await page.keyboard.press('r');
-      await page.mouse.move(380, 260); await page.mouse.down(); await page.mouse.move(600, 380, { steps: 10 }); await page.waitForTimeout(100); await page.mouse.up();
-      await page.waitForFunction(() => window.__charioxViewAgent.state().then(r => r.value?.total > 0));
-      await beforePrepare({ page, total, backend });
-      await page.evaluate(() => window.__charioxViewAgent.prepareUpdate());
-      await body({ open, total, backend });
-    } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
-  });
+async function withApp(options, body) {
+  const app = await openApp(options);
+  try { await app.load(); await body(app); app.assertClean(); } finally { await app.close(); }
 }
 
-await updateTest('an edit still waiting for its automatic save comes back after the update reloads the view', async ({ open, total }) => {
-  await open();
-  assert.equal(await total(), 1, 'the drawn rectangle must survive the reload');
-});
+for (const dpr of [1, 2]) test(`a drawn rectangle is saved with the version check and survives a reload at DPR${dpr}`, { timeout: 60_000 }, () => withApp({ dpr }, async app => {
+  const { backend, page } = app;
+  await idle(1500);
+  // A diagram that was never saved is saved once, empty, when it is first shown.
+  const opened = backend.saves.length;
+  assert(opened <= 1, `opening saved ${opened} times`);
+  if (opened) assert.deepEqual(backend.saves[0].scene.elements, []);
+  await app.draw();
+  await waitUntil(() => backend.saves.length === opened + 1, { what: 'the first save of the drawing' });
+  assert.equal(backend.saves[opened].version, opened ? '1' : null, 'a save carries the version it read');
+  assert.deepEqual(backend.live().map(element => element.type), ['rectangle']);
+  const rectangle = backend.live()[0];
+  const saved = backend.saves.length;
+  const version = backend.version;
 
-await updateTest('a saved draft is dropped when the App saved a newer scene meanwhile', async ({ open, total, backend }) => {
-  backend.version = '7';
-  await open();
-  assert.equal(await total(), 0, 'a draft based on an older version must not overwrite the newer scene');
-});
+  // Selecting, hovering and scrolling change the canvas, not the diagram.
+  await page.keyboard.press('v');
+  await page.mouse.click(rectangle.x + 40, rectangle.y);
+  await page.mouse.move(700, 500, { steps: 10 });
+  for (let i = 0; i < 5; i++) { await page.mouse.wheel(0, 20); await page.mouse.move(600 + i * 10, 450); }
+  await idle(1500);
+  assert.equal(backend.saves.length, saved, 'selection, hover and scroll must not save');
 
-await updateTest('an unacknowledged automatic save does not discard newer user edits during update', async ({ open, total }) => {
-  await open();
-  assert.equal(await total(), 3, 'the pending user draft must survive its own unacknowledged save');
-}, async ({ page, total, backend }) => {
-  backend.delaySaveReply = true;
-  await page.evaluate(() => { void window.__charioxViewAgent.invoke('add_elements', { elements: [{ type: 'rectangle', x: 50, y: 50, width: 30, height: 30 }] }); });
-  for (let i = 0; i < 100 && backend.version === '1'; i++) await page.waitForTimeout(20);
-  assert.equal(backend.version, '2');
-  for (const y of [450, 600]) {
-    await page.keyboard.press('r');
-    await page.mouse.move(650, y); await page.mouse.down(); await page.mouse.move(800, y + 80, { steps: 10 }); await page.mouse.up();
-  }
-  await page.waitForFunction(() => window.__charioxViewAgent.state().then(r => r.value?.total === 3));
-});
+  await page.reload();
+  await page.waitForSelector('.excalidraw__canvas.interactive');
+  await idle(1500);
+  assert.equal(backend.saves.length, saved, 'an unchanged loaded diagram must not write');
+  assert.equal(backend.version, version);
+  assert.deepEqual((await app.elements()).map(element => element.type), ['rectangle'], 'the reload keeps the rectangle');
+
+  await app.draw(600, 400);
+  await waitUntil(() => backend.saves.length === saved + 1, { what: 'the next save' });
+  assert.equal(backend.saves[saved].version, version, 'a save carries the version it read');
+  assert.equal(backend.live().length, 2);
+  await app.shot('canvas');
+}));
+
+test('an agent-made diagram opens without a write, bound labels included', { timeout: 60_000 }, () => withApp({
+  scene: sceneOf([...labelled('client', 'Client', 100, 100), ...labelled('kernel', 'Kernel', 400, 100)]),
+}, async app => {
+  const { backend } = app;
+  await idle(2500);
+  assert.equal(backend.count('save_scene'), 0, 'opening must not bump the version');
+  assert.equal(backend.version, '1');
+  assert.deepEqual(await app.ids(), ['client', 'client-text', 'kernel', 'kernel-text']);
+}));
+
+test('an agent adds a labelled box and edits another: the open window shows both without owner input', { timeout: 60_000 }, () => withApp({
+  scene: sceneOf([rect('existing', 100, 400)]),
+}, async app => {
+  const { backend } = app;
+  await app.canvas.waitFor();
+  backend.agentEdit(scene => {
+    scene.elements.push(...labelled('client', 'Client', 300, 100));
+    scene.elements.find(element => element.id === 'existing').x = 700;
+  });
+  const took = await app.until(elements => elements.some(element => element.id === 'client-text')
+    && elements.find(element => element.id === 'existing').x === 700, { what: 'the agent edit on the canvas' });
+  assert(took < 3500, `the edit took ${took} ms to show`);
+  const elements = await app.elements();
+  const label = elements.find(element => element.id === 'client-text');
+  assert.equal(label.containerId, 'client');
+  assert.deepEqual(elements.find(element => element.id === 'client').boundElements.map(bound => bound.id), ['client-text']);
+  // The label is drawn, not only present in the scene.
+  await app.menu('Export SVG');
+  await waitUntil(() => backend.files.has('diagram.svg'), { what: 'the SVG' });
+  assert(backend.files.get('diagram.svg').toString().includes('Client'));
+  assert.equal(backend.count('save_scene'), 0, 'merging what the backend saved must not save it back');
+  await app.shot('agent-added');
+}));
+
+test('an owner drawing while an agent adds an element loses neither edit', { timeout: 60_000 }, () => withApp({
+  scene: sceneOf([rect('existing', 100, 500)]),
+}, async app => {
+  const { backend } = app;
+  await app.canvas.waitFor();
+  await app.draw(300, 150);
+  // The owner's save is still waiting for its 300 ms timer: the backend moves on first.
+  backend.agentEdit(scene => scene.elements.push(rect('agent-box', 800, 150)));
+  await waitUntil(() => backend.live().length === 3, { timeout: 5000, what: 'both edits in the saved diagram' });
+  const saved = backend.live().map(element => element.id);
+  assert(saved.includes('existing') && saved.includes('agent-box'));
+  assert.equal(saved.filter(id => id !== 'existing' && id !== 'agent-box').length, 1, 'and the owner rectangle');
+  await app.until(elements => elements.length === 3, { what: 'both edits on the canvas' });
+  assert.deepEqual(await app.ids(), saved.slice().sort());
+  assert.equal(await app.toast.filter({ hasText: /changed by another/ }).count(), 0, 'a refused save is merged, not reported');
+}));
+
+test('a save refused for a conflict is merged and saved again', { timeout: 60_000 }, () => withApp({
+  scene: sceneOf([rect('existing', 100, 500)]),
+}, async app => {
+  const { backend } = app;
+  await app.canvas.waitFor();
+  backend.interleave = () => backend.agentEdit(scene => scene.elements.push(rect('agent-box', 800, 150)));
+  await app.draw(300, 150);
+  await waitUntil(() => backend.saves.length >= 2, { what: 'the retried save' });
+  assert.equal(backend.saves.length, 2, 'one refused save, one retry');
+  assert.equal(backend.saves[0].version, '1');
+  assert.equal(backend.saves[1].version, '2', 'the retry carries the version the merge read');
+  assert.equal(backend.live().length, 3);
+  assert(backend.live().some(element => element.id === 'agent-box'), 'the agent edit stays saved');
+  assert.equal(await app.toast.count(), 0, 'no notice for a conflict that was resolved');
+  assert.equal((await app.elements()).length, 3);
+  await idle(1500);
+  assert.equal(backend.saves.length, 2, 'the merged diagram is saved once');
+}));
+
+test('a window that cannot catch up with the backend gives up after four refused saves and says so', { timeout: 60_000 }, () => withApp({
+  scene: sceneOf([rect('existing', 100, 500)]),
+}, async app => {
+  const { backend } = app;
+  await app.canvas.waitFor();
+  let n = 0;
+  const raceAgain = () => { backend.interleave = raceAgain; backend.agentEdit(scene => scene.elements.push(rect(`agent-${++n}`, 800, 100 + n * 30))); };
+  backend.interleave = raceAgain;
+  await app.draw(300, 150);
+  await app.toast.waitFor();
+  assert.match(await app.toast.innerText(), /changed by another window or an agent/);
+  assert.equal(backend.saves.length, 4);
+  backend.interleave = null;
+  await idle(1500);
+  assert.equal(backend.saves.length, 4, 'no further attempts after giving up');
+  assert.equal(backend.live().filter(element => element.id.startsWith('agent-')).length, 4, 'every agent edit stays saved');
+}));
+
+test('an element the agent deleted leaves the window and does not come back when the window saves', { timeout: 60_000 }, () => withApp({
+  scene: sceneOf([rect('a', 100, 100), rect('b', 300, 100), rect('c', 500, 100)]),
+}, async app => {
+  const { backend } = app;
+  await app.canvas.waitFor();
+  assert.deepEqual(await app.ids(), ['a', 'b', 'c']);
+  backend.agentEdit(scene => { scene.elements = scene.elements.filter(element => element.id !== 'b'); });
+  assert(backend.scene.elements.find(element => element.id === 'b').isDeleted, 'the backend keeps a marked element');
+  await app.until(elements => elements.length === 2, { what: 'the deleted element to leave the canvas' });
+  assert.deepEqual(await app.ids(), ['a', 'c']);
+  assert.equal(backend.count('save_scene'), 0);
+
+  await app.draw(300, 400);
+  await waitUntil(() => backend.saves.length === 1, { what: 'the window save' });
+  assert.equal(backend.live().length, 3);
+  assert(!backend.live().some(element => element.id === 'b'), 'the saved diagram does not have b');
+  await idle(2200);
+  const ids = await app.ids();
+  assert.equal(ids.length, 3);
+  assert(!ids.includes('b'), 'b must not come back');
+  // A later agent edit does not bring it back either.
+  backend.agentEdit(scene => scene.elements.push(rect('d', 900, 100)));
+  await app.until(elements => elements.some(element => element.id === 'd'), { what: 'the next agent element' });
+  assert(!(await app.ids()).includes('b'));
+}));
+
+test('an agent deleting a labelled box removes its label from the window too', { timeout: 60_000 }, () => withApp({
+  scene: sceneOf([...labelled('client', 'Client', 100, 100), rect('other', 500, 100)]),
+}, async app => {
+  const { backend } = app;
+  await app.canvas.waitFor();
+  backend.agentEdit(scene => { scene.elements = scene.elements.filter(element => element.id !== 'client' && element.containerId !== 'client'); });
+  await app.until(elements => elements.length === 1, { what: 'the labelled box to leave' });
+  assert.deepEqual(await app.ids(), ['other']);
+}));
+
+test('an agent selection is applied in the window once', { timeout: 60_000 }, () => withApp({
+  scene: sceneOf([rect('a', 100, 100), rect('b', 400, 100)]),
+}, async app => {
+  const { backend, page } = app;
+  await app.canvas.waitFor();
+  // Excalidraw handles keys only while it has focus: a click on empty canvas gives it focus.
+  await page.mouse.click(1000, 700);
+  backend.agentEdit(scene => { scene.appState.selectedElementIds = { b: true }; });
+  // The selection is observable through what it does: Delete removes the selected element.
+  await idle(1800);
+  await page.keyboard.press('Delete');
+  await waitUntil(() => backend.live().length === 1, { what: 'the selected element to be deleted' });
+  assert.deepEqual(backend.live().map(element => element.id), ['a']);
+  assert.deepEqual(await app.ids(), ['a']);
+}));
+
+test('an agent selection is not applied again after the owner cleared it', { timeout: 60_000 }, () => withApp({
+  scene: sceneOf([rect('a', 100, 100), rect('b', 400, 100)]),
+}, async app => {
+  const { backend, page } = app;
+  await app.canvas.waitFor();
+  // Excalidraw handles keys only while it has focus: a click on empty canvas gives it focus.
+  await page.mouse.click(1000, 700);
+  backend.agentEdit(scene => { scene.appState.selectedElementIds = { b: true }; });
+  await idle(1800);
+  await page.mouse.click(1000, 600);
+  await idle(2500);
+  await page.keyboard.press('Delete');
+  await idle(800);
+  assert.deepEqual(await app.ids(), ['a', 'b'], 'nothing is selected, so Delete deletes nothing');
+  assert.equal(backend.count('save_scene'), 0);
+}));
+
+test('a save that fails for a reason that is not a conflict is reported once and does not loop', { timeout: 60_000 }, () => withApp({
+  scene: sceneOf([rect('existing', 100, 500)]),
+}, async app => {
+  const { backend } = app;
+  await app.canvas.waitFor();
+  backend.failSaves = 'The data directory is full.';
+  await app.draw(300, 150);
+  await app.toast.waitFor();
+  assert.match(await app.toast.innerText(), /data directory is full/);
+  assert.equal(await app.toast.count(), 1, 'one notice');
+  assert.equal(await app.page.locator('.Modal').count(), 0, 'no modal traps the canvas');
+  assert.equal(backend.saves.length, 1);
+  await app.toast.locator('button').click();
+  await idle(2500);
+  assert.equal(await app.toast.count(), 0, 'the closed notice is not shown again');
+  assert.equal(backend.saves.length, 1, 'the failed save is not retried in a loop');
+
+  // The person keeps editing: the unsaved state is reported again, without asking the backend.
+  await app.draw(600, 150);
+  await app.toast.waitFor();
+  assert.match(await app.toast.innerText(), /data directory is full/);
+  assert.equal(backend.saves.length, 1);
+  await app.toast.locator('button').click();
+
+  // Reloading recovers automatic saving once the backend works again.
+  backend.failSaves = null;
+  await app.page.reload();
+  await app.canvas.waitFor();
+  await app.draw(300, 400);
+  await waitUntil(() => backend.saves.length === 2, { what: 'saving after the reload' });
+  assert.equal(backend.live().length, 2, 'the two rectangles drawn before the reload were never saved');
+  await app.shot('failure-recovery');
+}));
+
+// Known gaps in the page (src/persistence.js); these fail today and are reported, not hidden.
+test('a change whose load failed once is still merged', { timeout: 60_000 }, () => withApp({
+  scene: sceneOf([rect('a', 100, 100)]),
+}, async app => {
+  const { backend } = app;
+  await app.canvas.waitFor();
+  const call = backend.call.bind(backend);
+  let failed = false;
+  backend.call = async (name, input) => {
+    if (name === 'load_scene' && !failed) { failed = true; throw Error('transient'); }
+    return call(name, input);
+  };
+  backend.agentEdit(scene => scene.elements.push(rect('c', 700, 100)));
+  await app.until(elements => elements.some(element => element.id === 'c'), { timeout: 6000, what: 'the agent element after a failed load' });
+}));
+
+test('an agent selection that the owner cleared is not applied again by a later agent edit', { timeout: 60_000 }, () => withApp({
+  scene: sceneOf([rect('a', 100, 100), rect('b', 400, 100)]),
+}, async app => {
+  const { backend, page } = app;
+  await app.canvas.waitFor();
+  await page.mouse.click(1000, 700);
+  backend.agentEdit(scene => { scene.appState.selectedElementIds = { b: true }; });
+  await idle(2000);
+  await page.mouse.click(1000, 700);
+  backend.agentEdit(scene => scene.elements.push(rect('c', 700, 100)));
+  await idle(2200); // reading the canvas through the menu would take the focus away from the keys
+  await page.keyboard.press('Delete');
+  await idle(1000);
+  assert.deepEqual(await app.ids(), ['a', 'b', 'c']);
+}));

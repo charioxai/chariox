@@ -24,6 +24,7 @@ export function persistence(chariox, api, loaded, feedHead) {
   let lastSaved = loaded.scene ? normalized(loaded.scene).key : null;
   let queue = Promise.resolve();
   let failure = null;
+  let shownSelection = '';
   const enqueue = work => {
     const pending = queue.then(work);
     queue = pending.catch(() => {});
@@ -36,8 +37,10 @@ export function persistence(chariox, api, loaded, feedHead) {
     api.addFiles(Object.values(restored.files));
     const selected = remote.scene.appState?.selectedElementIds;
     api.updateScene({ elements: merged, captureUpdate: 'NEVER' });
-    // An agent's selection is in the saved scene only until the window saves; show it once.
-    if (selected && Object.keys(selected).length) {
+    // An agent's selection stays in the saved scene until the window saves; show each one once.
+    const selection = selected ? JSON.stringify(Object.keys(selected).sort()) : '';
+    if (selection && selection !== shownSelection) {
+      shownSelection = selection;
       api.updateScene({ appState: { selectedElementIds: selected }, captureUpdate: 'NEVER' });
       api.scrollToContent(merged.filter(element => selected[element.id]), { fitToContent: true, animate: false });
     }
@@ -78,7 +81,8 @@ export function persistence(chariox, api, loaded, feedHead) {
       await new Promise(resolve => setTimeout(resolve, POLL_MS));
       try {
         const { latest } = await chariox.call('view_changes', { since });
-        if (latest !== since) { since = latest; await pull(); }
+        // The feed position moves only once the saved scene is merged, so a failed load is asked for again.
+        if (latest !== since) { await pull(); since = latest; }
       } catch { /* the next tick asks again */ }
     }
   })();

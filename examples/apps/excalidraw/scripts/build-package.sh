@@ -11,7 +11,10 @@ root=$(pwd)
 case "$output/" in "$root/"*) echo 'The output directory must be outside the checkout' >&2; exit 2;; esac
 app=examples/apps/excalidraw
 mkdir -p "$output"
-cargo build --locked --manifest-path "$app/backend/Cargo.toml" --target wasm32-unknown-unknown --release
-cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/chariox_excalidraw.wasm" "$output/excalidraw.core.wasm"
+# The product target has the clock and the files the backend uses; the admission tool is the one
+# the product build (packages/app-sdk-tools/build-rust.py) runs on the component before it is packed.
+cargo build --locked --manifest-path "$app/backend/Cargo.toml" --target wasm32-wasip2 --release
+cargo run --locked -p chariox-app-sdk-tools --bin chariox-app-component -- \
+  "$CARGO_TARGET_DIR/wasm32-wasip2/release/chariox_excalidraw.wasm" "$output/excalidraw.core.wasm"
 (cd "$app" && node scripts/build-client-view.mjs "$output/view")
 cargo run --locked -p chariox-app-wasm-worker --example client-view-package -- "$output/excalidraw.core.wasm" "$output/view/index.html" "$app" "$output"

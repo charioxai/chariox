@@ -13,7 +13,7 @@ mod view_signing;
 fn main() {
     let mut args = std::env::args_os().skip(1).map(PathBuf::from);
     let (core, view, app, output) = (
-        args.next().expect("core module"),
+        args.next().expect("core module or component"),
         args.next().expect("view html"),
         args.next().expect("app directory"),
         args.next().expect("output directory"),
