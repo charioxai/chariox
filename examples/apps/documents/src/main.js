@@ -160,7 +160,10 @@ $("import-docs").addEventListener("click", async () => {
   try {
     const { skipped } = await call("import_documents")
     if (skipped.length) say(`Not imported: ${skipped.map((file) => file.name ?? "a file").join(", ")}.`, true)
-  } catch {} finally {
+  } catch (error) {
+    // The kernel gives a call 30 seconds; the person may not have chosen by then.
+    if (error.code === "DEADLINE_EXCEEDED") say("No files were chosen in time. Choose Import again.", true)
+  } finally {
     button.textContent = "Import"
     button.disabled = false
   }
