@@ -1,5 +1,6 @@
-// Serialized before any publisher code. CSP supplies the resource restrictions;
-// these constructors need an additional pre-script fence (notably WebRTC).
+// Serialized before any publisher code, so it cannot import anything. CSP supplies the resource
+// restrictions; these constructors need an additional pre-script fence (notably WebRTC), and
+// window.chariox is the page's only service surface.
 export function bootstrap() {
   for (const name of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'WebTransport', 'indexedDB', 'webkitIndexedDB']) {
     Object.defineProperty(globalThis, name, { value: undefined, writable: false, configurable: false });
@@ -24,6 +25,34 @@ export function bootstrap() {
     });
     Object.defineProperty(globalThis, name, { value: storage, writable: false, configurable: false });
   }
+  // Calls travel over one private port that the trusted host transfers after the document loads; the page
+  // never holds the client's connection. Calls made before the port arrives wait for it.
+  const calls = new Map(), waiting = [];
+  let port = null, next = 0;
+  addEventListener('message', event => {
+    if (port || event.source !== parent || event.data?.type !== 'chariox.app-view.port' || event.ports.length !== 1) return;
+    port = event.ports[0];
+    port.onmessage = message => {
+      const { data } = message, call = data?.type === 'chariox.app-view.result' ? calls.get(data.id) : undefined;
+      if (!call) return;
+      calls.delete(data.id);
+      if (data.ok === true) call.resolve(data.result);
+      else call.reject(Object.assign(new Error(String(data.error?.message ?? 'The call did not complete')), { code: String(data.error?.code ?? 'CALL_FAILED') }));
+    };
+    for (const send of waiting.splice(0)) send();
+  });
+  const chariox = Object.freeze({
+    call: (method, input = {}) => new Promise((resolve, reject) => {
+      const id = next++;
+      calls.set(id, { resolve, reject });
+      const send = () => {
+        try { port.postMessage({ type: 'chariox.app-view.call', id, method, input }); }
+        catch (error) { calls.delete(id); reject(error); }
+      };
+      if (port) send(); else waiting.push(send);
+    }),
+  });
+  Object.defineProperty(globalThis, 'chariox', { value: chariox, writable: false, configurable: false });
 }
 
 export function assemble() {
