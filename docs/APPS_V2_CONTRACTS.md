@@ -114,39 +114,6 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
 - Reuses: `CapabilityApproval`/`CapabilityDecision`, the stage/prepare/commit
   journal, `RuntimeInteraction` for the single prompt, `publisher_trust` revisions.
 
-## 10. Credentialed HTTP (`capabilities.network`)
-
-A destination may name a `credential` label and a signed route table:
-`{origin: "https://api.example.com", methods, credential: "example", routes:
-[{method, path: "/repos/{owner}/{repo}/pulls/{number}", safety: "read" | "write" |
-"destructive"}]}`. Such a destination needs the required feature `credentialed-http`,
-an `https` origin, at most 128 routes, `methods` equal to the routes' methods, and path
-templates of literal segments and `{name}` (one non-empty segment); `AuthoritySet`
-counts every route, so an update that adds a route or raises a safety class asks again.
-
-The owner binds an account: `GrantAppAccount {installation_id, account, credential,
-vault_credential_id, allow}` (`/app account grant`). Only the owner can; there is no
-agent tool. The Vault entry must be created for HTTP use at exactly that origin with an
-`Authorization` header (`chariox.vault.copy_for_use` makes one from an entry made for
-another use). The App calls `http.fetch` with `connection-id: "account:<label>"` and no
-`Authorization`; the kernel then
-
-1. matches origin, method and path against the signed routes (`APP_HTTP_ROUTE_NOT_DECLARED`)
-   and allows only the headers `accept, content-type, if-match, if-none-match,
-   if-modified-since, x-github-api-version`;
-2. checks the owner's binding exists for that credential label (`APP_HTTP_ACCOUNT_UNKNOWN`)
-   and allows at least the route's safety (`APP_HTTP_ACCOUNT_NOT_ALLOWED`);
-3. only then reads the Vault value (`APP_HTTP_ACCOUNT_UNAVAILABLE` if it cannot) and adds
-   `Authorization` and a `User-Agent` to the request itself;
-4. sends it (no redirects, public addresses only) and buffers the answer, at most 1 MiB
-   (`APP_HTTP_LIMIT`), with the value removed from the body and the headers, and only the
-   headers `content-type, etag, last-modified, link, location, retry-after,
-   x-poll-interval, x-github-request-id, x-ratelimit-*`. A 304 answer carries its `etag`.
-
-The same origin without an account (`APP_HTTP_ACCOUNT_REQUIRED`) and an account call to an
-origin without credentials (`APP_HTTP_ACCOUNT_UNKNOWN`) are refused. The App never sees the
-value; neither do App state, logs, history, traces or the agent's tool results.
-
 ## 5. WIT versioning (`v2::world`)
 
 - `WorldId` = `<ns>:<pkg>/<world>@<semver>` (no pre-release). `check_world`
@@ -286,6 +253,39 @@ value; neither do App state, logs, history, traces or the agent's tool results.
   the App's own code.
 - **Waits for R4/L1.** Declarations of an installed App exist only once a v2
   package installs; until then catalogs list views with no actions.
+## 10. Credentialed HTTP (`capabilities.network`)
+
+A destination may name a `credential` label and a signed route table:
+`{origin: "https://api.example.com", methods, credential: "example", routes:
+[{method, path: "/repos/{owner}/{repo}/pulls/{number}", safety: "read" | "write" |
+"destructive"}]}`. Such a destination needs the required feature `credentialed-http`,
+an `https` origin, at most 128 routes, `methods` equal to the routes' methods, and path
+templates of literal segments and `{name}` (one non-empty segment); `AuthoritySet`
+counts every route, so an update that adds a route or raises a safety class asks again.
+
+The owner binds an account: `GrantAppAccount {installation_id, account, credential,
+vault_credential_id, allow}` (`/app account grant`). Only the owner can; there is no
+agent tool. The Vault entry must be created for HTTP use at exactly that origin with an
+`Authorization` header (`chariox.vault.copy_for_use` makes one from an entry made for
+another use). The App calls `http.fetch` with `connection-id: "account:<label>"` and no
+`Authorization`; the kernel then
+
+1. matches origin, method and path against the signed routes (`APP_HTTP_ROUTE_NOT_DECLARED`)
+   and allows only the headers `accept, content-type, if-match, if-none-match,
+   if-modified-since, x-github-api-version`;
+2. checks the owner's binding exists for that credential label (`APP_HTTP_ACCOUNT_UNKNOWN`)
+   and allows at least the route's safety (`APP_HTTP_ACCOUNT_NOT_ALLOWED`);
+3. only then reads the Vault value (`APP_HTTP_ACCOUNT_UNAVAILABLE` if it cannot) and adds
+   `Authorization` and a `User-Agent` to the request itself;
+4. sends it (no redirects, public addresses only) and buffers the answer, at most 1 MiB
+   (`APP_HTTP_LIMIT`), with the value removed from the body and the headers, and only the
+   headers `content-type, etag, last-modified, link, location, retry-after,
+   x-poll-interval, x-github-request-id, x-ratelimit-*`. A 304 answer carries its `etag`.
+
+The same origin without an account (`APP_HTTP_ACCOUNT_REQUIRED`) and an account call to an
+origin without credentials (`APP_HTTP_ACCOUNT_UNKNOWN`) are refused. The App never sees the
+value; neither do App state, logs, history, traces or the agent's tool results.
+
 ## A4 inspection (MP-08 / MP-10 / MP-11)
 
 `InspectAppView` (local 933; peer 381) reads an **existing** Room App Tab.
