@@ -322,7 +322,7 @@ impl Feed {
         let mut installations = Vec::new();
         let mut after = None;
         loop {
-            let mut page = self
+            let page = self
                 .read_request(LocalDaemonRequest::ListAppInstallations(
                     ListAppInstallationsRequest {
                         session_id: session_id.clone(),
@@ -330,7 +330,16 @@ impl Feed {
                         limit: Some(APP_INSTALLATION_PAGE),
                     },
                 ))
-                .await?;
+                .await;
+            let mut page = match page {
+                Ok(page) => page,
+                // A Room collaborator owns no Apps on this kernel, and the owner's cannot be opened by anyone
+                // else: the list outside a Room is empty for them, not a refusal a client must treat as a failure.
+                Err(DaemonError::OwnershipAccessDenied { .. }) if session_id.is_none() => {
+                    return Ok(serde_json::json!({ "installations": [] }));
+                }
+                Err(error) => return Err(error),
+            };
             if let Some(Value::Array(rows)) = page.get_mut("installations").map(Value::take) {
                 installations.extend(rows);
             }
