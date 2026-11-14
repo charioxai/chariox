@@ -1,9 +1,8 @@
-//! The diagram actions that need no Excalidraw layout engine, run on the saved scene by the
-//! backend: `scene_summary`, `select_elements`, `delete_elements` and `group_elements`. They do
-//! what `src/scene.js` does in the page, so an agent can act on a diagram with no page open.
-//! `add_elements`, `update_elements` and `connect_elements` stay in the page: they use
-//! Excalidraw's element converter and text metrics.
+//! The diagram actions on the saved scene, run by the backend so an agent can act on a diagram
+//! with no page open: `scene_summary`, `select_elements`, `delete_elements` and `group_elements`
+//! here, `add_elements` and `connect_elements` in `draw.rs`, `update_elements` in `update.rs`.
 
+use crate::stamp::Stamp;
 use chariox_app_sdk::{app_types::AppError, error};
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
@@ -11,40 +10,24 @@ use std::collections::HashSet;
 const SUMMARY_BYTES: usize = 48 * 1024;
 const UNKNOWN_ID: &str = "Every ID must identify an existing element. Read scene_summary first.";
 
-/// What `newElementWith` stamps on an element it changes.
-pub struct Stamp {
-    state: u64,
-    pub now_ms: u64,
+use crate::element::{fields, live};
+
+/// Change an element and give it its next version.
+fn touch(stamp: &mut Stamp, element: &mut Value, patch: impl FnOnce(&mut Map<String, Value>)) {
+    let fields = fields(element);
+    patch(fields);
+    stamp.bump(fields);
 }
 
-impl Stamp {
-    pub fn new(seed: u64, now_ms: u64) -> Self {
-        Self {
-            state: seed | 1,
-            now_ms,
-        }
-    }
+/// How long a deleted element stays in the saved scene: a window that has not yet seen the
+/// deletion merges it, instead of drawing the element again.
+const TOMBSTONE_MS: u64 = 60 * 60 * 1000;
 
-    fn nonce(&mut self) -> u32 {
-        // xorshift64*: only needs to differ between versions of an element.
-        self.state ^= self.state >> 12;
-        self.state ^= self.state << 25;
-        self.state ^= self.state >> 27;
-        (self.state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) as u32
-    }
-
-    fn touch(&mut self, element: &mut Value, patch: impl FnOnce(&mut Map<String, Value>)) {
-        let fields = element.as_object_mut().expect("scene elements are objects");
-        patch(fields);
-        let version = fields.get("version").and_then(Value::as_u64).unwrap_or(0);
-        fields.insert("version".into(), json!(version + 1));
-        fields.insert("versionNonce".into(), json!(self.nonce()));
-        fields.insert("updated".into(), json!(self.now_ms));
-    }
-}
-
-fn live(element: &Value) -> bool {
-    element["isDeleted"] != true
+/// Drop the deleted elements that every open window has had time to see.
+pub fn forget_old_deletions(scene: &mut Value, now_ms: u64) {
+    elements_mut(scene).retain(|e| {
+        live(e) || now_ms.saturating_sub(e["updated"].as_u64().unwrap_or(now_ms)) < TOMBSTONE_MS
+    });
 }
 
 fn text_of(value: &Value, limit: usize) -> (String, bool) {
@@ -151,7 +134,8 @@ pub fn select(scene: &mut Value, ids: &[String]) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Delete the elements, the text bound in them, and every binding that pointed at them.
+/// Delete the elements, the text bound in them, and every binding that pointed at them. The
+/// deleted elements stay in the scene, marked, until `forget_old_deletions`.
 pub fn delete(scene: &mut Value, ids: &[String], stamp: &mut Stamp) -> Result<(), AppError> {
     existing(scene, ids)?;
     let mut removed: HashSet<String> = ids.iter().cloned().collect();
@@ -164,12 +148,12 @@ pub fn delete(scene: &mut Value, ids: &[String], stamp: &mut Stamp) -> Result<()
         }
     }
     let was_removed = |value: &Value| value.as_str().is_some_and(|id| removed.contains(id));
-    for element in elements_mut(scene).iter_mut() {
+    for element in elements_mut(scene).iter_mut().filter(|e| live(e)) {
         let gone = element["id"]
             .as_str()
             .is_some_and(|id| removed.contains(id));
         let arrow = element["type"] == "arrow";
-        stamp.touch(element, |fields| {
+        touch(stamp, element, |fields| {
             if gone {
                 fields.insert("isDeleted".into(), json!(true));
                 return;
@@ -191,9 +175,77 @@ pub fn delete(scene: &mut Value, ids: &[String], stamp: &mut Stamp) -> Result<()
             }
         });
     }
-    elements_mut(scene).retain(live);
     scene["appState"]["selectedElementIds"] = json!({});
     Ok(())
+}
+
+/// The diagram `opened` in place of the one in `current`: its elements, and the elements it
+/// replaces marked deleted, so a window that merges the saved scene drops them instead of
+/// keeping them. An element that is in both carries on from the version it had.
+pub fn replace_scene(current: &Value, opened: &Value, stamp: &mut Stamp) -> Value {
+    let versions: std::collections::HashMap<&str, u64> = current["elements"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|e| live(e))
+        .filter_map(|e| Some((e["id"].as_str()?, e["version"].as_u64()?)))
+        .collect();
+    let opened_elements: Vec<Value> = opened["elements"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|e| live(e))
+        .cloned()
+        .map(|mut element| {
+            let earlier = element["id"].as_str().and_then(|id| versions.get(id));
+            if let Some(earlier) = earlier {
+                let fields = fields(&mut element);
+                let own = fields.get("version").and_then(Value::as_u64).unwrap_or(0);
+                fields.insert("version".into(), json!(own.max(*earlier)));
+                stamp.bump(fields);
+            }
+            element
+        })
+        .collect();
+    let kept: HashSet<&str> = opened_elements
+        .iter()
+        .filter_map(|e| e["id"].as_str())
+        .collect();
+    let mut elements = opened_elements.clone();
+    for element in current["elements"].as_array().into_iter().flatten() {
+        if live(element) && !element["id"].as_str().is_some_and(|id| kept.contains(id)) {
+            let mut gone = element.clone();
+            touch(stamp, &mut gone, |fields| {
+                fields.insert("isDeleted".into(), json!(true));
+            });
+            elements.push(gone);
+        }
+    }
+    let mut next = opened.clone();
+    next["elements"] = json!(elements);
+    next
+}
+
+/// The change `name` makes to the scene; the actions that only read it are `summary`.
+pub fn edit(
+    name: &str,
+    scene: &mut Value,
+    input: &Value,
+    stamp: &mut Stamp,
+) -> Result<(), AppError> {
+    forget_old_deletions(scene, stamp.now_ms);
+    match name {
+        "select_elements" => select(scene, &ids(input)?),
+        "delete_elements" => delete(scene, &ids(input)?, stamp),
+        "group_elements" => {
+            let id = format!("group-{}", stamp.id());
+            group(scene, &ids(input)?, &id, stamp)
+        }
+        "add_elements" => crate::draw::add(scene, input, stamp),
+        "connect_elements" => crate::draw::connect(scene, input, stamp),
+        "update_elements" => crate::update::update(scene, input, stamp),
+        _ => Err(error("TOOL_NOT_FOUND", name)),
+    }
 }
 
 /// Put the elements, and the text bound in them, in one new group.
@@ -211,7 +263,7 @@ pub fn group(
     };
     for element in elements_mut(scene).iter_mut().filter(|e| live(e)) {
         if member(element) {
-            stamp.touch(element, |fields| {
+            touch(stamp, element, |fields| {
                 let mut groups = fields
                     .get("groupIds")
                     .and_then(Value::as_array)
@@ -291,28 +343,58 @@ mod tests {
         assert_eq!(scene, before, "a refused action changes nothing");
     }
 
+    fn live_ids(scene: &Value) -> Vec<&str> {
+        scene["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| live(e))
+            .map(|e| e["id"].as_str().unwrap())
+            .collect()
+    }
+
     #[test]
     fn deleting_takes_the_bound_text_and_clears_bindings_that_pointed_at_it() {
         let mut scene = scene();
         delete(&mut scene, &strings(&["box"]), &mut stamp()).unwrap();
-        let live_ids: Vec<&str> = scene["elements"]
+        assert_eq!(
+            live_ids(&scene),
+            ["arrow", "other"],
+            "the box and its label are deleted"
+        );
+        let deleted: Vec<&Value> = scene["elements"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|e| e["id"].as_str().unwrap())
+            .filter(|e| !live(e))
             .collect();
         assert_eq!(
-            live_ids,
-            ["arrow", "other"],
-            "the box and its label are gone from the saved scene"
+            deleted
+                .iter()
+                .map(|e| e["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["box", "label"],
+            "they stay in the scene, marked, for a window that has not seen the deletion"
         );
-        let arrow = &scene["elements"][0];
+        assert_eq!(deleted[0]["version"], 2);
+        let arrow = &scene["elements"][2];
         assert_eq!(arrow["startBinding"], Value::Null);
         assert_eq!(arrow["endBinding"]["elementId"], "other");
         assert_eq!(arrow["version"], 2);
         assert_eq!(arrow["updated"], 1_000);
         assert_eq!(scene["appState"]["selectedElementIds"], json!({}));
         assert!(delete(&mut scene, &strings(&["box"]), &mut stamp()).is_err());
+    }
+
+    #[test]
+    fn a_deletion_is_forgotten_after_an_hour() {
+        let mut scene = scene();
+        delete(&mut scene, &strings(&["box"]), &mut stamp()).unwrap();
+        forget_old_deletions(&mut scene, 1_000 + TOMBSTONE_MS - 1);
+        assert_eq!(scene["elements"].as_array().unwrap().len(), 4);
+        forget_old_deletions(&mut scene, 1_000 + TOMBSTONE_MS);
+        assert_eq!(live_ids(&scene), ["arrow", "other"]);
+        assert_eq!(scene["elements"].as_array().unwrap().len(), 2);
     }
 
     #[test]
@@ -323,7 +405,7 @@ mod tests {
             scene["elements"][0]["boundElements"],
             json!([{"id": "label", "type": "text"}])
         );
-        assert_eq!(scene["elements"][2]["boundElements"], json!([]));
+        assert_eq!(scene["elements"][3]["boundElements"], json!([]));
     }
 
     #[test]
