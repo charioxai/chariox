@@ -18,8 +18,10 @@ pub(crate) fn session_projection_events(
     });
     if same_public
         && previous.is_some_and(|before| {
-            before.processes == snapshot.processes
-                && before.disk_usage == snapshot.disk_usage
+            crate::runtime::process_resources::same_to_clients(
+                &before.processes,
+                &snapshot.processes,
+            ) && before.disk_usage == snapshot.disk_usage
                 && before.jobs == snapshot.jobs
         })
     {
@@ -665,5 +667,69 @@ mod tests {
             Some("session_metadata_processes"),
         );
         assert!(health.iter().any(|event| matches!(event, KernelEvent::SessionProcessesChanged { processes, .. } if !processes.is_empty())));
+    }
+
+    /// A snapshot holding one running process of `rss` bytes, sampled at `sampled_at_ms`.
+    fn sampled(rss: u64, sampled_at_ms: u64) -> SessionSnapshotProjection {
+        let mut snapshot = snapshot();
+        add_process(&mut snapshot);
+        let process = &mut snapshot.processes[0].process;
+        process.resident_set_bytes = rss;
+        process.sampled_at_ms = sampled_at_ms;
+        process.age_ms = sampled_at_ms;
+        snapshot
+    }
+
+    const MIB: u64 = 1024 * 1024;
+
+    // A session attached for hours resent its whole process list every sample (4 KB x 2 s: 10 of
+    // the 10.6 MB the Mac sent in 30 minutes) although only the sample time and age had moved.
+    #[test]
+    fn a_sample_that_only_moves_its_time_sends_nothing() {
+        let before = sampled(100 * MIB, 10_000);
+        let after = sampled(100 * MIB, 12_000);
+        assert!(session_projection_events(&after, Some(&before), false).is_empty());
+    }
+
+    #[test]
+    fn resident_memory_is_sent_when_it_changes_by_a_meaningful_amount() {
+        let before = sampled(100 * MIB, 10_000);
+        let jitter = sampled(100 * MIB + 2 * MIB, 12_000);
+        assert!(session_projection_events(&jitter, Some(&before), false).is_empty());
+        let grown = sampled(100 * MIB + 6 * MIB, 12_000);
+        assert!(matches!(
+            session_projection_events(&grown, Some(&before), false).as_slice(),
+            [KernelEvent::SessionProcessesChanged { .. }]
+        ));
+        // A change counts from 1 MiB or 5 %, whichever is larger: 5 MiB at 100 MiB, 200 MiB at 4 GiB.
+        let large = sampled(4096 * MIB, 10_000);
+        let large_jitter = sampled(4096 * MIB + 10 * MIB, 12_000);
+        assert!(session_projection_events(&large_jitter, Some(&large), false).is_empty());
+    }
+
+    // Clients drop rows they have not heard of for a while, so a quiet process is repeated now and then.
+    #[test]
+    fn a_quiet_process_is_repeated_so_clients_can_tell_a_live_feed() {
+        let before = sampled(100 * MIB, 10_000);
+        let later = sampled(100 * MIB, 10_000 + 31_000);
+        assert!(matches!(
+            session_projection_events(&later, Some(&before), false).as_slice(),
+            [KernelEvent::SessionProcessesChanged { .. }]
+        ));
+    }
+
+    // A snapshot that clients already hold stays the baseline while samples stay within noise, so
+    // memory that grows 3 MiB per sample is sent once it has grown 5 MiB, not never.
+    #[test]
+    fn slow_memory_growth_is_measured_against_what_clients_hold() {
+        let held = sampled(100 * MIB, 10_000);
+        let step_one = sampled(100 * MIB + 3 * MIB, 12_000);
+        let step_two = sampled(100 * MIB + 6 * MIB, 14_000);
+        assert!(held.same_to_clients(&step_one));
+        assert!(!held.same_to_clients(&step_two));
+        assert!(matches!(
+            session_projection_events(&step_two, Some(&held), false).as_slice(),
+            [KernelEvent::SessionProcessesChanged { .. }]
+        ));
     }
 }

@@ -1,12 +1,15 @@
 import type { SessionProcess } from "@chariox/kernel-client/kernel-events"
 
+/// The kernel repeats a quiet process at least every 30 s and sends a changed row at once: a row not heard of for longer is gone.
+const PROCESS_ROW_FRESH_MS = 45_000
+
 export function sessionProcessLines(processes: SessionProcess[], now = Date.now(), ownerLabel = (row: SessionProcess) => `${row.owner.kind}:${row.owner.id}`): string[] {
   const columns = (values: string[]) => values.map((value, i) => value.slice(0, [18, 8, 22, 12, 8, 8][i]).padEnd([18, 8, 22, 12, 8, 8][i]!)).join(" ")
-  const rows = processes.filter(row => now - row.sampled_at_ms <= 5000)
+  const rows = processes.filter(row => now - row.sampled_at_ms <= PROCESS_ROW_FRESH_MS)
   return [columns(["OWNER", "PID", "COMMAND", "MEMORY", "CPU", "AGE"]), ...rows.flatMap(row => [columns([
     ownerLabel(row), String(row.pid), row.command,
     `${(row.resident_set_bytes / 1048576).toFixed(1)} MiB`,
-    `${(row.cpu_millis / 10).toFixed(1)}%`, `${Math.floor(row.age_ms / 1000)}s`,
+    `${(row.cpu_millis / 10).toFixed(1)}%`, `${Math.floor((row.age_ms + Math.max(0, now - row.sampled_at_ms)) / 1000)}s`,
   ]), `  ${row.process_id}`]), ...(rows.length ? [] : [processes.length ? "No recent process samples." : "No running processes in this session."])]
 }
 

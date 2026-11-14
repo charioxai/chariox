@@ -784,7 +784,10 @@ pub(crate) fn session_projection_changed_events(
 ) -> Vec<KernelEvent> {
     [
         (previous.is_none_or(|previous| {
-            previous.processes != snapshot.processes || previous.disk_usage != snapshot.disk_usage
+            !crate::runtime::process_resources::same_to_clients(
+                &previous.processes,
+                &snapshot.processes,
+            ) || previous.disk_usage != snapshot.disk_usage
         }) && (previous.is_some()
             || !snapshot.processes.is_empty()
             || !snapshot.disk_usage.is_empty()))

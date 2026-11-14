@@ -595,7 +595,10 @@ pub(crate) fn watch_subscription_state(
     let snapshot = if should_check_snapshot {
         match build_session_snapshot(app, session_id, &attachment_owner_user_id) {
             Ok(snapshot) => {
-                if previous_snapshot.as_ref() != Some(&snapshot) {
+                if !previous_snapshot
+                    .as_ref()
+                    .is_some_and(|previous| previous.same_to_clients(&snapshot))
+                {
                     Box::new(Some(snapshot))
                 } else {
                     Box::new(None)
