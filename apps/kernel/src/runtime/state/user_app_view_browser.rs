@@ -351,7 +351,9 @@ impl KernelRuntimeState {
         if running.is_none_or(|generation| generation <= binding.generation) {
             return;
         }
-        let Ok((current, frontend)) = self.user_app_frontend(owner, &binding.installation, true).await
+        let Ok((current, frontend)) = self
+            .user_app_frontend(owner, &binding.installation, true)
+            .await
         else {
             return;
         };
