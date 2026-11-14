@@ -1,0 +1,4 @@
+{"uiActions":[
+  {"name":"list_notes","description":"Read the saved notes","inputSchema":{"type":"object","additionalProperties":false},"effect":"read"},
+  {"name":"add_note","description":"Save one note","inputSchema":{"type":"object","additionalProperties":false,"required":["text"],"properties":{"text":{"type":"string","minLength":1,"maxLength":200}}},"effect":"write"}
+]}

@@ -9,7 +9,12 @@ case "$output" in /*) ;; *) echo 'The output directory must be absolute' >&2; ex
 root=$(pwd)
 case "$output/" in "$root/"*) echo 'The output directory must be outside the checkout' >&2; exit 2;; esac
 mkdir -p "$output/ui"
-cargo build --locked --manifest-path packages/app-view-host/fixture/guest/Cargo.toml --target wasm32-unknown-unknown --release
+guest=packages/app-view-host/fixture
+cargo build --locked --manifest-path "$guest/guest/Cargo.toml" --target wasm32-unknown-unknown --release
 cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/app_view_notes_guest.wasm" "$output/notes.core.wasm"
-node packages/app-view-host/fixture/build-view.mjs "$output/ui"
-cargo run --locked -p chariox-app-wasm-worker --example view-package -- "$output/notes.core.wasm" "$output/ui/index.html" "$output"
+cargo build --locked --manifest-path "$guest/guest/Cargo.toml" --target wasm32-unknown-unknown --release --features widened-registration
+cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/app_view_notes_guest.wasm" "$output/notes-widened.core.wasm"
+node "$guest/build-view.mjs" "$output/ui"
+pack() { cargo run --locked -p chariox-app-wasm-worker --example view-package -- "$1" "$output/ui/index.html" "$guest/ui-actions.json" "$output" ${2:-}; }
+pack "$output/notes.core.wasm"
+pack "$output/notes-widened.core.wasm" widened
