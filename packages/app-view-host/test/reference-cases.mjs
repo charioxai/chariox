@@ -33,7 +33,9 @@ export async function referenceCases({ chromium, launchOptions, server, evidence
         await server.open(page, packed, true);
         row.builtRequests = requests.filter(url => url.startsWith(server.origin + '/assets/'));
         const frame = await server.frame(page);
-        await frame.waitForFunction(() => globalThis.__charioxViewAgent?.registrations().length > 0, null, { timeout: 25000 });
+        // Excalidraw's page has no agent surface: its backend serves the actions, so it is ready when its canvas is.
+        if (name === 'excalidraw') await frame.locator('.excalidraw__canvas.interactive').waitFor({ timeout: 25000 });
+        else await frame.waitForFunction(() => globalThis.__charioxViewAgent?.registrations().length > 0, null, { timeout: 25000 });
         await delay(500);
         row.reportedDpr = await frame.evaluate(() => devicePixelRatio);
         row.parentDpr = await page.evaluate(() => devicePixelRatio);
@@ -44,10 +46,13 @@ export async function referenceCases({ chromium, launchOptions, server, evidence
           const bounds = await canvas.boundingBox();
           await page.mouse.move(bounds.x + 180, bounds.y + 180); await page.mouse.down();
           await page.mouse.move(bounds.x + 400, bounds.y + 310, { steps: 8 }); await page.mouse.up();
-          await frame.waitForFunction(async () => (await globalThis.__charioxViewAgent.state()).value?.total > 0);
-          row.nativeDrawing = await frame.evaluate(() => globalThis.__charioxViewAgent.state());
-          row.text = await frame.evaluate(() => globalThis.__charioxViewAgent.invoke('add_elements', { elements: [{ id: 'font-proof', type: 'rectangle', x: 450, y: 180, label: 'Native App fonts' }] }));
-          assert.equal(row.text.ok, true);
+          await frame.waitForFunction(() => globalThis.__standInBackend.scene()?.elements.length > 0);
+          row.nativeDrawing = await frame.evaluate(() => globalThis.__standInBackend.scene().elements.length);
+          // Text typed into the rectangle is a bound label in the page's own font.
+          await page.mouse.dblclick(bounds.x + 290, bounds.y + 245);
+          await page.keyboard.type('Native App fonts');
+          await page.keyboard.press('Escape');
+          await frame.waitForFunction(() => globalThis.__standInBackend.scene()?.elements.some(element => element.text === 'Native App fonts'));
         } else {
           row.formula = await frame.evaluate(async () => {
             await globalThis.__charioxViewAgent.invoke('set_range', { range: 'A1:C2', values: [['Item', 'Qty', 'Total'], ['AV1', 7, '=B2*3']] });

@@ -1,15 +1,14 @@
 //! Sign a source App with a self-contained client view as its UI entry, for the native-open drill.
 //! usage: view-package <core.wasm> <view html> <ui actions json> <output directory> [variant]
 //! A variant packs the same App under its own id and file name (view-notes-<variant>.cxapp).
-//! The key is fixed public test material; the drill enrolls its public half like any publisher.
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chariox_app_package::{
     v2::{self, ManifestV2},
     Limits,
 };
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::PathBuf};
+
+mod view_signing;
 
 fn main() {
     let mut args = std::env::args_os().skip(1).map(PathBuf::from);
@@ -27,14 +26,9 @@ fn main() {
         ),
         None => ("com.example.viewnotes".into(), "view-notes.cxapp".into()),
     };
-    let component = wit_component::ComponentEncoder::default()
-        .module(&std::fs::read(core).unwrap())
-        .unwrap()
-        .validate(true)
-        .encode()
-        .unwrap();
-    let key = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
-    let key_id = format!("dev-{:x}", Sha256::digest(key.verifying_key().as_bytes()));
+    let component = view_signing::component(&core);
+    let key = view_signing::dev_key();
+    let key_id = key.id.clone();
     let declared: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&ui_actions).unwrap()).unwrap();
     let declared = declared["uiActions"].as_array().expect("uiActions list");
@@ -81,17 +75,8 @@ fn main() {
     std::fs::create_dir_all(&output).unwrap();
     std::fs::write(
         output.join(&file),
-        v2::pack(&manifest, &files, &key, &[], &Limits::default()).unwrap(),
+        v2::pack(&manifest, &files, &key.key, &[], &Limits::default()).unwrap(),
     )
     .unwrap();
-    std::fs::write(
-        output.join("publisher.json"),
-        serde_json::to_vec(&json!({
-            "schema":"chariox.developer-publisher.v1", "algorithm":"ed25519",
-            "publisher":{"id":"com.example","keyId":key_id,"name":"Native view fixture"},
-            "publicKey":STANDARD.encode(key.verifying_key().as_bytes()),
-        }))
-        .unwrap(),
-    )
-    .unwrap();
+    view_signing::write_publisher(&output, "com.example", "Native view fixture", &key);
 }

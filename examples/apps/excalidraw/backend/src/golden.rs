@@ -116,7 +116,7 @@ fn every_action_makes_what_the_page_made() {
                 }
                 (None, Ok(())) => {}
             }
-            adopt_ids(&mut scene, &expected.iter().cloned().collect::<Vec<_>>());
+            adopt_ids(&mut scene, expected);
             let ours = live_elements(&scene);
             if ours.len() != expected.len() {
                 failures.push(format!(
