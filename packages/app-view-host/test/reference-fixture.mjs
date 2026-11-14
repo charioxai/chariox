@@ -3,8 +3,9 @@
 import { createViewActions } from '../../../apps/kernel/slice-linux-docker/docker/browser-app-view-actions.mjs';
 
 function backend() {
-  let scene = null, version = null, changes = 0;
+  let scene = null, version = null, changes = 0, calls = 0;
   const request = async (name, input) => {
+    calls++;
     if (name === 'load_scene') return { scene, version };
     if (name === 'save_scene') { scene = input.scene; version = String(Number(version ?? 0) + 1); changes++; return { version }; }
     if (name === 'view_changes') return { latest: changes, dropped: false, changes: [] };
@@ -14,6 +15,7 @@ function backend() {
   };
   // What the page saved, for the checks that cannot ask a page that has no agent surface.
   request.scene = () => scene;
+  request.calls = () => calls;
   return request;
 }
 
