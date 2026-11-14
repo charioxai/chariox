@@ -1285,6 +1285,25 @@ fn current(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
     }
     Ok(())
 }
+/// The task a turn began, when the owner has since resumed it: the task is on its Resume continuation.
+fn continued_past(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+    prompt: &str,
+) -> Result<Option<AgentTaskExecution>, DaemonError> {
+    let row: Option<(String, String)> = tx
+        .query_row(
+            "SELECT prompt_id,payload FROM agent_tasks WHERE task_id=?1 AND room_id=?2 AND agent_id=?3",
+            params![prompt, room, agent],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    row.filter(|(current, _)| goals::is_owner_resume_prompt_id(current))
+        .map(|(current, payload)| decode_task(prompt, room, agent, &current, &payload))
+        .transpose()
+}
 fn new_admitted_task(
     tx: &Transaction<'_>,
     room: String,
