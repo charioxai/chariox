@@ -35,6 +35,13 @@ export function decodeTerminalOutput(bytes: Uint8Array): Record<string, unknown>
     if (cursor !== payload.length) throw invalid()
     return output
   }
+  // A Room terminal stream page keeps its bytes raw: its one reader draws them as they are.
+  if (output.event === "room_terminal_output") {
+    const range = output.bytes
+    if (!Array.isArray(range) || range.length !== 2 || range[0] !== 0 || range[1] !== payload.length) throw invalid()
+    output.bytes = new Uint8Array(payload)
+    return output
+  }
   const records: unknown = output.event === "terminal_output" ? output.records
     : Object.keys(output).length === 1 && output.TerminalOutput
       && typeof output.TerminalOutput === "object" && !Array.isArray(output.TerminalOutput)
@@ -52,4 +59,9 @@ export function decodeTerminalOutput(bytes: Uint8Array): Record<string, unknown>
   }
   if (cursor !== payload.length) throw invalid()
   return output
+}
+
+/** The JSON text of a decoded event: the raw bytes of a pushed Room terminal page become the number array that terminal output records use. */
+export function terminalOutputJson(event: Record<string, unknown>): string {
+  return JSON.stringify(event, (_key, value) => (value instanceof Uint8Array ? Array.from(value) : value))
 }

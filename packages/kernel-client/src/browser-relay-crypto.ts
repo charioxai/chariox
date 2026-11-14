@@ -1,4 +1,4 @@
-import { decodeTerminalOutput } from "./terminal-output-wire.js"
+import { decodeTerminalOutput, terminalOutputJson } from "./terminal-output-wire.js"
 import { RelayFrameReceiver, relayTransportUrl } from "./relay-frame-transport.js"
 import type { EncryptedRelayPayload as RelayPayload } from "./kernel-transport-frames.js"
 
@@ -131,7 +131,7 @@ export async function decryptRelayPayload(
 ): Promise<string> {
   const bytes = await decryptRelayBytes(privateKey, payload, expectedSenderPublicKey)
   const terminal = decodeTerminalOutput(bytes)
-  return terminal ? JSON.stringify(terminal) : new TextDecoder().decode(bytes)
+  return terminal ? terminalOutputJson(terminal) : new TextDecoder().decode(bytes)
 }
 
 // Display and terminal output events carry metadata followed by raw bytes.
