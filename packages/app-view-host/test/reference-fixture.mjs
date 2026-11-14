@@ -13,6 +13,10 @@ function backend() {
   };
 }
 
-export function referencePrelude() {
-  return `const request=(${backend.toString()})();const sdk=(${createViewActions.toString()})(request);window.chariox={action:sdk.action,view:sdk.view,call:request};window.__charioxViewAgent=sdk.agent;\n`;
+// The bootstrap owns window.chariox (frozen, with the call only), so the stand-in SDK cannot replace it. The reference Apps
+// read their SDK from the stand-in instead, until the page SDK (action, view) moves into the bootstrap.
+export function adoptStandInSdk(script) {
+  const prelude = `const request=(${backend.toString()})();const sdk=(${createViewActions.toString()})(request);globalThis.__standInChariox={action:sdk.action,view:sdk.view,call:request};window.__charioxViewAgent=sdk.agent;\n`;
+  // A bare `chariox` would reach the frozen global too, so the App's code runs in a block that shadows it.
+  return prelude + '{const chariox=globalThis.__standInChariox;\n' + script.replace(/\b(?:window|globalThis)\.chariox\b/g, 'globalThis.__standInChariox') + '\n}';
 }
