@@ -41,17 +41,28 @@ export function bootstrap() {
     };
     for (const send of waiting.splice(0)) send();
   });
-  const chariox = Object.freeze({
-    call: (method, input = {}) => new Promise((resolve, reject) => {
-      const id = next++;
-      calls.set(id, { resolve, reject });
-      const send = () => {
-        try { port.postMessage({ type: 'chariox.app-view.call', id, method, input }); }
-        catch (error) { calls.delete(id); reject(error); }
-      };
-      if (port) send(); else waiting.push(send);
-    }),
+  const call = (method, input = {}) => new Promise((resolve, reject) => {
+    const id = next++;
+    calls.set(id, { resolve, reject });
+    const send = () => {
+      try { port.postMessage({ type: 'chariox.app-view.call', id, method, input }); }
+      catch (error) { calls.delete(id); reject(error); }
+    };
+    if (port) send(); else waiting.push(send);
   });
+  // The App backend's change feed (`view_changes`): the changes after `since`, asked again each second until one
+  // arrives or `waitMs` (at most 30 s) is up. A reader that fell behind (`dropped`) is answered at once.
+  const changes = async (since, waitMs = 0) => {
+    if (!Number.isSafeInteger(since) || since < 0 || !Number.isFinite(waitMs) || waitMs < 0) throw new TypeError('changes takes a feed position and a wait in milliseconds');
+    const until = Date.now() + Math.min(waitMs, 30000);
+    for (;;) {
+      const answer = await call('view_changes', { since });
+      const left = until - Date.now();
+      if (answer.dropped || answer.changes.length || left <= 0) return answer;
+      await new Promise(resolve => setTimeout(resolve, Math.min(1000, left)));
+    }
+  };
+  const chariox = Object.freeze({ call, changes });
   Object.defineProperty(globalThis, 'chariox', { value: chariox, writable: false, configurable: false });
 }
 
