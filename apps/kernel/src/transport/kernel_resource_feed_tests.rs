@@ -305,20 +305,35 @@ async fn refused_watches_are_listed_and_never_answered_empty() {
 async fn a_collaborators_app_list_is_answered_empty_and_the_owners_is_not_changed() {
     let kernel = Kernel::new();
     let (inbox, mut events) = kernel.feed();
-    let refused = submit_watch_set(&inbox, vec![watch("app_installations", None)], collaborator())
-        .await
-        .unwrap();
-    assert!(refused.is_empty(), "the collaborator's watch was refused: {refused:?}");
+    let refused = submit_watch_set(
+        &inbox,
+        vec![watch("app_installations", None)],
+        collaborator(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        refused.is_empty(),
+        "the collaborator's watch was refused: {refused:?}"
+    );
     let (_, body) = next_change(&mut events).await;
     assert_eq!(body["snapshot"]["data"], json!({ "installations": [] }));
 
     let (owner_inbox, mut owner_events) = kernel.feed();
-    let refused = submit_watch_set(&owner_inbox, vec![watch("app_installations", None)], owner())
-        .await
-        .unwrap();
+    let refused = submit_watch_set(
+        &owner_inbox,
+        vec![watch("app_installations", None)],
+        owner(),
+    )
+    .await
+    .unwrap();
     assert!(refused.is_empty(), "{refused:?}");
     let (_, body) = next_change(&mut owner_events).await;
-    assert_eq!(body["snapshot"]["data"], json!({ "installations": [] }), "the owner reads the kernel's own list");
+    assert_eq!(
+        body["snapshot"]["data"],
+        json!({ "installations": [] }),
+        "the owner reads the kernel's own list"
+    );
 }
 
 #[test]
