@@ -364,7 +364,7 @@ impl Exchange {
         if response.status().as_u16() == 101 {
             return Err(HttpError::Invalid);
         }
-        let scrub = target.authorization().map(scrub::Scrub::of);
+        let scrub = target.authorization().map(scrub::boundary);
         let cap = if scrub.is_some() {
             scrub::ANSWER_BYTES
         } else {
@@ -400,7 +400,7 @@ impl Exchange {
             let text: String = value.as_bytes().iter().map(|b| char::from(*b)).collect();
             headers.push((
                 name.to_string(),
-                scrub.as_ref().map_or(text.clone(), |scrub| scrub.text(&text)),
+                scrub.as_ref().map_or(text.clone(), |scrub| scrub.scrub(&text)),
             ));
         }
         let head = ResponseHead {
@@ -420,7 +420,11 @@ impl Exchange {
     }
     /// An account's answer is read whole (at most `ANSWER_BYTES`), scrubbed,
     /// and only then handed on, so the credential cannot straddle two chunks.
-    async fn download_scrubbed(&self, mut body: Incoming, scrub: &scrub::Scrub) -> Result<()> {
+    async fn download_scrubbed(
+        &self,
+        mut body: Incoming,
+        scrub: &crate::secret::HttpSecretBoundary,
+    ) -> Result<()> {
         let mut answer = Vec::new();
         while let Some(frame) = body.frame().await {
             let frame = frame.map_err(|_| HttpError::Network)?;
@@ -431,7 +435,9 @@ impl Exchange {
                 answer.extend_from_slice(&bytes);
             }
         }
-        for chunk in scrub.bytes(&answer).chunks(CHUNK_BYTES) {
+        // The answer to an account's call is text: JSON, a diff, a log.
+        let answer = String::from_utf8(answer).map_err(|_| HttpError::Invalid)?;
+        for chunk in scrub.scrub(&answer).as_bytes().chunks(CHUNK_BYTES) {
             self.chunks
                 .send(Ok(Bytes::copy_from_slice(chunk)))
                 .await
