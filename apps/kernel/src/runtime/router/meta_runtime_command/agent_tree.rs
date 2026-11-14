@@ -145,7 +145,9 @@ impl CommandRouter {
                 }) {
                     None
                 } else {
-                    self.runtime_state.durable_state_store().deleted_spawned_child(caller, &args[0])?
+                    self.runtime_state
+                        .durable_state_store()
+                        .deleted_spawned_child(caller, &args[0])?
                         .map(|deleted| RuntimeToolResult {
                             ok: true,
                             payload: serde_json::json!({
@@ -155,11 +157,7 @@ impl CommandRouter {
                                     "agent":super::summary::summarize_meta_agent(&deleted.agent),
                                     "already_deleted":true,
                                     "deleted_at_ms":deleted.deleted_at_ms,
-                                    "reason":if deleted.handled_completion {
-                                        "The kernel automatically deleted this sub-agent after its child_finished receipt was handled."
-                                    } else {
-                                        "The kernel already deleted this sub-agent."
-                                    },
+                                    "reason":"The kernel already deleted this sub-agent.",
                                 },
                             }),
                         })

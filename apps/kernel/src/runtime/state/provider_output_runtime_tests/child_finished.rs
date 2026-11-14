@@ -17,7 +17,6 @@ pub(super) struct Family {
     pub(super) parent: String,
     pub(super) parent_run: String,
     pub(super) kids: Vec<Kid>,
-    pub(super) config: crate::config::DaemonConfig,
     pub(super) _worktree: crate::test_support::TestWorktree,
 }
 
@@ -132,7 +131,7 @@ async fn family_in(
     if let Some(root) = history_root {
         config = config.with_session_history_root(root);
     }
-    let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+    let mut app = DaemonApp::bootstrap(config).unwrap();
     let (session, parent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .unwrap();
@@ -253,7 +252,6 @@ async fn family_in(
         parent_run: parent_run.id().into(),
         kids,
         runtime,
-        config,
         _worktree: worktree,
     }
 }

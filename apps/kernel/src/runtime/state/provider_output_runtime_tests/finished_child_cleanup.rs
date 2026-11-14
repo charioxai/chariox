@@ -1,7 +1,6 @@
-//! A parent that handled its child's `child_finished` receipt does not delete the child itself:
-//! the kernel ends a sub-agent the parent spawned once the parent acked its receipt as handled.
+//! Handling a child's `child_finished` receipt never ends the child: its units, wakes and uncollected
+//! results are invisible to the receipt, so only the parent's explicit `agent delete` removes it.
 use super::child_finished::{family_of, Family};
-use super::{owned_runtime_state, Arc, Mutex};
 use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
 
 /// Calls a runtime tool as the parent's running turn.
@@ -154,74 +153,22 @@ async fn ack(team: &Family, sequence: u64, handled: bool) {
         .unwrap();
 }
 
-// Drill: spawn one child, yield with no deadline, wake only on its child_finished, ack it handled,
-// and the child is gone.
+// Drill: spawn one child, yield with an explicit long deadline, wake only on its child_finished, ack it handled:
+// the child is still there, and the parent's explicit delete is what ends it.
 #[tokio::test]
-async fn a_handled_child_finished_receipt_deletes_the_spawned_child() {
+async fn a_handled_child_finished_receipt_keeps_the_spawned_child_until_the_parent_deletes_it() {
     let team = family_of("child-cleanup-handled", 1, None, true, true).await;
     let child = team.kids[0].child.clone();
     let (_, receipt) = parent_waits_and_child_finishes(&team).await;
+    ack(&team, receipt, true).await;
     assert!(
         child_exists(&team, &child),
-        "the child stays until its receipt is handled"
+        "a handled receipt leaves the child to its parent"
     );
-    ack(&team, receipt, true).await;
+    team.runtime.destroy_subtree(&child, "local").await.unwrap();
     assert!(
         !child_exists(&team, &child),
-        "a handled receipt ends the child"
-    );
-    assert!(
-        team.runtime
-            .owned
-            .agent_store
-            .list_agents()
-            .iter()
-            .all(|agent| agent.id() != child),
-        "the child is gone from the agent list"
-    );
-}
-
-#[tokio::test]
-async fn a_parent_keeps_a_finished_child_for_its_next_round() {
-    let team = family_of("child-cleanup-keep", 1, None, true, true).await;
-    let child = team.kids[0].child.clone();
-    let (_, receipt) = parent_waits_and_child_finishes(&team).await;
-    team.runtime
-        .ack_agent_inbox(
-            &team.room,
-            &team.parent,
-            &serde_json::json!({"sequence": receipt, "handled": true, "keep_children": true}),
-            crate::session::unix_epoch_ms(),
-        )
-        .await
-        .unwrap();
-    assert!(
-        child_exists(&team, &child),
-        "a child the parent keeps survives its handled receipt"
-    );
-}
-
-#[tokio::test]
-async fn an_unhandled_ack_keeps_the_child() {
-    let team = family_of("child-cleanup-unhandled", 1, None, true, true).await;
-    let child = team.kids[0].child.clone();
-    let (_, receipt) = parent_waits_and_child_finishes(&team).await;
-    ack(&team, receipt, false).await;
-    assert!(
-        child_exists(&team, &child),
-        "only a handled ack ends the child"
-    );
-}
-
-#[tokio::test]
-async fn a_child_a_person_moved_under_the_parent_is_kept() {
-    let team = family_of("child-cleanup-person", 1, None, true, false).await;
-    let child = team.kids[0].child.clone();
-    let (_, receipt) = parent_waits_and_child_finishes(&team).await;
-    ack(&team, receipt, true).await;
-    assert!(
-        child_exists(&team, &child),
-        "an agent a person made is never deleted"
+        "the parent's delete ends the child"
     );
 }
 
@@ -324,7 +271,7 @@ async fn child_finishes_a_newer_task(team: &Family, prompt: &str) -> u64 {
 
 // Review P1: a child with an older task still waiting is not finished by the newer task's receipt.
 #[tokio::test]
-async fn a_handled_receipt_keeps_a_child_whose_older_task_is_unfinished() {
+async fn a_handled_receipt_never_ends_a_child_with_an_unfinished_older_task() {
     let team = family_of("child-cleanup-older-task", 1, None, true, true).await;
     let child = team.kids[0].child.clone();
     let newer = child_finishes_a_newer_task(&team, "newer-prompt").await;
@@ -333,7 +280,7 @@ async fn a_handled_receipt_keeps_a_child_whose_older_task_is_unfinished() {
         child_exists(&team, &child),
         "the older task is still unfinished: the child stays"
     );
-    // The older task ends and its receipt is handled: now the child goes.
+    // Even once the older task ends and its receipt is handled, the child stays for its parent.
     let store = &team.runtime.owned.durable_state_store;
     let crate::durable_state::agent_lifecycle::Outcome::Settled { task, .. } = store
         .agent_lifecycle(Operation::Settle {
@@ -367,99 +314,9 @@ async fn a_handled_receipt_keeps_a_child_whose_older_task_is_unfinished() {
     assert_ne!(older, newer);
     ack(&team, older, true).await;
     assert!(
-        !child_exists(&team, &child),
-        "with nothing left unfinished, the handled receipt ends the child"
-    );
-}
-
-/// The parent's turn ends while it acks: the receipt is handled, but the cleanup is refused.
-async fn ack_with_a_retired_turn(team: &Family, sequence: u64) {
-    let retired = team
-        .runtime
-        .with_room_provider_origin(Some(&team.parent), Some("retired-provider-run"));
-    let _ = retired
-        .ack_agent_inbox(
-            &team.room,
-            &team.parent,
-            &serde_json::json!({"sequence": sequence, "handled": true}),
-            crate::session::unix_epoch_ms(),
-        )
-        .await;
-    let receipt = team
-        .runtime
-        .owned
-        .durable_state_store
-        .agent_inbox(&team.room, &team.parent, 0)
-        .unwrap()
-        .into_iter()
-        .find(|event| event.sequence == sequence)
-        .unwrap();
-    assert_eq!(receipt.state, "handled");
-}
-
-// Review P2: a kernel stop between the handled ack and the delete must not lose the delete.
-#[tokio::test]
-async fn a_stop_between_the_ack_and_the_delete_is_finished_after_a_restart() {
-    let team = family_of("child-cleanup-restart", 1, None, true, true).await;
-    let child = team.kids[0].child.clone();
-    let (_, receipt) = parent_waits_and_child_finishes(&team).await;
-    ack_with_a_retired_turn(&team, receipt).await;
-    assert!(
         child_exists(&team, &child),
-        "the stop came before the delete"
+        "with nothing left unfinished, the child still waits for its parent's delete"
     );
-    let Family {
-        runtime,
-        room,
-        parent,
-        parent_run,
-        kids,
-        config,
-        _worktree,
-    } = team;
-    drop(runtime);
-    let app = crate::test_support::bootstrap_after_test_owner_exit(config.clone()).await;
-    let runtime = owned_runtime_state(&Arc::new(Mutex::new(app))).await;
-    let team = Family {
-        runtime,
-        room,
-        parent,
-        parent_run,
-        kids,
-        config,
-        _worktree,
-    };
-    assert!(
-        child_exists(&team, &child),
-        "the restart alone deletes nothing"
-    );
-    team.runtime.end_orphaned_sub_agents().await;
-    assert!(
-        !child_exists(&team, &child),
-        "the first pass of the restarted kernel ends the handled child"
-    );
-}
-
-#[tokio::test]
-async fn a_failed_cleanup_is_retried_not_lost() {
-    let team = family_of("child-cleanup-retry", 1, None, true, true).await;
-    let child = team.kids[0].child.clone();
-    let (_, receipt) = parent_waits_and_child_finishes(&team).await;
-    ack_with_a_retired_turn(&team, receipt).await;
-    let retired = team
-        .runtime
-        .with_room_provider_origin(Some(&team.parent), Some("retired-provider-run"));
-    assert_eq!(
-        retired.end_orphaned_sub_agents().await,
-        0,
-        "the pass is refused too"
-    );
-    assert!(
-        child_exists(&team, &child),
-        "a failed cleanup keeps the child"
-    );
-    assert_eq!(team.runtime.end_orphaned_sub_agents().await, 1);
-    assert!(!child_exists(&team, &child), "the next pass ends it");
 }
 
 #[tokio::test]
@@ -477,7 +334,7 @@ async fn kfinish_handled_child_receipt_finishes_the_original_parent_task() {
     assert_eq!(task.state, ExecutionState::Done, "{task:?}");
     assert!(task.wait.is_none());
     assert!(!task.reason.is_empty());
-    assert!(!child_exists(&team, &team.kids[0].child));
+    assert!(child_exists(&team, &team.kids[0].child));
     // The receipt was handled by a separate event turn. Once that turn ends,
     // completion of the original task must also reach its subscribers.
     let event_task = team
@@ -559,7 +416,7 @@ async fn kfinish_handled_child_receipt_finishes_the_original_parent_task() {
 }
 
 #[tokio::test]
-async fn kfinish_auto_cleanup_waits_for_all_terminal_receipts_to_be_published() {
+async fn kfinish_a_handled_receipt_keeps_a_child_that_still_owes_a_terminal_outcome() {
     let team = family_of("kfinish-unpublished-completion", 1, None, true, true).await;
     let (_, receipt) = parent_waits_and_child_finishes(&team).await;
     let kid = &team.kids[0];
@@ -608,7 +465,7 @@ async fn kfinish_auto_cleanup_waits_for_all_terminal_receipts_to_be_published() 
         })
         .unwrap();
     ack(&team, last.sequence, true).await;
-    assert!(!child_exists(&team, &kid.child));
+    assert!(child_exists(&team, &kid.child));
 }
 
 #[tokio::test]

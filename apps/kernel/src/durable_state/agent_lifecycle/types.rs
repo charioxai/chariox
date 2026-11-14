@@ -526,16 +526,6 @@ pub(crate) enum Operation {
         handled: bool,
         now: u64,
     },
-    /// A handled `Ack` of a `child_finished` receipt that, in the same write, marks the
-    /// reported sub-agent's `subtree` (the child first) as deleting, so a stop after the
-    /// ack still leaves the deletion for the lifecycle pass.
-    AckHandledChild {
-        room: String,
-        agent: String,
-        sequence: u64,
-        subtree: Vec<String>,
-        now: u64,
-    },
     Progress {
         task: String,
         prompt: String,
