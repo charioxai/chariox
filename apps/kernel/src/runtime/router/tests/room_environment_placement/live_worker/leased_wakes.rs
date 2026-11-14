@@ -429,6 +429,8 @@ async fn leased_requested_reply_carries_worker_answer() {
         json!({"message":"return the verified worker result"}),
     );
     request.reply_requested = true;
+    // Only an urgent message starts its idle recipient.
+    request.urgent = true;
     let Outcome::Event(request) = store
         .agent_lifecycle(Operation::Send {
             task,
