@@ -551,14 +551,20 @@ impl PreparedDomain {
                             announce(pid, &notice);
                             tell_stopped(&watched, pid, notice);
                         }
-                        tree.kill(pid);
+                        let samples = watched.lock().unwrap_or_else(|e| e.into_inner()).samples.clone();
+                        if tree.is_root(pid) {
+                            tree.kill(pid);
+                        } else {
+                            tree.kill_work(pid, &samples);
+                        }
                     }
                     Ok(WatchCommand::DiskStop { pid, notice }) => {
                         let protection = self.pool.protection();
                         if !protection.disk { continue; }
                         announce(pid, &notice);
                         tell_stopped(&watched, pid, notice);
-                        tree.kill(pid);
+                        let samples = watched.lock().unwrap_or_else(|e| e.into_inner()).samples.clone();
+                        tree.kill_work(pid, &samples);
                     }
                     Ok(WatchCommand::Stop { process_id, reply }) => {
                         let result = tree.stop(

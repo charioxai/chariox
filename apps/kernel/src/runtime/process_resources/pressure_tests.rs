@@ -504,6 +504,40 @@ fn a_pause_that_frees_nothing_ends_the_paused_command_after_the_stall_window() {
     );
 }
 
+/// A harness's tool call is a shell around the command (`sh -c 'build; echo'`).
+/// The pool ends the command it stopped, not the shell: the harness still
+/// reads that shell's exit, and one that never sees it (OpenCode) waits for ever.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stopped_command_leaves_the_tool_shell_around_it_to_report_it() {
+    let pool = pool(1536);
+    pool.ledger.lock().unwrap().stall_window = Duration::from_secs(4);
+    let a = Workload::start(
+        domain(&pool, "a", false),
+        &[("big", 800, 0, 0), ("idle", 0, 0, 0)],
+    );
+    settle(1);
+    let grow = "sh -c 'python3 \"$1/alloc.py\" 300 48 1000; echo \"the shell went on\" > \"$1/after\"' sh \"$0\"".to_string();
+    let mut b = Workload::run(
+        domain(&pool, "b", false),
+        &[("idle", "sleep 600".into()), ("grow", grow)],
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(40);
+    while !b.dir.join("after").exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        b.dir.join("after").exists(),
+        "the tool shell was ended with the command it ran, so the harness never saw it exit"
+    );
+    let mut a = a;
+    assert!(
+        a.alive("big") && a.root_alive(),
+        "the running command ended"
+    );
+    assert!(!b.alive("grow"), "the shell outlived its work");
+}
+
 /// The program of an agent's tool call starts a grower and ends: the grower is
 /// then a command of its own, seen for the first time. It must read as the
 /// grower it is, or a pass that finds the pool full cannot pause it and ends
