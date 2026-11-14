@@ -2432,6 +2432,17 @@ const visitB = async evaluate => {
   await evaluate("document.getElementById('b').click(), true"); await at("/b");
   await evaluate("history.back(), true"); await at("/");
 };
+test("MIRROR-P3-NAV-REATTACH: a link followed while a credit waits answers that credit with the new document's reset, on the same subscription", () => mirrored(visitedPage, async ({ next, evaluate }) => {
+  const first = await next(0, true);
+  const waiting = next(4000);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  await evaluate("document.getElementById('b').click(), true");
+  const moved = await waiting;
+  assert.equal(moved.reset, true, "the credit went on with the new document instead of failing as stale");
+  assert.notEqual(moved.document_id, first.document_id);
+  assert.equal(moved.base_sequence ?? null, null);
+}, visitedRoutes));
+
 test("MP-08/MP-10 protocol 629: a link the kernel saw visited from this origin is sent as an empty href to a subscription that asked", () => mirrored(visitedPage, async ({ subscribe, evaluate }) => {
   await visitB(evaluate);
   const first = await (await subscribe({ visited_links: true })).next();

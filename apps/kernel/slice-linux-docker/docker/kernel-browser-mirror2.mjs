@@ -362,9 +362,11 @@ export class Mirror2 {
     // A live resize can land while a packet is observed: that packet describes the old size. The viewer gets the
     // reset at the new size on this same credit instead of an error that retires its mirror mid-drag. A drag can
     // retire each replacement too, so keep observing until the credit's own deadline or cancellation.
+    // A navigation that commits while the credit waits ends its document, not the subscription: the same credit
+    // goes on with the new document (its preview or reset) instead of an error the viewer would answer by ending the subscription.
     const observe = async () => {
       for (;;) {
-        try { return await build(); } catch (error) { if (!LAYOUT_MOVED.test(error?.message ?? '') || signal?.aborted || Date.now() >= hard) throw error; }
+        try { return await build(); } catch (error) { if (!(LAYOUT_MOVED.test(error?.message ?? '') || error?.code === 'stale_document_reference') || signal?.aborted || Date.now() >= hard) throw error; }
       }
     };
     const run = stream.chain.then(observe);

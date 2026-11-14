@@ -736,6 +736,17 @@ test('MP-08/MP-10/MP-11 explicit handover flush ends older polls before a fresh 
  await mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:2,wait_ms:0,flush:true},'scope');assert.equal(hurried,1);
 });
 
+test('MP-08/MP-10/MP-11 a navigation that commits during a credit moves that credit to the new document instead of failing it',async()=>{
+ const stream={chain:Promise.resolve(),issued:2},mirror=new Mirror2({host:{}}),moved=()=>Object.assign(new Error('browser mirror document retired'),{code:'stale_document_reference'});
+ const asked=[];mirror.packet=async()=>{asked.push(asked.length);if(asked.length<3)throw moved();return{sequence:3,reset:true,document_id:'D2'}};
+ const packet=await mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:2,wait_ms:0},'scope');
+ assert.deepEqual([packet.document_id,asked.length],['D2',3],'the credit went on with the new document within its own answer');
+ mirror.packet=async()=>{throw new Error('MP-11: stale mirror protection policy or subscription')};
+ await assert.rejects(mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:3,wait_ms:0},'scope'),/stale mirror protection policy/,'only a moved document is observed again');
+ const abort=new AbortController();abort.abort();mirror.packet=async()=>{throw moved()};
+ await assert.rejects(mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:3,wait_ms:0},'scope',{signal:abort.signal}),{code:'stale_document_reference'},'a cancelled credit does not loop');
+});
+
 test('MP-08/MP-10/MP-11 native preview follows a document transition, not initial attachment',async()=>{
  const tab={tab_id:'t',target_id:'T',document_id:'initial'},stream={tab_id:'t',scope:'scope',navigationPreview:true,initialDocument:'initial',issued:0};
  const mirror=new Mirror2({host:{generation:1,pageSize,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab},require:()=>stream,streams:new Map([['s',stream]])});
