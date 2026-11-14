@@ -5226,6 +5226,9 @@ MIRROR-P3 (same release, no new field): a navigation that commits while a `mirro
 document (its `navigation_preview`, then the reset) on the same subscription. A viewport-first header reports `snapshot_viewport_complete` once the
 document is parsed (`readyState` is not `loading`) instead of fully loaded, and the full text of the sheets one delta reports travels in steps of
 the packet budget (256 KiB) on that and the following credits.
+MIRROR-P2 fonts (same release, no new field): a font of 32 KiB or more travels as the glyphs the page can show, written as WOFF2 (`font/woff2`);
+its `resource_id` is the digest of those bytes, so a later document the same subset covers names it in `known_fonts` as before, and one that needs more
+glyphs sends a new subset. A face the kernel cannot read as WOFF2, TrueType or OpenType (WOFF 1, collections) travels whole.
 
 MP-08 / MP-10 / MP-11: allocated 560/168 adds the `display_subscribe` target
 `{kind:"browser_window", window_generation}`: the owner's view of the Chrome window's page area. It
