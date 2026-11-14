@@ -355,12 +355,15 @@ impl KernelRuntimeState {
                 request.prompt_id
             )));
         }
+        // A firing that began a task is that task's id for good; a continuation replaces the
+        // task's prompt id, so the prompt id of the firing no longer names it.
         let reply = self
             .owned
             .durable_state_store
-            .agent_tasks(Some(&request.session_id), Some(trigger.agent_id()))?
-            .into_iter()
-            .find(|task| task.prompt_id == request.prompt_id)
+            .agent_task(&request.prompt_id)?
+            .filter(|task| {
+                task.room_id == request.session_id && task.agent_id == trigger.agent_id()
+            })
             .map(|task| self.owned.agent_trigger_reply(&task))
             .transpose()?
             .unwrap_or(crate::local::AgentTriggerReply::Pending);
@@ -904,6 +907,115 @@ mod tests {
             restored.agent_triggers()[0].http_options(),
             saved.agent_triggers()[0].http_options()
         );
+    }
+
+    /// A sync firing that yields and resumes under a continuation keeps its task but not its
+    /// prompt id; the reply is still read with the id the firing returned.
+    #[tokio::test]
+    async fn http_trigger_reply_is_read_with_the_firing_id_after_a_continuation() {
+        use crate::durable_state::agent_lifecycle::Operation;
+        let (_root, runtime, session_id, agent_id, _, _, _) = runtime_with_active_prompt().await;
+        let trigger = runtime
+            .owned
+            .session_store
+            .write()
+            .create_agent_http_trigger(
+                &session_id,
+                &agent_id,
+                "local",
+                std::num::NonZeroU16::new(32123).unwrap(),
+                default_options(),
+                AgentTriggerBusyPolicy::Queue,
+                Some("Decide what to do".into()),
+            )
+            .unwrap();
+        let LocalDaemonResponse::AgentTriggerInvoked {
+            invocation: AgentTriggerInvocation::Accepted { prompt_id, .. },
+        } = runtime
+            .invoke_agent_trigger(
+                invocation(
+                    session_id.clone(),
+                    trigger.id(),
+                    serde_json::json!({"n": 1}),
+                ),
+                "local",
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("the request is accepted");
+        };
+        let owner = runtime
+            .owned
+            .session_snapshot(&session_id)
+            .unwrap()
+            .owner_user_id()
+            .to_string();
+        let store = &runtime.owned.durable_state_store;
+        let now = crate::session::unix_epoch_ms();
+        let begin = |prompt: &str, run: &str| Operation::Begin {
+            owner: owner.clone(),
+            room: session_id.clone(),
+            agent: agent_id.clone(),
+            prompt: prompt.into(),
+            run: Some(run.into()),
+            now,
+        };
+        store.agent_lifecycle(begin(&prompt_id, "run-1")).unwrap();
+        let continuation = format!("task-catalog:{prompt_id}");
+        store
+            .agent_lifecycle(Operation::PrepareCatalogContinuation {
+                room: session_id.clone(),
+                agent: agent_id.clone(),
+                prompt: prompt_id.clone(),
+                run: "run-1".into(),
+                next_prompt: continuation.clone(),
+                now,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(begin(&continuation, "run-2"))
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Settle {
+                room: session_id.clone(),
+                agent: agent_id.clone(),
+                prompt: continuation.clone(),
+                run: "run-2".into(),
+                has_answer: true,
+                cancelled: false,
+                now,
+            })
+            .unwrap();
+        let task = store
+            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .unwrap()
+            .into_iter()
+            .find(|task| task.task_id == prompt_id)
+            .expect("the firing's task");
+        assert_eq!(
+            task.prompt_id, continuation,
+            "the continuation replaced the prompt id"
+        );
+        assert_eq!(
+            task.state,
+            crate::durable_state::agent_lifecycle::ExecutionState::Done
+        );
+        assert!(matches!(
+            runtime
+                .read_agent_trigger_reply(
+                    crate::local::ReadAgentTriggerReplyRequest {
+                        session_id: session_id.clone(),
+                        trigger_id: trigger.id().into(),
+                        prompt_id,
+                    },
+                    "local",
+                )
+                .unwrap(),
+            LocalDaemonResponse::AgentTriggerReplyRead {
+                reply: crate::local::AgentTriggerReply::Completed { .. }
+            }
+        ));
     }
 
     #[test]

@@ -2,6 +2,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -14,7 +15,11 @@ const COALESCE: Duration = Duration::from_millis(20);
 
 pub(crate) struct FileWatch {
     watcher: RecommendedWatcher,
-    paths: BTreeSet<PathBuf>,
+    /// The paths the client asked for. A link in one of them is followed afresh at every
+    /// invalidation, because kernel reads and listings follow it afresh too.
+    requested: BTreeSet<PathBuf>,
+    /// What an event is checked against: the requested paths and where they lead now.
+    interests: Arc<Mutex<BTreeSet<PathBuf>>>,
     watched: BTreeMap<PathBuf, (u64, u64)>,
     guard: StateGuard,
     changed: mpsc::Receiver<()>,
@@ -28,21 +33,19 @@ impl FileWatch {
                 "watch between 1 and {MAX_FILE_WATCH_PATHS} paths per client"
             ));
         }
-        let paths = paths
+        let requested = paths
             .iter()
             .map(|path| {
                 let path = Machine::absolute(path)?;
                 guard.check(&path)?;
-                // Resolve links at registration, just as the file read does. The parent remains
-                // watched when an editor replaces a file or a directory is removed and recreated.
-                let real = path
-                    .canonicalize()
+                // Registration refuses a path that does not exist, just as the file read does.
+                path.canonicalize()
                     .map_err(|e| format!("cannot watch {}: {e}", path.display()))?;
-                guard.check(&real)?;
-                Ok(real)
+                Ok(path)
             })
             .collect::<Result<BTreeSet<_>, String>>()?;
-        let interests = paths.clone();
+        let interests = Arc::new(Mutex::new(BTreeSet::<PathBuf>::new()));
+        let callback_interests = Arc::clone(&interests);
         let (tx, changed) = mpsc::channel(1);
         let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             let relevant = match event {
@@ -50,6 +53,7 @@ impl FileWatch {
                 Ok(event) => {
                     event.need_rescan()
                         || event.paths.iter().any(|path| {
+                            let interests = callback_interests.lock().expect("watch interests");
                             interests.iter().any(|interest| {
                                 path == interest
                                     || interest.starts_with(path)
@@ -67,7 +71,8 @@ impl FileWatch {
         .map_err(|e| format!("native filesystem notifications are unavailable: {e}"))?;
         let mut watch = Self {
             watcher,
-            paths,
+            requested,
+            interests,
             watched: BTreeMap::new(),
             guard,
             changed,
@@ -77,17 +82,27 @@ impl FileWatch {
         Ok(watch)
     }
 
+    /// Resolves every requested path again and watches the directories that can change what
+    /// it reads: its target, and the nearest existing parent of the path and of the target. The
+    /// parents stay watched when an editor replaces a file, a link is repointed or a directory
+    /// is removed and recreated.
     fn rearm(&mut self) -> Result<(), String> {
+        let mut interests = self.requested.clone();
         let mut directories = BTreeSet::new();
-        for path in &self.paths {
+        for path in &self.requested {
             self.guard.check(path)?;
-            if path.is_dir() {
-                directories.insert(path.clone());
-            }
-            if let Some(parent) = path.ancestors().skip(1).find(|parent| parent.is_dir()) {
-                directories.insert(parent.to_path_buf());
+            directories.extend(nearest_parent_directory(path));
+            // A path that is gone, or a link whose target is gone, keeps its parent watched.
+            if let Ok(target) = path.canonicalize() {
+                self.guard.check(&target)?;
+                if target.is_dir() {
+                    directories.insert(target.clone());
+                }
+                directories.extend(nearest_parent_directory(&target));
+                interests.insert(target);
             }
         }
+        *self.interests.lock().expect("watch interests") = interests;
         self.watched.retain(|path, _| {
             if directories.contains(path) {
                 true
@@ -128,6 +143,13 @@ impl FileWatch {
         self.pending = false;
         self.rearm()
     }
+}
+
+fn nearest_parent_directory(path: &std::path::Path) -> Option<PathBuf> {
+    path.ancestors()
+        .skip(1)
+        .find(|parent| parent.is_dir())
+        .map(std::path::Path::to_path_buf)
 }
 
 #[cfg(test)]
@@ -182,6 +204,44 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        drop(watch);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_watch_follows_a_link_repointed_after_registration() {
+        let root = std::env::temp_dir().join(format!("files-watch-{}", rand::random::<u64>()));
+        let (a, b, links) = (
+            root.join("releases/a"),
+            root.join("releases/b"),
+            root.join("links"),
+        );
+        for dir in [&a, &b, &links] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let current = links.join("current");
+        std::os::unix::fs::symlink(&a, &current).unwrap();
+        let mut watch =
+            FileWatch::new(&[current.display().to_string()], StateGuard::default()).unwrap();
+        let next = links.join("current.next");
+        std::os::unix::fs::symlink(&b, &next).unwrap();
+        std::fs::rename(&next, &current).unwrap();
+        tokio::time::timeout(Duration::from_millis(500), watch.changed())
+            .await
+            .expect("repointing the link invalidates the listing")
+            .unwrap();
+        std::fs::write(b.join("new"), "after").unwrap();
+        tokio::time::timeout(Duration::from_millis(500), watch.changed())
+            .await
+            .expect("a change in the new target invalidates the listing")
+            .unwrap();
+        std::fs::write(a.join("old"), "ignored").unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), watch.changed())
+                .await
+                .is_err(),
+            "the previous target is no longer watched"
+        );
         drop(watch);
         std::fs::remove_dir_all(root).unwrap();
     }

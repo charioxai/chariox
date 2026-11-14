@@ -46,6 +46,12 @@ impl KernelRuntimeState {
         let room = agent.and_then(|agent| self.owned.agent_store.get_agent(agent).ok()).map(|a| a.session_id().to_owned())
             .or_else(|| command.session_id.clone())
             .ok_or_else(|| acquisition_error("approval_required", "An agent allocation needs an active Room for the owner's approval; request it from your Room"))?;
+        // The owner authorized this agent's task with /sudo; its remote work needs no second decision.
+        if let Some(agent) = agent {
+            if self.sudo_task_authorizes_agent(&room, agent).await {
+                return Ok(());
+            }
+        }
         let session = self.owned.session_store.get_session(&room)?;
         let request_id = match request {
             ControlPlaneRequest::Acquire { request_id, .. }
