@@ -117,7 +117,7 @@ impl KernelRuntimeState {
                     return Ok(failed(AppRequestErrorCode::NotFound));
                 };
                 let (current, frontend) =
-                    match self.user_app_frontend(owner, &binding.installation).await {
+                    match self.user_app_frontend(owner, &binding.installation, true).await {
                         Ok(view) => view,
                         Err(code) => return Ok(failed(code)),
                     };
@@ -295,7 +295,8 @@ impl KernelRuntimeState {
         {
             return Ok(Err(AppRequestErrorCode::Conflict));
         }
-        let (binding, frontend) = match self.user_app_frontend(owner, installation).await {
+        let with_files = host != Some(UserAppViewHost::ClientNative);
+        let (binding, frontend) = match self.user_app_frontend(owner, installation, with_files).await {
             Ok(view) => view,
             Err(code) => return Ok(Err(code)),
         };
@@ -444,10 +445,14 @@ impl KernelRuntimeState {
         .unwrap_or(false)
     }
 
+    /// `with_files` is false for a client that fetches and verifies its own view
+    /// (`ClientAppViewRequest`): the reply then names the entry and holds no files, so it stays
+    /// within one relay reply whatever the size of the view.
     pub(super) async fn user_app_frontend(
         &self,
         owner: &str,
         installation: &str,
+        with_files: bool,
     ) -> Result<(AppViewBinding, AppFrontendBundle), AppRequestErrorCode> {
         if installation.is_empty() || installation.len() > 128 {
             return Err(AppRequestErrorCode::InvalidRequest);
@@ -456,7 +461,11 @@ impl KernelRuntimeState {
         let store = self.owned.durable_state_store.clone();
         let (view_owner, view_installation) = (owner.to_owned(), installation.to_owned());
         let assets = tokio::task::spawn_blocking(move || {
-            store.app_view_assets(&view_owner, &view_installation)
+            if with_files {
+                store.app_view_assets(&view_owner, &view_installation)
+            } else {
+                store.app_view_release_without_files(&view_owner, &view_installation)
+            }
         })
         .await
         .map_err(|_| AppRequestErrorCode::StorageUnavailable)?

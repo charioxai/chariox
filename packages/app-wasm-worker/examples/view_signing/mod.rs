@@ -5,9 +5,14 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-pub fn component(core: &Path) -> Vec<u8> {
+/// A core module becomes a component; a component (a `wasm32-wasip2` build) is taken as it is.
+pub fn component(wasm: &Path) -> Vec<u8> {
+    let bytes = std::fs::read(wasm).unwrap();
+    if bytes.get(4..8) == Some(&[0x0d, 0x00, 0x01, 0x00]) {
+        return bytes;
+    }
     wit_component::ComponentEncoder::default()
-        .module(&std::fs::read(core).unwrap())
+        .module(&bytes)
         .unwrap()
         .validate(true)
         .encode()
