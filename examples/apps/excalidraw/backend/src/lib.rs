@@ -5,6 +5,7 @@ use chariox_app_sdk::{
 use serde_json::{json, Value};
 use std::{fs::File, io::Read};
 
+mod actions;
 mod export_cleanup;
 mod scene;
 
@@ -105,6 +106,61 @@ async fn replace(name: String, bytes: Vec<u8>) -> Result<u64, AppError> {
     Ok(written)
 }
 
+async fn save(scene: &Value, version: Option<u64>) -> Result<u64, AppError> {
+    let committed = state::transact(state::Transaction {
+        schema_version: 0,
+        checks: vec![state::Check {
+            key: "scene".into(),
+            version,
+        }],
+        writes: vec![state::Write::Put(("scene".into(), scene.to_string()))],
+        occurrences: vec![],
+        wakes: vec![],
+    })
+    .await?;
+    Ok(committed.revision)
+}
+
+/// One of the diagram actions of `actions.rs` on the saved scene; the answer is the new summary.
+async fn diagram_action(name: &str, input: &Value) -> Result<Value, AppError> {
+    let record = state::get("scene".into()).await?;
+    let (mut scene, version) = match record {
+        Some(record) => (scene::parse(&record.value)?, Some(record.version)),
+        None => (scene::empty(), None),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| error("INVALID_STATE", "cannot read the clock"))?;
+    let mut stamp = actions::Stamp::new(now.as_nanos() as u64, now.as_millis() as u64);
+    match name {
+        "scene_summary" => {
+            let count = |key: &str, default: u64| match &input[key] {
+                Value::Null => Ok(default as usize),
+                value => value.as_u64().map(|n| n as usize).ok_or_else(|| {
+                    error("INVALID_ARGUMENT", format!("{key} must be a whole number"))
+                }),
+            };
+            return Ok(actions::summary(
+                &scene,
+                count("offset", 0)?,
+                count("limit", 50)?,
+            ));
+        }
+        "select_elements" => actions::select(&mut scene, &actions::ids(input)?)?,
+        "delete_elements" => actions::delete(&mut scene, &actions::ids(input)?, &mut stamp)?,
+        _ => actions::group(
+            &mut scene,
+            &actions::ids(input)?,
+            &format!("group-{:x}", now.as_nanos()),
+            &mut stamp,
+        )?,
+    }
+    // The saved scene stays within the limit of a save from the page.
+    scene::parse(&scene.to_string())?;
+    save(&scene, version).await?;
+    Ok(actions::summary(&scene, 0, 50))
+}
+
 async fn call(name: &str, input: &str) -> Result<Value, AppError> {
     let input: Value =
         serde_json::from_str(input).map_err(|e| error("INVALID_ARGUMENT", e.to_string()))?;
@@ -133,18 +189,10 @@ async fn call(name: &str, input: &str) -> Result<Value, AppError> {
                         ))
                     }
                 };
-            let committed = state::transact(state::Transaction {
-                schema_version: 0,
-                checks: vec![state::Check {
-                    key: "scene".into(),
-                    version,
-                }],
-                writes: vec![state::Write::Put(("scene".into(), scene.to_string()))],
-                occurrences: vec![],
-                wakes: vec![],
-            })
-            .await?;
-            Ok(json!({"version": committed.revision.to_string()}))
+            Ok(json!({"version": save(&scene, version).await?.to_string()}))
+        }
+        "scene_summary" | "select_elements" | "delete_elements" | "group_elements" => {
+            diagram_action(name, &input).await
         }
         "write_file" => {
             let name = scene::filename(&input["name"])?;
@@ -224,6 +272,10 @@ impl Guest for Excalidraw {
             "write_file",
             "read_file",
             "pick_file",
+            "scene_summary",
+            "select_elements",
+            "delete_elements",
+            "group_elements",
         ] {
             registry::tool(name);
         }
