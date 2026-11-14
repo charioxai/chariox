@@ -5124,8 +5124,7 @@ the request extension and its hash, including legacy omission/round-trip coverag
 
 MIRROR-P2: provisional local 1055 lets a `mirror_next` credit carry `known_fonts`, at most 128 lowercase
 24-digit hexadecimal digests (the first 24 characters of a font resource's `resource_id`) of fonts this viewer keeps
-across documents (a view keeps them across the subscriptions of its navigations: its page runtime ends a
-subscription when a document is retired and attaches the next). A reset credit lists them and the kernel keeps the list until a credit lists
+across documents (a view keeps them across its subscriptions too: a link-loss recovery attaches a new one). A reset credit lists them and the kernel keeps the list until a credit lists
 another (a reset credit without one means none). A font whose digest is listed travels as a resource without bytes,
 `{key, resource_id, mime_type, data_base64: "", retained: true}`; the viewer binds its retained bytes to that key for the
 new document and refuses an unknown digest, a non-font MIME type or a retained resource with bytes or slice fields.
@@ -5222,6 +5221,11 @@ icons, every two seconds). The viewer keeps the state it read last and waits aft
 The same release lets an idle viewer park one `state_wait` and one `mirror_next` credit for up to 10000 ms (2000 before), so a quiet
 Browser view asks the kernel once per wait; a change still answers the parked request at once.
 The same release lets `mirror_next` carry `known_fonts` and a resource be sent as `retained` (see MIRROR-P2 below), and a view keeps its retained sheets and fonts across the subscriptions of its navigations.
+MIRROR-P3 (same release, no new field): a navigation that commits while a `mirror_next` credit waits no longer fails that credit
+(`stale_document_reference`, relayed as `user_domain_stale_reference`, which ended the viewer's subscription): the credit goes on with the new
+document (its `navigation_preview`, then the reset) on the same subscription. A viewport-first header reports `snapshot_viewport_complete` once the
+document is parsed (`readyState` is not `loading`) instead of fully loaded, and the full text of the sheets one delta reports travels in steps of
+the packet budget (256 KiB) on that and the following credits.
 
 MP-08 / MP-10 / MP-11: allocated 560/168 adds the `display_subscribe` target
 `{kind:"browser_window", window_generation}`: the owner's view of the Chrome window's page area. It
