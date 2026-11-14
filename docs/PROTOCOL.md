@@ -745,10 +745,11 @@ from the parent's repository, including outside the parent's folders. An unrelat
 existing directory or repository outside those folders is refused. The end of a child's work reaches its
 parent as one urgent `child_finished` inbox event carrying `child_agent_id`,
 `success`, the typed turn `outcome` and `deadline_reached`; a turn that waited
-on a question when the kernel restarted ends as `interrupted_by_restart`. When the
-parent acks that event with `handled: true`, the kernel deletes the sub-agent the
-parent spawned (an agent a person moved under the parent stays). The relay peer
-protocol needs no change for it.
+on a question when the kernel restarted ends as `interrupted_by_restart`. The kernel
+never deletes a finished sub-agent for its parent: it can still own running units,
+live wakes or results nobody collected. Acking the event with `handled: true` keeps
+the child, and only `agent delete` removes it. The relay peer protocol needs no
+change for it.
 
 Relay peer 442 adds `SetLeasedAgentDeadline {leased_agent_id, deadline_ms}`, answered by
 `LeasedAgentDeadlineSet {leased_agent_id}`. The home sends it before it records the

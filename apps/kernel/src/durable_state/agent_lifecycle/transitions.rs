@@ -709,36 +709,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 correction,
             })
         }
-        Operation::AckHandledChild {
-            room,
-            agent,
-            sequence,
-            subtree,
-            now,
-        } => {
-            let outcome = super::delivery::apply(
-                tx,
-                Operation::Ack {
-                    room: room.clone(),
-                    agent,
-                    sequence,
-                    handled: true,
-                    now,
-                },
-            )?;
-            if let (Outcome::Event(event), Some(root)) = (&outcome, subtree.first()) {
-                if event.state == "handled" {
-                    migration::audit(
-                        tx,
-                        crate::durable_state::agent_subtree_deletion::AGENT_SUBTREE_DELETING,
-                        root,
-                        serde_json::json!({ "session_id": room, "agent_ids": subtree,
-                            "reason": "handled_child_finished", "receipt_sequence": event.sequence }),
-                    )?;
-                }
-            }
-            Ok(outcome)
-        }
         op @ (Operation::Send { .. }
         | Operation::Occur(_)
         | Operation::Attempt { .. }

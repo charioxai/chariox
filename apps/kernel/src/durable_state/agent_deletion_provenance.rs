@@ -37,11 +37,10 @@ impl DurableKernelStateStore {
     }
 }
 
-/// The completed deletion of a child, including the reason for automatic cleanup.
+/// The completed deletion of a child.
 pub(crate) struct DeletedChild {
     pub agent: crate::agent::AgentInstance,
     pub deleted_at_ms: u64,
-    pub handled_completion: bool,
 }
 
 impl DurableKernelStateStore {
@@ -52,14 +51,9 @@ impl DurableKernelStateStore {
     ) -> Result<Option<DeletedChild>, DaemonError> {
         let operation = "durable_state.deleted_spawned_child";
         let db = self.lock_connection(operation)?;
-        let row: Option<(String, i64, bool)> = db
+        let row: Option<(String, i64)> = db
             .query_row(
-                "SELECT json_extract(d.payload_json,'$.agent'), d.timestamp_ms,
-                EXISTS(SELECT 1 FROM durable_state_events cleanup
-                    WHERE cleanup.kind='agent.subtree_deleting'
-                    AND cleanup.subject_id=json_extract(d.payload_json,'$.agent.id')
-                    AND cleanup.sequence<d.sequence AND json_valid(cleanup.payload_json)
-                    AND json_extract(cleanup.payload_json,'$.reason')='handled_child_finished')
+                "SELECT json_extract(d.payload_json,'$.agent'), d.timestamp_ms
              FROM durable_state_events d WHERE d.kind='agent.deleted'
              AND json_valid(d.payload_json)
              AND json_extract(d.payload_json,'$.agent.session_id')=?1
@@ -76,14 +70,14 @@ impl DurableKernelStateStore {
                     parent.id(),
                     reference
                 ],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(|error| DaemonError::LocalTransport {
                 operation,
                 message: error.to_string(),
             })?;
-        row.map(|(payload, deleted_at_ms, handled_completion)| {
+        row.map(|(payload, deleted_at_ms)| {
             let deleted_at_ms =
                 u64::try_from(deleted_at_ms).map_err(|_| DaemonError::LocalTransport {
                     operation,
@@ -97,7 +91,6 @@ impl DurableKernelStateStore {
             Ok(DeletedChild {
                 agent,
                 deleted_at_ms,
-                handled_completion,
             })
         })
         .transpose()

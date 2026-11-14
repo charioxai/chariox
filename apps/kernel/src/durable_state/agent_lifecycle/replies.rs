@@ -71,6 +71,35 @@ pub(super) fn forward_to_sender_room(
         _ => Ok(()),
     }
 }
+/// A reply_requested question has no message turn of its own once its recipient reads it inside a
+/// running task: that task is what answers it, by a message or by the way it ends.
+pub(super) fn read_in_turn(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+    sequence: u64,
+) -> Result<(), DaemonError> {
+    let asks_reply: bool = tx
+        .query_row(
+            "SELECT COALESCE(json_extract(payload,'$.reply_requested'),0)=1 AND json_extract(payload,'$.kind')='message' FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence=?3",
+            params![room, agent, sql_integer(sequence)?],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?
+        .unwrap_or(false);
+    let reader = live_tasks(tx, room, agent)?
+        .into_iter()
+        .rfind(|task| task.state == ExecutionState::Working);
+    if let (true, Some(task)) = (asks_reply, reader) {
+        tx.execute(
+            "INSERT OR REPLACE INTO agent_read_questions VALUES(?1,?2)",
+            params![sql_integer(sequence)?, task.task_id],
+        )
+        .map_err(sql)?;
+    }
+    Ok(())
+}
 /// A reply_requested question its recipient read inside a running turn (shown by an inbox read, or
 /// already acknowledged) has no message turn of its own whose end could answer it: the recipient's
 /// next message to the asker is that answer.
@@ -136,7 +165,7 @@ pub(super) fn reconcile_source(
     room: &str,
     source: &str,
 ) -> Result<(), DaemonError> {
-    let mut q=tx.prepare("SELECT i.sequence FROM agent_urgent_reply_links l JOIN agent_inbox i ON i.sequence=l.sequence WHERE l.target_task_id=?1 AND i.room_id=?2").map_err(sql)?;
+    let mut q=tx.prepare("SELECT i.sequence FROM (SELECT sequence,target_task_id FROM agent_urgent_reply_links UNION SELECT sequence,task_id FROM agent_read_questions) l JOIN agent_inbox i ON i.sequence=l.sequence WHERE l.target_task_id=?1 AND i.room_id=?2").map_err(sql)?;
     let sequences = q
         .query_map(params![source, room], |r| r.get::<_, i64>(0))
         .map_err(sql)?
@@ -172,7 +201,7 @@ pub(super) fn reconcile_event(tx: &Transaction<'_>, event: &InboxEvent) -> Resul
     {
         return Ok(());
     }
-    let proof:Option<(bool,Option<String>)>=tx.query_row("SELECT o.success,o.public_answer FROM agent_urgent_reply_links l JOIN agent_source_occurrences o ON o.source_id=l.target_task_id AND o.room_id=?2 WHERE l.sequence=?1 ORDER BY o.sequence DESC LIMIT 1",params![sql_integer(event.sequence)?,event.room_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
+    let proof:Option<(bool,Option<String>)>=tx.query_row("SELECT o.success,o.public_answer FROM (SELECT sequence,target_task_id FROM agent_urgent_reply_links UNION SELECT sequence,task_id FROM agent_read_questions) l JOIN agent_source_occurrences o ON o.source_id=l.target_task_id AND o.room_id=?2 WHERE l.sequence=?1 ORDER BY o.sequence DESC LIMIT 1",params![sql_integer(event.sequence)?,event.room_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
     if let Some((success, answer)) = proof {
         let source = format!("agent-event-{}-{}", event.agent_id, event.sequence);
         let occurrence = format!("reply-terminal-{}", event.sequence);
