@@ -142,6 +142,7 @@ impl KernelRuntimeState {
             estimated_minutes: None,
             memory_mib: None,
             return_pending: false,
+            return_outcome: None,
         };
         if let Some(reach) =
             self.reach_for_id(&format!("{}{}", super::reach::REACH_PREFIX, run.id()))

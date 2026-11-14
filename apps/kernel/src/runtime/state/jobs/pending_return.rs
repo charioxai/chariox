@@ -1,5 +1,5 @@
-//! A remote command that finished while some of its files are still on the worker keeps that
-//! worker until they are home, so a relay outage or a full disk cannot destroy the only copy.
+//! A remote command's worker is kept from before the command runs until its files are home, so a
+//! relay outage or a full disk cannot destroy the only copy.
 use super::remote::Remote;
 use super::*;
 use serde::{Deserialize, Serialize};
@@ -11,8 +11,6 @@ pub(super) struct PendingReturn {
     pub(super) kernel_id: String,
     pub(super) base: crate::jobs::Manifest,
     pub(super) uploaded: crate::jobs::Manifest,
-    /// The command's own outcome, restored once its files are home.
-    pub(super) outcome: JobOutcome,
 }
 
 impl PendingReturn {
@@ -52,6 +50,7 @@ impl KernelRuntimeState {
     /// The worker's files are home (or given up): the plan and the live grant are no longer needed.
     pub(super) fn settle_pending_return(&self, record: &mut Record) {
         record.return_pending = false;
+        record.return_outcome = None;
         let _ = std::fs::remove_file(PendingReturn::path(self, &record.job_id));
         if let Some(driver) = &self.job_wake_driver {
             driver
@@ -98,7 +97,9 @@ impl KernelRuntimeState {
             .ok_or_else(|| ledger::error("The job has no result to complete"))?;
         result.files_back = files;
         result.conflicts = conflicts;
-        result.outcome = plan.outcome;
+        if let Some(outcome) = record.return_outcome {
+            result.outcome = outcome;
+        }
         result
             .output_tail
             .push_str("The files the worker still held were collected.\n");

@@ -90,7 +90,7 @@ impl WakeDriver for JobDriver {
             let result = record.result.clone().unwrap_or_else(|| JobResult {
                 exit_code: None,
                 output_tail: if record.return_pending {
-                    "The kernel restarted while this job's files were being returned. Its remote machine is kept: check this job with chariox.jobs.status to collect them.".into()
+                    "The kernel restarted while this job ran on its remote machine. The machine is kept so no file it produced is lost: check this job with chariox.jobs.status to collect them, or cancel it to give them up.".into()
                 } else {
                     "The kernel restarted; this job was not relaunched.".into()
                 },

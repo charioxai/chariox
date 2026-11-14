@@ -39,9 +39,12 @@ pub(super) struct Record {
     pub(super) estimated_minutes: Option<u64>,
     #[serde(default)]
     pub(super) memory_mib: Option<u64>,
-    /// The command finished but some of its files are still on the worker, which is kept for them.
+    /// The worker may hold files not yet home (set before the command can run) and is kept for them.
     #[serde(default)]
     pub(super) return_pending: bool,
+    /// The command's own outcome, restored once its files are home; unknown until the command ends.
+    #[serde(default)]
+    pub(super) return_outcome: Option<JobOutcome>,
 }
 
 impl JobDriver {

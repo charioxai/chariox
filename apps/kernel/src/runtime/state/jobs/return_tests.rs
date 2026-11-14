@@ -53,6 +53,7 @@ pub(super) fn remote_record(source: &Path, script: &str, outputs: &[&str]) -> Re
         estimated_minutes: None,
         memory_mib: None,
         return_pending: false,
+        return_outcome: None,
     }
 }
 
@@ -212,8 +213,19 @@ struct HeldWorker {
     job_id: String,
 }
 
-/// A command that made two artifacts finished on the worker while the read of the second failed.
-async fn worker_held_after_failed_return() -> HeldWorker {
+/// A job record of a remote command whose worker is the test's own second kernel.
+struct Prepared {
+    state: KernelRuntimeState,
+    run: crate::provider::RuntimeProviderRun,
+    task: AgentTaskExecution,
+    workspace: crate::test_support::TestWorktree,
+    home: crate::test_support::TestWorktree,
+    outage: Arc<Outage>,
+    record: Record,
+    machine: super::super::job_compute::JobMachine,
+}
+
+async fn prepared(script: &str, outputs: &[&str]) -> Prepared {
     let (state, run, task, workspace) = super::tests::fixture().await;
     let home = crate::test_support::TestWorktree::new("offload-outage-home");
     let outage = Arc::new(Outage {
@@ -232,12 +244,7 @@ async fn worker_held_after_failed_return() -> HeldWorker {
         .unwrap();
     let driver = state.job_wake_driver.as_ref().unwrap();
     let mut record = driver.read(started["job_id"].as_str().unwrap()).unwrap();
-    record.request = remote_record(
-        workspace.path(),
-        "mkdir -p target; printf one > target/first.bin; printf two > target/second.bin",
-        &["target/*.bin"],
-    )
-    .request;
+    record.request = remote_record(workspace.path(), script, outputs).request;
     record.placement = JobPlacement::Remote;
     record.state = "uploading".into();
     record.result = None;
@@ -257,39 +264,66 @@ async fn worker_held_after_failed_return() -> HeldWorker {
             currency: "usd".into(),
         },
     };
-    let mut output = super::execute::Output::new(&state, &record).unwrap();
-    let (_cancel, mut cancelled) = watch::channel(false);
+    Prepared {
+        state,
+        run,
+        task,
+        workspace,
+        home,
+        outage,
+        record,
+        machine,
+    }
+}
+
+impl Prepared {
+    /// Runs the command and settles its job the way the driver does.
+    async fn run(&mut self) -> Result<JobResult, DaemonError> {
+        let mut output = super::execute::Output::new(&self.state, &self.record).unwrap();
+        let (_cancel, mut cancelled) = watch::channel(false);
+        let result = self
+            .state
+            .run_remote_job(
+                &mut self.record,
+                &self.machine,
+                &BTreeMap::new(),
+                &mut output,
+                &mut cancelled,
+            )
+            .await;
+        self.state
+            .complete_remote_job(&mut self.record, &mut output, result, false)
+            .await
+    }
+}
+
+/// A command that made two artifacts finished on the worker while the read of the second failed.
+async fn worker_held_after_failed_return() -> HeldWorker {
+    let mut job = prepared(
+        "mkdir -p target; printf one > target/first.bin; printf two > target/second.bin",
+        &["target/*.bin"],
+    )
+    .await;
     // The worker is told its job started; any later request is the release.
     let release = super::cleanup_tests::service(
-        &state,
+        &job.state,
         vec![
             ("job_started", 200, super::cleanup_tests::machine("ready")),
             ("get", 200, super::cleanup_tests::machine("deleted")),
         ],
     )
     .await;
-    let result = state
-        .run_remote_job(
-            &mut record,
-            &machine,
-            &BTreeMap::new(),
-            &mut output,
-            &mut cancelled,
-        )
-        .await;
-    state
-        .complete_remote_job(&mut record, &mut output, result, false)
-        .await
-        .unwrap();
+    job.run().await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
         !release.is_finished(),
         "the worker was released while a file it produced had not come home"
     );
     release.abort();
-    record.state = "finished".into();
-    driver.save(&record).unwrap();
-    let saved = driver.read(&record.job_id).unwrap();
+    job.record.state = "finished".into();
+    let driver = job.state.job_wake_driver.as_ref().unwrap();
+    driver.save(&job.record).unwrap();
+    let saved = driver.read(&job.record.job_id).unwrap();
     assert!(saved.return_pending && !saved.deleted);
     assert!(saved
         .result
@@ -297,18 +331,18 @@ async fn worker_held_after_failed_return() -> HeldWorker {
         .output_tail
         .contains("files could not all be returned"));
     assert_eq!(
-        std::fs::read(workspace.path().join("target/first.bin")).unwrap(),
+        std::fs::read(job.workspace.path().join("target/first.bin")).unwrap(),
         b"one"
     );
-    assert!(!workspace.path().join("target/second.bin").exists());
+    assert!(!job.workspace.path().join("target/second.bin").exists());
     HeldWorker {
-        state,
-        run,
-        task,
-        workspace,
-        _home: home,
-        outage,
-        job_id: record.job_id,
+        state: job.state,
+        run: job.run,
+        task: job.task,
+        workspace: job.workspace,
+        _home: job.home,
+        outage: job.outage,
+        job_id: job.record.job_id,
     }
 }
 
@@ -379,4 +413,80 @@ async fn offload_job_cancel_gives_up_the_files_and_deletes_the_worker() {
     assert_eq!(status["deleted"], true);
     assert_eq!(status["return_pending"], false);
     assert!(!held.workspace.path().join("target/second.bin").exists());
+}
+
+fn job_state_path(state: &KernelRuntimeState, relative: &str) -> PathBuf {
+    state
+        .owned
+        .config_projection
+        .snapshot()
+        .private_runtime_state_root()
+        .join("jobs")
+        .join(relative)
+}
+
+#[tokio::test]
+async fn offload_job_has_its_return_plan_and_worker_hold_saved_before_the_command_runs() {
+    let probe = crate::test_support::TestWorktree::new("offload-plan-probe");
+    let marker = probe.path().join("marker");
+    let mut job = prepared("true", &[]).await;
+    let id = job.record.job_id.clone();
+    let record = job_state_path(&job.state, &format!("{id}.json"));
+    let plan = job_state_path(&job.state, &format!("{id}/return.json"));
+    job.record.request.command = JobCommand::Argv(vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        format!(
+            "grep -q '\"return_pending\":true' {record:?} && test -f {plan:?} && printf kept > {marker:?}"
+        ),
+    ]);
+    job.outage
+        .cut
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let release = super::cleanup_tests::service(
+        &job.state,
+        vec![
+            ("job_started", 200, super::cleanup_tests::machine("ready")),
+            ("get", 200, super::cleanup_tests::machine("deleted")),
+        ],
+    )
+    .await;
+    job.run().await.unwrap();
+    release.await.unwrap();
+    assert_eq!(
+        std::fs::read(&marker).unwrap_or_default(),
+        b"kept",
+        "the command ran before the job's file return was recoverable"
+    );
+}
+
+#[tokio::test]
+async fn offload_job_does_not_run_its_command_when_its_return_plan_cannot_be_kept() {
+    let probe = crate::test_support::TestWorktree::new("offload-plan-refused");
+    let marker = probe.path().join("marker");
+    let mut job = prepared("true", &[]).await;
+    job.record.request.command = JobCommand::Argv(vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        format!("printf ran > {marker:?}"),
+    ]);
+    // A directory where the plan file goes: its write cannot succeed.
+    std::fs::create_dir_all(job_state_path(
+        &job.state,
+        &format!("{}/return.json/occupied", job.record.job_id),
+    ))
+    .unwrap();
+    let release = super::cleanup_tests::service(
+        &job.state,
+        vec![("get", 200, super::cleanup_tests::machine("deleted"))],
+    )
+    .await;
+    let result = job.run().await.unwrap();
+    release.await.unwrap();
+    assert!(
+        !marker.exists(),
+        "the command ran although its outputs could not be tracked"
+    );
+    assert!(result.output_tail.contains("return plan"));
+    assert!(job.record.deleted && !job.record.return_pending);
 }

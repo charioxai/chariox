@@ -400,6 +400,9 @@ impl KernelRuntimeState {
         };
         let mut result = result.unwrap_or_else(|error| {
             let _ = output.push(self, &record.room_id, error.to_string().as_bytes(), true);
+            if record.return_pending {
+                let _ = output.push(self, &record.room_id, KEPT_WORKER_NOTICE.as_bytes(), true);
+            }
             failed(record, "Job failed; see the protected output log".into())
         });
         output
@@ -562,6 +565,28 @@ impl KernelRuntimeState {
         if *cancelled.borrow() {
             return Ok(cancelled_result(record));
         }
+        // From here the worker may come to hold the only copy of the outputs: keep what collecting
+        // them needs before the command can run, so nothing after it can lose them. The worker is
+        // released only once they are home or given up.
+        let plan = PendingReturn {
+            root,
+            kernel_id: machine.kernel_id.clone(),
+            base,
+            uploaded: upload,
+        };
+        plan.save(self, &record.job_id)?;
+        record.return_pending = true;
+        if let Err(error) = save_record(self, record) {
+            self.settle_pending_return(record);
+            return Err(error);
+        }
+        if let Some(driver) = &self.job_wake_driver {
+            driver
+                .return_grants
+                .lock()
+                .expect("job return grants")
+                .insert(record.job_id.clone(), machine.grant.clone());
+        }
         let exec_id = remote
             .open(
                 validate(&record.request)?,
@@ -651,26 +676,8 @@ impl KernelRuntimeState {
             }
         };
         let mut result = result_from_exit(record, outcome, stopped);
+        record.return_outcome = Some(result.outcome);
         record.state = "returning".into();
-        // From here the worker may hold the only copy of the outputs: keep what collecting them
-        // again needs before the first attempt, and release the worker only once they are home.
-        let plan = PendingReturn {
-            root,
-            kernel_id: machine.kernel_id.clone(),
-            base,
-            uploaded: upload,
-            outcome: result.outcome,
-        };
-        plan.save(self, &record.job_id)?;
-        record.return_pending = true;
-        save_record(self, record)?;
-        if let Some(driver) = &self.job_wake_driver {
-            driver
-                .return_grants
-                .lock()
-                .expect("job return grants")
-                .insert(record.job_id.clone(), machine.grant.clone());
-        }
         match remote
             .return_files(&plan.root, record, &plan.base, &plan.uploaded)
             .await
@@ -681,7 +688,9 @@ impl KernelRuntimeState {
                 self.settle_pending_return(record);
             }
             Err(error) => {
-                let notice = format!("The command finished, but its files could not all be returned: {error}. The remote machine is kept so none are lost. Check this job with chariox.jobs.status to collect them; chariox.jobs.cancel gives them up. The machine is deleted once they are home, or when its lease ends.\n");
+                let notice = format!(
+                    "The command finished, but its files could not all be returned: {error}. {KEPT_WORKER_NOTICE}"
+                );
                 output.push(self, &record.room_id, notice.as_bytes(), true)?;
                 result.outcome = JobOutcome::OutsideEnd;
             }
@@ -689,6 +698,8 @@ impl KernelRuntimeState {
         Ok(result)
     }
 }
+
+const KEPT_WORKER_NOTICE: &str = "The remote machine is kept so none are lost. Check this job with chariox.jobs.status to collect them; chariox.jobs.cancel gives them up. The machine is deleted once they are home, or when its lease ends.\n";
 
 fn command_input(
     request: &RunJobRequest,
@@ -754,10 +765,11 @@ fn failed(record: &Record, message: String) -> JobResult {
 }
 fn uncollected_stop(
     state: &KernelRuntimeState,
-    record: &Record,
+    record: &mut Record,
     output: &mut Output,
     outcome: JobOutcome,
 ) -> Result<JobResult, DaemonError> {
+    state.settle_pending_return(record);
     let notice = if outcome == JobOutcome::TimeLimit {
         "Time limit reached. Command output is partial and returned files are unavailable.\n"
     } else {
