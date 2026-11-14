@@ -3296,6 +3296,14 @@ Workflow trigger and deployment direction:
   as the event payload, deduplicated by the source occurrence id.
   `AppInboxRouteSummary` shows the `connection`. The route grants the App no
   use of the connection beyond receiving these occurrences.
+- GitHub App GHA-1 (provisional): App accounts. `GrantAppAccount {installation_id, account,
+  credential, vault_credential_id, allow: read|write|destructive}`, `RevokeAppAccount
+  {installation_id, account}` and `ListAppAccounts {installation_id}` answer `AppAccounts
+  {installation_id, credentials: [{credential, origin, routes, safety}], accounts: [{account,
+  credential, vault_credential_id, allow, bound_at_ms}]}`. Only the owner can bind; the Vault
+  entry must be made for HTTP use at the destination's origin, and the value is never part of
+  any reply. `capabilities.network[].credential` and `routes` plus the required feature
+  `credentialed-http` declare the destination (`APPS_V2_CONTRACTS.md` §10).
 - protocol 359: App connection grants. `GrantAppConnection {installation_id,
   generator_id, connection_id}`, `RevokeAppConnection {installation_id,
   connection_id}` and `ListAppConnections {installation_id}` answer
