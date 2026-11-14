@@ -307,6 +307,18 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2-fonts.mjs"),
     ),
     (
+        "kernel-browser-font-subset.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-font-subset.mjs"),
+    ),
+    (
+        "kernel-browser-font-subset-worker.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-font-subset-worker.mjs"),
+    ),
+    (
+        "kernel-browser-font-subset.wasm",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-font-subset.wasm"),
+    ),
+    (
         "kernel-browser-mirror2-regions.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2-regions.mjs"),
     ),

@@ -22,6 +22,7 @@ import { discoverClosedHosts } from './kernel-browser-mirror2-closed.mjs';
 const LAYOUT_MOVED = /mirror layout changed during observation/;
 const HISTORY_CHORDS = new Map([['Ctrl+Z', 2], ['Ctrl+Shift+Z', 10]]);
 import { Mirror2Regions } from './kernel-browser-mirror2-regions.mjs';
+import { FontSubsets } from './kernel-browser-font-subset.mjs';
 
 const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
 // MP-08/MP-10: packet age does not establish loss on a shaped link. Only an
@@ -193,7 +194,7 @@ export class ParsedSheets {
   }
 }
 export class Mirror2 {
-  constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); this.parsedSheets = new ParsedSheets(); this.host.visitedLinks?.listeners.add((origin, url) => this.visited(origin, url)); }
+  constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); this.parsedSheets = new ParsedSheets(); this.fontSubsets = new FontSubsets(); this.host.visitedLinks?.listeners.add((origin, url) => this.visited(origin, url)); }
   // MP-08/MP-10/MP-11: older v2 viewers never receive an unknown operation.
   // `absent` (protocol 567) only reaches a viewer that asked for it: older viewers refuse unknown op fields.
   viewerOps(stream, ops) { return stream.fontRequirements === true ? stream.fontAbsent === true ? ops : ops.map(op => op.op === 'fonts' && op.absent ? { op: op.op, id: op.id, required: op.required } : op) : ops.filter(op => op.op !== 'fonts'); }
@@ -817,6 +818,7 @@ export class Mirror2 {
             body ??= await this.cached(world, entry.url).catch(() => null);
           }
         }
+        if (body && entry.kind === 'font') body = await this.subsetFont(world, body);
         let mime_type = body && body.length <= RESOURCE_BYTES ? mirrorResourceType(body, entry.kind === 'sprite' ? 'image' : entry.kind) : null;
         // Protocol 501: a sprite travels as its sanitized symbols (the viewer validates them again).
         if (entry.kind === 'sprite') { const clean = mime_type === 'image/svg+xml' ? await this.evaluate(world, `${world.ref}.sprite(${JSON.stringify(body.toString('utf8'))})`).catch(() => null) : null; body = typeof clean === 'string' ? Buffer.from(clean, 'utf8') : null; if (!body) mime_type = null; }
@@ -851,6 +853,19 @@ export class Mirror2 {
       out.push(!offset && entry.sent ? entry.resource : { ...entry.resource, data_base64: data.slice(offset, end), offset, total: data.length });
     }
     return out;
+  }
+  // MP-10 first-visit bytes: a large face travels as the glyphs the page can show. A face the subsetter does not read
+  // (WOFF 1, a collection) travels whole, and the timing event says so.
+  async subsetFont(world, body) {
+    const at = timestamp();
+    try {
+      const subset = await this.fontSubsets.subset(body, async () => this.evaluate(world, `${world.ref}.textCodePoints()`));
+      this.host.timing?.event?.('mirror2_font_subset', { whole_bytes: body.length, subset_bytes: subset?.length ?? 0, ms: Math.round(timestamp() - at) });
+      return subset ?? body;
+    } catch (error) {
+      this.host.timing?.event?.('mirror2_font_subset', { whole_bytes: body.length, subset_bytes: 0, error: String(error?.message ?? error).slice(0, 120) });
+      return body;
+    }
   }
   async cached(world, url, limit = RESOURCE_BYTES) {
     const { resource } = await world.connection.send('Network.loadNetworkResource', { frameId: world.frame.id, url, options: { disableCache: false, includeCredentials: false } }, world.sessionId);
