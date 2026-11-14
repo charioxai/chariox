@@ -10,7 +10,7 @@ pub(super) async fn fixture() -> (
     fixture_with(crate::config::DaemonConfig::for_tests()).await
 }
 
-async fn fixture_with(
+pub(super) async fn fixture_with(
     config: crate::config::DaemonConfig,
 ) -> (
     KernelRuntimeState,

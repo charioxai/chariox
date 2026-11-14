@@ -766,6 +766,10 @@ fn command_input(
 fn is_capacity_failure(error: &DaemonError) -> bool {
     match error {
         DaemonError::MachineRequest { code, .. } if code == "control_plane_unavailable" => true,
+        // The service's own refusal of an account at its machine limit reaches the kernel as a transport error.
+        DaemonError::LocalTransport { .. } => {
+            crate::runtime::cloud_api_client::cloud_error_code(error) == Some("capacity_exceeded")
+        }
         DaemonError::RelayTransport { code, .. } | DaemonError::MachineRequest { code, .. } => {
             matches!(
                 code.as_str(),
