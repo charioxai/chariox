@@ -124,17 +124,7 @@ export class Fixture {
   }
 
   async unlock() {
-    const work = path.join(this.home, 'A/work')
-    const made = (await this.A.send({ CreateSession: { workspace_id: work, worktree_id: work, alias: null, no_subscribe: true } })).SessionCreated
-    const pending = this.A.send({ ManageCredentialVault: { session_id: made.session.id, agent_id: made.agent.id } })
-    pending.catch(() => undefined)
-    const prompt = await until(async () => {
-      const state = await this.A.send({ GetSessionState: { session_id: made.session.id } })
-      return state.SessionState.session.active_interactions?.find(item => item.id.startsWith('vault-unlock-'))
-    }, 'disposable Vault setup')
-    await this.A.send({ RespondToInteraction: { session_id: made.session.id, interaction_id: prompt.id, choice_id: 'passphrase', custom_reply: this.passphrase } })
-    await pending
-    await this.A.send({ EndSession: { session_id: made.session.id } })
+    await this.A.send({ CreateCredentialVault: { origin: { kind: 'passphrase', passphrase: this.passphrase } } })
   }
 
   async grant() {

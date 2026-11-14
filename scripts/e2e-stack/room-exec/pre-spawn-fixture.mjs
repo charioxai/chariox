@@ -8,14 +8,16 @@ const script = 'import sys,hashlib; open(sys.argv[1],"ab").write(b"x"); data=sys
 export const marker = (home, name, host = 'A') => path.join(home, host, 'work', name)
 export const command = (home, name, host = 'A') => ['/usr/bin/python3', path.join(home, host, 'work', 'binary-stream.py'), name]
 
+// The kernel's peak key (normalized line plus folder) and the exact line a peak decides alone for.
 function key(argv, cwd) {
-  const hash = createHash('sha256')
+  const hash = createHash('sha256'), exact = createHash('sha256')
   for (const argument of argv) {
     const normalized = argument.replace(/[a-fA-F0-9]+/g, run => run.length >= 6 || /^\d+$/.test(run) ? '#' : run)
     hash.update(normalized); hash.update(Buffer.from([0]))
+    exact.update(argument); exact.update(Buffer.from([0]))
   }
   hash.update(cwd)
-  return hash.digest('hex').slice(0, 32)
+  return {key: hash.digest('hex').slice(0, 32), exact: exact.digest().readBigUInt64LE(0)}
 }
 
 export class AdmissionFixture extends Fixture {
@@ -26,10 +28,14 @@ export class AdmissionFixture extends Fixture {
       await mkdir(root, {recursive: true, mode: 0o700})
       const cwd = await realpath(path.join(this.home, host, 'work'))
       await writeFile(path.join(cwd, 'binary-stream.py'), script, {mode: 0o600})
-      // This is the ordinary learned-peak input to admission, not a gate override.
-      // An impossible predicted peak makes the side-effect assertion red on the old kernel.
-      const peaks = Object.fromEntries(['cancel', 'start', 'revoke', 'peer-start', 'peer-cancel', 'peer-revoke', 'peer-target-revoke', 'ui-start-standard', 'ui-cancel-standard', 'ui-start-retina', 'ui-cancel-retina', 'ui-owner-standard', 'ui-owner-retina', 'ui-place-standard', 'ui-place-retina', 'ui-stay-standard', 'ui-stay-retina'].map(name => [key(command(this.home, name, host), cwd), {memory: 2 ** 52, writes: 0}]))
-      await writeFile(path.join(root, 'admission-peaks.json'), JSON.stringify(peaks), {mode: 0o600})
+      // This is the ordinary learned-peak input to admission, not a gate override. The peak
+      // decides alone only for the exact line, so each entry carries it. Above the pool a
+      // matching peak ends the launch (it can never fit); `peakBytes` below the pool holds it
+      // while the room is occupied.
+      const names = ['cancel', 'start', 'revoke', 'peer-start', 'peer-cancel', 'peer-revoke', 'peer-target-revoke', 'ui-start-standard', 'ui-cancel-standard', 'ui-start-retina', 'ui-cancel-retina', 'ui-owner-standard', 'ui-owner-retina', 'ui-place-standard', 'ui-place-retina', 'ui-stay-standard', 'ui-stay-retina']
+      // u64 values do not survive JSON.stringify of a Number: write the text.
+      const peaks = `{${names.map(name => { const seen = key(command(this.home, name, host), cwd); return `"${seen.key}":{"memory":${this.peakBytes ?? 2 ** 52},"writes":0,"exact":${seen.exact}}` }).join(',')}}`
+      await writeFile(path.join(root, 'admission-peaks.json'), peaks, {mode: 0o600})
     }
     return super.launch(name, executable, env, argv)
   }
