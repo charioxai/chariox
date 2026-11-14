@@ -1,4 +1,22 @@
-// Human UI calls use the ambient bridge; registered forms keep their caller.
+import { applyChange, awaitsReminder, follow } from "./model.js"
+
+// The page is a native view: `window.chariox` is its only way to the App backend. The sandbox has no
+// forms, so Add answers its button and Enter. Todos are read once, then followed through the change feed.
+const root = document.getElementById("app")
+root.innerHTML = `<main>
+  <header>
+    <h1>Todo</h1>
+    <label class="filter"><input type="checkbox" id="open-only"> Open only</label>
+  </header>
+  <div id="new-todo" role="group" aria-label="New Todo">
+    <input id="title" required maxlength="200" placeholder="What needs doing?" aria-label="Title">
+    <input id="due" type="datetime-local" aria-label="Due (optional)">
+    <button type="button" id="add">Add</button>
+  </div>
+  <p id="status" role="status" aria-live="polite"></p>
+  <p id="reminders" class="hint" role="status" hidden></p>
+  <ul id="todos" aria-label="Todos"></ul>
+</main>`
 const $ = (id) => document.getElementById(id)
 const list = $("todos")
 const status = $("status")
@@ -12,9 +30,9 @@ function say(message, error = false) {
   status.classList.toggle("error", error)
 }
 
-async function call(tool, input = {}, caller = window.chariox) {
+async function call(tool, input = {}) {
   try {
-    return await caller.call(tool, input)
+    return await window.chariox.call(tool, input)
   } catch (error) {
     say(error.message || "The App could not complete that.", true)
     throw error
@@ -80,12 +98,21 @@ function item(todo) {
   return li
 }
 
-// Re-render only when the list changed, so polling never moves keyboard or
+// Re-render only when the list changed, so following the feed never moves keyboard or
 // screen-reader focus off the row a person is on.
-async function refresh(caller = window.chariox) {
+function show(next) {
+  const text = JSON.stringify(next)
+  if (text === shown) return
+  shown = text
+  todos = next
+  render()
+  showReminders()
+}
+
+async function reload() {
   let result
   try {
-    result = await caller.call("list_todos", {})
+    result = await window.chariox.call("list_todos", {})
   } catch (error) {
     listFailed = true
     say(error.message || "The App could not load Todos.", true)
@@ -98,12 +125,7 @@ async function refresh(caller = window.chariox) {
     say("")
     shown = ""
   }
-  const next = JSON.stringify(result.todos)
-  if (next === shown) return
-  shown = next
-  todos = result.todos
-  render()
-  showReminders()
+  show(result.todos)
 }
 
 // Reminders only reach a workflow while the reminders automation is active.
@@ -127,40 +149,64 @@ async function checkReminders() {
 }
 function showReminders() {
   const hint = $("reminders")
-  const message = todos.some((todo) => !todo.done && !todo.reminded && todo.due_at_ms != null) ? REMINDERS[reminderState] : undefined
+  const message = todos.some(awaitsReminder) ? REMINDERS[reminderState] : undefined
   if (hint.textContent !== (message ?? "")) hint.textContent = message ?? ""
   hint.hidden = !message
 }
 
-// Always re-render afterwards, so a refused change (e.g. a checkbox the
+// Always read the list afterwards, so a refused change (e.g. a checkbox the
 // browser already flipped) shows the stored state again.
-async function mutate(tool, input, caller = window.chariox) {
+async function mutate(tool, input) {
   let ok = false
   try {
-    await call(tool, input, caller)
+    await call(tool, input)
     ok = true
     say("")
   } catch {}
   shown = ""
-  await refresh(caller)
+  await reload()
   return ok
 }
 
-window.chariox.form($("new-todo"), async (_input, caller) => {
+async function add() {
   const title = $("title").value.trim()
   if (!title) return
   const due = $("due").value
   const input = { title }
   if (due) input.due_at_ms = new Date(due).getTime()
-  if (!(await mutate("create_todo", input, caller))) return
-  $("new-todo").reset()
+  if (!(await mutate("create_todo", input))) return
+  $("title").value = ""
+  $("due").value = ""
   $("title").focus()
-})
+}
+$("add").addEventListener("click", add)
+$("title").addEventListener("keydown", (event) => { if (event.key === "Enter") add() })
 $("open-only").addEventListener("change", () => render())
 
-// Agents and other views change Todos too; a short poll keeps this view current
-// without any network access.
-refresh()
+// Agents and other windows change Todos too: read the feed's position, then the list, then follow the
+// feed. The position is read first, so a change in between is applied again rather than missed.
+async function follow_feed() {
+  let since
+  while (since === undefined) {
+    try {
+      since = (await window.chariox.changes(0)).latest
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+    }
+  }
+  await reload()
+  for (;;) {
+    try {
+      since = await follow(window.chariox.changes, since, {
+        apply: (delta) => show(applyChange(todos, delta)),
+        reload,
+      })
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+    }
+  }
+}
+follow_feed()
 checkReminders()
-setInterval(() => { if (!document.hidden) refresh() }, 2000)
-setInterval(() => { if (!document.hidden) checkReminders() }, 15000)
+// The reminders automation changes outside the App: look again while a Todo waits for its reminder.
+setInterval(() => { if (!document.hidden && todos.some(awaitsReminder)) checkReminders() }, 15000)

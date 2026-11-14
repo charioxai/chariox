@@ -49,6 +49,11 @@ name = "github-events-drill"
 path = "../../examples/apps/github-events/test/component-drill.rs"
 required-features = ["component-drills"]
 
+[[test]]
+name = "todo-drill"
+path = "../../examples/apps/todo/test/component-drill.rs"
+required-features = ["component-drills"]
+
 [[bin]]
 name = "chariox-gate-component"
 path = "src/gate_main.rs"
