@@ -7404,6 +7404,20 @@ the session and never stored, so a client names who asks in the card's first pai
 card is shown in its top parent's panel (`shown_in_agent_id`) whoever holds it (above). Focused check: `cargo test -p chariox-kernel --lib --
 a_sub_agent_card_carries a_projected_card_names_its_asker the_user_answers_a_decision protocol_shapes`.
 
+### Idle viewer traffic and mirror reply bytes (local 1055, provisional after Landing 10)
+
+A viewer's relay subscriptions on one lane (the session lane, or the kernel-wide inventory and resource lane) share one
+`heartbeat` per interval: the kernel sends the next one only when no other subscription of the same client key and lane sent
+one in the last half interval. A client treats any event of its lane as proof the lane is alive and watches the lane, not each
+subscription (a subscription that dies alone is no longer noticed by a missing heartbeat). Relay subscribers and their
+`heartbeat_interval_ms` are unchanged.
+
+A `KernelBrowser` reply whose `result` holds a mirror packet (`packet_base64`, `resources[].data_base64`) travels as `CXT1`
+like a Room terminal reply: the header keeps the JSON with each such base64 string replaced by `[offset, length]` into the raw
+bytes that follow, in the order body then resources. A client restores the base64 text before it reads the packet; a resource
+slice that is not canonical base64 on its own stays text in the header. This removes the 33 % base64 expansion of every mirror
+packet (a GitHub first paint's reset: 123 KB to about 93 KB).
+
 ### APP-CONFIRM-01: person-confirmed App actions — local 1008 / relay peer 447
 
 A signed `schemas/ui-actions.json` action may have `effect: "person_confirmed"` with a
