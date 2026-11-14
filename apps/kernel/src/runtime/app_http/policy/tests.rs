@@ -265,8 +265,16 @@ pub(super) fn github_rules() -> Rules {
             Credentialed {
                 label: "github".into(),
                 routes: vec![
-                    route(HttpMethod::Get, "/repos/{owner}/{repo}/pulls/{number}", RouteSafety::Read),
-                    route(HttpMethod::Put, "/repos/{owner}/{repo}/pulls/{number}/merge", RouteSafety::Destructive),
+                    route(
+                        HttpMethod::Get,
+                        "/repos/{owner}/{repo}/pulls/{number}",
+                        RouteSafety::Read,
+                    ),
+                    route(
+                        HttpMethod::Put,
+                        "/repos/{owner}/{repo}/pulls/{number}/merge",
+                        RouteSafety::Destructive,
+                    ),
                 ],
             },
         )]),
@@ -280,10 +288,16 @@ fn an_account_reaches_only_the_routes_of_the_signed_table() {
         .account_call(
             "https://api.github.com/repos/charioxai/drill/pulls/7?per_page=50",
             "GET",
-            &[("If-None-Match".into(), "\"abc\"".into()), ("Accept".into(), "application/json".into())],
+            &[
+                ("If-None-Match".into(), "\"abc\"".into()),
+                ("Accept".into(), "application/json".into()),
+            ],
         )
         .unwrap();
-    assert_eq!((call.credential.as_str(), call.safety), ("github", RouteSafety::Read));
+    assert_eq!(
+        (call.credential.as_str(), call.safety),
+        ("github", RouteSafety::Read)
+    );
     let merge = rules
         .account_call("https://api.github.com/repos/o/r/pulls/7/merge", "PUT", &[])
         .unwrap();
@@ -291,22 +305,70 @@ fn an_account_reaches_only_the_routes_of_the_signed_table() {
 
     for (url, method, expected) in [
         // Not in the table: another path, another method, a longer or shorter path.
-        ("https://api.github.com/user", "GET", HttpError::RouteNotDeclared),
-        ("https://api.github.com/repos/o/r/pulls/7", "PUT", HttpError::RouteNotDeclared),
-        ("https://api.github.com/repos/o/r/pulls/7/merge", "GET", HttpError::RouteNotDeclared),
-        ("https://api.github.com/repos/o/r/pulls/7/", "GET", HttpError::RouteNotDeclared),
-        ("https://api.github.com/repos/o/r/pulls", "GET", HttpError::RouteNotDeclared),
+        (
+            "https://api.github.com/user",
+            "GET",
+            HttpError::RouteNotDeclared,
+        ),
+        (
+            "https://api.github.com/repos/o/r/pulls/7",
+            "PUT",
+            HttpError::RouteNotDeclared,
+        ),
+        (
+            "https://api.github.com/repos/o/r/pulls/7/merge",
+            "GET",
+            HttpError::RouteNotDeclared,
+        ),
+        (
+            "https://api.github.com/repos/o/r/pulls/7/",
+            "GET",
+            HttpError::RouteNotDeclared,
+        ),
+        (
+            "https://api.github.com/repos/o/r/pulls",
+            "GET",
+            HttpError::RouteNotDeclared,
+        ),
         // A dot segment cannot reach another route.
-        ("https://api.github.com/repos/o/r/pulls/7/../../issues", "GET", HttpError::RouteNotDeclared),
-        ("https://api.github.com/repos/o/r/pulls/7/%2e%2e/%2e%2e/issues", "GET", HttpError::RouteNotDeclared),
+        (
+            "https://api.github.com/repos/o/r/pulls/7/../../issues",
+            "GET",
+            HttpError::RouteNotDeclared,
+        ),
+        (
+            "https://api.github.com/repos/o/r/pulls/7/%2e%2e/%2e%2e/issues",
+            "GET",
+            HttpError::RouteNotDeclared,
+        ),
         // Another origin or scheme is not the destination.
-        ("https://evil.example.com/repos/o/r/pulls/7", "GET", HttpError::Destination),
-        ("http://api.github.com/repos/o/r/pulls/7", "GET", HttpError::Destination),
+        (
+            "https://evil.example.com/repos/o/r/pulls/7",
+            "GET",
+            HttpError::Destination,
+        ),
+        (
+            "http://api.github.com/repos/o/r/pulls/7",
+            "GET",
+            HttpError::Destination,
+        ),
     ] {
-        assert_eq!(rules.account_call(url, method, &[]).err(), Some(expected), "{method} {url}");
+        assert_eq!(
+            rules.account_call(url, method, &[]).err(),
+            Some(expected),
+            "{method} {url}"
+        );
     }
     // The App sets no header the kernel owns or does not list.
-    for name in ["Authorization", "authorization", "Cookie", "User-Agent", "X-HTTP-Method-Override", "Host", "X-Anything"] {
+    for name in [
+        "Authorization",
+        "authorization",
+        "Cookie",
+        "User-Agent",
+        "X-HTTP-Method-Override",
+        "Host",
+        "X-Anything",
+    ] {
         assert_eq!(
             rules
                 .account_call(
@@ -337,7 +399,9 @@ fn a_credentialed_destination_is_never_reached_anonymously_and_accounts_only_rea
         BTreeSet::from([HttpMethod::Get]),
     );
     assert_eq!(
-        rules.account_call("https://api.example.com/x", "GET", &[]).err(),
+        rules
+            .account_call("https://api.example.com/x", "GET", &[])
+            .err(),
         Some(HttpError::AccountUnknown)
     );
 }

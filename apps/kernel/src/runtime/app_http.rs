@@ -11,9 +11,9 @@ mod limits;
 mod policy;
 mod streams;
 mod transport;
-pub(crate) use account::{AccountVault, KernelAccountVault};
 #[cfg(test)]
 pub(crate) use account::FixtureVault;
+pub(crate) use account::{AccountVault, KernelAccountVault};
 pub(crate) use broker::{AppHttpBroker, HttpContext};
 pub(crate) use limits::HttpLimits;
 pub(crate) use streams::HttpJob;

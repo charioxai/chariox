@@ -882,11 +882,20 @@ async fn copy_for_use_derives_an_api_entry_without_the_value_reaching_the_model(
             .as_str(),
         format!("Bearer {SECRET}")
     );
-    for origin in ["https://api.example.com", "https://github.com", "http://api.github.com"] {
-        assert!(service.app_account_authorization(&to, origin).is_err(), "{origin}");
+    for origin in [
+        "https://api.example.com",
+        "https://github.com",
+        "http://api.github.com",
+    ] {
+        assert!(
+            service.app_account_authorization(&to, origin).is_err(),
+            "{origin}"
+        );
     }
     // The original keeps its own single use.
-    assert!(service.validate_app_account(&from, "https://api.github.com").is_err());
+    assert!(service
+        .validate_app_account(&from, "https://api.github.com")
+        .is_err());
     assert_eq!(stored(&f, &from).as_str(), SECRET);
     // A retry names the same entry; a new request makes a second one.
     let again = call(
@@ -896,7 +905,13 @@ async fn copy_for_use_derives_an_api_entry_without_the_value_reaching_the_model(
     )
     .await
     .unwrap();
-    assert_eq!((again["credential_id"].as_str().unwrap(), again["created"].clone()), (to.as_str(), json!(false)));
+    assert_eq!(
+        (
+            again["credential_id"].as_str().unwrap(),
+            again["created"].clone()
+        ),
+        (to.as_str(), json!(false))
+    );
     assert!(call(
         &f,
         COPY_FOR_USE,
@@ -910,7 +925,10 @@ async fn copy_for_use_derives_an_api_entry_without_the_value_reaching_the_model(
         json!({"request_id":"missing","from":"nope","use_binding":site("https://api.github.com")}),
         json!({"request_id":"nobinding","from":from}),
     ] {
-        assert!(call(&f, COPY_FOR_USE, refused.clone()).await.is_err(), "{refused}");
+        assert!(
+            call(&f, COPY_FOR_USE, refused.clone()).await.is_err(),
+            "{refused}"
+        );
     }
     let session =
         serde_json::to_string(&f.state.owned.session_snapshot(&turn.session_id).unwrap()).unwrap();

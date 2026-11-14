@@ -40,17 +40,32 @@ mod tests {
         let scrub = boundary("Bearer ghp_SENTINEL+/x\"y");
         let echoed = r#"{"authorization":"Bearer ghp_SENTINEL+/x\"y","t":"ghp_SENTINEL+/x\"y","q":"ghp_SENTINEL%2B%2Fx%22y","b":"Z2hwX1NFTlRJTkVMKy94Ink="}"#;
         let clean = scrub.scrub(echoed);
-        assert!(!clean.contains("SENTINEL") && !clean.contains("Z2hwX1NFTlRJTkVM"), "{clean}");
+        assert!(
+            !clean.contains("SENTINEL") && !clean.contains("Z2hwX1NFTlRJTkVM"),
+            "{clean}"
+        );
         assert_eq!(scrub.scrub("nothing here"), "nothing here");
         assert_eq!(scrub.scrub("Bearer ghp_SENTINEL+/x\"y"), "[redacted]");
     }
 
     #[test]
     fn only_rate_and_cache_headers_pass() {
-        for name in ["etag", "link", "x-ratelimit-remaining", "x-poll-interval", "content-type"] {
+        for name in [
+            "etag",
+            "link",
+            "x-ratelimit-remaining",
+            "x-poll-interval",
+            "content-type",
+        ] {
             assert!(answer_header(name), "{name}");
         }
-        for name in ["set-cookie", "authorization", "www-authenticate", "x-oauth-scopes", "server"] {
+        for name in [
+            "set-cookie",
+            "authorization",
+            "www-authenticate",
+            "x-oauth-scopes",
+            "server",
+        ] {
             assert!(!answer_header(name), "{name}");
         }
     }

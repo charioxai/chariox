@@ -400,7 +400,9 @@ impl Exchange {
             let text: String = value.as_bytes().iter().map(|b| char::from(*b)).collect();
             headers.push((
                 name.to_string(),
-                scrub.as_ref().map_or(text.clone(), |scrub| scrub.scrub(&text)),
+                scrub
+                    .as_ref()
+                    .map_or(text.clone(), |scrub| scrub.scrub(&text)),
             ));
         }
         let head = ResponseHead {

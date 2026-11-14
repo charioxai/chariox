@@ -148,7 +148,9 @@ impl KernelRuntimeState {
                     destination_word(&args.use_binding.target)
                 ))
             }),
-            source: UserCredentialSourceConfig::Vault { key: handle.clone() },
+            source: UserCredentialSourceConfig::Vault {
+                key: handle.clone(),
+            },
             allowed_hosts: vec![allowed_host],
             allowed_uses: vec![allowed_use],
             injection,

@@ -383,7 +383,9 @@ impl RuntimeSecretService {
             }
             _ => Err(secret_error(
                 "app_account",
-                format!("credential `{credential_id}` must send its value as the Authorization header"),
+                format!(
+                    "credential `{credential_id}` must send its value as the Authorization header"
+                ),
             )),
         }
     }

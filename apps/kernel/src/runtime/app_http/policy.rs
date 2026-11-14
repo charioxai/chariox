@@ -238,10 +238,14 @@ impl Rules {
             .find(|route| {
                 route.method == declared
                     && route.path.len() == segments.len()
-                    && route.path.iter().zip(&segments).all(|(want, got)| match want {
-                        Segment::Literal(text) => text == got,
-                        Segment::Param => !got.is_empty(),
-                    })
+                    && route
+                        .path
+                        .iter()
+                        .zip(&segments)
+                        .all(|(want, got)| match want {
+                            Segment::Literal(text) => text == got,
+                            Segment::Param => !got.is_empty(),
+                        })
             })
             .ok_or(HttpError::RouteNotDeclared)?;
         Ok(AccountCall {

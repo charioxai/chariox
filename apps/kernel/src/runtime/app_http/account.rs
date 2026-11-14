@@ -95,7 +95,8 @@ mod tests {
 
     #[test]
     fn a_call_needs_a_route_the_owners_binding_and_a_readable_entry_in_that_order() {
-        let root = std::env::temp_dir().join(format!("chariox-accounts-{:016x}", rand::random::<u64>()));
+        let root =
+            std::env::temp_dir().join(format!("chariox-accounts-{:016x}", rand::random::<u64>()));
         std::fs::create_dir(&root).unwrap();
         let store = DurableKernelStateStore::open_owned(root.join("kernel.sqlite")).unwrap();
         let policy = super::super::policy::fixture_account_policy(
@@ -119,31 +120,61 @@ mod tests {
                 .unwrap()
         };
         let call = |vault: &FixtureVault, connection: &str, url: &str, method: &str| {
-            Accounts { store: &store, owner: "alice", installation: "github", vault }
-                .target(&policy, connection, url, method, &[])
-                .map(|target| target.authorization().map(str::to_owned))
+            Accounts {
+                store: &store,
+                owner: "alice",
+                installation: "github",
+                vault,
+            }
+            .target(&policy, connection, url, method, &[])
+            .map(|target| target.authorization().map(str::to_owned))
         };
         let vault = FixtureVault(Some("Bearer ghp_X".into()));
 
         // No binding yet, then one for another credential label: unknown.
-        assert_eq!(call(&vault, "account:work", PULL, "GET"), Err(HttpError::AccountUnknown));
+        assert_eq!(
+            call(&vault, "account:work", PULL, "GET"),
+            Err(HttpError::AccountUnknown)
+        );
         bind("work", "gitlab", RouteSafety::Destructive);
-        assert_eq!(call(&vault, "account:work", PULL, "GET"), Err(HttpError::AccountUnknown));
+        assert_eq!(
+            call(&vault, "account:work", PULL, "GET"),
+            Err(HttpError::AccountUnknown)
+        );
         // A read binding reads, and is refused the destructive route.
         bind("work", "github", RouteSafety::Read);
-        assert_eq!(call(&vault, "account:work", PULL, "GET"), Ok(Some("Bearer ghp_X".into())));
-        assert_eq!(call(&vault, "account:work", MERGE, "PUT"), Err(HttpError::AccountNotAllowed));
+        assert_eq!(
+            call(&vault, "account:work", PULL, "GET"),
+            Ok(Some("Bearer ghp_X".into()))
+        );
+        assert_eq!(
+            call(&vault, "account:work", MERGE, "PUT"),
+            Err(HttpError::AccountNotAllowed)
+        );
         bind("work", "github", RouteSafety::Destructive);
         assert!(call(&vault, "account:work", MERGE, "PUT").is_ok());
         // Another account of the same installation is its own binding.
-        assert_eq!(call(&vault, "account:home", PULL, "GET"), Err(HttpError::AccountUnknown));
+        assert_eq!(
+            call(&vault, "account:home", PULL, "GET"),
+            Err(HttpError::AccountUnknown)
+        );
         // The route table is checked before anything is read from the Vault.
         let empty = FixtureVault(None);
-        assert_eq!(call(&empty, "account:work", "https://api.github.com/user", "GET"), Err(HttpError::RouteNotDeclared));
-        assert_eq!(call(&empty, "account:work", PULL, "GET"), Err(HttpError::AccountUnavailable));
+        assert_eq!(
+            call(&empty, "account:work", "https://api.github.com/user", "GET"),
+            Err(HttpError::RouteNotDeclared)
+        );
+        assert_eq!(
+            call(&empty, "account:work", PULL, "GET"),
+            Err(HttpError::AccountUnavailable)
+        );
         // Only `account:<label>` names an account.
         for connection in ["work", "slack-1", "account:", "Account:work"] {
-            assert_eq!(call(&vault, connection, PULL, "GET"), Err(HttpError::ConnectionAuthority), "{connection}");
+            assert_eq!(
+                call(&vault, connection, PULL, "GET"),
+                Err(HttpError::ConnectionAuthority),
+                "{connection}"
+            );
         }
         let _ = std::fs::remove_dir_all(root);
     }

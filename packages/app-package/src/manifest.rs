@@ -386,7 +386,9 @@ fn route_path(path: &str) -> bool {
                     || literal(segment),
                     |inner| {
                         !inner.is_empty()
-                            && inner.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                            && inner
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
                     },
                 )
         })
@@ -551,24 +553,42 @@ mod credential_tests {
 
     #[test]
     fn a_credentialed_destination_is_a_bounded_set_of_exact_routes() {
-        let read = (HttpMethod::Get, "/repos/{owner}/{repo}/pulls/{number}", RouteSafety::Read);
+        let read = (
+            HttpMethod::Get,
+            "/repos/{owner}/{repo}/pulls/{number}",
+            RouteSafety::Read,
+        );
         let merge = (
             HttpMethod::Put,
             "/repos/{owner}/{repo}/pulls/{number}/merge",
             RouteSafety::Destructive,
         );
         destination(&[read, merge]).validate_credential().unwrap();
-        assert!(RouteSafety::Read < RouteSafety::Write && RouteSafety::Write < RouteSafety::Destructive);
+        assert!(
+            RouteSafety::Read < RouteSafety::Write && RouteSafety::Write < RouteSafety::Destructive
+        );
 
         let refused = [
             // Routes without a credential label.
-            NetworkDestination { credential: None, ..destination(&[read]) },
+            NetworkDestination {
+                credential: None,
+                ..destination(&[read])
+            },
             // A bearer token over plain HTTP.
-            NetworkDestination { origin: "http://api.github.com".into(), ..destination(&[read]) },
+            NetworkDestination {
+                origin: "http://api.github.com".into(),
+                ..destination(&[read])
+            },
             // Methods that no route uses.
-            NetworkDestination { methods: vec![HttpMethod::Get, HttpMethod::Delete], ..destination(&[read]) },
+            NetworkDestination {
+                methods: vec![HttpMethod::Get, HttpMethod::Delete],
+                ..destination(&[read])
+            },
             // A credential with no route at all.
-            NetworkDestination { routes: Vec::new(), ..destination(&[read]) },
+            NetworkDestination {
+                routes: Vec::new(),
+                ..destination(&[read])
+            },
             destination(&[read, read]),
             destination(&[(HttpMethod::Get, "/repos/%2e%2e", RouteSafety::Read)]),
             destination(&[(HttpMethod::Get, "/repos/../x", RouteSafety::Read)]),
@@ -578,7 +598,10 @@ mod credential_tests {
             destination(&[(HttpMethod::Get, "repos", RouteSafety::Read)]),
         ];
         for destination in refused {
-            assert!(destination.validate_credential().is_err(), "{destination:?}");
+            assert!(
+                destination.validate_credential().is_err(),
+                "{destination:?}"
+            );
         }
     }
 }
