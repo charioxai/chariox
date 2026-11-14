@@ -282,6 +282,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     } else {
                         None
                     };
+                    let settled = super::settled_waits::is_settled(tx, &t)?;
                     if let Some(w) = t.wait.as_mut() {
                         if !w.long_wait_notified
                             && now.saturating_sub(t.last_progress_at_ms) >= LONG_WAIT_MS
@@ -305,11 +306,13 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                                 && now >= w.started_at_ms
                                 && !clock_rollback
                         });
-                        if (dead && unread == 0)
-                            || w.deadline_ms.is_some_and(|deadline| deadline <= now)
-                            || now < w.started_at_ms
-                            || clock_rollback
-                            || check_in.is_some()
+                        // A settled wait held back by the agent's other work has nothing to re-check.
+                        if !settled
+                            && ((dead && unread == 0)
+                                || w.deadline_ms.is_some_and(|deadline| deadline <= now)
+                                || now < w.started_at_ms
+                                || clock_rollback
+                                || check_in.is_some())
                         {
                             let kind = if dead {
                                 "wait_recheck"
