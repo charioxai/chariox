@@ -152,6 +152,7 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
                         | "message"
                         | "deadline"
                         | "children"
+                        | "revoke"
                         | "answer"
                         | "pass"
                         | "usage"

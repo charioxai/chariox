@@ -182,6 +182,7 @@ pub(crate) use managed_kernel_quiescence_state::{
     ManagedKernelAdmissionGuard, ManagedKernelQuiescenceChallenge, ManagedKernelQuiescenceGate,
     ManagedKernelQuiescenceOutcome,
 };
+mod agent_grants;
 mod claude_permission_rules;
 mod provider_launch_defaults_owned_state;
 mod provider_relaunch_runtime;
@@ -209,7 +210,6 @@ mod room_setup_runtime;
 mod room_shared_display;
 mod room_terminal_runtime_state;
 mod runtime_tool_call_activity;
-mod terminal_input_grants;
 mod usage_snapshot;
 mod visible_region_capture;
 mod web_bot_auth_runtime;
@@ -271,7 +271,9 @@ pub(crate) struct KernelRuntimeState {
     /// agent, so a restarted Claude process starts with it again.
     claude_session_grants: claude_permission_rules::StandingGrants,
     /// The agents whose terminal input a person allowed for the session.
-    terminal_input_grants: terminal_input_grants::TerminalInputGrants,
+    terminal_input_grants: agent_grants::AgentGrants,
+    /// The agents whose watched commands and jobs a person allowed outside the provider sandbox.
+    watched_process_grants: agent_grants::AgentGrants,
     /// The only strong handle on the terminal wake driver. The driver holds a runtime copy made
     /// before this field was set, and the Room terminal service and wake registry hold it weakly,
     /// so dropping the runtime frees the kernel instead of leaving a cycle.
@@ -1159,7 +1161,8 @@ impl KernelRuntimeState {
             task_work: Default::default(),
             trigger_firings: Default::default(),
             claude_session_grants: claude_permission_rules::StandingGrants::default(),
-            terminal_input_grants: terminal_input_grants::TerminalInputGrants::default(),
+            terminal_input_grants: agent_grants::AgentGrants::default(),
+            watched_process_grants: agent_grants::AgentGrants::default(),
             terminal_wake_driver: None,
             interaction_wake_driver: None,
             job_wake_driver: None,
