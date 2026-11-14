@@ -42,6 +42,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             after_sequence: 3,
             drift_nodes: vec!["n1".into()],
             known_sheets: vec![],
+            known_fonts: vec![],
             wait_ms: None,
             resend: None,
             flush: None,
@@ -65,6 +66,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             after_sequence: 3,
             drift_nodes: vec![],
             known_sheets: vec![],
+            known_fonts: vec![],
             wait_ms: Some(1500),
             resend: None,
             flush: None,
@@ -75,6 +77,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             after_sequence: 3,
             drift_nodes: vec![],
             known_sheets: vec![],
+            known_fonts: vec![],
             wait_ms: Some(1500),
             resend: Some(true),
             flush: None,
@@ -178,6 +181,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             after_sequence: 3,
             drift_nodes: vec![],
             known_sheets: vec![],
+            known_fonts: vec![],
             wait_ms: Some(1500),
             resend: Some(true),
             flush: None,
@@ -222,6 +226,28 @@ fn browser_mirror2_sheet_cache_550_shape_is_pinned() {
         .as_object_mut()
         .unwrap()
         .remove("known_sheets");
+    let request: LocalDaemonRequest = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), legacy);
+}
+
+#[test]
+fn browser_mirror2_font_cache_1055_shape_is_pinned() {
+    // MIRROR-P2: provisional 1055 mirror v2 wire contract (fonts the viewer keeps across documents).
+    let snapshot = include_str!("browser-mirror2-font-cache-1055.json");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(snapshot.as_bytes())),
+        "a36354d780f32288217ad546f9aae3a7fecef53e4ffc5a5c374876b4eccb1897"
+    );
+    let fixture: serde_json::Value = serde_json::from_str(snapshot).unwrap();
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION as u64 >= fixture["protocol_version"].as_u64().unwrap());
+    let request: LocalDaemonRequest = serde_json::from_value(fixture["command"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), fixture["command"]);
+    // A credit without the list stays accepted and serializes without it.
+    let mut legacy = fixture["command"].clone();
+    legacy["KernelBrowser"]["command"]
+        .as_object_mut()
+        .unwrap()
+        .remove("known_fonts");
     let request: LocalDaemonRequest = serde_json::from_value(legacy.clone()).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), legacy);
 }

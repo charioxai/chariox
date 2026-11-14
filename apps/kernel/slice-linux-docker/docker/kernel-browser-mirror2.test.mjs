@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
 import { inflateRawSync, constants as zlib } from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { Mirror2, ParsedSheets, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports } from './kernel-browser-mirror2.mjs';
 const pageSize=()=>({width:1280,height:800});
 
@@ -597,6 +598,31 @@ test('MP-10 M2: first-packet font bytes use the completed response before the Pa
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(actual,address){assert.equal(actual,world);assert.equal(address,'https://public.example/font.woff2');return body}}}}});
  mirror.evaluate=async(_world,expression)=>expression.includes('nearImages')?{near:[],all:[]}:['r1'];const entry={key:'r1',url:'https://public.example/font.woff2',kind:'font',state:'new'};
  const out=await mirror.materializeWorld(world,[entry],0,262144,{issued:0,movedAt:0,loadedCount:1,resources:new Map([['r1',entry]])});assert.equal(out[0].mime_type,'font/woff2');assert.deepEqual(calls,[]);
+});
+
+// transport5 (bbc.com/news: 531 KB of fonts on every page of the site): a font the viewer retains from an earlier document
+// is named, not sent again. Only fonts: other resources keep their per-document delivery.
+test('MIRROR-P2: a font the viewer retains is sent by reference; other bytes and unknown fonts travel whole',async()=>{
+ const font=Buffer.alloc(48);font.write('wOF2');const image=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==','base64');
+ const id=bytes=>createHash('sha256').update(bytes).digest('hex');
+ const world={connection:{async send(){throw Error('unrelated document resources are still loading')}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(_world,address){return address.endsWith('.woff2')?font:image}}}}});
+ mirror.evaluate=async(_world,expression)=>expression.includes('nearImages')?{near:[],all:[]}:['r1','r2','r3'];
+ const due=()=>[{key:'r1',url:'https://public.example/a.woff2',kind:'font',state:'new'},{key:'r2',url:'https://public.example/b.png',kind:'image',state:'new'}];
+ const known={issued:0,movedAt:0,loadedCount:1,knownFonts:new Set([id(font).slice(0,24),id(image).slice(0,24)]),resources:new Map()};
+ const out=await mirror.materializeWorld(world,due(),0,262144,known);
+ assert.deepEqual(out.find(r=>r.key==='r1'),{key:'r1',resource_id:id(font),mime_type:'font/woff2',data_base64:'',retained:true});
+ assert.equal(out.find(r=>r.key==='r2').data_base64.length>0,true,'an image is never retained across documents');
+ const fresh=await mirror.materializeWorld(world,due(),0,262144,{issued:0,movedAt:0,loadedCount:1,knownFonts:new Set(),resources:new Map()});
+ assert.equal(fresh.find(r=>r.key==='r1').data_base64,font.toString('base64'),'a font the viewer does not retain travels whole');
+});
+
+test('MIRROR-P2: a reset credit lists the fonts the viewer retains and a malformed list is refused',async()=>{
+ const mirror=new Mirror2({host:{}}),stream={chain:Promise.resolve(),issued:0},a='a'.repeat(24);mirror.packet=async()=>({sequence:1});
+ await mirror.next(stream,{after_sequence:0,known_fonts:[a]},'scope');assert.deepEqual([...stream.knownFonts],[a]);
+ await mirror.next(stream,{after_sequence:1},'scope');assert.deepEqual([...stream.knownFonts],[a],'an unchanged list is not repeated');
+ await mirror.next(stream,{after_sequence:0},'scope');assert.deepEqual([...stream.knownFonts],[],'a reset without a list means the viewer retains no font');
+ for(const known_fonts of [false,['not-a-digest'],Array(129).fill(a)]) await assert.rejects(mirror.next(stream,{known_fonts},'scope'),/invalid mirror font dictionary/);
 });
 
 // Review #1016 @f0ccdb5c2 P2 (protocol 530): mirrored undo/redo arrive as named mirror keys and resolve to the
