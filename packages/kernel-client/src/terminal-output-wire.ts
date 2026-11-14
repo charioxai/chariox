@@ -26,10 +26,26 @@ export function decodeTerminalOutput(bytes: Uint8Array): Record<string, unknown>
       const data = payload.subarray(cursor, cursor + length)
       if (encoding === "text") body[key] = new TextDecoder("utf-8", { fatal: true }).decode(data)
       else {
-        let binary = ""
-        for (let index = 0; index < data.length; index += 16384) binary += String.fromCharCode(...data.subarray(index, index + 16384))
-        body[key] = btoa(binary)
+        body[key] = base64Of(data)
       }
+      cursor += length
+    }
+    if (cursor !== payload.length) throw invalid()
+    return output
+  }
+  // A mirror packet's deflated body and whole resources keep their bytes raw, in this order: the body, then each resource.
+  if (Object.keys(output).length === 1 && output.KernelBrowser) {
+    const result = (output.KernelBrowser as { result?: Record<string, unknown> }).result
+    if (!result || typeof result !== "object" || Array.isArray(result)) throw invalid()
+    const holders: [Record<string, unknown>, string][] = [[result, "packet_base64"]]
+    if (Array.isArray(result.resources)) for (const resource of result.resources) if (resource && typeof resource === "object") holders.push([resource as Record<string, unknown>, "data_base64"])
+    let cursor = 0
+    for (const [holder, key] of holders) {
+      const range = holder[key]
+      if (!Array.isArray(range)) continue
+      const [offset, length] = range
+      if (range.length !== 2 || offset !== cursor || !Number.isSafeInteger(length) || length < 0 || length > payload.length - cursor) throw invalid()
+      holder[key] = base64Of(payload.subarray(cursor, cursor + length))
       cursor += length
     }
     if (cursor !== payload.length) throw invalid()
@@ -64,4 +80,10 @@ export function decodeTerminalOutput(bytes: Uint8Array): Record<string, unknown>
 /** The JSON text of a decoded event: the raw bytes of a pushed Room terminal page become the number array that terminal output records use. */
 export function terminalOutputJson(event: Record<string, unknown>): string {
   return JSON.stringify(event, (_key, value) => (value instanceof Uint8Array ? Array.from(value) : value))
+}
+
+function base64Of(data: Uint8Array): string {
+  let binary = ""
+  for (let index = 0; index < data.length; index += 16384) binary += String.fromCharCode(...data.subarray(index, index + 16384))
+  return btoa(binary)
 }
