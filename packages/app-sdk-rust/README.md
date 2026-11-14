@@ -14,6 +14,16 @@ revision. The two Todo operations use durable state and optimistic checks; a
 concurrent write may return the host's conflict error instead of losing data.
 
 
+## Serving a view to an agent
+
+`view::View::declare(include_str!("ui-actions.json"))` takes the signed `ui-actions` document once.
+Call `register()` in `Guest::register` and `serve(tool, input, state)` first in `call_tool`: it
+answers the view's registration, state and (after `with_changes()`) change feed, and returns `None`
+for the App's own tools. Commit a change with `view::transact_with_change(tx, delta)`; it adds the
+change to the App's transaction, keeps the last 128 and refuses a change over 8 KiB. The tools it
+registers (`view_actions`, `view_state`, `view_changes`) must be listed in the manifest `tools`.
+See `packages/app-view-host/fixture/guest`.
+
 ## Browser UI handlers
 
 This SDK dispatches backend WIT handlers. Browser UI actions receive
