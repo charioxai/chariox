@@ -2,27 +2,28 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { signReference } from '../build-reference.mjs';
-import { referencePrelude } from './reference-fixture.mjs';
+import { adoptStandInSdk } from './reference-fixture.mjs';
 import { processNetwork } from './process-network.mjs';
 import { browserProfile } from './browser-profile.mjs';
 
-export async function referenceCases({ chromium, launchOptions, server, evidence, builds }) {
+export async function referenceCases({ chromium, launchOptions, server, evidence, builds, names = ['excalidraw', 'univer'] }) {
   const rows = [];
-  for (const name of ['excalidraw', 'univer']) {
+  for (const name of names) {
     // Only this test adapter supplies the old SDK in document memory. It does
     // not claim backend persistence, agent admission, broker access or a Room.
-    const packed = await signReference(name, join(builds, name), join(evidence, 'signed-references'), referencePrelude());
+    const packed = await signReference(name, join(builds, name), join(evidence, 'signed-references'), adoptStandInSdk);
     for (const dpr of [1, 2]) {
-      let profile;
-      const row = { name, dpr, errors: [], remoteRequests: [], builtEntry: true, backend: 'frontend-only fixture' };
+      let profile, page;
+      const row = { name, dpr, errors: [], console: [], remoteRequests: [], builtEntry: true, backend: 'frontend-only fixture' };
       try {
         // Use an actual renderer scale: context-only emulation did not reach
         // opaque out-of-process frames in the earlier Chrome155/Playwright run.
         profile = await browserProfile(chromium, { ...launchOptions, clientView: true, captureDirectory: join(evidence, 'process-tree', name + '-dpr' + dpr), args: [...launchOptions.args, `--force-device-scale-factor=${dpr}`],
           viewport: { width: 1440, height: 900 }, deviceScaleFactor: dpr });
         const { context } = profile;
-        const page = await context.newPage();
+        page = await context.newPage();
         page.on('pageerror', e => row.errors.push(e.stack));
+        page.on('console', message => { if (row.console.length < 50) row.console.push(message.type() + ': ' + message.text().slice(0, 300)); });
         const requests = [];
         context.on('request', request => {
           requests.push(request.url());
@@ -82,7 +83,11 @@ export async function referenceCases({ chromium, launchOptions, server, evidence
         assert.equal(row.remoteRequests.length, 0, 'reference uses no remote frontend resources');
         await page.screenshot({ path: join(evidence, name + '-dpr' + dpr + '.png') });
         await writeConsole(page, join(evidence, name + '-dpr' + dpr + '-dom.txt'));
-      } catch (error) { row.failure = error.stack; }
+      } catch (error) {
+        row.failure = error.stack;
+        // What the page showed when it stopped is the first thing to read.
+        if (page) { await page.screenshot({ path: join(evidence, name + '-dpr' + dpr + '-failed.png') }).catch(() => {}); await writeConsole(page, join(evidence, name + '-dpr' + dpr + '-failed-dom.txt')).catch(() => {}); row.frames = await Promise.all(page.frames().map(async frame => ({ url: frame.url().slice(0, 100), text: await frame.locator('body').innerText({ timeout: 2000 }).then(text => text.slice(0, 300), () => null) }))); }
+      }
       finally { await profile?.close(); if (profile) row.processNetwork = await processNetwork(join(evidence, 'process-tree', name + '-dpr' + dpr)); }
       rows.push(row);
       console.log(name, dpr, JSON.stringify({ rendered: row.rendered, failure: row.failure?.slice(0, 180), pageErrors: row.errors.length }));
