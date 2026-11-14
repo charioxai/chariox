@@ -64,6 +64,17 @@ a reviewed image recipe change. Routine releases change only the URL/digest.
 Changing the trust root requires a new base image. No key supplied beside a
 release can replace the image pin.
 
+The signing key can stay on another machine. With `--signing-request <new file>`
+instead of `--signing-key`, the packager stages the release without signatures and
+writes a signing request of a few KB (kernel, supervisor and relay attestation plus
+the manifest entries). `scripts/sign-digests-on-mac.mjs` signs it on the macOS
+signer: it needs only that file and `scripts/release-signing-documents.mjs`, takes
+the request digest as `--request <file>@sha256:<digest>`, and writes detached
+signatures, public keys and `SIGNING_RECEIPT.json`. `scripts/assemble-signed-release.mjs`
+embeds them into the staged release and re-verifies every signature and artifact
+digest from disk against the pinned public keys. The result is byte-identical to
+signing in place.
+
 The lane drill is deliberately separate: an ephemeral TEST key signs two local
 builds, and the candidate image pins only its TEST public key. The HTTPS test
 server uses an ephemeral certificate with explicit CA trust on the validation
