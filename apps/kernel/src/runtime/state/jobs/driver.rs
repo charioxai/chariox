@@ -63,9 +63,12 @@ impl WakeDriver for JobDriver {
                     tracing::warn!(%error, "job restart process settlement could not be confirmed");
                 }
             }
-            if let (Some(allocation), Some(revision)) =
-                (&record.allocation_ref, &record.capability_revision)
-            {
+            // A worker that still holds files not yet returned stays until they are collected.
+            if let (Some(allocation), Some(revision), false) = (
+                &record.allocation_ref,
+                &record.capability_revision,
+                record.return_pending,
+            ) {
                 match state.job_compute_release_ref(allocation, revision).await {
                     Ok(()) => record.deleted = true,
                     Err(error) => {
@@ -73,7 +76,10 @@ impl WakeDriver for JobDriver {
                     }
                 }
             }
-            if record.placement == JobPlacement::Remote && record.allocation_ref.is_none() {
+            if record.placement == JobPlacement::Remote
+                && record.allocation_ref.is_none()
+                && !record.return_pending
+            {
                 match state.job_compute_release_job_ref(&record.job_id).await {
                     Ok(()) => record.deleted = true,
                     Err(error) => {
@@ -83,7 +89,11 @@ impl WakeDriver for JobDriver {
             }
             let result = record.result.clone().unwrap_or_else(|| JobResult {
                 exit_code: None,
-                output_tail: "The kernel restarted; this job was not relaunched.".into(),
+                output_tail: if record.return_pending {
+                    "The kernel restarted while this job's files were being returned. Its remote machine is kept: check this job with chariox.jobs.status to collect them.".into()
+                } else {
+                    "The kernel restarted; this job was not relaunched.".into()
+                },
                 log: String::new(),
                 files_back: vec![],
                 conflicts: vec![],
@@ -95,7 +105,11 @@ impl WakeDriver for JobDriver {
                     ip: record.address.clone(),
                 },
                 duration_ms: crate::session::unix_epoch_ms().saturating_sub(record.started_at_ms),
-                outcome: JobOutcome::MachineLost,
+                outcome: if record.return_pending {
+                    JobOutcome::OutsideEnd
+                } else {
+                    JobOutcome::MachineLost
+                },
             });
             state.finish_job(&wake, &mut record, result).await;
             live.lock().expect("job live").remove(&wake.id);
@@ -121,6 +135,7 @@ impl KernelRuntimeState {
             owner_stops: Default::default(),
             remote_samples: Default::default(),
             remote_origins: Default::default(),
+            return_grants: Default::default(),
         });
         let source: Arc<dyn WakeDriver> = driver.clone();
         self.register_wake_driver(Arc::downgrade(&source));

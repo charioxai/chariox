@@ -1,9 +1,24 @@
 use crate::error::DaemonError;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
 
-pub(crate) type Manifest = BTreeMap<String, String>;
+/// A file's bytes and executable permission. An upload carries only these two, so these are
+/// what a job can change and what a returned file is compared by.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FileState {
+    pub(crate) sha256: String,
+    pub(crate) executable: bool,
+}
+
+pub(crate) type Manifest = BTreeMap<String, FileState>;
+
+/// A file the remote machine returned, to be compared with and applied over the home copy.
+pub(crate) struct ReturnedFile {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) executable: bool,
+}
 
 pub(crate) fn error(message: impl Into<String>) -> DaemonError {
     DaemonError::MachineRequest {
@@ -24,13 +39,14 @@ pub(crate) fn relative(path: &str) -> Result<&str, DaemonError> {
     Ok(path)
 }
 
-pub(crate) fn digest(path: &Path) -> Result<Option<String>, DaemonError> {
+pub(crate) fn file_state(path: &Path) -> Result<Option<FileState>, DaemonError> {
     use std::io::Read;
     let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(error(format!("Cannot read job file: {e}"))),
     };
+    let executable = is_executable(&file.metadata().map_err(|e| error(e.to_string()))?);
     let mut hash = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
@@ -40,7 +56,21 @@ pub(crate) fn digest(path: &Path) -> Result<Option<String>, DaemonError> {
         }
         hash.update(&buffer[..read]);
     }
-    Ok(Some(format!("{:x}", hash.finalize())))
+    Ok(Some(FileState {
+        sha256: format!("{:x}", hash.finalize()),
+        executable,
+    }))
+}
+
+#[cfg(unix)]
+fn is_executable(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_: &std::fs::Metadata) -> bool {
+    false
 }
 
 pub(crate) fn snapshot(root: &Path, outputs: &[String]) -> Result<Manifest, DaemonError> {
@@ -91,8 +121,8 @@ pub(crate) fn snapshot(root: &Path, outputs: &[String]) -> Result<Manifest, Daem
                 if total > 2 * 1024 * 1024 * 1024 || manifest.len() >= 100_000 {
                     return Err(error("Job workspace exceeds the 2 GiB or 100000 file transfer limit; ignore generated files"));
                 }
-                if let Some(hash) = digest(&item.path())? {
-                    manifest.insert(path, hash);
+                if let Some(state) = file_state(&item.path())? {
+                    manifest.insert(path, state);
                 }
             }
         }
@@ -100,12 +130,15 @@ pub(crate) fn snapshot(root: &Path, outputs: &[String]) -> Result<Manifest, Daem
     Ok(manifest)
 }
 
+/// `Ok(true)` when the home copy now matches what the job returned, `Ok(false)` when a local
+/// change since `base` kept it and the returned file went to the conflicts folder. Applying the
+/// same return twice is harmless, so an interrupted return can simply be run again.
 pub(crate) fn apply_return(
     root: &Path,
     job_id: &str,
     path: &str,
-    base: Option<&str>,
-    returned: Option<&[u8]>,
+    base: Option<&FileState>,
+    returned: Option<&ReturnedFile>,
 ) -> Result<bool, DaemonError> {
     relative(path)?;
     if !job_id.starts_with("job-")
@@ -116,18 +149,27 @@ pub(crate) fn apply_return(
         return Err(error("Invalid job identity"));
     }
     let target = checked_path(root, path)?;
-    let current = digest(&target)?;
-    if current.as_deref() != base {
+    let current = file_state(&target)?;
+    let returned_state = returned.map(|file| FileState {
+        sha256: format!("{:x}", Sha256::digest(&file.bytes)),
+        executable: file.executable,
+    });
+    if current == returned_state {
+        return Ok(true);
+    }
+    if current.as_ref() != base {
         let conflict = format!(".chariox/jobs/{job_id}/conflicts/{path}");
         let conflict = checked_path(root, &conflict)?;
         publish(
             &conflict,
-            returned.unwrap_or(b"Remote job deleted this file; local edit retained.\n"),
+            returned
+                .map(|file| file.bytes.as_slice())
+                .unwrap_or(b"Remote job deleted this file; local edit retained.\n"),
         )?;
         return Ok(false);
     }
     match returned {
-        Some(bytes) => publish(&target, bytes)?,
+        Some(file) => publish(&target, &file.bytes)?,
         None if current.is_some() => std::fs::remove_file(&target)
             .map_err(|e| error(format!("Cannot return job deletion: {e}")))?,
         None => {}
@@ -179,6 +221,12 @@ pub(crate) fn hard_excluded(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn file(bytes: &[u8]) -> ReturnedFile {
+        ReturnedFile {
+            bytes: bytes.to_vec(),
+            executable: false,
+        }
+    }
     #[test]
     fn offload_job_snapshot_ignores_runtime_state_and_includes_declared_artifact() {
         let tree = crate::test_support::TestWorktree::new("job-snapshot");
@@ -200,14 +248,14 @@ mod tests {
         let tree = crate::test_support::TestWorktree::new("job-conflict");
         let root = tree.path();
         std::fs::write(root.join("source.rs"), b"base").unwrap();
-        let base = digest(&root.join("source.rs")).unwrap().unwrap();
+        let base = file_state(&root.join("source.rs")).unwrap().unwrap();
         std::fs::write(root.join("source.rs"), b"local edit").unwrap();
         assert!(!apply_return(
             root,
             "job-test",
             "source.rs",
             Some(&base),
-            Some(b"remote edit")
+            Some(&file(b"remote edit"))
         )
         .unwrap());
         assert_eq!(
@@ -218,19 +266,31 @@ mod tests {
             std::fs::read(root.join(".chariox/jobs/job-test/conflicts/source.rs")).unwrap(),
             b"remote edit"
         );
-        assert!(apply_return(root, "job-test", "new.rs", None, Some(b"new file")).unwrap());
+        assert!(apply_return(root, "job-test", "new.rs", None, Some(&file(b"new file"))).unwrap());
         assert_eq!(std::fs::read(root.join("new.rs")).unwrap(), b"new file");
     }
     #[test]
     fn offload_job_return_rejects_escape_and_symlink() {
         let tree = crate::test_support::TestWorktree::new("job-return-paths");
-        assert!(apply_return(tree.path(), "job-test", "../outside", None, Some(b"bad")).is_err());
+        assert!(apply_return(
+            tree.path(),
+            "job-test",
+            "../outside",
+            None,
+            Some(&file(b"bad"))
+        )
+        .is_err());
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink("/tmp", tree.path().join("link")).unwrap();
-            assert!(
-                apply_return(tree.path(), "job-test", "link/outside", None, Some(b"bad")).is_err()
-            );
+            assert!(apply_return(
+                tree.path(),
+                "job-test",
+                "link/outside",
+                None,
+                Some(&file(b"bad"))
+            )
+            .is_err());
         }
     }
 }

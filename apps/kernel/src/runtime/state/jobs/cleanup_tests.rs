@@ -1,7 +1,7 @@
 use super::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-async fn service(
+pub(super) async fn service(
     state: &KernelRuntimeState,
     responses: Vec<(&'static str, u16, serde_json::Value)>,
 ) -> tokio::task::JoinHandle<()> {
@@ -67,7 +67,7 @@ async fn service(
     })
 }
 
-fn machine(state: &str) -> serde_json::Value {
+pub(super) fn machine(state: &str) -> serde_json::Value {
     serde_json::json!({"kind":"machine","revision":1,"available_actions":[],
         "allocation_ref":"cleanup-test","state":state,"kernel_target":null,
         "access_state":"pending","access_reason":null,"purpose":"offload_job"})
