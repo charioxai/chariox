@@ -37,6 +37,24 @@ def fail(message):
     sys.exit(1)
 
 
+def trusted_owners():
+    """Owners whose files this process may trust: root, this user and, where the host's root cannot be named.
+
+    Rootless Docker runs the provisioner inside a user namespace that does not map
+    host root. The installer's root-owned files then show as the kernel's overflow
+    uid, the only way this process can see host root there.
+    """
+    owners = {0, os.getuid()}
+    with open("/proc/self/uid_map") as source:
+        host_root_mapped = any(
+            int(outside) <= 0 < int(outside) + int(count)
+            for _inside, outside, count in (line.split() for line in source))
+    if not host_root_mapped:
+        with open("/proc/sys/kernel/overflowuid") as source:
+            owners.add(int(source.read()))
+    return owners
+
+
 def require_trusted_file(path, what):
     """Only a regular file that nobody but root or this user can change."""
     try:
@@ -45,7 +63,7 @@ def require_trusted_file(path, what):
         fail(f"{what} is missing: {path}. Reinstall the Chariox release bundle.")
     if not stat.S_ISREG(metadata.st_mode):
         fail(f"{what} must be a regular file, not a link: {path}")
-    if metadata.st_uid not in (0, os.getuid()):
+    if metadata.st_uid not in trusted_owners():
         fail(f"{what} is owned by another user: {path}. Reinstall the Chariox release bundle.")
     if metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         fail(f"{what} is writable by other users: {path}. Reinstall the Chariox release bundle.")
