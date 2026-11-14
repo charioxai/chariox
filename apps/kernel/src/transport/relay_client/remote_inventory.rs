@@ -36,6 +36,18 @@ pub(super) fn remote_inventory_refresh_due(
     !last_refreshed || heartbeat_tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS)
 }
 
+/// The machine list is kept warm for the clients that subscribed to it; with none attached, a
+/// request for it refreshes it on demand, so an idle kernel does not ask Cloud and the relay for it
+/// every 500 s. The first client to subscribe finds the refresh already started.
+pub(super) fn inventory_refresh_wanted(
+    attached: bool,
+    was_attached: bool,
+    due: bool,
+    no_refresh_running: bool,
+) -> bool {
+    attached && (due || (!was_attached && no_refresh_running))
+}
+
 pub(super) fn abort_inventory_refresh_task(task: &mut Option<JoinHandle<bool>>) {
     if let Some(handle) = task.take() {
         handle.abort();
@@ -242,6 +254,18 @@ fn requires_peer_probe(is_known: bool, config: &crate::config::DaemonConfig) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unattended_kernel_does_not_refresh_the_machine_list_on_a_timer() {
+        // No client: neither the 500 s tick nor the retry after a failure asks for it.
+        assert!(!inventory_refresh_wanted(false, false, true, true));
+        assert!(!inventory_refresh_wanted(false, true, true, true));
+        // The first subscriber starts it at once; later ones follow the timer.
+        assert!(inventory_refresh_wanted(true, false, false, true));
+        assert!(!inventory_refresh_wanted(true, false, false, false));
+        assert!(!inventory_refresh_wanted(true, true, false, true));
+        assert!(inventory_refresh_wanted(true, true, true, true));
+    }
 
     // MP-08 / MP-11: the home's own machine is "local" in every client; without another kernel on
     // it, it must not also appear as a remote machine with no kernels, whether or not Cloud is used.

@@ -156,6 +156,14 @@ fn post_cloud_acknowledged_blocking_with_timeout(
     }
 }
 
+/// One agent for every Cloud JSON call: its pool keeps the connection a presence refresh opened for
+/// the next one, which a kernel with no client otherwise pays a TCP and TLS handshake for every 30 s.
+/// Native Cloud calls must not follow browser login redirects.
+fn cloud_json_agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| crate::outbound_dial::agent_builder().redirects(0).build())
+}
+
 fn post_cloud_json_blocking_with_timeout<T>(
     api_url: String,
     path: &str,
@@ -166,13 +174,9 @@ where
     T: serde::de::DeserializeOwned,
 {
     let url = format!("{api_url}{path}");
-    // Native Cloud calls must not follow browser login redirects.
-    let agent = crate::outbound_dial::agent_builder()
-        .timeout(timeout)
-        .redirects(0)
-        .build();
-    let response = agent
+    let response = cloud_json_agent()
         .post(&url)
+        .timeout(timeout)
         .set("content-type", "application/json")
         .send_string(&body.to_string())
         .map_err(cloud_transport_error)?;
