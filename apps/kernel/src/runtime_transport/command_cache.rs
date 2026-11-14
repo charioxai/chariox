@@ -250,6 +250,8 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::PreviewDeploymentApps(_)
             | LocalDaemonRequest::PrepareDeploymentApps(_)
             | LocalDaemonRequest::RevokeAppConnection(_)
+            | LocalDaemonRequest::GrantAppAccount(_)
+            | LocalDaemonRequest::RevokeAppAccount(_)
             | LocalDaemonRequest::GrantAppFile(_)
             | LocalDaemonRequest::SaveAppFileExport(_)
             | LocalDaemonRequest::RevokeAppFileGrants(_)
