@@ -110,8 +110,9 @@ impl Uploads {
     }
 
     /// True when the lane has a chunk the window has room for; one chunk always
-    /// fits when nothing is unacknowledged.
-    pub(crate) fn ready(&self, lane: Lane) -> bool {
+    /// fits when nothing is unacknowledged. A chunk that waits tells the window
+    /// that the link, not the application, limits what it measures.
+    pub(crate) fn ready(&mut self, lane: Lane) -> bool {
         let upload = match lane {
             Lane::Priority => &self.priority,
             Lane::Event => &self.event,
@@ -123,7 +124,11 @@ impl Uploads {
             Some(_) => CHUNK_BYTES,
             None => return false,
         };
-        self.bytes == 0 || self.bytes + frame <= self.window.bytes()
+        let fits = self.bytes == 0 || self.bytes + frame <= self.window.bytes();
+        if !fits {
+            self.window.blocked(Instant::now());
+        }
+        fits
     }
 
     /// The lane's next chunk; the lane is free again after its last one.

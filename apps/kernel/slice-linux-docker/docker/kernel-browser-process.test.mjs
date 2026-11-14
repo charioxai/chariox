@@ -221,3 +221,28 @@ test('MP-08/10/11 every launch flag states what a page can observe of it',async(
  const stale=Object.keys(launchFlagVisibility).filter(flag=>!used.has(flag));
  assert.deepEqual(stale,[],'a removed launch flag must leave the table');
 });
+
+// MP-08/MP-10 (transport3, 2026-11-13): on a busy host a cold Chromium answered its first CDP
+// command after more than five seconds, the request bound of a running browser, so the first
+// Browser open failed with browser_startup_timeout although the next attempt started fine.
+test('MP-08/MP-10 a cold browser that answers its first command slowly still starts',async()=>{
+ const {writeFile,chmod}=await import('node:fs/promises');
+ // The browser lives beside, not inside, the root: Chromium's namespace sees no file of the App storage's parents.
+ const root=await mkdtemp(tmpdir()+'/chariox-slow-cold-start-'),bin=await mkdtemp(tmpdir()+'/chariox-slow-browser-'),getuid=process.getuid,browser=path.join(bin,'slow-browser');
+ await writeFile(browser,`#!${process.execPath}
+const fs=require('node:fs');
+if(process.argv.includes('--version')){console.log('Google Chrome 155.0.8059.79');process.exit(0)}
+const out=fs.createWriteStream(null,{fd:4});let buffer='';
+fs.createReadStream(null,{fd:3}).on('data',chunk=>{buffer+=chunk;let end;while((end=buffer.indexOf('\\0'))>=0){const {id,method}=JSON.parse(buffer.slice(0,end));buffer=buffer.slice(end+1);
+ const result=method==='SystemInfo.getProcessInfo'?{processInfo:[{type:'browser',id:process.pid}]}:{product:'Chrome/155.0.8059.79'};
+ setTimeout(()=>out.write(JSON.stringify({id,result})+'\\0'),method==='Browser.getVersion'?6500:0)}});
+setInterval(()=>{},1000);
+`);await chmod(browser,0o755);await chmod(bin,0o755);
+ process.getuid=()=>1000;
+ const host=new HostChromium(root,{appStorageRoot:path.join(root,'app-wasm-state-test'),environment:{...process.env,CHARIOX_KERNEL_BROWSER_EXECUTABLE:browser,CHARIOX_KERNEL_BROWSER_HEADLESS:'1'}});
+ host.desktop=null;
+ try{
+  const connection=await host.start();
+  assert.match((await connection.send('Browser.getVersion',{},undefined,{timeoutMs:10_000})).product,/Chrome/);
+ }finally{process.getuid=getuid;await host.stop();await rm(root,{recursive:true,force:true});await rm(bin,{recursive:true,force:true});}
+});

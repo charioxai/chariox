@@ -18,6 +18,10 @@ fn revision(state: &Value, signal: Option<u64>) -> String {
     let digest = Sha256::digest(state.to_string().as_bytes());
     format!("{}.{}", hex_prefix(&digest), signal.unwrap_or(0))
 }
+/// A wait that ended without a change: the caller keeps the state it read last.
+fn unchanged(revision: String) -> Value {
+    serde_json::json!({"revision": revision, "unchanged": true})
+}
 fn hex_prefix(digest: &[u8]) -> String {
     digest[..8]
         .iter()
@@ -95,7 +99,11 @@ impl KernelRuntimeState {
             }
             let current = revision(&state, signal);
             let changed = known.is_none_or(|(digest, _)| !current.starts_with(digest));
-            if changed || Instant::now() >= deadline {
+            if !changed && Instant::now() >= deadline {
+                // The viewer holds this content: only the revision to wait after travels.
+                return Ok(unchanged(current));
+            }
+            if changed {
                 state["revision"] = current.into();
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 self.restore_user_app_tabs(&user);

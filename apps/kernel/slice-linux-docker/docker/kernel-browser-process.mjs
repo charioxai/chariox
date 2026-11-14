@@ -25,6 +25,9 @@ function platformPolicy(platform) {
   throw new Error("MD-2: kernel browser supports Linux and macOS only");
 }
 
+// A cold Chromium on a busy host answers its first command after several seconds; later
+// commands keep the running browser's request bound.
+const STARTUP_ANSWER_MS = 30_000;
 export function headlessLaunch(platform, environment) { return platformPolicy(platform).headless(environment); }
 
 export async function executable(environment = process.env, platform = process.platform) {
@@ -236,7 +239,7 @@ export class HostChromium {
     child.once('exit', () => { void connection.close(); });
     try {
       if (this.desktop?.binding()) await this.desktop.recordOwned(child, true);
-      await connection.send('Browser.getVersion');
+      await connection.send('Browser.getVersion', {}, undefined, { timeoutMs: STARTUP_ANSWER_MS });
       if (this.desktop?.binding()) {
         const owned = await this.desktop.browserProcesses();
         this.browserPid = ownedBrowserPid((await connection.send('SystemInfo.getProcessInfo')).processInfo, owned);
