@@ -126,6 +126,9 @@ export function createKernelApprovalController(deps: {
     deps.onClose()
     render()
   }
+  // A hand-off opens with its protected owner action selected, so Enter acts at
+  // once; every other approval still opens with nothing selected.
+  const openingSelection = (): number | null => (open && interactionHandoff(view().interaction) ? 0 : null)
   const sync = () => {
     const session = deps.getSession()
     if (sessionId !== session.id || detachedBinding !== (deps.detachedBinding?.() ?? 0)) {
@@ -142,7 +145,7 @@ export function createKernelApprovalController(deps: {
     const nextIdentity = JSON.stringify(view().interaction)
     if (identity !== nextIdentity) {
       identity = nextIdentity
-      selected = null
+      selected = openingSelection()
       error = null
     }
     if (!view().count) close()
@@ -152,7 +155,7 @@ export function createKernelApprovalController(deps: {
     sync()
     if (open || !view().count) return
     open = true
-    selected = null // Opening never selects a default approval.
+    selected = openingSelection()
     deps.onOpen()
     render()
   }
