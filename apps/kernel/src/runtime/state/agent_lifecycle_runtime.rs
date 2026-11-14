@@ -642,10 +642,16 @@ impl KernelRuntimeState {
                 ),
             );
         }
-        Ok(crate::transport::runtime_tools::RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({"status":"durable","sequence":event.sequence,"urgent":event.urgent,"reply_requested":event.reply_requested}),
-        })
+        let mut payload = serde_json::json!({"status":"durable","sequence":event.sequence,"urgent":event.urgent,"reply_requested":event.reply_requested});
+        if self.message_waits_for_stopped_agent(target_room, target.id(), event.sequence)? {
+            let name = self.agent_notice_name(target.id());
+            payload["held"] = true.into();
+            payload["note"] = format!(
+                "{name} was stopped by its owner and runs nothing until the owner's next prompt to it; this message is held until then. Do not wait for an answer."
+            )
+            .into();
+        }
+        Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
     }
     /// A message or steer to an agent on another kernel lands there as a stamped inbox message.
     /// Nothing waits here for its answer: a reply comes back the same way, as a message.

@@ -1091,3 +1091,29 @@ idle()
         );
     }
 }
+
+// AO-SA-05: a room agent is launched by the kernel like a sub-agent is, but its request for
+// kernel access goes to the person; only a sub-agent is told to ask its parent.
+#[tokio::test]
+async fn a_room_agents_request_for_kernel_access_goes_to_the_person() {
+    let f = fixture_with_provider(Some("while :; do sleep 1; done"));
+    let _turn = running(&f);
+    let identity = exec_settled(&root(&f)).await;
+    let submission = f
+        .state
+        .submit_kernel_access(
+            &identity,
+            &crate::local::RequestKernelAccessRequest {
+                holder_pid: Some(identity.pid),
+                no_wait: true,
+                term: None,
+            },
+        )
+        .unwrap_or_else(|refused| {
+            panic!("the room agent's request must reach the person: {refused}")
+        });
+    assert!(matches!(
+        submission,
+        crate::runtime::state::kernel_access::AccessSubmission::Pending(_)
+    ));
+}

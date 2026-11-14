@@ -521,6 +521,30 @@ impl KernelRuntimeState {
         }
         WakeDisposition::Deliver
     }
+    /// Whether message `sequence` waits for the owner's next prompt to `agent`, which the owner
+    /// stopped: the sender is told so instead of expecting a turn.
+    pub(super) fn message_waits_for_stopped_agent(
+        &self,
+        room: &str,
+        agent: &str,
+        sequence: u64,
+    ) -> Result<bool, DaemonError> {
+        let session = self.owned.session_store.get_session(room)?;
+        let store = &self.owned.durable_state_store;
+        Ok(self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent)
+            .is_none()
+            && store
+                .agent_tasks(Some(room), Some(agent))?
+                .last()
+                .is_some_and(|task| task.stopped_by_owner())
+            && store
+                .agent_work_inbox(room, agent, 0, None)?
+                .iter()
+                .any(|event| event.sequence == sequence && event.state == "pending"))
+    }
     /// Marks the oldest unrelated pending event deferred once and says so.
     /// The owner sees once that a message waits for the agent they stopped.
     fn hold_message_for_stopped_agent(

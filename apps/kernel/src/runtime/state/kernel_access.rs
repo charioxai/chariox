@@ -603,7 +603,13 @@ impl KernelRuntimeState {
         peer: &ProcessIdentity,
         request: &RequestKernelAccessRequest,
     ) -> Result<AccessSubmission, DaemonError> {
-        if process::inspect(std::process::id()).is_ok_and(|(kernel, _)| kernel.contains(peer)) {
+        // The kernel launched every agent's provider; only a sub-agent has a parent to ask. A
+        // room agent's request goes to the person like an outside agent's.
+        if process::inspect(std::process::id()).is_ok_and(|(kernel, _)| kernel.contains(peer))
+            && !self
+                .agent_of_peer(peer)
+                .is_some_and(|agent| !agent.is_sub_agent())
+        {
             return Err(Refusal::SubAgent.error());
         }
         let holder = self.access_holder(peer, request.holder_pid)?;
