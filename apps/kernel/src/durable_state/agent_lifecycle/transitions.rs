@@ -671,7 +671,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     .obligations
                     .iter()
                     .any(AgentObligation::requires_resolution);
-                if retain_question_wait(tx, &mut t, now)? {
+                if retain_question_wait(tx, &mut t, now)?
+                    || retain_running_sources_wait(tx, &mut t, now)?
+                {
                     t.provider_run_id = Some(run);
                     t.revision += 1;
                     save(tx, &t)?;
@@ -970,8 +972,8 @@ fn yield_refusal(
     Ok(format!("yield sources must cover every unresolved obligation. Uncovered: {}. Add the listed registration_ids to chariox.events.yield; if a binding is missing, use subscribe_call first. To stop a source instead, use its cancel_call, then handle its completion receipt with chariox.events.inbox and chariox.events.ack (handled:true). Unknown registration_ids: {}. chariox.events.subscriptions lists admitted registrations.", encode(&uncovered)?, encode(&foreign)?))
 }
 
-/// Questions are the only source allowed to outlive a normal turn without an
-/// explicit yield. This never covers unrelated obligations or an active goal.
+/// An unanswered question may outlive a normal turn without an explicit yield. This never
+/// covers unrelated obligations or an active goal; `retain_running_sources_wait` covers the rest.
 fn retain_question_wait(
     tx: &Transaction<'_>,
     t: &mut AgentTaskExecution,
@@ -1014,4 +1016,53 @@ fn retain_question_wait(
         return Ok(true);
     }
     Ok(false)
+}
+
+/// A turn that ends while the work it started still runs keeps waiting on that work: every
+/// unresolved obligation is a source that has not ended and has a live registration, so nothing
+/// needs the agent now and the end of each wakes it. A source the agent has yet to read, a failed
+/// one or one nothing can still report keeps the turn-end correction. This never covers an active goal.
+fn retain_running_sources_wait(
+    tx: &Transaction<'_>,
+    t: &mut AgentTaskExecution,
+    now: u64,
+) -> Result<bool, DaemonError> {
+    if t.wait.is_some() || t.goal.is_some() {
+        return Ok(false);
+    }
+    let unresolved: Vec<_> = t
+        .obligations
+        .iter()
+        .filter(|o| o.requires_resolution())
+        .collect();
+    if unresolved.is_empty() || unresolved.iter().any(|o| !o.needs_live_source()) {
+        return Ok(false);
+    }
+    let selected: Vec<_> = registrations(tx, &t.task_id)?
+        .into_iter()
+        .filter(|r| {
+            r.live
+                && unresolved
+                    .iter()
+                    .any(|o| r.obligation_id.as_deref() == Some(&o.id))
+        })
+        .collect();
+    if unresolved.iter().any(|o| {
+        !selected
+            .iter()
+            .any(|r| r.obligation_id.as_deref() == Some(&o.id))
+    }) {
+        return Ok(false);
+    }
+    t.wait = Some(AgentWait {
+        registration_ids: selected.into_iter().map(|r| r.id).collect(),
+        deadline_ms: Some(now.saturating_add(super::DEFAULT_WAIT_TIMEOUT_MS)),
+        started_at_ms: now,
+        inbox_cursor: 0,
+        long_wait_notified: false,
+        last_checked_at_ms: now,
+    });
+    t.state = ExecutionState::Waiting;
+    t.reason = "Waiting for the work it started".into();
+    Ok(true)
 }

@@ -1579,6 +1579,56 @@ async fn event_tools_arm_wait_and_cancel_through_the_runtime_mcp_entry() {
     scheduler.abort();
 }
 
+/// A timer the agent armed is work the kernel knows: the turn that ends without a yield keeps
+/// waiting on it, and the timer's firing wakes the agent.
+#[tokio::test]
+async fn a_timer_armed_without_a_yield_keeps_the_ended_turn_waiting_on_it() {
+    let f = fixture("timer-without-yield", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = runtime_token(&f).await;
+    let scheduler = {
+        let runtime = f.runtime.clone();
+        tokio::spawn(async move { runtime.run_agent_wake_scheduler().await })
+    };
+    let timer = call(
+        &f,
+        &token,
+        "chariox.events.timer",
+        &task,
+        serde_json::json!({"label":"check in","delay_ms":60_000}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    let registration = timer["registration_id"].as_str().unwrap().to_string();
+    let now = crate::session::unix_epoch_ms();
+    let Outcome::Settled {
+        task: settled,
+        correction,
+    } = f
+        .store()
+        .agent_lifecycle(Operation::Settle {
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            prompt: task.prompt_id.clone(),
+            run: f.run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now,
+        })
+        .unwrap()
+    else {
+        panic!("settled")
+    };
+    assert!(
+        !correction,
+        "the agent is not told to yield on a timer the kernel holds"
+    );
+    assert_eq!(settled.state, ExecutionState::Waiting);
+    assert_eq!(settled.wait.unwrap().registration_ids, [registration]);
+    scheduler.abort();
+}
+
 /// A10-S02: a message turn that reuses the ids of the waiting task it
 /// interrupted is told that the wait continues and given its own ids, not a
 /// bare refusal it escalates to the owner.
