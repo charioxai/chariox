@@ -263,8 +263,20 @@ like a page's feed (`dropped` when the reader missed evicted changes: read the s
 kernel hands a reader at most 128 changes in at most 1 MiB, in revision order and not past the
 head, whatever a backend answers (`view_error` otherwise); `wait_ms` makes it ask again every
 250 ms until a change exists or the wait ends. An App that offers no `view_changes` tool answers
-`changes_unavailable`. Other Apps' action logic in their backends and removal of the
-page-registration path are the rest of AV3.
+`changes_unavailable`.
+
+Excalidraw is such an App (AV3-AV6 slice 4): its backend runs every declared action on the
+saved scene (`add_elements`, `connect_elements` and `update_elements` repeat the library's
+converter, text layout and arrow binding in Rust, and are tested against 78 requests that the
+real library answered in Chrome), serves `view_state` as the scene summary and writes the feed
+in the same transaction as every save, its own and the window's. The page has no action
+registrations any more: with the window open it asks the feed once a second and merges the saved
+scene into its canvas with Excalidraw's reconciliation, so the agent's edits show live and the
+person's edits and the agent's both survive. A deleted element stays in the saved scene,
+marked, for an hour so that a window which has not yet seen the deletion removes it. An agent
+exports JSON; PNG and SVG need the window's renderer. Univer's actions and the kernel's own
+page-registration path (`controller_call`, `browser_controller_app_view`, the Room and User
+page branches) remain until Univer's backend serves its view.
 
 ## CSP frozen as one layer of containment
 
