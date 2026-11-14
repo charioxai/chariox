@@ -132,7 +132,6 @@ async fn a_peer_event_points_at_the_exact_turn_without_its_text() {
 /// ended the task, which the history tool opens, and not the task's first one.
 #[tokio::test]
 async fn a_peer_event_after_a_correction_opens_the_turn_that_ended_the_task() {
-    use crate::durable_state::agent_lifecycle::Registration;
     use crate::history::{HistoryEventKind, HistoryEventRole, HistoryEventTurnContext};
 
     let history_root =
@@ -160,7 +159,8 @@ async fn a_peer_event_after_a_correction_opens_the_turn_that_ended_the_task() {
         .owner_user_id()
         .to_string();
 
-    // The peer ends its first turn with a delegate it never released: it is corrected once.
+    // The peer ends its first turn with a delegate no registration can report, which it never
+    // released: it is corrected once.
     store
         .agent_lifecycle(Operation::RegisterObligation {
             owner: "local".into(),
@@ -172,21 +172,6 @@ async fn a_peer_event_after_a_correction_opens_the_turn_that_ended_the_task() {
             kind: "delegate".into(),
             resource: Some("late-worker".into()),
             now: 2,
-        })
-        .unwrap();
-    store
-        .agent_lifecycle(Operation::Subscribe {
-            task: task_id.clone(),
-            prompt: first.child_prompt.id().into(),
-            registration: Registration {
-                id: "late-reg".into(),
-                task_id: task_id.clone(),
-                source_id: "late-worker".into(),
-                obligation_id: Some("late".into()),
-                source_cursor: 0,
-                live: true,
-                peer: false,
-            },
         })
         .unwrap();
     let Outcome::Settled {

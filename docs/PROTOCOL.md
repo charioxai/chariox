@@ -1017,9 +1017,12 @@ tasks, including physical resource settlement after cancellation. The canonical
 admission and settlement, so cancellation also releases the parent's wait.
 This lineage is private kernel storage and adds no serialized client fields.
 
-A final answer with unresolved obligations other than the async-question wait
-described above gets one persisted corrective turn,
-then blocks if still invalid. Unfinished work without a live wake source is
+A final answer with unresolved obligations gets one persisted corrective turn,
+then blocks if still invalid, except where each unresolved obligation is a source
+that is still running with a live registration (a delegate, timer or watched
+process): the kernel then keeps the turn waiting on those registrations as an
+explicit yield would, with the default wait deadline, and the end of each source
+wakes the agent. Unfinished work without a live wake source is
 corrected or shown as blocked, never silently left idle. The kernel sweeps every
 30 seconds. Timer acknowledgements and repeated continuations do not limit
 automatic wakes. Fifteen minutes waiting without progress

@@ -1084,11 +1084,30 @@ async fn a_holder_whose_task_is_blocked_hands_the_decision_up() {
     .await;
     let _answer = t.raise(permission("perm-b1", &t.c)).await;
     assert_eq!(t.decision_events(&t.p).len(), 1);
-    let ((task, _), prompt) = t.settle_turn(&t.p, false, false);
-    let Outcome::Task(blocked) = t
+    // The turn's work is still unfinished when the owner is asked: a plain turn end would now keep
+    // waiting on the live child, so the task is blocked directly.
+    let prompt = t.session().active_prompt_for_agent(&t.p).unwrap().clone();
+    let run = t
         .runtime
         .owned
-        .durable_state_store
+        .provider_store
+        .get_run_for_agent(&t.room, &t.p)
+        .unwrap();
+    let store = &t.runtime.owned.durable_state_store;
+    let Outcome::Task(task) = store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: t.room.clone(),
+            agent: t.p.clone(),
+            prompt: prompt.id().into(),
+            run: Some(run.id().into()),
+            now: 1,
+        })
+        .unwrap()
+    else {
+        panic!("begun")
+    };
+    let Outcome::Task(blocked) = store
         .agent_lifecycle(Operation::Block {
             task: task.task_id,
             prompt: prompt.id().into(),
