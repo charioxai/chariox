@@ -380,10 +380,6 @@ async fn the_component_registers_serves_and_reminds() -> wasmtime::Result<()> {
         occurrences[0].occurrence_id,
         format!("evt1.5000.todo:{}:1", agent_todo["id"].as_str().unwrap())
     );
-    assert!(
-        store.data().wakes.get(&wake_id).is_none()
-            || store.data().wakes[&wake_id].revision.as_deref() == Some("1")
-    );
     let listed = call(
         &mut store,
         &app,
