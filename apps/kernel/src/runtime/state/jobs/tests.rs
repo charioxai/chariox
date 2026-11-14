@@ -131,9 +131,9 @@ fn offload_job_request_rejects_env_values_and_escaping_paths() {
     }
 }
 
-struct Worker {
-    router: crate::runtime::router::CommandRouter,
-    home: PathBuf,
+pub(super) struct Worker {
+    pub(super) router: crate::runtime::router::CommandRouter,
+    pub(super) home: PathBuf,
 }
 impl crate::room_exec::gateway_placement::GrantedSend for Worker {
     fn send<'a>(

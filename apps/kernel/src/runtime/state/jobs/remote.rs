@@ -233,7 +233,7 @@ impl Remote {
                 .utility(command, &format!("mkdir:{index}"))
                 .await?;
         }
-        for (index, (path, hash)) in manifest.iter().enumerate() {
+        for (index, (path, state)) in manifest.iter().enumerate() {
             let local = crate::jobs::checked_path(&record.workspace, path)?;
             let mut file = std::fs::File::open(&local)
                 .map_err(|e| ledger::error(format!("Cannot upload job file: {e}")))?;
@@ -259,7 +259,7 @@ impl Remote {
                             offset,
                             data_base64: base64::engine::general_purpose::STANDARD.encode(chunk),
                             total_size: size,
-                            sha256: Some(hash.clone()),
+                            sha256: Some(state.sha256.clone()),
                             overwrite: false,
                         }),
                     )
@@ -283,24 +283,17 @@ impl Remote {
             }
         }
         // Uploads preserve bytes; source scripts also need their executable permission.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let executables: Vec<_> = manifest
-                .keys()
-                .filter(|path| {
-                    std::fs::metadata(record.workspace.join(path))
-                        .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
-                })
-                .map(|path| format!("{root}/{path}"))
-                .collect();
-            for (index, paths) in executables.chunks(60).enumerate() {
-                let mut command = vec!["/bin/chmod".into(), "+x".into(), "--".into()];
-                command.extend(paths.iter().cloned());
-                preparation
-                    .utility(command, &format!("chmod:{index}"))
-                    .await?;
-            }
+        let executables: Vec<_> = manifest
+            .iter()
+            .filter(|(_, state)| state.executable)
+            .map(|(path, _)| format!("{root}/{path}"))
+            .collect();
+        for (index, paths) in executables.chunks(60).enumerate() {
+            let mut command = vec!["/bin/chmod".into(), "+x".into(), "--".into()];
+            command.extend(paths.iter().cloned());
+            preparation
+                .utility(command, &format!("chmod:{index}"))
+                .await?;
         }
         let relative_cwd = record
             .cwd
@@ -405,9 +398,16 @@ impl Remote {
                                 return Err(ledger::error("Job machine did not return a file hash"))
                             }
                         };
-                        if let Some(hash) = stat.sha256 {
-                            modes.insert(relative.clone(), stat.mode.unwrap_or(entry.mode) & 0o777);
-                            remote.insert(relative, hash);
+                        if let Some(sha256) = stat.sha256 {
+                            let mode = stat.mode.unwrap_or(entry.mode) & 0o777;
+                            modes.insert(relative.clone(), mode);
+                            remote.insert(
+                                relative,
+                                crate::jobs::FileState {
+                                    sha256,
+                                    executable: mode & 0o111 != 0,
+                                },
+                            );
                         }
                     }
                 }
@@ -424,7 +424,7 @@ impl Remote {
             .collect();
         let (mut files, mut conflicts) = (vec![], vec![]);
         for path in changed {
-            let bytes = if let Some(expected) = remote.get(&path) {
+            let returned = if let Some(expected) = remote.get(&path) {
                 let mut bytes = vec![];
                 loop {
                     let offset = bytes.len() as u64;
@@ -458,12 +458,15 @@ impl Remote {
                     }
                 }
                 use sha2::Digest;
-                if format!("{:x}", sha2::Sha256::digest(&bytes)) != *expected {
+                if format!("{:x}", sha2::Sha256::digest(&bytes)) != expected.sha256 {
                     return Err(ledger::error(
                         "Job return changed while being read; its hash does not match",
                     ));
                 }
-                Some(bytes)
+                Some(crate::jobs::ReturnedFile {
+                    bytes,
+                    executable: expected.executable,
+                })
             } else {
                 None
             };
@@ -471,11 +474,11 @@ impl Remote {
                 &record.workspace,
                 &record.job_id,
                 &path,
-                base.get(&path).map(String::as_str),
-                bytes.as_deref(),
+                base.get(&path),
+                returned.as_ref(),
             )?;
             #[cfg(unix)]
-            if bytes.is_some() {
+            if returned.is_some() {
                 use std::os::unix::fs::PermissionsExt;
                 let target = if applied {
                     record.workspace.join(&path)

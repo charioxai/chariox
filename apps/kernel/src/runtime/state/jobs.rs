@@ -19,6 +19,8 @@ mod record;
 mod remote;
 mod requests;
 #[cfg(test)]
+mod return_tests;
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]
