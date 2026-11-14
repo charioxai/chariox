@@ -452,7 +452,11 @@ impl KernelRuntimeOwnedState {
             })?;
         self.cancel_owned_agent_wakes(session_id, None);
         for agent in self.agent_store.get_session_agents(session_id) {
-            self.announce_agent_gone(session_id, agent.id());
+            self.announce_agent_gone(
+                session_id,
+                agent.id(),
+                super::agent_gone_announcement::AgentGone::RoomEnded,
+            );
         }
         self.withdraw_agent_interactions(session_id, None)?;
 
