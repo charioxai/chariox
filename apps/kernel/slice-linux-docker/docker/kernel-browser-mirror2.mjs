@@ -500,20 +500,24 @@ export class Mirror2 {
         const snap = await this.snapshotOnce(world, policy, patience, stream.knownSheets ?? [], this.snapshotOptions(stream, world));
         this.host.timing?.('mirror2_snapshot', snapshotAt);
         if (snap.resync) return snap;
-        await this.markClosedHosts(world, snap);
-        // Sheets this CSSOM cannot read come through CDP.
+        // The sheets and the closed roots with the child frames do not depend on each other: they overlap, as they cost the page's
+        // main thread and the CDP round trips in turn (a page full of custom elements took 0.5 s to inspect before its sheets began).
         const sheetsAt = timestamp();
-        const sheetOps = await this.sheetOps(world, snap.sheets, true);
+        const sheetsDone = this.sheetOps(world, snap.sheets, true).then(ops => { this.host.timing?.('mirror2_sheets', sheetsAt); return ops; });
+        const framesDone = (async () => {
+          await this.markClosedHosts(world, snap);
+          const framesAt = timestamp();
+          // Cross-origin frames: child DOM under the owner, or an opaque region.
+          const attached = await this.frames.attach(world, stream, snap.nodes.filter(r => r.foreign).map(r => r.id), maskPolicy(stream, policy), tab);
+          this.host.timing?.('mirror2_frames', framesAt);
+          return attached;
+        })();
+        const [sheetOps, frames] = await Promise.all([sheetsDone, framesDone]);
         // A pruned sheet's full text follows on a quiet packet; a viewer that retains it gets it by reference now.
         const known = new Set(stream.knownSheets ?? []);
         stream.deferredSheets = [];
         for (const op of sheetOps) if (op.full) { if (known.has(sheetDigest(op.full))) op.css = op.full; else stream.deferredSheets.push({ op: 'css', id: op.id, css: op.full }); delete op.full; }
         stream.deferredAt = Date.now(); stream.fullPending = snap.full_pending ?? 0;
-        this.host.timing?.('mirror2_sheets', sheetsAt);
-        const framesAt = timestamp();
-        // Cross-origin frames: child DOM under the owner, or an opaque region.
-        const frames = await this.frames.attach(world, stream, snap.nodes.filter(r => r.foreign).map(r => r.id), maskPolicy(stream, policy), tab);
-        this.host.timing?.('mirror2_frames', framesAt);
         this.opaque(snap.nodes, frames.opaque);
         return this.frames.project(stream, { ...snap, sheets: [], nodes: [...snap.nodes, ...frames.records], ops: this.viewerOps(stream, [...(snap.ops ?? []), ...frames.ops, ...sheetOps]), resources: [...snap.resources, ...(frames.resources ?? [])] });
       }

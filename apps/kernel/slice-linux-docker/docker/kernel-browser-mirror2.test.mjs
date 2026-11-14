@@ -851,6 +851,25 @@ test('MIRROR-P3-FOLLOWUP the full text of every sheet a delta reports travels in
  assert.deepEqual(css(rest),['d'],'and arrives on the next credit');
 });
 
+test('MIRROR-P2-SHEETS-COLD a first paint reads its sheets while the closed roots and child frames are inspected', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
+ const host={protection:policy,generation:1,pageSize,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});
+ mirror.evaluate=async(_,expression)=>expression.startsWith('m.snapshot')?{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'div',attrs:{}}],sheets:[{id:'s1',url:'a.css'}],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true}:{ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],focused:null,selection:null,fragment:null};
+ const events=[];let releaseClosed;const closed=new Promise(resolve=>{releaseClosed=resolve});
+ mirror.markClosedHosts=async()=>{events.push('closed start');await closed;events.push('closed end')};
+ mirror.frames={attach:async()=>{events.push('frames');return{records:[],ops:[],opaque:[]}},drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.tiles=async()=>[];
+ mirror.sheetOps=async()=>{events.push('sheets start');await new Promise(resolve=>setTimeout(resolve,20));events.push('sheets end');return[]};mirror.encode=async(_,packet)=>packet;
+ const packet=mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:0,wait_ms:0},'scope');
+ for(let waited=0;waited<500&&!events.includes('sheets end');waited+=10)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.deepEqual(events,['sheets start','closed start','sheets end'],'the sheets are read while the closed roots are inspected');
+ releaseClosed();await packet;
+ assert.deepEqual(events.slice(0,5),['sheets start','closed start','sheets end','closed end','frames'],'the child frames follow the closed roots');
+});
+
 test('F-5 a page resize during an observation re-snapshots the stream without refusing input as a stale protection policy', async () => {
  const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
  const connection={isOpen:()=>true,send:async()=>({})};
