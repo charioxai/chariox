@@ -1187,6 +1187,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "7ef801b74f003e27504be203d267659109f9effd0eba7169bc432815686dfaad"
+        "f6f49cd068ecbc19af419499e19c22af78f1d302cbe4022abdcdcdf5486e763e"
     );
 }

@@ -377,7 +377,10 @@ impl KernelRuntimeState {
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         if matches!(
             tool_name,
-            "chariox.machines.acquire" | "chariox.machines.status" | "chariox.machines.release"
+            "chariox.machines.options"
+                | "chariox.machines.acquire"
+                | "chariox.machines.status"
+                | "chariox.machines.release"
         ) {
             return self.machine_tool(auth_token, tool_name, arguments).await;
         }
