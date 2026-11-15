@@ -222,6 +222,14 @@ pub struct AppInstallationSummary {
     /// Filled by `ListAppInstallations` and `GetAppInstallation`; empty without an active release.
     #[serde(default)]
     pub events: Vec<AppEventSummary>,
+    /// How many standing permissions the owner has given this installation's actions
+    /// (`ListAppStanding` lists them). Filled with `events`; absent when none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub standing_permissions: u32,
+}
+
+fn is_zero(count: &u32) -> bool {
+    *count == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -456,6 +464,46 @@ pub struct AppAccountSummary {
     pub vault_credential_id: String,
     pub allow: chariox_app_package::RouteSafety,
     pub bound_at_ms: u64,
+}
+
+/// Lets one action class run without its card in one repository, for an account the owner
+/// bound. Only the owner makes it, here; an App or an agent has no way to. `class` is one of
+/// the closed set (`merge`, `close`, `delete_branch`, `review`): there is none for a force
+/// push, for deleting a default branch or for any grant. `expires_at_ms` absent: until
+/// revoked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantAppStandingRequest {
+    pub installation_id: String,
+    pub account: String,
+    /// `owner/name`.
+    pub repo: String,
+    pub class: chariox_app_package::v2::StandingClass,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevokeAppStandingRequest {
+    pub installation_id: String,
+    pub standing_id: String,
+}
+
+/// A standing permission the owner gave. `uses` and `last_used_ms` say how often the card was
+/// skipped under it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppStandingSummary {
+    pub standing_id: String,
+    pub account: String,
+    pub repo: String,
+    pub class: chariox_app_package::v2::StandingClass,
+    pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+    pub uses: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_ms: Option<u64>,
 }
 
 /// A credentialed destination the active release declares, with the most

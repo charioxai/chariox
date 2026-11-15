@@ -14,6 +14,59 @@ impl Drop for CancelOnDrop {
     }
 }
 
+/// Whether the backend tool `tool` is an action whose approval or confirmation card only the
+/// view path (`chariox.app_view_invoke`) raises.
+fn needs_view_path(actions: &[chariox_app_package::v2::UiActionDeclaration], tool: &str) -> bool {
+    use chariox_app_package::v2::UiActionEffect::{Approval, PersonConfirmed};
+    actions
+        .iter()
+        .any(|action| action.name == tool && matches!(action.effect, Approval | PersonConfirmed))
+}
+
+#[cfg(test)]
+mod needs_view_path_tests {
+    use super::*;
+    use chariox_app_package::v2::{UiActionDeclaration, UiActionEffect};
+
+    fn action(name: &str, effect: UiActionEffect) -> UiActionDeclaration {
+        serde_json::from_value(serde_json::json!({
+            "name": name, "description": "d", "inputSchema": {"type": "object"},
+            "effect": match effect {
+                UiActionEffect::Read => "read",
+                UiActionEffect::Write => "write",
+                UiActionEffect::Approval => "approval",
+                UiActionEffect::PersonConfirmed => "person_confirmed",
+            },
+            "approvalReason": (effect == UiActionEffect::Approval).then_some("why"),
+            "confirmationView": (effect == UiActionEffect::PersonConfirmed).then_some("preview"),
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn only_an_action_that_asks_the_person_must_go_through_the_view() {
+        let actions = vec![
+            action("get_pull_request", UiActionEffect::Read),
+            action("comment", UiActionEffect::Write),
+            action("approve", UiActionEffect::Approval),
+            action("merge_pull_request", UiActionEffect::PersonConfirmed),
+        ];
+        for tool in ["approve", "merge_pull_request"] {
+            assert!(needs_view_path(&actions, tool), "{tool}");
+        }
+        for tool in ["get_pull_request", "comment", "undeclared"] {
+            assert!(!needs_view_path(&actions, tool), "{tool}");
+        }
+        let refused = app_call_errors::needs_approval_path("merge_pull_request", "github");
+        assert_eq!(refused.0, "USE_APP_VIEW_INVOKE");
+        assert!(
+            refused.1.contains("chariox.app_view_invoke"),
+            "{}",
+            refused.1
+        );
+    }
+}
+
 impl KernelRuntimeState {
     /// `caller_run_id` is the provider run that made the call: the local run,
     /// or a leased agent's worker run.
@@ -75,6 +128,14 @@ impl KernelRuntimeState {
         );
         if tool.version_hash.as_deref() != Some(expected_version.as_str()) {
             return Err(unavailable());
+        }
+        // An action the person must approve is asked for only on the view path: a tool call
+        // would run it without the card, whatever the App's own code checks.
+        if needs_view_path(lease.catalog().app_catalog().ui_actions(), &tool.tool_name) {
+            return Err(coded(app_call_errors::needs_approval_path(
+                &tool.tool_name,
+                &tool.name,
+            )));
         }
         let slot = lease
             .reserve_call(Duration::from_secs(30))

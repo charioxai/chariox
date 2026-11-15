@@ -39,9 +39,62 @@ pub struct UiActionDeclaration {
     /// Shown in the approval interaction; required for, and only for, `approval`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_reason: Option<String>,
-    /// The App's registered compact view, required only for `person_confirmed`.
+    /// What shows the person the exact input, required only for `person_confirmed`: the App's
+    /// registered compact view (a page), or, for an App whose backend serves its view, the
+    /// backend tool that answers with the preview rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirmation_view: Option<String>,
+    /// What the owner may stand-grant for this action, so a repository they trust skips its
+    /// card. Only an action that asks (`approval`, `person_confirmed`) can carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing: Option<StandingDeclaration>,
+}
+
+/// The classes of action an owner may stand-grant. Closed on purpose: force pushes, deleting
+/// a default branch and every grant itself are not in it, so no standing permission names them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StandingClass {
+    Merge,
+    Close,
+    DeleteBranch,
+    Review,
+}
+
+impl StandingClass {
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Merge => "merge",
+            Self::Close => "close",
+            Self::DeleteBranch => "delete_branch",
+            Self::Review => "review",
+        }
+    }
+
+    pub fn from_word(word: &str) -> Option<Self> {
+        [Self::Merge, Self::Close, Self::DeleteBranch, Self::Review]
+            .into_iter()
+            .find(|class| class.word() == word)
+    }
+}
+
+/// Which standing permission covers an action: its class, and the input property that names
+/// the repository (`owner/name`). The kernel reads the repository from the validated input,
+/// never from anything the App says afterwards.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StandingDeclaration {
+    pub class: StandingClass,
+    pub repo: String,
+}
+
+impl UiActionDeclaration {
+    /// The repository this call is about, when the action is stand-grantable.
+    pub fn standing_repo(&self, input: &Value) -> Option<(StandingClass, String)> {
+        let standing = self.standing.as_ref()?;
+        let repo = input.get(&standing.repo)?.as_str()?;
+        Some((standing.class, repo.to_ascii_lowercase()))
+    }
 }
 
 #[derive(Deserialize)]
@@ -93,6 +146,22 @@ pub(crate) fn read_ui_actions(bytes: &[u8], limits: &Limits) -> Result<Vec<UiAct
             );
         }
         validate_schema(&action.input_schema, true, limits)?;
+        if let Some(standing) = &action.standing {
+            let names_a_text_property = action.input_schema["properties"][&standing.repo]["type"]
+                == "string"
+                && action.input_schema["required"]
+                    .as_array()
+                    .is_some_and(|required| required.iter().any(|name| *name == standing.repo));
+            if !matches!(
+                action.effect,
+                UiActionEffect::Approval | UiActionEffect::PersonConfirmed
+            ) || !names_a_text_property
+            {
+                return invalid(
+                    "standing is for approval or person-confirmed actions whose required text input property names the repository",
+                );
+            }
+        }
         if let Some(output) = &action.output_schema {
             validate_schema(output, false, limits)?;
         }
@@ -108,6 +177,7 @@ pub enum UiActionField {
     Effect,
     ApprovalReason,
     ConfirmationView,
+    Standing,
     InputSchema,
     OutputSchema,
     Description,
@@ -119,6 +189,7 @@ impl fmt::Display for UiActionField {
             Self::Effect => "effect",
             Self::ApprovalReason => "approval reason",
             Self::ConfirmationView => "confirmation view",
+            Self::Standing => "standing permission",
             Self::InputSchema => "input schema",
             Self::OutputSchema => "output schema",
             Self::Description => "description",
@@ -197,6 +268,9 @@ pub fn check_registration(
     }
     if signed.confirmation_view != registered.confirmation_view {
         return differs(UiActionField::ConfirmationView);
+    }
+    if signed.standing != registered.standing {
+        return differs(UiActionField::Standing);
     }
     if !same_json(&signed.input_schema, &registered.input_schema) {
         return differs(UiActionField::InputSchema);

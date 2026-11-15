@@ -107,13 +107,26 @@ impl KernelRuntimeState {
                 "invalid_arguments",
                 "an action call names its action",
             )),
-            // A preview is shown in the App's own Tab; a backend-served view has none.
-            (ViewAgentCallKind::PrepareConfirmation | ViewAgentCallKind::ClearConfirmation, _) => {
-                Err(failure(
-                    "confirmation_unavailable",
-                    "This action needs the person's confirmation in an App Tab: open the App in a Tab first.",
-                ))
+            // A backend-served view has no page to preview in: its own tool, the one the signed
+            // action names as its confirmation view, answers with the preview rows.
+            (ViewAgentCallKind::PrepareConfirmation, Some((action, input))) => {
+                let preview_tool = context
+                    .declared
+                    .iter()
+                    .find(|declared| declared.name == action)
+                    .and_then(|declared| declared.confirmation_view.clone())
+                    .ok_or_else(|| {
+                        failure(
+                            "confirmation_unavailable",
+                            "The signed action names no preview for the person to confirm",
+                        )
+                    })?;
+                run(preview_tool, input).await
             }
+            (ViewAgentCallKind::PrepareConfirmation, None) => {
+                Err(failure("invalid_arguments", "a preview names its action"))
+            }
+            (ViewAgentCallKind::ClearConfirmation, _) => Ok(Value::Null),
             (ViewAgentCallKind::Changes, _) => {
                 let ViewHost::Backend { changes: true } = context.host else {
                     return Err(failure(

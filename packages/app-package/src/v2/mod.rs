@@ -26,8 +26,8 @@ pub use package::{
     VerifiedPackageV2, MAX_REVIEWS, MAX_REVIEW_BYTES, REVIEW_DIR, REVIEW_SCHEMA,
 };
 pub use ui_actions::{
-    check_agreement, check_registration, UiActionDeclaration, UiActionEffect, UiActionField,
-    UiActionMismatch,
+    check_agreement, check_registration, StandingClass, StandingDeclaration, UiActionDeclaration,
+    UiActionEffect, UiActionField, UiActionMismatch,
 };
 pub use view_agent::{
     check_input, check_registered, find_declared, plan_batch, BatchPlan, ViewActionError,

@@ -43,6 +43,7 @@ pub(crate) mod app_publishers;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_snapshot_restore;
 pub(crate) mod app_snapshots;
+pub(crate) mod app_standing;
 pub(crate) mod app_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_tools;
@@ -236,6 +237,7 @@ enum DurableWriterRequest {
     AppHostAction(Box<app_host_actions::HostActionRequest>),
     AppConnectionGrant(Box<app_connections::ConnectionGrantRequest>),
     AppAccount(Box<app_accounts::AccountRequest>),
+    AppStanding(Box<app_standing::StandingRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
     AppAutomation(Box<app_automations::AppAutomationRequest>),
     AgentLifecycle(Box<agent_lifecycle::Request>),
@@ -471,6 +473,7 @@ impl DurableKernelStateStore {
             .and_then(|()| app_host_actions::initialize(&connection))
             .and_then(|()| app_connections::initialize(&connection))
             .and_then(|()| app_accounts::initialize(&connection))
+            .and_then(|()| app_standing::initialize(&connection))
             .map_err(|_| DaemonError::LocalTransport {
                 operation: "durable_state.app_file_grants",
                 message: "App file grant schema could not be initialized".into(),
@@ -1743,6 +1746,10 @@ fn run_durable_writer_with(
             }
             DurableWriterRequest::AppAccount(request) => {
                 app_accounts::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppStanding(request) => {
+                app_standing::execute(&mut connection, *request);
                 continue;
             }
             DurableWriterRequest::AppConnectionGrant(request) => {

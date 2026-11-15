@@ -43,6 +43,11 @@ const shared: Record<string, string[][]> = {
     ["account", "grant", "install-1", "work", "github", "entry-1", "--allow", "write"],
     ["account", "revoke", "install-1", "work"],
   ],
+  standing: [
+    ["standing", "list", "install-1"],
+    ["standing", "grant", "install-1", "work", "owner/repo", "merge", "--days", "7"],
+    ["standing", "revoke", "install-1", "standing-1"],
+  ],
   file: [["file", "revoke", "install-1"], ["file", "revoke", "install-1", "operation-1"]],
 }
 
@@ -136,6 +141,7 @@ test("App command parity snapshot", () => {
     "inbox: cli=inbox list|add|remove|pause|resume|test INSTALLATION … | tui=inbox list|add|remove|pause|resume|test INSTALLATION …",
     "connection: cli=connection list|grant|revoke INSTALLATION … | tui=connection list|grant|revoke INSTALLATION …",
     "account: cli=account list|grant|revoke INSTALLATION … | tui=account list|grant|revoke INSTALLATION …",
+    "standing: cli=standing list|grant|revoke INSTALLATION … | tui=standing list|grant|revoke INSTALLATION …",
     'file: cli=file revoke INSTALLATION [OPERATION] | tui=file grant OPERATION "FILE"… | file save OPERATION "PATH" | file revoke INSTALLATION [OPERATION]',
   ])
   assert.match(cliAppUsage(), /chariox app create\|keygen\|manifest\|validate\|pack\|inspect\|install\|update\|list\|actions\|set\|/)

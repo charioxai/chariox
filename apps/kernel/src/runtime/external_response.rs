@@ -240,6 +240,7 @@ response_policies! {
         AppInboxRoutes,
         AppConnections,
         AppAccounts,
+        AppStanding,
         AppSet,
         DeploymentAppsPreview,
         DeploymentAppsConsent,

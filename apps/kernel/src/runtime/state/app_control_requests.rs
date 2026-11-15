@@ -47,6 +47,9 @@ impl KernelRuntimeState {
             | LocalDaemonRequest::GrantAppAccount(_)
             | LocalDaemonRequest::RevokeAppAccount(_)
             | LocalDaemonRequest::ListAppAccounts(_)
+            | LocalDaemonRequest::GrantAppStanding(_)
+            | LocalDaemonRequest::RevokeAppStanding(_)
+            | LocalDaemonRequest::ListAppStanding(_)
             | LocalDaemonRequest::RevokeAppFileGrants(_) => {
                 Box::pin(self.execute_app_control_request_selected(command, request))
             }
@@ -170,6 +173,9 @@ impl KernelRuntimeState {
             LocalDaemonRequest::GrantAppAccount(request) => &request.installation_id,
             LocalDaemonRequest::RevokeAppAccount(request) => &request.installation_id,
             LocalDaemonRequest::ListAppAccounts(request) => &request.installation_id,
+            LocalDaemonRequest::GrantAppStanding(request) => &request.installation_id,
+            LocalDaemonRequest::RevokeAppStanding(request) => &request.installation_id,
+            LocalDaemonRequest::ListAppStanding(request) => &request.installation_id,
             LocalDaemonRequest::RevokeAppFileGrants(request) => &request.installation_id,
             _ => return None,
         };
@@ -456,6 +462,13 @@ impl KernelRuntimeState {
             | LocalDaemonRequest::RevokeAppAccount(_)
             | LocalDaemonRequest::ListAppAccounts(_)) => {
                 return self.app_account_request(owner, installation, request).await;
+            }
+            request @ (LocalDaemonRequest::GrantAppStanding(_)
+            | LocalDaemonRequest::RevokeAppStanding(_)
+            | LocalDaemonRequest::ListAppStanding(_)) => {
+                return self
+                    .app_standing_request(owner, installation, request)
+                    .await;
             }
             LocalDaemonRequest::UninstallApp(request) => {
                 return self

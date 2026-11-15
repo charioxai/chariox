@@ -207,6 +207,8 @@ export type AppConfirmationFrame = {
   publisher_id: string
   publisher_name: string
   action_name: string
+  /** The App's own rows for this exact input, when no App Tab shows the preview. Plain text. */
+  preview?: { label: string; value: string }[]
 }
 
 /** One card payment the owner approves. `origin` is the page the kernel observed;

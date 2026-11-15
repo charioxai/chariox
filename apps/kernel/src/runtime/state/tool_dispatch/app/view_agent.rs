@@ -6,6 +6,7 @@
 //! only after known secret values are scrubbed.
 
 use super::*;
+use crate::durable_state::app_standing::StandingCommand;
 use crate::runtime::{
     app_view_authority::{self, AppViewAuthority},
     app_views::AppViewBinding,
@@ -348,17 +349,60 @@ impl KernelRuntimeState {
             declared_actions::find_declared(&context.declared, name).map_err(action_error)?;
         declared_actions::check_input(action, &input).map_err(action_error)?;
         self.check_view_claimed(agent, context)?;
-        if action.effect == UiActionEffect::Approval {
+        let standing = self.standing_covers(context, action, &input).await?;
+        if action.effect == UiActionEffect::Approval && !standing {
             self.approve_view_action(run_id, agent, context, action, &input)
                 .await?;
         }
         let _turn = self.view_turn(context).await?;
         // The preview shares the page with the action, so the turn is held from the card to the run.
-        if action.effect == UiActionEffect::PersonConfirmed {
+        if action.effect == UiActionEffect::PersonConfirmed && !standing {
             self.confirm_view_action(run_id, agent, context, action, &input)
                 .await?;
         }
         self.run_in_view(context, name, input).await
+    }
+
+    /// Whether the owner's standing permission for this repository and action class covers the
+    /// call, so its card is not raised. Only what the signed declaration names can be covered,
+    /// read from the validated input; the use is counted for the owner to see.
+    async fn standing_covers(
+        &self,
+        context: &ViewContext,
+        action: &UiActionDeclaration,
+        input: &Value,
+    ) -> Result<bool, ViewError> {
+        let Some((class, repo)) = action.standing_repo(input) else {
+            return Ok(false);
+        };
+        let store = self.owned.durable_state_store.clone();
+        let (owner, installation) = (
+            context.binding.owner.clone(),
+            context.binding.installation.clone(),
+        );
+        let covering = tokio::task::spawn_blocking(move || {
+            store.app_standing_command(StandingCommand::Use {
+                owner,
+                installation,
+                repo,
+                class,
+                now_ms: crate::session::unix_epoch_ms(),
+            })
+        })
+        .await
+        .map_err(|_| {
+            failure(
+                "storage_unavailable",
+                "Standing permissions could not be read; retry",
+            )
+        })?
+        .map_err(|_| {
+            failure(
+                "storage_unavailable",
+                "Standing permissions could not be read; retry",
+            )
+        })?;
+        Ok(covering.is_some())
     }
 
     /// An owner's App Tab is driven only by an agent that claimed it. Checked

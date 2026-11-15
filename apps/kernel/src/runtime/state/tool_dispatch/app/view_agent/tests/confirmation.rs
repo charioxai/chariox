@@ -3,6 +3,7 @@
 use super::*;
 use crate::local::AppConfirmationFrame;
 use crate::runtime::state::room_cards::AgentInteractionAnswer;
+use crate::runtime::state::tool_dispatch::app::view_agent::confirmation::checked_preview;
 
 const TAB: &str = "host-tab-native-test";
 
@@ -14,6 +15,7 @@ fn frame() -> AppConfirmationFrame {
         publisher_id: "com.chariox".into(),
         publisher_name: "Chariox".into(),
         action_name: "pay".into(),
+        preview: None,
     }
 }
 
@@ -280,4 +282,155 @@ async fn an_action_that_needs_a_person_never_runs_in_a_view_without_a_tab() {
         .active_interactions()
         .iter()
         .all(|i| !i.id().starts_with("app-confirm-")));
+}
+
+fn rows() -> Vec<crate::local::AppConfirmationPreviewRow> {
+    [
+        "Repository|charioxai/drill",
+        "Pull request|#7 Add a README",
+        "Method|squash",
+    ]
+    .iter()
+    .map(|row| {
+        let (label, value) = row.split_once('|').unwrap();
+        crate::local::AppConfirmationPreviewRow {
+            label: label.into(),
+            value: value.into(),
+        }
+    })
+    .collect()
+}
+
+fn backend_context(rig: &Rig) -> ViewContext {
+    let mut context = rig.context(declared());
+    context.host = ViewHost::Backend { changes: false };
+    context
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_backend_served_view_asks_on_a_card_with_the_apps_rows_and_no_app_tab() {
+    let mut rig = rig();
+    rig.grant().await;
+    let context = backend_context(&rig);
+    let input = json!({"repo": "charioxai/drill", "number": 7});
+    let mut with_rows = frame();
+    with_rows.preview = Some(rows());
+    let ask = rig.runtime.ask_person_to_confirm(
+        rig.run.id(),
+        &rig.agent,
+        &context,
+        with_rows.clone(),
+        &input,
+    );
+    let (outcome, ()) = tokio::join!(ask, async {
+        let card = pending_confirmation(&rig).await;
+        assert_eq!(card.app_confirmation(), Some(&with_rows));
+        assert!(card.view().is_none(), "no App Tab, no protected region");
+        assert_eq!(
+            card.choices().iter().map(|c| c.id()).collect::<Vec<_>>(),
+            ["confirm", "cancel"]
+        );
+        assert!(card.message().contains("Input: "), "{}", card.message());
+        rig.runtime
+            .resolve_runtime_interaction(&rig.session, card.id(), "confirm", None)
+            .await
+            .unwrap();
+    });
+    outcome.expect("the person's Confirm lets the action on, with no App Tab open");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_backend_card_is_cancelled_like_any_other_and_an_agent_cannot_answer_it() {
+    let mut rig = rig();
+    rig.grant().await;
+    let context = backend_context(&rig);
+    let mut with_rows = frame();
+    with_rows.preview = Some(rows());
+    let input = json!({});
+    let ask =
+        rig.runtime
+            .ask_person_to_confirm(rig.run.id(), &rig.agent, &context, with_rows, &input);
+    let (outcome, ()) = tokio::join!(ask, async {
+        let card = pending_confirmation(&rig).await;
+        let refused = rig.runtime.owned.resolve_runtime_interaction_routed(
+            &rig.session,
+            card.id(),
+            "confirm",
+            None,
+            Some("alice"),
+            false,
+            None,
+            false,
+            false,
+            None,
+            Some(AgentInteractionAnswer::Holder(rig.agent.id())),
+        );
+        assert!(refused.is_err(), "an agent confirmed a person's card");
+        rig.runtime
+            .resolve_runtime_interaction(&rig.session, card.id(), "cancel", None)
+            .await
+            .unwrap();
+    });
+    assert_eq!(outcome.unwrap_err().code, "confirmation_declined");
+}
+
+#[tokio::test]
+async fn a_backend_served_view_that_cannot_show_its_rows_never_raises_a_card() {
+    let mut rig = rig();
+    rig.grant().await;
+    let mut declared = declared();
+    declared.push(action("pay", UiActionEffect::PersonConfirmed));
+    let mut context = rig.context(declared);
+    context.host = ViewHost::Backend { changes: false };
+    let refused = rig
+        .runtime
+        .invoke_declared(
+            rig.run.id(),
+            &rig.agent,
+            &context,
+            "pay",
+            json!({"text": "1"}),
+        )
+        .await;
+    assert!(refused.is_err(), "no running backend answers the preview");
+    let session = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session)
+        .unwrap();
+    assert!(session
+        .active_interactions()
+        .iter()
+        .all(|i| !i.id().starts_with("app-confirm-")));
+}
+
+#[test]
+fn a_backend_preview_is_bounded_plain_rows_and_nothing_else() {
+    let ok = json!({"rows": [{"label": "Repository", "value": "o/r"}]});
+    assert_eq!(checked_preview(ok).unwrap().len(), 1);
+    let long = "x".repeat(401);
+    let many: Vec<Value> = (0..13)
+        .map(|n| json!({"label": format!("l{n}"), "value": "v"}))
+        .collect();
+    for bad in [
+        json!(["rows"]),
+        json!({}),
+        json!({"rows": []}),
+        json!({"rows": many}),
+        json!({"rows": [{"label": "a", "value": "b"}], "html": "<b>"}),
+        json!({"rows": [{"label": "a"}]}),
+        json!({"rows": [{"label": "a", "value": "b", "style": "x"}]}),
+        json!({"rows": [{"label": "", "value": "b"}]}),
+        json!({"rows": [{"label": "a", "value": long}]}),
+        json!({"rows": [{"label": "a", "value": "b\u{0}c"}]}),
+        json!({"rows": [{"label": "a\nb", "value": "c"}]}),
+        json!({"rows": [{"label": 1, "value": "c"}]}),
+    ] {
+        assert_eq!(
+            checked_preview(bad.clone()).unwrap_err().code,
+            "view_error",
+            "{bad}"
+        );
+    }
 }

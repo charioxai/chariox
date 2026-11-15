@@ -198,6 +198,23 @@ export function listAppAccountsRequest(installationId: string) {
   return { ListAppAccounts: { installation_id: installationId } }
 }
 
+export type AppStandingClass = "merge" | "close" | "delete_branch" | "review"
+
+/** The owner lets an action class run without its card in one repository (`owner/name`), for a bound account. */
+export function grantAppStandingRequest(
+  installationId: string, account: string, repo: string, standingClass: AppStandingClass, expiresAtMs?: number,
+) {
+  return { GrantAppStanding: { installation_id: installationId, account, repo, class: standingClass, ...(expiresAtMs === undefined ? {} : { expires_at_ms: expiresAtMs }) } }
+}
+
+export function revokeAppStandingRequest(installationId: string, standingId: string) {
+  return { RevokeAppStanding: { installation_id: installationId, standing_id: standingId } }
+}
+
+export function listAppStandingRequest(installationId: string) {
+  return { ListAppStanding: { installation_id: installationId } }
+}
+
 export function removeAppInboxRouteRequest(installationId: string, routeId: string) {
   return { RemoveAppInboxRoute: { installation_id: installationId, route_id: routeId } }
 }

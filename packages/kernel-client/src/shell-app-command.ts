@@ -6,9 +6,10 @@ import {
   removeAppInboxRouteRequest, setAppInboxRoutePausedRequest, pauseAppAutomationRequest, testAppInboxRouteRequest,
   grantAppConnectionRequest, revokeAppConnectionRequest, listAppConnectionsRequest, getAppSetRequest,
   grantAppAccountRequest, revokeAppAccountRequest, listAppAccountsRequest, type AppAccountAllow,
+  grantAppStandingRequest, revokeAppStandingRequest, listAppStandingRequest, type AppStandingClass,
   revokeAppFileGrantsRequest, inspectAppViewRequest,
 } from "./ipc-app-requests.js"
-import type { AppViewCatalog, AppViewInspection, AppAutomationSummary, AppAccountSummary, AppConnectionSummary, AppCredentialSummary, AppInboxRouteSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
+import type { AppViewCatalog, AppViewInspection, AppAutomationSummary, AppAccountSummary, AppConnectionSummary, AppStandingSummary, AppCredentialSummary, AppInboxRouteSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
 import { LocalIpcError } from "./local-ipc-error.js"
 import type { ShellCommandResult } from "./shell-core.js"
 
@@ -27,6 +28,7 @@ const usage = [
   "       app inbox test <installation-id> <route-id> <occurrence-id> '<json-payload>'",
   "       app connection list <installation-id> | grant <installation-id> <generator>/<connection-id> | revoke <installation-id> <connection-id>",
   "       app account list <installation-id> | grant <installation-id> <account> <credential> <vault-entry-id> [--allow read|write|destructive] | revoke <installation-id> <account>",
+  "       app standing list <installation-id> | grant <installation-id> <account> <owner/repo> <merge|close|delete_branch|review> [--days <n>|--never] | revoke <installation-id> <standing-id>",
   "       app file revoke <installation-id> [<operation-id>]",
 ].join("\n")
 
@@ -121,6 +123,16 @@ export async function executeAppCommand(
     else if (verb === "grant" && installation && account && credential && entry && (allow === "read" || allow === "write" || allow === "destructive")) {
       request = grantAppAccountRequest(installation, account, credential, entry, allow as AppAccountAllow)
     } else return { ok: false, message: usage }
+  } else if (action === "standing") {
+    const [verb, installation, account, repo, standingClass, ...flags] = rest
+    const day = 24 * 60 * 60 * 1000
+    // A standing permission ends in 30 days unless the owner says otherwise.
+    const days = flags.length === 0 ? 30 : flags.length === 2 && flags[0] === "--days" && /^[1-9][0-9]{0,3}$/.test(flags[1]!) ? Number(flags[1]) : flags.length === 1 && flags[0] === "--never" ? null : undefined
+    if (verb === "list" && installation && rest.length === 2) request = listAppStandingRequest(installation)
+    else if (verb === "revoke" && installation && account && rest.length === 3) request = revokeAppStandingRequest(installation, account)
+    else if (verb === "grant" && installation && account && repo && days !== undefined && (standingClass === "merge" || standingClass === "close" || standingClass === "delete_branch" || standingClass === "review")) {
+      request = grantAppStandingRequest(installation, account, repo, standingClass as AppStandingClass, days === null ? undefined : Date.now() + days * day)
+    } else return { ok: false, message: usage }
   } else if (action === "file" && rest[0] === "revoke" && rest[1] && rest.length <= 3) {
     request = revokeAppFileGrantsRequest(rest[1], rest[2])
   } else if (action === "automation") {
@@ -139,7 +151,7 @@ export async function executeAppCommand(
     const check = action === "uninstall" ? `app status ${rest[0]}` : `app worker ${rest[0]}`
     return { ok: false, message: `The kernel did not answer, so the ${action} may still happen. Check with ${check} before trying again.` }
   }
-  if (response.AppRequestFailed) return appFailure(response, action === "connection" || action === "account" || action === "file" ? `${action} ${rest[0]}` : action)
+  if (response.AppRequestFailed) return appFailure(response, action === "connection" || action === "account" || action === "standing" || action === "file" ? `${action} ${rest[0]}` : action)
   if (response.AppLogs) {
     const data = expect<{ installation_id: string; entries: AppLogEntry[] }>(response, "AppLogs")
     const lines = data.entries.map(formatLogEntry)
@@ -184,6 +196,11 @@ export async function executeAppCommand(
     const wants = data.credentials.map((c) => `${c.credential} · ${c.origin} · ${c.routes} routes up to ${c.safety}`)
     const bound = data.accounts.map((a) => `${a.account} · ${a.credential} · entry ${a.vault_credential_id} · allows ${a.allow}`)
     return { ok: true, message: [...wants.map((line) => `needs ${line}`), ...bound].join("\n") || "This App declares no credentialed destination.", data }
+  }
+  if (response.AppStanding) {
+    const data = expect<{ installation_id: string; standing: AppStandingSummary[] }>(response, "AppStanding")
+    const lines = data.standing.map((s) => `${s.standing_id} · ${s.repo} · ${s.class} · account ${s.account} · ${s.expires_at_ms === undefined ? "until revoked" : `until ${new Date(s.expires_at_ms).toISOString()}`} · used ${s.uses}×`)
+    return { ok: true, message: lines.join("\n") || "No standing permissions for this App.", data }
   }
   if (response.AppFileGrantsRevoked) {
     const data = expect<{ installation_id: string; requests: number; files: number }>(response, "AppFileGrantsRevoked")
@@ -372,12 +389,15 @@ function appFailure(response: Record<string, unknown>, action?: string): ShellCo
       : action === "inbox" ? "Not found: check the App installation and route."
       : action?.startsWith("connection") ? "Not found: check the App installation and the connection id."
       : action?.startsWith("account") ? "Not found: check the App installation and the account name."
+      : action?.startsWith("standing") ? "Not found: bind the account first (app account grant), and check the App installation and the standing permission id."
       : action === "file revoke" ? "Not found: check the App installation and the file request id."
       : "App installation not found.",
     invalid_request: action === "inbox"
       ? "Invalid App request: the event must be one the App declares as incoming, and a payload must match its schema."
       : action === "account grant"
         ? "Invalid App request: the App must declare this credential, and the Vault entry must be made for HTTP use at its origin (chariox.vault.copy_for_use makes one)."
+      : action === "standing grant"
+        ? "Invalid App request: the repository must be owner/name, the expiry in the future, and the App must declare an action of this class."
       : action === "connection grant"
         ? "Invalid App request: the App's signed manifest must declare this generator under capabilities.connections."
         : "Invalid App request.",

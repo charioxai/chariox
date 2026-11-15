@@ -796,6 +796,10 @@ mod tests {
                 "app-account-list",
                 "app-account-grant",
                 "app-account-revoke",
+                "app-standing",
+                "app-standing-list",
+                "app-standing-grant",
+                "app-standing-revoke",
                 "app-file-revoke",
             ]
         );
@@ -1009,6 +1013,30 @@ mod tests {
             (
                 "app-account-revoke",
                 "/app account revoke ",
+                Kernel,
+                vec![Session, WaitingRoom],
+            ),
+            (
+                "app-standing",
+                "/app standing ",
+                Kernel,
+                vec![Session, WaitingRoom],
+            ),
+            (
+                "app-standing-list",
+                "/app standing list ",
+                Kernel,
+                vec![Session, WaitingRoom],
+            ),
+            (
+                "app-standing-grant",
+                "/app standing grant ",
+                Kernel,
+                vec![Session, WaitingRoom],
+            ),
+            (
+                "app-standing-revoke",
+                "/app standing revoke ",
                 Kernel,
                 vec![Session, WaitingRoom],
             ),

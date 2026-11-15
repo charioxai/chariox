@@ -63,6 +63,7 @@ mod app_dev_runtime;
 mod app_event_delivery_owned_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_event_routing_runtime;
+mod app_standing_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) use app_event_routing_runtime::{
     Acting, ConnectionView, RouteSpec, RouteView, RoutingError, RoutingScope, TargetView,

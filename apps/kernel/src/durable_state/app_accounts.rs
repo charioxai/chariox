@@ -174,6 +174,31 @@ fn apply(connection: &mut Connection, command: AccountCommand) -> Result<(), &'s
             if existing >= MAX_ACCOUNTS {
                 return Err("LIMIT_EXCEEDED");
             }
+            // Another Vault entry may be another person's account: what was stood-granted under the
+            // old one is not carried over.
+            let replaced: i64 = transaction
+                .query_row(
+                    "SELECT count(*) FROM app_account_bindings
+                     WHERE owner_id=?1 AND installation_id=?2 AND account=?3
+                       AND vault_credential_id<>?4",
+                    params![
+                        owner,
+                        installation,
+                        binding.account,
+                        binding.vault_credential_id
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(storage)?;
+            if replaced > 0 {
+                super::app_standing::forget_account(
+                    &transaction,
+                    &owner,
+                    &installation,
+                    &binding.account,
+                )
+                .map_err(storage)?;
+            }
             // Binding an account again replaces its entry and level.
             transaction
                 .execute(
@@ -208,6 +233,8 @@ fn apply(connection: &mut Connection, command: AccountCommand) -> Result<(), &'s
             if removed == 0 {
                 return Err("NOT_FOUND");
             }
+            super::app_standing::forget_account(&transaction, &owner, &installation, &account)
+                .map_err(storage)?;
         }
     }
     transaction.commit().map_err(storage)

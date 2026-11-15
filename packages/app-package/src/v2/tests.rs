@@ -658,6 +658,7 @@ fn a_mismatch_names_the_action_and_the_part_that_differs() {
         effect: UiActionEffect::Write,
         approval_reason: None,
         confirmation_view: None,
+        standing: None,
     }];
     let mut registered = declared.clone();
     registered[0].effect = UiActionEffect::Read;
@@ -921,4 +922,92 @@ fn generic_verifier_refuses_a_signed_unknown_required_feature() {
         code(crate::verify_app(&bytes, &generic)),
         crate::ErrorCode::InvalidManifest
     );
+}
+
+fn actions_with_standing(
+    effect: &str,
+    standing: Value,
+    properties: Value,
+) -> crate::Result<Vec<UiActionDeclaration>> {
+    let mut action = json!({
+        "name": "merge_pull_request", "description": "Merge", "effect": effect,
+        "inputSchema": {"type": "object", "additionalProperties": false, "properties": properties, "required": ["repo"]},
+        "standing": standing
+    });
+    match effect {
+        "approval" => action["approvalReason"] = json!("Merges the pull request"),
+        "person_confirmed" => action["confirmationView"] = json!("preview_merge"),
+        _ => {}
+    }
+    let document = serde_json::to_vec(&json!({"uiActions": [action]})).unwrap();
+    super::ui_actions::read_ui_actions(&document, &Limits::default())
+}
+
+#[test]
+fn a_standing_declaration_names_a_closed_class_and_the_required_text_property_with_the_repository()
+{
+    let repo = json!({"repo": {"type": "string"}});
+    let declared = actions_with_standing(
+        "person_confirmed",
+        json!({"class": "merge", "repo": "repo"}),
+        repo.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        declared[0].standing_repo(&json!({"repo": "Owner/Name"})),
+        Some((StandingClass::Merge, "owner/name".into()))
+    );
+    assert_eq!(declared[0].standing_repo(&json!({"other": 1})), None);
+    // Only what asks can carry it, and only a class that exists.
+    assert!(actions_with_standing(
+        "write",
+        json!({"class": "merge", "repo": "repo"}),
+        repo.clone()
+    )
+    .is_err());
+    assert!(actions_with_standing(
+        "person_confirmed",
+        json!({"class": "force_push", "repo": "repo"}),
+        repo.clone()
+    )
+    .is_err());
+    assert!(actions_with_standing(
+        "person_confirmed",
+        json!({"class": "merge", "repo": "missing"}),
+        repo.clone()
+    )
+    .is_err());
+    assert!(actions_with_standing(
+        "person_confirmed",
+        json!({"class": "merge", "repo": "repo"}),
+        json!({"repo": {"type": "integer"}})
+    )
+    .is_err());
+    assert!(actions_with_standing(
+        "person_confirmed",
+        json!({"class": "merge", "repo": "repo", "branch": "x"}),
+        repo
+    )
+    .is_err());
+}
+
+#[test]
+fn a_standing_declaration_cannot_be_added_in_the_runtime_registration() {
+    let signed: UiActionDeclaration = serde_json::from_value(json!({
+        "name":"merge_pull_request", "description":"Merge", "inputSchema":{"type":"object"},
+        "effect":"person_confirmed", "confirmationView":"preview_merge"
+    }))
+    .unwrap();
+    let mut registered = signed.clone();
+    registered.standing = Some(StandingDeclaration {
+        class: StandingClass::Merge,
+        repo: "repo".into(),
+    });
+    assert!(matches!(
+        check_registration(&[signed], &registered),
+        Err(UiActionMismatch::Differs {
+            field: UiActionField::Standing,
+            ..
+        })
+    ));
 }

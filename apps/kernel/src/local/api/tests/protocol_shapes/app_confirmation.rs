@@ -12,6 +12,7 @@ fn app_confirmation_shapes_are_pinned() {
         publisher_id: "com.chariox".into(),
         publisher_name: "Chariox".into(),
         action_name: "pay".into(),
+        preview: None,
     };
     let interaction = crate::session::RuntimeInteraction::new(
         "app-confirm-1",

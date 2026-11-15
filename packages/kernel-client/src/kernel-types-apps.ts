@@ -30,6 +30,8 @@ export type AppInstallationSummary = {
   app_id: string
   /** Outgoing events declared by the active verified release. */
   events?: { name: string; label: string }[]
+  /** How many standing permissions the owner gave this App's actions (absent when none). */
+  standing_permissions?: number
   /** Opaque decimal generation, never convert to a JavaScript number. */
   generation: string
   active_release: AppReleaseSummary | null
@@ -135,6 +137,18 @@ export interface AppAccountSummary {
   vault_credential_id: string
   allow: "read" | "write" | "destructive"
   bound_at_ms: number
+}
+
+/** A standing permission the owner gave: the action class runs without its card in this repository. */
+export interface AppStandingSummary {
+  standing_id: string
+  account: string
+  repo: string
+  class: "merge" | "close" | "delete_branch" | "review"
+  created_at_ms: number
+  expires_at_ms?: number
+  uses: number
+  last_used_ms?: number
 }
 
 /** A credentialed destination the App's release declares, with the most authority one of its routes needs. */
