@@ -752,6 +752,7 @@ impl CommandRouter {
                 let result = self.runtime_state.remote_job_policy(
                     &request.session_id,
                     request.agent_id.as_deref(),
+                    request.project,
                     &caller,
                 )?;
                 Ok(LocalDaemonResponse::RemoteJobPolicy { result })
@@ -761,6 +762,7 @@ impl CommandRouter {
                 let result = self.runtime_state.set_remote_job_policy(
                     &request.session_id,
                     request.agent_id.as_deref(),
+                    request.project,
                     &caller,
                     request.policy,
                 )?;

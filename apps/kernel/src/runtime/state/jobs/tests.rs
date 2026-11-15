@@ -415,6 +415,7 @@ async fn offload_job_runtime_budget_starts_after_queue_admission() {
         .set_remote_job_policy(
             &task.room_id,
             Some(&task.agent_id),
+            false,
             &task.owner_user_id,
             Some(crate::local::OffloadPolicy::WhenBusy),
         )
