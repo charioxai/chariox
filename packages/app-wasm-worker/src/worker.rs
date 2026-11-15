@@ -214,7 +214,7 @@ impl AppWorker {
         let instance = self.pre.instantiate_async(&mut store).await?;
         let worker = Worker::new(&mut store, &instance)?;
         worker
-            .chariox_app_handlers()
+            .chariox_app1_0_0_handlers()
             .call_register(&mut store)
             .await?
             .map_err(|error| {

@@ -24,7 +24,7 @@ wasmtime::component::bindgen!({
     world: "drill",
     exports: { "chariox:app/handlers.register": async },
 });
-use chariox::app::{
+use chariox::app1_0_0::{
     app_types::{AppError, InvocationContext, Occurrence, Receipt},
     events, registry, state,
 };
@@ -46,7 +46,7 @@ impl WasiView for Host {
         }
     }
 }
-impl chariox::app::app_types::Host for Host {}
+impl chariox::app1_0_0::app_types::Host for Host {}
 impl registry::Host for Host {
     fn tool(&mut self, name: String) {
         self.tools.push(name);
@@ -176,7 +176,7 @@ async fn instance() -> wasmtime::Result<(Store<Host>, Drill)> {
         },
     );
     let app = Drill::instantiate_async(&mut store, &component, &linker).await?;
-    app.chariox_app_handlers()
+    app.chariox_app1_0_0_handlers()
         .call_register(&mut store)
         .await?
         .unwrap();
@@ -212,7 +212,7 @@ async fn call(
                     std::future::pending::<wasmtime::Result<String>>(),
                 )
             })?;
-            let handlers = app.chariox_app_handlers();
+            let handlers = app.chariox_app1_0_0_handlers();
             match deliver {
                 Some(occurrence) => {
                     handlers

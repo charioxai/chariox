@@ -211,13 +211,14 @@ pub fn verify_app<'a>(
                 v2::RequiredFeature::Connections,
                 v2::RequiredFeature::DirectedEvents,
                 v2::RequiredFeature::CredentialedHttp,
+                v2::RequiredFeature::EventRouting,
             ]
             .into(),
-            ["chariox:app/app", "chariox:app/migration"]
-                .map(|name| v2::SupportedWorld {
+            [("chariox:app/app", 1), ("chariox:app/migration", 0)]
+                .map(|(name, minor)| v2::SupportedWorld {
                     name: name.into(),
                     major: 1,
-                    minor: 0,
+                    minor,
                 })
                 .into(),
             policy.trusted_publishers.clone(),

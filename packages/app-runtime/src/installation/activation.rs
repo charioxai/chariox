@@ -106,6 +106,15 @@ impl AuthoritySet {
                 atoms.insert(format!("connection:{}:{action}", connection.generator));
             }
         }
+        if let Some(routing) = &capabilities.event_routing {
+            atoms.insert(format!(
+                "event-routing-routes:{} {}",
+                routing.generator, routing.max_routes
+            ));
+            for event in &routing.incoming {
+                atoms.insert(format!("event-routing:{}:{event}", routing.generator));
+            }
+        }
         for action in actions {
             for route in &action.effect_routes {
                 let key = format!(

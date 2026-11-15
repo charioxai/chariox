@@ -12,8 +12,8 @@ pub mod bindings {
 
 pub mod view;
 
-pub use bindings::chariox::app::*;
-pub use bindings::exports::chariox::app::handlers::Guest;
+pub use bindings::chariox::app1_0_0::*;
+pub use bindings::exports::chariox::app1_0_0::handlers::Guest;
 pub use wit_bindgen::{FutureReader, StreamReader, StreamResult};
 
 use app_types::AppError;

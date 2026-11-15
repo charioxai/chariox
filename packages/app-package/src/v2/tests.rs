@@ -779,6 +779,58 @@ fn kernel_verifier_admits_the_registered_signed_migration_world() {
     ));
 }
 
+fn routing_fixture() -> Fixture {
+    let mut fixture = base();
+    if let Some(actions) = fixture.manifest.ui_actions.take() {
+        fixture.files.remove(&actions);
+    }
+    fixture.manifest.world = APP_WORLD_1_1.into();
+    fixture.manifest.capabilities.event_routing = Some(crate::EventRouting {
+        generator: "dev.chariox.github".into(),
+        incoming: vec!["pull_request".into()],
+        max_routes: 50,
+    });
+    fixture.manifest.required_features = fixture.manifest.derive_features();
+    let component = fixture.manifest.runtime.component.clone();
+    fixture
+        .files
+        .insert(component, components::build(APP_WORLD_1_1, false));
+    fixture
+}
+
+#[test]
+fn an_app_with_event_routing_needs_the_minor_world_its_feature_and_its_import() {
+    let routed = routing_fixture();
+    assert!(routed
+        .manifest
+        .required_features
+        .contains(&RequiredFeature::EventRouting));
+    let kernel = crate::VerificationPolicy::new(1009, policy().trusted_publishers);
+    assert!(matches!(
+        crate::verify_app(&packed(&routed, &[]), &kernel),
+        Ok(crate::VerifiedAppPackage::Wasm(_))
+    ));
+
+    // The capability without the minor world cannot be used: refused when signed.
+    let mut old_world = routing_fixture();
+    old_world.manifest.world = APP_WORLD.into();
+    assert!(old_world.manifest.validate(&Limits::default()).is_err());
+
+    // The feature list must match what the package uses.
+    let mut understated = routing_fixture();
+    understated.manifest.required_features = vec![RequiredFeature::WasmComponent];
+    assert!(understated.manifest.validate(&Limits::default()).is_err());
+
+    // A 1.0.0 component under a 1.1.0 manifest world is still a valid App; the
+    // import-bearing component is refused under 1.0.0 by the admission world.
+    let mut mismatched = routing_fixture();
+    mismatched.manifest.capabilities.event_routing = None;
+    mismatched.manifest.world = APP_WORLD.into();
+    mismatched.manifest.required_features = mismatched.manifest.derive_features();
+    let error = verify(&packed(&mismatched, &[]), &policy()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ImportNotAllowed);
+}
+
 #[test]
 fn idempotent_tool_policy_is_signed_and_defaults_to_no_retries() {
     let fixture = base();

@@ -14,6 +14,7 @@ wasmtime::component::bindgen!({
             import chariox:app/log@1.0.0;
             import chariox:app/host@1.0.0;
             import chariox:app/validation@1.0.0;
+            import chariox:app/event-routing@1.1.0;
             export chariox:app/handlers@1.0.0;
         }
     "#,

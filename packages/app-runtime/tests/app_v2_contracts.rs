@@ -7,7 +7,8 @@ use chariox_app_package::{v2::SignerPrincipal, ActionDeclaration, Capabilities, 
 use chariox_app_runtime::{
     installation::{
         activation::{
-            activation_entry, approval_requirement, check_source, commit_gate, AuthoritySet,
+            activation_entry, approval_requirement, check_source, commit_gate, ApprovalRequirement,
+            AuthoritySet,
         },
         channel::{
             check_immutable_version, resolve, AcquisitionSource, InstallationChannel,
@@ -173,6 +174,37 @@ fn authority_vectors() {
             },
         }
     });
+}
+
+#[test]
+fn event_routing_is_authority_the_owner_approves_again_when_it_grows() {
+    let routed = |max_routes: u32, incoming: &[&str]| -> AuthoritySet {
+        let capabilities: Capabilities = word(&json!({"eventRouting": {
+            "generator": "dev.chariox.github", "incoming": incoming, "maxRoutes": max_routes,
+        }}));
+        AuthoritySet::of(&capabilities, &[])
+    };
+    let base = routed(50, &["pull_request"]);
+    assert_eq!(
+        base.atoms().collect::<Vec<_>>(),
+        [
+            "event-routing-routes:dev.chariox.github 50",
+            "event-routing:dev.chariox.github:pull_request"
+        ]
+    );
+    for grown in [
+        routed(51, &["pull_request"]),
+        routed(50, &["pull_request", "push"]),
+    ] {
+        assert!(matches!(
+            approval_requirement(Some(&base), &grown),
+            ApprovalRequirement::Prompt { .. }
+        ));
+    }
+    assert!(matches!(
+        approval_requirement(Some(&base), &routed(50, &["pull_request"])),
+        ApprovalRequirement::Reuse
+    ));
 }
 
 #[test]
