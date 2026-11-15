@@ -3,6 +3,7 @@
 import { follower } from "./feed.js"
 import { markdownToHtml, sanitizeHtmlInto } from "./preview.js"
 import { skeleton } from "./skeleton.js"
+import { readUploads } from "./upload.js"
 
 document.getElementById("app").innerHTML = skeleton
 const $ = (id) => document.getElementById(id)
@@ -151,22 +152,24 @@ async function save() {
   }
 }
 
-// The owner chooses files in the terminal's trusted prompt, outside this view; the call returns
-// when they have chosen and imported documents are listed by the feed.
-$("import-docs").addEventListener("click", async () => {
-  const button = $("import-docs")
-  button.textContent = "Choose files in the prompt…"
-  button.disabled = true
-  try {
-    const { skipped } = await call("import_documents")
-    if (skipped.length) say(`Not imported: ${skipped.map((file) => file.name ?? "a file").join(", ")}.`, true)
-  } catch (error) {
-    // The kernel gives a call 30 seconds; the person may not have chosen by then.
-    if (error.code === "DEADLINE_EXCEEDED") say("No files were chosen in time. Choose Import again.", true)
-  } finally {
-    button.textContent = "Import"
-    button.disabled = false
+// The browser's own file chooser opens on the click; the window reads the files and the App
+// makes a document of each. (An agent's request for files is answered in the Room instead.)
+const chooser = document.createElement("input")
+chooser.type = "file"
+chooser.multiple = true
+chooser.accept = ".md,.markdown,.txt,.html,.htm"
+chooser.hidden = true
+document.body.append(chooser)
+$("import-docs").addEventListener("click", () => chooser.click())
+chooser.addEventListener("change", async () => {
+  const { files, skipped } = await readUploads(chooser.files)
+  chooser.value = ""
+  const unread = [...skipped]
+  if (files.length) {
+    const answer = await call("import_documents", { files })
+    unread.push(...answer.skipped)
   }
+  if (unread.length) say(`Not imported: ${unread.map((file) => file.name ?? "a file").join(", ")}.`, true)
 })
 
 $("export").addEventListener("click", async () => {

@@ -38,17 +38,44 @@ pub fn title_and_kind(name: &str) -> (String, Kind) {
     (title, kind)
 }
 
+/// How long one call waits for the person's choice. The kernel ends a call after 30 seconds and
+/// keeps the request open for ten minutes, so the call comes back with the request still open
+/// and its caller asks again with the same `importId`.
+const WAIT_MS: u32 = 20_000;
+
 /// The person chooses files in the kernel's trusted prompt, outside this call; each becomes a new
 /// document. A file that cannot be imported is reported with the reason and the others go on.
-pub async fn import(folder: &str) -> Result<Value, AppError> {
-    let grants = host::pick_file(host::Pick {
-        multiple: true,
-        accept: IMPORTS
-            .iter()
-            .map(|(suffix, _)| (*suffix).to_owned())
-            .collect(),
-    })
-    .await?;
+pub async fn import(folder: &str, resume: Option<&str>) -> Result<Value, AppError> {
+    let asked = match resume {
+        Some(id) => host::Picked::Pending(id.to_owned()),
+        None => {
+            host::request_file(host::Pick {
+                multiple: true,
+                accept: IMPORTS
+                    .iter()
+                    .map(|(suffix, _)| (*suffix).to_owned())
+                    .collect(),
+            })
+            .await?
+        }
+    };
+    let chosen = match asked {
+        host::Picked::Pending(id) => host::await_file(id, WAIT_MS).await?,
+        answered => answered,
+    };
+    let grants = match chosen {
+        host::Picked::Granted(grants) => grants,
+        host::Picked::Pending(id) => return Ok(json!({"pending": true, "importId": id})),
+        host::Picked::Declined => {
+            return Err(error("CANCELLED", "The owner chose no files to import"))
+        }
+        host::Picked::Expired => {
+            return Err(error(
+                "FILE_PICK_EXPIRED",
+                "No files were chosen in time; ask again",
+            ))
+        }
+    };
     let mut imported = Vec::new();
     let mut skipped = Vec::new();
     for grant in &grants {
@@ -75,21 +102,58 @@ async fn import_one(grant: &str, folder: &str) -> Result<Value, (Option<String>,
                 error("INVALID_ARGUMENT", format!("{name} is not UTF-8 text")),
             )
         })?;
-        let (title, kind) = title_and_kind(&name);
-        let new = NewDoc {
-            id: store::nonce(),
-            title,
-            kind,
-            folder: folder.to_owned(),
-            content,
-        };
-        index::change(|docs| model::create(docs, new.clone(), &store::stamp()))
-            .await
-            .map_err(|failure| (Some(name), failure))
+        create_from(&name, content, folder).await
     }
     .await;
     let _ = fs::remove_file(store::on_disk(&staged));
     outcome
+}
+
+/// A new document titled and typed after the file it came from.
+async fn create_from(
+    name: &str,
+    content: String,
+    folder: &str,
+) -> Result<Value, (Option<String>, AppError)> {
+    let (title, kind) = title_and_kind(name);
+    let new = NewDoc {
+        id: store::nonce(),
+        title,
+        kind,
+        folder: folder.to_owned(),
+        content,
+    };
+    index::change(|docs| model::create(docs, new.clone(), &store::stamp()))
+        .await
+        .map_err(|failure| (Some(name.to_owned()), failure))
+}
+
+/// The most files one import takes, as the kernel's file prompt does.
+const MAX_FILES: usize = 8;
+
+/// Files the person chose in their own browser, read by the window: the same documents as a file
+/// the kernel's prompt granted, without the prompt.
+pub async fn import_uploaded(folder: &str, files: &[Value]) -> Result<Value, AppError> {
+    if files.is_empty() || files.len() > MAX_FILES {
+        return Err(error(
+            "INVALID_ARGUMENT",
+            format!("import takes 1 to {MAX_FILES} files"),
+        ));
+    }
+    let mut imported = Vec::new();
+    let mut skipped = Vec::new();
+    for file in files {
+        let name = file["name"].as_str().unwrap_or_default();
+        let Some(content) = file["content"].as_str() else {
+            skipped.push(json!({"name": name, "reason": format!("{name} is not UTF-8 text")}));
+            continue;
+        };
+        match create_from(name, content.to_owned(), folder).await {
+            Ok(summary) => imported.push(summary),
+            Err((name, failure)) => skipped.push(json!({"name": name, "reason": failure.message})),
+        }
+    }
+    Ok(json!({"imported": imported, "skipped": skipped}))
 }
 
 /// The file name the person is offered: the title, safe to save under.

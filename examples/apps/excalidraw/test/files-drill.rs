@@ -87,6 +87,16 @@ impl<T: Send> host::HostWithStore<T> for HasSelf<Host> {
     async fn pick_file(_: &Accessor<T, Self>, _: host::Pick) -> Result<Vec<String>, AppError> {
         panic!("unexpected picker")
     }
+    async fn request_file(_: &Accessor<T, Self>, _: host::Pick) -> Result<host::Picked, AppError> {
+        panic!("unexpected picker")
+    }
+    async fn await_file(
+        _: &Accessor<T, Self>,
+        _: String,
+        _: u32,
+    ) -> Result<host::Picked, AppError> {
+        panic!("unexpected picker")
+    }
 }
 struct Contents(
     Arc<Mutex<Vec<u8>>>,

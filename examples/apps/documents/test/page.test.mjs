@@ -64,3 +64,21 @@ test('the page builds into one self-contained view that reaches the App only thr
   assert.match(source.script, /view_changes/);
   assert.doesNotMatch(source.script + source.style, /https?:\/\/|sessionStorage|<form/);
 });
+
+test('chosen files are read as UTF-8 text; a file that is too big or not text is skipped with its reason', async () => {
+  const { readUploads, MAX_BYTES } = await import('../src/upload.js');
+  const chosen = [
+    new File(['# Notes\n'], 'Notes.md'),
+    new File([new Uint8Array([0xff, 0xfe, 0x00])], 'photo.txt'),
+    new File([new Uint8Array(MAX_BYTES + 1)], 'big.md'),
+  ];
+  const read = await readUploads(chosen);
+  assert.deepEqual(read.files, [{ name: 'Notes.md', content: '# Notes\n' }]);
+  assert.deepEqual(read.skipped, [
+    { name: 'photo.txt', reason: 'photo.txt is not UTF-8 text' },
+    { name: 'big.md', reason: 'big.md is larger than 512 KB' },
+  ]);
+  const many = await readUploads(Array.from({ length: 10 }, (_, n) => new File(['x'], `${n}.md`)));
+  assert.equal(many.files.length, 8);
+  assert.deepEqual(many.skipped.map((file) => file.name), ['8.md', '9.md']);
+});

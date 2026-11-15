@@ -119,7 +119,13 @@ async fn call(name: &str, input: &Value) -> Result<Value, AppError> {
             let id = text(input, "id")?;
             index::change(|docs| model::remove(docs, id)).await
         }
-        "import_documents" => transfer::import(input["folder"].as_str().unwrap_or("")).await,
+        "import_documents" => {
+            let folder = input["folder"].as_str().unwrap_or("");
+            match input["files"].as_array() {
+                Some(files) => transfer::import_uploaded(folder, files).await,
+                None => transfer::import(folder, input["importId"].as_str()).await,
+            }
+        }
         "export_document" => transfer::export(text(input, "id")?).await,
         "snapshot_documents" => {
             transfer::snapshot(input["name"].as_str().unwrap_or("documents")).await
@@ -215,6 +221,21 @@ mod tests {
             assert!(TOOLS.contains(&name), "the backend runs {name}");
             assert_eq!(tool["inputSchema"], action["inputSchema"], "{name}");
             assert_eq!(tool["description"], action["description"], "{name}");
+        }
+    }
+
+    #[test]
+    fn an_agent_asks_the_person_before_deleting_and_nothing_else_asks() {
+        let actions = document(include_str!("../../schemas/ui-actions.json"), "uiActions");
+        for action in &actions {
+            let name = action["name"].as_str().unwrap();
+            let asks = action["effect"] == "approval";
+            assert_eq!(asks, name == "delete_document", "{name}");
+            assert_eq!(
+                action.get("approvalReason").is_some(),
+                asks,
+                "{name} states why only when it asks"
+            );
         }
     }
 }

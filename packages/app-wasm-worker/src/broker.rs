@@ -295,37 +295,82 @@ impl<T: Send> host::HostWithStore<T> for HasSelf<Host> {
         accessor: &Accessor<T, Self>,
         request: host::Pick,
     ) -> Result<Vec<String>, types::AppError> {
-        let mut value = call(
-            accessor,
-            "host.pick_file",
-            json!({"multiple":request.multiple,"accept":request.accept}),
-        )
-        .await?;
+        let mut state = picked(
+            &call(
+                accessor,
+                "host.pick_file",
+                json!({"multiple":request.multiple,"accept":request.accept}),
+            )
+            .await?,
+        )?;
         loop {
-            match value["state"].as_str() {
-                Some("granted") => {
-                    return serde_json::from_value(value["grantIds"].clone()).map_err(|_| invalid())
+            match state {
+                host::Picked::Granted(grants) => return Ok(grants),
+                host::Picked::Pending(operation_id) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    state = picked(&status(accessor, &operation_id).await?)?;
                 }
-                Some("pending") => {}
-                Some("declined") => {
+                host::Picked::Declined => {
                     return Err(app_error(error("CANCELLED", "file selection cancelled")))
                 }
-                Some("expired") => {
+                host::Picked::Expired => {
                     return Err(app_error(error(
                         "FILE_PICK_EXPIRED",
                         "file selection expired; pick again",
                     )))
                 }
-                _ => return Err(invalid()),
             }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            value = call(
-                accessor,
-                "host.pick_file_status",
-                json!({"operationId":text(&value,"operationId")?}),
-            )
-            .await?;
         }
+    }
+    async fn request_file(
+        accessor: &Accessor<T, Self>,
+        request: host::Pick,
+    ) -> Result<host::Picked, types::AppError> {
+        picked(
+            &call(
+                accessor,
+                "host.pick_file",
+                json!({"multiple":request.multiple,"accept":request.accept}),
+            )
+            .await?,
+        )
+    }
+    async fn await_file(
+        accessor: &Accessor<T, Self>,
+        operation_id: String,
+        wait_ms: u32,
+    ) -> Result<host::Picked, types::AppError> {
+        let until = tokio::time::Instant::now() + std::time::Duration::from_millis(wait_ms.into());
+        loop {
+            let state = picked(&status(accessor, &operation_id).await?)?;
+            if !matches!(state, host::Picked::Pending(_)) || tokio::time::Instant::now() >= until {
+                return Ok(state);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+}
+async fn status<T: Send>(
+    accessor: &Accessor<T, HasSelf<Host>>,
+    operation_id: &str,
+) -> Result<Value, types::AppError> {
+    call(
+        accessor,
+        "host.pick_file_status",
+        json!({"operationId":operation_id}),
+    )
+    .await
+}
+/// What the kernel's file broker says about a request for files, as the App reads it.
+fn picked(value: &Value) -> Result<host::Picked, types::AppError> {
+    match value["state"].as_str() {
+        Some("granted") => serde_json::from_value(value["grantIds"].clone())
+            .map(host::Picked::Granted)
+            .map_err(|_| invalid()),
+        Some("pending") => Ok(host::Picked::Pending(text(value, "operationId")?)),
+        Some("declined") => Ok(host::Picked::Declined),
+        Some("expired") => Ok(host::Picked::Expired),
+        _ => Err(invalid()),
     }
 }
 fn operation(value: Value) -> Result<validation::Operation, types::AppError> {
