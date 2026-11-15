@@ -213,6 +213,10 @@ export function createKernelEventDispatchController(
       case "heartbeat":
         deps.recordDaemonActivity("kernel_heartbeat")
         return
+      case "subscription_ended":
+        // Only a relay viewer's lane needs to resume; the daemon socket this client reads ends with its subscription.
+        deps.recordDaemonActivity("kernel_subscription_ended")
+        return
       case "room_workflows_changed":
         // The room workflow composition subscribes to these itself.
         deps.recordDaemonActivity("kernel_room_workflows_changed")

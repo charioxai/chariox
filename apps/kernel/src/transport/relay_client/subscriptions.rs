@@ -2,6 +2,8 @@
 
 use std::future::Future;
 
+use futures_util::FutureExt;
+
 use super::request_errors::{map_relay_error, relay_error};
 use super::*;
 use crate::runtime::projection::SessionSnapshotProjection;
@@ -38,6 +40,38 @@ pub(super) struct RelaySubscriptionTask {
     pub(super) resource_watch:
         Option<crate::transport::kernel_resource_feed::KernelResourceWatchSender>,
     pub(super) handle: JoinHandle<()>,
+}
+
+/// Tells a viewer when the kernel's task for one of its subscriptions ends while its connection stays up. The
+/// viewer watches its lane's shared `heartbeat`, which a surviving sibling keeps arriving, so only this event
+/// shows it that this subscription stopped. An unsubscribe aborts the task before it gets here.
+pub(super) struct SubscriptionEndNotice {
+    pub(super) router: Arc<CommandRouter>,
+    pub(super) outgoing_tx: RelayOutgoingSender,
+    pub(super) subscription_id: String,
+    pub(super) client_public_key: String,
+    pub(super) event_runtime: Arc<RelayEventRuntime>,
+    pub(super) event_stream_id: String,
+    pub(super) session_id: String,
+}
+
+impl SubscriptionEndNotice {
+    pub(super) async fn announce_end_of(self, task: impl Future<Output = ()>) {
+        // A panic ends the task too; the viewer must hear of it the same way.
+        let _ = std::panic::AssertUnwindSafe(task).catch_unwind().await;
+        let _ = emit_relay_event(
+            &self.router,
+            &self.outgoing_tx,
+            &self.subscription_id,
+            &self.client_public_key,
+            &self.event_runtime,
+            &self.event_stream_id,
+            KernelEvent::SubscriptionEnded {
+                session_id: self.session_id,
+            },
+        )
+        .await;
+    }
 }
 
 /// The lease of the browser actor `caller` acts as, if it is an authenticated terminal.
@@ -402,7 +436,21 @@ pub(super) async fn handle_relay_subscribe(
             );
         }
     }
-    let task = tokio::spawn(run_relay_subscription_loop(
+    let event_stream_id = if is_inventory_subscription {
+        WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE.to_string()
+    } else {
+        subscription_event_stream_id(&session_id, &attachment_id)
+    };
+    let end_notice = SubscriptionEndNotice {
+        router: Arc::clone(router),
+        outgoing_tx: outgoing_tx.clone(),
+        subscription_id: relay_subscription_id.clone(),
+        client_public_key: client_public_key.clone(),
+        event_runtime: Arc::clone(event_runtime),
+        event_stream_id,
+        session_id: session_id.clone(),
+    };
+    let task = tokio::spawn(end_notice.announce_end_of(run_relay_subscription_loop(
         Arc::clone(router),
         outgoing_tx.clone(),
         relay_subscription_id.clone(),
@@ -413,7 +461,7 @@ pub(super) async fn handle_relay_subscribe(
         Arc::clone(event_runtime),
         resume_from_event_id.is_some(),
         subscriber,
-    ));
+    )));
     subscription_tasks.lock().await.insert(
         task_key,
         RelaySubscriptionTask {

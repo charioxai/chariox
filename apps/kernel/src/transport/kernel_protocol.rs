@@ -252,6 +252,12 @@ pub(crate) enum KernelEvent {
     Heartbeat {
         session_id: String,
     },
+    /// Protocol 1056: the kernel's task for this subscription ended while the connection stayed up. A viewer
+    /// that watches the lane's shared `heartbeat` cannot see one subscription stop, so it subscribes again.
+    /// Never replayed: a resumed subscription must not recover itself from an end it already recovered from.
+    SubscriptionEnded {
+        session_id: String,
+    },
     TransportResumed {
         session_id: String,
         resumed_from_event_id: Option<u64>,
@@ -993,6 +999,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::WorkflowDesignOp { .. } => "workflow_design_op",
         KernelEvent::WorkflowRunUpdated { .. } => "workflow_run_updated",
         KernelEvent::Heartbeat { .. } => "heartbeat",
+        KernelEvent::SubscriptionEnded { .. } => "subscription_ended",
         KernelEvent::TransportResumed { .. } => "transport_resumed",
         KernelEvent::ReplayGap { .. } => "replay_gap",
         KernelEvent::PasskeyPromptsChanged { .. } => "passkey_prompts_changed",
@@ -1034,6 +1041,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::WorkflowDesignOp { design_op } => Some(design_op.session_id.as_str()),
         KernelEvent::WorkflowRunUpdated { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::Heartbeat { session_id } => Some(session_id.as_str()),
+        KernelEvent::SubscriptionEnded { session_id } => Some(session_id.as_str()),
         KernelEvent::TransportResumed { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::ReplayGap { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::PasskeyPromptsChanged { .. } => None,
@@ -1109,6 +1117,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::ReplayGap { .. } => true,
         // The current set is sent at each subscription start instead.
         KernelEvent::PasskeyPromptsChanged { .. } => false,
+        KernelEvent::SubscriptionEnded { .. } => false,
     }
 }
 

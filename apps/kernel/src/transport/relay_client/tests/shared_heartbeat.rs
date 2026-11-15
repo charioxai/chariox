@@ -1,11 +1,12 @@
 //! A viewer's subscriptions on one lane share one `heartbeat` per interval: any event proves the lane alive,
-//! so a second subscription must not double the idle traffic.
+//! so a second subscription must not double the idle traffic. What a shared heartbeat cannot show is one
+//! subscription stopping alone, so the kernel says so.
 use super::support::*;
 
 const INTERVAL_MS: u64 = 1_000;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn two_session_subscriptions_of_one_viewer_share_one_heartbeat() {
+async fn a_viewers_subscriptions_share_one_heartbeat_and_one_that_ends_alone_says_so() {
     let _relay_test_guard = relay_client_test_guard().await;
     let _home = RelayTestHome::new();
     let server = RelayServer::new(RelayConfig {
@@ -92,6 +93,7 @@ async fn two_session_subscriptions_of_one_viewer_share_one_heartbeat() {
     let public_key = relay_crypto::public_key_from_private_key_base64(&private_key)
         .expect("viewer public key should derive");
     approve_test_terminal(&config, &public_key);
+    let first_attachment_id = first_attachment.clone();
     for (n, attachment_id) in [first_attachment, second_attachment]
         .into_iter()
         .enumerate()
@@ -126,6 +128,40 @@ async fn two_session_subscriptions_of_one_viewer_share_one_heartbeat() {
     assert!(
         (3..=5).contains(&heartbeats),
         "two subscriptions of one viewer sent {heartbeats} heartbeats in three intervals"
+    );
+
+    // The first subscription's task ends alone: its attachment goes, the connection and its sibling stay.
+    app.lock()
+        .await
+        .detach(&first_attachment_id)
+        .expect("attachment should detach");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut ended = Vec::new();
+    while let Ok(Some(Ok(Message::Text(payload)))) =
+        tokio::time::timeout_at(deadline, socket.next()).await
+    {
+        let RelayEnvelope::ClientEvent {
+            subscription_id,
+            encrypted_event,
+            ..
+        } = serde_json::from_str(&payload).expect("relay envelope should parse")
+        else {
+            continue;
+        };
+        let decrypted =
+            relay_crypto::decrypt_payload_for_private_key(&private_key, &encrypted_event)
+                .expect("event should decrypt");
+        let event: serde_json::Value =
+            serde_json::from_slice(&decrypted.plaintext).expect("event should deserialize");
+        if event["event"] == serde_json::json!("subscription_ended") {
+            ended.push(subscription_id);
+            break;
+        }
+    }
+    assert_eq!(
+        ended,
+        vec!["subscription-0".to_string()],
+        "the subscription whose task ended says so, and only that one"
     );
 
     let _ = shutdown_tx.send(true);

@@ -294,6 +294,8 @@ macro_rules! public_events {
             match event {
                 $(KernelEvent::$variant { .. } => {},)*
                 KernelEvent::PasskeyPromptsChanged { .. } => {},
+                // Only the relay viewer's own subscription tells its client that its task ended.
+                KernelEvent::SubscriptionEnded { .. } => {},
                 // Transcript turns are for the session's own clients, not external streams.
                 KernelEvent::AgentTurnChanged { .. } => {},
                 // External agents follow trees through their own `agent_tree` event.

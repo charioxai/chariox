@@ -180,6 +180,10 @@ export type KernelEvent =
     session_id: string
   }
   | {
+    event: "subscription_ended"
+    session_id: string
+  }
+  | {
     event: "transport_resumed"
     session_id: string
     resumed_from_event_id: number | null
