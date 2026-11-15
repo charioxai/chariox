@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { createApp } from '../handler.mjs';
+import { createEventsApp as createApp } from '../src/events.mjs';
 
 class AppError extends Error {
   constructor(code, message) { super(message); this.code = code; }

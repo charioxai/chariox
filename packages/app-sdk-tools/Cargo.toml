@@ -41,7 +41,7 @@ required-features = ["component-drills"]
 
 [[test]]
 name = "github-events-drill"
-path = "../../examples/apps/github-events/test/component-drill.rs"
+path = "../../examples/apps/github/test/component-drill.rs"
 required-features = ["component-drills"]
 
 [[bin]]

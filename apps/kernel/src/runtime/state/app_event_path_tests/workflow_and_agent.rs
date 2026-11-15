@@ -19,7 +19,7 @@ fn busy_agent(app: &mut DaemonApp, session: &str) -> String {
     let attachment = KernelSessionService::new(app)
         .attach(AttachRequest::new(
             session,
-            "attachment-github-events",
+            "attachment-github",
             ClientCapabilityLevel::FullTerminal,
         ))
         .unwrap();

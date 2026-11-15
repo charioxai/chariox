@@ -12,7 +12,7 @@ const SETTINGS = 'automations';
 const outgoing = new Set(Object.keys(eventTypes).map(name => `${name}_notification`));
 const fail = (code, message) => { throw { code, message, retryable: false }; };
 
-export function createApp({ state, events }) {
+export function createEventsApp({ state, events }) {
   async function settings() {
     const record = await state.get(SETTINGS);
     return { record, automations: record ? JSON.parse(record.value) : {} };

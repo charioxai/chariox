@@ -1,7 +1,7 @@
 //! MP-08/MP-09/MP-10/MP-11: the GitHub events App's real WASM component.
 //! State and the event broker are in-memory fixtures; the kernel path is covered by
 //! `app_event_path_tests`. Build the component with the pinned SDK tools and pass it
-//! as `CHARIOX_GITHUB_EVENTS_COMPONENT`.
+//! as `CHARIOX_GITHUB_EVENTS_COMPONENT`; build it from `test/events-entry.ts`, the fan-out alone.
 use std::{
     collections::{hash_map::DefaultHasher, BTreeMap},
     hash::{Hash, Hasher},
