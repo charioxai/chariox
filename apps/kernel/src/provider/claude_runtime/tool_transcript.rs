@@ -745,6 +745,29 @@ mod tests {
         assert_eq!(ended[0]["finished_at_ms"], 3_000);
     }
 
+    // Live (l10orch r1, L10-CHILD-BACKGROUND): Claude reports a helper that stopped with background
+    // work of its own as `completed` with a note that the result may be interim. The same task id
+    // notifies again when the helper finishes; only that one ends the call.
+    #[test]
+    fn a_completed_helper_notification_marked_interim_does_not_end_the_call() {
+        let notification = |note: &str, result: &str| {
+            json!({"type":"user","message":{"role":"user","content":format!(
+                "<task-notification>\n<task-id>aauto1</task-id>\n<tool-use-id>toolu_auto</tool-use-id>\n<status>completed</status>\n<summary>Agent \"helper\" finished</summary>\n{note}<result>{result}</result>\n</task-notification>"
+            )}})
+        };
+        let mut transcript = ClaudeToolTranscript::default();
+        transcript.observe_at(&helper_launch("toolu_auto", false), 1_000);
+        transcript.observe_at(&helper_launch_result("toolu_auto", "aauto1"), 1_200);
+        let interim = notification(
+            "<note>This agent stopped with background work of its own still running. It may resume on its own when that work completes or reports, and the same task-id notifies again if it does; the result below may be interim.</note>\n",
+            "still waiting",
+        );
+        assert!(transcript.observe_at(&interim, 3_000).is_empty());
+        let ended = transcript.observe_at(&notification("", "HELPERRESULT42"), 9_000);
+        assert_eq!(ended[0]["id"], "toolu_auto");
+        assert_eq!(ended[0]["finished_at_ms"], 9_000);
+    }
+
     // Live (l10orch r1): a helper's own background `sleep` left open held the agent for the whole
     // hold limit. A foreground helper's commands are reported to that helper only; a background
     // helper's are replayed here (kwait_nested_background_command_ends_on_replayed_task_notification).
