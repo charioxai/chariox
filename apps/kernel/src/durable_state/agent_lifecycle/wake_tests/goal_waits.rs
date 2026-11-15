@@ -57,7 +57,7 @@ pub(super) fn assess_waiting(f: &Fixture, now: u64, deadline: u64) {
 }
 
 #[test]
-fn a12_long_timer_survives_two_checkins_without_spending_progress_guard() {
+fn a12_long_timer_survives_repeated_goal_checkins() {
     let f = Fixture::new();
     let due = 55 * 60_000 + 10;
     start(&f, due);
@@ -123,10 +123,6 @@ fn a12_long_timer_survives_two_checkins_without_spending_progress_guard() {
             "check-in {index}: {}",
             task.reason
         );
-        assert_eq!(
-            task.no_progress_wakes, 0,
-            "a live source still before its deadline is an allowed wait"
-        );
         assert!(
             task.goal.as_ref().unwrap().next_check_in_ms.unwrap() >= now + 600_000,
             "do not burst through immediate repeated continuations"
@@ -136,7 +132,7 @@ fn a12_long_timer_survives_two_checkins_without_spending_progress_guard() {
 }
 
 #[test]
-fn a12_refused_checkin_does_not_erase_an_earlier_progress_guard_strike() {
+fn a12_refused_checkin_preserves_the_wait_after_continuation() {
     for fired_before_refusal in [false, true] {
         let f = Fixture::new();
         let due = 55 * 60_000 + 10;
@@ -151,7 +147,6 @@ fn a12_refused_checkin_does_not_erase_an_earlier_progress_guard_strike() {
                 .to_string(),
             now: 32,
         });
-        assert_eq!(f.task().no_progress_wakes, 1);
         let work = f.task().pending_prompt_id.unwrap();
         begin(&f, &work, 40);
         yield_on(&f, &work, 41, due);
@@ -195,10 +190,5 @@ fn a12_refused_checkin_does_not_erase_an_earlier_progress_guard_strike() {
             },
         });
         assert_eq!(f.task().state, ExecutionState::Waiting);
-        assert_eq!(
-            f.task().no_progress_wakes,
-            1,
-            "an exempt check-in cannot refund an earlier strike, including after a source fires"
-        );
     }
 }

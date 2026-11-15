@@ -18,5 +18,7 @@ try {
  assert.deepEqual(captureTranscriptFrame(target,{x:1,y:2,width:35,height:3}),frame)
  assert.equal(validCachedTranscriptFrame({...frame,width:1001}),false)
  const unsafe=structuredClone(frame);unsafe.lines[0].spans[0].text='\u001b[31m';assert.equal(validCachedTranscriptFrame(unsafe),false)
- console.log(JSON.stringify({scope:'MP-08 / MP-10 / MP-11',status:'PASS',checks:6,unicode:true,colors:true,croppedControls:true}))
+ // dataplane TUI-RELOAD: a viewport captured before its rows were drawn is not remembered (it would paint a blank Room).
+ assert.equal(captureTranscriptFrame(source,{x:1,y:5,width:35,height:3}),undefined)
+ console.log(JSON.stringify({scope:'MP-08 / MP-10 / MP-11',status:'PASS',checks:7,unicode:true,colors:true,croppedControls:true}))
 } finally {source.destroy();target.destroy()}

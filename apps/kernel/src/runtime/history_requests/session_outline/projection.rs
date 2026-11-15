@@ -404,7 +404,7 @@ fn truncated_provider_tool_payload_field(text: &str, field: &str) -> Option<Stri
         .filter(|value| !value.trim().is_empty())
 }
 
-fn provider_tool_payload(text: &str) -> Option<serde_json::Value> {
+pub(super) fn provider_tool_payload(text: &str) -> Option<serde_json::Value> {
     serde_json::from_str(text).ok().or_else(|| {
         let (_, payload) = text.split_once('\n')?;
         serde_json::from_str(payload).ok()

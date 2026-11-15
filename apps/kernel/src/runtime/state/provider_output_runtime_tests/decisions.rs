@@ -1,5 +1,6 @@
 //! One decision is one card: a sub-agent's decision goes to the nearest parent that may answer
-//! it and otherwise reaches the user as the same interaction, listed with the top parent only.
+//! it and otherwise reaches the user as the same interaction. The user sees it in the top
+//! parent's panel from the start, whoever holds it, and the first answer wins.
 //! Tree: g (room agent) -> p -> c. Every test raises through `create_runtime_interaction`.
 use super::*;
 use crate::durable_state::agent_lifecycle::{InboxEvent, Operation, Outcome};
@@ -317,10 +318,67 @@ async fn a_delegable_permission_goes_to_the_nearest_parent_that_may_answer() {
         .unwrap();
     assert_eq!(
         card.shown_in_agent_id(),
-        None,
-        "no user card while an agent holds it"
+        Some(t.g.as_str()),
+        "the user sees it in the top panel while an agent holds it"
     );
     assert!(answer.try_recv().is_err(), "nobody has answered yet");
+}
+
+/// Live (pcdrive r3 F1): a parent parked in a wait held its child's decision, the person never saw
+/// it and the child waited. The person answers a decision a parent holds from the top panel; the
+/// holder's event is withdrawn and the holder hears that the user settled it.
+#[tokio::test]
+async fn the_user_answers_a_decision_a_parent_holds_from_the_top_panel() {
+    let t = tree(
+        "decision-user-answers-held",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let mut answer = t.raise(permission("perm-held-user", &t.c)).await;
+    assert_eq!(t.decision_events(&t.p).len(), 1, "p holds it and is told");
+    assert_eq!(
+        t.session().interactions_listed_for(&t.g)[0].id(),
+        "perm-held-user"
+    );
+    t.runtime
+        .owned
+        .resolve_runtime_interaction(&t.room, "perm-held-user", "deny", None, None, false)
+        .unwrap();
+    assert_eq!(
+        answer.try_recv().unwrap().choice_id.as_deref(),
+        Some("deny")
+    );
+    assert!(t.all_closed(&t.p), "the holder's event is withdrawn");
+    assert_eq!(
+        t.runtime
+            .answer_child_decision(&t.room, &t.p, "perm-held-user", "allow")
+            .await
+            .unwrap(),
+        ChildDecisionStatus::SettledByUser
+    );
+}
+
+/// UIQA-S4: a client named a sub-agent's card a moment after painting it, once a separate lookup
+/// answered. The projected card names its asker itself, by its alias.
+#[tokio::test]
+async fn a_projected_card_names_its_asker() {
+    let t = tree(
+        "decision-asker-name",
+        AgentPermissionLevel::Required,
+        AgentPermissionLevel::Required,
+    )
+    .await;
+    t.raise(permission("perm-asker", &t.c)).await;
+    let session = t.runtime.owned.session_snapshot(&t.room).unwrap();
+    let card = session
+        .active_interactions()
+        .iter()
+        .find(|i| i.id() == "perm-asker")
+        .unwrap();
+    let projected = serde_json::to_value(card).unwrap();
+    assert_eq!(projected["shown_in_agent_id"], t.g.as_str());
+    assert_eq!(projected["asker_name"], "c", "{projected}");
 }
 
 #[tokio::test]
@@ -376,6 +434,41 @@ async fn the_user_holds_it_as_the_same_interaction_listed_with_the_top_parent_on
     );
     assert!(session.interactions_listed_for(&t.p).is_empty());
     assert_eq!(session.interactions_listed_for(&t.g)[0].id(), "perm-3");
+}
+
+// UIQA-S4a: an ordinary session response must name an asker hidden from the Room roster.
+#[tokio::test]
+async fn session_snapshot_names_hidden_asker_before_any_tree_read() {
+    let t = tree(
+        "decision-asker-snapshot",
+        AgentPermissionLevel::Required,
+        AgentPermissionLevel::Required,
+    )
+    .await;
+    t.raise(permission("snapshot-card", &t.c)).await;
+    let request = crate::local::GetSessionStateRequest {
+        session_id: t.room.clone(),
+    };
+    let response = t.runtime.session_state_response(request).unwrap();
+    let wire = serde_json::to_value(response).unwrap();
+    let session = &wire["SessionState"]["session"];
+    let card = session["active_interactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|card| card["id"] == "snapshot-card")
+        .unwrap();
+    assert_eq!(card["agent_id"], t.c);
+    assert_eq!(card["asker_name"], "c");
+    let projected = t
+        .runtime
+        .session_snapshot(&t.room)
+        .await
+        .unwrap()
+        .redacted_for_user(crate::session::DEFAULT_LOCAL_USER_ID);
+    assert!(projected.agents().iter().all(|agent| agent.id() != t.c));
+    let wire = serde_json::to_value(projected).unwrap();
+    assert_eq!(wire["active_interactions"][0]["asker_name"], "c");
 }
 
 #[tokio::test]
@@ -839,6 +932,34 @@ fn every_user_only_kind_is_the_users() {
             ),
             Some(UserOnly::Payment),
         ),
+        // A person-confirmed App action's card is the person's alone, whoever asks.
+        (
+            "app confirmation",
+            pending(),
+            RuntimeInteraction::new(
+                "app-confirm-1",
+                "agent-1",
+                RuntimeInteractionKind::Choice,
+                RuntimeInteractionLevel::Warning,
+                None,
+                "m",
+                vec![RuntimeInteractionChoice::new(
+                    "confirm", "Confirm", "confirm", None,
+                )],
+                None,
+                None,
+                None,
+            )
+            .with_app_confirmation(crate::local::AppConfirmationFrame {
+                installation_id: "campaign".into(),
+                app_id: "com.chariox.campaign".into(),
+                app_name: "Campaign".into(),
+                publisher_id: "com.chariox".into(),
+                publisher_name: "Chariox".into(),
+                action_name: "pay".into(),
+            }),
+            Some(UserOnly::AppConfirmation),
+        ),
         (
             "sign-in",
             pending(),
@@ -875,6 +996,40 @@ fn every_user_only_kind_is_the_users() {
             pending(),
             permission("ok-1", "agent-1"),
             None,
+        ),
+        // A blocked task's Resume/Cancel is a decision about an agent, which its parent may hold;
+        // allowing the user's browser again stays the user's.
+        (
+            "blocked task resume or cancel",
+            pending(),
+            RuntimeInteraction::for_kernel_operation(
+                "task-blocked-t1-3",
+                "task-blocked-t1-3",
+                "Agent needs your action",
+                "c: blocked",
+                vec![
+                    RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", None),
+                    RuntimeInteractionChoice::new("resume", "Resume", "resume", None),
+                ],
+            )
+            .with_related_agent_id("agent-1".to_owned()),
+            None,
+        ),
+        (
+            "blocked task browser access",
+            pending(),
+            RuntimeInteraction::for_kernel_operation(
+                "task-blocked-t1-4",
+                "task-blocked-t1-4",
+                "Allow browser access",
+                "c: Browser access ended",
+                vec![
+                    RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", None),
+                    RuntimeInteractionChoice::new("allow_browser", "Allow browser", "resume", None),
+                ],
+            )
+            .with_related_agent_id("agent-1".to_owned()),
+            Some(UserOnly::UserDomain),
         ),
     ];
     for (name, pending, interaction, expected) in table {
@@ -1264,6 +1419,48 @@ async fn a_decision_the_holder_answered_can_be_acknowledged_by_sequence() {
     assert_eq!(acked["acknowledged"], sequence);
 }
 
+/// A card that died with the kernel holding it (a restart after an abandoned shutdown) leaves
+/// its holder's decision event with nothing to answer: it no longer needs one and can be acked.
+#[tokio::test]
+async fn a_decision_whose_card_is_gone_can_be_acknowledged() {
+    let t = tree(
+        "decision-card-gone",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    t.raise(permission("perm-gone", &t.c)).await;
+    let sequence = t.decision_events(&t.p)[0].sequence;
+    let handled = serde_json::json!({"sequence": sequence, "handled": true});
+    let ack = || t.runtime.ack_agent_inbox(&t.room, &t.p, &handled, 1);
+    assert!(ack().await.is_err(), "a live card still needs its answer");
+    // What a restart leaves behind: no responder and no card in the room.
+    t.runtime
+        .owned
+        .pending_interactions
+        .write()
+        .remove("perm-gone");
+    {
+        let mut sessions = t.runtime.owned.session_store.write();
+        let mut room = sessions.get_session(&t.room).unwrap().clone();
+        room.remove_active_interaction("perm-gone");
+        sessions.restore_session(room);
+    }
+    let read = t
+        .runtime
+        .read_agent_inbox(&t.room, &t.p, &serde_json::json!({}))
+        .unwrap();
+    let view = read["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["sequence"] == sequence)
+        .expect("the decision event is still listed");
+    assert_eq!(view["needs_answer"], false, "{view}");
+    let acked = ack().await.expect("nothing is left to answer");
+    assert_eq!(acked["acknowledged"], sequence);
+}
+
 /// The holder's turn is settling and its output pump holds the run's provider lane: the child's
 /// approval request must not wait for it, and must reach the holder once its turn has ended.
 #[tokio::test]
@@ -1340,7 +1537,11 @@ async fn a_holder_that_yields_without_answering_hands_the_decision_on() {
     t.end_turn_yielded(&t.p).await;
     assert!(t.all_closed(&t.p), "p's event is withdrawn");
     assert_eq!(t.decision_events(&t.g).len(), 1, "g holds it and is told");
-    assert!(t.session().interactions_listed_for(&t.g).is_empty());
+    assert_eq!(
+        t.session().interactions_listed_for(&t.g)[0].id(),
+        "perm-yield",
+        "the user sees it while g holds it"
+    );
 
     t.read_inbox(&t.g);
     t.end_turn_yielded(&t.g).await;
@@ -1393,6 +1594,7 @@ async fn a_holder_that_yields_before_reading_the_decision_keeps_it() {
 
 mod answer_audit;
 mod asked_without_waiting;
+mod blocked_card;
 mod detail;
 mod holder_inbox_reads;
 mod reparent;

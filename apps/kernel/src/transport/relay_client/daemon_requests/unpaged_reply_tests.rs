@@ -78,8 +78,9 @@ impl Asker {
         )
         .unwrap()
         .plaintext;
-        let LocalDaemonResponse::RoomTerminal { result } =
-            serde_json::from_slice(&plaintext).unwrap()
+        // Snapshot and output replies carry their bytes in CXT1 framing, as the client opens them.
+        let json = crate::transport::terminal_output_wire::open(&plaintext).unwrap();
+        let LocalDaemonResponse::RoomTerminal { result } = serde_json::from_slice(&json).unwrap()
         else {
             panic!("a terminal answer");
         };

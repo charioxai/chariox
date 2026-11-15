@@ -231,7 +231,7 @@ fn restoring_hidden_session_keeps_its_project_without_making_it_visible() {
     let hidden = restored.restore_session(hidden);
     assert_eq!(hidden.project_id(), project.id());
     assert!(restored
-        .list_visible_projects(true, |session| {
+        .list_visible_projects(DEFAULT_LOCAL_USER_ID, true, |session| {
             session.has_member(DEFAULT_LOCAL_USER_ID)
         })
         .is_empty());

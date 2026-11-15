@@ -112,10 +112,10 @@ async fn enrolled_owner_existing_run(check_read: bool) {
     let create = LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
         session_id: session.id().into(),
         agent_id: agent.id().into(),
-        source: crate::local::AgentTriggerSourceRequest::Schedule {
-            interval_seconds: 3600,
-            repeat: crate::session::AgentTriggerRepeat::Once,
-        },
+        source: crate::local::AgentTriggerSourceRequest::interval(
+            3600,
+            crate::session::AgentTriggerRepeat::Once,
+        ),
         busy_policy: Some(crate::session::AgentTriggerBusyPolicy::Queue),
         prompt: Some("existing owner's trigger".into()),
     });

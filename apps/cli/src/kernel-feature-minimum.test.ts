@@ -138,3 +138,14 @@ test("MP-08 MP-10 cancelling a Move is refused by kernels older than protocol 63
   assert.doesNotThrow(() => requireKernelFeatureProtocol(cancel, 638))
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ MoveAgentToLocal: { session_id: "room", agent_ref: "agent" } }, 600))
 })
+
+test("machine acquisition requires the kernel's owner connection support", () => {
+  for (const request of [
+    { ControlPlane: { action: "capabilities" } },
+    { ControlPlane: { action: "acquire", capability_revision: "offer", request_id: "request" } },
+    { ControlPlane: { action: "get", allocation_ref: "machine" } },
+  ]) {
+    assert.throws(() => requireKernelFeatureProtocol(request, 1005), /Machine acquisition needs protocol ≥1006/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 1006))
+  }
+})

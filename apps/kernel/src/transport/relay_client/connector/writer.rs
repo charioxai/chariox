@@ -357,12 +357,19 @@ mod tests {
             }
             complete
         };
-        // The window starts at two chunks: both are written, then the writer waits.
-        let first = wire.recv().await.unwrap();
-        let second = wire.recv().await.unwrap();
+        // A cold window takes short chunks until it is full, then the writer waits.
+        let cold = chariox_relay::drain_window::DrainWindow::new(tokio::time::Instant::now());
+        let mut in_flight = Vec::new();
+        let mut in_flight_bytes = 0;
+        while in_flight.is_empty() || in_flight_bytes + cold.chunk_bytes() <= cold.bytes() {
+            let chunk = wire.recv().await.unwrap();
+            in_flight_bytes += chunk.len();
+            in_flight.push(chunk);
+        }
         priority.send(heartbeat()).await.unwrap();
-        assert!(acknowledge(first).await.is_none());
-        assert!(acknowledge(second).await.is_none());
+        for chunk in in_flight {
+            assert!(acknowledge(chunk).await.is_none());
+        }
         let next = wire.recv().await.unwrap();
         assert!(
             matches!(&next, Message::Text(text) if text.contains("daemon_heartbeat")),

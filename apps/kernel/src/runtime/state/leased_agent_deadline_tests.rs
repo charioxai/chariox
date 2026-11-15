@@ -22,7 +22,7 @@ async fn the_home_asks_the_worker_to_enforce_a_leased_agents_deadline_and_then_r
         SetAgentDeadlineRequest {
             session_id: home.session_id.clone(),
             agent_id: home.agent_id.clone(),
-            deadline_ms,
+            deadline_ms: Some(deadline_ms),
         },
     );
     let reply = home
@@ -35,7 +35,7 @@ async fn the_home_asks_the_worker_to_enforce_a_leased_agents_deadline_and_then_r
     assert!(matches!(
         request,
         RelayPeerRequest::SetLeasedAgentDeadline { leased_agent_id, deadline_ms: sent }
-            if leased_agent_id == LEASED_AGENT && sent == deadline_ms
+            if leased_agent_id == LEASED_AGENT && sent == Some(deadline_ms)
     ));
     let recorded = home
         .state
@@ -63,7 +63,7 @@ async fn a_worker_that_does_not_confirm_leaves_the_home_without_a_deadline() {
         SetAgentDeadlineRequest {
             session_id: home.session_id.clone(),
             agent_id: home.agent_id.clone(),
-            deadline_ms: crate::session::unix_epoch_ms() + 60_000,
+            deadline_ms: Some(crate::session::unix_epoch_ms() + 60_000),
         },
     );
     let reply = home
@@ -125,7 +125,7 @@ async fn a_worker_stops_a_leased_agent_at_its_deadline_without_the_home() {
 
     let deadline_ms = crate::session::unix_epoch_ms() + 200;
     worker
-        .set_relay_leased_agent_deadline(&leased.id, deadline_ms)
+        .set_relay_leased_agent_deadline(&leased.id, Some(deadline_ms))
         .await
         .expect("the worker arms the deadline on the agent that carries the leased work");
     let armed = worker
@@ -148,13 +148,13 @@ async fn a_worker_stops_a_leased_agent_at_its_deadline_without_the_home() {
     assert_eq!(reached.state, AgentDeadlineState::Reached);
     assert!(reached.stopped_at_ms.is_some(), "{reached:?}");
 
-    // A deadline only ever shortens.
+    // A completed deadline cannot revive the ended agent.
     let later = worker
-        .set_relay_leased_agent_deadline(&leased.id, deadline_ms + 1)
+        .set_relay_leased_agent_deadline(&leased.id, Some(deadline_ms + 1))
         .await;
     assert!(
         matches!(&later, Err(DaemonError::MachineRequest { code, .. })
-            if code == "agent_deadline_extension_refused"),
+            if code == "agent_deadline_reached"),
         "{later:?}"
     );
 }
@@ -166,7 +166,7 @@ async fn a_leased_prompt_that_arrives_after_the_deadline_starts_nothing() {
     let (worker, leased) = worker_with_leased_agent();
     let deadline_ms = crate::session::unix_epoch_ms() + 100;
     worker
-        .set_relay_leased_agent_deadline(&leased.id, deadline_ms)
+        .set_relay_leased_agent_deadline(&leased.id, Some(deadline_ms))
         .await
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
@@ -230,4 +230,56 @@ async fn a_leased_prompt_that_arrives_after_the_deadline_starts_nothing() {
         .prompt_state_owner
         .peek_next_queued_prompt(&session, &leased.backing_agent_id)
         .is_none());
+}
+
+#[tokio::test]
+async fn a_worker_accepts_extensions_and_clears_before_the_deadline_fires() {
+    let (worker, leased) = worker_with_leased_agent();
+    let first = crate::session::unix_epoch_ms() + 60_000;
+    for time in [
+        Some(first),
+        Some(first + 60_000),
+        None,
+        Some(first - 10_000),
+    ] {
+        worker
+            .set_relay_leased_agent_deadline(&leased.id, time)
+            .await
+            .unwrap();
+        let actual = worker
+            .owned
+            .durable_state_store
+            .agent_deadline(&leased.backing_session_id, &leased.backing_agent_id)
+            .unwrap();
+        assert_eq!(actual.map(|deadline| deadline.deadline_ms), time);
+    }
+}
+
+#[tokio::test]
+async fn edited_worker_deadlines_do_not_fire_at_the_old_time() {
+    let (worker, leased) = worker_with_leased_agent();
+    let old = crate::session::unix_epoch_ms() + 60_000;
+    worker
+        .set_relay_leased_agent_deadline(&leased.id, Some(old))
+        .await
+        .unwrap();
+    worker
+        .set_relay_leased_agent_deadline(&leased.id, Some(old + 60_000))
+        .await
+        .unwrap();
+    worker.tick_agent_deadlines(old + 1).await.unwrap();
+    let get = || {
+        worker
+            .owned
+            .durable_state_store
+            .agent_deadline(&leased.backing_session_id, &leased.backing_agent_id)
+            .unwrap()
+    };
+    assert_eq!(get().unwrap().state, AgentDeadlineState::Armed);
+    worker
+        .set_relay_leased_agent_deadline(&leased.id, None)
+        .await
+        .unwrap();
+    worker.tick_agent_deadlines(old + 120_000).await.unwrap();
+    assert!(get().is_none());
 }

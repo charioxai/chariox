@@ -20,6 +20,8 @@ import {
   submitClaudeRemoteRenderedInitialPrompt,
   writeClaudeRemoteRenderedTerminalRecords,
 } from "./claude-remote-rendered-io.js"
+import { createRemoteAttachmentRecovery, type RemoteAttachmentRef } from "./remote-attachment-recovery.js"
+import { detachFromSessionRequest } from "../ipc-requests.js"
 import {
   formatNativeTuiRuntimeBanner,
 } from "./runtime-banner.js"
@@ -265,7 +267,30 @@ async function runClaudeRemoteRendered(
         permission_level: options.permissions,
       }, options.sliceRef)
     const session = created?.session ?? await resolveNativeSession(client, options.sessionRef!, workspace)
-    const attachment = await attachNativeSession(client, session.id, options.clientId)
+    const attached = await attachNativeSession(client, session.id, options.clientId)
+    // RR-07: hold the attachment id in a mutable ref so the pump, stdin and the event
+    // subscription all follow a recovery that re-attaches after the target swept the
+    // old attachment during a relay outage.
+    const attachment: RemoteAttachmentRef = { id: attached.id }
+    const recovery = createRemoteAttachmentRecovery({
+      attachment,
+      reattach: async () => (await attachNativeSession(client, session.id, options.clientId)).id,
+      resubscribe: async (attachmentId) => {
+        await client.unsubscribeFromKernelEvents().catch(() => {})
+        await client.subscribeToKernelEvents(session.id, attachmentId)
+      },
+      detach: async (attachmentId) => {
+        await client.send(detachFromSessionRequest(attachmentId))
+      },
+      isActive: () => !exitController.signal.aborted,
+      onFatal: () => {
+        if (exitController.signal.aborted) return
+        process.stderr.write(
+          "\nchariox: the remote session is no longer reachable (detached or access revoked).\n",
+        )
+        exitController.abort()
+      },
+    })
     const agent = created?.agent
       ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
       : await spawnNativeAgent(client, session.id, "claude", options.agentAlias, options.model, worktree, options.effort, options.mode, options.permissions, options.machineRef, options.sliceRef)
@@ -311,20 +336,22 @@ async function runClaudeRemoteRendered(
     pump = startClaudeRemoteRenderedPumpLoop(
       client,
       session.id,
-      attachment.id,
+      attachment,
       run.id,
       agent.id,
+      recovery,
       (records) => readiness.observe(records, run.id, agent.id),
     )
     restoreStdin = forwardClaudeRemoteRenderedStdin({
       client,
       sessionId: session.id,
-      attachmentId: attachment.id,
+      attachment,
       agentId: agent.id,
       providerRunId: run.id,
       worktree,
       inlineLocalAttachments: Boolean(options.relayUrl) || Boolean(options.machineRef) || Boolean(options.sliceRef) || promptAttachmentTransferIsForced(),
       debug: debugNativeClaude,
+      recover: recovery.recover,
     })
     restoreResize = installClaudeRemoteRenderedResizeForwarder(client, session.id, run.id)
     if (options.initialPrompt) {

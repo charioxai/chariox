@@ -3,8 +3,9 @@ import { projectEnvironmentCommand } from "./project-environment-command.js"
 import { listProviderAccountCopyOffers, copyProviderAccountFromKernel } from "./provider-api.js"
 import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
 import type { AgentTaskExecution } from "@chariox/kernel-client/kernel-types"
-import { getManagedContextTransferStatus } from "./managed-environment-api.js"
+import { getManagedContextTransferStatus } from "./managed-context-api.js"
 import { getCloudClientControlProfile } from "./cloud-client-control.js"
+import { createCloudClientInvite } from "./cloud-client-invite.js"
 import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
 import { getAppInstallationRequest, listWorkflowNotificationsRequest } from "@chariox/kernel-client/ipc-requests"
 import type { AppInstallationSummary, WorkflowNotificationSourceSummary } from "@chariox/kernel-client/kernel-types"
@@ -50,6 +51,7 @@ import {
 import {
   getUserConfig,
   getUserConfigSchema,
+  createCredentialVault,
   getCredentialVaultStatus,
   lockCredentialVault,
   unlockCredentialVault,
@@ -259,7 +261,6 @@ export type CliCommandActionCompositionDeps = {
   currentExecutionMode: AnyFn
   currentPermissionLevel: AnyFn
   refreshWaitingRoomData: AnyFn
-  reimageManagedEnvironment?: AnyFn
   remoteMachinesState: AnyFn
   setRemoteMachinesState: AnyFn
   reconcileWaitingRoom: AnyFn
@@ -378,7 +379,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     currentExecutionMode,
     currentPermissionLevel,
     refreshWaitingRoomData,
-    reimageManagedEnvironment,
     remoteMachinesState,
     setRemoteMachinesState,
     reconcileWaitingRoom,
@@ -682,7 +682,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     logoutCloudRelay: (_profile, options) => logoutCloudRelay(client, options),
     issueCloudClientRelayToken: createInitialCloudClientTokenIssuer(client, options.clientId ?? "chariox-cli"),
     ...(deps.cloudClient ? {
-      createCloudSessionInvite: (sessionId: string, inviteOptions: Parameters<CloudClient["collaboration"]["createSessionInvite"]>[1]) => deps.cloudClient!.collaboration.createSessionInvite(sessionId, inviteOptions),
+      createCloudSessionInvite: (sessionId: string, inviteOptions: Omit<Parameters<CloudClient["collaboration"]["createSessionInvite"]>[1], "kernelId">) => createCloudClientInvite(deps.cloudClient!, client, sessionId, inviteOptions),
       acceptCloudSessionInvite: (inviteToken: string) => deps.cloudClient!.collaboration.acceptSessionInvite(inviteToken),
       listCloudSessionMembers: (sessionId: string) => deps.cloudClient!.collaboration.sessionMembers(sessionId),
       listCloudCollaborators: () => deps.cloudClient!.collaboration.collaborators(),
@@ -693,7 +693,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     setWorkspaceLiveSyncMode: (sessionId, mode) => setWorkspaceLiveSyncMode(client, sessionId, mode),
     unsetUserConfigValue: (path) => unsetUserConfigValue(client, path),
     refreshWaitingRoomData,
-    ...(reimageManagedEnvironment ? { reimageManagedEnvironment } : {}),
     getRemoteMachines: remoteMachinesState,
     setRemoteMachines: setRemoteMachinesState,
     reconcileWaitingRoom: () => reconcileWaitingRoom(),
@@ -823,6 +822,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     }),
     getCredentialVaultStatus: () => getCredentialVaultStatus(client),
     lockCredentialVault: () => lockCredentialVault(client),
+    createCredentialVault: passphrase => createCredentialVault(client, passphrase),
     unlockCredentialVault: (passphrase, duration) => unlockCredentialVault(client, passphrase, duration),
     manageCredentialVault: () => manageCredentialVault(client, sessionState().id, focusedAgentId()),
     registerCredential: (sourcePath) => registerCredential(client, sourcePath),

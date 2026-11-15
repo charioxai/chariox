@@ -105,6 +105,10 @@ impl KernelBrowserResourceGrant {
 }
 
 impl KernelBrowserAdmission {
+    pub(crate) fn agent_id(&self) -> Option<&str> {
+        self.agent.as_deref()
+    }
+
     pub(crate) fn is_agent(&self) -> bool {
         self.agent.is_some()
     }

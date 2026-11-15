@@ -190,3 +190,23 @@ fn a_running_source_left_out_of_the_yield_is_still_refused() {
         "{refusal}"
     );
 }
+
+#[test]
+fn kwait_yield_refusal_names_uncovered_wake_and_the_calls_to_settle_it() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    running_delegate(&f);
+    let refusal = yield_on(&f, &["reg"]).unwrap_err().to_string();
+    for expected in [
+        "running",
+        "worker",
+        "running-reg",
+        "chariox.events.yield",
+        "registration_ids",
+        "chariox.events.subscribe",
+    ] {
+        assert!(refusal.contains(expected), "missing {expected}: {refusal}");
+    }
+}

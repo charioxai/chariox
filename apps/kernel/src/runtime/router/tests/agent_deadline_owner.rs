@@ -21,7 +21,7 @@ async fn a_private_member_cannot_arm_a_deadline_on_another_users_agent() {
     let request = LocalDaemonRequest::SetAgentDeadline(crate::local::SetAgentDeadlineRequest {
         session_id: session.id().into(),
         agent_id: owner.id().into(),
-        deadline_ms: crate::session::unix_epoch_ms() + 60_000,
+        deadline_ms: Some(crate::session::unix_epoch_ms() + 60_000),
     });
     let mut command = KernelCommand::from_local_request("member-deadline", None, None, &request);
     command.caller.user_id = Some("private-member".into());

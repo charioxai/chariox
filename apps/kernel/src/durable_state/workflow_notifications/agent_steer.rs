@@ -18,9 +18,8 @@ fn decode(payload: &str) -> rusqlite::Result<DurablePromptStateEventPayload> {
 /// by the worker: the commit that releases the hold also ends that lineage.
 pub(in crate::durable_state) fn record_prompt_state_in(
     tx: &Transaction<'_>,
-    payload: &str,
+    state: &DurablePromptStateEventPayload,
 ) -> rusqlite::Result<()> {
-    let state = decode(payload)?;
     let notifications = || {
         state
             .active_prompt

@@ -536,6 +536,21 @@ impl KernelRuntimeState {
                 ),
                 None,
             )),
+            crate::transport::runtime_tools::PEEK_AGENT_TOOL
+            | crate::transport::runtime_tools::READ_AGENT_ENTRY_TOOL => Ok((
+                Box::pin(
+                    self.handle_agent_peek_runtime_tool(
+                        &self
+                            .owned
+                            .session_snapshot_without_projection_update(session_id)?,
+                        &agent,
+                        tool_name,
+                        arguments,
+                    ),
+                )
+                .await?,
+                None,
+            )),
             crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL => Ok((
                 Box::pin(self.handle_send_agent_message_runtime_tool(&session, &agent, arguments))
                     .await?,

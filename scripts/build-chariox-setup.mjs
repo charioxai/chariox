@@ -21,7 +21,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   await mkdir(output, { recursive: true })
   const scratch = await mkdtemp(join(tmpdir(), "chariox-setup-build-"))
   try {
-    const source = await readFile(join(repository, "deploy/managed-kernel/extract-release.py"), "utf8")
+    const source = await readFile(join(repository, "deploy/runtime-release/extract-release.py"), "utf8")
     const entry = join(scratch, "entry.mjs")
     await writeFile(entry, `import { runSetup } from ${JSON.stringify(join(repository, "apps/setup/main.mjs"))};\nrunSetup(${JSON.stringify({ ...build, extractorSource: source })}).catch(error => {process.stderr.write("MP-07/MP-08/MP-11: Setup failed: " + (error instanceof Error ? error.message : "unknown installation failure") + "\\n");process.exitCode=1});\n`)
     const result = spawnSync("bun", ["build", "--compile", `--target=bun-${options.target}`, entry, "--outfile", join(output, "chariox-setup")], { stdio: "inherit" })

@@ -7,6 +7,8 @@ export type AgentTriggerStripItem = {
   readonly busyPolicy: AgentTriggerBusyPolicy
   readonly enabled: boolean
   readonly nextRunAtMs: number | null
+  /** The schedule fired its max runs. */
+  readonly done: boolean
   readonly fired: number
   readonly lastError: string | null
   /** A notification trigger whose source's kernel is down: shown as "offline", like the workflow picker. */
@@ -32,7 +34,8 @@ function agentTriggerStripItem(trigger: AgentTrigger): AgentTriggerStripItem {
     label: agentTriggerSourceLabel(trigger),
     busyPolicy: trigger.busy_policy,
     enabled: trigger.enabled,
-    nextRunAtMs: trigger.enabled && trigger.source.kind === "schedule" ? trigger.source.next_run_at_ms : null,
+    nextRunAtMs: trigger.enabled && trigger.source.kind === "schedule" && !agentTriggerDone(trigger) ? trigger.source.next_run_at_ms : null,
+    done: agentTriggerDone(trigger),
     ...(localUrl ? { localUrl } : {}),
     fired: trigger.fired,
     lastError: trigger.last_error?.trim() || null,
@@ -41,10 +44,16 @@ function agentTriggerStripItem(trigger: AgentTrigger): AgentTriggerStripItem {
 }
 
 export function agentTriggerSourceLabel(trigger: Pick<AgentTrigger, "source">): string {
-  if (trigger.source.kind === "http") return "HTTP"
+  if (trigger.source.kind === "http") return `HTTP ${trigger.source.methods.join(" and ")} ${trigger.source.route}`
   if (trigger.source.kind === "notification") return `Notification · ${trigger.source.display_name}`
-  const { interval_seconds: seconds, repeat } = trigger.source
-  return `${repeat === "every" ? "every" : "in"} ${formatInterval(seconds)}`
+  const { trigger: schedule, repeat } = trigger.source
+  if (schedule.kind === "cron") return `${schedule.expression} · ${schedule.timezone}`
+  return `${repeat === "every" ? "every" : "in"} ${formatInterval(schedule.every_seconds)}`
+}
+
+/** A repeating schedule that fired its max runs: it stays listed, and never fires again. */
+export function agentTriggerDone(trigger: Pick<AgentTrigger, "source" | "fired">): boolean {
+  return trigger.source.kind === "schedule" && typeof trigger.source.max_runs === "number" && trigger.fired >= trigger.source.max_runs
 }
 
 function formatInterval(seconds: number): string {

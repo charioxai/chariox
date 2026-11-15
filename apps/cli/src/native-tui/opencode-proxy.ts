@@ -1,3 +1,4 @@
+import { sendWithRecoveredAttachment, type RemoteAttachmentRecovery } from "./remote-attachment-recovery.js"
 import http, { type IncomingMessage, type ServerResponse } from "node:http"
 import { Readable } from "node:stream"
 
@@ -50,6 +51,7 @@ type OpenCodeProxyOptions = {
   client: LocalIpcClient
   sessionId: string
   attachmentId: string
+  recovery?: RemoteAttachmentRecovery
   agentId: string
   inlineLocalAttachments: boolean
   debug: OpenCodeProxyDebug
@@ -163,9 +165,9 @@ async function handleProxyRequest(
     if (selection?.model || selection?.variant) {
       state.lastNativeSelection = compactSelection(selection)
     }
-    await options.client.send<Record<string, unknown>>(
+    await sendWithRecoveredAttachment(() => options.client.send<Record<string, unknown>>(
       submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, attachments),
-    )
+    ), options.recovery)
     response.writeHead(204, { "content-length": "0" })
     response.end()
     return
@@ -173,9 +175,9 @@ async function handleProxyRequest(
 
   const abortMatch = method === "POST" ? path.match(/^\/session\/([^/]+)\/abort(?:\?.*)?$/) : null
   if (abortMatch && !isKernelRequest) {
-    await options.client.send<Record<string, unknown>>(
+    await sendWithRecoveredAttachment(() => options.client.send<Record<string, unknown>>(
       cancelActivePromptRequest(options.sessionId, options.attachmentId),
-    )
+    ), options.recovery)
     response.writeHead(204, { "content-length": "0" })
     response.end()
     return

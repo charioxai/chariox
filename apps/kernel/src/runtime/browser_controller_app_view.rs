@@ -100,6 +100,9 @@ pub(crate) enum ViewAgentCallKind {
     Invoke,
     State,
     Changes,
+    /// Renders the App's confirmation view of one exact input; the page runs no action.
+    PrepareConfirmation,
+    ClearConfirmation,
 }
 
 /// What the page's agent bridge answered: a value, or an error with a code the

@@ -8,6 +8,8 @@
     "./server": "./dist/agent-trigger-server.js",
     "./page": "./dist/agent-trigger-page.js",
     "./raw-body-parsers": "./dist/publication-raw-body-parsers.js",
+    "./publication-parser": "./dist/publication-parser.js",
+    "./http-trigger": "./dist/agent-trigger-http.js",
     "./types": "./dist/types.js",
     "./live": "./dist/agent-trigger-live.js",
     "./images": "./dist/agent-trigger-images.js",

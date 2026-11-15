@@ -637,6 +637,7 @@ impl RuntimeSession {
                 None => self.workflow_runs.push(workflow_run),
             }
         }
+        self.reconcile_workflow_runtime_instances();
     }
 
     pub(crate) fn restore_workflow_event_delivery_receipts(

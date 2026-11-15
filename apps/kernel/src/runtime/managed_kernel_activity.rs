@@ -11,7 +11,7 @@ use crate::managed_bootstrap::ConfirmedManagedKernelRegistration;
 use crate::runtime::cloud_api_client::post_cloud_json;
 use crate::runtime::state::KernelRuntimeState;
 
-const ACTIVITY_ENDPOINT: &str = "/v1/managed-kernels/activity";
+const ACTIVITY_ENDPOINT: &str = "/v1/kernels/activity";
 const MAX_ACTIVITY_SEQUENCE: u32 = 2_147_483_647;
 const MIN_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);

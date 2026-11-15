@@ -196,7 +196,7 @@ test("getSessionState returns the Room's process rows with the session", async (
   assert.deepEqual(session.processes, [row])
 })
 
-test("attachSessionView returns the Room's process rows with the session", async () => {
+test("attachSessionView returns the Room's process and job rows with the session", async () => {
   const row = {
     owner: { kind: "agent" as const, id: "agent-1" },
     process_id: "process-1",
@@ -211,7 +211,7 @@ test("attachSessionView returns the Room's process rows with the session", async
     send: async () => ({
       SessionViewAttached: {
         attachment: { id: "attachment-1", session_id: "session-1" },
-        state: { SessionState: { session: runtimeSession(), processes: [row] } },
+        state: { SessionState: { session: runtimeSession(), processes: [row], jobs: [{ job_id: "j", agent_id: "a", command: "build", state: "starting", placement: "remote", started_at_ms: 1, deleted: false }] } },
         history: { SessionHistoryOutline: { agents: [] } },
       },
     }),
@@ -220,6 +220,7 @@ test("attachSessionView returns the Room's process rows with the session", async
   const view = await attachSessionView(client, "session-1", "client-1")
 
   assert.deepEqual(view.session.processes, [row])
+  assert.equal(view.session.jobs?.[0]?.job_id, "j")
 })
 
 function runtimeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {

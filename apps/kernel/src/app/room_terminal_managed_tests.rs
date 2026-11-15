@@ -192,7 +192,7 @@ async fn a_command_typed_at_the_prompt_counts_as_work_until_it_ends() {
     let fixture = fixture("terminal-typed-command");
     let shell = fixture.open_settled_shell().await;
     fixture
-        .terminal(input(&shell, "sleep 2\n"))
+        .terminal(input(&shell, "cat >/dev/null\n"))
         .await
         .expect("input");
     assert_eq!(fixture.runtime.managed_working_agent_count(), 1);
@@ -200,6 +200,11 @@ async fn a_command_typed_at_the_prompt_counts_as_work_until_it_ends() {
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
     assert_eq!(fixture.runtime.managed_working_agent_count(), 1);
     assert!(!fixture.reserve());
+    // Keep the command alive until this check, even if the runtime was delayed.
+    fixture
+        .terminal(input(&shell, "\x04"))
+        .await
+        .expect("finish the command's input");
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while fixture.runtime.managed_working_agent_count() != 0 {

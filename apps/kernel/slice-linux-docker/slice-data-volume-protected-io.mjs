@@ -103,8 +103,8 @@ function readProtectedInput(path, schemaVersion, expectedGid) {
   if (!value || typeof value !== "object" || Array.isArray(value) || value.schemaVersion !== schemaVersion) {
     fail("protected bootstrap input has an unsupported schema version")
   }
-  const serial = value.expectedDataVolumeSerial
-  const sizeGb = value.expectedDataVolumeSizeGb
+  const serial = value.authorityData?.storage?.expectedDataVolumeSerial
+  const sizeGb = value.authorityData?.storage?.expectedDataVolumeSizeGb
   if (
     typeof serial !== "string" || serial.length > 16 || !/^[1-9][0-9]*$/.test(serial) ||
     BigInt(serial) > BigInt(MAX_SAFE_INTEGER) ||

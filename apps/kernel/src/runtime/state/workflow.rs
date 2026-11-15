@@ -215,6 +215,17 @@ impl KernelRuntimeOwnedState {
                     .set_active_provider_run(session_id, Some(run.id().to_string()))?;
                 return Ok((run.id().to_string(), None));
             }
+            if run.state() != crate::provider::ProviderRunState::Ended {
+                // Enabling workflow tools replaces an idle ordinary process even when its
+                // conversation is kept. Release its provider writer before resuming it.
+                let ended = self
+                    .provider_store
+                    .terminate_run_provider_only(session_id, run.id())?
+                    .into_run();
+                self.clear_active_provider_run_session_pointer(session_id, ended.id())?;
+                self.provider_run_projection.update(ended.clone());
+                retired_provider_run_id = Some(ended.id().to_string());
+            }
         }
         let mut request = crate::provider::LaunchProviderRequest::new(
             session_id,

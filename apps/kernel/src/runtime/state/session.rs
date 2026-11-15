@@ -84,6 +84,7 @@ impl KernelRuntimeOwnedState {
         let mut session = self.session_store.get_session(session_id)?;
         let agents = self.agent_store.get_session_agents(session_id);
         session.set_agents(agents);
+        session.name_interaction_askers();
         session.set_agent_tasks(
             self.durable_state_store
                 .visible_agent_tasks(

@@ -204,7 +204,7 @@ impl KernelRuntimeState {
         let mut approval_wake = wake.clone();
         approval_wake.room_id = room.clone();
         approval_wake.agent_id = agent.clone();
-        self.approve_agent_process(
+        self.approve_leased_agent_process(
             &run,
             &approval_wake,
             &directory,

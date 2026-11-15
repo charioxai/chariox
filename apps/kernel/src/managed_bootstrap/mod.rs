@@ -1,13 +1,11 @@
 mod cloud;
 mod context_plan;
-mod data_volume_observation;
-mod freshness;
 pub mod grant_redemption;
 mod provider_path;
 mod release;
+mod runtime_identity;
 mod state;
 mod supervisor;
-pub mod worker;
 
 use std::thread;
 use std::time::Duration;
@@ -27,12 +25,8 @@ use cloud::{
     ManagedCloudRelayProfile,
 };
 pub use context_plan::ManagedKernelContextPlan;
-use freshness::{
-    capture_freshness_evidence_with_volume, capture_old_generation_runtime_identity_report,
-    validate_freshness_evidence, ManagedKernelFreshnessEvidence,
-    ManagedKernelRuntimeIdentityReport,
-};
 use release::{verify_release, verify_release_evidence, VerifiedRelease};
+use runtime_identity::{capture_runtime_identity_report, ManagedKernelRuntimeIdentityReport};
 use state::{
     default_managed_bootstrap_receipt_path, remove_envelope, trusted_builder_public_key_path,
     valid_identifier, valid_secret, BootstrapConfig, BootstrapReceipt, BootstrapReceiptStatus,
@@ -140,7 +134,7 @@ pub(crate) struct ManagedReleaseEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PreReimageObservationAcknowledgement {
+pub(crate) struct RuntimeIdentityObservationAcknowledgement {
     pub(crate) environment_id: String,
     pub(crate) generation: u64,
     pub(crate) observed_at: String,
@@ -382,9 +376,6 @@ fn validate_envelope_receipt_compatibility(
         || receipt.status == BootstrapReceiptStatus::Exchanged
             && envelope.runtime_release_digest != receipt.runtime_release_digest
         || envelope_repository_root != receipt_repository_root
-        || receipt.status == BootstrapReceiptStatus::Exchanged
-            && receipt.provider_rebuild_action_id.as_deref()
-                != envelope.provider_rebuild_action_id.as_deref()
     {
         return Err(bootstrap_error(
             "managed bootstrap envelope conflicts with its receipt",
@@ -399,7 +390,7 @@ fn begin_registration(
     now: DateTime<Utc>,
     envelope: &ManagedBootstrapEnvelope,
     identity: &ManagedRuntimeIdentity,
-    release: &VerifiedRelease,
+    _release: &VerifiedRelease,
 ) -> Result<Option<PendingConfirmation>, DaemonError> {
     if envelope.is_redeemed() {
         return Err(bootstrap_error(
@@ -440,8 +431,6 @@ fn begin_registration(
             .then_some(managed_repository_root),
         confirmed_at: None,
         context_plan: Some(exchanged.context_plan),
-        provider_rebuild_action_id: envelope.provider_rebuild_action_id.clone(),
-        freshness_evidence: None,
     };
     receipt.persist(&config.receipt_path)?;
     // The pending sidecar was durably written before exchange. Persist the
@@ -449,7 +438,6 @@ fn begin_registration(
     // that receipt instead of treating a completed binding as permission to
     // exchange the envelope again.
     bind_grant_to_receipt(config, envelope, &receipt)?;
-    let receipt = ensure_rebuild_freshness_evidence(config, Some(envelope), receipt, release)?;
     Ok(Some(PendingConfirmation {
         envelope: envelope.clone(),
         receipt,
@@ -462,7 +450,7 @@ fn resume_registration(
     envelope: Option<&ManagedBootstrapEnvelope>,
     receipt: BootstrapReceipt,
     identity: &ManagedRuntimeIdentity,
-    release: &VerifiedRelease,
+    _release: &VerifiedRelease,
 ) -> Result<Option<PendingConfirmation>, DaemonError> {
     validate_receipt_identity(&receipt, identity)?;
     let profile = load_managed_cloud_relay_profile()
@@ -494,8 +482,6 @@ fn resume_registration(
                 bootstrap_error("managed bootstrap envelope is required to resume confirmation")
             })?;
             validate_receipt_envelope_grant_binding(config, envelope, &receipt)?;
-            let receipt =
-                ensure_rebuild_freshness_evidence(config, Some(envelope), receipt, release)?;
             Ok(Some(PendingConfirmation {
                 envelope: envelope.clone(),
                 receipt,
@@ -532,39 +518,6 @@ fn confirm_registration(
     profile: &PersistedCloudRelayProfile,
 ) -> Result<(), DaemonError> {
     validate_receipt_envelope_grant_binding(config, envelope, &receipt)?;
-    let freshness_required = receipt.provider_rebuild_action_id.is_some()
-        || receipt.schema_version == 3 && receipt.generation > 1;
-    let freshness_evidence = if freshness_required {
-        let evidence = receipt
-            .freshness_evidence
-            .as_ref()
-            .ok_or_else(|| bootstrap_error("managed reimage freshness evidence is missing"))?;
-        validate_freshness_evidence(evidence, &receipt.runtime_release_digest)?;
-        validate_rebuild_volume_evidence(config, Some(envelope), evidence)?;
-        let verified = verify_release_evidence(
-            &config.manifest_path,
-            &config.signature_path,
-            &config.public_key_path,
-            &receipt.runtime_release_digest,
-            &config.kernel_binary,
-            trusted_builder_public_key_path()?.as_deref(),
-        )?;
-        if evidence.runtime_source_commit != verified.source_commit
-            || evidence.runtime_source_tree != verified.source_tree
-        {
-            return Err(bootstrap_error(
-                "managed reimage source identity does not match the signed release",
-            ));
-        }
-        Some(evidence.clone())
-    } else {
-        if receipt.freshness_evidence.is_some() {
-            return Err(bootstrap_error(
-                "managed freshness evidence has no rebuild operation binding",
-            ));
-        }
-        None
-    };
     let confirmed = cloud.confirm(
         &normalized_api_url(&envelope.control_plane_url),
         &ConfirmRequest {
@@ -575,7 +528,7 @@ fn confirm_registration(
                 .machine_credential
                 .clone()
                 .ok_or_else(|| bootstrap_error("managed machine credential is missing"))?,
-            freshness_evidence,
+            confirmation_evidence: envelope.confirmation_evidence.clone(),
         },
     )?;
     if !confirmed.confirmed || confirmed.observed_state != "awaiting_context" {
@@ -594,17 +547,15 @@ fn confirm_registration(
     }
     receipt.status = BootstrapReceiptStatus::Confirmed;
     receipt.confirmed_at = Some(now.to_rfc3339());
-    receipt.provider_rebuild_action_id = None;
-    receipt.freshness_evidence = None;
     receipt.persist(&config.receipt_path)?;
     remove_bound_envelope(config, envelope)
 }
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "Preserve the existing report_pre_reimage_runtime_identity operation signature and explicit context arguments"
+    reason = "Preserve the existing report_kernel_runtime_identity operation signature and explicit context arguments"
 )]
-fn report_pre_reimage_runtime_identity(
+fn report_kernel_runtime_identity(
     config: &BootstrapConfig,
     cloud: &impl BootstrapCloudClient,
     api_url: &str,
@@ -618,7 +569,7 @@ fn report_pre_reimage_runtime_identity(
 ) -> Result<ManagedKernelRuntimeIdentityReport, DaemonError> {
     if profile.machine_id.as_deref() != Some(machine_id) {
         return Err(bootstrap_error(
-            "managed pre-reimage report machine identity does not match the current Cloud profile",
+            "runtime identity report machine identity does not match the current Cloud profile",
         ));
     }
     let machine_credential = profile
@@ -633,7 +584,7 @@ fn report_pre_reimage_runtime_identity(
         &config.kernel_binary,
         trusted_builder_public_key_path()?.as_deref(),
     )?;
-    let report = capture_old_generation_runtime_identity_report(
+    let report = capture_runtime_identity_report(
         environment_id,
         machine_id,
         kernel_id,
@@ -649,34 +600,34 @@ fn report_pre_reimage_runtime_identity(
         || response.observed_at != report.observed_at
     {
         return Err(bootstrap_error(
-            "Cloud did not accept the managed pre-reimage runtime identity",
+            "Cloud did not accept the kernel runtime identity",
         ));
     }
     Ok(report)
 }
 
-pub(crate) fn observe_managed_environment_pre_reimage(
+pub(crate) fn observe_kernel_runtime_identity(
     daemon_config: &DaemonConfig,
     registration: &ConfirmedManagedKernelRegistration,
     expected_environment_id: &str,
     expected_generation: u64,
     observed_at: DateTime<Utc>,
-) -> Result<PreReimageObservationAcknowledgement, DaemonError> {
+) -> Result<RuntimeIdentityObservationAcknowledgement, DaemonError> {
     let config = BootstrapConfig::from_env()?;
     let receipt = match BootstrapReceipt::read(&config.receipt_path)? {
         Some(receipt) => receipt,
         None => {
             return Err(bootstrap_error(
-                "managed pre-reimage observation requires a bootstrap receipt",
+                "runtime identity observation requires a bootstrap receipt",
             ));
         }
     };
     if receipt.status != BootstrapReceiptStatus::Confirmed {
         return Err(bootstrap_error(
-            "managed pre-reimage observation requires a confirmed bootstrap receipt",
+            "runtime identity observation requires a confirmed bootstrap receipt",
         ));
     }
-    let profile = validate_pre_reimage_observation_binding(
+    let profile = validate_runtime_identity_observation_binding(
         daemon_config,
         registration,
         &receipt,
@@ -690,7 +641,7 @@ pub(crate) fn observe_managed_environment_pre_reimage(
         &receipt.runtime_release_digest,
         &config.kernel_binary,
     )?;
-    let report = report_pre_reimage_runtime_identity(
+    let report = report_kernel_runtime_identity(
         &config,
         &HttpBootstrapCloudClient::default(),
         &profile.api_url,
@@ -702,14 +653,14 @@ pub(crate) fn observe_managed_environment_pre_reimage(
         &release,
         observed_at,
     )?;
-    Ok(PreReimageObservationAcknowledgement {
+    Ok(RuntimeIdentityObservationAcknowledgement {
         environment_id: report.environment_id,
         generation: report.generation,
         observed_at: report.observed_at,
     })
 }
 
-fn validate_pre_reimage_observation_binding<'a>(
+fn validate_runtime_identity_observation_binding<'a>(
     daemon_config: &'a DaemonConfig,
     registration: &ConfirmedManagedKernelRegistration,
     receipt: &BootstrapReceipt,
@@ -720,7 +671,7 @@ fn validate_pre_reimage_observation_binding<'a>(
         || expected_generation != receipt.generation
     {
         return Err(bootstrap_error(
-            "managed pre-reimage observation does not match the current environment generation",
+            "runtime identity observation does not match the current environment generation",
         ));
     }
     if registration.environment_id != receipt.environment_id
@@ -731,7 +682,7 @@ fn validate_pre_reimage_observation_binding<'a>(
         || daemon_config.relay_public_key != receipt.relay_public_key
     {
         return Err(bootstrap_error(
-            "managed pre-reimage observation does not match the running kernel identity",
+            "runtime identity observation does not match the running kernel identity",
         ));
     }
     let profile = daemon_config
@@ -740,138 +691,6 @@ fn validate_pre_reimage_observation_binding<'a>(
         .ok_or_else(|| bootstrap_error("managed Cloud profile is missing"))?;
     validate_profile(profile, receipt)?;
     Ok(profile)
-}
-
-fn expected_data_volume_identity(
-    envelope: &ManagedBootstrapEnvelope,
-) -> Result<Option<(&str, u32)>, DaemonError> {
-    match (
-        envelope.schema_version,
-        envelope.expected_data_volume_serial.as_deref(),
-        envelope.expected_data_volume_size_gb,
-    ) {
-        (3, Some(serial), Some(size_gb)) => Ok(Some((serial, size_gb))),
-        (1 | 2 | 4, None, None) => Ok(None),
-        _ => Err(bootstrap_error(
-            "managed protected data-volume identity is incomplete",
-        )),
-    }
-}
-
-fn validate_rebuild_volume_evidence(
-    config: &BootstrapConfig,
-    envelope: Option<&ManagedBootstrapEnvelope>,
-    evidence: &ManagedKernelFreshnessEvidence,
-) -> Result<(), DaemonError> {
-    let path1 = config.envelope_path.as_path()
-        == std::path::Path::new(state::PROTECTED_MANAGED_BOOTSTRAP_PATH);
-    if path1 {
-        if evidence.schema_version != Some(3) {
-            return Err(bootstrap_error(
-                "Path-1 reimage freshness evidence is missing its admitted data-volume identity",
-            ));
-        }
-        if let Some(envelope) = envelope {
-            let Some((expected_serial, expected_size_gb)) =
-                expected_data_volume_identity(envelope)?
-            else {
-                return Err(bootstrap_error(
-                    "Path-1 freshness evidence has no protected data-volume expectation",
-                ));
-            };
-            if evidence.data_volume_serial.as_deref() != Some(expected_serial)
-                || evidence.data_volume_size_gb != Some(expected_size_gb)
-            {
-                return Err(bootstrap_error(
-                    "Path-1 freshness evidence does not match its protected data-volume identity",
-                ));
-            }
-        }
-    } else if evidence.schema_version.is_some()
-        || evidence.data_volume_serial.is_some()
-        || evidence.data_volume_size_gb.is_some()
-    {
-        return Err(bootstrap_error(
-            "shared-host freshness evidence contains Path-1 storage identity",
-        ));
-    }
-    Ok(())
-}
-
-fn ensure_rebuild_freshness_evidence(
-    config: &BootstrapConfig,
-    envelope: Option<&ManagedBootstrapEnvelope>,
-    mut receipt: BootstrapReceipt,
-    release: &VerifiedRelease,
-) -> Result<BootstrapReceipt, DaemonError> {
-    let envelope_action_id = envelope.and_then(|value| value.provider_rebuild_action_id.as_deref());
-    if envelope_action_id.is_some()
-        && receipt
-            .provider_rebuild_action_id
-            .as_deref()
-            .is_some_and(|value| Some(value) != envelope_action_id)
-    {
-        return Err(bootstrap_error(
-            "managed rebuild action ID conflicts with its receipt",
-        ));
-    }
-    let action_id = envelope_action_id.or(receipt.provider_rebuild_action_id.as_deref());
-    let generation_bound_path1_rebuild = receipt.schema_version == 3 && receipt.generation > 1;
-    if action_id.is_none()
-        && generation_bound_path1_rebuild
-        && receipt.status == BootstrapReceiptStatus::Confirmed
-        && receipt.freshness_evidence.is_none()
-    {
-        return Ok(receipt);
-    }
-    if action_id.is_none() && !generation_bound_path1_rebuild {
-        if receipt.freshness_evidence.is_some() {
-            return Err(bootstrap_error(
-                "managed freshness evidence is not bound to a rebuild operation",
-            ));
-        }
-        return Ok(receipt);
-    }
-    if let Some(action_id) = action_id {
-        receipt.provider_rebuild_action_id = Some(action_id.to_string());
-    }
-    let verified = verify_release_evidence(
-        &config.manifest_path,
-        &config.signature_path,
-        &config.public_key_path,
-        &release.digest,
-        &config.kernel_binary,
-        trusted_builder_public_key_path()?.as_deref(),
-    )?;
-    if receipt.status == BootstrapReceiptStatus::Confirmed {
-        let evidence = receipt.freshness_evidence.as_ref().ok_or_else(|| {
-            bootstrap_error("managed confirmed reimage freshness evidence is missing")
-        })?;
-        validate_freshness_evidence(evidence, &verified.digest)?;
-        validate_rebuild_volume_evidence(config, envelope, evidence)?;
-        if evidence.runtime_source_commit != verified.source_commit
-            || evidence.runtime_source_tree != verified.source_tree
-        {
-            return Err(bootstrap_error(
-                "managed confirmed reimage source identity does not match the signed release",
-            ));
-        }
-        return Ok(receipt);
-    }
-    if envelope_action_id.is_none() && !generation_bound_path1_rebuild {
-        return Err(bootstrap_error(
-            "managed reimage confirmation envelope is missing",
-        ));
-    }
-    let expected_data_volume = envelope
-        .map(expected_data_volume_identity)
-        .transpose()?
-        .flatten();
-    let evidence = capture_freshness_evidence_with_volume(config, &verified, expected_data_volume)?;
-    validate_rebuild_volume_evidence(config, envelope, &evidence)?;
-    receipt.freshness_evidence = Some(evidence);
-    receipt.persist(&config.receipt_path)?;
-    Ok(receipt)
 }
 
 fn validate_exchange_response(

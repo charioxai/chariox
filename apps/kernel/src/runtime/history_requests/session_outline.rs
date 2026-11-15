@@ -16,8 +16,11 @@ use crate::provider::{
 };
 use crate::session::PromptOrigin;
 
+mod peek;
 mod prefetch;
 mod projection;
+
+pub(crate) use peek::{execute_agent_transcript_entry_read, execute_agent_transcript_peek};
 
 #[cfg(test)]
 #[allow(unused_imports)]
@@ -160,6 +163,26 @@ fn load_blob_content_page(
     agent_import: Option<&ExternalProviderImportMetadata>,
 ) -> Result<SessionHistoryBlobContentPage, DaemonError> {
     let (sequence_start, sequence_end) = parse_blob_id(&blob_id)?;
+    let entries = load_blob_content_entries(
+        operational_history,
+        session_id,
+        agent_id,
+        sequence_start,
+        sequence_end,
+        agent_import,
+    )?;
+    Ok(SessionHistoryBlobContentPage { blob_id, entries })
+}
+
+/// What a row covering these sequences holds, as the pane shows it opened.
+fn load_blob_content_entries(
+    operational_history: &OperationalHistoryStore,
+    session_id: &str,
+    agent_id: &str,
+    sequence_start: u64,
+    sequence_end: u64,
+    agent_import: Option<&ExternalProviderImportMetadata>,
+) -> Result<Vec<crate::session_history_page::SessionHistoryPageEntry>, DaemonError> {
     let events = operational_history.load_session_events_for_agent_sequence_range(
         session_id,
         agent_id,
@@ -174,12 +197,11 @@ fn load_blob_content_page(
                 && !event.is_internal_dispatch_diagnostic()
         })
         .collect();
-    let entries = outline_blob_content_events(events)
+    Ok(outline_blob_content_events(events)
         .into_iter()
         .filter(|event| event_belongs_to_external_import(agent_import, event))
         .filter_map(page_entry_from_event)
-        .collect::<Vec<_>>();
-    Ok(SessionHistoryBlobContentPage { blob_id, entries })
+        .collect())
 }
 
 fn outline_agent_ids(
@@ -746,10 +768,24 @@ fn outline_turn_from_events_with_lifecycle(
     let external_identity = outline_turn_external_identity(&events);
     let prompt_origin = outline_turn_prompt_origin(prompt);
     let mut user_prompt = outline_page_entry_from_event(prompt.clone())?;
-    if prompt
+    // The kernel started this turn itself: a wake of a waiting agent, or a trigger that fired.
+    // Its prompt is shown as what it is, a system prompt, instead of being hidden or taken for the person's.
+    let inbox_wake = prompt
         .prompt_id
         .as_deref()
-        .is_some_and(crate::session::is_internal_prompt_echo_id)
+        .is_some_and(crate::session::is_agent_inbox_prompt_id);
+    let system_prompt = inbox_wake
+        || matches!(
+            prompt_origin,
+            crate::session::PromptOrigin::Schedule
+                | crate::session::PromptOrigin::Http
+                | crate::session::PromptOrigin::Notification
+        );
+    if !inbox_wake
+        && prompt
+            .prompt_id
+            .as_deref()
+            .is_some_and(crate::session::is_internal_prompt_echo_id)
     {
         // Retain the turn and reply attribution without presenting kernel
         // instructions as user input after a reconnect.
@@ -759,7 +795,7 @@ fn outline_turn_from_events_with_lifecycle(
         user_prompt.total_chars = 0;
     }
     project_workflow_user_prompt(&mut user_prompt, prompt_origin);
-    if prompt.is_internal_prompt_echo() {
+    if !inbox_wake && prompt.is_internal_prompt_echo() {
         // Preserve the agent's reply and turn identity without a user instruction row.
         user_prompt.entry.text.clear();
         user_prompt.fragment_start = 0;
@@ -817,6 +853,7 @@ fn outline_turn_from_events_with_lifecycle(
             .unwrap_or_else(|| format!("turn-{}", prompt.sequence)),
         prompt_id: prompt.prompt_id.clone(),
         prompt_origin,
+        system_prompt,
         external_provider: external_identity
             .as_ref()
             .map(|identity| identity.provider.clone()),

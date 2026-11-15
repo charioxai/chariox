@@ -81,6 +81,13 @@ impl From<RuntimeProviderRun> for PublicProviderRun {
 }
 
 impl PublicProviderRun {
+    /// Activity travels with the next state/usage update; a timestamp sample alone
+    /// must not resend the whole run to every Room view.
+    pub(crate) fn without_activity_timestamp(mut self) -> Self {
+        self.last_activity_at_ms = 0;
+        self
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }

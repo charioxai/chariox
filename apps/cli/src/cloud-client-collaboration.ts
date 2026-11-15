@@ -12,7 +12,7 @@ type Collaborator = Member & {lastCollaboratedAt: string; sharedSessionCount: nu
 export class CloudClientCollaboration {
   constructor(private readonly authenticated: AuthenticatedRequest,
     private readonly rememberSessionScope: (credential: CloudClientCredential, session: {sessionId: string; accountId: string}) => Promise<void>) {}
-  async createSessionInvite(sessionId: string, options: {displayName?: string | null; expiresInMs?: number | null; maxUses?: number | null; collaborationLevel?: CollaborationLevel}) {
+  async createSessionInvite(sessionId: string, options: {kernelId: string; displayName?: string | null; expiresInMs?: number | null; maxUses?: number | null; collaborationLevel?: CollaborationLevel}) {
     return this.authenticated(async credential => {
       const invite = await cloudClientRequest<{inviteId: string; inviteToken: string; sessionId: string; accountId: string; createdByUserId: string; expiresAt?: string | null; maxUses?: number | null}>(credential.profile.apiUrl, "/sessions/invites", {body: {...options, sessionId, sessionToken: credential.accessToken, accountId: credential.profile.accountId}})
       await this.rememberSessionScope(credential, {sessionId: invite.sessionId, accountId: invite.accountId})

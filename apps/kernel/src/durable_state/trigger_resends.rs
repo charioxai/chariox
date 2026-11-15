@@ -1,10 +1,7 @@
 //! MP-08/MP-10/MP-11: a resend is consumed by durable prompt admission, even
 //! after its replacement finishes or a later snapshot contains stale state.
 use super::DurableKernelStateStore;
-use crate::{
-    durable_prompt_state::DurablePromptStateEventPayload, error::DaemonError,
-    session::PromptQueueItem,
-};
+use crate::{durable_prompt_state::DurablePromptStateEventPayload, error::DaemonError};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 pub(crate) struct TriggerResendReceipt {
@@ -26,13 +23,10 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
 }
 
 /// The existing event and its receipt commit in the same writer transaction.
-pub(super) fn record_prompt_state_in(tx: &Transaction<'_>, payload: &str) -> rusqlite::Result<()> {
-    if !payload.contains(PromptQueueItem::TRIGGER_RESEND_OPERATION_PREFIX) {
-        return Ok(());
-    }
-    let mut event: DurablePromptStateEventPayload =
-        serde_json::from_str(payload).map_err(|_| rusqlite::Error::InvalidQuery)?;
-    event.restore_private_states();
+pub(super) fn record_prompt_state_in(
+    tx: &Transaction<'_>,
+    event: &DurablePromptStateEventPayload,
+) -> rusqlite::Result<()> {
     for prompt in event
         .active_prompt
         .iter()

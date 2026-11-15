@@ -193,7 +193,9 @@ export type AppViewCatalog = {
 }
 export type AppViewAction = {
   name: string; description: string; inputSchema: unknown; outputSchema?: unknown
-  effect: "read" | "write" | "approval"; approvalReason?: string
+  effect: "read" | "write" | "approval" | "person_confirmed"; approvalReason?: string
+  /** `person_confirmed` only: the App's own view that previews the exact input on the person's card. */
+  confirmationView?: string
 }
 /** target_id is the logical Room Tab ID, also accepted by InspectAppView. */
 export type AppViewInspection = {

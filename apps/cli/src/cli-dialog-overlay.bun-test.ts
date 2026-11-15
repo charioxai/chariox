@@ -129,7 +129,7 @@ test("session browser keeps nonzero ERROR visible at 80 columns", async () => {
   }
 })
 
-test("managed-machine dialog renders deployment fields outside the session form", async () => {
+test("the machine offer dialog renders read-only service details with a working close button", async () => {
   const harness = await createTestRenderer({ width: 100, height: 30, useThread: false })
   const overlayBox = new BoxRenderable(harness.renderer, {
     position: "absolute",
@@ -139,34 +139,43 @@ test("managed-machine dialog renders deployment fields outside the session form"
     height: 30,
   })
   harness.renderer.root.add(overlayBox)
+  let dismissed = 0
   try {
     renderCliDialogOverlay({
       overlayBox,
       renderer: harness.renderer,
       dimensions: { width: 100, height: 30 },
       mode: "managed-machine",
-      onDismiss() {},
+      onDismiss() { dismissed++ },
       sessions: [],
       normalizeSessionBrowserIndex: () => 0,
       terminalPairing: null,
       terminalPairingQrLines: [],
       hotkeySections: [],
       managedMachineRows: [{
-        id: "managed-compute",
-        title: "Compute class",
-        value: "agent-small",
+        id: "machine-offer:type",
+        title: "Machine type",
+        value: "General purpose",
         titleWidth: 28,
         indent: 1,
-        focused: true,
-        selectable: true,
+        focused: false,
+        selectable: false,
         scrollbar: "",
       }],
     })
     await harness.renderOnce()
     const frame = harness.captureCharFrame()
-    assert.match(frame, /New Chariox-managed machine/)
-    assert.match(frame, /Compute class/)
-    assert.match(frame, /agent-small/)
+    assert.match(frame, /New machine/)
+    assert.match(frame, /Machine type/)
+    assert.match(frame, /General purpose/)
+    assert.doesNotMatch(frame, /fields|values|Compute class|Chariox-managed/)
+    const lines = frame.split("\n"), y = lines.findIndex(line => line.includes("×"))
+    assert.ok(y >= 0, "the header includes a close button")
+    const x = lines[y]!.indexOf("×")
+    await harness.mockMouse.click(x, y, 2)
+    assert.equal(dismissed, 0)
+    await harness.mockMouse.click(x, y, 0)
+    assert.equal(dismissed, 1)
   } finally {
     harness.renderer.destroy()
   }

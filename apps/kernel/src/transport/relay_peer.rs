@@ -163,7 +163,6 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: allocated 371 pairs the embedded local response union with local 920.
 /// 374 pairs the embedded local response union with local 923 (`CredentialVaultUnlocked`).
 /// Landing union 374 pairs the embedded local union with local 923 (it carries peers 364, 370 and 371).
-/// Allocated 375 pairs the embedded local response union with local 924 (opaque reimage `providerId`).
 /// MP-08/MP-09/MP-10/MP-11: 376 pairs local 925 (the relay close's `kernel_reload`).
 /// 377 pairs the embedded local union with local 926 (direct data channel liveness).
 /// 378 pairs the embedded local union with local 927 (`SessionProcess.state`, `StartSessionProcessNow`).
@@ -212,7 +211,15 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// `StartFileTransfer`, `GetFileTransfer` and `CancelFileTransfer` between kernels of one owner, and
 /// renames the answers `LeasedAgentFileRead` and `LeasedAgentFileRefused` to `FileSliceRead` and
 /// `FileRefused`, which both file services use.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 444;
+/// Peer 445 (Landing 10) carries local 1006 between kernels of one owner: the generic runtime identity
+/// observation request and response, `asker_name` on an active interaction, `PeekAgentTranscript` and
+/// `ReadAgentTranscriptEntry`, the idle Stop success contract, the agent trigger options, the owner room card
+/// command results, the required nullable deadline edit, and job execution needs, memory-limit outcomes,
+/// private authenticated job targets and durable job operations, and the machine resource-protection
+/// configuration in kernel responses.
+/// 446 carries native machine-file watch leases and worker invalidations; 447 forwards `app_confirmation`
+/// with its interaction between kernels of one owner.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 447;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -1048,7 +1055,8 @@ pub enum RelayPeerRequest {
     /// The worker enforces the agent's deadline itself, so the run stops with the home offline.
     SetLeasedAgentDeadline {
         leased_agent_id: String,
-        deadline_ms: u64,
+        #[serde(deserialize_with = "Option::deserialize")]
+        deadline_ms: Option<u64>,
     },
     /// `chariox.file.copy` from the leased agent: one slice of a file in its workspace, starting
     /// at `offset`.
@@ -1067,6 +1075,18 @@ pub enum RelayPeerRequest {
         sha256: String,
         overwrite: bool,
         content: RemoteFileBytes,
+    },
+    /// Native file interests leased by a home kernel; renewals do no filesystem I/O.
+    WatchMachineFiles {
+        subscription_id: String,
+        paths: Vec<String>,
+    },
+    UnwatchMachineFiles {
+        subscription_id: String,
+    },
+    /// Coalesced invalidation pushed by the worker, authenticated to its kernel identity.
+    MachineFilesChanged {
+        subscription_id: String,
     },
     /// Files on this machine for another kernel of the same owner. What it is, by absolute path.
     StatMachinePath {
@@ -1598,6 +1618,9 @@ pub enum RelayPeerResponse {
         truncated: bool,
     },
     MachinePathDeleted,
+    MachineFilesWatched {
+        created: bool,
+    },
     FileTransfer {
         job: crate::local::FileTransferJob,
     },
@@ -2316,6 +2339,17 @@ mod native_approval_protocol_tests {
 
 #[cfg(test)]
 mod leased_agent_deadline_shapes {
+    #[test]
+    fn deadline_clear_requires_an_explicit_null() {
+        let value = serde_json::json!({"kind":"set_leased_agent_deadline","leased_agent_id":"lease","deadline_ms":null});
+        let request: super::RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), value);
+        assert!(serde_json::from_value::<super::RelayPeerRequest>(
+            serde_json::json!({"kind":"set_leased_agent_deadline","leased_agent_id":"lease"})
+        )
+        .is_err());
+    }
+
     use super::*;
     use sha2::{Digest, Sha256};
 

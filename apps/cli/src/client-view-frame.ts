@@ -11,6 +11,8 @@ export function captureTranscriptFrame(buffer: OptimizedBuffer, rect: Rect): Cac
   try {
     crop.drawFrameBuffer(0, 0, buffer, x, y, width, height)
     const lines = crop.getSpanLines().map(line => ({spans: line.spans.map(span => ({text:span.text,width:span.width,fg:span.fg.toInts(),bg:span.bg.toInts(),attributes:span.attributes & 0xff}))}))
+    // A viewport captured before its rows were drawn is empty: remembered, it would paint a blank Room on the next start.
+    if (!lines.some(line => line.spans.some(span => span.text.trim() !== ""))) return
     return {width,height,lines}
   } finally { crop.destroy() }
 }

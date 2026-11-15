@@ -323,9 +323,16 @@ impl AgentRuntime {
                 Err(error) => return Err(error),
             }
         };
-        self.store
+        let agent = self
+            .store
             .ensure_agent_owner(&agent_id, &caller_user_id, "cancel active prompt")
             .await?;
+        if agent.session_id() != request.session_id.as_str() {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: request.session_id.clone(),
+                agent_id,
+            });
+        }
         self.dispatch_to_agent(
             agent_id.clone(),
             CommandTrace::from_command(command),

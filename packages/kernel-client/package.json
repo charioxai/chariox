@@ -12,7 +12,6 @@
     "./default-control-plane": "./dist/default-control-plane.js",
     "./ipc-managed-context-requests": "./dist/ipc-managed-context-requests.js",
     "./ipc-project-environment-requests": "./dist/ipc-project-environment-requests.js",
-    "./ipc-managed-environment-requests": "./dist/ipc-managed-environment-requests.js",
     "./ipc-disposable-worker-requests": "./dist/ipc-disposable-worker-requests.js",
     "./extension-grant-placement": "./dist/extension-grant-placement.js",
     "./agent-activity": "./dist/agent-activity.js",
@@ -90,6 +89,7 @@
     "./shell-capability-format": "./dist/shell-capability-format.js",
     "./shell-session-footer": "./dist/shell-session-footer.js",
     "./shell-remote-format": "./dist/shell-remote-format.js",
+    "./shell-config-command": "./dist/shell-config-command.js",
     "./shell-core": "./dist/shell-core.js",
     "./shell-app-command": "./dist/shell-app-command.js",
     "./shell-executor": "./dist/shell-executor.js",
@@ -105,7 +105,10 @@
     "./user-domain-access": "./dist/user-domain-access.js",
     "./browser-mirror": "./dist/browser-mirror.js",
     "./browser-mirror2": "./dist/browser-mirror2.js",
-    "./agent-task-state": "./dist/agent-task-state.js"
+    "./agent-task-state": "./dist/agent-task-state.js",
+    "./ipc-runtime-identity-requests": "./dist/ipc-runtime-identity-requests.js",
+    "./context-transfer-types": "./dist/context-transfer-types.js",
+    "./ipc-control-plane-requests": "./dist/ipc-control-plane-requests.js"
   },
   "types": "./dist/index.d.ts",
   "scripts": {

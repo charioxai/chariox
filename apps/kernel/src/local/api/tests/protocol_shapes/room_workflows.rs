@@ -84,6 +84,7 @@ fn mp08_mp11_session_state_and_snapshot_hash_required_room_workflows() {
         agent_activity: std::collections::BTreeMap::new(),
         agent_activity_revision: 0,
         processes: Vec::new(),
+        jobs: Vec::new(),
         disk_usage: Vec::new(),
     };
     let event = crate::transport::kernel_protocol::KernelEvent::SessionSnapshot {

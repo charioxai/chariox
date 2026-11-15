@@ -10,6 +10,8 @@ use crate::{
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+mod confirmation;
+
 const APP: &str = "installed";
 const TARGET: &str = "view-1";
 const GENERATION: u64 = 3;
@@ -233,6 +235,8 @@ fn action(name: &str, effect: UiActionEffect) -> UiActionDeclaration {
         output_schema: None,
         effect,
         approval_reason: (effect == UiActionEffect::Approval).then(|| "Deletes the list".into()),
+        confirmation_view: (effect == UiActionEffect::PersonConfirmed)
+            .then(|| "review_payment".into()),
     }
 }
 

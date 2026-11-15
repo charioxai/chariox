@@ -203,6 +203,9 @@ pub struct WaitingRoomSessionActivitySummary {
     pub remote_extension_pending_revoke_count: usize,
     #[serde(default, skip_serializing_if = "crate::session::is_zero")]
     pub unread_idle_agent_count: usize,
+    /// Agents that are not working and have armed waits or events.
+    #[serde(default, skip_serializing_if = "crate::session::is_zero")]
+    pub waiting_agent_count: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,6 +216,9 @@ pub struct WaitingRoomPublicItemActivitySummary {
     pub error: bool,
     #[serde(default, skip_serializing_if = "crate::session::is_false")]
     pub unread_idle_output: bool,
+    /// The agent has armed waits or events and will be woken by them.
+    #[serde(default, skip_serializing_if = "crate::session::is_false")]
+    pub waiting: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

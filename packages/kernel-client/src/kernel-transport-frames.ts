@@ -100,6 +100,7 @@ export type RelayEventFrame = {
 export type RelayCloseFrame = {
   kind: "close"
   reason: string
+  kernel_reload?: boolean
 }
 
 export type KernelSocketLane = "control" | "event"

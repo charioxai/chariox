@@ -312,6 +312,10 @@ mod tests {
         file.sync_all().unwrap();
         let (id, bytes) = allocation(&file.metadata().unwrap(), &path);
         let process = SessionProcess {
+            remote_available: false,
+            remote_refusal: None,
+            estimate: None,
+            placement: None,
             owner: SessionProcessOwner::Agent("agent-test".into()),
             state: super::super::process_resources::SessionProcessState::Running,
             process: super::super::process_resources::ProcessSample {

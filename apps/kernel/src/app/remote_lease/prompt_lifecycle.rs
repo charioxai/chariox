@@ -1648,6 +1648,9 @@ mod receipt_tests {
             external_provider_turn_id: None,
             prompt_summary: "run-scoped cancellation test".to_string(),
         };
+        RemoteLeaseRuntime::new(app)
+            .begin_leased_prompt_receipt(&leased_agent.id, &home_prompt_id)
+            .unwrap();
         let (provider_run_id, outcome) = RemoteLeaseRuntime::new(app)
             .submit_leased_prompt_with_workflow_context(
                 &leased_agent.id,
@@ -1661,6 +1664,14 @@ mod receipt_tests {
             )
             .expect("worker should accept the prompt");
         assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+        RemoteLeaseRuntime::new(app)
+            .update_leased_prompt_receipt(
+                &leased_agent.id,
+                &home_prompt_id,
+                WorkerPromptReceiptPhase::Accepted,
+                Some(&provider_run_id),
+            )
+            .unwrap();
         (
             leased_agent.id,
             leased_agent.backing_session_id,
@@ -2006,6 +2017,21 @@ mod receipt_tests {
         RemoteLeaseRuntime::new(&mut app)
             .begin_leased_prompt_receipt(&leased_agent.id, home_prompt_id)
             .unwrap();
+        // The relay admission path records this pair before accepting the receipt.
+        let backing = app
+            .prompt_owner_active_prompt_for_agent_snapshot(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .unwrap()
+            .unwrap();
+        let mut receipt = app
+            .worker_prompt_receipts
+            .get(&leased_agent.id, home_prompt_id)
+            .unwrap()
+            .clone();
+        receipt.backing_prompt_id = Some(backing.id().into());
+        app.worker_prompt_receipts.persist(receipt).unwrap();
         RemoteLeaseRuntime::new(&mut app)
             .update_leased_prompt_receipt(
                 &leased_agent.id,

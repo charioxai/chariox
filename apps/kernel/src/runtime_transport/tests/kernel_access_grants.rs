@@ -640,6 +640,7 @@ impl Kernel {
                     )
                     .env("CHARIOX_HOME", root.join("state"))
                     .env("HOME", root.join("home"))
+                    .env(crate::runtime::owned_process_signals::CLAIM_VARIABLE, &root)
                     .envs(extra_env.iter().copied())
                     .env_remove("CLAUDE_CONFIG_DIR")
                     .env_remove("CODEX_HOME")
@@ -816,6 +817,9 @@ fn reap_fixture(child: &mut Child, root: &Path) {
         let _ = child.kill();
     }
     let _ = child.wait();
+    // Provider servers the kernel started run in sessions of their own; the claim
+    // in the fixture's environment names them.
+    crate::test_support::end_claimed_descendants(&root.display().to_string());
     if let Ok(pid) = std::fs::read_to_string(root.join("descendant-pid")) {
         let fields = pid.split_whitespace().collect::<Vec<_>>();
         if let [pid, start] = fields.as_slice() {
@@ -888,6 +892,32 @@ impl Drop for StartingKernel {
             reap_fixture(&mut child, &self.root);
         }
     }
+}
+
+#[test]
+fn reaping_a_fixture_ends_the_job_its_kernel_detached() {
+    let root = std::env::temp_dir().join(format!("a{:016x}", rand::random::<u64>()));
+    std::fs::create_dir(&root).unwrap();
+    let seconds = 300_000 + std::process::id() % 100_000;
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "{}; exec sleep 600",
+            crate::test_support::detached_job("/dev/null", seconds)
+        ))
+        .env(crate::runtime::owned_process_signals::CLAIM_VARIABLE, &root)
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !crate::test_support::detached_sleeper_running(seconds) {
+        assert!(std::time::Instant::now() < deadline, "the job should start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    reap_fixture(&mut child, &root);
+    assert!(
+        !crate::test_support::detached_sleeper_running(seconds),
+        "the job the fixture detached must end with it"
+    );
 }
 
 #[tokio::test]

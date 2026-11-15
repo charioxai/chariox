@@ -317,6 +317,7 @@ impl SessionService {
 
     pub fn list_visible_projects(
         &self,
+        owner_user_id: &str,
         include_archived: bool,
         is_member: impl Fn(&RuntimeSession) -> bool,
     ) -> Vec<RuntimeProject> {
@@ -330,7 +331,11 @@ impl SessionService {
             .collect::<BTreeSet<_>>();
         self.projects
             .values()
-            .filter(|project| visible_project_ids.contains(project.id()))
+            .filter(|project| {
+                (project.kind() == RuntimeProjectKind::Named
+                    && project.owner_user_id() == owner_user_id)
+                    || visible_project_ids.contains(project.id())
+            })
             .filter(|project| include_archived || project.status() == RuntimeProjectStatus::Active)
             .cloned()
             .collect()

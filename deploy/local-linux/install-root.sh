@@ -184,7 +184,7 @@ install_all() {
     python3 "$here/provision-docker-admission-locks.py" --root "${R:-/}"
 
   put "$here/provision-docker-admission-locks.py" "$R/usr/libexec/chariox-docker-admission-locks" 0755 || true
-  if put "$here/../managed-kernel/chariox-docker-admission-locks.service" "$R/etc/systemd/system/chariox-docker-admission-locks.service" 0644 && [[ -z "$R" ]]; then
+  if put "$here/chariox-docker-admission-locks.service" "$R/etc/systemd/system/chariox-docker-admission-locks.service" 0644 && [[ -z "$R" ]]; then
     act "reload systemd units" systemctl daemon-reload
   fi
   if [[ -z "$R" ]]; then

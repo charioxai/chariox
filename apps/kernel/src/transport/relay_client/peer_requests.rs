@@ -160,7 +160,7 @@ pub(super) async fn handle_daemon_peer_request(
     }
     let disposable_home_caller =
         if router.kernel_runtime_role() == crate::config::KernelRuntimeRole::RemoteLeaseWorker {
-            router.confirmed_disposable_worker_home_caller().ok()
+            router.enrolled_lease_worker_home_caller().ok()
         } else {
             None
         };
@@ -451,7 +451,7 @@ pub(super) async fn handle_daemon_peer_request(
             requester_public_key.clone(),
         );
         if machine_file_request(&request) {
-            let response = match router.relay_machine_files(request).await {
+            let response = match router.relay_machine_files(sender, request).await {
                 Ok(response) => response,
                 Err(error) => {
                     return RelayRequestOutcome {
@@ -594,6 +594,9 @@ pub(super) async fn handle_daemon_peer_request(
         | RelayPeerRequest::SpawnRoomPeer { .. }
         | RelayPeerRequest::DeleteRoomPeer { .. }
         | RelayPeerRequest::DeliverPeerAgentOutcome { .. }
+        | RelayPeerRequest::WatchMachineFiles { .. }
+        | RelayPeerRequest::UnwatchMachineFiles { .. }
+        | RelayPeerRequest::MachineFilesChanged { .. }
         | RelayPeerRequest::StatMachinePath { .. }
         | RelayPeerRequest::ListMachineDirectory { .. }
         | RelayPeerRequest::ReadMachineFile { .. }
@@ -2628,7 +2631,10 @@ fn project_environment_setup_request(request: &RelayPeerRequest) -> bool {
 fn machine_file_request(request: &RelayPeerRequest) -> bool {
     matches!(
         request,
-        RelayPeerRequest::StatMachinePath { .. }
+        RelayPeerRequest::WatchMachineFiles { .. }
+            | RelayPeerRequest::UnwatchMachineFiles { .. }
+            | RelayPeerRequest::MachineFilesChanged { .. }
+            | RelayPeerRequest::StatMachinePath { .. }
             | RelayPeerRequest::ListMachineDirectory { .. }
             | RelayPeerRequest::ReadMachineFile { .. }
             | RelayPeerRequest::DeleteMachinePath { .. }
@@ -4586,42 +4592,10 @@ mod tests {
         });
         let target_public_key = config.relay_public_key.clone();
         let target_key_thumbprint = public_key_thumbprint(&target_public_key);
-        let release_digest = format!("sha256:{}", "a".repeat(64));
-        let receipt_path = root.join("disposable-worker/bootstrap-receipt.json");
-        fs::create_dir_all(receipt_path.parent().expect("receipt parent"))
-            .expect("create receipt parent");
-        let write_receipt = |status: &str, confirmed_at: Option<&str>| {
-            let receipt = serde_json::json!({
-                "schemaVersion": 1,
-                "status": status,
-                "allocationId": "allocation-peer-arm",
-                "machineId": target_machine_id,
-                "kernelId": target_kernel_id,
-                "relayPublicKey": target_public_key,
-                "runtimeReleaseDigest": release_digest,
-                "homeCaller": {
-                    "accountId": "account-1",
-                    "userId": "user-1",
-                    "realmId": "realm-1",
-                    "machineId": "home-machine-1",
-                    "kernelId": source_kernel_id,
-                    "relayPublicKey": source_public_key,
-                },
-                "confirmedAt": confirmed_at,
-            });
-            crate::config::write_private_file(
-                &receipt_path,
-                &serde_json::to_vec(&receipt).expect("encode disposable receipt"),
-            )
-            .expect("write disposable receipt");
-        };
-        let _receipt_environment = ScopedEnv::set(
-            "CHARIOX_DISPOSABLE_WORKER_RECEIPT",
-            receipt_path.as_os_str(),
-        );
-        let app = Arc::new(Mutex::new(
-            DaemonApp::bootstrap(config).expect("disposable worker should bootstrap"),
-        ));
+        let app = DaemonApp::bootstrap(config).expect("disposable worker should bootstrap");
+        let config_projection = app.config_projection_store();
+        let enrolled = config_projection.snapshot();
+        let app = Arc::new(Mutex::new(app));
         let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 1));
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let peer_harness = ManagedPeerRequestHarness {
@@ -4650,7 +4624,14 @@ mod tests {
         };
         let valid_request = arm_request(context_plan.package_binding(), "environment-peer");
 
-        write_receipt("exchanged", None);
+        // Until Cloud enrolls the machine, the worker refuses every context import.
+        let mut unenrolled = enrolled.clone();
+        unenrolled
+            .cloud_relay
+            .as_mut()
+            .expect("lease worker cloud profile")
+            .machine_credential = None;
+        config_projection.update(unenrolled);
         let unconfirmed = send_managed_peer_request(
             &peer_harness,
             source_kernel_id,
@@ -4668,7 +4649,7 @@ mod tests {
             } if code == "kernel_runtime_role_denied"
         ));
 
-        write_receipt("confirmed", Some("2026-09-14T00:00:00Z"));
+        config_projection.update(enrolled);
         let mut wrong_home = identity.clone();
         wrong_home.subject = "other-home-kernel".to_string();
         let wrong_home_response = send_managed_peer_request(
@@ -5906,7 +5887,7 @@ mod tests {
                         continue;
                     };
                     let headers = String::from_utf8_lossy(&request[..header_end]);
-                    assert!(headers.starts_with("POST /v1/managed-kernels/context/complete "));
+                    assert!(headers.starts_with("POST /v1/kernels/context/complete "));
                     let content_length = headers
                         .lines()
                         .find_map(|line| {

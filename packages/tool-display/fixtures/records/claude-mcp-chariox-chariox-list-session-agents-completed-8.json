@@ -1,14 +1,14 @@
 {
- "provider": "claude",
- "kind": "mcp__chariox__chariox_list_session_agents",
- "source": "live 2026-11-10: record from the kernel history of a real claude turn on the lane kernel",
- "record": {
-  "id": "toolu_01KKhmUgAp5zVzrZ8qR8A2z4",
-  "input": {},
-  "output": "{\"agent_tasks\":[{\"agent_id\":\"agent-85a2f76f16e19dd4477b6e5a5505d543\",\"blocked_revision\":0,\"correction_used\":false,\"last_progress_at_ms\":1794313792315,\"no_progress_wakes\":0,\"obligations\":[],\"owner_user_id\":\"cmwano5uf000101lxccfs612p\",\"pending_prompt_id\":null,\"progress_sequence\":0,\"prompt_id\":\"prompt-1794313665593\",\"provider_run_id\":\"provider-run-2\",\"reason\":\"\",\"revision\":1,\"room_id\":\"18e6aee31f6ba8e7\",\"state\":\"working\",\"task_id\":\"prompt-1794313665593\",\"wait\":null}],\"agents\":[{\"account_profile\":\"claude-1-h6vtixep\",\"address\":\"@agent-1\",\"agent_ref\":\"313962c0\",\"alias\":\"agent-1\",\"effort\":\"high\",\"execution_mode\":\"build\",\"extensions\":{\"connectors\":[],\"mcps\":[],\"scripts\":[],\"skills\":[]},\"has_active_prompt\":true,\"id\":\"agent-85a2f76f16e19dd4477b6e5a5505d543\",\"is_focused\":true,\"is_processing\":false,\"is_self\":true,\"location\":{\"kind\":\"local\"},\"model\":\"claude-haiku-5-5\",\"operating_mode\":\"regular\",\"parent_agent_id\":null,\"permission_level\":\"yolo\",\"provider\":\"claude-headless\",\"queued_prompt_count\":0,\"state\":\"focused\",\"visible_in_freeform\":true}],\"focused_agent_id\":\"agent-85a2f76f16e19dd4477b6e5a5505d543\",\"session_id\":\"18e6aee31f6ba8e7\"}",
-  "started_at_ms": 1794313821474,
-  "status": "completed",
-  "tool": "mcp__chariox__chariox_list_session_agents"
- },
- "shows": "agent_tasks"
+  "provider": "claude",
+  "kind": "mcp__chariox__chariox_list_session_agents",
+  "source": "live 2026-11-10: record from the kernel history of a real claude turn on the lane kernel",
+  "record": {
+    "id": "toolu_01KKhmUgAp5zVzrZ8qR8A2z4",
+    "input": {},
+    "output": "{\"agent_tasks\":[{\"agent_id\":\"agent-85a2f76f16e19dd4477b6e5a5505d543\",\"blocked_revision\":0,\"correction_used\":false,\"last_progress_at_ms\":1794313792315,\"obligations\":[],\"owner_user_id\":\"cmwano5uf000101lxccfs612p\",\"pending_prompt_id\":null,\"prompt_id\":\"prompt-1794313665593\",\"provider_run_id\":\"provider-run-2\",\"reason\":\"\",\"revision\":1,\"room_id\":\"18e6aee31f6ba8e7\",\"state\":\"working\",\"task_id\":\"prompt-1794313665593\",\"wait\":null}],\"agents\":[{\"account_profile\":\"claude-1-h6vtixep\",\"address\":\"@agent-1\",\"agent_ref\":\"313962c0\",\"alias\":\"agent-1\",\"effort\":\"high\",\"execution_mode\":\"build\",\"extensions\":{\"connectors\":[],\"mcps\":[],\"scripts\":[],\"skills\":[]},\"has_active_prompt\":true,\"id\":\"agent-85a2f76f16e19dd4477b6e5a5505d543\",\"is_focused\":true,\"is_processing\":false,\"is_self\":true,\"location\":{\"kind\":\"local\"},\"model\":\"claude-haiku-5-5\",\"operating_mode\":\"regular\",\"parent_agent_id\":null,\"permission_level\":\"yolo\",\"provider\":\"claude-headless\",\"queued_prompt_count\":0,\"state\":\"focused\",\"visible_in_freeform\":true}],\"focused_agent_id\":\"agent-85a2f76f16e19dd4477b6e5a5505d543\",\"session_id\":\"18e6aee31f6ba8e7\"}",
+    "started_at_ms": 1794313821474,
+    "status": "completed",
+    "tool": "mcp__chariox__chariox_list_session_agents"
+  },
+  "shows": "agent_tasks"
 }

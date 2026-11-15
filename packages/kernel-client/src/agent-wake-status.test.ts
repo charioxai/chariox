@@ -15,7 +15,7 @@ function wake(overrides: Partial<AgentWake>): AgentWake {
 const waiting = { task_id: "t", room_id: "room", owner_user_id: "o", agent_id: "agent", prompt_id: "t", provider_run_id: null,
   revision: 1, blocked_revision: 0, state: "waiting", reason: "timers", obligations: [],
   wait: { registration_ids: ["completion-w"], deadline_ms: Date.UTC(2026, 9, 7, 13), started_at_ms: 0, inbox_cursor: 0, long_wait_notified: false, last_checked_at_ms: 0 },
-  last_progress_at_ms: 0, progress_sequence: 0, no_progress_wakes: 0, correction_used: false, pending_prompt_id: null } satisfies AgentTaskExecution
+  last_progress_at_ms: 0, correction_used: false, pending_prompt_id: null } satisfies AgentTaskExecution
 
 test("MP-08/MP-09/MP-10/MP-11 A03 waiting status names the next armed wake", () => {
   const session = { agent_tasks: [waiting], agent_wakes: [

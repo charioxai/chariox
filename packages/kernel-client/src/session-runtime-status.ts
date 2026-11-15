@@ -380,7 +380,7 @@ export function sessionAgentTaskStatus(session: RuntimeSession | null | undefine
     const sources = task.wait?.registration_ids.length ?? 0
     const objective = [...goal.objective.replace(/\s+/g, " ").trim()]
     const title = objective.length > 160 ? objective.slice(0, 159).join("") + "…" : objective.join("")
-    return { label: `GOAL ${phase}: ${title}\nnext check ${deadline} · active ${seconds(active)} · wait ${seconds(waiting)} · ${goal.check_in_minutes}m · check ${goal.check_count}\nsources ${sources} · progress ${task.progress_sequence ?? 0} at ${task.last_progress_at_ms ? new Date(task.last_progress_at_ms).toISOString() : "none"} · ${open} obligations${task.reason ? ` · ${task.reason}` : ""}\n${goal.id} revision ${task.revision} · /goal pause | resume | cancel | interval <minutes> | edit <objective>`, tone: task.state === "blocked" ? "error" : task.state === "working" ? "working" : "idle" }
+    return { label: `GOAL ${phase}: ${title}\nnext check ${deadline} · active ${seconds(active)} · wait ${seconds(waiting)} · ${goal.check_in_minutes}m · check ${goal.check_count}\nsources ${sources} · progress at ${task.last_progress_at_ms ? new Date(task.last_progress_at_ms).toISOString() : "none"} · ${open} obligations${task.reason ? ` · ${task.reason}` : ""}\n${goal.id} revision ${task.revision} · /goal pause | resume | cancel | interval <minutes> | edit <objective>`, tone: task.state === "blocked" ? "error" : task.state === "working" ? "working" : "idle" }
   }
   const status = agentTaskStatus(session, agentId)
   return status ? { label: status.label, tone: status.tone, ...(status.deadline_ms !== undefined ? { deadline_ms: status.deadline_ms } : {}) } : null

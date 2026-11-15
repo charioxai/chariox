@@ -167,11 +167,12 @@ impl KernelRuntimeOwnedState {
         room: &str,
     ) -> Result<BTreeSet<(String, String)>, DaemonError> {
         let mut targets = BTreeSet::new();
-        for task in self.durable_state_store.agent_tasks(Some(room), None)? {
-            if !matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled) {
-                if let Some(binding) = self.agent_workflow_task_context(&task)? {
-                    targets.insert(binding);
-                }
+        for task in self
+            .durable_state_store
+            .agent_unfinished_tasks(room, None)?
+        {
+            if let Some(binding) = self.agent_workflow_task_context(&task)? {
+                targets.insert(binding);
             }
         }
         // Aliases and adoption relationships do not prove live work. Legacy runs

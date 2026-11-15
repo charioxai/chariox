@@ -93,6 +93,7 @@ test("#1263 P2 a workspace picture is read through the kernel from the trigger a
   const kernel = {
     async send<T>(request: Record<string, unknown>): Promise<T> {
       if ("ReadAgentTriggerTranscript" in request) return { AgentTriggerTranscript: { trigger: { agent_id: "agent-1", enabled: true, source: { kind: "http", ingress_id: "chart" } }, agent_alias: "a", online: true, busy: false, history: { SessionHistoryOutline: { agents: [] } }, deliveries: [] } } as T
+      if ("ReadAgentTriggerHttpOptions" in request) return { AgentTriggerHttpOptionsRead: { enabled: true, options: { route: "/", methods: ["GET", "POST"], parser: { kind: "json" }, mode: "async" } } } as T
       if ("GetSessionState" in request) return { SessionState: { session: { workspace_id: "/work/default", worktree_id: "/work/default-wt", agents: [{ id: "other", workspace_id: "/elsewhere", worktree_id: null }, { id: "agent-1", workspace_id: "/work/repo", worktree_id: "/work/repo-wt" }] } } } as T
       reads.push(request.GetWorkspaceFileContent as Record<string, unknown>)
       return { WorkspaceFileContent: { content: { content_base64: png.toString("base64"), truncated: false, size_bytes: png.length } } } as T

@@ -3,7 +3,7 @@ import test from "node:test"
 
 import type { SliceRecord } from "./cli-types.js"
 import { catalogModelOptions, fallbackProviderCatalog } from "./provider-catalog.js"
-import { waitingRoomStartRows } from "./waiting-room-start-rows.js"
+import { waitingRoomMachineOfferRows, waitingRoomStartRows } from "./waiting-room-start-rows.js"
 import { normalizeWaitingRoomState } from "./waiting-room-state.js"
 import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
@@ -360,17 +360,6 @@ test("MP-08/MP-11 the Kernel row keeps the selected machine's kernel once the TU
   // like every kernel, leaves itself out of its relay kernel list.
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "opencode")
-  const managedEnvironment = {
-    environmentId: "managed_env_061cec4b",
-    name: "Managed agent",
-    managedRepositoryRoot: "/home/chariox",
-    desiredState: "running" as const,
-    observedState: "ready",
-    desiredRevision: 2,
-    observedRevision: 2,
-    runtimeMachineId: "machine-rented",
-    runtimeKernelId: "kernel-rented",
-  }
   const remote = {
     relay: {
       configured: true,
@@ -381,11 +370,10 @@ test("MP-08/MP-11 the Kernel row keeps the selected machine's kernel once the TU
     },
     machines: [
       { machine_id: "machine-home", machine_alias: "home", kernel_count: 1, online: true, trust_status: "approved" },
-      { machine_id: "machine-rented", machine_alias: "chariox-managed-env-061cec4b-1546f94b", kernel_count: 0, online: true, trust_status: "approved" },
+      { machine_id: "machine-rented", machine_alias: "acquired-machine", kernel_count: 0, online: true, trust_status: "approved" },
       { machine_id: "machine-empty", machine_alias: "empty", kernel_count: 0, online: true, trust_status: "approved" },
     ],
     kernels: [{ kernel_id: "kernel-home", machine_id: "machine-home", kernel_alias: "home-kernel" }],
-    managedEnvironments: [managedEnvironment],
   } as unknown as WaitingRoomRemoteState
   const startRows = (selection: Partial<WaitingRoomState>) => {
     const state = normalizeWaitingRoomState(
@@ -413,12 +401,7 @@ test("MP-08/MP-11 the Kernel row keeps the selected machine's kernel once the TU
   // The rented machine is offered once, as its environment, also when its machine id was selected.
   assert.deepEqual(startRows({ selectedMachineRef: "machine-rented", selectedKernelRef: "kernel-rented" }), {
     selectedKernelRef: "kernel-rented",
-    machine: "Managed agent · ready",
-    kernel: "rented-kernel",
-  })
-  assert.deepEqual(startRows({ selectedMachineRef: "managed:environment:managed_env_061cec4b", selectedKernelRef: "" }), {
-    selectedKernelRef: "kernel-rented",
-    machine: "Managed agent · ready",
+    machine: "acquired-machine",
     kernel: "rented-kernel",
   })
   assert.deepEqual(startRows({ selectedMachineRef: "machine-empty", selectedKernelRef: "" }), {
@@ -468,3 +451,11 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
     ...overrides,
   }
 }
+
+test("the new machine details show the service offer as read-only rows", () => {
+  const remote = { machineAllocationCapability: { revision: "offer-1", actions: ["acquire"], job_offers: [], job_default_class_id: null, offer: { machine_type: "Service type", vcpu: 6, ram_gb: 12, disk_gb: 80, location: "Site A", terms: { amount: "2.50", currency: "EUR", period: "hour" as const } } } }
+  const rows = waitingRoomMachineOfferRows(waitingRoomState({}), remote)
+  assert.deepEqual(rows.map(row => [row.title, row.value]), [["Machine type", "Service type"], ["CPU", "6"], ["Memory", "12 GB"], ["Disk", "80 GB"], ["Location", "Site A"], ["Terms", "2.50 EUR/hour"]])
+  assert.ok(rows.every(row => !row.selectable && !row.focused))
+  assert.deepEqual(waitingRoomMachineOfferRows(waitingRoomState({}), {}), [])
+})

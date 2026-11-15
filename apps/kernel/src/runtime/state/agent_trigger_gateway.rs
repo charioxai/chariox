@@ -22,7 +22,10 @@ impl KernelRuntimeState {
         session_id: &str,
         trigger: &AgentTrigger,
     ) -> Result<(), DaemonError> {
-        let crate::session::AgentTriggerSource::Http { ingress_id, port } = trigger.source() else {
+        let crate::session::AgentTriggerSource::Http {
+            ingress_id, port, ..
+        } = trigger.source()
+        else {
             return Ok(());
         };
         let key = format!("{session_id}:{}", trigger.id());

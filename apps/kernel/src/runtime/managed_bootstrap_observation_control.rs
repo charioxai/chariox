@@ -3,8 +3,8 @@ use chrono::Utc;
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::local::{
-    LocalDaemonResponse, ManagedEnvironmentPreReimageObservationAcknowledgement,
-    ObserveManagedEnvironmentPreReimageRequest,
+    KernelRuntimeIdentityObservationAcknowledgement, LocalDaemonResponse,
+    ObserveKernelRuntimeIdentityRequest,
 };
 use crate::managed_bootstrap::ConfirmedManagedKernelRegistration;
 
@@ -12,13 +12,13 @@ pub(crate) async fn execute_managed_bootstrap_observation_request(
     config: DaemonConfig,
     registration: Option<ConfirmedManagedKernelRegistration>,
     caller_user_id: &str,
-    request: ObserveManagedEnvironmentPreReimageRequest,
+    request: ObserveKernelRuntimeIdentityRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     authorize_observation_caller(&config, caller_user_id)?;
-    let registration = registration
-        .ok_or_else(|| observation_error("kernel is not a confirmed managed environment"))?;
+    let registration =
+        registration.ok_or_else(|| observation_error("kernel has no confirmed enrollment"))?;
     let acknowledgement = tokio::task::spawn_blocking(move || {
-        crate::managed_bootstrap::observe_managed_environment_pre_reimage(
+        crate::managed_bootstrap::observe_kernel_runtime_identity(
             &config,
             &registration,
             &request.environment_id,
@@ -28,8 +28,8 @@ pub(crate) async fn execute_managed_bootstrap_observation_request(
     })
     .await
     .map_err(|error| observation_error(format!("observation task failed: {error}")))??;
-    Ok(LocalDaemonResponse::ManagedEnvironmentPreReimageObserved {
-        acknowledgement: ManagedEnvironmentPreReimageObservationAcknowledgement {
+    Ok(LocalDaemonResponse::KernelRuntimeIdentityObserved {
+        acknowledgement: KernelRuntimeIdentityObservationAcknowledgement {
             environment_id: acknowledgement.environment_id,
             generation: acknowledgement.generation,
             observed_at: acknowledgement.observed_at,
@@ -44,10 +44,10 @@ fn authorize_observation_caller(
     let profile = config
         .cloud_relay
         .as_ref()
-        .ok_or_else(|| observation_error("kernel is not connected to Chariox Cloud"))?;
+        .ok_or_else(|| observation_error("kernel is not connected to its enrollment authority"))?;
     if caller_user_id != profile.user_id {
         return Err(observation_error(
-            "managed pre-reimage observation belongs to another Cloud user",
+            "runtime identity observation belongs to another owner",
         ));
     }
     if profile
@@ -56,7 +56,7 @@ fn authorize_observation_caller(
         .is_none_or(str::is_empty)
     {
         return Err(observation_error(
-            "managed pre-reimage observation requires a machine credential",
+            "runtime identity observation requires a machine credential",
         ));
     }
     Ok(())
@@ -64,7 +64,7 @@ fn authorize_observation_caller(
 
 fn observation_error(message: impl Into<String>) -> DaemonError {
     DaemonError::LocalTransport {
-        operation: "observe managed environment before reimage",
+        operation: "observe kernel runtime identity",
         message: message.into(),
     }
 }
@@ -75,7 +75,7 @@ mod tests {
     use crate::config::PersistedCloudRelayProfile;
 
     #[test]
-    fn pre_reimage_observation_requires_the_installed_cloud_owner_and_machine_credential() {
+    fn runtime_identity_observation_requires_the_installed_cloud_owner_and_machine_credential() {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
             kernel_id: None,

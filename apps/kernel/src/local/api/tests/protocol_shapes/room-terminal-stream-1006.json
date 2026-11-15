@@ -1,0 +1,28 @@
+{
+  "local_protocol": 1008,
+  "peer_protocol": 447,
+  "subscription_scope": "room_terminal",
+  "attachment_id": ["term-1a2b", "term-1a2b@agent-w"],
+  "output_header": {
+    "event": "room_terminal_output",
+    "next_offset": 4893,
+    "bytes": [0, 4893]
+  },
+  "gap_header": {
+    "event": "room_terminal_output",
+    "next_offset": 9000,
+    "gap": true,
+    "bytes": [0, 0]
+  },
+  "listed": {
+    "event": "room_terminals_listed",
+    "terminals": []
+  },
+  "heartbeat": {
+    "event": "heartbeat"
+  },
+  "ended": {
+    "event": "room_terminal_stream_ended",
+    "message": "the machine that runs this agent could not be reached"
+  }
+}

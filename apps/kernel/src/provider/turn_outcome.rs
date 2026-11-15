@@ -48,13 +48,14 @@ impl TurnOutcomeKind {
     }
 }
 
+// Match the key order of projected JSON snapshots as well as direct replies.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnOutcome {
     pub kind: TurnOutcomeKind,
-    /// A later attempt may succeed without anyone changing anything.
-    pub retryable: bool,
     /// A calm explanation for people. Native provider diagnostics stay in the log.
     pub reason: String,
+    /// A later attempt may succeed without anyone changing anything.
+    pub retryable: bool,
 }
 
 impl TurnOutcomeKind {

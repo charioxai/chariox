@@ -212,8 +212,15 @@ impl KernelRuntimeState {
                 async {
                     let agent = self.owned.agent_store.get_agent(&next.agent_id)?;
                     let attachment = self.ensure_agent_message_attachment(&next.room_id, &agent)?;
-                    let mut context = self.owned.goal_continuation_context(&next)?.unwrap_or_else(||
-                        "The owner has allowed this task to continue. Browser access, if requested, has been restored. Check the current page and continue the original task. If a previous verification card ended, take a fresh snapshot and raise a new card. Write card instructions for the person, and keep tool names and internal task bookkeeping out of your visible replies.".into());
+                    let mut context = if task.owner_action.is_some() {
+                        "The owner has allowed this task to continue. Browser access, if requested, has been restored. Check the current page and continue the original task. If a previous verification card ended, take a fresh snapshot and raise a new card. Write card instructions for the person, and keep tool names and internal task bookkeeping out of your visible replies.".into()
+                    } else {
+                        self.owned.task_resume_text(&next, &task.reason)?
+                    };
+                    if let Some(goal) = self.owned.goal_continuation_context(&next)? {
+                        context.push('\n');
+                        context.push_str(&goal);
+                    }
                     if browser_grant.is_some() { context.push_str(" Browser access has been approved. Take a fresh snapshot of the original tab and replace any retired verification card. Write the card's steps directly to the person. Do not narrate snapshots, browser grants, tool loading, scheduling instructions or task bookkeeping; tell the person only what they need to do or what result changed."); }
                     Box::pin(self.dispatch_task_continuation(&next, &attachment, context)).await
                 }.await

@@ -7,6 +7,7 @@ import { createDeflateRaw, constants as zlib } from 'node:zlib';
 import { mirrorExceptionReason } from './kernel-browser-error-label.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
 import { mirror2ObserverExpression, sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
+import {captureDocumentOwner} from './browser-controller-frames.mjs';
 import { assertCurrentDocument, assertNotCancelled, BrowserActionError } from './browser-controller-actions.mjs';
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
 // VAUDIT S3 / AU-03: the owner's own view shows Vault fills and captures as the page does. Only the
@@ -30,7 +31,8 @@ const HISTORY_BYTES = 8 * 1024 * 1024;
 // GATE-bytes: sheets from this size (normalized text) are pruned to their used rules for a first paint.
 const FIRST_PAINT_SHEET = 32 * 1024;
 const MOVED = Symbol('document moved');
-const MAX_WAIT_MS = 2000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
+// An idle viewer parks one credit this long: the answer to a quiet page is one heartbeat per wait.
+const MAX_WAIT_MS = 10_000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
 // Protocol 489: resource bytes travel in slices (base64 characters, a multiple
 // of 4) of at most a packet budget, smaller while the viewer is typing or
 // clicking so an echo never waits behind more than one slice on the socket.
@@ -916,10 +918,13 @@ export class Mirror2 {
     assertNotCancelled(signal);
     const world = stream.world;
     if (!world || world.connection !== this.host.browser.connection || !world.connection.isOpen()) throw new Error('MP-11: region document unavailable');
-    await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id);
+    // The committed owner fences navigation/detach while a busy renderer delays frame-tree reads.
+    const owner=captureDocumentOwner(this.host.browser,tab,world.connection,world.sessionId);
+    const current=()=>owner?owner.assertCurrent():assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);
+    await current();
     await this.protectTargets(world, tab, maskPolicy(stream, this.host.protection));
     const boxes = [...(await this.evaluate(world, `${world.ref}.regionBoxes()`)).filter(b => !stream.frames.has(b.id)), ...await this.frames.regionBoxes(stream, world, tab, maskPolicy(stream, this.host.protection))];
-    await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id);
+    await current();
     assertNotCancelled(signal); return boxes;
   }
   async opaqueBoxes(world, stream) { return [...(await this.evaluate(world, `${world.ref}.opaqueBoxes()`)).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)]; }

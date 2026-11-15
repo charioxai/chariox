@@ -378,7 +378,7 @@ fn command_docs_prefer_specific_denial_policy_entries() {
 }
 
 #[test]
-fn peer_message_and_steer_are_documented_and_decisions_are_not_a_peer_path() {
+fn peer_commands_and_owner_room_card_authority_are_documented() {
     for (name, usage) in [
         ("agent steer", "agent steer <agent-ref> <text>"),
         ("agent message", "agent message <agent-ref> <text>"),
@@ -394,14 +394,29 @@ fn peer_message_and_steer_are_documented_and_decisions_are_not_a_peer_path() {
         );
         assert_eq!(docs["routed"], true, "{docs}");
     }
-    for name in ["agent answer", "agent pass"] {
+    let answer = command_docs(MetaCommandDocsArgs {
+        command: "agent answer".into(),
+    })
+    .unwrap();
+    assert!(answer["usage"].as_str().unwrap().contains("--room"));
+    assert!(answer["description"]
+        .as_str()
+        .unwrap()
+        .contains("owner-only"));
+    for name in ["room agents", "room cards"] {
         let docs = command_docs(MetaCommandDocsArgs {
-            command: name.to_string(),
+            command: name.into(),
         })
         .unwrap();
-        assert!(
-            docs["description"].as_str().unwrap().contains("never"),
-            "`{name}` says it is not a peer path: {docs}"
-        );
+        assert_eq!(docs["routed"], true);
+        assert_eq!(docs["mutates"], false);
     }
+    let pass = command_docs(MetaCommandDocsArgs {
+        command: "agent pass".into(),
+    })
+    .unwrap();
+    assert!(pass["description"]
+        .as_str()
+        .unwrap()
+        .contains("never acts for a peer"));
 }

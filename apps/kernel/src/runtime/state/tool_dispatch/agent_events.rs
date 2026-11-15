@@ -238,7 +238,7 @@ impl KernelRuntimeState {
                 });
                 if !delegate && !workflow && !peer_task {
                     return Err(ledger::error(
-                        "source unavailable or no longer live in this room",
+                        "source unavailable or no longer live in this room; to follow an agent or task of another room of yours, pass that room as `room`",
                     ));
                 }
                 let obligation = args["obligation_id"].as_str().map(str::to_owned);
@@ -323,6 +323,9 @@ impl KernelRuntimeState {
                 }
                 serde_json::json!({"blocked":true})
             }
+            "chariox.jobs.run" | "chariox.jobs.status" | "chariox.jobs.cancel" => {
+                self.dispatch_job_tool(run, name, &args, task).await?
+            }
             "chariox.events.timer"
             | "chariox.events.process"
             | "chariox.events.terminal"
@@ -354,8 +357,8 @@ fn other_room<'a>(args: &'a serde_json::Value, room: &str) -> Option<&'a str> {
 }
 
 impl KernelRuntimeState {
-    /// A peer in another room of the owner is followed by its address there; its turns end in
-    /// that room and reach this task as peer events.
+    /// A peer in another room of the owner is followed by its address there, or one of its tasks
+    /// by the task or prompt id; its turns end in that room and reach this task as peer events.
     fn subscribe_peer_in_other_room(
         &self,
         session: &crate::session::RuntimeSession,
@@ -369,7 +372,20 @@ impl KernelRuntimeState {
             .as_str()
             .ok_or_else(|| ledger::error("source_id required"))?;
         let caller = self.owned.agent_store.get_agent(actor)?;
-        let peer = self.resolve_message_target(session, &caller, Some(other), source)?;
+        let task = self
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(other), None)?
+            .into_iter()
+            .find(|t| t.task_id == source || t.prompt_id == source);
+        // A task is followed with the same reach as its agent.
+        let peer = self.resolve_message_target(
+            session,
+            &caller,
+            Some(other),
+            task.as_ref().map_or(source, |t| t.agent_id.as_str()),
+        )?;
+        let followed = task.as_ref().map_or(peer.id(), |_| source);
         let id = format!("subscription-{:032x}", rand::random::<u128>());
         self.owned
             .durable_state_store
@@ -379,13 +395,15 @@ impl KernelRuntimeState {
                 registration: Registration {
                     id: id.clone(),
                     task_id: task_id.into(),
-                    source_id: peer.id().into(),
+                    source_id: followed.into(),
                     obligation_id: None,
                     source_cursor: args["source_cursor"].as_u64().unwrap_or(0),
                     live: true,
                     peer: true,
                 },
             })?;
-        Ok(serde_json::json!({"registration_id":id,"source_id":peer.id(),"room":other}))
+        Ok(
+            serde_json::json!({"registration_id":id,"source_id":followed,"agent_id":peer.id(),"room":other}),
+        )
     }
 }

@@ -1,6 +1,6 @@
 import { waitingRoomStartRows } from "./waiting-room-start-rows.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
-import { managedEnvironmentMachineRef, NEW_MANAGED_MACHINE_REF } from "./waiting-room-managed-environments.js"
+import { NEW_MACHINE_ALLOCATION_REF } from "./waiting-room-machine-allocation.js"
 import assert from "node:assert/strict"
 import test from "node:test"
 import { createWaitingRoomWorkspaceController, createWaitingRoomWorkspacePlacementController, waitingRoomWorkspaceSelection } from "./waiting-room-workspace-controller.js"
@@ -271,28 +271,9 @@ for (const change of ["workspace edit", "kernel ABA", "machine ABA"] as const) {
   })
 }
 
-test("TUI does not use the home kernel as a filesystem fallback for an unconnected managed machine", () => {
-  const target = waitingRoomWorkspaceSelection({ selectedMachineRef: managedEnvironmentMachineRef("env") },
-    { machineId: "home-machine", kernelId: "home-kernel" }, [{ environmentId: "env", runtimeMachineId: "remote-machine" }])
-  assert.deepEqual(target, { machineId: "remote-machine", kernelId: "" })
-})
-
-test("TUI keeps the home inventory away from a managed machine that has no machine yet", () => {
-  const managedRef = managedEnvironmentMachineRef("env")
-  const controller = createWaitingRoomWorkspaceController({
-    getWorkspace: () => "/repo", getWorktree: () => "/repo", setWorkspace: () => {}, setWorktree: () => {},
-    resetSelection: () => {}, render: () => {},
-    getSelection: () => waitingRoomWorkspaceSelection({ selectedMachineRef: managedRef },
-      { machineId: "home-machine", kernelId: "home-machine-1" }, [{ environmentId: "env", runtimeMachineId: null }]),
-    send: async () => { throw new Error("must not read through home") },
-    withClient: async () => { throw new Error("Choose a connected kernel before reading its workspace.") },
-  })
-  assert.equal(controller.acceptsInventory(inventory("home-machine", "/repo")), false)
-})
-
 test("TUI machine creation keeps source filesystem identity separate from the requested placement", () => {
-  assert.deepEqual(waitingRoomWorkspaceSelection({ selectedMachineRef: NEW_MANAGED_MACHINE_REF },
-    { machineId: "home-machine", kernelId: "home-kernel" }, []), { machineId: "home-machine", kernelId: "home-kernel" })
+  assert.deepEqual(waitingRoomWorkspaceSelection({ selectedMachineRef: NEW_MACHINE_ALLOCATION_REF },
+    { machineId: "home-machine", kernelId: "home-kernel" }), { machineId: "home-machine", kernelId: "home-kernel" })
 })
 
 test("TUI uses the kernel current worktree when the pending path is absent from its inventory", async () => {

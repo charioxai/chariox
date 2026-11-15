@@ -88,6 +88,7 @@ mod remote_inventory;
 mod room_environment;
 mod session_control;
 mod session_retirement_upgrade;
+mod session_state_history;
 mod session_view;
 mod session_worktree_paths;
 mod terminal_output;
@@ -97,6 +98,7 @@ mod workflow_run_control;
 mod workspace_capabilities;
 
 mod provider_login_input;
+mod resource_protection;
 mod usage_snapshot;
 
 mod agent_hide;

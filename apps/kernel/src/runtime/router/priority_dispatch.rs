@@ -321,6 +321,13 @@ impl CommandRouter {
                 )
                 .await
             }),
+            // The relay connection that holds the subscription answers it before the router.
+            LocalDaemonRequest::WatchKernelResources(_) => boxed_handler(|| async move {
+                Err(DaemonError::MachineRequest {
+                    code: "kernel_resources_relay_only".into(),
+                    message: "WatchKernelResources is answered for a kernel_resources subscription over the relay; send it on that relay link".into(),
+                })
+            }),
             request @ (LocalDaemonRequest::GetProviderCatalog(_)
             | LocalDaemonRequest::GetClientCatalogSnapshot(_)
             | LocalDaemonRequest::GetClientCatalogRevisions(_)
@@ -481,6 +488,19 @@ impl CommandRouter {
                     self.runtime_state
                         .read_agent_trigger_transcript(request, &caller, self.history_store.clone())
                         .await
+                })
+            }
+            LocalDaemonRequest::ReadAgentTriggerReply(request) => boxed_handler(|| async move {
+                // A sync response polls this while the firing's turn runs on the session lane.
+                let caller = command_caller_user_id(&command);
+                self.runtime_state
+                    .read_agent_trigger_reply(request, &caller)
+            }),
+            LocalDaemonRequest::ReadAgentTriggerHttpOptions(request) => {
+                boxed_handler(|| async move {
+                    let caller = command_caller_user_id(&command);
+                    self.runtime_state
+                        .read_agent_trigger_http_options(request, &caller)
                 })
             }
             request @ (LocalDaemonRequest::GetWaitingRoomInventory(_)
@@ -687,17 +707,98 @@ impl CommandRouter {
             }),
             LocalDaemonRequest::StopSessionProcesses(request) => boxed_handler(|| async move {
                 let caller = command_caller_user_id(&command);
-                let result = self
-                    .runtime_state
-                    .stop_session_processes(&request.session_id, &caller, request.target)
-                    .await?;
+                use crate::runtime::process_resources::{
+                    ProcessControlOutcome, ProcessControlResult, ProcessControlTarget,
+                };
+                let jobs: Vec<String> = match &request.target {
+                    ProcessControlTarget::Process { process_id } => vec![process_id.clone()],
+                    ProcessControlTarget::Agent { agent_id } => self
+                        .runtime_state
+                        .session_jobs(&request.session_id)
+                        .into_iter()
+                        .filter(|job| job.agent_id == *agent_id && job.result.is_none())
+                        .map(|job| job.job_id)
+                        .collect(),
+                };
+                let mut stopped_jobs = Vec::new();
+                for id in jobs {
+                    if self.runtime_state.cancel_session_job(
+                        &request.session_id,
+                        &command.caller,
+                        &id,
+                    )? {
+                        stopped_jobs.push(id);
+                    }
+                }
+                let result = if matches!(&request.target, ProcessControlTarget::Process { .. })
+                    && !stopped_jobs.is_empty()
+                {
+                    ProcessControlResult {
+                        outcome: ProcessControlOutcome::OutsideEnd,
+                        process_ids: stopped_jobs,
+                    }
+                } else {
+                    let mut result = self
+                        .runtime_state
+                        .stop_session_processes(&request.session_id, &caller, request.target)
+                        .await?;
+                    result.process_ids.extend(stopped_jobs);
+                    result
+                };
                 Ok(LocalDaemonResponse::SessionProcessesStopped { result })
             }),
+            LocalDaemonRequest::GetRemoteJobPolicy(request) => boxed_handler(|| async move {
+                let caller = command_caller_user_id(&command);
+                let result = self.runtime_state.remote_job_policy(
+                    &request.session_id,
+                    request.agent_id.as_deref(),
+                    &caller,
+                )?;
+                Ok(LocalDaemonResponse::RemoteJobPolicy { result })
+            }),
+            LocalDaemonRequest::SetRemoteJobPolicy(request) => boxed_handler(|| async move {
+                let caller = command_caller_user_id(&command);
+                let result = self.runtime_state.set_remote_job_policy(
+                    &request.session_id,
+                    request.agent_id.as_deref(),
+                    &caller,
+                    request.policy,
+                )?;
+                Ok(LocalDaemonResponse::RemoteJobPolicy { result })
+            }),
+            LocalDaemonRequest::RunSessionProcessRemotely(request) => {
+                boxed_handler(|| async move {
+                    let job_id = self
+                        .runtime_state
+                        .with_job_router(self.clone())
+                        .run_session_process_remotely(
+                            &request.session_id,
+                            &command.caller,
+                            &request.process_id,
+                        )
+                        .await?;
+                    Ok(LocalDaemonResponse::SessionProcessRemoteStarted {
+                        session_id: request.session_id,
+                        process_id: request.process_id,
+                        job_id,
+                    })
+                })
+            }
             LocalDaemonRequest::StartSessionProcessNow(request) => boxed_handler(|| async move {
                 let caller = command_caller_user_id(&command);
-                self.runtime_state
-                    .start_session_process_now(&request.session_id, &caller, &request.process_id)
-                    .await?;
+                if !self.runtime_state.start_session_job_now(
+                    &request.session_id,
+                    &command.caller,
+                    &request.process_id,
+                )? {
+                    self.runtime_state
+                        .start_session_process_now(
+                            &request.session_id,
+                            &caller,
+                            &request.process_id,
+                        )
+                        .await?;
+                }
                 Ok(LocalDaemonResponse::SessionProcessStartedNow {
                     process_id: request.process_id,
                 })
@@ -719,6 +820,8 @@ impl CommandRouter {
             request @ (LocalDaemonRequest::GetSessionHistoryOutline(_)
             | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
             | LocalDaemonRequest::GetSessionHistoryBlobContents(_)
+            | LocalDaemonRequest::PeekAgentTranscript(_)
+            | LocalDaemonRequest::ReadAgentTranscriptEntry(_)
             | LocalDaemonRequest::QueryRecall(_)
             | LocalDaemonRequest::SearchRecall(_)
             | LocalDaemonRequest::SemanticSearchRecall(_)) => boxed_handler(|| async move {

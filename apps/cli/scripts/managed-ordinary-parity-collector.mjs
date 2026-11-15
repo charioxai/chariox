@@ -31,7 +31,7 @@ const REVIEWED_COMMIT = /^[0-9a-f]{40}$/i
 const PROTOCOL_VERSION = /^\d+$/
 const DIGEST = /^sha256:[0-9a-f]{64}$/i
 const PROBE_RELATIVE_PATH = "apps/cli/scripts/managed-ordinary-parity-probe.mjs"
-const RELEASE_VERIFIER_RELATIVE_PATH = "deploy/managed-kernel/verify-image-release.mjs"
+const RELEASE_VERIFIER_RELATIVE_PATH = "deploy/runtime-release/verify-rootfs.mjs"
 const NODE_FILESYSTEM = Object.freeze({ mkdir, readFile, readdir, readlink, realpath, writeFile })
 
 class CollectorError extends Error {
@@ -512,7 +512,7 @@ function validateOptions(options, processApi) {
   for (const [key, label] of [["kernelBinary", "kernel binary"], ["kernelReleaseRoot", "kernel release root"], ["kernelReleasePublicKey", "kernel release public key"]]) {
     if (!isAbsolute(options[key])) throw new CollectorError("path_invalid", `${label} must be an absolute path`)
   }
-  if (options.topology === "path1" && !nonEmptyString(options.kernelBuilderPublicKey)) {
+  if (!nonEmptyString(options.kernelBuilderPublicKey)) {
     throw new CollectorError("builder_key_missing", "Path-1 capture requires an independently supplied trusted builder public key")
   }
   if (options.kernelBuilderPublicKey && !isAbsolute(options.kernelBuilderPublicKey)) {
@@ -744,7 +744,7 @@ export function createParityCollector({
       "source_protocol_identity",
       "kernel-release-verification",
       process.execPath,
-      [ctx.releaseVerifierPath, ctx.kernelReleaseRoot, ctx.kernelReleaseDigest, ctx.kernelReleasePublicKey, ...(ctx.topology === "path1" ? ["path1", ctx.kernelBuilderPublicKey] : [])],
+      [ctx.releaseVerifierPath, ctx.kernelReleaseRoot, ctx.kernelReleaseDigest, ctx.kernelReleasePublicKey, ctx.kernelBuilderPublicKey],
       { allowEmpty: true, cwd: ctx.sourceRoot },
     )
     const expectedKernelPath = resolve(ctx.kernelReleaseRoot, "usr/local/bin/chariox-kernel")

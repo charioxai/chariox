@@ -11,6 +11,20 @@ struct BlockedWorkflowClaimRetry {
     prompt_text: String,
 }
 
+impl KernelRuntimeState {
+    /// A blocked node waits for the claim it was refused for, whoever holds it.
+    /// Retry as soon as such a claim is released.
+    pub(crate) async fn run_contended_claim_retries(&self) {
+        loop {
+            self.owned
+                .workspace_coordinator
+                .contended_claim_released()
+                .await;
+            self.spawn_workflow_prompt_dispatches(self.owned.workflow_retry_blocked_claims());
+        }
+    }
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn workflow_retry_blocked_claims(&self) -> WorkflowPromptDispatches {
         self.reconcile_completed_workflow_write_claims();

@@ -254,6 +254,16 @@ fn resolve_catalog_profiles(
             // Unconfigured providers cannot hide the configured providers or borrow owner accounts.
             continue;
         };
+        // Native defaults exist before a login does. Broad reads (including startup
+        // warm-up) must not keep a provider server alive for an empty placeholder.
+        // An explicit provider/account request still starts it on demand.
+        if profile.origin == crate::account_profile::ProviderAccountProfileOrigin::Default
+            && profile.auth_state != crate::account_profile::ProviderAccountAuthState::Authenticated
+            && focus_provider != Some(provider)
+            && !overrides.contains_key(provider)
+        {
+            continue;
+        }
         selected.insert(provider.to_string(), profile);
     }
     Ok(selected)

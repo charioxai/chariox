@@ -54,11 +54,12 @@ pub(super) fn start(
                 remote::run(record, input, cancel, service, placed).await;
                 return;
             }
-            let permit = service.inner.admission.reserve(
+            let permit = service.inner.admission.reserve_with_memory(
                 &intent.exec_id,
                 &intent.command,
                 &intent.cwd,
                 *forced.borrow_and_update(),
+                record.minimum_memory,
             );
             match permit {
                 Ok(permit) => {
@@ -92,9 +93,14 @@ pub(super) fn start(
                                 "command canceled before start",
                             ));
                         }
-                        process::spawn(
+                        let spawn = if launch.job {
+                            process::spawn_job
+                        } else {
+                            process::spawn
+                        };
+                        spawn(
                             &launch.intent.cwd,
-                            &launch.intent.command,
+                            &launch.launch_command,
                             &permit,
                             &launch.intent,
                         )

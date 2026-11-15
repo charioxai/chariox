@@ -1,3 +1,4 @@
+import type { RemoteAttachmentRecovery } from "./remote-attachment-recovery.js"
 import { loadCodexPromptSettlements } from "./codex-prompt-settlement.js"
 import http from "node:http"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -46,6 +47,7 @@ type CodexProxyOptions = {
   client: LocalIpcClient
   sessionId: string
   attachmentId: string
+  recovery?: RemoteAttachmentRecovery
   agentId: string
   model: string
   effort: string
@@ -397,7 +399,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       if (message.method === "turn/start" && downstream.kind !== "kernel" && !ephemeral) {
         void handleCodexNativeTurnStart(
           message,
-          { ...options, onPromptStarted: kernelOutputProjection.startPrompt },
+          { ...options, get attachmentId() { return options.attachmentId }, onPromptStarted: kernelOutputProjection.startPrompt },
           (response) => sendDownstream(downstream, response),
         )
         return

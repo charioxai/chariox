@@ -87,7 +87,7 @@ class AdmissionProvisionTests(unittest.TestCase):
         release = self.root / "release"
         context = release / "usr/lib/chariox/slice-build-context"
         script_target = context / "deploy/local-linux/provision-docker-admission-locks.py"
-        unit_target = context / "deploy/managed-kernel/chariox-docker-admission-locks.service"
+        unit_target = context / "deploy/local-linux/chariox-docker-admission-locks.service"
         script_target.parent.mkdir(parents=True)
         unit_target.parent.mkdir(parents=True)
         shutil.copyfile(source, script_target)

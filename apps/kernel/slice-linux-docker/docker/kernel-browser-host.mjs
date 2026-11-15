@@ -1,3 +1,4 @@
+import { PaymentActions } from "./kernel-browser-payment.mjs";
 import { captureBackgroundRenderer } from './kernel-browser-background.mjs';
 import { AppTabs } from './browser-controller-apps.mjs';
 import { HostDownloads } from "./kernel-browser-downloads.mjs";
@@ -88,6 +89,13 @@ const SHOW_TAB_WAIT_MS = 1000;
 const SHOW_TAB_OBSERVE_MS = 500;
 // How often the focus emulation of the Tabs agents work in behind the shown one is asserted again.
 const BACKGROUND_KEEP_MS = 1500;
+// An agent Tab renders at full speed behind the shown one only this long after the agent's last action in it; an idle
+// one stops scheduling frames, and the agent's next action wakes it before acting.
+export const BACKGROUND_IDLE_MS = 30_000;
+// The shown Tab renders into the owned window at full rate whether or not anyone watches it. With no viewer stream
+// and no request for this long it is frozen (hidden: no frames, no page tasks) until the next request wakes it.
+export const SHOWN_IDLE_MS = 30_000;
+const SHOWN_IDLE_CHECK_MS = 5_000;
 // A group's mark: a dot at rest, a spinner while the agent acts, and "needs you" while a card asks the person to act in one of its Tabs.
 const SPINNER = ['◐', '◓', '◑', '◒'], IDLE_MARK = '●', NEEDS_MARK = '▲';
 // How long a spinner stays after an agent's last action in a Tab, so a short action is still seen.
@@ -117,9 +125,12 @@ export function navigationUrl(raw) {
 }
 
 export class KernelBrowserHost {
-  constructor(root, { appStorageRoot, chromium = new HostChromium(root, { appStorageRoot }), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }), personIdleMs = PERSON_IDLE_MS } = {}) {
+  constructor(root, { appStorageRoot, chromium = new HostChromium(root, { appStorageRoot }), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }), personIdleMs = PERSON_IDLE_MS, backgroundIdleMs = BACKGROUND_IDLE_MS, shownIdleMs = SHOWN_IDLE_MS } = {}) {
     this.root = root;
-    this.personIdleMs = personIdleMs;
+    this.personIdleMs = personIdleMs; this.backgroundIdleMs = backgroundIdleMs;
+    this.shownIdleMs = shownIdleMs; this.usedAt = Date.now(); this.running = 0; this.frozen = null; this.freezing = null;
+    this.shownTimer = setInterval(() => { this.freezing ??= this.freezeIdleShown().catch(() => {}).finally(() => { this.freezing = null; }); }, SHOWN_IDLE_CHECK_MS);
+    this.shownTimer.unref?.();
     this.timing = displayTiming(root);
     this.visitedLinks = new VisitedLinks();
     // r55: a Node event loop that stalls delays every request behind it without any step to name: mark the stall itself.
@@ -138,6 +149,7 @@ export class KernelBrowserHost {
     this.generation = 0;
     this.observations = 0; this.observed = 0;
     this.tabs = new Map();
+    this.paymentActions = new PaymentActions(root);
     this.webBotAuthRestoreUrls = new Map();
     this.webBotAuthProjects = new Map();
     this.popupEvidence = new BrowserPopupEvidence(TAB_LIMIT);
@@ -269,7 +281,7 @@ export class KernelBrowserHost {
     this.foreground.reset();
     this.sampleLanes.clear();this.inputChangedAt.clear();this.scrolling.clear();
 
-    clearInterval(this.keepTimer); this.keepTimer = null;
+    clearInterval(this.keepTimer); this.keepTimer = null; this.frozen = null;
     await Promise.all([...this.backgroundHolds.keys()].map(target => this.releaseBackground(target)));
     // MP-11: retire helpers on the old display before Chromium recovery can
     // replace it. A failed key release still requires owned desktop teardown.
@@ -285,7 +297,7 @@ export class KernelBrowserHost {
     this.browser = null;
     if(this.displayTeardownErrors.length)throw new AggregateError(this.displayTeardownErrors.splice(0),'MD-DISPLAY: owned display teardown failed');
     this.backgroundHolds.clear();this.personInputAt.clear();
-    clearInterval(this.spinner);this.spinner=null;this.agentBusy.clear();clearInterval(this.keepTimer);this.keepTimer=null;
+    clearInterval(this.spinner);this.spinner=null;this.agentBusy.clear();clearInterval(this.keepTimer);this.keepTimer=null;this.frozen=null;
     this.tabs.clear();this.header.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;this.resizeSettled=null;
     this.popupEvidence.clear();
     this.observed = ++this.observations;
@@ -981,10 +993,20 @@ export class KernelBrowserHost {
   // An independent CDP enable is undone when a display releases its last capture.
   async holdBackground(tab) {
     if (!this.backgroundHolds.has(tab.target_id)) {
-      this.backgroundHolds.set(tab.target_id, { pending: null, lease: null });
-      if (!this.keepTimer) { this.keepTimer = setInterval(() => void this.assertBackground(), BACKGROUND_KEEP_MS); this.keepTimer.unref?.(); }
+      this.backgroundHolds.set(tab.target_id, { pending: null, lease: null, tabId: tab.tab_id, usedAt: 0 });
+      if (!this.keepTimer) { this.keepTimer = setInterval(() => void this.keepBackground(), BACKGROUND_KEEP_MS); this.keepTimer.unref?.(); }
     }
+    this.backgroundHolds.get(tab.target_id).usedAt = Date.now();
     await this.assertBackground(tab.target_id);
+  }
+  // Releases the holds of agent Tabs idle past the linger and asserts the rest; no timer runs without a hold.
+  async keepBackground() {
+    for (const [target, hold] of this.backgroundHolds) {
+      if (this.agentBusy.has(hold.tabId)) hold.usedAt = Date.now();
+      else if (Date.now() - hold.usedAt > this.backgroundIdleMs) await this.releaseBackground(target);
+    }
+    if (!this.backgroundHolds.size) { clearInterval(this.keepTimer); this.keepTimer = null; }
+    await this.assertBackground();
   }
   async assertBackground(only) {
     for (const [target, hold] of this.backgroundHolds) {
@@ -1014,6 +1036,24 @@ export class KernelBrowserHost {
       }).finally(() => { hold.pending = null; });
       await hold.pending;
     }
+  }
+  // A viewer stream that is not parked watches the owned window.
+  watched() {
+    return this.mirror.streams.size > 0 || [...this.displays.values()].some(stream => !stream.parked);
+  }
+  async freezeIdleShown() {
+    const target = this.activeTarget;
+    if (this.frozen || this.running || !this.browser || !target || this.watched() || Date.now() - this.usedAt < this.shownIdleMs) return;
+    const { connection, sessionId } = await this.browser.resolvePageTarget(target);
+    await connection.send('Page.setWebLifecycleState', { state: 'frozen' }, sessionId);
+    this.frozen = { connection, sessionId };
+  }
+  async wakeShown() {
+    await this.freezing;
+    const frozen = this.frozen;
+    if (!frozen) return;
+    this.frozen = null;
+    await frozen.connection.send('Page.setWebLifecycleState', { state: 'active' }, frozen.sessionId).catch(() => {});
   }
   async releaseBackground(targetId) {
     const hold = this.backgroundHolds.get(targetId);
@@ -1321,6 +1361,7 @@ export class KernelBrowserHost {
         const deferred=await this.sampleLane(tab).run("input", async () => {
           if(timestamp()-laneAt>250)this.timing('input_wait sample_lane',laneAt);
           const dispatch = async (inputTimestamp, inputToken) => {
+            await this.paymentActions.beforeInput(this.browser, tab, command);
             if (command.input.kind !== "scroll") await this.tabGroups?.openingInput?.(tab.target_id, Boolean(agentRequest));
             return this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { uploadRoots: command._upload_roots, signal, inputTimestamp, inputToken, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, viewport:{css_width:this.pageSize(tab.tab_id).width,css_height:this.pageSize(tab.tab_id).height}, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
           };
@@ -1400,7 +1441,17 @@ export class KernelBrowserHost {
       node_ref: params.node_ref, reveal_node_ref: params.reveal_node_ref ?? null, read: params.read ?? "node",
       expected_document_url: params.expected_document_url }, { signal }));
   }
-  async handle(request, { signal } = {}) {
+  // Every request but a parked state read or an unwatched park is a use: it wakes the shown Tab before it runs, and
+  // the linger starts again when the last one ends.
+  async handle(request, options) {
+    const use = request.method !== 'health' && !(request.method === 'host.browser' && (request.params?.op === 'state_signal'
+      || request.params?.op === 'display_park' && request.params.parked === true));
+    if (!use) return this.handleNow(request, options);
+    this.running++;
+    try { await this.wakeShown(); return await this.handleNow(request, options); }
+    finally { this.running--; this.usedAt = Date.now(); }
+  }
+  async handleNow(request, { signal } = {}) {
     if (request.method === "host.downloads.cleanup") {
       if (!this.browser) await this.downloads.close();
       else await this.downloads.cleanupSession(request.params.session_id);
@@ -1460,6 +1511,7 @@ export class KernelBrowserHost {
         // recorded before the field's input/change handlers can run.
         const app = this.appForInput(tab, params, true);
         if (app) this.browser.appTabs.noteActivity(tab.target_id);
+        if (params._vault_payment) this.paymentActions.register(tab, params._vault_payment);
         const action = { ...params.action, mask_code_input: codeInput, vault_factor_input: factorInput, plain_target: params.plain_target === true };
         const performed = await this.sampleLane(tab).run("input", () => this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
           node_ref: params.node_ref, action, timeout_ms: 10_000 }, { signal }));
@@ -1530,7 +1582,7 @@ export class KernelBrowserHost {
       // Protocol 556: the kernel parks here, outside its protection barrier, until a state read could differ.
       if (request.method === "host.browser" && request.params?.op === "state_signal") {
         const {after, wait_ms} = request.params;
-        const parked = await this.stateSignal.wait(Number.isSafeInteger(after) ? after : null, Math.min(Number(wait_ms) || 0, 5000), signal);
+        const parked = await this.stateSignal.wait(Number.isSafeInteger(after) ? after : null, Math.min(Number(wait_ms) || 0, 10_000), signal);
         return { id: request.id, ok: true, result: { signal: parked } };
       }
       if (request.method === "host.browser") {

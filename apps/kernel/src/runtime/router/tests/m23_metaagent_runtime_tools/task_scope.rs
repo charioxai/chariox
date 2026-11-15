@@ -1245,11 +1245,13 @@ async fn runtime_mcp_shared_token_with_metaagent_stays_meta_only() {
             .all(|spec| spec.name.starts_with("chariox.meta.")
                 || spec.name == crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
                 || spec.name == crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
+                || spec.name == crate::transport::runtime_tools::PEEK_AGENT_TOOL
+                || spec.name == crate::transport::runtime_tools::READ_AGENT_ENTRY_TOOL
                 || spec.name == crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
                 || spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL
                 || spec.name == crate::transport::runtime_tools::SEARCH_RECALL_TOOL
                 || spec.name == crate::transport::runtime_tools::QUERY_RECALL_TOOL),
-        "shared token with a metaagent run should expose only meta, agent collaboration, read-only workspace, and recall tools: {specs:?}"
+        "shared token with a metaagent run should expose only meta, agent collaboration, agent peek, read-only workspace, and recall tools: {specs:?}"
     );
 
     let overview = router

@@ -38,12 +38,8 @@ import {
   normalizeWaitingRoomProjectSelectionId,
 } from "./waiting-room-projects.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
-import {
-  managedProviderAccountIsTransferable,
-  normalizeWaitingRoomManagedDraft,
-  waitingRoomConfiguresNewManagedMachine,
-  waitingRoomProjectRepositoryOptions,
-} from "./waiting-room-managed-environments.js"
+import { waitingRoomConfiguresNewManagedMachine } from "./waiting-room-machine-allocation.js"
+import { normalizeWaitingRoomManagedDraft, waitingRoomProjectRepositoryOptions } from "./waiting-room-context-selection.js"
 import { normalizeProviderAccountProfileId } from "./waiting-room-provider-accounts.js"
 
 export function createWaitingRoomState(
@@ -69,13 +65,8 @@ export function createWaitingRoomState(
       workspaceLiveSyncMode: "off",
       selectedMachineRef: "local",
       selectedKernelRef: "local",
-      managedKernelContext: "empty",
       managedDevelopmentMode: "empty",
       managedRepositoryIndex: 0,
-      managedProviderAccountSource: "selected_account",
-      managedProviderAccountIndex: 0,
-      managedGitCredentialSource: "none",
-      managedAutoStopPreset: "agents_done",
       sliceSelectionId: "none",
       sliceDisplayMode: "headless",
       providerId,
@@ -200,12 +191,6 @@ export function normalizeWaitingRoomState(
     && waitingRoomProjectRepositoryOptions(normalized, remote).length > 1
   if (normalized.focus === "managed-repositories" && !selectedRepositoryTargetExists) {
     return { ...normalized, focus: "managed-development" }
-  }
-  if (normalized.focus === "managed-provider-account") {
-    const focusedProviderAccount = remote.providerAccounts?.[normalized.managedProviderAccountIndex ?? 0]
-    if (!focusedProviderAccount || !managedProviderAccountIsTransferable(focusedProviderAccount)) {
-      return { ...normalized, focus: "managed-provider-accounts" }
-    }
   }
   return normalized
 }

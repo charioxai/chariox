@@ -86,6 +86,8 @@ pub(crate) fn reach_need(request: &LocalDaemonRequest) -> ReachNeed {
             | LocalDaemonRequest::GetSessionHistoryOutline(_)
             | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
             | LocalDaemonRequest::GetSessionHistoryBlobContents(_)
+            | LocalDaemonRequest::PeekAgentTranscript(_)
+            | LocalDaemonRequest::ReadAgentTranscriptEntry(_)
             | LocalDaemonRequest::AttachToSession(_)
             | LocalDaemonRequest::DetachFromSession(_)
             | LocalDaemonRequest::HeartbeatAttachments(_)

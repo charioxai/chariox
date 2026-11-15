@@ -8,6 +8,7 @@ use super::app_operation_budget::AppOperationBudget;
 use crate::durable_state::{
     app_file_exports::{FileExport, FileExportCommand, FileExportReply, OFFER_MS},
     app_file_grants::{FileGrantCommand, FilePick, PickState, MAX_FILES, MAX_FILE_BYTES, PICK_MS},
+    app_files::AppFileError,
     DurableKernelStateStore,
 };
 use chariox_app_package::{ExternalFileAccess, VerifiedApp};
@@ -15,7 +16,7 @@ use chariox_app_runtime::{
     app_outbox::EventCatalog,
     wire::RemoteError,
     worker_peer::BrokerRequest,
-    worker_process::{PrivateData, PrivateDataError},
+    worker_process::{PreparedDataReplace, PrivateData, PrivateDataError},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -32,6 +33,8 @@ pub(crate) struct AppFileGrantBroker {
     admission: Arc<Semaphore>,
     data: PrivateData,
     user_selected: bool,
+    #[cfg(test)]
+    publication_fault: Option<Arc<crate::durable_state::app_files::TestPublicationFault>>,
 }
 
 #[derive(Deserialize)]
@@ -83,6 +86,8 @@ impl AppFileGrantBroker {
             admission,
             data,
             user_selected,
+            #[cfg(test)]
+            publication_fault: None,
         }
     }
 
@@ -160,6 +165,25 @@ impl AppFileGrantBroker {
         Ok(reply(&pick))
     }
 
+    fn publish_import(
+        &self,
+        staged: PreparedDataReplace,
+        budget: AppOperationBudget,
+    ) -> Result<(), AppFileError> {
+        #[cfg(test)]
+        if let Some(fault) = &self.publication_fault {
+            return self.store.fixture_publish_app_file(
+                &self.owner,
+                self.catalog.clone(),
+                staged,
+                budget,
+                fault.clone(),
+            );
+        }
+        self.store
+            .publish_app_file(&self.owner, self.catalog.clone(), staged, budget)
+    }
+
     fn import(&self, params: Value, budget: AppOperationBudget) -> Result<Value, RemoteError> {
         let request: Import =
             serde_json::from_value(params).map_err(|_| error("INVALID_ARGUMENT", false))?;
@@ -185,22 +209,22 @@ impl AppFileGrantBroker {
         let published = self
             .data
             .prepare_replace(&request.destination, &file.contents)
-            .map_err(|failure| match failure {
-                PrivateDataError::Invalid => error("INVALID_ARGUMENT", false),
-                PrivateDataError::StorageFull => super::app_files_broker::storage_full(),
-                // Any other copy that could not be written (for example, a
-                // missing parent directory), as for `atomic_replace`. The grant
-                // is released below, so a later import can succeed.
-                _ => error("APP_FILE_UNAVAILABLE", false),
-            })
+            .map_err(AppFileError::from)
             .and_then(|staged| {
-                budget.check().map_err(stopped)?;
-                self.store
-                    .publish_app_file(&self.owner, self.catalog.clone(), staged, budget)
-                    .map_err(|_| error("APP_FILE_UNAVAILABLE", false))
+                budget.check()?;
+                self.publish_import(staged, budget)
             });
+        // A lost writer reply or a rename with uncertain completion may have
+        // committed the copy. The durable claim must stay consumed, including
+        // across restart; only a definitely unpublished attempt can release it.
+        let published = match published {
+            Err(failure @ AppFileError::File(PrivateDataError::OutcomeUncertain)) => {
+                return Err(super::app_files_broker::file_failure(failure));
+            }
+            result => result,
+        };
         let (owner, installation, grant_id) = grant();
-        let settle = match published {
+        let settle = match &published {
             Ok(()) => FileGrantCommand::Imported {
                 owner,
                 installation,
@@ -212,8 +236,15 @@ impl AppFileGrantBroker {
                 grant_id,
             },
         };
-        let _ = self.store.app_file_grant(settle);
-        published?;
+        let settled = self.store.app_file_grant(settle);
+        published.map_err(super::app_files_broker::file_failure)?;
+        // The copy is published already. Failure to record its settlement
+        // cannot be reported as if it were a safe-to-repeat failed import.
+        settled.map_err(|_| {
+            super::app_files_broker::file_failure(AppFileError::File(
+                PrivateDataError::OutcomeUncertain,
+            ))
+        })?;
         Ok(json!({"bytesWritten": file.contents.len(), "name": file.name}))
     }
 }
@@ -286,6 +317,14 @@ fn error(code: &str, retryable: bool) -> RemoteError {
 
 #[cfg(test)]
 impl AppFileGrantBroker {
+    pub(crate) fn fixture_with_publication_fault(
+        mut self,
+        fault: Arc<crate::durable_state::app_files::TestPublicationFault>,
+    ) -> Self {
+        self.publication_fault = Some(fault);
+        self
+    }
+
     pub(super) fn fixture(
         store: DurableKernelStateStore,
         owner: String,
@@ -301,6 +340,8 @@ impl AppFileGrantBroker {
             admission,
             data,
             user_selected,
+            #[cfg(test)]
+            publication_fault: None,
         }
     }
 }

@@ -1,3 +1,4 @@
+import type { MachineAllocationCapability } from "./machine-allocation-api.js"
 import { waitingRoomSessionRecencyMs } from "@chariox/kernel-client/waiting-room-activity"
 import { createWaitingRoomRetainedRows } from "./waiting-room-retained-rows.js"
 import {
@@ -17,7 +18,6 @@ import type {
 } from "./waiting-room-inventory-api.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
-import type { ManagedEnvironmentCatalog } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import { LocalIpcError, type LocalIpcClient } from "./ipc.js"
 
 type WaitingRoomInventoryStatus = "loading" | "ready" | "error"
@@ -55,8 +55,8 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   setSlices: (slices: SliceRecord[]) => void
   setProviderAccountCopyOffers?: (offers: import("@chariox/kernel-client").ProviderAccountCopyOffer[]) => void
   setProviderAccounts?: (profiles: ProviderAccountProfile[]) => void
-  setManagedEnvironmentCatalog?: (catalog: ManagedEnvironmentCatalog | undefined) => void
-  getManagedEnvironmentCatalogScope?: (inventory: WaitingRoomInventory) => string
+  setMachineAllocationCapability?: (catalog: MachineAllocationCapability | null | undefined) => void
+  getMachineAllocationCapabilityScope?: (inventory: WaitingRoomInventory) => string
   shouldApplyWorkspaceInventory?: (inventory: WaitingRoomInventory) => boolean
   applyWorkspaceInventory?: (inventory: WaitingRoomInventory, client?: LocalIpcClient) => void | Promise<void>
   setLaunchTarget?: (target: WaitingRoomInventory["launchTarget"]) => void
@@ -92,7 +92,7 @@ export function createWaitingRoomInventoryRefreshController(
   const formatError = options.formatError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
   let inventoryVersion: string | null = null
   let activeKernelId: string | null = null
-  let managedEnvironmentCatalogScope: string | null = null
+  let machineAllocationCapabilityScope: string | null = null
   let inventoryInvalidated = false
   let transportGeneration = 0
   let rowsBaselinePending = false
@@ -263,14 +263,14 @@ export function createWaitingRoomInventoryRefreshController(
     options.setSlices(snapshot.slices)
     options.setProviderAccountCopyOffers?.(snapshot.providerAccountCopyOffers ?? [])
     options.setProviderAccounts?.(snapshot.providerAccounts ?? [])
-    const nextManagedEnvironmentCatalogScope = options.getManagedEnvironmentCatalogScope?.(snapshot)
+    const nextMachineAllocationCapabilityScope = options.getMachineAllocationCapabilityScope?.(snapshot)
       ?? snapshot.kernelId
-    if (snapshot.managedEnvironmentCatalog !== undefined) {
-      managedEnvironmentCatalogScope = nextManagedEnvironmentCatalogScope
-      options.setManagedEnvironmentCatalog?.(snapshot.managedEnvironmentCatalog)
-    } else if (managedEnvironmentCatalogScope !== nextManagedEnvironmentCatalogScope) {
-      managedEnvironmentCatalogScope = nextManagedEnvironmentCatalogScope
-      options.setManagedEnvironmentCatalog?.(undefined)
+    if (snapshot.machineAllocationCapability !== undefined) {
+      machineAllocationCapabilityScope = nextMachineAllocationCapabilityScope
+      options.setMachineAllocationCapability?.(snapshot.machineAllocationCapability)
+    } else if (machineAllocationCapabilityScope !== nextMachineAllocationCapabilityScope) {
+      machineAllocationCapabilityScope = nextMachineAllocationCapabilityScope
+      options.setMachineAllocationCapability?.(undefined)
     }
     if (options.shouldApplyWorkspaceInventory?.(snapshot) !== false) {
       options.applyWorkspaceInventory?.(snapshot)

@@ -320,6 +320,7 @@ fn mp11_amfix_snapshot_recomputes_inventory_for_private_recipient() {
     let inventory = RoomWorkflowInventory::project(&room, "viewer");
     assert_eq!(inventory.workflows[0].runs.len(), 1);
     let projection = super::SessionSnapshotProjection {
+        jobs: Vec::new(),
         processes: Vec::new(),
         disk_usage: Vec::new(),
         room_workflows: inventory,

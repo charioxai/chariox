@@ -725,28 +725,26 @@ async fn fetch_authoritative_ticket(
         // Only legacy/managed-worker profiles retain Machine authority.
         body["machineCredential"] = serde_json::json!(credential);
     }
-    post_cloud_json(
-        cloud.api_url.clone(),
-        "/v1/managed-kernels/context/ticket",
-        body,
-    )
-    .await
-    .map_err(|error| {
-        let retryable = cloud_error_is_retryable(&error);
-        if requested
-            .context_plan
-            .package_binding()
-            .destination
-            .is_some()
-        {
-            crate::managed_context::owner_managed::cloud_admission_error(error)
-        } else {
-            outbound_service_error(
-                format!("Cloud could not authorize the managed-context transfer ticket: {error}"),
-                retryable,
-            )
-        }
-    })
+    post_cloud_json(cloud.api_url.clone(), "/v1/kernels/context/ticket", body)
+        .await
+        .map_err(|error| {
+            let retryable = cloud_error_is_retryable(&error);
+            if requested
+                .context_plan
+                .package_binding()
+                .destination
+                .is_some()
+            {
+                crate::managed_context::owner_managed::cloud_admission_error(error)
+            } else {
+                outbound_service_error(
+                    format!(
+                        "Cloud could not authorize the managed-context transfer ticket: {error}"
+                    ),
+                    retryable,
+                )
+            }
+        })
 }
 
 fn retire_matching_artifact_after_terminal_preflight(
@@ -2608,7 +2606,7 @@ mod tests {
                     };
                     let mut status = "200 OK";
                     let response = if !owner_managed {
-                        assert!(headers.starts_with("POST /v1/managed-kernels/context/ticket "));
+                        assert!(headers.starts_with("POST /v1/kernels/context/ticket "));
                         assert!(body.get("kernelCredential").is_some());
                         assert!(body.get("machineCredential").is_none());
                         legacy_response.clone()
@@ -2616,9 +2614,7 @@ mod tests {
                         assert!(body.get("environmentId").is_none());
                         match step {
                             0 => {
-                                assert!(
-                                    headers.starts_with("POST /v1/managed-kernels/context/ticket ")
-                                );
+                                assert!(headers.starts_with("POST /v1/kernels/context/ticket "));
                                 assert!(body["ownerManagedExport"].is_object());
                                 status = "403 Forbidden";
                                 serde_json::json!({ "error": { "code": "authorization_expired", "message": "Not consumed" } })
@@ -2645,9 +2641,7 @@ mod tests {
                                 issued
                             }
                             _ => {
-                                assert!(
-                                    headers.starts_with("POST /v1/managed-kernels/context/ticket ")
-                                );
+                                assert!(headers.starts_with("POST /v1/kernels/context/ticket "));
                                 assert!(body.get("kernelCredential").is_some());
                                 assert!(body.get("admission").is_none());
                                 assert_eq!(
@@ -3025,7 +3019,7 @@ mod tests {
             ticket
         );
         let request = fixture.join().expect("Cloud fixture thread");
-        assert!(request.starts_with("POST /v1/managed-kernels/context/ticket "));
+        assert!(request.starts_with("POST /v1/kernels/context/ticket "));
         assert!(request.contains("\"machineId\":\"source-machine-test\""));
         assert!(request.contains("\"kernelId\":"));
         assert!(request.contains("\"machineCredential\":\"mcred_"));

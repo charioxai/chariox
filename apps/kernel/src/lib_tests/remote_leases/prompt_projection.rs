@@ -1144,30 +1144,25 @@ fn leased_projection_pull_replays_a_completion_lost_after_worker_drain() {
         )
         .expect("leased agent should be created");
     let home_prompt_id = "home-prompt-1";
-    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
-        .submit_leased_prompt_with_workflow_context(
-            &leased_agent.id,
-            "remote leased prompt\n",
-            Vec::new(),
-            None,
-            Some(crate::transport::relay_peer::RemoteGitTurnContext {
-                home_session_id: "session-1".to_string(),
-                home_agent_id: "agent-home-1".to_string(),
-                home_prompt_id: home_prompt_id.to_string(),
-                home_turn_id: home_prompt_id.to_string(),
-                source_attachment_id: None,
-                workspace_live_sync_mode: None,
-                prompt_origin: Some(PromptOrigin::Chariox),
-                external_provider: None,
-                external_provider_session_id: None,
-                external_provider_turn_id: None,
-                prompt_summary: "remote leased prompt".to_string(),
-            }),
-            Vec::new(),
-            None,
-            crate::extension::RemoteExtensionManifest::default(),
-        )
-        .expect("leased prompt should submit");
+    let (provider_run_id, outcome) = submit_leased_prompt_with_receipt(
+        &mut app,
+        &leased_agent.id,
+        "remote leased prompt\n",
+        crate::transport::relay_peer::RemoteGitTurnContext {
+            home_session_id: "session-1".to_string(),
+            home_agent_id: "agent-home-1".to_string(),
+            home_prompt_id: home_prompt_id.to_string(),
+            home_turn_id: home_prompt_id.to_string(),
+            source_attachment_id: None,
+            workspace_live_sync_mode: None,
+            prompt_origin: Some(PromptOrigin::Chariox),
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            prompt_summary: "remote leased prompt".to_string(),
+        },
+    )
+    .expect("leased prompt should submit");
     assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
     app.terminal_mut().record_assistant_message_completion(
         &leased_agent.backing_session_id,
@@ -1261,30 +1256,25 @@ fn explicit_completion_replay_keeps_the_settled_home_prompt_output_key() {
         )
         .expect("leased agent should be created");
     let home_prompt_id = "home-prompt-explicit-replay";
-    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
-        .submit_leased_prompt_with_workflow_context(
-            &leased_agent.id,
-            "remote explicit completion prompt\n",
-            Vec::new(),
-            None,
-            Some(crate::transport::relay_peer::RemoteGitTurnContext {
-                home_session_id: "session-explicit-replay".to_string(),
-                home_agent_id: "agent-home-explicit-replay".to_string(),
-                home_prompt_id: home_prompt_id.to_string(),
-                home_turn_id: home_prompt_id.to_string(),
-                source_attachment_id: None,
-                workspace_live_sync_mode: None,
-                prompt_origin: Some(PromptOrigin::Chariox),
-                external_provider: None,
-                external_provider_session_id: None,
-                external_provider_turn_id: None,
-                prompt_summary: "remote explicit completion prompt".to_string(),
-            }),
-            Vec::new(),
-            None,
-            crate::extension::RemoteExtensionManifest::default(),
-        )
-        .expect("leased prompt should submit");
+    let (provider_run_id, outcome) = submit_leased_prompt_with_receipt(
+        &mut app,
+        &leased_agent.id,
+        "remote explicit completion prompt\n",
+        crate::transport::relay_peer::RemoteGitTurnContext {
+            home_session_id: "session-explicit-replay".to_string(),
+            home_agent_id: "agent-home-explicit-replay".to_string(),
+            home_prompt_id: home_prompt_id.to_string(),
+            home_turn_id: home_prompt_id.to_string(),
+            source_attachment_id: None,
+            workspace_live_sync_mode: None,
+            prompt_origin: Some(PromptOrigin::Chariox),
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            prompt_summary: "remote explicit completion prompt".to_string(),
+        },
+    )
+    .expect("leased prompt should submit");
     assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
     materialize_empty_codex_profile_for_test(&app, "user-home");
     RemoteLeaseRuntime::new(&mut app).set_leased_agent_provider_for_test(&leased_agent.id, "codex");
@@ -1368,30 +1358,25 @@ fn new_home_prompt_clears_prior_explicit_completion_replay() {
     RemoteLeaseRuntime::new(&mut app).set_leased_agent_provider_for_test(&leased_agent.id, "codex");
 
     let first_home_prompt_id = "home-prompt-consecutive-1";
-    let (provider_run_id, first_outcome) = RemoteLeaseRuntime::new(&mut app)
-        .submit_leased_prompt_with_workflow_context(
-            &leased_agent.id,
-            "first remote prompt\n",
-            Vec::new(),
-            None,
-            Some(crate::transport::relay_peer::RemoteGitTurnContext {
-                home_session_id: "session-consecutive-explicit".to_string(),
-                home_agent_id: "agent-home-consecutive-explicit".to_string(),
-                home_prompt_id: first_home_prompt_id.to_string(),
-                home_turn_id: first_home_prompt_id.to_string(),
-                source_attachment_id: None,
-                workspace_live_sync_mode: None,
-                prompt_origin: Some(PromptOrigin::Chariox),
-                external_provider: None,
-                external_provider_session_id: None,
-                external_provider_turn_id: None,
-                prompt_summary: "first remote prompt".to_string(),
-            }),
-            Vec::new(),
-            None,
-            crate::extension::RemoteExtensionManifest::default(),
-        )
-        .expect("first leased prompt should submit");
+    let (provider_run_id, first_outcome) = submit_leased_prompt_with_receipt(
+        &mut app,
+        &leased_agent.id,
+        "first remote prompt\n",
+        crate::transport::relay_peer::RemoteGitTurnContext {
+            home_session_id: "session-consecutive-explicit".to_string(),
+            home_agent_id: "agent-home-consecutive-explicit".to_string(),
+            home_prompt_id: first_home_prompt_id.to_string(),
+            home_turn_id: first_home_prompt_id.to_string(),
+            source_attachment_id: None,
+            workspace_live_sync_mode: None,
+            prompt_origin: Some(PromptOrigin::Chariox),
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            prompt_summary: "first remote prompt".to_string(),
+        },
+    )
+    .expect("first leased prompt should submit");
     assert!(matches!(
         first_outcome,
         PromptSubmissionOutcome::Started { .. }
@@ -1433,30 +1418,25 @@ fn new_home_prompt_clears_prior_explicit_completion_replay() {
     );
 
     let second_home_prompt_id = "home-prompt-consecutive-2";
-    let (second_provider_run_id, second_outcome) = RemoteLeaseRuntime::new(&mut app)
-        .submit_leased_prompt_with_workflow_context(
-            &leased_agent.id,
-            "second remote prompt\n",
-            Vec::new(),
-            None,
-            Some(crate::transport::relay_peer::RemoteGitTurnContext {
-                home_session_id: "session-consecutive-explicit".to_string(),
-                home_agent_id: "agent-home-consecutive-explicit".to_string(),
-                home_prompt_id: second_home_prompt_id.to_string(),
-                home_turn_id: second_home_prompt_id.to_string(),
-                source_attachment_id: None,
-                workspace_live_sync_mode: None,
-                prompt_origin: Some(PromptOrigin::Chariox),
-                external_provider: None,
-                external_provider_session_id: None,
-                external_provider_turn_id: None,
-                prompt_summary: "second remote prompt".to_string(),
-            }),
-            Vec::new(),
-            None,
-            crate::extension::RemoteExtensionManifest::default(),
-        )
-        .expect("second leased prompt should submit");
+    let (second_provider_run_id, second_outcome) = submit_leased_prompt_with_receipt(
+        &mut app,
+        &leased_agent.id,
+        "second remote prompt\n",
+        crate::transport::relay_peer::RemoteGitTurnContext {
+            home_session_id: "session-consecutive-explicit".to_string(),
+            home_agent_id: "agent-home-consecutive-explicit".to_string(),
+            home_prompt_id: second_home_prompt_id.to_string(),
+            home_turn_id: second_home_prompt_id.to_string(),
+            source_attachment_id: None,
+            workspace_live_sync_mode: None,
+            prompt_origin: Some(PromptOrigin::Chariox),
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            prompt_summary: "second remote prompt".to_string(),
+        },
+    )
+    .expect("second leased prompt should submit");
     assert!(matches!(
         second_outcome,
         PromptSubmissionOutcome::Started { .. }
@@ -1557,30 +1537,25 @@ fn assert_output_only_settlement(provider: &str) {
     materialize_empty_codex_profile_for_test(&app, "user-home");
     RemoteLeaseRuntime::new(&mut app).set_leased_agent_provider_for_test(&leased_agent.id, "codex");
     let home_prompt_id = "home-prompt-explicit-output-only";
-    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
-        .submit_leased_prompt_with_workflow_context(
-            &leased_agent.id,
-            "remote explicit output-only prompt\n",
-            Vec::new(),
-            None,
-            Some(crate::transport::relay_peer::RemoteGitTurnContext {
-                home_session_id: "session-explicit-output-only".to_string(),
-                home_agent_id: "agent-home-explicit-output-only".to_string(),
-                home_prompt_id: home_prompt_id.to_string(),
-                home_turn_id: home_prompt_id.to_string(),
-                source_attachment_id: None,
-                workspace_live_sync_mode: None,
-                prompt_origin: Some(PromptOrigin::Chariox),
-                external_provider: None,
-                external_provider_session_id: None,
-                external_provider_turn_id: None,
-                prompt_summary: "remote explicit output-only prompt".to_string(),
-            }),
-            Vec::new(),
-            None,
-            crate::extension::RemoteExtensionManifest::default(),
-        )
-        .expect("leased prompt should submit");
+    let (provider_run_id, outcome) = submit_leased_prompt_with_receipt(
+        &mut app,
+        &leased_agent.id,
+        "remote explicit output-only prompt\n",
+        crate::transport::relay_peer::RemoteGitTurnContext {
+            home_session_id: "session-explicit-output-only".to_string(),
+            home_agent_id: "agent-home-explicit-output-only".to_string(),
+            home_prompt_id: home_prompt_id.to_string(),
+            home_turn_id: home_prompt_id.to_string(),
+            source_attachment_id: None,
+            workspace_live_sync_mode: None,
+            prompt_origin: Some(PromptOrigin::Chariox),
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            prompt_summary: "remote explicit output-only prompt".to_string(),
+        },
+    )
+    .expect("leased prompt should submit");
     assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
     // Reuse the isolated admission fixture; projection below receives the
     // selected provider's actual run identity, not a provider executable.
@@ -1714,30 +1689,25 @@ fn native_completion_does_not_reuse_prior_home_prompt_identity() {
         )
         .expect("leased agent should be created");
     let home_prompt_id = "home-prompt-1";
-    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
-        .submit_leased_prompt_with_workflow_context(
-            &leased_agent.id,
-            "home-origin prompt\n",
-            Vec::new(),
-            None,
-            Some(crate::transport::relay_peer::RemoteGitTurnContext {
-                home_session_id: "session-1".to_string(),
-                home_agent_id: "agent-home-1".to_string(),
-                home_prompt_id: home_prompt_id.to_string(),
-                home_turn_id: home_prompt_id.to_string(),
-                source_attachment_id: None,
-                workspace_live_sync_mode: None,
-                prompt_origin: Some(PromptOrigin::Chariox),
-                external_provider: None,
-                external_provider_session_id: None,
-                external_provider_turn_id: None,
-                prompt_summary: "home-origin prompt".to_string(),
-            }),
-            Vec::new(),
-            None,
-            crate::extension::RemoteExtensionManifest::default(),
-        )
-        .expect("home prompt should submit");
+    let (provider_run_id, outcome) = submit_leased_prompt_with_receipt(
+        &mut app,
+        &leased_agent.id,
+        "home-origin prompt\n",
+        crate::transport::relay_peer::RemoteGitTurnContext {
+            home_session_id: "session-1".to_string(),
+            home_agent_id: "agent-home-1".to_string(),
+            home_prompt_id: home_prompt_id.to_string(),
+            home_turn_id: home_prompt_id.to_string(),
+            source_attachment_id: None,
+            workspace_live_sync_mode: None,
+            prompt_origin: Some(PromptOrigin::Chariox),
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            prompt_summary: "home-origin prompt".to_string(),
+        },
+    )
+    .expect("home prompt should submit");
     assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
     app.complete_active_prompt(
         &leased_agent.backing_session_id,
@@ -2063,18 +2033,13 @@ fn leased_projection_pump_leaves_home_prompt_records_for_authoritative_drain() {
         external_provider_turn_id: None,
         prompt_summary: "home prompt drain".to_string(),
     };
-    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
-        .submit_leased_prompt_with_workflow_context(
-            &leased_agent.id,
-            "home prompt drain\n",
-            Vec::new(),
-            None,
-            Some(git_context),
-            Vec::new(),
-            None,
-            crate::extension::RemoteExtensionManifest::default(),
-        )
-        .expect("leased prompt should submit");
+    let (provider_run_id, outcome) = submit_leased_prompt_with_receipt(
+        &mut app,
+        &leased_agent.id,
+        "home prompt drain\n",
+        git_context,
+    )
+    .expect("leased prompt should submit");
     assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
     app.fan_out_output_for_agent(
         &leased_agent.backing_session_id,

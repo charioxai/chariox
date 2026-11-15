@@ -6,11 +6,12 @@ import {
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
 } from "../ipc-requests.js"
+import type { RemoteAttachmentRecovery, RemoteAttachmentRef } from "./remote-attachment-recovery.js"
 
 export function startNativeKernelPumpLoop(
   client: LocalIpcClient,
   sessionId: string,
-  attachmentId: string,
+  attachment: RemoteAttachmentRef,
   options: {
     onAgentActivity?: ((activity: Record<string, AgentRuntimeActivity>) => void | Promise<void>) | undefined
     onInteractions?: ((interactions: RuntimeInteraction[]) => void) | undefined
@@ -19,10 +20,17 @@ export function startNativeKernelPumpLoop(
     formatError?: ((error: unknown) => string) | undefined
     intervalMs?: number | undefined
     pollRuntimeNotices?: boolean | undefined
+    // RR-07: re-attach when the target sweeps the attachment during a relay outage.
+    recovery?: RemoteAttachmentRecovery | undefined
   } = {},
 ): { stop: () => void } {
   let stopped = false
   let inFlight = false
+  let interval: ReturnType<typeof setInterval> | undefined
+  const stop = () => {
+    stopped = true
+    if (interval) clearInterval(interval)
+  }
   const tick = async () => {
     if (stopped || inFlight) return
     inFlight = true
@@ -38,7 +46,7 @@ export function startNativeKernelPumpLoop(
       // settlement to a later tick if the attachment still has output pages.
       const maxPages = options.onAgentActivity ? 8 : 1
       for (let page = 0; !stopped && page < maxPages; page++) {
-        const response = await client.send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
+        const response = await client.send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachment.id))
         traceCodexLifecycle("pump_reply", { responseKinds: Object.keys(response),
           records: Array.isArray((response.TerminalOutput as { records?: unknown[] } | undefined)?.records)
             ? (response.TerminalOutput as { records: unknown[] }).records.length : undefined })
@@ -52,7 +60,7 @@ export function startNativeKernelPumpLoop(
             const terminalRecords = records as TerminalOutputRecord[]
             options.debug?.("pump_terminal_records", {
               sessionId,
-              attachmentId,
+              attachmentId: attachment.id,
               count: terminalRecords.length,
               records: terminalRecords.map(summarizeTerminalRecord),
             })
@@ -66,28 +74,32 @@ export function startNativeKernelPumpLoop(
       // barrier. Another agent's output must not hold their approval hostage.
       if (!stopped && state?.SessionState?.session) options.onInteractions?.(state.SessionState.session.active_interactions ?? [])
       if (!stopped && options.pollRuntimeNotices !== false) {
-        await client.send<Record<string, unknown>>(pollRuntimeNoticesRequest(sessionId, attachmentId))
+        await client.send<Record<string, unknown>>(pollRuntimeNoticesRequest(sessionId, attachment.id))
       }
     } catch (error) {
+      // RR-07: a definite attachment_not_found re-attaches (the pump then reads the new
+      // id and the fresh catch-up redraws the screen); a fatal refusal stops the loop; a
+      // transient error is left to the next tick. Classification/serialisation is in the
+      // shared recovery.
+      if (options.recovery && (await options.recovery.recover(error)) === "fatal") {
+        stop()
+        return
+      }
       traceCodexLifecycle("pump_error", { errorClass: error instanceof Error ? error.name : typeof error })
       options.debug?.("pump_error", {
         error: options.formatError ? options.formatError(error) : error instanceof Error ? error.message : String(error),
       })
     } finally {
+      if (!stopped && options.recovery) await options.recovery.settlePendingSubscription()
       inFlight = false
     }
   }
   const intervalMs = options.intervalMs ?? 250
-  const interval = setInterval(() => {
+  interval = setInterval(() => {
     void tick()
   }, intervalMs)
   void tick()
-  return {
-    stop: () => {
-      stopped = true
-      clearInterval(interval)
-    },
-  }
+  return { stop }
 }
 
 function summarizeTerminalRecord(record: TerminalOutputRecord) {

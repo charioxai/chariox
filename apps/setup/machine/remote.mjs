@@ -98,8 +98,8 @@ export function unitFor(home, r, root, kernelPath = "usr/local/bin/chariox-kerne
   return `[Unit]\nDescription=Chariox machine ${r.installId}\n\n[Service]\nType=simple\nEnvironment=${quote(`HOME=${home}`)}\nEnvironment=${quote(`CHARIOX_HOME=${home}/.chariox/dev/machines/${r.installId}`)}\nEnvironment=${quote(`PATH=${process.env.PATH}`)}\nEnvironment=CHARIOX_KERNEL_HOST=127.0.0.1\nEnvironment=CHARIOX_KERNEL_PORT=${r.port}\nEnvironment=CHARIOX_MCP_HOST=127.0.0.1\nEnvironment=CHARIOX_MCP_PORT=${r.port + 1}\nUnsetEnvironment=${isolatedKernelEnvironment.join(" ")}\nExecStart=${quote(`${root}/current/${kernelPath}`)}\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`
 }
 async function verifyImage(image, digest, pins, stage) {
-  await command("node", [join(stage, "verify-image-release.mjs"), image, digest, join(pins, "release-public-pin"), "path1", join(pins, "builder-public-pin")])
-  // The managed verifier hashes every declared artifact; reject additional, unsigned files too.
+  await command("node", [join(stage, "verify-rootfs.mjs"), image, digest, join(pins, "release-public-pin"), join(pins, "builder-public-pin")])
+  // The release verifier hashes every declared artifact; reject additional, unsigned files too.
   const manifest = JSON.parse(await readFile(join(image, "usr/lib/chariox/release-manifest.json")))
   const files = new Set(manifest.artifacts.filter(a => a.name !== "chariox-slice-build-context").map(a => a.path.slice(1)))
   for (const path of ["release-manifest.json", "release-manifest.sig", "release-public-key"]) files.add(`usr/lib/chariox/${path}`)

@@ -38,8 +38,6 @@ pub struct AgentTaskExecution {
     pub obligations: Vec<AgentObligation>,
     pub wait: Option<AgentWait>,
     pub last_progress_at_ms: u64,
-    pub progress_sequence: u64,
-    pub no_progress_wakes: u32,
     pub correction_used: bool,
     pub pending_prompt_id: Option<String>,
 }
@@ -119,7 +117,7 @@ impl AgentObligation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentWait {
     pub registration_ids: Vec<String>,
-    /// Only a goal wait carries a deadline; any other wait ends with its sources.
+    /// Every wait has one: its own, or `DEFAULT_WAIT_TIMEOUT_MS` after it started.
     pub deadline_ms: Option<u64>,
     pub started_at_ms: u64,
     pub inbox_cursor: u64,
@@ -240,7 +238,8 @@ pub(crate) enum Operation {
     SetDeadline {
         room: String,
         agent: String,
-        deadline: u64,
+        deadline: Option<u64>,
+        inherited: Vec<(String, Option<u64>)>,
     },
     ReachDeadline {
         room: String,
@@ -522,16 +521,6 @@ pub(crate) enum Operation {
         handled: bool,
         now: u64,
     },
-    /// A handled `Ack` of a `child_finished` receipt that, in the same write, marks the
-    /// reported sub-agent's `subtree` (the child first) as deleting, so a stop after the
-    /// ack still leaves the deletion for the lifecycle pass.
-    AckHandledChild {
-        room: String,
-        agent: String,
-        sequence: u64,
-        subtree: Vec<String>,
-        now: u64,
-    },
     Progress {
         task: String,
         prompt: String,
@@ -675,6 +664,14 @@ pub(crate) enum Operation {
         room: String,
         owner: String,
     },
+    /// The owner ends the wait a task is in without waking it: its sources stop, nothing is
+    /// delivered, and the task is done. Wakes that need a physical stop come back as `Wakes`.
+    CancelOwnerWait {
+        task: String,
+        room: String,
+        owner: String,
+        started_at_ms: u64,
+    },
     /// `prompt: Some` is the owning agent's turn; `None` settles a cancelled
     /// task. `pending` means the driver must still stop the source physically
     /// and will report the end; a watched process always settles on its exit.
@@ -700,7 +697,7 @@ pub(crate) enum Operation {
 }
 #[derive(Debug)]
 pub(crate) enum Outcome {
-    Deadline(crate::local::AgentDeadline),
+    Deadline(Option<crate::local::AgentDeadline>),
     LeasedProcess(Option<super::LeasedProcessReceipt>),
     Task(AgentTaskExecution),
     Event(InboxEvent),

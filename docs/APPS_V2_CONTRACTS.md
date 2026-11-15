@@ -42,8 +42,11 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   the worker may replay once after instance loss. Omission permits no automatic
   replay; effects and action descriptions never imply idempotence.
 - `schemas/ui-actions.json` (`UiActionDeclaration`): name, description, input
-  and optional output schema, `effect` `read | write | approval`, and an
-  `approvalReason` for, and only for, `approval`. Backend `actions` keep their
+  and optional output schema, `effect` `read | write | approval |
+  person_confirmed`, an `approvalReason` for, and only for, `approval`, and a
+  `confirmationView` for, and only for, `person_confirmed` (APP-CONFIRM-01: the
+  name of the view the App registers with `chariox.view.confirmation(name,
+  render)`; also `data-chariox-confirmation-view` on an annotated form). Backend `actions` keep their
   protected effect routes unchanged; an effect class grants no capability.
 - Signature slots: `signatures/publisher.sig` plus up to 8
   `signatures/reviews/<reviewer-key-id>.json` (`chariox.package-review.v1`, at
@@ -193,8 +196,9 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   step, cancelling the wait when revoked) → generation (a view of an older one
   is `APP_VIEW_STALE`) → declared (`find_declared`) → input against the signed
   schema (`check_input`) → approval for an `approval` action → the view's one
-  queue → the page's registration against the declaration
-  (`check_registered`) → the call. Nothing reaches the page before the last step.
+  queue → the person's confirmation for a `person_confirmed` action → the page's
+  registration against the declaration (`check_registered`) → the call.
+  Nothing that runs the action reaches the page before the last step.
 - **Approval.** An `approval` action asks through the kernel interaction
   `app-view-action-*` (allow once / allow for session / deny, shown on every
   client of the Room; `/sudo` answers it like a provider permission). The
@@ -202,9 +206,25 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   generation. Revocation invalidates it, including after a regrant. The App
   grant alone does not approve an action. `batch` never decides one: it
   stops before the first approval step and reports it.
+- **Person confirmation (APP-CONFIRM-01).** A `person_confirmed` action runs only
+  after the person confirms this exact input on one kernel card
+  (`app-confirm-*`, Confirm / Cancel, 300 s, Cancel on timeout). The kernel
+  holds the view's turn, asks the page to render the App's own registered
+  confirmation view of the input (`prepareConfirmation`: an inert, 480 by 320
+  at most, `[data-chariox-confirmation]` root; no action runs), and the browser
+  host, not the App or the agent, finds that one element and projects its pixels
+  as the card's protected region. The card's frame (`app_confirmation`: App,
+  publisher, action) is written by the kernel from the verified release, never
+  by the App. The card is the person's alone: no agent holder or owner agent, no
+  `/sudo`, no session approval and no earlier answer stands in for it; the
+  turn, grant, release and generation are checked again after Confirm. Cancel,
+  timeout, disconnect or a stale view run nothing and say so. The preview is
+  removed on every path. Input an agent drove through the browser into a
+  `person_confirmed` form or button is refused by the page bridge
+  (`person_confirmation_required`). It needs the App open in an App Tab.
 - **Batch.** Every step is checked first (`plan_batch`), then run in order. It
-  stops at the first error or approval and reports `completed` and `stopped`;
-  there is no rollback.
+  stops at the first error, approval or person-confirmed action and reports
+  `completed` and `stopped`; there is no rollback.
 - **One queue per view.** `AppViews::agent_queue` serializes the agent calls
   that run App code (`invoke`, `state`, `batch`, the catalog's state read). The
   change log runs none, so `changes` waits outside the queue. The controller
@@ -223,7 +243,8 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   being unavailable withholds the answer. Values the agent supplies are its own.
 - **Errors** are `{code, message}` with a stable code: `unknown_view`,
   `unknown_action`, `invalid_input`, `view_mismatch`, `action_not_registered`,
-  `approval_denied`, `APP_VIEW_STALE`, `AGENT_APP_NOT_GRANTED`,
+  `approval_denied`, `confirmation_declined`, `confirmation_expired`,
+  `confirmation_unavailable`, `person_confirmation_required`, `APP_VIEW_STALE`, `AGENT_APP_NOT_GRANTED`,
   `view_busy`, `deadline`, `view_reloaded`, `view_unavailable`, `withheld`, or
   the App's own code.
 - **Waits for R4/L1.** Declarations of an installed App exist only once a v2

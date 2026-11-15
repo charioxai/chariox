@@ -1,6 +1,7 @@
 import { createCliAppActionsComposition } from "./cli-app-actions-composition.js"
 import { createCliUserAppViewsComposition } from "./cli-user-app-views-composition.js"
 import { sessionActivePromptForAgent } from "@chariox/kernel-client/session-prompt-identity"
+import { performQueuedJobAction } from "./queued-job-actions.js"
 import type { MutableLocalIpcClient } from "./mutable-local-ipc-client.js"
 import { createCliViewPersistence } from "./cli-view-persistence.js"
 import { recordPaneFirstFrame } from "./pane-first-frame-timing.js"
@@ -62,7 +63,7 @@ import { createCliRuntimeProjectionComposition } from "./cli-runtime-projection-
 import { createCliSessionLifecycleComposition } from "./cli-session-lifecycle-composition.js"
 import { createCliTranscriptRuntimeComposition } from "./cli-transcript-runtime-composition.js"
 import { createCliWaitingRoomComposition } from "./cli-waiting-room-composition.js"
-import { waitingRoomManagedCatalogRemoteState } from "./waiting-room-managed-environments.js"
+import { waitingRoomAllocationRemoteState } from "./waiting-room-machine-allocation.js"
 import { createCliClosingStateController } from "./cli-closing-state-controller.js"
 import {
   COMMAND_CENTER_OVERLAY_FOOTPRINT,
@@ -461,7 +462,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     restoreWaitingRoomProject, renameWaitingRoomProject,
     currentProviderSelection, currentVariantId, promptMetaParts, promptUsageMeta,
     reconcileWaitingRoom, reconcileWaitingRoomProjection, refreshWaitingRoomData,
-    loadWaitingRoomSessionHistory, refreshWaitingRoomDataNow, reimageManagedEnvironment, startSessionFromWaitingRoomDefaults,
+    loadWaitingRoomSessionHistory, refreshWaitingRoomDataNow, startSessionFromWaitingRoomDefaults,
     waitingRoomTargets, editWaitingRoomWorkspace,
   } = createCliWaitingRoomComposition({
     onLaunchRefused: (message, retry) => providerAccountRecovery.showLaunchRefusal(message, retry),
@@ -619,7 +620,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       const targets = waitingRoomTargets()
       return {
         ...targets,
-        ...waitingRoomManagedCatalogRemoteState(targets.managedEnvironmentCatalog),
+        ...waitingRoomAllocationRemoteState(targets.machineAllocationCapability),
         relay: relayStatusState(),
         machines: remoteMachinesState(),
         kernels: remoteKernelsState(),
@@ -865,6 +866,10 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => selectedQueuedPromptIndexForAgent(agentId),
     onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") =>
       handleQueuedPromptStripAction(item, action),
+    onQueuedJobAction: (job, action) => {
+      if (!isAttached()) return
+      void performQueuedJobAction(client, sessionState().id, job, action).catch(error => appLogger?.error("queued_job_action_failed", { action, error: formatError(error) }))
+    },
     interactionChoiceStore, providerLoginInteractions, promptUsageMeta, sessionHydrating, setSessionHydrating,
     setLoadingHistory, setHistoryLoadingMessage,
     rebuildTranscript: () => rebuildTranscript(),
@@ -1160,7 +1165,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     setRemoteMachinesState, remoteKernelsState, providerAccountsState, terminalsState, slicesState,
     themeRegistryState, reconcileWaitingRoom, setWaitingRoomState, applyWaitingRoomSessionLifecycleAction,
     restoreWaitingRoomProject, renameWaitingRoomProject,
-    activateWaitingRoom, reimageManagedEnvironment, startSessionFromWaitingRoomDefaults, handleSessionBrowserKey,
+    activateWaitingRoom, startSessionFromWaitingRoomDefaults, handleSessionBrowserKey,
     openProjectEnvironment, handleProjectEnvironmentKey, openSessionProcesses, handleSessionProcessesKey, confirmProcessStop,
     handleManagedMachineDialogKey, openManagedMachineDialog,
     toggleWorkspaceScreen: workflowActions.toggleWorkspaceScreen,

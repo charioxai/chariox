@@ -230,8 +230,8 @@ pub(crate) fn check_spawn(
     Ok(())
 }
 
-/// A child's folder lies inside the parent's worktree or workspace. Both must exist: the spawn
-/// already requires the folder to exist, so a path that cannot be resolved is refused.
+/// A child works inside its parent's folders or in another worktree of the same repository.
+/// Existing folders are resolved before checking either grant, including symlink targets.
 pub(crate) fn check_directory(
     parent: &AgentInstance,
     session: &RuntimeSession,
@@ -242,15 +242,16 @@ pub(crate) fn check_directory(
             "the directory `{directory}` cannot be used: {error}"
         ))
     })?;
-    keep_inside_parent_folders(parent, session, directory, &wanted)
+    check_directory_scope(parent, session, directory, &wanted, &wanted)
 }
 
-/// The same limit for a folder a spawn is about to create, such as a git worktree: the deepest
-/// existing ancestor is resolved, and the part that does not exist yet may not climb out.
+/// A new Git worktree may leave the parent's folders only when its source is the parent's
+/// repository. Git creates the target in that repository before the agent is registered.
 pub(crate) fn check_directory_to_create(
     parent: &AgentInstance,
     session: &RuntimeSession,
     directory: &Path,
+    source_directory: &Path,
 ) -> Result<(), DaemonError> {
     let mut existing = directory;
     let mut missing = Vec::new();
@@ -271,14 +272,21 @@ pub(crate) fn check_directory_to_create(
         ))
     })?;
     wanted.extend(missing.into_iter().rev());
-    keep_inside_parent_folders(parent, session, &directory.display().to_string(), &wanted)
+    check_directory_scope(
+        parent,
+        session,
+        &directory.display().to_string(),
+        &wanted,
+        source_directory,
+    )
 }
 
-fn keep_inside_parent_folders(
+fn check_directory_scope(
     parent: &AgentInstance,
     session: &RuntimeSession,
     directory: &str,
     wanted: &Path,
+    repository_directory: &Path,
 ) -> Result<(), DaemonError> {
     let roots = [
         parent
@@ -292,12 +300,34 @@ fn keep_inside_parent_folders(
         .iter()
         .filter_map(|root| Path::new(root).canonicalize().ok())
         .any(|root| wanted.starts_with(root))
+        || shares_parent_repository(parent, session, repository_directory)
     {
         return Ok(());
     }
     Err(refused(format!(
-        "a sub-agent works inside its parent's folders; `{directory}` is outside them. Use a folder under the parent's workspace"
+        "a sub-agent works inside its parent's folders or in a worktree of the same Git repository; `{directory}` is outside that scope. Use a folder under the parent's workspace or a worktree sharing its repository's Git common directory"
     )))
+}
+
+fn shares_parent_repository(
+    parent: &AgentInstance,
+    session: &RuntimeSession,
+    directory: &Path,
+) -> bool {
+    let parent_directory = parent
+        .worktree_id()
+        .unwrap_or_else(|| session.worktree_id());
+    git_common_directory(Path::new(parent_directory))
+        .zip(git_common_directory(directory))
+        .is_some_and(|(parent, child)| parent == child)
+}
+
+fn git_common_directory(directory: &Path) -> Option<std::path::PathBuf> {
+    let common = crate::runtime::workspace_git_common::git_command_output(
+        directory.to_str()?,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    Path::new(&common).canonicalize().ok()
 }
 
 /// Test hook: runs once between a spawn's check and its effect, so a test can change the

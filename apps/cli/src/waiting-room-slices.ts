@@ -6,9 +6,9 @@ import {
   sliceProviderAuthCoverage,
 } from "@chariox/kernel-client/slice-format"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
-import type { ManagedEnvironmentDevelopmentSetup } from "@chariox/kernel-client/ipc-managed-environment-requests"
+import type { ContextDevelopmentSetup } from "@chariox/kernel-client/context-transfer-types"
 import { selectedWaitingRoomWorktreePath } from "./waiting-room-worktrees.js"
-import { waitingRoomProjectDevelopmentSetup } from "./waiting-room-managed-environments.js"
+import { waitingRoomProjectDevelopmentSetup } from "./waiting-room-context-selection.js"
 
 export type WaitingRoomSliceScope = {
   workspacePath?: string | null | undefined
@@ -229,7 +229,7 @@ function sliceCompatibleWithScope(
   worktreePath: string,
   machineRef: string | null | undefined,
   kernelRef: string | null | undefined,
-  expectedDevelopment: ManagedEnvironmentDevelopmentSetup | null,
+  expectedDevelopment: ContextDevelopmentSetup | null,
 ) {
   if (slice.workspace_id && workspacePath && slice.workspace_id !== workspacePath) {
     return false
@@ -254,7 +254,7 @@ function sliceCompatibleWithScope(
 
 function sliceDevelopmentMatches(
   slice: SliceRecord,
-  expected: ManagedEnvironmentDevelopmentSetup,
+  expected: ContextDevelopmentSetup,
 ): boolean {
   if (expected.kind === "empty") return !slice.development || slice.development.kind === "empty"
   const actual = slice.development

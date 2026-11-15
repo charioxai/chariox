@@ -291,7 +291,7 @@ impl AgentRuntimeCommandExecutor {
         {
             return Ok(response);
         }
-        let prepared = self
+        let prepared = match self
             .prompt_commands
             .cancel_agent_prompt(
                 &request.session_id,
@@ -299,7 +299,19 @@ impl AgentRuntimeCommandExecutor {
                 &request.attachment_id,
                 request.expected_prompt_id.as_deref(),
             )
-            .await?;
+            .await
+        {
+            Ok(prepared) => prepared,
+            // Stop describes the desired idle state; a correlated Stop still
+            // reports that its exact prompt is no longer current.
+            Err(DaemonError::NoActivePrompt { .. }) if request.expected_prompt_id.is_none() => {
+                return Ok(LocalDaemonResponse::NothingToStop {
+                    session_id: request.session_id,
+                    agent_id: target_agent_id,
+                });
+            }
+            Err(error) => return Err(error),
+        };
         publish_session_runtime_projection(
             &self.session_projection,
             &self.agent_runtime_projection,

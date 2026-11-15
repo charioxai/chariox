@@ -1,5 +1,5 @@
 import { BoxRenderable, TextAttributes } from "@opentui/core"
-import { queuedJobsForAgent } from "@chariox/kernel-client/queued-jobs"
+import { queuedJobsForAgent, remoteJobLinesForAgent, type QueuedJob } from "@chariox/kernel-client/queued-jobs"
 import {
   sessionAgentRuntimeDisplayStateByAgent,
 } from "@chariox/kernel-client/session-runtime-status"
@@ -92,6 +92,7 @@ export type CliResponseShellCompositionDeps = {
   askingAgentLabel: AnyFn
   selectedQueuedPromptIndexForAgent: AnyFn
   onQueuedPromptAction: AnyFn
+  onQueuedJobAction: (job: QueuedJob, action: "remote" | "stop") => void
   interactionChoiceStore: any
   providerLoginInteractions: ProviderLoginInteractionController
   promptUsageMeta: AnyFn
@@ -195,6 +196,8 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     subAgentStripeForAgent: deps.subAgentStripeForAgent,
     askingAgentLabel: deps.askingAgentLabel,
     queuedJobsForAgent: (agentId: string | null | undefined) => queuedJobsForAgent(deps.isAttached() ? deps.sessionState()?.processes : [], agentId),
+    onQueuedJobAction: deps.onQueuedJobAction,
+    remoteJobLinesForAgent: (agentId: string | null | undefined) => remoteJobLinesForAgent(deps.isAttached() ? deps.sessionState()?.jobs : [], agentId),
     selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
     onQueuedPromptAction: deps.onQueuedPromptAction,
     agentTriggerStripItemsForAgent: (agentId: string | null | undefined) => agentTriggersForAgent(deps.sessionState(), agentId),

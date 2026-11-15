@@ -407,13 +407,10 @@ impl KernelRuntimeOwnedState {
             pending.holder = holder;
             pending.holder_tenure = tenure;
         }
-        // The user sees a sub-agent's decision in its top parent's panel, not in its own.
-        let interaction = if pending.holder == super::super::DecisionHolder::User {
-            let shown_in = self.decision_shown_in(session_id, &interaction);
-            interaction.shown_in(shown_in)
-        } else {
-            interaction
-        };
+        // The user sees a sub-agent's decision in its top parent's panel from the start, also while
+        // a parent agent holds it: the first answer, the holder's or the user's, wins.
+        let shown_in = self.decision_shown_in(session_id, &interaction);
+        let interaction = interaction.shown_in(shown_in);
         let worker_live = pending.agent_lifetime.as_ref().is_none_or(|lifetime| {
             self.worker_interaction_binding_is_live(lifetime, remote_binding.as_ref(), &session)
         });

@@ -253,11 +253,11 @@ impl YieldedSources {
         store: &crate::durable_state::DurableKernelStateStore,
         room: &str,
     ) -> Self {
-        let tasks = store.agent_tasks(Some(room), None).unwrap_or_default();
+        // Only waiting tasks yield on sources; the Room's finished turns are not read.
+        let tasks = store.agent_waiting_tasks(room).unwrap_or_default();
         let wakes = store.agent_wakes(Some(room), None).unwrap_or_default();
         let registrations = tasks
             .iter()
-            .filter(|task| task.state == ExecutionState::Waiting)
             .flat_map(|task| store.agent_registrations(&task.task_id).unwrap_or_default())
             .collect();
         Self {
@@ -285,6 +285,10 @@ mod tests {
 
     fn row(agent: &str, state: SessionProcessState) -> SessionProcess {
         SessionProcess {
+            remote_available: false,
+            remote_refusal: None,
+            estimate: None,
+            placement: None,
             owner: SessionProcessOwner::Agent(agent.into()),
             process: ProcessSample {
                 process_id: "p".into(),
@@ -420,7 +424,7 @@ mod tests {
             "task_id": id, "room_id": "room", "agent_id": agent, "prompt_id": "p",
             "provider_run_id": null, "revision": 1, "state": state, "reason": "",
             "obligations": [], "wait": null, "last_progress_at_ms": 0,
-            "progress_sequence": 0, "no_progress_wakes": 0, "correction_used": false,
+            "correction_used": false,
             "pending_prompt_id": null
         }))
         .unwrap()

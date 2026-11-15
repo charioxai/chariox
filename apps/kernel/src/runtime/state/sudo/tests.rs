@@ -273,6 +273,7 @@ pub(super) fn fixture_for_owner(
     let vault = worktree.path().join("test-vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
     let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.providers.default = Some("dev-stub".into());
     config.room_agent_tools = room_tools;
     config.user_config.credential_vault.backend =
         crate::config::CredentialVaultBackend::CharioxEncrypted;

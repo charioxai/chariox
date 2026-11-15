@@ -142,6 +142,10 @@ pub(crate) enum KernelEvent {
     RoomWorkflowsChanged {
         inventory: crate::runtime::projection::RoomWorkflowInventory,
     },
+    SessionJobsChanged {
+        session_id: String,
+        jobs: Vec<crate::local::JobView>,
+    },
     SessionProcessesChanged {
         session_id: String,
         processes: Vec<crate::runtime::process_resources::SessionProcess>,
@@ -204,6 +208,13 @@ pub(crate) enum KernelEvent {
     WaitingRoomInventoryChanged {
         inventory_version: String,
     },
+    /// Protocol 1006: one watched resource of a `kernel_resources` subscription.
+    KernelResourceChanged {
+        resource: String,
+        params: Value,
+        revision: String,
+        body: KernelResourceChange,
+    },
     WaitingRoomRowsChanged {
         #[serde(default)]
         sessions_total: usize,
@@ -264,11 +275,11 @@ pub(crate) enum KernelEvent {
     },
 }
 
+/// The session metadata a `session_metadata_changed` event carries; a change of anything else
+/// (last use, last prompt time) sends no event of its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SessionMetadataPatch {
     pub(crate) alias: Option<String>,
-    pub(crate) last_used_at_ms: Option<u64>,
-    pub(crate) last_prompt_sent_at_ms: Option<u64>,
     pub(crate) hidden: bool,
     pub(crate) focused_agent_id: Option<String>,
     pub(crate) workspace_live_sync_mode: Option<WorkspaceLiveSyncMode>,
@@ -278,8 +289,6 @@ impl SessionMetadataPatch {
     fn from_session(session: &RuntimeSession) -> Self {
         Self {
             alias: session.alias().map(str::to_string),
-            last_used_at_ms: session.last_used_at_ms(),
-            last_prompt_sent_at_ms: session.last_prompt_sent_at_ms(),
             hidden: session.is_hidden(),
             focused_agent_id: session.focused_agent_id().map(str::to_string),
             workspace_live_sync_mode: session.workspace_live_sync_mode(),
@@ -291,6 +300,15 @@ impl SessionMetadataPatch {
 pub(crate) enum KernelSubscriptionScope {
     Session,
     WaitingRoomInventory,
+    KernelResources,
+}
+
+/// Protocol 1006: how a watched resource differs from the copy the client holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum KernelResourceChange {
+    Unchanged {},
+    Snapshot { data: Value },
 }
 
 pub(crate) const MIN_SUBSCRIPTION_HEARTBEAT_MS: u64 = 500;
@@ -318,6 +336,8 @@ pub(crate) fn requested_heartbeat_interval(
 pub(crate) fn kernel_subscription_scope(scope: Option<&str>) -> KernelSubscriptionScope {
     if scope == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE) {
         KernelSubscriptionScope::WaitingRoomInventory
+    } else if scope == Some(super::kernel_resource_feed::KERNEL_RESOURCES_SUBSCRIPTION_SCOPE) {
+        KernelSubscriptionScope::KernelResources
     } else {
         KernelSubscriptionScope::Session
     }
@@ -667,9 +687,16 @@ pub(crate) fn agent_activity_changed_event(
     let session_allows_activity_delta = previous_snapshot.session == snapshot.session
         || previous_snapshot
             .session
-            .equivalent_except_prompt_runtime(&snapshot.session);
+            .equivalent_except_prompt_runtime_and_session_metadata(&snapshot.session);
     if !session_allows_activity_delta
-        || previous_snapshot.provider_run != snapshot.provider_run
+        || previous_snapshot
+            .provider_run
+            .as_ref()
+            .map(|run| PublicProviderRun::from(run).without_activity_timestamp())
+            != snapshot
+                .provider_run
+                .as_ref()
+                .map(|run| PublicProviderRun::from(run).without_activity_timestamp())
         || previous_snapshot.agent_activity == snapshot.agent_activity
     {
         return None;
@@ -708,7 +735,14 @@ pub(crate) fn provider_run_changed_event(
     let previous_snapshot = previous_snapshot?;
     if previous_snapshot.session != snapshot.session
         || previous_snapshot.agent_activity != snapshot.agent_activity
-        || previous_snapshot.provider_run == snapshot.provider_run
+        || previous_snapshot
+            .provider_run
+            .as_ref()
+            .map(|run| PublicProviderRun::from(run).without_activity_timestamp())
+            == snapshot
+                .provider_run
+                .as_ref()
+                .map(|run| PublicProviderRun::from(run).without_activity_timestamp())
     {
         return None;
     }
@@ -759,6 +793,12 @@ pub(crate) fn session_projection_changed_events(
             processes: snapshot.processes.clone(),
             disk_usage: snapshot.disk_usage.clone(),
         }),
+        previous
+            .is_none_or(|p| p.jobs != snapshot.jobs)
+            .then(|| KernelEvent::SessionJobsChanged {
+                session_id: snapshot.session.id().to_string(),
+                jobs: snapshot.jobs.clone(),
+            }),
         agent_activity_changed_event(snapshot, previous),
         provider_run_changed_event(snapshot, previous),
         session_metadata_changed_event(snapshot, previous),
@@ -800,12 +840,25 @@ pub(crate) fn can_skip_session_snapshot(
     // a window opens, warns, extends or ends alongside another projection delta.
     emitted_projection_delta
         && previous_snapshot.is_some_and(|previous| {
+            // Activity carries queue identities but not text or attachments.
+            // Concurrent metadata also needs the complete state when no metadata delta can carry it.
+            if !previous.session.same_prompt_runtime(&snapshot.session)
+                || (previous.agent_activity != snapshot.agent_activity
+                    && SessionMetadataPatch::from_session(&previous.session)
+                        != SessionMetadataPatch::from_session(&snapshot.session))
+            {
+                return false;
+            }
             // Interaction and task deltas cannot carry a changed execution route
             // or account. Keep the full agent projection alongside those deltas.
             if previous.session.agents() != snapshot.session.agents() {
                 return false;
             }
             if previous.session.sudo_windows() != snapshot.session.sudo_windows() {
+                return false;
+            }
+            // Trigger changes have no event of their own.
+            if previous.session.agent_triggers() != snapshot.session.agent_triggers() {
                 return false;
             }
             // Wake changes have no event of their own.
@@ -916,6 +969,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::HomeExtensionAuditAppended { .. } => "home_extension_audit_appended",
         KernelEvent::HomeExtensionAuditLagged { .. } => "home_extension_audit_lagged",
         KernelEvent::RoomWorkflowsChanged { .. } => "room_workflows_changed",
+        KernelEvent::SessionJobsChanged { .. } => "session_jobs_changed",
         KernelEvent::SessionProcessesChanged { .. } => "session_processes_changed",
         KernelEvent::SessionSnapshot { .. } => "session_snapshot",
         KernelEvent::AgentTaskUpdated { .. } => "agent_task_updated",
@@ -928,6 +982,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::RelayStatusChanged { .. } => "relay_status_changed",
         KernelEvent::RemoteMachinesChanged { .. } => "remote_machines_changed",
         KernelEvent::WaitingRoomInventoryChanged { .. } => "waiting_room_inventory_changed",
+        KernelEvent::KernelResourceChanged { .. } => "kernel_resource_changed",
         KernelEvent::WaitingRoomRowsChanged { .. } => "waiting_room_rows_changed",
         KernelEvent::ClientCatalogChanged { .. } => "client_catalog_changed",
         KernelEvent::ProviderCatalogChanged { .. } => "provider_catalog_changed",
@@ -955,7 +1010,8 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::HomeExtensionAuditAppended { session_id, .. }
         | KernelEvent::HomeExtensionAuditLagged { session_id } => Some(session_id.as_str()),
         KernelEvent::RoomWorkflowsChanged { inventory } => Some(&inventory.session_id),
-        KernelEvent::SessionProcessesChanged { session_id, .. } => Some(session_id.as_str()),
+        KernelEvent::SessionJobsChanged { session_id, .. }
+        | KernelEvent::SessionProcessesChanged { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::SessionSnapshot { session, .. } => Some(session.id()),
         KernelEvent::AgentTaskUpdated { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::AgentActivityChanged { session_id, .. } => Some(session_id.as_str()),
@@ -967,6 +1023,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::RelayStatusChanged { .. } => None,
         KernelEvent::RemoteMachinesChanged { .. } => None,
         KernelEvent::WaitingRoomInventoryChanged { .. } => None,
+        KernelEvent::KernelResourceChanged { .. } => None,
         KernelEvent::WaitingRoomRowsChanged { .. } => None,
         KernelEvent::ClientCatalogChanged { .. } => None,
         KernelEvent::ProviderCatalogChanged { .. } => None,
@@ -1024,6 +1081,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::HomeExtensionAuditAppended { .. }
         | KernelEvent::HomeExtensionAuditLagged { .. }
         | KernelEvent::RoomWorkflowsChanged { .. }
+        | KernelEvent::SessionJobsChanged { .. }
         | KernelEvent::SessionProcessesChanged { .. }
         | KernelEvent::SessionSnapshot { .. }
         | KernelEvent::AgentTaskUpdated { .. }
@@ -1036,6 +1094,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::RelayStatusChanged { .. }
         | KernelEvent::RemoteMachinesChanged { .. }
         | KernelEvent::WaitingRoomInventoryChanged { .. }
+        | KernelEvent::KernelResourceChanged { .. }
         | KernelEvent::WaitingRoomRowsChanged { .. }
         | KernelEvent::ClientCatalogChanged { .. }
         | KernelEvent::ProviderCatalogChanged { .. }

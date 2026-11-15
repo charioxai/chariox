@@ -106,7 +106,7 @@ fn a_kernel_that_requires_a_host_token_starts_the_http_trigger_gateway() {
                 let invoked = request(
                     &mut socket,
                     json!({"InvokeAgentTrigger": {"session_id": session_id,
-                        "trigger_id": trigger_id, "payload": {"event": "pushed"}}}),
+                        "trigger_id": trigger_id, "input": {"event": "pushed"}}}),
                 )
                 .await
                 .unwrap();

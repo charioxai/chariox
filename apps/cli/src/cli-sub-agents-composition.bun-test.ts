@@ -157,3 +157,29 @@ test("AO-UI-02 a root deleted and created again under the same id reads fresh, w
     dispose()
   })
 })
+
+test("ordinary Room events do not reread trees; tree changes and new roots do", async () => {
+  await createRoot(async dispose => {
+    const handlers: Array<(event: Record<string, unknown>) => void> = []
+    let reads = 0
+    const session = { id: "s1", agents: [{ id: "room" }] }
+    const client = {
+      send: async (request: { ListDescendants: { agent_id: string } }) => { reads++; return { AgentTree: { tree: { ...tree, root: request.ListDescendants.agent_id, rev: reads } } } },
+      onKernelEvent: (handler: (event: Record<string, unknown>) => void) => { handlers.push(handler); return () => {} },
+    }
+    const sub = createCliSubAgentsComposition({ client: client as never, session: () => session as never, attached: () => true, focusedAgentId: () => "room", width: () => 100 })
+    await sub.controller.refresh("room"); await flush()
+    const before = reads
+    const emit = async (event: Record<string, unknown>) => { handlers.forEach(handler => handler(event)); await flush() }
+    for (const event of ["session_snapshot", "agent_activity_changed", "provider_run_changed", "runtime_interactions_changed"]) await emit({ event, session_id: "s1" })
+    assert.equal(reads, before, "unchanged membership and activity leave the trees alone")
+    await emit({ event: "agent_tree_changed", session_id: "other", root: "room", rev: 10 })
+    assert.equal(reads, before)
+    await emit({ event: "agent_tree_changed", session_id: "s1", root: "room", rev: 10 })
+    assert.equal(reads, before + 1)
+    session.agents.push({ id: "new-root" })
+    await emit({ event: "session_snapshot", session_id: "s1" })
+    assert.equal(reads, before + 3, "changed membership may move children between roots")
+    dispose()
+  })
+})

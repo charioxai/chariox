@@ -1,3 +1,4 @@
+import { paymentInputTarget } from "./kernel-browser-payment.mjs";
 import {pageObservationFence,nativeStatePage} from './browser-controller-frames.mjs';
 import {FOCUS_WORLD,ensureFocusWorld,recordFocusWorld} from './browser-focus-world.mjs';
 import { BrowserResponseBodies, responseBufferLimits } from './browser-controller-response-bodies.mjs';
@@ -1523,6 +1524,8 @@ export class BrowserCdpClient {
     const sessionId = this.sessionsByTarget.get(targetId), documentId = this.documentIdsByTarget.get(targetId);
     return this.connection?.isOpen?.() === true && sessionId && documentId ? { connection: this.connection, sessionId, document_id: documentId } : null;
   }
+  async paymentInputTarget(tab, input) { return paymentInputTarget(this, tab, input); }
+
   async resolvePageTarget(targetId) {
     if (this.rendererRecovery.crashed.has(targetId)) {
       throw new BrowserControllerError('browser_renderer_crashed', 'Browser tab crashed; recovery waits for available memory. Close the tab to stop recovery.');

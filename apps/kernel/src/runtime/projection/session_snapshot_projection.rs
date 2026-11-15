@@ -16,6 +16,8 @@ pub(crate) const SESSION_SNAPSHOT_PROJECTION_VERSION: u64 = 4;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSnapshotProjection {
     pub processes: Vec<crate::runtime::process_resources::SessionProcess>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jobs: Vec<crate::local::JobView>,
     pub disk_usage: Vec<crate::runtime::disk_usage::DiskUsageEntry>,
     pub room_workflows: super::RoomWorkflowInventory,
     pub metadata: ProjectionMetadata,
@@ -64,6 +66,9 @@ pub struct AgentRuntimeActivity {
     pub queued_prompt_count: usize,
     #[serde(default)]
     pub unread_idle_output: bool,
+    /// The agent has armed waits or events and will be woken by them.
+    #[serde(default, skip_serializing_if = "crate::session::is_false")]
+    pub waiting: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub queued_prompt_controls: BTreeMap<String, AgentQueuedPromptControlProjection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -119,6 +124,14 @@ impl SessionSnapshotProjection {
                     session.can_view_tree_agent_owned_by(user_id, agent.owner_user_id())
                 })
         });
+        self.jobs.retain(|job| {
+            self.session.agents().iter().any(|agent| {
+                agent.id() == job.agent_id
+                    && self
+                        .session
+                        .can_view_tree_agent_owned_by(user_id, agent.owner_user_id())
+            })
+        });
         self.session = self
             .session
             .redacted_for_user_with_workflow_history(user_id, history)?;
@@ -161,6 +174,7 @@ impl SessionSnapshotProjection {
         let mut session = app.session_state_store().get_session(session_id)?;
         let agents = app.agents().get_session_agents(session_id);
         session.set_agents(agents);
+        session.name_interaction_askers();
         app.project_session_runtime_view(&mut session);
         let provider_run = session
             .active_provider_run_id()
@@ -204,6 +218,7 @@ impl SessionSnapshotProjection {
             &super::YieldedSources::of_room(&app.durable_state_store(), session_id),
         );
         Ok(Self {
+            jobs: Vec::new(),
             disk_usage: Vec::new(),
             processes,
             room_workflows: super::RoomWorkflowInventory::project(
@@ -348,6 +363,7 @@ pub(crate) fn agent_activity_for_session_projection(
                     && unread_for_user_id.is_some_and(|user_id| {
                         session.agent_has_unread_output(user_id, agent.id())
                     }),
+                waiting: session.agent_is_waiting(agent.id()),
                 queued_prompt_controls: queued_prompt_controls_projection(
                     prompt_state,
                     active_turn.as_ref().and_then(|turn| turn.prompt_origin),

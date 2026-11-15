@@ -129,7 +129,11 @@ pub fn plan_batch<'a>(
     for (index, (name, input)) in steps.iter().enumerate() {
         let action = find_declared(declared, name).map_err(|error| (index, error))?;
         check_input(action, input).map_err(|error| (index, error))?;
-        if action.effect == UiActionEffect::Approval && approval.is_none() {
+        if matches!(
+            action.effect,
+            UiActionEffect::Approval | UiActionEffect::PersonConfirmed
+        ) && approval.is_none()
+        {
             run = index;
             approval = Some(action);
         }
@@ -153,6 +157,8 @@ mod tests {
             effect,
             approval_reason: (effect == UiActionEffect::Approval)
                 .then(|| "Deletes the list".into()),
+            confirmation_view: (effect == UiActionEffect::PersonConfirmed)
+                .then(|| "review_payment".into()),
         }
     }
 

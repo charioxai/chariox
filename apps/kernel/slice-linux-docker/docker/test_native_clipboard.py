@@ -60,12 +60,12 @@ class ClipboardTests(unittest.TestCase):
         with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run',return_value=SimpleNamespace(stdout=b'public',returncode=0)):
             self.assertEqual(m.public_clipboard([p],a),('public',(99,77,'1')))
 
-    def test_registry_or_native_protection_never_reads_bytes(self):
+    def test_chosen_clipboard_read_is_independent_of_vault_field_protection(self):
         p,t,a,o,c=self.setup()
-        for tree,mask in [(t,True),({**t,'protected':True},False),({**t,'complete':False},False),({**t,'nodes':[{'pid':77,'protected':True}]},False)]:
+        for tree in [{**t,'protected':True},{**t,'nodes':[{'pid':77,'protected':True}]}]:
             a.snapshot.return_value=tree
-            with patch('Xlib.display.Display') as connect,patch.object(m.subprocess,'run') as read:
-                self.assertIsNone(m.public_clipboard([p],a,mask));connect.assert_not_called();read.assert_not_called()
+            with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run',return_value=SimpleNamespace(stdout=b'chosen copy')):
+                self.assertEqual(m.public_clipboard([p],a),('chosen copy',(99,77,'1')))
 
     def test_truncated_owner_traversal_is_not_a_public_source_for_reads(self):
         p,t,a,o,c=self.setup();a.snapshot.return_value={**t,'complete':False,'traversed':False}

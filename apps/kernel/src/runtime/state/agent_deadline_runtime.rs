@@ -38,6 +38,8 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         request: SetAgentDeadlineRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let _deadline_edit = self.owned.agent_deadline_edit.lock().await;
+        self.authorize_current_external_command()?;
         // A reached deadline ends the agent's work, so only who acts for its owner arms one.
         let agent = self.owned.ensure_agent_owner(
             &request.agent_id,
@@ -60,51 +62,82 @@ impl KernelRuntimeState {
                 .owned
                 .durable_state_store
                 .agent_deadline(&request.session_id, ancestor.id())?
-                .is_some_and(|parent| request.deadline_ms > parent.deadline_ms)
+                .is_some_and(|parent| {
+                    request
+                        .deadline_ms
+                        .is_none_or(|time| time > parent.deadline_ms)
+                })
             {
                 return Err(refusal(
                     "agent_deadline_after_parent",
-                    "an agent deadline cannot be later than its parent's; use a shorter time",
+                    "an agent deadline cannot be later than its parent's; use a shorter time or clear the ancestor deadline first",
                 ));
             }
         }
-        // The worker enforces a leased agent's deadline itself, so the home asks it first: a
-        // refused request leaves no deadline the worker does not hold.
+        self.owned
+            .durable_state_store
+            .validate_agent_deadline_edit(
+                &request.session_id,
+                &request.agent_id,
+                request.deadline_ms,
+            )?;
+        // Keep explicit child limits separately: removing or extending an inherited limit
+        // must not erase a child's earlier limit or leave a stale parent limit behind.
+        let mut inherited = Vec::new();
+        for descendant in crate::agent::authority_limit::descendants(&request.agent_id, &agents) {
+            if self
+                .owned
+                .durable_state_store
+                .agent_deadline(&request.session_id, descendant.id())?
+                .is_some_and(|own| own.state == AgentDeadlineState::Reached)
+            {
+                continue;
+            }
+            let mut effective = self
+                .owned
+                .durable_state_store
+                .agent_deadline_intent(&request.session_id, descendant.id())?;
+            for ancestor in crate::agent::authority_limit::ancestors(descendant, &agents) {
+                let limit = if ancestor.id() == agent.id() {
+                    request.deadline_ms
+                } else {
+                    self.owned
+                        .durable_state_store
+                        .agent_deadline_intent(&request.session_id, ancestor.id())?
+                };
+                effective = match (effective, limit) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+            inherited.push((descendant.id().to_string(), effective));
+        }
+        // The executor confirms every changed limit before the local transaction commits.
         self.arm_leased_agent_deadline(&agent, request.deadline_ms)
             .await?;
+        for (id, effective) in &inherited {
+            let descendant = agents
+                .iter()
+                .find(|agent| agent.id() == id)
+                .expect("descendant in room");
+            self.arm_leased_agent_deadline(descendant, *effective)
+                .await?;
+        }
+        self.authorize_current_external_command()?;
         let Outcome::Deadline(deadline) =
             self.owned
                 .durable_state_store
                 .agent_lifecycle(Operation::SetDeadline {
-                    room: request.session_id.clone(),
-                    agent: request.agent_id.clone(),
+                    room: request.session_id,
+                    agent: request.agent_id,
                     deadline: request.deadline_ms,
+                    inherited,
                 })?
         else {
             unreachable!()
         };
-        // Everything below follows a shortened deadline at once.
-        for descendant in crate::agent::authority_limit::descendants(&request.agent_id, &agents) {
-            let later = self
-                .owned
-                .durable_state_store
-                .agent_deadline(&request.session_id, descendant.id())?
-                .is_none_or(|own| own.deadline_ms > request.deadline_ms);
-            if later {
-                self.arm_leased_agent_deadline(descendant, request.deadline_ms)
-                    .await?;
-                self.owned
-                    .durable_state_store
-                    .agent_lifecycle(Operation::SetDeadline {
-                        room: request.session_id.clone(),
-                        agent: descendant.id().to_string(),
-                        deadline: request.deadline_ms,
-                    })?;
-            }
-        }
-        Ok(LocalDaemonResponse::AgentDeadline {
-            deadline: Some(deadline),
-        })
+        self.publish_changed_agent_trees();
+        Ok(LocalDaemonResponse::AgentDeadline { deadline })
     }
 
     /// Asks the worker that runs a leased agent to arm the deadline on its backing agent. An
@@ -112,22 +145,11 @@ impl KernelRuntimeState {
     async fn arm_leased_agent_deadline(
         &self,
         agent: &crate::agent::AgentInstance,
-        deadline_ms: u64,
+        deadline_ms: Option<u64>,
     ) -> Result<(), DaemonError> {
         let Some(remote_execution) = agent.remote_execution().cloned() else {
             return Ok(());
         };
-        if self
-            .owned
-            .durable_state_store
-            .agent_deadline(agent.session_id(), agent.id())?
-            .is_some_and(|own| deadline_ms > own.deadline_ms)
-        {
-            return Err(refusal(
-                "agent_deadline_extension_refused",
-                "an agent deadline cannot be extended; start a new agent",
-            ));
-        }
         self.authorize_current_external_command()?;
         let mut config = self.config_snapshot().await;
         if let (Some(relay_url), Some(relay_token)) = (
@@ -201,6 +223,7 @@ impl KernelRuntimeState {
 
     /// Called by A03's scheduler independently of Room-tool configuration and caller life.
     pub(super) async fn tick_agent_deadlines(&self, now: u64) -> Result<(), DaemonError> {
+        let _deadline_edit = self.owned.agent_deadline_edit.lock().await;
         let mut due = Vec::new();
         for deadline in self.owned.durable_state_store.agent_deadlines()? {
             if deadline.deadline_ms > now {

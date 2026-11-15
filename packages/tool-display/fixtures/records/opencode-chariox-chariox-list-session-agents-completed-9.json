@@ -1,12 +1,12 @@
 {
- "provider": "opencode",
- "kind": "chariox_chariox_list_session_agents",
- "source": "live 2026-11-10: record from the kernel history of a real opencode turn on the lane kernel",
- "record": {
-  "id": "prt_1c57c3c820018K08Wp9xIQqnyC",
-  "tool": "chariox_chariox_list_session_agents",
-  "status": "completed",
-  "output": "{\"agent_tasks\":[{\"agent_id\":\"agent-01ee373ae5f07f092aa13b47ac23ba31\",\"blocked_revision\":0,\"correction_used\":false,\"last_progress_at_ms\":1794314603073,\"no_progress_wakes\":0,\"obligations\":[],\"owner_user_id\":\"cmwano5uf000101lxccfs612p\",\"pending_prompt_id\":null,\"progress_sequence\":0,\"prompt_id\":\"prompt-1794313665596\",\"provider_run_id\":\"provider-run-3\",\"reason\":\"\",\"revision\":1,\"room_id\":\"18e6af9f9c8e7072\",\"state\":\"working\",\"task_id\":\"prompt-1794313665596\",\"wait\":null}],\"agents\":[{\"account_profile\":\"allrows-opencode-evthoxmf\",\"address\":\"@agent-1\",\"agent_ref\":\"b7a743c1\",\"alias\":\"agent-1\",\"effort\":\"high\",\"execution_mode\":\"build\",\"extensions\":{\"connectors\":[],\"mcps\":[],\"scripts\":[],\"skills\":[]},\"has_active_prompt\":true,\"id\":\"agent-01ee373ae5f07f092aa13b47ac23ba31\",\"is_focused\":true,\"is_processing\":false,\"is_self\":true,\"location\":{\"kind\":\"local\"},\"model\":\"opencode/deepseek-v4.1-flash\",\"operating_mode\":\"regular\",\"parent_agent_id\":null,\"permission_level\":\"yolo\",\"provider\":\"opencode\",\"queued_prompt_count\":0,\"state\":\"focused\",\"visible_in_freeform\":true}],\"focused_agent_id\":\"agent-01ee373ae5f07f092aa13b47ac23ba31\",\"session_id\":\"18e6af9f9c8e7072\"}"
- },
- "shows": "agent_tasks"
+  "provider": "opencode",
+  "kind": "chariox_chariox_list_session_agents",
+  "source": "live 2026-11-10: record from the kernel history of a real opencode turn on the lane kernel",
+  "record": {
+    "id": "prt_1c57c3c820018K08Wp9xIQqnyC",
+    "tool": "chariox_chariox_list_session_agents",
+    "status": "completed",
+    "output": "{\"agent_tasks\":[{\"agent_id\":\"agent-01ee373ae5f07f092aa13b47ac23ba31\",\"blocked_revision\":0,\"correction_used\":false,\"last_progress_at_ms\":1794314603073,\"obligations\":[],\"owner_user_id\":\"cmwano5uf000101lxccfs612p\",\"pending_prompt_id\":null,\"prompt_id\":\"prompt-1794313665596\",\"provider_run_id\":\"provider-run-3\",\"reason\":\"\",\"revision\":1,\"room_id\":\"18e6af9f9c8e7072\",\"state\":\"working\",\"task_id\":\"prompt-1794313665596\",\"wait\":null}],\"agents\":[{\"account_profile\":\"allrows-opencode-evthoxmf\",\"address\":\"@agent-1\",\"agent_ref\":\"b7a743c1\",\"alias\":\"agent-1\",\"effort\":\"high\",\"execution_mode\":\"build\",\"extensions\":{\"connectors\":[],\"mcps\":[],\"scripts\":[],\"skills\":[]},\"has_active_prompt\":true,\"id\":\"agent-01ee373ae5f07f092aa13b47ac23ba31\",\"is_focused\":true,\"is_processing\":false,\"is_self\":true,\"location\":{\"kind\":\"local\"},\"model\":\"opencode/deepseek-v4.1-flash\",\"operating_mode\":\"regular\",\"parent_agent_id\":null,\"permission_level\":\"yolo\",\"provider\":\"opencode\",\"queued_prompt_count\":0,\"state\":\"focused\",\"visible_in_freeform\":true}],\"focused_agent_id\":\"agent-01ee373ae5f07f092aa13b47ac23ba31\",\"session_id\":\"18e6af9f9c8e7072\"}"
+  },
+  "shows": "agent_tasks"
 }

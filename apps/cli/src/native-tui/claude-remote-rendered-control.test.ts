@@ -47,3 +47,17 @@ test("rendered Claude interruption accepts a task parked after the activity snap
   } })
   assert(!requests.some(request => request.SendTerminalInput))
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11: the prompt can finish before Escape reaches the kernel.
+test("rendered Claude interruption accepts work finished after the activity snapshot", async () => {
+  const requests: any[] = []
+  const client = { send: async (request: any) => {
+    requests.push(request)
+    return request.GetSessionState
+      ? { SessionState: { agent_activity: { agent: { active_prompt_count: 1 } } } }
+      : { NothingToStop: { session_id: "session", agent_id: "agent" } }
+  } } as unknown as LocalIpcClient
+  await sendClaudeRemoteRenderedInput(client, "session", "attachment", "run", "\u001b", "agent")
+  assert(requests.at(-1).CancelActivePrompt)
+  assert(!requests.some(request => request.SendTerminalInput))
+})

@@ -1,6 +1,6 @@
 {
-  "local_protocol": 1005,
-  "peer_protocol": 444,
+  "local_protocol": 1008,
+  "peer_protocol": 447,
   "request": {
     "StartManagedContextTransfer": {
       "interactive": true,
@@ -14,10 +14,15 @@
         },
         "contextSelection": {
           "kernelContext": "empty",
-          "developmentSetup": { "kind": "empty" },
+          "developmentSetup": {
+            "kind": "empty"
+          },
           "eventConnections": {
             "kind": "selected",
-            "connectionIds": ["connection-a", "connection-b"]
+            "connectionIds": [
+              "connection-a",
+              "connection-b"
+            ]
           }
         }
       }
@@ -26,14 +31,27 @@
   "plan": {
     "contextId": "context",
     "planDigest": "digest",
-    "destination": { "kind": "owner_managed_machine", "machineId": "machine", "kernelId": "kernel" },
+    "destination": {
+      "kind": "owner_managed_machine",
+      "machineId": "machine",
+      "kernelId": "kernel"
+    },
     "kernelContext": "empty",
-    "development": { "kind": "empty" },
-    "providerAccounts": { "kind": "none" },
-    "gitCredentials": { "kind": "none" },
+    "development": {
+      "kind": "empty"
+    },
+    "providerAccounts": {
+      "kind": "none"
+    },
+    "gitCredentials": {
+      "kind": "none"
+    },
     "eventConnections": {
       "kind": "selected",
-      "connectionIds": ["connection-a", "connection-b"]
+      "connectionIds": [
+        "connection-a",
+        "connection-b"
+      ]
     }
   }
 }

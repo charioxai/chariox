@@ -24,8 +24,8 @@ import {
 } from "@chariox/kernel-client/session-browser-policy"
 import { createSessionBrowserProjectionController } from "./session-browser-projection-controller.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
-import { waitingRoomManagedMachineDialogRows } from "./waiting-room-start-rows.js"
-import { createWaitingRoomManagedMachineDialogController } from "./waiting-room-managed-machine-dialog-controller.js"
+import { waitingRoomMachineOfferRows } from "./waiting-room-start-rows.js"
+import { createWaitingRoomMachineOfferController } from "./waiting-room-machine-offer-controller.js"
 
 type AnyFn = (...args: any[]) => any
 
@@ -183,7 +183,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
         terminalPairingQrLines: deps.terminalPairingQrLines(),
         hotkeySections: hotkeySections(),
         managedMachineRows: mode === "managed-machine"
-          ? waitingRoomManagedMachineDialogRows(
+          ? waitingRoomMachineOfferRows(
               deps.waitingRoomState(),
               deps.waitingRoomRemoteState(),
             )
@@ -225,17 +225,12 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     formatError: deps.formatError,
   })
 
-  const managedMachineDialogController = createWaitingRoomManagedMachineDialogController({
+  const managedMachineDialogController = createWaitingRoomMachineOfferController({
     isOpen: deps.managedMachineDialogOpen,
     state: deps.waitingRoomState,
-    sessions: deps.availableSessions,
-    catalog: deps.providerCatalogState,
     remote: deps.waitingRoomRemoteState,
-    themeRegistry: deps.themeRegistryState,
-    setState: deps.reconcileWaitingRoom,
     openOverlay: dialogOverlayController.openManagedMachine,
     closeOverlay: dialogOverlayController.closeManagedMachine,
-    renderOverlay: dialogOverlayController.render,
   })
 
   const hotkeysToggleController = createHotkeysToggleController({

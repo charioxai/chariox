@@ -27,7 +27,7 @@ pub(super) struct PasteArgs {
 pub(super) fn paste_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: PASTE.into(),
-        description: "MD-5: insert a Vault credential into an observed editable text field in a user-domain tab. Use tab/generation/document_id/node_ref from a fresh snapshot. Secret bytes never enter tool arguments/results. TOTP handles compute a current code at insertion; backup_codes consumes an unused code. A saved payment card fills one checkout field per call: set card_field and describe the payment in payment {merchant, amount, currency} on every call. The owner approves each payment once; then every field of that card for that payment at that site fills as often as the checkout needs (retries, reloads) until your turn ends or 15 minutes pass. Another site, merchant, amount or currency asks the owner again. Default submit=false; use ordinary input to click a separate sign-in button. With submit=true the field's native form is submitted and the result carries submitted:{navigated,url,title}: a form that navigates is a successful submit, so continue from that page and do not paste again.".into(),
+        description: "MD-5: insert a Vault credential into an observed editable text field in a user-domain tab. Use tab/generation/document_id/node_ref from a fresh snapshot. Secret bytes never enter tool arguments/results. TOTP handles compute a current code at insertion; backup_codes consumes an unused code. A saved payment card fills one checkout field per call: set card_field and describe the payment in payment {merchant, amount, currency} on every call. The owner approves each payment once; then every field of that card for that payment at that site fills as often as the checkout needs (retries, reloads) until your turn ends or 15 minutes pass. Another site, merchant, amount or currency asks the owner again. For saved cards submit must be false: use the observed checkout button to pay after filling. A payment submits once; if its result is uncertain, inspect the receipt before starting another payment. Default submit=false; use ordinary input to click a separate sign-in button. With submit=true the field's native form is submitted and the result carries submitted:{navigated,url,title}: a form that navigates is a successful submit, so continue from that page and do not paste again.".into(),
         input_schema: json!({"type":"object","properties":{"credential_id":{"type":"string"},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"document_id":{"type":"string"},"node_ref":{"type":"string"},"submit":{"type":"boolean","default":false},"card_field":{"type":"string","enum":["number","expiry","expiry_month","expiry_year","security_code","name"]},"payment":{"type":"object","required":["merchant","amount","currency"],"properties":{"merchant":{"type":"string","minLength":1,"maxLength":100},"amount":{"type":"string","pattern":"^[0-9]{1,12}(\\.[0-9]{1,4})?$"},"currency":{"type":"string","pattern":"^[A-Z]{3}$"}},"additionalProperties":false}},"required":["credential_id","tab_id","generation","document_id","node_ref"],"additionalProperties":false}),
     }
 }
@@ -101,6 +101,13 @@ impl KernelRuntimeState {
                 .kernel_browser_host
                 .set_attention(user, self.pending_handoff_tabs(user));
         }
+        let mut params = params;
+        if method == "host.browser" && params["op"] == "input" {
+            if let Some(agent) = admission.and_then(KernelBrowserAdmission::agent_id) {
+                params["_vault_payment_approvals"] =
+                    self.vault_browser_payment_approvals(agent).into();
+            }
+        }
         let model_mutation = admission.is_some_and(KernelBrowserAdmission::is_agent)
             && (method == "host.secret"
                 || (method == "host.browser"
@@ -117,6 +124,7 @@ impl KernelRuntimeState {
                         )
                     )));
         let capture = method == "host.secret" && params["op"] == "capture";
+        let chosen_clipboard = method == "host.computer" && params["op"] == "clipboard_read";
         let tab = params["tab_id"].as_str().map(str::to_owned);
         if model_mutation && self.handoff_model_write_blocked(user, tab.as_deref()) {
             return Err(host_error("owner_step_pending: wait for the owner's hand-off completion before changing this tab".into()));
@@ -140,6 +148,31 @@ impl KernelRuntimeState {
             } else {
                 admission
             }
+        });
+        let mut approval_ids: Vec<String> = params["_vault_payment_approvals"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|approval| approval["id"].as_str().map(str::to_owned))
+            .collect();
+        if let Some(id) = params["_vault_payment"]["id"].as_str() {
+            approval_ids.push(id.to_owned());
+        }
+        let admission = admission.map(|admission| {
+            let Some(actor) = admission.agent_id().map(str::to_owned) else {
+                return admission;
+            };
+            if approval_ids.is_empty() {
+                return admission;
+            }
+            let state = self.clone();
+            admission.with_authority(move || {
+                let live = state.vault_browser_payment_approvals(&actor);
+                approval_ids.iter().all(|expected| {
+                    live.iter()
+                        .any(|approval| approval["id"] == expected.as_str())
+                })
+            })
         });
         let (user, method) = (user.to_string(), method.to_string());
         let pixels = matches!(method.as_str(), "host.browser" | "host.computer")
@@ -185,6 +218,11 @@ impl KernelRuntimeState {
         // The capture reply is the value itself, headed for the Vault and never for the model:
         // scrubbing it would store the redaction marker when the value is already protected.
         if !protect || capture {
+            return Ok(result);
+        }
+        // The agent explicitly chose to read its copied text. Field observations
+        // remain masked; masks do not follow the value into the clipboard.
+        if chosen_clipboard {
             return Ok(result);
         }
         if card_region {
@@ -266,6 +304,17 @@ impl KernelRuntimeState {
                 agent.id(),
             )?;
             return Err(error);
+        }
+        if args.submit
+            && credential
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.use_binding.as_ref())
+                .is_some_and(|binding| {
+                    binding.value_kind == crate::config::VaultValueKind::PaymentCard
+                })
+        {
+            return Err(host_error("Fill a saved card with submit=false, then use the observed checkout button to pay.".into()));
         }
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(user);
@@ -520,6 +569,33 @@ impl KernelRuntimeState {
             };
         protection.register_command(&scope, &command)?;
         let mut params = json!({"tab_id":args.tab_id,"generation":args.generation,"document_id":args.document_id,"node_ref":args.node_ref,"action":action});
+        if args.card_field.is_some() {
+            let origin = url::Url::parse(&url)
+                .map_err(|_| {
+                    host_error("The checkout URL is invalid. Observe the page again.".into())
+                })?
+                .origin()
+                .ascii_serialization();
+            let claim = json!(args.payment);
+            let approval = admission
+                .agent_id()
+                .and_then(|agent| {
+                    self.vault_browser_payment_approvals(agent)
+                        .into_iter()
+                        .find(|approval| {
+                            approval["credential_id"] == args.credential_id
+                                && approval["claim"] == claim
+                                && approval["origin"] == origin
+                        })
+                })
+                .ok_or_else(|| {
+                    host_error(
+                        "This payment approval ended. Fill the saved card again to ask.".into(),
+                    )
+                })?;
+            params["_vault_payment"] = approval;
+        }
+
         // OTP and recovery forms commonly use plain inputs. The registered
         // target protects model observations without changing the owner's field.
         params["vault_factor_input"] = matches!(

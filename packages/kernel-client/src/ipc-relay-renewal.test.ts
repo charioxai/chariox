@@ -8,7 +8,7 @@ import { RelayClientIdentity, createRelayKeypair } from "./relay-crypto.js"
 
 // Signed-token verification belongs to the real relay tests. This fixture
 // exercises the shared SDK's encrypted issuer calls and both retained lanes.
-for (const outcome of ["renew", "revoked", "wrong-key", "transient", "target-lost", "reauth-denied", "legacy", "legacy-busy", "machine-only"] as const) {
+for (const outcome of ["renew", "framed", "revoked", "wrong-key", "transient", "target-lost", "reauth-denied", "legacy", "legacy-busy", "machine-only"] as const) {
   test(`short-lived relay authorization ${outcome} on the existing control/event sockets`, async () => {
     const daemon = new RelayClientIdentity(createRelayKeypair().privateKey)
     const identity = new RelayClientIdentity(createRelayKeypair().privateKey)
@@ -24,7 +24,7 @@ for (const outcome of ["renew", "revoked", "wrong-key", "transient", "target-los
     const timers: ReturnType<typeof setInterval>[]=[]
     server.on("connection",socket=>{
       connections++
-      let handshakes=0
+      let handshakes=0, transfer=0
       socket.on("message",data=>{
         const frame=JSON.parse(String(data))
         if(frame.kind==="client_connect") {
@@ -39,7 +39,8 @@ for (const outcome of ["renew", "revoked", "wrong-key", "transient", "target-los
           if(outcome==="reauth-denied" && handshakes>1) {
             socket.send(JSON.stringify({kind:"close",reason:"relay token has been revoked"}));socket.close();return
           }
-          socket.send(JSON.stringify({kind:"client_connected",target:frame.target,daemon_public_key:daemon.publicKeyBase64}))
+          const ack=JSON.stringify({kind:"client_connected",target:frame.target,daemon_public_key:daemon.publicKeyBase64})
+          socket.send(outcome==="framed"?JSON.stringify({kind:"transport_chunk",transfer_id:++transfer,offset:0,total_bytes:Buffer.byteLength(ack),payload:ack}):ack)
         } else if(frame.kind==="client_request") {
           const envelope=JSON.parse(daemon.decrypt(frame.encrypted_request,identity.publicKeyBase64))
           if(outcome==="legacy-busy" && envelope.request.GetDaemonHealth!==undefined) return
@@ -71,7 +72,7 @@ for (const outcome of ["renew", "revoked", "wrong-key", "transient", "target-los
       }
       await client.send({GetDaemonHealth:null})
       if(outcome!=="legacy") await client.subscribeToKernelEvents("session","attachment")
-      await sleep(outcome==="machine-only"?900:outcome==="renew" || outcome==="transient" || outcome==="target-lost"?4200:outcome==="legacy"?200:1800)
+      await sleep(outcome==="machine-only"?900:outcome==="renew" || outcome==="framed" || outcome==="transient" || outcome==="target-lost"?4200:outcome==="legacy"?200:1800)
       if(outcome==="legacy") {
         assert.equal(renewals,0,"an unsupported kernel must never issue renewal for its login client")
         assert.equal(closed.length,1)
@@ -93,7 +94,7 @@ for (const outcome of ["renew", "revoked", "wrong-key", "transient", "target-los
         return
       }
       assert.ok(renewals>0,"SDK must request fresh authorization before expiry")
-      if(outcome==="renew" || outcome==="transient" || outcome==="target-lost") {
+      if(outcome==="renew" || outcome==="framed" || outcome==="transient" || outcome==="target-lost") {
         assert.ok(renewals>=2,"several grant expiries must renew")
         if(outcome==="target-lost") { assert.equal(targetLosses,1);assert.ok(connections>=3,"temporary target loss reconnects") }
         else assert.equal(connections,2,"neither socket reconnects")

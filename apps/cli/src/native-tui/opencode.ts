@@ -1,3 +1,5 @@
+import { createRemoteAttachmentRecovery } from "./remote-attachment-recovery.js"
+import { detachFromSessionRequest } from "../ipc-requests.js"
 import { signalNativeChild } from "./native-child-signals.js"
 import { appendFileSync } from "node:fs"
 import path from "node:path"
@@ -94,6 +96,8 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
   let openCodeServer: OpenCodeServerProcess | null = null
   let endpointBridge: { close: () => Promise<void> } | null = null
   let pump: { stop: () => void } | null = null
+  let active = true
+  let detach: (() => Promise<void>) | undefined
   try {
     const remotePlacement = Boolean(options.machineRef || options.sliceRef)
     const created = options.sessionRef
@@ -111,6 +115,17 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
         throw new Error("missing OpenCode session")
       })())
     const attachment = await attachNativeSession(client, session.id, options.clientId)
+    const recovery = createRemoteAttachmentRecovery({
+      attachment,
+      reattach: async () => (await attachNativeSession(client, session.id, options.clientId)).id,
+      // These native proxies pull output; they do not consume the event stream.
+      resubscribe: async () => {},
+      detach: async id => { await client.send(detachFromSessionRequest(id)) },
+      isActive: () => active,
+      onFatal: () => { active = false },
+    })
+    detach = async () => { await client.send(detachFromSessionRequest(attachment.id)) }
+
     const agent = created?.agent
       ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
       : await spawnNativeAgent(client, session.id, "opencode", options.agentAlias, options.model, undefined, null, options.mode, options.permissions, options.machineRef, options.sliceRef)
@@ -141,7 +156,8 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       upstreamBaseUrl,
       client,
       sessionId: session.id,
-      attachmentId: attachment.id,
+      get attachmentId() { return attachment.id },
+      recovery,
       agentId: agent.id,
       inlineLocalAttachments: Boolean(options.relayUrl) || remotePlacement || promptAttachmentTransferIsForced(),
       debug: debugNativeMutation,
@@ -190,7 +206,8 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       ],
       promptPolicy: "native prompts pass through; Chariox observes the session",
     }))
-    pump = startNativeKernelPumpLoop(client, session.id, attachment.id, {
+    pump = startNativeKernelPumpLoop(client, session.id, attachment, {
+      recovery,
       debug: debugNativeMutation,
       formatError,
     })
@@ -201,7 +218,9 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       workingDirectory: run.working_directory?.trim() || worktree,
     })
   } finally {
+    active = false
     pump?.stop()
+    await detach?.().catch(() => {})
     if (proxy) {
       await new Promise<void>((resolve) => proxy!.server.close(() => resolve()))
     }

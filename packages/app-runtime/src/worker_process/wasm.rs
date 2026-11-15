@@ -21,12 +21,15 @@ use std::{
 
 mod compile;
 pub(super) mod domain;
+#[cfg(any(target_os = "macos", test))]
+mod pinned;
 mod snapshot;
 pub mod storage;
 
 pub struct WasmRuntime {
     pub(super) executable: File,
-    path: PathBuf,
+    #[cfg(target_os = "macos")]
+    copy: pinned::PrivateCopy,
     identity: AotRuntimeIdentity,
 }
 impl WasmRuntime {
@@ -35,38 +38,45 @@ impl WasmRuntime {
     pub fn open(program: &Path) -> Result<Self, AotError> {
         let directory = Dir::open_installed_parent(program.parent().ok_or(AotError::Runtime)?)
             .map_err(|_| AotError::Runtime)?;
-        let mut executable = directory
+        let mut installed = directory
             .open_installed(program.file_name().ok_or(AotError::Runtime)?)
             .map_err(|_| AotError::Runtime)?;
-        let metadata = executable.metadata()?;
+        let metadata = installed.metadata()?;
         if !metadata.is_file()
             || !trusted_runtime(metadata.uid(), metadata.mode(), unsafe { libc::geteuid() })
         {
             return Err(AotError::Runtime);
         }
-        let mut hash = Sha256::new();
-        let mut buffer = [0; 64 * 1024];
-        loop {
-            let size = executable.read(&mut buffer)?;
-            if size == 0 {
-                break;
+        #[cfg(target_os = "linux")]
+        let (executable, build) = {
+            let mut hash = Sha256::new();
+            let mut buffer = [0; 64 * 1024];
+            loop {
+                let size = installed.read(&mut buffer)?;
+                if size == 0 {
+                    break;
+                }
+                hash.update(&buffer[..size]);
             }
-            hash.update(&buffer[..size]);
-        }
-        let output = compile::run(
-            &executable_path(program, std::os::fd::AsRawFd::as_raw_fd(&executable)),
-            &["identity"],
-            &[],
-            16 * 1024,
-        )?;
+            (installed, format!("sha256:{:x}", hash.finalize()))
+        };
+        #[cfg(target_os = "macos")]
+        let (executable, copy, build) =
+            pinned::PrivateCopy::create(&mut installed, &std::env::temp_dir())?;
+        #[cfg(target_os = "linux")]
+        let verified = executable_path(std::os::fd::AsRawFd::as_raw_fd(&executable));
+        #[cfg(target_os = "macos")]
+        let verified = copy.path(&executable)?;
+        let output = compile::run(&verified, &["identity"], &[], 16 * 1024)?;
         let identity: AotRuntimeIdentity =
             serde_json::from_slice(&output).map_err(|_| AotError::Incompatible)?;
-        if identity.worker_build != format!("sha256:{:x}", hash.finalize()) {
+        if identity.worker_build != build {
             return Err(AotError::Integrity);
         }
         Ok(Self {
             executable,
-            path: program.to_owned(),
+            #[cfg(target_os = "macos")]
+            copy,
             identity,
         })
     }
@@ -84,13 +94,22 @@ impl WasmRuntime {
     pub fn identity(&self) -> &AotRuntimeIdentity {
         &self.identity
     }
-    /// What to exec for the verified worker held at `descriptor`.
-    pub(super) fn program(&self, descriptor: i32) -> PathBuf {
-        executable_path(&self.path, descriptor)
+    /// What to exec for the verified worker held at `descriptor`; refused if it
+    /// no longer names the verified bytes.
+    pub(super) fn program(&self, descriptor: i32) -> Result<PathBuf, AotError> {
+        #[cfg(target_os = "linux")]
+        {
+            Ok(executable_path(descriptor))
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = descriptor;
+            self.copy.path(&self.executable)
+        }
     }
     pub fn compile(&self, component: &VerifiedComponent) -> Result<Vec<u8>, AotError> {
         compile::run(
-            &self.program(std::os::fd::AsRawFd::as_raw_fd(&self.executable)),
+            &self.program(std::os::fd::AsRawFd::as_raw_fd(&self.executable))?,
             &["precompile-stdio", component.world()],
             component.bytes(),
             crate::release_store::aot_cache::MAX_ARTIFACT_BYTES,
@@ -259,8 +278,14 @@ impl PreparedWorker {
         };
         record.encode()?;
         let prepared = Self {
-            program: CString::new(runtime.program(8).as_os_str().as_encoded_bytes())
-                .map_err(|_| WorkerError::Preparation)?,
+            program: CString::new(
+                runtime
+                    .program(8)
+                    .map_err(aot_error)?
+                    .as_os_str()
+                    .as_encoded_bytes(),
+            )
+            .map_err(|_| WorkerError::Preparation)?,
             arguments: vec![CString::new("serve-supervised").unwrap()],
             record,
             _objects: vec![],
@@ -357,20 +382,9 @@ pub(super) fn input_file(root: &Dir, bytes: &[u8]) -> Result<File, WorkerError> 
     Ok(file)
 }
 
-/// Linux execs the verified descriptor itself. macOS cannot exec /dev/fd/N
-/// (EACCES), so it execs the verified path in its trusted installed parent;
-/// the worker hashes its own executable and the kernel checks that build.
-fn executable_path(path: &Path, descriptor: i32) -> PathBuf {
-    #[cfg(target_os = "linux")]
-    {
-        let _ = path;
-        PathBuf::from(format!("/proc/self/fd/{descriptor}"))
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = descriptor;
-        path.to_owned()
-    }
+#[cfg(target_os = "linux")]
+fn executable_path(descriptor: i32) -> PathBuf {
+    PathBuf::from(format!("/proc/self/fd/{descriptor}"))
 }
 
 fn aot_error(error: AotError) -> WorkerError {

@@ -19,8 +19,9 @@ pub(super) struct OwnedProcessGroup {
     root: u32,
     known: Arc<Mutex<BTreeMap<u32, String>>>,
     tracker: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
+    /// The last PID allocated before the previous scan: every process started since has a PID after it.
     #[cfg(target_os = "linux")]
-    seen: BTreeSet<u32>,
+    covered: Option<u32>,
 }
 
 impl OwnedProcessGroup {
@@ -32,7 +33,7 @@ impl OwnedProcessGroup {
             known: Arc::new(Mutex::new(BTreeMap::new())),
             tracker: None,
             #[cfg(target_os = "linux")]
-            seen: BTreeSet::new(),
+            covered: None,
         };
         if let Some(processes) = group.scan() {
             if let Some(leader) = processes.get(&root).filter(|process| process.group == root) {
@@ -55,7 +56,15 @@ impl OwnedProcessGroup {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .clone();
-            linux_refresh(self.root, &known, &mut self.seen)
+            linux_refresh(
+                self.root,
+                &known,
+                &mut self.covered,
+                last_allocated_pid(),
+                proc_pids,
+                read_proc_stat,
+                thread_group_leader,
+            )
         }
         #[cfg(not(target_os = "linux"))]
         snapshot(self.root)
@@ -107,7 +116,7 @@ impl OwnedProcessGroup {
             known: self.known.clone(),
             tracker: None,
             #[cfg(target_os = "linux")]
-            seen: BTreeSet::new(),
+            covered: None,
         }
     }
     pub(super) fn start_tracking(&mut self) -> std::io::Result<()> {
@@ -126,14 +135,14 @@ impl OwnedProcessGroup {
                     known,
                     tracker: None,
                     #[cfg(target_os = "linux")]
-                    seen: BTreeSet::new(),
+                    covered: None,
                 };
                 #[cfg(target_os = "linux")]
                 let mut allocated = None;
                 while !stop.load(Ordering::Acquire) {
                     // MP-08/MP-11: a new descendant needs a newly allocated PID.
-                    // Skip the full /proc walk only when none was allocated
-                    // since the value read before the previous walk.
+                    // Skip the scan when none was allocated since the value
+                    // read before the previous one.
                     #[cfg(target_os = "linux")]
                     {
                         let current = last_allocated_pid();
@@ -288,37 +297,73 @@ impl Drop for OwnedProcessGroup {
 }
 
 #[cfg(target_os = "linux")]
-fn last_allocated_pid() -> Option<String> {
+fn last_allocated_pid() -> Option<u32> {
     std::fs::read_to_string("/proc/loadavg")
         .ok()?
         .split_whitespace()
-        .nth(4)
-        .map(str::to_owned)
+        .nth(4)?
+        .parse()
+        .ok()
 }
 
+/// More new PIDs than this since the previous scan read /proc whole instead.
+#[cfg(target_os = "linux")]
+const NEW_PIDS_READ_ONE_BY_ONE: u32 = 4096;
+
+/// The processes that joined group `root` since the previous scan, with the recorded members that prove them.
+/// Linux hands out PIDs in increasing order until they wrap, so every process started since the previous
+/// scan has a PID in (`covered`, `allocated`]: only those are read, and nothing else when none joined. A
+/// first scan, a wrap or a long gap lists /proc. Never cache a signal decision: signal() still scans ALL
+/// current identities, rejecting foreign/reused members before any kill.
 #[cfg(target_os = "linux")]
 fn linux_refresh(
     root: u32,
     known: &BTreeMap<u32, String>,
-    seen: &mut BTreeSet<u32>,
+    covered: &mut Option<u32>,
+    allocated: Option<u32>,
+    list: impl FnOnce() -> Option<BTreeSet<u32>>,
+    read_stat: impl Fn(u32) -> std::io::Result<String>,
+    leader: impl Fn(u32) -> bool,
 ) -> Option<BTreeMap<u32, Process>> {
     if root <= 1 || root > i32::MAX as u32 {
         return None;
     }
-    let current = proc_pids()?;
-    // Enumerate every PID, but read identity only for new PIDs and recorded
-    // group members. Never cache a signal decision: signal() still scans ALL
-    // current identities, rejecting foreign/reused members before any kill.
-    let processes = linux_members(
+    let fresh: Vec<u32> = match (*covered, allocated) {
+        (Some(from), Some(to)) if from <= to && to - from <= NEW_PIDS_READ_ONE_BY_ONE => {
+            (from + 1..=to).collect()
+        }
+        _ => list()?.into_iter().collect(),
+    };
+    let mut processes = linux_members(
         root,
-        current
-            .iter()
-            .copied()
-            .filter(|pid| *pid == root || !seen.contains(pid) || known.contains_key(pid)),
-        read_proc_stat,
+        fresh.into_iter().filter(|pid| !known.contains_key(pid)),
+        &read_stat,
     )?;
-    *seen = current;
+    // A thread is readable under /proc by its id too, but it is not a process of the group.
+    processes.retain(|pid, _| leader(*pid));
+    *covered = allocated;
+    if processes.is_empty() {
+        return Some(processes);
+    }
+    let recorded = linux_members(
+        root,
+        std::iter::once(root).chain(known.keys().copied()),
+        &read_stat,
+    )?;
+    processes.extend(recorded);
     Some(processes)
+}
+
+/// Whether `pid` is a process rather than one of its threads.
+#[cfg(target_os = "linux")]
+fn thread_group_leader(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/status")).is_ok_and(|status| {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("Tgid:"))
+            .and_then(|tgid| tgid.trim().parse::<u32>().ok())
+            == Some(pid)
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -360,7 +405,7 @@ fn linux_members(
                 if error.kind() == std::io::ErrorKind::NotFound
                     || error.raw_os_error() == Some(libc::ESRCH) =>
             {
-                continue
+                continue;
             }
             Err(_) => return None,
         };
@@ -461,7 +506,7 @@ mod tests {
             known: Arc::new(Mutex::new(BTreeMap::new())),
             tracker: None,
             #[cfg(target_os = "linux")]
-            seen: BTreeSet::new(),
+            covered: None,
         };
         let mut processes = BTreeMap::from([
             (
@@ -511,7 +556,7 @@ mod tests {
             known: Arc::new(Mutex::new(BTreeMap::new())),
             tracker: None,
             #[cfg(target_os = "linux")]
-            seen: BTreeSet::new(),
+            covered: None,
         };
         let processes = BTreeMap::from([(
             42,
@@ -534,7 +579,7 @@ mod tests {
             ]))),
             tracker: None,
             #[cfg(target_os = "linux")]
-            seen: BTreeSet::new(),
+            covered: None,
         };
         let member = |parent, started: &str| Process {
             parent,
@@ -616,6 +661,108 @@ mod tests {
             .is_none(),
             "an unreadable member still fails closed"
         );
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_refresh_reads_only_the_pids_allocated_since_the_previous_scan() {
+        let stat = |parent: u32, group: u32| {
+            format!("1 (x) S {parent} {group} {group} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 7 0")
+        };
+        let reads = std::cell::RefCell::new(Vec::new());
+        let read = |pid: u32| {
+            reads.borrow_mut().push(pid);
+            Ok(match pid {
+                42 => stat(1, 42),
+                104 => stat(42, 42),
+                _ => stat(1, pid),
+            })
+        };
+        let mut covered = None;
+        let first = linux_refresh(
+            42,
+            &BTreeMap::new(),
+            &mut covered,
+            Some(100),
+            || Some(BTreeSet::from([1, 42, 90])),
+            read,
+            |_| true,
+        )
+        .unwrap();
+        assert_eq!(first.into_keys().collect::<Vec<_>>(), vec![42]);
+        reads.borrow_mut().clear();
+        let known = BTreeMap::from([(42, "7".to_string())]);
+        let quiet = linux_refresh(
+            42,
+            &known,
+            &mut covered,
+            Some(103),
+            || panic!("a scan after the first one must not list /proc"),
+            read,
+            |_| true,
+        )
+        .unwrap();
+        assert!(
+            quiet.is_empty(),
+            "foreign processes leave the group as it is"
+        );
+        assert_eq!(
+            *reads.borrow(),
+            vec![101, 102, 103],
+            "only the new PIDs are read"
+        );
+        reads.borrow_mut().clear();
+        let joined = linux_refresh(
+            42,
+            &known,
+            &mut covered,
+            Some(104),
+            || panic!("a scan after the first one must not list /proc"),
+            read,
+            |_| true,
+        )
+        .unwrap();
+        assert_eq!(
+            joined.into_keys().collect::<Vec<_>>(),
+            vec![42, 104],
+            "a new child is proven through its parent"
+        );
+        reads.borrow_mut().clear();
+        let thread = linux_refresh(
+            42,
+            &known,
+            &mut covered,
+            Some(105),
+            || None,
+            |_| Ok(stat(42, 42)),
+            |pid| pid != 105,
+        )
+        .unwrap();
+        assert!(
+            thread.is_empty(),
+            "a thread of a member is not a process of the group"
+        );
+        for (from, to) in [(100, 99), (100, 100 + 5000)] {
+            let mut covered = Some(from);
+            let listed = std::cell::Cell::new(false);
+            linux_refresh(
+                42,
+                &known,
+                &mut covered,
+                Some(to),
+                || {
+                    listed.set(true);
+                    Some(BTreeSet::new())
+                },
+                read,
+                |_| true,
+            )
+            .unwrap();
+            assert!(
+                listed.get(),
+                "a wrapped or long gap ({from} -> {to}) lists /proc"
+            );
+            assert_eq!(covered, Some(to));
+        }
     }
     #[test]
     #[cfg(target_os = "linux")]

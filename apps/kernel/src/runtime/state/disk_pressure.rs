@@ -116,8 +116,18 @@ impl KernelRuntimeState {
     }
 
     fn trim_temp(idle: Duration) -> crate::agent_temp::Trimmed {
-        let (Some(root), Some(held)) = (crate::agent_temp::root(), crate::agent_temp::held_paths())
-        else {
+        let Some(root) = crate::agent_temp::root() else {
+            return Default::default();
+        };
+        // A new kernel has no agent scratch yet. Scanning every process's mappings
+        // then can read megabytes without there being anything to trim.
+        let Ok(mut entries) = std::fs::read_dir(&root) else {
+            return Default::default();
+        };
+        if entries.next().is_none() {
+            return Default::default();
+        }
+        let Some(held) = crate::agent_temp::held_paths() else {
             return Default::default();
         };
         crate::agent_temp::trim(&root, std::time::SystemTime::now(), idle, &held)

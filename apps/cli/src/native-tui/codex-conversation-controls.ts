@@ -1,3 +1,4 @@
+import { sendWithRecoveredAttachment, type RemoteAttachmentRecovery } from "./remote-attachment-recovery.js"
 import { traceCodexLifecycle } from "./codex-lifecycle-trace.js"
 import { setTimeout as sleep } from "node:timers/promises"
 
@@ -20,7 +21,7 @@ export function bindCodexDisplayTurn(state: CodexNativeBindingState, threadId: s
 export async function handleCodexNativeTurnSteer(
   message: CodexJsonRpcMessage,
   options: {
-    client: LocalIpcClient, sessionId: string, attachmentId: string, agentId: string,
+    client: LocalIpcClient, sessionId: string, attachmentId: string, recovery?: RemoteAttachmentRecovery, agentId: string,
     bindState: CodexNativeBindingState, inlineLocalAttachments: boolean,
   },
   sendClient: (message: unknown) => void,
@@ -40,10 +41,10 @@ export async function handleCodexNativeTurnSteer(
     const attachments = await preparePromptAttachmentsForSubmit(extractCodexAttachments(message.params), {
       inlineLocalFiles: options.inlineLocalAttachments,
     })
-    const response = await options.client.send<Record<string, unknown>>(steerActivePromptRequest(
+    const response = await sendWithRecoveredAttachment(() => options.client.send<Record<string, unknown>>(steerActivePromptRequest(
       options.sessionId, options.attachmentId, options.agentId, bound.promptId,
       extractCodexSteeringPrompt(message.params), attachments,
-    ))
+    )), options.recovery)
     if (!("ActivePromptSteered" in response)) throw new Error("kernel did not admit active prompt steering")
     // MP-08 / MP-10 / MP-11: The kernel echoes steering to other attachments.
     // Codex also needs a committed receipt on the submitting display to clear

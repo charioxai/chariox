@@ -108,8 +108,10 @@ mod tests {
                 session.id(),
                 agent.id(),
                 DEFAULT_LOCAL_USER_ID,
-                3600,
-                crate::session::AgentTriggerRepeat::Once,
+                crate::session::AgentSchedule::interval(
+                    3600,
+                    crate::session::AgentTriggerRepeat::Once,
+                ),
                 crate::session::AgentTriggerBusyPolicy::Queue,
                 Some("once".into()),
             )

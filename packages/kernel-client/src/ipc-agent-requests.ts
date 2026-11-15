@@ -224,7 +224,7 @@ export function listAgentsRequest(sessionId: string) {
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11: arm on the executing kernel, before submission.
-export function setAgentDeadlineRequest(sessionId: string, agentId: string, deadlineMs: number) {
+export function setAgentDeadlineRequest(sessionId: string, agentId: string, deadlineMs: number | null) {
   return { SetAgentDeadline: { session_id: sessionId, agent_id: agentId, deadline_ms: deadlineMs } }
 }
 // Only the user places an agent in the agent tree; `null` makes it a root.

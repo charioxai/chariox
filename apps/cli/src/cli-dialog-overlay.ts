@@ -137,14 +137,17 @@ function renderManagedMachinePanel(options: CliDialogOverlayOptions): BoxRendera
   const rows = options.managedMachineRows ?? []
   const width = Math.min(108, Math.max(76, Math.floor(dimensions.width * 0.82)))
   const panel = dialogPanel(renderer, width, dimensions.width)
-  panel.add(dialogHeader(
-    renderer,
-    "New Chariox-managed machine",
-    "↑/↓ fields • ←/→ values • Enter/Esc done",
-  ))
+  const header = dialogHeader(renderer, "New machine", "Enter/Esc close")
+  const close = new TextRenderable(renderer, { content: "×", fg: theme.text })
+  close.onMouseUp = (event) => {
+    event.stopPropagation()
+    if (event.button === 0) options.onDismiss()
+  }
+  header.add(close)
+  panel.add(header)
   if (rows.length === 0) {
     panel.add(new TextRenderable(renderer, {
-      content: "Managed-machine options are unavailable.",
+      content: "Machine details are unavailable.",
       fg: theme.textMuted,
     }))
     return panel

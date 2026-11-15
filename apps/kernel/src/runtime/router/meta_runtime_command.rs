@@ -27,6 +27,7 @@ use super::CommandRouter;
 mod agent_peer;
 mod agent_tree;
 mod dispatch;
+mod own_schedule;
 mod reach_lists;
 mod request;
 mod result;

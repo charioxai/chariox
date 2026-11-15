@@ -1356,6 +1356,18 @@ impl DaemonApp {
                 if !self.session_belongs_to_current_kernel(&session) {
                     return Ok(());
                 }
+                match self.agents.get_agent(&prompt_state.agent_id) {
+                    Ok(_) => {}
+                    Err(DaemonError::AgentNotFound { .. })
+                        if prompt_state.active_prompt.is_none()
+                            && prompt_state.queued_prompts.is_empty() =>
+                    {
+                        // Deletion wins over late empty queue cleanup, including
+                        // the removed agent's cached last-sent timestamp.
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
+                }
                 self.sessions.note_session_activity(
                     &prompt_state.session_id,
                     prompt_state.last_activity_at_ms,

@@ -53,7 +53,7 @@ pub(crate) async fn complete_managed_context_import(
     })?;
     let response: CompleteManagedContextResponse = post_cloud_json(
         profile.api_url.clone(),
-        "/v1/managed-kernels/context/complete",
+        "/v1/kernels/context/complete",
         serde_json::json!({
             "accountId": profile.account_id,
             "environmentId": registration.environment_id,
@@ -81,7 +81,7 @@ pub(crate) fn validate_disposable_worker_completion_binding(
     target_key_thumbprint: &str,
     plan: &ManagedContextPlanBinding,
 ) -> Result<(), DaemonError> {
-    crate::managed_bootstrap::worker::confirmed_disposable_worker_home_caller(config)
+    crate::lease_worker_enrollment::enrolled_lease_worker_home_caller(config)
         .map_err(|error| {
             completion_error(
                 format!("confirmed disposable worker binding is unavailable: {error}"),
@@ -133,7 +133,7 @@ pub(crate) async fn complete_disposable_managed_context_import(
     })?;
     let response: CompleteManagedContextResponse = post_cloud_json(
         profile.api_url.clone(),
-        "/v1/managed-kernels/context/complete",
+        "/v1/kernels/context/complete",
         serde_json::json!({
             "accountId": profile.account_id,
             "environmentId": target_environment_id,

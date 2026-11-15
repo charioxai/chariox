@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify"
-import type { Invocation } from "@chariox/agent-trigger-gateway"
+import { decodeBody, invokeHttpTrigger, sendPageMessage, type AgentHttpOptions, type HttpTriggerKernel, type HttpTriggerResponse, type Invocation, type TriggerReply } from "@chariox/agent-trigger-gateway/http-trigger"
 import { agentTriggerErrorPage } from "@chariox/agent-trigger-gateway/page"
 export type AgentTriggerBinding = {kernelId: string; sessionId: string; triggerId: string}
 
@@ -8,37 +8,44 @@ export type TriggerIngressConnection = {
   close(): Promise<void>
 }
 
-// MP-08 / MP-09 / MP-10 / MP-11: ingress accepts work; it never attaches to output.
+/** The kernel requests of one firing over the ingress connection: options, the invocation and its reply. */
+function ingressKernel(kernel: TriggerIngressConnection, binding: AgentTriggerBinding): HttpTriggerKernel {
+  const trigger = {session_id: binding.sessionId, trigger_id: binding.triggerId}
+  return {
+    options: async () => (await kernel.send<{AgentTriggerHttpOptionsRead: {enabled: boolean; options: AgentHttpOptions}}>({ReadAgentTriggerHttpOptions: trigger})).AgentTriggerHttpOptionsRead,
+    invoke: async (input, http) => (await kernel.send<{AgentTriggerInvoked: {invocation: Invocation}}>({InvokeAgentTrigger: {...trigger, input, ...(http ? {http} : {})}})).AgentTriggerInvoked.invocation,
+    reply: async promptId => (await kernel.send<{AgentTriggerReplyRead: {reply: TriggerReply}}>({ReadAgentTriggerReply: {...trigger, prompt_id: promptId}})).AgentTriggerReplyRead.reply,
+  }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: ingress accepts work and reads only its own firing's reply; it never attaches to output.
+// `path` is the request path below the trigger's base; "send" is the trigger page's own message box.
 export async function invokeAgentTrigger(request: FastifyRequest, reply: FastifyReply, binding: AgentTriggerBinding,
-  base: string, connect: () => Promise<TriggerIngressConnection>): Promise<unknown> {
+  base: string, path: string, connect: () => Promise<TriggerIngressConnection>): Promise<unknown> {
   const raw = request.body instanceof Buffer ? request.body : Buffer.alloc(0)
   const contentType = String(request.headers["content-type"] ?? "text/plain")
-  const type = contentType.split(";")[0]!.trim().toLowerCase()
-  let body: unknown = raw.toString("utf8")
-  if (request.method === "POST") {
-    if (type === "application/json") {
-      try { body = raw.length ? JSON.parse(raw.toString("utf8")) : {} }
-      catch { return reply.code(400).send({error: "Invalid JSON body"}) }
-    } else if (type === "application/x-www-form-urlencoded") body = Object.fromEntries(new URLSearchParams(raw.toString("utf8")))
-    else if (type !== "text/plain") return reply.code(415).send({error: "Use JSON, form or plain text"})
-  } else body = null
-  const query = request.query as Record<string, unknown>
-  const prompt = typeof body === "string" ? body : body && typeof body === "object" ? (body as Record<string, unknown>).prompt : query.prompt
-  let kernel: TriggerIngressConnection | undefined
+  const decoded = decodeBody(request.method, raw, contentType)
   reply.header("Cache-Control", "no-store")
+  if ("status" in decoded) return reply.code(decoded.status).send(decoded.body)
+  let kernel: TriggerIngressConnection | undefined
   try {
     kernel = await connect()
-    const response = await kernel.send<{AgentTriggerInvoked: {invocation: Invocation}}>({InvokeAgentTrigger: {
-      session_id: binding.sessionId, trigger_id: binding.triggerId,
-      payload: {...(prompt !== undefined ? {prompt} : {}), query, body,
-        http: {body_base64: raw.toString("base64"), content_type: contentType}},
-    }})
-    const result = response.AgentTriggerInvoked.invocation
-    if (result.status === "accepted") {
-      if (String(request.headers.accept).includes("text/html")) return reply.code(303).header("Location", `${base}#firing-${encodeURIComponent(result.prompt_id)}`).send()
-      return reply.code(202).send({firing_id: result.prompt_id, prompt_id: result.prompt_id, outcome: result.outcome})
+    const operations = ingressKernel(kernel, binding)
+    let result: HttpTriggerResponse
+    if (path === "send") {
+      const prompt = (decoded.body as {prompt?: unknown} | null)?.prompt
+      if (request.method !== "POST" || typeof prompt !== "string" || !prompt.trim()) return reply.code(400).send({error: "invalid request body"})
+      result = await sendPageMessage(prompt, operations)
+    } else {
+      const url = new URL(request.url, "https://ingress.local")
+      result = await invokeHttpTrigger({method: request.method, path: `/${path}`, search: url.search, query: request.query as Record<string, unknown>,
+        headers: request.headers, body: decoded.body, raw, contentType}, operations, base)
     }
-    if (result.status !== "offline") return reply.code(({disabled: 403, busy: 429, payload_too_large: 413} as const)[result.status]).send({error: result.status.replaceAll("_", " ")})
+    if (result.status !== 503) {
+      reply.code(result.status)
+      for (const [name, value] of Object.entries(result.headers)) reply.header(name, value)
+      return reply.send(result.body)
+    }
   } catch (error) {
     const status = (error as {statusCode?: number}).statusCode
     if (status && status !== 503) return reply.code(status).send({error: status === 502 ? "delivery unconfirmed; check agent history before sending again" : "agent request refused"})

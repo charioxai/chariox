@@ -458,6 +458,9 @@ mod tests {
         let count = |path| fs::read_dir(path).unwrap().count();
         let threads = count("/proc/self/task");
         let descriptors = count("/proc/self/fd");
+        // A busy builder must have time to start the producer and write its PID.
+        // The elapsed bound below separately limits cleanup after the deadline.
+        let timeout_ms = 1_000;
         for (producer, wait) in [
             ("while :; do printf output; sleep 0.01; done", "wait"),
             ("while :; do printf error >&2; sleep 0.01; done", "wait"),
@@ -476,11 +479,15 @@ mod tests {
                         root.clone(),
                         None,
                     )
-                    .with_timeout_ms(100),
+                    .with_timeout_ms(timeout_ms),
                 )
                 .expect_err("descendant should time out");
             assert!(matches!(error, DaemonError::ShellCommandTimedOut { .. }));
-            assert!(started.elapsed() < std::time::Duration::from_secs(2));
+            assert!(
+                started.elapsed()
+                    < std::time::Duration::from_millis(timeout_ms)
+                        + std::time::Duration::from_secs(2)
+            );
             let pid: i32 = fs::read_to_string(root.join("producer.pid"))
                 .unwrap()
                 .trim()

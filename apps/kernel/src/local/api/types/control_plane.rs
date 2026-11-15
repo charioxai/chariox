@@ -10,6 +10,24 @@ pub enum ControlPlaneRequest {
         capability_revision: String,
         request_id: String,
     },
+    AcquireJob {
+        capability_revision: String,
+        request_id: String,
+        job_ref: String,
+        #[serde(default)]
+        needs: super::JobNeeds,
+        timeout_s: u64,
+    },
+    GetJob {
+        job_ref: String,
+    },
+    CancelJob {
+        job_ref: String,
+    },
+    JobStarted {
+        allocation_ref: String,
+        capability_revision: String,
+    },
     List {},
     Get {
         allocation_ref: String,
@@ -51,6 +69,9 @@ pub enum ControlPlaneRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlPlaneResponse {
+    JobCancelled {
+        job_ref: String,
+    },
     Capabilities {
         machine_allocation: Option<MachineAllocationCapability>,
     },
@@ -63,9 +84,15 @@ pub enum ControlPlaneResponse {
         available_actions: Vec<String>,
         allocation_ref: String,
         state: String,
-        kernel_target: Option<ControlPlaneMachineTarget>,
+        kernel_target: Option<Box<ControlPlaneMachineTarget>>,
         access_state: String,
         access_reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        purpose: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine_label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        address: Option<String>,
     },
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -74,6 +101,10 @@ pub struct MachineAllocationCapability {
     pub revision: String,
     pub actions: Vec<String>,
     pub offer: Option<MachineAcquisitionOffer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub job_offers: Vec<JobMachineOffer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_default_class_id: Option<String>,
 }
 
 /// Display facts supplied by the connected service for this capability revision.
@@ -88,6 +119,8 @@ pub struct MachineAcquisitionOffer {
     /// Amount, currency and period exactly as the connected service offers them; the kernel
     /// never computes amounts.
     pub terms: MachineAcquisitionTerms,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_per_minute: Option<JobMachineRate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,6 +144,8 @@ pub struct ControlPlaneMachineTarget {
     pub machine_id: String,
     pub relay_realm_id: String,
     pub key_thumbprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence: Option<chariox_relay::protocol::RelayKernelPresence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,4 +170,21 @@ pub struct ControlPlaneSavedStateRow {
     pub revision: u64,
     pub since: String,
     pub available_actions: Vec<String>,
+}
+
+/// Opaque machine offers and rates supplied by the connected service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JobMachineOffer {
+    pub class_id: String,
+    pub vcpu: u32,
+    pub usable_memory_mib: u64,
+    pub disk_gib: u32,
+    pub rate_per_minute: JobMachineRate,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JobMachineRate {
+    pub amount_micros: u64,
+    pub currency: String,
 }

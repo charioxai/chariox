@@ -23,6 +23,12 @@ pub(crate) struct DurablePromptStateEventPayload {
 }
 
 impl DurablePromptStateEventPayload {
+    pub(crate) fn decode(payload: &str) -> Result<Self, serde_json::Error> {
+        let mut state: Self = serde_json::from_str(payload)?;
+        state.restore_private_states();
+        Ok(state)
+    }
+
     pub(crate) fn capture(session: &RuntimeSession, agent_id: &str) -> Self {
         let active_prompt = session.active_prompt_for_agent(agent_id).cloned();
         let queued_prompts = session

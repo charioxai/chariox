@@ -24,6 +24,7 @@ pub(crate) fn waiting_room_agent_activity_summary(
         error,
         unread_idle_output: active_prompt_count == 0
             && session.agent_has_unread_output(caller_user_id, agent.id()),
+        waiting: session.agent_is_waiting(agent.id()),
     }
 }
 
@@ -50,6 +51,7 @@ pub(crate) fn waiting_room_workflow_activity_summary(
         queued_prompt_count: 0,
         error,
         unread_idle_output: false,
+        waiting: false,
     }
 }
 
@@ -155,6 +157,15 @@ pub(crate) fn waiting_room_session_activity_summary(
             .filter(|agent| {
                 !active_prompt_agent_ids.contains(agent.id())
                     && session.agent_has_unread_output(caller_user_id, agent.id())
+            })
+            .count(),
+        waiting_agent_count: session
+            .agents()
+            .iter()
+            .filter(|agent| counted_in_room(agent))
+            .filter(|agent| {
+                !active_prompt_agent_ids.contains(agent.id())
+                    && session.agent_is_waiting(agent.id())
             })
             .count(),
     }

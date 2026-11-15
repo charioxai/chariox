@@ -64,12 +64,6 @@ impl TerminalOutputExecutor {
                 .await?;
             return Ok(LocalDaemonResponse::TerminalOutput { records });
         };
-        if !session.has_attachment(&request.attachment_id) {
-            return Err(DaemonError::AttachmentNotInSession {
-                session_id: request.session_id,
-                attachment_id: request.attachment_id,
-            });
-        }
         self.terminal_output_store
             .state
             .record_terminal_attachment_heartbeat(
@@ -133,10 +127,9 @@ impl TerminalOutputExecutor {
                 Err(error) => return Some(Err(error)),
             };
         if !session.has_attachment(&request.attachment_id) {
-            return Some(Err(DaemonError::AttachmentNotInSession {
-                session_id: request.session_id.clone(),
-                attachment_id: request.attachment_id.clone(),
-            }));
+            // Only the attachment store can distinguish expiry from a foreign Room.
+            // Execute validates it through the authoritative heartbeat before draining.
+            return None;
         }
         let active_provider_run_id = session.active_provider_run_id();
         if !session.has_any_prompt_work()

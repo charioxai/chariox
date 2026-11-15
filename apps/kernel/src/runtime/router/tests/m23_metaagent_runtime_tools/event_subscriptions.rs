@@ -590,10 +590,6 @@ async fn subscribed_collaborator_workflow_output_records_and_injects_metaagent_e
         "dev-stub",
         "meta-model",
     );
-    let worker_auth_token = worker_run
-        .runtime_mcp_auth_token()
-        .expect("worker run should expose runtime MCP auth token")
-        .to_string();
     let meta_auth_token = meta_run
         .runtime_mcp_auth_token()
         .expect("meta run should expose runtime MCP auth token")
@@ -709,6 +705,19 @@ async fn subscribed_collaborator_workflow_output_records_and_injects_metaagent_e
         LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
         other => panic!("unexpected workflow invoke response: {other:?}"),
     };
+    // The workflow replaces the worker's idle ordinary process; its own run submits the output.
+    let workflow_provider_run = router
+        .runtime_state
+        .list_session_snapshots()
+        .into_iter()
+        .find(|room| room.id() == session.id())
+        .and_then(|room| room.active_provider_run_id().map(str::to_string))
+        .expect("the workflow should run the worker");
+    assert_ne!(workflow_provider_run, worker_run.id());
+    let worker_auth_token = router
+        .runtime_state
+        .runtime_mcp_auth_token_for_provider_run(&workflow_provider_run)
+        .expect("the workflow run should expose runtime MCP auth token");
 
     let submitted = router
         .runtime_state

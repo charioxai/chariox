@@ -369,10 +369,10 @@ async fn check(native: bool) {
     let request = LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
         session_id: session.id().into(),
         agent_id: first.id().into(),
-        source: crate::local::AgentTriggerSourceRequest::Schedule {
-            interval_seconds: 600,
-            repeat: crate::session::AgentTriggerRepeat::Once,
-        },
+        source: crate::local::AgentTriggerSourceRequest::interval(
+            600,
+            crate::session::AgentTriggerRepeat::Once,
+        ),
         busy_policy: Some(crate::session::AgentTriggerBusyPolicy::Queue),
         prompt: None,
     });

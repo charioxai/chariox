@@ -8,6 +8,7 @@ use super::*;
 mod agent_events;
 pub(super) mod agent_inbox_read;
 mod agent_messaging;
+mod agent_peek;
 pub(super) use agent_messaging::resolve_session_agent;
 mod agent_process_permission;
 pub(super) mod agent_wakes;
@@ -216,6 +217,7 @@ impl KernelRuntimeState {
             specs.push(super::agent_auth::spec());
             specs.push(super::file_copy_tool::file_copy_spec());
             specs.extend(super::machine_files_tools::files_tool_specs());
+            specs.extend(super::machine_acquisition::machine_tool_specs());
         }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             let room_tools = self.room_agent_tools_enabled();
@@ -230,6 +232,7 @@ impl KernelRuntimeState {
                     }),
             );
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
+            specs.extend(crate::transport::runtime_tools::agent_peek_runtime_tool_specs());
             specs.extend(
                 crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs()
                     .into_iter()
@@ -269,6 +272,7 @@ impl KernelRuntimeState {
                 specs.extend(crate::transport::runtime_tools::agent_event_tool_specs());
             }
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
+            specs.extend(crate::transport::runtime_tools::agent_peek_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::extension_runtime_tool_specs());
             if !self.room_agent_tools_enabled() {
@@ -308,6 +312,8 @@ impl KernelRuntimeState {
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let kernel_browser = tool_name == "chariox.kernel_browser";
         let kernel_snapshot = kernel_browser && arguments["command"]["op"] == "snapshot";
+        let chosen_clipboard = tool_name == "chariox.kernel_computer"
+            && arguments["command"]["op"] == "clipboard_read";
         let browser_state = kernel_browser
             && matches!(
                 arguments["command"]["op"].as_str(),
@@ -356,7 +362,7 @@ impl KernelRuntimeState {
                 result.payload = protection.scrub_kernel_snapshot_result(&room, result.payload)?;
             } else if browser_state {
                 result.payload = protection.scrub_kernel_browser_state(&room, result.payload)?;
-            } else {
+            } else if !chosen_clipboard {
                 result = protection.scrub_runtime_result(&room, result)?;
             }
         }
@@ -369,6 +375,13 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if matches!(
+            tool_name,
+            "chariox.machines.acquire" | "chariox.machines.status" | "chariox.machines.release"
+        ) {
+            return self.machine_tool(auth_token, tool_name, arguments).await;
+        }
+
         for run in self
             .owned
             .provider_store
@@ -462,6 +475,9 @@ impl KernelRuntimeState {
             let owned = &self.owned;
             let canonical_tool_name =
                 crate::transport::runtime_tools::canonical_agent_messaging_tool_name(tool_name)
+                    .or_else(|| {
+                        crate::transport::runtime_tools::canonical_agent_peek_tool_name(tool_name)
+                    })
                     .or_else(|| {
                         crate::transport::runtime_tools::canonical_workspace_live_sync_tool_name(
                             tool_name,
@@ -645,6 +661,8 @@ impl KernelRuntimeState {
                 canonical_tool_name,
                 crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
                     | crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
+                    | crate::transport::runtime_tools::PEEK_AGENT_TOOL
+                    | crate::transport::runtime_tools::READ_AGENT_ENTRY_TOOL
                     | crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
                     | crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL
                     | crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL
@@ -1001,6 +1019,8 @@ fn is_metaagent_direct_runtime_tool_allowed(tool_name: &str, slice_available: bo
         tool_name,
         crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
             | crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
+            | crate::transport::runtime_tools::PEEK_AGENT_TOOL
+            | crate::transport::runtime_tools::READ_AGENT_ENTRY_TOOL
             | crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
             | crate::transport::runtime_tools::READ_ARTIFACT_TOOL
             | crate::transport::runtime_tools::SEARCH_RECALL_TOOL

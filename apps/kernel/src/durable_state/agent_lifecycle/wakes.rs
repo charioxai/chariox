@@ -59,10 +59,23 @@ impl DurableKernelStateStore {
         room: Option<&str>,
         agent: Option<&str>,
     ) -> Result<Vec<AgentWake>, DaemonError> {
+        // Literal filters, as for tasks, so the (room, agent) index serves a Room's read.
+        let (filter, values) = match (room, agent) {
+            (Some(room), Some(agent)) => ("room_id=?1 AND agent_id=?2", vec![room, agent]),
+            (Some(room), None) => ("room_id=?1", vec![room]),
+            (None, Some(agent)) => ("agent_id=?1", vec![agent]),
+            (None, None) => ("1", vec![]),
+        };
         let db = self.lock_connection("agent.lifecycle.wakes")?;
-        let mut q = db.prepare_cached("SELECT payload FROM agent_wakes WHERE (?1 IS NULL OR room_id=?1) AND (?2 IS NULL OR agent_id=?2) ORDER BY rowid").map_err(sql)?;
+        let mut q = db
+            .prepare_cached(&format!(
+                "SELECT payload FROM agent_wakes WHERE {filter} ORDER BY rowid"
+            ))
+            .map_err(sql)?;
         let rows = q
-            .query_map(params![room, agent], |r| r.get::<_, String>(0))
+            .query_map(rusqlite::params_from_iter(values), |r| {
+                r.get::<_, String>(0)
+            })
             .map_err(sql)?;
         rows.map(|row| decode(&row.map_err(sql)?)).collect()
     }
@@ -154,12 +167,12 @@ pub(super) fn source_deadline(
 const MAX_QUESTION_WAIT_DEADLINE_MS: u64 = 253_402_300_799_999;
 
 /// Retain every unanswered question until the latest source deadline. A question
-/// without a timeout uses the client date bound, rather than spending provider
-/// turns on an unrelated periodic retention deadline.
+/// without a timeout waits the default wait timeout, like every wait.
 pub(super) fn question_deadline(
     tx: &Transaction<'_>,
     task: &AgentTaskExecution,
     registrations: &[Registration],
+    now: u64,
 ) -> Result<u64, DaemonError> {
     if registrations.is_empty() {
         return Err(error(
@@ -179,7 +192,10 @@ pub(super) fn question_deadline(
                 "registered question binding corrupt; quarantine required",
             ));
         }
-        deadline = deadline.max(wake.next_due_ms.unwrap_or(MAX_QUESTION_WAIT_DEADLINE_MS));
+        deadline = deadline.max(
+            wake.next_due_ms
+                .unwrap_or(now.saturating_add(super::DEFAULT_WAIT_TIMEOUT_MS)),
+        );
     }
     Ok(deadline.min(MAX_QUESTION_WAIT_DEADLINE_MS))
 }
@@ -279,9 +295,22 @@ fn settle_source(
 }
 
 fn cancel_settle(tx: &Transaction<'_>, wake: &mut AgentWake, now: u64) -> Result<(), DaemonError> {
+    cancel_settle_because(tx, wake, now, None)
+}
+
+/// `reason` tells the task why its timer ended when no one cancelled it.
+fn cancel_settle_because(
+    tx: &Transaction<'_>,
+    wake: &mut AgentWake,
+    now: u64,
+    reason: Option<&str>,
+) -> Result<(), DaemonError> {
     wake.state = "cancelled".into();
     wake.next_due_ms = None;
-    let answer = serde_json::json!({"wake_id":wake.id,"label":wake.label,"cancelled":true});
+    let mut answer = serde_json::json!({"wake_id":wake.id,"label":wake.label,"cancelled":true});
+    if let Some(reason) = reason {
+        answer["reason"] = reason.into();
+    }
     settle_source(
         tx,
         wake,
@@ -304,10 +333,12 @@ fn fire_one(
         cancel_settle(tx, &mut wake, now)?;
         return Ok(None);
     }
-    // Timer-only turns exhaust the existing no-progress budget. Wait for
-    // explicit owner disposition before emitting another paid check-in.
+    // A blocked task takes no further paid check-in until its owner decides. Its timer
+    // ends here with that reason; left scheduled it would sit past due with no outcome.
     if t.state == ExecutionState::Blocked {
-        return Ok(None);
+        let reason = format!("its task is blocked: {}", t.reason);
+        cancel_settle_because(tx, &mut wake, now, Some(&reason))?;
+        return Ok(Some(wake));
     }
     if wake.interval_ms.is_some() {
         let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed'))", params![wake.room_id,wake.agent_id,wake.id], |r| r.get(0)).map_err(sql)?;
@@ -838,6 +869,88 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 }
             }
             Ok(Outcome::Wakes(vec![wake]))
+        }
+        Operation::CancelOwnerWait {
+            task,
+            room,
+            owner,
+            started_at_ms,
+        } => {
+            let mut t = load(tx, &task)?;
+            if t.room_id != room || t.owner_user_id != owner || owner.is_empty() {
+                return Err(error("stale or foreign owner wait cancellation"));
+            }
+            let wait = match &t.wait {
+                Some(wait)
+                    if t.state == ExecutionState::Waiting
+                        && wait.started_at_ms == started_at_ms =>
+                {
+                    wait.clone()
+                }
+                _ => {
+                    return Err(error(
+                        "the wait has already ended; reload its current state",
+                    ))
+                }
+            };
+            if t.goal.is_some() {
+                return Err(error(
+                    "a goal's wait ends with its goal; stop the goal instead",
+                ));
+            }
+            // Dead registrations are what keep the sources' last outcomes from waking the agent.
+            let mut sources = Vec::new();
+            for mut reg in registrations(tx, &t.task_id)? {
+                if reg.live && wait.registration_ids.contains(&reg.id) {
+                    reg.live = false;
+                    tx.execute(
+                        "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+                        params![reg.id, encode(&reg)?],
+                    )
+                    .map_err(sql)?;
+                    sources.push(reg.source_id);
+                }
+            }
+            for o in &mut t.obligations {
+                if o.requires_resolution()
+                    && o.completion_source()
+                        .is_some_and(|s| sources.iter().any(|x| x == s))
+                {
+                    o.status = "cancelled".into();
+                    o.dispatch_state = "cancelled".into();
+                }
+            }
+            if t.obligations
+                .iter()
+                .any(AgentObligation::requires_resolution)
+            {
+                return Err(error(
+                    "the task has other open work; stop the task to end it",
+                ));
+            }
+            t.wait = None;
+            t.state = ExecutionState::Done;
+            t.revision += 1;
+            save(tx, &t)?;
+            let now = crate::session::unix_epoch_ms();
+            let mut stopped = Vec::new();
+            for source in sources {
+                let Ok(mut wake) = load_wake(tx, &source) else {
+                    continue;
+                };
+                if terminal(&wake) {
+                    continue;
+                }
+                if wake.kind == "process" {
+                    // A watched process settles on its physical exit.
+                    wake.state = "cancelling".into();
+                    save_wake(tx, &wake)?;
+                } else {
+                    cancel_settle(tx, &mut wake, now)?;
+                }
+                stopped.push(wake);
+            }
+            Ok(Outcome::Wakes(stopped))
         }
         Operation::WakeAlerted { id, sequence } => {
             let mut wake = load_wake(tx, &id)?;

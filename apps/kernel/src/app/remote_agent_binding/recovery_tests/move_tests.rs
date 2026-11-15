@@ -218,7 +218,7 @@ async fn reboot_app(app: &Arc<Mutex<DaemonApp>>) {
     let old = std::mem::replace(&mut *app, placeholder);
     let config = old.config.clone();
     drop(old);
-    *app = DaemonApp::bootstrap(config).expect("kernel must reopen its durable Move records");
+    *app = crate::test_support::bootstrap_after_test_owner_exit(config).await;
 }
 
 async fn reboot_worker(fixture: &mut Fixture) {

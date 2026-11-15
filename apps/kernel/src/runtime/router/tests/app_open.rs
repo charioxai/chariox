@@ -51,7 +51,8 @@ async fn app_open_drill() {
     std::fs::create_dir(&root).unwrap();
     let scratch = Scratch(std::fs::canonicalize(root).unwrap());
     let mut config = DaemonConfig::for_tests().with_session_history_root(scratch.0.join("history"));
-    config.local_socket_path = scratch.0.join("kernel.sock");
+    let socket = crate::test_support::TestSocketDirectory::new();
+    config.local_socket_path = socket.path().join("kernel.sock");
     config.user_config_path = scratch.0.join("config.toml");
     config.user_config.state.path = Some(scratch.0.join("state.db").display().to_string());
     config.user_config.history.operational.path =

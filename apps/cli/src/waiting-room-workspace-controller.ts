@@ -1,4 +1,4 @@
-import { managedEnvironmentIdFromMachineRef, managedEnvironmentMachineRef, NEW_MANAGED_MACHINE_REF } from "@chariox/kernel-client/waiting-room-runtime-placement"
+import { NEW_MACHINE_ALLOCATION_REF } from "@chariox/kernel-client/waiting-room-runtime-placement"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import { getWorkspaceGitOverviewRequest, listWorkspaceWorktreesRequest } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
@@ -23,16 +23,10 @@ type WorkspaceReadClient = { send<T>(request: unknown): Promise<T> }
 export function waitingRoomWorkspaceSelection(
   state: Pick<WaitingRoomState, "selectedMachineRef" | "selectedKernelRef">,
   home: { machineId: string | null; kernelId: string | null },
-  environments: readonly { environmentId: string; runtimeMachineId: string | null }[],
 ) {
-  const environmentId = managedEnvironmentIdFromMachineRef(state.selectedMachineRef)
-  const sourceSelection = state.selectedMachineRef === NEW_MANAGED_MACHINE_REF
+  const sourceSelection = state.selectedMachineRef === NEW_MACHINE_ALLOCATION_REF
   if (sourceSelection) return { machineId: home.machineId || "", kernelId: home.kernelId || "" }
-  // A managed machine that is still being created (or was deleted) has no machine id yet; its ref keeps the home's
-  // inventory and workspace reads away from it until its own kernel reports.
   const machineId = state.selectedMachineRef === "local" ? home.machineId || ""
-    : environmentId ? environments.find(environment => environment.environmentId === environmentId)?.runtimeMachineId
-      || managedEnvironmentMachineRef(environmentId)
     : state.selectedMachineRef || home.machineId || ""
   return {
     machineId,
@@ -218,64 +212,39 @@ export async function loadWaitingRoomKernelWorktrees(
 export function createWaitingRoomWorkspacePlacementController(deps: {
   getState(): WaitingRoomState
   homeMachineId(): string | null
-  managedEnvironments?(): readonly { environmentId: string; runtimeMachineId: string | null }[]
   beginMachineSelection(machineId: string, kernelId?: string): void
   connect(kernelRef: string, machineRef: string | undefined, isActive: () => boolean): Promise<boolean>
-  browseManaged?(kernelRef: string, machineId: string, isActive: () => boolean): Promise<void>
-  workspaceLoading?(): boolean
   homeKernelId?(): string | null
   refresh(): Promise<void>
   failure(error: unknown): void
 }) {
-  let browsingManagedWorkspace = false
   let placementGeneration = 0
   return {
     acceptsInventory(machineId: string, kernelId?: string) {
       const selected = waitingRoomWorkspaceSelection(deps.getState(), {
         machineId: deps.homeMachineId(), kernelId: deps.homeKernelId?.() || null,
-      }, deps.managedEnvironments?.() ?? [])
+      })
       return (!selected.machineId || selected.machineId === machineId)
         && (!kernelId || !selected.kernelId || selected.kernelId === kernelId)
     },
-    async refreshDisabledWorkspace() {
-      // Ordinary snapshots recheck worktrees in applyInventory. Managed previews
-      // keep the home control client, so recheck their filesystem separately.
-      if (!browsingManagedWorkspace || deps.workspaceLoading?.() || !waitingRoomWorktreeDisabledHint()) return
-      const { selectedMachineRef: machineRef, selectedKernelRef: kernelRef } = deps.getState()
-      const environmentId = managedEnvironmentIdFromMachineRef(machineRef)
-      const machineId = deps.managedEnvironments?.().find(environment => environment.environmentId === environmentId)?.runtimeMachineId
-      if (!kernelRef || !machineId || !deps.browseManaged) return
-      const requestedGeneration = placementGeneration
-      const isActive = () => requestedGeneration === placementGeneration && deps.getState().selectedKernelRef === kernelRef
-        && deps.getState().selectedMachineRef === machineRef
-      try {
-        await deps.browseManaged(kernelRef, machineId, isActive)
-      } catch (error) {
-        if (isActive()) deps.failure(error)
-      }
-    },
     select(state: WaitingRoomState) {
-      const creatingMachine = state.selectedMachineRef === NEW_MANAGED_MACHINE_REF
+      const creatingMachine = state.selectedMachineRef === NEW_MACHINE_ALLOCATION_REF
       if (!state.selectedKernelRef && !creatingMachine) return
       const kernelRef = state.selectedKernelRef ?? ""
       const machineRef = state.selectedMachineRef
       const requestedGeneration = ++placementGeneration
-      const environmentId = managedEnvironmentIdFromMachineRef(machineRef)
       // Creation has no destination kernel yet; its filesystem source is home.
       const source = waitingRoomWorkspaceSelection(state, {
         machineId: deps.homeMachineId(), kernelId: deps.homeKernelId?.() || null,
-      }, deps.managedEnvironments?.() ?? [])
+      })
       const machineId = source.machineId
       if (machineId) deps.beginMachineSelection(machineId, source.kernelId || undefined)
       const isActive = () => requestedGeneration === placementGeneration && (deps.getState().selectedKernelRef ?? "") === kernelRef
         && deps.getState().selectedMachineRef === machineRef
-      const browseManaged = environmentId && machineId && machineId !== machineRef ? deps.browseManaged : undefined
-      browsingManagedWorkspace = Boolean(browseManaged)
-      const connectHome = browseManaged || creatingMachine
+      const connectHome = creatingMachine
       void deps.connect(connectHome ? "local" : kernelRef, connectHome ? "local" : machineRef, isActive).then(async connected => {
         if (!connected || !isActive()) return
-        if (browseManaged) await browseManaged(kernelRef, machineId!, isActive)
-        else await deps.refresh()
+        await deps.refresh()
       }).catch(error => { if (isActive()) deps.failure(error) })
     },
   }

@@ -281,6 +281,8 @@ fn summarize_meta_command_response(
                 crate::session::AgentTriggerSource::Notification { display_name, .. } => display_name.as_str(),
                 _ => "",
             },
+            "next_run_at_ms": matches!(trigger.source(), crate::session::AgentTriggerSource::Schedule { .. })
+                .then(|| trigger.next_run_at_ms()),
         }),
         LocalDaemonResponse::AgentTriggerDeleted { trigger, .. } => serde_json::json!({
             "type": "AgentTriggerDeleted",

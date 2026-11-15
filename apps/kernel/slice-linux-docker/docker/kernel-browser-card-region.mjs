@@ -144,10 +144,30 @@ function watchBox(previous, resolveAnchor) {
   });
 }
 
+// An App's confirmation preview is found by the host itself in the Tab's top document.
+// The App never names the element: a page that holds more than one candidate shows nothing.
+const confirmationSelector = '[data-chariox-confirmation]';
+async function confirmationReference(host, scope, command) {
+  const tab = await host.displayTarget({ tab_id: command.tab_id, generation: command.generation });
+  const connection = await host.browser.ensureConnection();
+  const sessionId = await host.browser.ensureTargetSession(connection, tab.target_id);
+  const { root } = await connection.send('DOM.getDocument', { depth: 0 }, sessionId);
+  const { nodeIds } = await connection.send('DOM.querySelectorAll', { nodeId: root.nodeId, selector: confirmationSelector }, sessionId);
+  if (nodeIds?.length !== 1) throw new UserDomainRefusal('stale_reference');
+  const { node } = await connection.send('DOM.describeNode', { nodeId: nodeIds[0] }, sessionId);
+  const ref = `backend:${node.backendNodeId}`;
+  rememberCardReferences(host, scope, tab, { dom_nodes: [{ document_index: 0, node_ref: ref }] });
+  return ref;
+}
+
 export async function resolveCardRegion(host, command, scope, signal) {
   pruneCardAnchors(host);
   const key = typeof command.card_id === 'string' ? `${scope}\0${command.card_id}` : null;
   let anchor = key ? host.cardAnchors.get(key) : null;
+  if (command.app_confirmation === true) {
+    if (!key || command.release === true) throw new UserDomainRefusal('stale_reference');
+    command = { ...command, ref: anchor?.ref ?? await confirmationReference(host, scope, command) };
+  }
   if (command.release === true) {
     if (anchor?.tab_id === command.tab_id) forgetCardAnchor(host, key);
     return { released: true };

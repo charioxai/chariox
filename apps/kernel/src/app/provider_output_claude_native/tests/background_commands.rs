@@ -290,3 +290,42 @@ fn native_old_turns_before_the_cutoff_stay_out_of_the_new_prompt() {
     assert!(tools.is_empty(), "{tools:?}");
     assert!(others.is_empty(), "{others:?}");
 }
+
+#[test]
+fn kwait_nested_background_command_ends_on_replayed_task_notification_native() {
+    let mut session = RecordedSession::new("wrapped-notification");
+    session.read(LAUNCHED_AND_POLLED, 1_000);
+    let mut lines: Vec<Value> = RECORDED
+        .lines()
+        .take(FIRST_NOTIFIED)
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let notice = lines.last_mut().unwrap();
+    notice["message"]["content"] = Value::String(format!(
+        "[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event.\n{}",
+        notice["message"]["content"].as_str().unwrap()
+    ));
+    std::fs::write(
+        &session.transcript,
+        lines
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    let drain =
+        drain_claude_transcript_file_at(&session.transcript, &mut session.cursor, None, 2_000);
+    let finished = drain
+        .chunks
+        .iter()
+        .filter(|chunk| chunk.kind == TerminalOutputKind::ProviderTool)
+        .map(|chunk| serde_json::from_str::<Value>(&chunk.text).unwrap())
+        .find(|row| row["id"] == FIRST);
+    assert_eq!(
+        finished.as_ref().map(|row| &row["finished_at_ms"]),
+        Some(&Value::from(2_000)),
+        "the provider's preamble must not hide the completion: {finished:?}"
+    );
+}

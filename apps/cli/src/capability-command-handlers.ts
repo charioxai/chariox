@@ -14,6 +14,7 @@ import type {
 import { projectEnvironmentActions } from "./project-environment-command.js"
 import { formatAgentLabel } from "./agent-label.js"
 import { parseVaultUnlockDurationArgument, vaultUnlockDurationUsage, type VaultUnlockDuration } from "@chariox/kernel-client/ipc-requests"
+import { credentialVaultStatusMessage, readNewVaultPassphrase } from "@chariox/kernel-client/shell-config-command"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { ResolvedAgentReference } from "@chariox/kernel-client/session-agent-resolver"
 import {
@@ -65,6 +66,7 @@ export type CapabilityCommandHandlerDeps = {
   setCredentialSecret?: (key: string, value: string) => Promise<string>
   getCredentialVaultStatus?: () => Promise<Record<string, unknown>>
   lockCredentialVault?: () => Promise<Record<string, unknown>>
+  createCredentialVault?: (passphrase: string) => Promise<{ action: string; status: Record<string, unknown> }>
   unlockCredentialVault?: (passphrase: string, duration?: VaultUnlockDuration) => Promise<{ action: string; status: Record<string, unknown> }>
   manageCredentialVault?: () => Promise<{ action: string; status: Record<string, unknown> }>
   readSecret?: (prompt: string) => Promise<string>
@@ -512,7 +514,7 @@ export async function handleCredentialSlashCommand(
       if (!deps.getCredentialVaultStatus) return deps.flashFooter("credential vault status is not available in this daemon", "error")
       const status = await deps.getCredentialVaultStatus()
       deps.appendNotice(JSON.stringify(status, null, 2))
-      deps.flashFooter(status.unlocked === true ? "vault unlocked" : "vault locked", "info")
+      deps.flashFooter(credentialVaultStatusMessage(status), "info")
       return
     }
     if (vaultAction === "lock") {
@@ -520,6 +522,14 @@ export async function handleCredentialSlashCommand(
       const status = await deps.lockCredentialVault()
       deps.appendNotice(JSON.stringify(status, null, 2))
       deps.flashFooter("vault locked", "info")
+      return
+    }
+    if (vaultAction === "create") {
+      if (!deps.createCredentialVault) return deps.flashFooter("credential vault creation is not available in this daemon", "error")
+      const input = await readNewVaultPassphrase(deps.readSecret)
+      if (!input.ok) return deps.flashFooter(input.message, "error")
+      const result = await deps.createCredentialVault(input.passphrase)
+      deps.flashFooter(`vault ${result.action}`, "info")
       return
     }
     if (vaultAction === "unlock") {
@@ -552,7 +562,7 @@ export async function handleCredentialSlashCommand(
       deps.flashFooter(result.action === "passphrase_changed" ? "vault passphrase changed" : `vault ${result.action}`, "info")
       return
     }
-    deps.flashFooter("usage: /credential vault status|lock|unlock [once|30m|2h|kernel]|manage", "error")
+    deps.flashFooter("usage: /credential vault status|create|lock|unlock [once|30m|2h|kernel]|manage", "error")
     return
   }
   if (action === "remove" || action === "unregister") {
@@ -562,7 +572,7 @@ export async function handleCredentialSlashCommand(
     deps.flashFooter(`removed credential ${credential.id}`, "info")
     return
   }
-  deps.flashFooter("usage: /credential list | /credential show <id> | /credential set <vault-key> | /credential register <file.yaml> | /credential remove <id> | /credential vault status|lock|unlock [once|30m|2h|kernel]|manage", "error")
+  deps.flashFooter("usage: /credential list | /credential show <id> | /credential set <vault-key> | /credential register <file.yaml> | /credential remove <id> | /credential vault status|create|lock|unlock [once|30m|2h|kernel]|manage", "error")
 }
 
 /** Shown once when the kernel rejects a vault passphrase. Before the

@@ -28,7 +28,7 @@
     },
     {
       "path": "scripts/mp11-relay-signal-adapters.test.mjs",
-      "sha256": "fd73fe3b5e2818e40ef13826bb6528deba6070147e9795eeea472335a97081ef",
+      "sha256": "c50360048c804ccf1d5b9913538f752f95d678f1087ea0a0a9597ddd8a4a8217",
       "reason": "MP-11 source-only regression strings and regular expressions identify forbidden signal patterns; these strings are never executed."
     },
     {

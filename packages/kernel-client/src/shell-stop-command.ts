@@ -44,6 +44,9 @@ export async function executeStopCommand(
   if (kind === "task" || kind === "timer") {
     throw new Error("unexpected response variant: expected AgentTaskUpdated")
   }
+  if ("NothingToStop" in response) {
+    return { ok: true, message: "nothing to stop", data: response.NothingToStop }
+  }
   const payload = expectVariant<{ cancellation: { prompt?: { id?: string | null } | null } }>(response, "PromptCancelled")
   return { ok: true, message: `cancellation requested${payload.cancellation.prompt?.id ? ` for prompt ${payload.cancellation.prompt.id}` : ""}`, data: payload }
 }

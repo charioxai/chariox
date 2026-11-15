@@ -35,6 +35,8 @@ export type AgentRuntimeActivity = {
   active_prompt_count?: number
   queued_prompt_count?: number
   unread_idle_output: boolean
+  /** The agent has armed waits or events and will be woken by them. */
+  waiting?: boolean
   queued_prompt_controls?: Record<string, AgentQueuedPromptControl>
   active_turn?: AgentActiveTurn | null
   last_completed_turn?: CompletedGitTurnActionProjection | null
@@ -169,8 +171,10 @@ export type NativeInteractionOrigin =
 export type RuntimeInteraction = RuntimeInteractionSubject & {
   asking_task_id?: string | null
   related_agent_id?: string | null
-  /** A sub-agent's decision the user holds is listed with the room agent, whose panel shows it. */
+  /** A sub-agent's decision is listed with the room agent, whose panel shows it, whoever holds it. */
   shown_in_agent_id?: string | null
+  /** Protocol 1006: the asking agent's alias (else its ref), so a client names who asks in its first paint. */
+  asker_name?: string | null
   /** Person cards: the wake source whose occurrence closes this card by itself. */
   closes_with_wake?: string | null
   requester?: KernelAccessRequester | null
@@ -190,6 +194,19 @@ export type RuntimeInteraction = RuntimeInteractionSubject & {
   handoff?: import("./owner-handoff.js").RuntimeHandoff | null
   /** MP-08 / MP-09 / MP-10 / MP-11: a `vault-card-*` decision for one card payment. */
   payment?: VaultPaymentApproval | null
+  /** APP-CONFIRM-01: an `app-confirm-*` decision for one person-confirmed App action. */
+  app_confirmation?: AppConfirmationFrame | null
+}
+
+/** The App and publisher the kernel verified for a person-confirmed action. The App's own preview is the card's
+ * `view` region; none of these words come from the App. */
+export type AppConfirmationFrame = {
+  installation_id: string
+  app_id: string
+  app_name: string
+  publisher_id: string
+  publisher_name: string
+  action_name: string
 }
 
 /** One card payment the owner approves. `origin` is the page the kernel observed;
@@ -390,6 +407,7 @@ export type SessionConfigState = {
 
 export type CharioxUserConfig = {
   version: number
+  agents?: { offload_without_asking?: boolean }
   slices?: {
     linux?: {
       disk_layer_mb?: number
@@ -433,7 +451,13 @@ export type CharioxUserConfig = {
   }
   ui?: Record<string, unknown>
   relay?: Record<string, unknown>
-  kernel?: Record<string, unknown>
+  kernel?: {
+    resource_protection: { memory: boolean; disk: boolean; cpu: boolean }
+    websocket_host?: string
+    websocket_port?: number
+    runtime_mcp_host?: string
+    runtime_mcp_port?: number
+  }
   kernel_access?: {
     grant_default_minutes: number
     grant_max_minutes: number

@@ -212,6 +212,7 @@ pub struct DaemonApp {
     sudo_window_projection: crate::runtime::state::SudoWindowProjection,
     agent_runtime_projection: AgentRuntimeProjectionStore,
     provider_catalog_projection: ProviderCatalogProjectionStore,
+    kernel_resource_changes: crate::transport::kernel_resource_feed::KernelResourceChanges,
     provider_run_projection: ProviderRunProjectionStore,
     pending_agent_context_handoffs: crate::runtime::state::PendingAgentContextHandoffStore,
     provider_process_projection: ProviderProcessProjectionStore,
@@ -267,6 +268,7 @@ impl DaemonApp {
         let bootstrap_started = Instant::now();
         let validate_started = Instant::now();
         config.validate()?;
+        crate::runtime::process_resources::configure(config.user_config.kernel.resource_protection);
         if config.user_config.credential_vault.backend
             == crate::config::CredentialVaultBackend::CharioxEncrypted
         {
@@ -453,6 +455,7 @@ impl DaemonApp {
             sudo_window_projection: Default::default(),
             agent_runtime_projection: AgentRuntimeProjectionStore::default(),
             provider_catalog_projection: ProviderCatalogProjectionStore::default(),
+            kernel_resource_changes: Default::default(),
             provider_run_projection: ProviderRunProjectionStore::default(),
             pending_agent_context_handoffs: Default::default(),
             provider_process_projection: ProviderProcessProjectionStore::default(),
@@ -720,6 +723,12 @@ impl DaemonApp {
 
     pub(crate) fn provider_catalog_projection_store(&self) -> ProviderCatalogProjectionStore {
         self.provider_catalog_projection.clone()
+    }
+
+    pub(crate) fn kernel_resource_changes(
+        &self,
+    ) -> crate::transport::kernel_resource_feed::KernelResourceChanges {
+        self.kernel_resource_changes.clone()
     }
 
     pub(crate) fn remote_relay_inventory_projection_store(

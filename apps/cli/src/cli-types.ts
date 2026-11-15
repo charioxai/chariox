@@ -172,6 +172,7 @@ export type SkillImportOutcome = KernelSkillImportOutcome
 
 export type RuntimeSession = KernelRuntimeSession & {
   processes?: import("@chariox/kernel-client/kernel-events").SessionProcess[]
+  jobs?: import("@chariox/kernel-client/kernel-events").JobView[]
   room_workflows?: import("@chariox/kernel-client/kernel-types").RoomWorkflowInventory | undefined
   room_workflows_fresh?: boolean | undefined
   workspace_label?: string | null

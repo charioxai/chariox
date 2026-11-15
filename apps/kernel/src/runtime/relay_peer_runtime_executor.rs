@@ -175,7 +175,7 @@ pub(crate) async fn update_relay_leased_agent_remote_extension_manifest(
 pub(crate) async fn set_relay_leased_agent_deadline(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
-    deadline_ms: u64,
+    deadline_ms: Option<u64>,
 ) -> Result<(), DaemonError> {
     runtime_state
         .set_relay_leased_agent_deadline(leased_agent_id, deadline_ms)

@@ -57,7 +57,7 @@ try {
   await installLocal({ home, version, platform, installOnly: true,
     publicKeyHex: Buffer.from(keys.publicKey.export({ format: 'jwk' }).x, 'base64url').toString('hex'),
     releaseBase: `http://127.0.0.1:${server.address().port}`, apiUrl: 'http://127.0.0.1:1',
-    extractorSource: await readFile(join(sourceRoot, 'deploy/managed-kernel/extract-release.py'), 'utf8'),
+    extractorSource: await readFile(join(sourceRoot, 'deploy/runtime-release/extract-release.py'), 'utf8'),
     servicePersistence: async () => {}, serviceManager: async () => 'LoadState=not-found\nFragmentPath=\nDropInPaths=\nActiveState=inactive\nUnitFileState=disabled\n',
   });
   const install = join(home, '.local/share/chariox/machines/local');

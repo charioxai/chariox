@@ -18,8 +18,7 @@ function task(overrides: Partial<AgentTaskExecution> = {}): AgentTaskExecution {
   return {
     task_id: "t1", room_id: "room", owner_user_id: "owner", agent_id: "a1", prompt_id: "t1",
     provider_run_id: "run", revision: 1, blocked_revision: 0, state: "working", reason: "",
-    obligations: [], wait: null, last_progress_at_ms: 1, progress_sequence: 0, no_progress_wakes: 0,
-    correction_used: false, pending_prompt_id: null, ...overrides,
+    obligations: [], wait: null, last_progress_at_ms: 1, correction_used: false, pending_prompt_id: null, ...overrides,
   }
 }
 

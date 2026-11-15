@@ -194,6 +194,12 @@ and `trigger remove <trigger-id>` for the calling agent only; the request carrie
 caller's agent id and no agent argument (naming another agent is refused). `<source>` is a
 display name, `<kernel>/<name>`, a source id, or `app:<installation>/<event>`; the longest
 run of leading words that names exactly one source wins.
+`trigger add schedule (--every <N>s|m|h | --cron '<six fields>' [--timezone <zone>])
+[--prompt <text>]` gives the calling agent one recurring schedule trigger (its heartbeat):
+every firing is one prompt of that agent, a firing is skipped while the previous one is
+still queued or running, and it repeats across turns and kernel restarts until
+`trigger remove`. The kernel validates it as any schedule trigger. `trigger list` lists the
+caller's own triggers with their schedule, next run and firings.
 
 **Envelope.** `{source_id, display_name, occurrence_id, output, ancestry, deadline_ms}`.
 `deadline_ms` is the emit time plus the retention constant. There is no status, subject or

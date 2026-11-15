@@ -222,6 +222,7 @@ pub(crate) fn cloud_kernel_presence_body(
             "managed_context_source_protocol_version":
                 crate::managed_context::MANAGED_CONTEXT_SOURCE_PROTOCOL_VERSION,
             "kernel_started_at_ms": registration.map(|registration| registration.kernel_started_at_ms),
+            "capabilities": registration.map(|registration| registration.capabilities.clone()).unwrap_or_default(),
             "available_providers": registration
                 .map(|registration| registration.available_providers.clone())
                 .unwrap_or_default(),

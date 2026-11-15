@@ -896,7 +896,7 @@ test("manual release candidates retain exact ownership and resource controls wit
 test("an inspected blob gets only provisional grouping and never independent approval", () => {
   withFixture({}, (fixture) => {
     const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "bounded-release-archive-admission");
-    const source = readFileSync(new URL("../../../deploy/managed-kernel/extract-release.py", import.meta.url), "utf8");
+    const source = readFileSync(new URL("../../../deploy/runtime-release/extract-release.py", import.meta.url), "utf8");
     fixture.addFile(rule.path, source, "100644", rule.blob);
     const report = collect(fixture);
     const group = report.sourceClassifications.find((group) => group.ruleId === rule.id);
@@ -1085,7 +1085,7 @@ test("unverified fragment assembly is an explicit unresolved source gap", () => 
 test("the real generic release preparation control gets a manual candidate", () => {
   withFixture({}, (fixture) => {
     const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "release-update-outcome-evidence");
-    const source = readFileSync(new URL("../../../apps/kernel/src/runtime/managed_release_update_evidence.rs", import.meta.url), "utf8");
+    const source = execFileSync("git", ["cat-file", "blob", rule.blob], { encoding: "utf8" });
     fixture.addFile(rule.path, source, "100644", rule.blob);
     const report = collect(fixture);
     const entry = report.entries.find((entry) => entry.path === rule.path && entry.symbol === "prepare_archive" && entry.candidateOrigin === "manual_source_rule");
@@ -1097,7 +1097,7 @@ test("the real generic release preparation control gets a manual candidate", () 
 test("an expected manual declaration that disappears is an unresolved audit gap", () => {
   withFixture({}, (fixture) => {
     const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "release-update-outcome-evidence");
-    const source = readFileSync(new URL("../../../apps/kernel/src/runtime/managed_release_update_evidence.rs", import.meta.url), "utf8");
+    const source = execFileSync("git", ["cat-file", "blob", rule.blob], { encoding: "utf8" });
     fixture.addFile(rule.path, source.replaceAll("prepare_archive", "renamed_archive"));
     const report = collect(fixture);
     assert.ok(report.sourceAuditGaps.some((gap) => gap.ruleId === rule.id && gap.symbol === "prepare_archive" && gap.kind === "expected_declaration_missing"));

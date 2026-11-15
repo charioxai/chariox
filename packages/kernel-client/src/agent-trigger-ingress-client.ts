@@ -75,22 +75,26 @@ export class AgentTriggerIngressClient {
     finally { clearTimeout(timer) }
   }
 
+  /** An ingress invokes its trigger and reads only what routing it and a sync reply need. */
   async send<T = Record<string, unknown>>(request: unknown): Promise<T> {
-    if (!request || typeof request !== "object" || Object.keys(request).length !== 1 || !("InvokeAgentTrigger" in request)) throw Error("Only HTTP trigger invocation is admitted")
+    const kind = request && typeof request === "object" && Object.keys(request).length === 1 ? Object.keys(request)[0]! : ""
+    if (!["InvokeAgentTrigger", "ReadAgentTriggerHttpOptions", "ReadAgentTriggerReply"].includes(kind)) throw Error("Only HTTP trigger invocation is admitted")
     const id = randomUUID()
     if (!this.peer || this.closed) throw Error("agent offline")
     const encrypted_request = (await encryptRelayPayload(this.peer, JSON.stringify({ command_id: id, request }), this.keypair)).payload
-    return this.request<T>(id, { kind: "client_request", request_id: id, target: { daemon_id: this.kernelId }, encrypted_request })
+    return this.request<T>(id, { kind: "client_request", request_id: id, target: { daemon_id: this.kernelId }, encrypted_request }, kind === "InvokeAgentTrigger")
   }
 
-  private request<T>(id: string, frame: unknown): Promise<T> {
+  // Only a lost invocation reply is an unconfirmed delivery; a lost read is just an offline agent.
+  private request<T>(id: string, frame: unknown, delivers: boolean): Promise<T> {
+    const lost = () => delivers ? new DeliveryUnconfirmed() : Error("agent offline")
     return new Promise<T>((resolve, reject) => {
       if (this.closed) { reject(Error("agent offline")); return }
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new DeliveryUnconfirmed()) }, 15_000)
+      const timer = setTimeout(() => { this.pending.delete(id); reject(lost()) }, 15_000)
       this.pending.set(id, { resolve: value => resolve(value as T), reject, timer })
       this.socket.send(JSON.stringify(frame), error => {
         if (!error) return
-        clearTimeout(timer); this.pending.delete(id); reject(new DeliveryUnconfirmed())
+        clearTimeout(timer); this.pending.delete(id); reject(lost())
       })
     })
   }

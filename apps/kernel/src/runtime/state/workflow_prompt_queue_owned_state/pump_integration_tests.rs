@@ -400,3 +400,77 @@ fn one_pass_without_a_view_queues_the_original_event_and_recovers_its_prompt_rec
             && prompt.durable_operation_id() == Some(operation_id.as_str())
             && prompt.prompt().contains(&occurrence.invocation.prompt)));
 }
+
+#[test]
+fn completed_workflow_does_not_strand_the_next_app_event_on_hot_state_conflict() {
+    let (runtime, session, workflow, endpoint, _root) = runtime_with_idle_workflow();
+    let store = runtime.owned.durable_state_store.clone();
+    let catalog = fixture_event_catalog(&store);
+    configure_automation(&runtime, &session, &workflow, &endpoint, &catalog);
+    let (outcome, _) = runtime
+        .owned
+        .workflow_enqueue_prompt_and_maybe_start(
+            &session,
+            &workflow,
+            &endpoint,
+            Some("first run".into()),
+            None,
+            None,
+        )
+        .unwrap();
+    let crate::app::workflow_runtime::WorkflowLaunchOutcome::Started { workflow_run, .. } = outcome
+    else {
+        panic!("first run must start");
+    };
+    let completed = runtime
+        .owned
+        .session_store
+        .write()
+        .complete_workflow_node_run(
+            &session,
+            workflow_run.id(),
+            workflow_run.node_runs()[0].id(),
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(completed.workflow_run.status().is_terminal());
+    runtime
+        .owned
+        .persist_workflow_runtime_session(&session, "workflow_runtime_output_completed")
+        .unwrap();
+    // This is the normal maintenance reconciliation, with no source edits or
+    // new run to persist any in-memory instance release it performs.
+    runtime
+        .owned
+        .workflow_cleanup_runtime_instances(&session)
+        .unwrap();
+    let now = crate::session::unix_epoch_ms();
+    let AppStateOutcome::Receipt(accepted) = store
+        .execute_app_state(
+            "alice",
+            catalog.clone(),
+            AppStateOperation::Emit(Occurrence {
+                automation_id: "automation".into(),
+                occurrence_id: occurrence_id("next-event", now).unwrap(),
+                event_version: 1,
+                occurred_at_ms: now,
+                schedule_revision: None,
+                payload: serde_json::json!({"text":"next event"}),
+                invocation: Invocation {
+                    prompt: "next event".into(),
+                    artifacts: vec![],
+                },
+            }),
+            budget(),
+        )
+        .unwrap()
+    else {
+        panic!("receipt")
+    };
+    let queued = runtime
+        .owned
+        .queue_app_event("alice", catalog, &accepted.receipt_id, budget());
+    assert!(queued.is_ok(),
+        "WFDELAY-01: a completed run's instance release must persist before the next event: {queued:?}");
+}

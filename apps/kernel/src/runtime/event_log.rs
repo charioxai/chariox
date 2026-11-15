@@ -30,6 +30,29 @@ const PERSISTENCE_OUTCOME_FAILED: u8 = 2;
 #[cfg(test)]
 const PERSISTENT_WRITER_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// One encoding shared by delivery and the replay log.
+#[derive(Debug)]
+pub(crate) struct SerializedEvent<E> {
+    event: E,
+    json: Arc<serde_json::value::RawValue>,
+}
+
+impl<E: Serialize> SerializedEvent<E> {
+    pub(crate) fn new(event: E) -> io::Result<Self> {
+        let json = serde_json::value::to_raw_value(&event).map_err(io::Error::other)?;
+        Ok(Self {
+            event,
+            json: Arc::from(json),
+        })
+    }
+    pub(crate) fn event(&self) -> &E {
+        &self.event
+    }
+    pub(crate) fn json(&self) -> &serde_json::value::RawValue {
+        &self.json
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoggedEvent<E> {
     pub event_id: u64,
@@ -151,10 +174,32 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
         })
     }
 
+    pub(crate) async fn append_serialized(
+        &self,
+        stream_id: impl Into<String>,
+        event: &SerializedEvent<E>,
+    ) -> io::Result<LoggedEvent<E>> {
+        self.append_with_json(
+            stream_id,
+            event.event.clone(),
+            Some(Arc::clone(&event.json)),
+        )
+        .await
+    }
+
     pub async fn append(
         &self,
         stream_id: impl Into<String>,
         event: E,
+    ) -> io::Result<LoggedEvent<E>> {
+        self.append_with_json(stream_id, event, None).await
+    }
+
+    async fn append_with_json(
+        &self,
+        stream_id: impl Into<String>,
+        event: E,
+        json: Option<Arc<serde_json::value::RawValue>>,
     ) -> io::Result<LoggedEvent<E>> {
         let stream_id = stream_id.into();
         let Some(persistence) = &self.persistence else {
@@ -168,7 +213,10 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
                 recorded_at_ms: unix_epoch_ms(),
                 event,
             };
-            let logged_jsonl_bytes = logged_event_jsonl_bytes(&logged)?;
+            let logged_jsonl_bytes = match &json {
+                Some(json) => logged_event_jsonl_payload_with_json(&logged, json)?.len() as u64,
+                None => logged_event_jsonl_bytes(&logged)?,
+            };
             stream.next_stream_seq += 1;
             stream.latest_event_id = Some(event_id);
             stream.retain(logged.clone(), logged_jsonl_bytes);
@@ -203,7 +251,10 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
             recorded_at_ms: unix_epoch_ms(),
             event,
         };
-        let append_jsonl = logged_event_jsonl_payload(&logged)?;
+        let append_jsonl = match &json {
+            Some(json) => logged_event_jsonl_payload_with_json(&logged, json)?,
+            None => logged_event_jsonl_payload(&logged)?,
+        };
         timing.mark("serialize");
         let logged_jsonl_bytes = append_jsonl.len() as u64;
         stream.next_stream_seq += 1;
@@ -1245,6 +1296,19 @@ fn retained_events_jsonl_bytes<E>(streams: &BTreeMap<String, EventStream<E>>) ->
         .fold(0_u64, u64::saturating_add)
 }
 
+fn logged_event_jsonl_payload_with_json<E>(
+    logged: &LoggedEvent<E>,
+    event: &serde_json::value::RawValue,
+) -> io::Result<Vec<u8>> {
+    logged_event_jsonl_payload(&LoggedEvent {
+        event_id: logged.event_id,
+        stream_id: logged.stream_id.clone(),
+        stream_seq: logged.stream_seq,
+        recorded_at_ms: logged.recorded_at_ms,
+        event,
+    })
+}
+
 fn logged_event_jsonl_bytes<E>(event: &LoggedEvent<E>) -> io::Result<u64>
 where
     E: Serialize,
@@ -1466,3 +1530,6 @@ fn unix_epoch_ms() -> u64 {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod serialized_tests;

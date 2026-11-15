@@ -161,7 +161,7 @@ async fn child_and_parent_cards() {
 }
 
 #[test]
-fn a_decision_is_never_answered_or_passed_for_another_room_or_kernel() {
+fn a_decision_is_never_passed_to_another_room_or_answered_on_another_kernel() {
     run_large_stack_async_test("decision-commands-peer", peer_flags_and_unknown_ids);
 }
 
@@ -202,7 +202,6 @@ async fn peer_flags_and_unknown_ids() {
         .await
         .unwrap();
     for command in [
-        format!("agent answer perm-peer allow --room {}", world.room),
         "agent answer perm-peer allow --kernel elsewhere".to_string(),
         format!(
             "agent pass perm-peer --room {} --kernel elsewhere",
@@ -216,7 +215,11 @@ async fn peer_flags_and_unknown_ids() {
             refused
                 .payload
                 .to_string()
-                .contains("peer_decision_refused"),
+                .contains("peer_decision_refused")
+                || refused
+                    .payload
+                    .to_string()
+                    .contains("agent pass stays in this room"),
             "{command}: {refused:?}"
         );
     }

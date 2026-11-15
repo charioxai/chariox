@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use zeroize::Zeroize;
 
-pub(crate) const TICKET_ENDPOINT: &str = "/v1/managed-kernels/context/ticket";
+pub(crate) const TICKET_ENDPOINT: &str = "/v1/kernels/context/ticket";
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DirectoryPeer {

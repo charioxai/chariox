@@ -4,8 +4,8 @@ import type { AgentTrigger, SessionHistoryPageEntry, SessionHistoryOutlineTurn, 
 import type { Unconfirmed } from "./agent-trigger-unconfirmed.js"
 import type { TerminalOutputEntry, TerminalOutputRole, TerminalTurnState } from "@chariox/transcript-view"
 
-export type Invocation = { status: "accepted"; prompt_id: string; outcome: "started" | "queued" | "steered" }
-  | { status: "offline" | "disabled" | "busy" | "payload_too_large" }
+import type { AgentHttpOptions, HttpBody, Invocation, TriggerReply } from "./agent-trigger-http.js"
+export type { Invocation } from "./agent-trigger-http.js"
 type Entry = SessionHistoryPageEntry
 type WireTurn = SessionHistoryOutlineTurn
 type Outline = { agents: Array<{ agent_id: string; turns: WireTurn[]; next_cursor?: { before_sequence: number } | null }> }
@@ -50,9 +50,17 @@ export class AgentTriggerClient {
     this.attachmentId = response.SessionAttached.attachment.id
     await this.kernel.subscribeToKernelEvents(this.sessionId, this.attachmentId)
   }
-  async invoke(payload: unknown): Promise<Invocation> {
-    const response = await this.kernel.send<{ AgentTriggerInvoked: { invocation: Invocation } }>({ InvokeAgentTrigger: { session_id: this.sessionId, trigger_id: this.triggerId, payload } })
+  async invoke(input: unknown, http: HttpBody | null): Promise<Invocation> {
+    const response = await this.kernel.send<{ AgentTriggerInvoked: { invocation: Invocation } }>({ InvokeAgentTrigger: { session_id: this.sessionId, trigger_id: this.triggerId, input, ...(http ? { http } : {}) } })
     return response.AgentTriggerInvoked.invocation
+  }
+  async options(): Promise<{ enabled: boolean; options: AgentHttpOptions }> {
+    const response = await this.kernel.send<{ AgentTriggerHttpOptionsRead: { enabled: boolean; options: AgentHttpOptions } }>({ ReadAgentTriggerHttpOptions: { session_id: this.sessionId, trigger_id: this.triggerId } })
+    return response.AgentTriggerHttpOptionsRead
+  }
+  async reply(promptId: string): Promise<TriggerReply> {
+    const response = await this.kernel.send<{ AgentTriggerReplyRead: { reply: TriggerReply } }>({ ReadAgentTriggerReply: { session_id: this.sessionId, trigger_id: this.triggerId, prompt_id: promptId } })
+    return response.AgentTriggerReplyRead.reply
   }
   /** Sends a firing the provider did not confirm once more; the kernel allows it once. */
   async resend(promptId: string): Promise<void> {

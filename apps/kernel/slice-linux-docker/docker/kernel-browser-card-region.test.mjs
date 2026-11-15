@@ -9,6 +9,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { KernelBrowserHost, scheduleHostRequest } from './kernel-browser-host.mjs';
 import { PassThrough } from 'node:stream';
+import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 import { BrowserControllerStdioServer } from './browser-controller.mjs';
 
 async function withHost(run) {
@@ -56,6 +57,35 @@ test('MP-11 card region requires a snapshot ref from the same observer and Tab',
   assert.deepEqual(result.region.rect, { x: 64, y: 74, width: 132, height: 82 });
   assert.equal(result.region.origin, 'https://example.com', 'userinfo, query and fragment stay out of the card');
   assert.equal(calls.includes('Page.captureScreenshot'), false, 'card geometry does not create another display');
+}));
+
+test('an App confirmation region is found by the host in the Tab document, never from a reference the App supplies', () => withHost(async ({ host, region, calls }) => {
+  const connection = await host.browser.ensureConnection(), base = connection.send, sent = [];
+  let matches = [7];
+  connection.send = async (method, params, session) => {
+    sent.push({ method, params });
+    if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+    if (method === 'DOM.querySelectorAll') return { nodeIds: matches };
+    if (method === 'DOM.describeNode') return { node: { backendNodeId: 42 } };
+    return base(method, params, session);
+  };
+  // The real host resolves a Tab only under its current generation, as its display target does.
+  host.displayTarget = async command => {
+    if (command.generation !== host.generation) throw new UserDomainRefusal('stale_epoch');
+    return { tab_id: command.tab_id, target_id: 'target', document_id: 'doc', url: 'https://example.com/' };
+  };
+  await assert.rejects(region({ card_id: 'app-confirm-0', app_confirmation: true, ref: undefined }), { code: 'user_domain_stale_epoch' });
+  const found = await region({ card_id: 'app-confirm-1', app_confirmation: true, ref: undefined, generation: 1 });
+  assert.equal(found.state, 'present');
+  assert.equal(found.region.ref, 'backend:42');
+  assert.deepEqual(sent.find(call => call.method === 'DOM.querySelectorAll').params, { nodeId: 1, selector: '[data-chariox-confirmation]' });
+  // The follow-up poll names the reference the host returned and needs no flag.
+  const followed = await region({ card_id: 'app-confirm-1', ref: 'backend:42', generation: 1, document_id: 'doc' });
+  assert.equal(followed.state, 'present');
+  // Two matching elements mean the page tampered with the preview: nothing is shown.
+  matches = [7, 8];
+  await assert.rejects(region({ card_id: 'app-confirm-2', app_confirmation: true, ref: undefined, generation: 1 }), { code: 'user_domain_stale_reference' });
+  assert.equal(calls.includes('DOM.getDocument'), false, 'the base fake never saw the confirmation query');
 }));
 
 test('MP-08/MP-10 card geometry follows scrolling, movement and viewport resize without another snapshot', () => withHost(async ({ snapshot, region, state }) => {

@@ -31,16 +31,7 @@ function waitingRoomLaunchIntentSignature(state: WaitingRoomState): string {
     state.projectSelectionId ?? "default",
     state.worktreeSelectionId,
     state.sliceSelectionId,
-    state.managedComputeClass,
-    state.managedRegion,
-    state.managedRepositoryRoot,
-    state.managedKernelContext,
-    state.managedContextSourceTargetId,
     state.managedDevelopmentMode,
     state.managedRepositorySelection,
-    state.managedProviderAccountSource,
-    state.managedProviderAccountSelection,
-    state.managedGitCredentialSource,
-    state.managedAutoStopPreset,
   ])
 }

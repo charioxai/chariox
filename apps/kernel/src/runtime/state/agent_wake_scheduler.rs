@@ -49,6 +49,13 @@ impl AgentWakeMonitor {
             .register(Arc::new(super::wake_driver::TimerDriver));
         monitor
     }
+
+    /// How long the scheduler has been silent: since its last tick, or since the kernel started
+    /// when it has not ticked yet.
+    fn scheduler_silent_ms(&self, now: u64) -> u64 {
+        let tick = self.scheduler_tick_ms.load(Ordering::Acquire);
+        now.saturating_sub(tick.max(self.started_at_ms))
+    }
 }
 
 fn armed(w: &AgentWake) -> bool {
@@ -180,6 +187,9 @@ impl KernelRuntimeState {
 
     /// Fires due wakes and (from the scheduler only) arms new ones.
     async fn tick_agent_wakes(&self, now: u64, verify: bool) -> Result<(), DaemonError> {
+        // Timers read only their scheduled rows. A failed reconciliation or an unreadable
+        // historical wake must not hold back the kernel clock.
+        self.tick_timer_wakes(now, verify)?;
         self.tick_interaction_wakes(now)?;
         self.resume_browser_region_cards();
         let store = &self.owned.durable_state_store;
@@ -190,6 +200,11 @@ impl KernelRuntimeState {
                 self.ensure_leased_process_poll(&wake);
             }
         }
+        Ok(())
+    }
+
+    fn tick_timer_wakes(&self, now: u64, verify: bool) -> Result<(), DaemonError> {
+        let store = &self.owned.durable_state_store;
         let timers = store.agent_armed_timers()?;
         if verify && timers.iter().any(|w| w.verified_at_ms.is_none()) {
             store.agent_lifecycle(Operation::VerifyWakes { now })?;
@@ -210,6 +225,11 @@ impl KernelRuntimeState {
         for wake in fired {
             if wake.last_delivery.as_deref() == Some("backpressured") {
                 self.wake_notice(&wake, format!("Wake alert: '{}' is backpressured by its recipient; its due occurrence is retained and other timers continue", wake.label));
+                recipients.insert((wake.room_id, wake.agent_id));
+                continue;
+            }
+            if wake.state == "cancelled" {
+                self.wake_notice(&wake, format!("Wake alert: '{}' was due and ended without firing: its task is blocked until its owner resumes or cancels it", wake.label));
                 recipients.insert((wake.room_id, wake.agent_id));
                 continue;
             }
@@ -254,7 +274,7 @@ impl KernelRuntimeState {
         let tick = monitor.scheduler_tick_ms.load(Ordering::Acquire);
         let timers = store.agent_armed_timers()?;
         if !timers.is_empty()
-            && now.saturating_sub(tick) > WAKE_FIRE_TOLERANCE_MS
+            && monitor.scheduler_silent_ms(now) > WAKE_FIRE_TOLERANCE_MS
             && !monitor.scheduler_stall_alerted.swap(true, Ordering::AcqRel)
         {
             let since = if tick == 0 {
@@ -268,7 +288,7 @@ impl KernelRuntimeState {
             w.next_due_ms
                 .is_some_and(|d| d + WAKE_FIRE_TOLERANCE_MS < now)
         }) {
-            self.tick_agent_wakes(now, false).await?;
+            self.tick_timer_wakes(now, false)?;
         }
         self.sweep_driver_liveness(now)?;
         let wakes: BTreeMap<_, _> = store
@@ -316,12 +336,9 @@ impl KernelRuntimeState {
     }
 
     pub(super) fn wake_scheduler_health(&self, now: u64) -> serde_json::Value {
-        let tick = self
-            .owned
-            .agent_wakes
-            .scheduler_tick_ms
-            .load(Ordering::Acquire);
-        serde_json::json!({"last_tick_at_ms":tick,"stalled":now.saturating_sub(tick) > WAKE_FIRE_TOLERANCE_MS,"fire_tolerance_ms":WAKE_FIRE_TOLERANCE_MS,"delivery_tolerance_ms":WAKE_DELIVERY_TOLERANCE_MS})
+        let monitor = &self.owned.agent_wakes;
+        let tick = monitor.scheduler_tick_ms.load(Ordering::Acquire);
+        serde_json::json!({"last_tick_at_ms":tick,"stalled":monitor.scheduler_silent_ms(now) > WAKE_FIRE_TOLERANCE_MS,"fire_tolerance_ms":WAKE_FIRE_TOLERANCE_MS,"delivery_tolerance_ms":WAKE_DELIVERY_TOLERANCE_MS})
     }
 
     /// After a restart no process from an earlier kernel is supervised; it is

@@ -29,6 +29,7 @@ struct Browser {
     root: std::path::PathBuf,
     generation: u64,
     workspace: crate::test_support::TestWorktree,
+    owner_user: String,
 }
 
 impl Browser {
@@ -79,6 +80,7 @@ impl Browser {
             token,
             root,
             workspace,
+            owner_user: agent.owner_user_id().to_string(),
         }
     }
 
@@ -98,6 +100,93 @@ impl Browser {
             .unwrap();
         std::fs::remove_dir_all(&self.root).unwrap();
     }
+}
+
+#[test]
+#[ignore = "needs native Chromium; run with CHARIOX_KERNEL_BROWSER_EXECUTABLE and HEADLESS=1"]
+fn find_reaches_fields_beyond_a_large_snapshot_without_exposing_protected_values() {
+    run_test(|| {
+        Box::pin(async {
+            use std::io::{Read, Write};
+            let browser = Browser::start("browsertools-find-long-page", true).await;
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let mut html = "<!doctype html><title>Long checkout</title>".to_string();
+            for i in 0..100 {
+                html.push_str(&format!(
+                    "<p>Public article {i} {}</p>",
+                    "ordinary text ".repeat(30)
+                ));
+            }
+            html.push_str("<label>Card number find-protected-sentinel<input id=number></label><label>Card expiry<input id=expiry></label><label>Card security code<input id=cvc></label><button>Pay</button><p>find-protected-sentinel</p>");
+            std::thread::spawn(move || {
+                for mut stream in listener.incoming().flatten() {
+                    let mut request = [0; 4096];
+                    let _ = stream.read(&mut request);
+                    let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", html.len(), html);
+                }
+            });
+            let opened = tool(
+                &browser.router,
+                &browser.token,
+                json!({"command":{"op":"open","url":format!("http://127.0.0.1:{port}/")}}),
+            )
+            .await
+            .unwrap()
+            .payload;
+            let call = |op: &str, extra: Value| {
+                let mut command =
+                    json!({"op":op,"tab_id":opened["tab_id"],"generation":opened["generation"]});
+                for (key, value) in extra.as_object().unwrap() {
+                    command[key] = value.clone();
+                }
+                tool(&browser.router, &browser.token, json!({"command":command}))
+            };
+            browser
+                .router
+                .runtime_state()
+                .register_kernel_browser_fixture_value(
+                    &browser.owner_user,
+                    "find-protected-sentinel",
+                );
+            let snapshot = call("snapshot", json!({})).await.unwrap().payload;
+            let (_, bounded) =
+                crate::transport::mcp_server::runtime_tool_content_for_test(snapshot.clone());
+            assert_eq!(
+                bounded["chariox_truncated"], true,
+                "fixture must exceed the actual MCP cap"
+            );
+            let found = call("find", json!({"query":"card","kind":"field"}))
+                .await
+                .unwrap()
+                .payload;
+            assert_eq!(found["matches"].as_array().unwrap().len(), 3);
+            assert!(!found.to_string().contains("find-protected-sentinel"));
+            assert!(bounded["chariox_guidance"]
+                .as_str()
+                .unwrap()
+                .contains("find"));
+            assert_eq!(found["document_id"], snapshot["snapshot"]["document_id"]);
+            for id in ["number", "expiry", "cvc"] {
+                let reference = node_ref(&snapshot, id);
+                assert!(found["matches"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|node| node["node_ref"] == reference));
+            }
+            let (content, bounded) =
+                crate::transport::mcp_server::runtime_tool_content_for_test(found);
+            assert!(bounded.get("chariox_truncated").is_none());
+            assert!(content[0]["text"].as_str().unwrap().len() < 16 * 1024);
+            let all = call("find", json!({"query":"","kind":"any"}))
+                .await
+                .unwrap()
+                .payload;
+            assert!(!all.to_string().contains("find-protected-sentinel"));
+            browser.finish().await;
+        })
+    });
 }
 
 async fn tool_named(

@@ -16,7 +16,7 @@ let requests = 0;
 
 before(async () => {
   root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, 'app-view-actions-'));
-  host = new KernelBrowserHost(root);
+  host = new KernelBrowserHost(root, { appStorageRoot: path.join(root, 'apps') });
 });
 after(async () => {
   await host?.stop();
@@ -59,6 +59,33 @@ async function openApp(label, files = { 'index.html': html, 'app.js': script }) 
   for (let i = 0; i < 200 && !await evaluate('document.readyState === "complete" && typeof window.addTodo === "function"'); i++) await new Promise(r => setTimeout(r, 25));
   return { evaluate, agent: (call) => evaluate(`__charioxViewAgent.${call}`) };
 }
+
+test('APP-CONFIRM: a compact component previews the exact input without running its action', async () => {
+  const app = await openApp('confirmation-component', {
+    'index.html':'<main></main><script src="app.js"></script>',
+    'app.js':'window.addTodo = () => {};',
+  });
+  assert.equal(await app.evaluate('typeof chariox.view.confirmation'), 'function',
+    'the SDK must register a compact confirmation component');
+  await app.evaluate(`(() => {
+    window.paymentRuns = 0;
+    chariox.view.confirmation('review_payment', input => {
+      const card = document.createElement('section');
+      card.textContent = 'Campaign payment: ' + input.amount + ' ' + input.currency;
+      return card;
+    });
+    chariox.action({name:'pay',description:'Pay',inputSchema:{type:'object'},
+      effect:'person_confirmed',confirmationView:'review_payment'}, () => ++window.paymentRuns);
+  })()`);
+  const preview = await app.agent("prepareConfirmation('pay', {amount:1200,currency:'USD'})");
+  assert.equal(preview.ok, true, JSON.stringify(preview));
+  assert.match(await app.evaluate("document.querySelector('[data-chariox-confirmation]').textContent"), /1200 USD/);
+  const state = await app.evaluate(`(() => { const root=document.querySelector('[data-chariox-confirmation]'); const box=root.getBoundingClientRect(); return {runs:paymentRuns,width:box.width,height:box.height}; })()`);
+  assert.equal(state.runs, 0);
+  assert.ok(state.width <= 480 && state.height <= 320, JSON.stringify(state));
+  await app.agent('clearConfirmation()');
+  assert.equal(await app.evaluate("document.querySelector('[data-chariox-confirmation]') === null"), true);
+});
 
 test('A1: the page registers declaration-shaped actions and form markup, password included', async () => {
   const app = await openApp('view-registrations');

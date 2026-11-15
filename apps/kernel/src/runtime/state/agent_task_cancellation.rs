@@ -176,33 +176,54 @@ impl KernelRuntimeState {
             .owned
             .durable_state_store
             .agent_tasks(Some(session.id()), Some(agent))?;
-        let mut tasks = tasks.into_iter().filter(|task| {
-            !matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
-                || task
+        let parked: Vec<_> = tasks
+            .into_iter()
+            .filter(|task| {
+                !matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
+                    || task
+                        .obligations
+                        .iter()
+                        .any(|obligation| obligation.status == "open")
+            })
+            .map(|task| task.task_id)
+            .collect();
+        if parked.is_empty() {
+            return Ok(None);
+        }
+        // An agent that wakes on events leaves one parked task per wait; Stop ends them all.
+        let owner: String = session.owner_user_id().into();
+        let mut last = None;
+        for task_id in parked {
+            // An earlier cancellation may already have ended this one.
+            let Some(task) = self.owned.durable_state_store.agent_task(&task_id)? else {
+                continue;
+            };
+            if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
+                && !task
                     .obligations
                     .iter()
                     .any(|obligation| obligation.status == "open")
-        });
-        let Some(task) = tasks.next() else {
+            {
+                continue;
+            }
+            let cancel = self
+                .owned
+                .cancel_initiator(&request.attachment_id)
+                .cancel_task(task.task_id, owner.clone(), task.revision);
+            let Outcome::Task(cancelled) =
+                self.owned.durable_state_store.agent_lifecycle(cancel)?
+            else {
+                unreachable!()
+            };
+            self.retract_stale_task_owner_interactions(session.id())
+                .await;
+            Box::pin(self.cancel_agent_task_resources(&cancelled)).await?;
+            last = Some(cancelled.task_id);
+        }
+        let Some(last) = last else {
             return Ok(None);
         };
-        if tasks.next().is_some() {
-            return Err(crate::durable_state::agent_lifecycle::error("multiple unfinished tasks on this agent; cancel the intended task from its task controls"));
-        }
-        let (task_id, owner, revision) =
-            (task.task_id, session.owner_user_id().into(), task.revision);
-        let cancel = self
-            .owned
-            .cancel_initiator(&request.attachment_id)
-            .cancel_task(task_id, owner, revision);
-        let Outcome::Task(cancelled) = self.owned.durable_state_store.agent_lifecycle(cancel)?
-        else {
-            unreachable!()
-        };
-        self.retract_stale_task_owner_interactions(session.id())
-            .await;
-        Box::pin(self.cancel_agent_task_resources(&cancelled)).await?;
-        self.agent_cancellation_response(session.id(), &cancelled.task_id)
+        self.agent_cancellation_response(session.id(), &last)
             .map(Some)
     }
 

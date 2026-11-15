@@ -5,10 +5,10 @@
 // `__charioxViewAgent`; this module grants no authority, because the signed
 // declarations decide what a registration may be (`check_agreement` in
 // packages/app-package). Self-contained: it is stringified into the page bridge.
-export function createViewActions(request, inputs) {
+export function createViewActions(request, inputs, confirmations) {
   const NAME = /^[a-z][a-z0-9_]{0,63}$/;
-  const EFFECTS = ['read', 'write', 'approval'];
-  const FIELDS = new Set(['name', 'description', 'inputSchema', 'outputSchema', 'effect', 'approvalReason']);
+  const EFFECTS = ['read', 'write', 'approval', 'person_confirmed'];
+  const FIELDS = new Set(['name', 'description', 'inputSchema', 'outputSchema', 'effect', 'approvalReason', 'confirmationView']);
   const MAX_STATE_BYTES = 64 * 1024;
   const MAX_RESULT_BYTES = 256 * 1024;
   const MAX_CHANGE_BYTES = 16 * 1024;
@@ -50,6 +50,7 @@ export function createViewActions(request, inputs) {
     if (!NAME.test(declaration.name)) throw new TypeError('chariox.action: name must be lowercase letters, digits and underscores, starting with a letter');
     if (!EFFECTS.includes(declaration.effect)) throw new TypeError(`chariox.action: effect must be one of ${EFFECTS.join(', ')}`);
     if ((declaration.effect === 'approval') !== (declaration.approvalReason !== undefined)) throw new TypeError('chariox.action: approvalReason is required for, and only for, approval actions');
+    if (declaration.effect === 'person_confirmed' ? !NAME.test(declaration.confirmationView ?? '') : declaration.confirmationView !== undefined) throw new TypeError('chariox.action: confirmationView must name a view for, and only for, person-confirmed actions');
     return JSON.parse(JSON.stringify(declaration));
   }
 
@@ -59,10 +60,15 @@ export function createViewActions(request, inputs) {
     if (registered.has(descriptor.name)) throw new Error(`chariox.action: "${descriptor.name}" is already registered`);
     registered.set(descriptor.name, { descriptor, handler });
     // The user path calls the very function an agent runs.
-    return input => fromInput(handler, input ?? {}, globalThis.event);
+    return input => fromInput(handler, input ?? {}, globalThis.event, descriptor.effect);
   }
 
-  function fromInput(handler, input, event, token = inputs?.token(event)) {
+  // A person-confirmed action runs for a person's own input or after the kernel's
+  // confirmation (`agent.invoke`); input an agent drove through the browser is neither.
+  function fromInput(handler, input, event, effect, token = inputs?.token(event)) {
+    if (effect === 'person_confirmed' && token !== undefined) {
+      return Promise.reject(Object.assign(new Error('A person confirms this action; ask through chariox.app_view_invoke'), { code: 'person_confirmation_required' }));
+    }
     const running = runHandler(handler, input, token);
     inputs?.track(token, running);
     return running;
@@ -90,7 +96,7 @@ export function createViewActions(request, inputs) {
     // propagated. Input callers tag that native submit without intercepting it.
     element.addEventListener('submit', event => {
       event.preventDefault();
-      return fromInput(handler, readForm(element), event);
+      return fromInput(handler, readForm(element), event, element.getAttribute('data-chariox-confirmation-view') === null ? undefined : 'person_confirmed');
     });
   }
 
@@ -132,6 +138,8 @@ export function createViewActions(request, inputs) {
     };
     const reason = form.getAttribute('data-chariox-approval-reason');
     if (reason !== null) descriptor.approvalReason = reason;
+    const confirmation = form.getAttribute('data-chariox-confirmation-view');
+    if (confirmation !== null) descriptor.confirmationView = confirmation;
     return descriptor;
   }
   const forms = name => (typeof document === 'undefined' ? [] : [...document.querySelectorAll('form[data-chariox-action]')])
@@ -190,6 +198,10 @@ export function createViewActions(request, inputs) {
   }
 
   const view = Object.freeze({
+    confirmation(name, render) {
+      if (!confirmations) throw new Error('This App host does not support confirmation views');
+      confirmations.register(name, render);
+    },
     state(provider) {
       if (typeof provider !== 'function') throw new TypeError('chariox.view.state needs a function returning the snapshot');
       stateProvider = provider;
@@ -240,6 +252,16 @@ export function createViewActions(request, inputs) {
 
   // The kernel's side. Every answer is `{ok: true, value}` or `{ok: false, code, message}`.
   const agent = Object.freeze({
+    async prepareConfirmation(name, input) {
+      const entry = registered.get(name);
+      const matching = forms(name);
+      if (matching.length + (entry ? 1 : 0) !== 1) return fail('unknown_action', 'The confirmation needs one registered action');
+      const descriptor = entry?.descriptor ?? describeForm(matching[0]);
+      if (descriptor.effect !== 'person_confirmed' || !confirmations) return fail('confirmation_unavailable', 'The action has no person confirmation view');
+      try { return { ok:true, value:await confirmations.prepare(descriptor.confirmationView, input ?? {}) }; }
+      catch (error) { return failure(error); }
+    },
+    clearConfirmation() { confirmations?.clear(); return { ok:true, value:null }; },
     /** Runs the page's save handlers; the kernel reloads the view once they settle or after 5 s. */
     async prepareUpdate() {
       let timer;

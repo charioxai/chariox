@@ -178,8 +178,12 @@ impl KernelRuntimeState {
         let receipt: serde_json::Value =
             serde_json::from_str(&receipt).map_err(|error| ledger::error(error.to_string()))?;
         let Some(prompt) = receipt["prompt_id"].as_str() else {
-            return Err(DaemonError::NoActivePrompt {
-                session_id: target.session_id().into(),
+            // The first request found the agent idle. Keep that receipt a no-op even
+            // if a later retry arrives while the agent is working on another turn.
+            return Ok(RelayPeerResponse::PeerAgentAccepted {
+                protocol_version: VERSION,
+                duplicate,
+                target: self.peer_agent_stamp(target),
             });
         };
         // As for a peer in another room: the kernel cancels through the target's own

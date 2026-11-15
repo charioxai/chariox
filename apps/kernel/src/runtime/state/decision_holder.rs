@@ -1,7 +1,8 @@
 //! One decision is one card: the interaction a sub-agent raises stays one object, and the
 //! kernel only moves its holder (the parent agent that may answer it, or the user). The
-//! holder is kernel state for routing and audit; clients never read it.
-use super::runtime_interaction_state::ParentAnswer;
+//! holder is kernel state for routing and audit; clients never read it. The user sees the card
+//! in the top parent's panel from the start and may answer it whoever holds it.
+use super::runtime_interaction_state::AgentDecisionAnswer;
 use super::*;
 use crate::agent::authority_limit::{ancestors, descendants};
 use crate::durable_state::agent_lifecycle::{self as ledger, ExecutionState, Operation};
@@ -29,6 +30,8 @@ pub(crate) enum UserOnly {
     Sudo,
     Passkey,
     Payment,
+    /// A person-confirmed App action: only the person's Confirm lets it run.
+    AppConfirmation,
     /// Provider login, pairing, relay and Cloud identity, human verification.
     SignIn,
     /// Kernel access grants and their extensions.
@@ -63,6 +66,8 @@ pub(crate) fn user_only(
         Some(UserOnly::AccessGrant)
     } else if super::vault_use::is_vault_payment_decision(interaction.id()) {
         Some(UserOnly::Payment)
+    } else if interaction.app_confirmation().is_some() {
+        Some(UserOnly::AppConfirmation)
     } else if pending.passkey_prompt.is_some()
         || interaction
             .choices()
@@ -79,6 +84,14 @@ pub(crate) fn user_only(
         Some(UserOnly::UserDomain)
     } else if interaction.level() == crate::session::RuntimeInteractionLevel::Critical {
         Some(UserOnly::Critical)
+    } else if super::agent_task_owner_interactions::is_blocked_task_decision(interaction.id()) {
+        // Resume or Cancel of a blocked task is a decision about an agent, so its parent may
+        // hold it. Allowing the person's browser again stays the person's.
+        if interaction.choice("allow_browser").is_some() {
+            Some(UserOnly::UserDomain)
+        } else {
+            None
+        }
     } else if interaction.agent_id().is_none()
         || pending.kernel_operation_owner.is_some()
         || pending.kernel_wide_interaction.is_some()
@@ -100,7 +113,7 @@ impl KernelRuntimeOwnedState {
     /// Whether `ancestor` may hold a decision now: it is alive, not stopped, not past its deadline,
     /// not itself waiting for the user, and would approve for itself (a `Required` agent would ask
     /// the user, and a parent passes on only the authority it holds).
-    fn ancestor_can_hold(
+    pub(super) fn ancestor_can_hold(
         &self,
         session: &crate::session::RuntimeSession,
         ancestor: &crate::agent::AgentInstance,
@@ -205,6 +218,12 @@ impl KernelRuntimeOwnedState {
         ancestors(subject, &agents)
             .last()
             .map(|top| top.id().to_owned())
+            // A kernel decision has no agent subject for clients to fall back to.
+            .or_else(|| {
+                interaction
+                    .related_agent_id()
+                    .map(|_| subject.id().to_owned())
+            })
     }
 
     /// The decisions of `session_id` the agent `holder` holds now.
@@ -366,6 +385,7 @@ impl KernelRuntimeOwnedState {
             let holder = self.decision_holder_above(&session, &pending, &interaction, agent);
             let old_tenure = pending.holder_tenure;
             self.hand_decision_to(session_id, &id, &holder)?;
+            let mut handed_to_user = false;
             match &holder {
                 DecisionHolder::User => {
                     let shown = self.decision_shown_in(session_id, &interaction);
@@ -379,13 +399,33 @@ impl KernelRuntimeOwnedState {
                         InteractionPhase::Pending(&pending),
                     )?;
                     sessions.restore_session(session);
+                    handed_to_user = true;
                 }
                 DecisionHolder::Agent(_) => announce.push(id.clone()),
             }
             drop(sessions);
+            if handed_to_user {
+                self.alert_owner_of_handed_up_task(&id);
+            }
             self.withdraw_child_decision_event(session_id, agent, old_tenure, &id);
         }
         Ok((moved, announce))
+    }
+
+    /// A blocked task's card nobody above could hold reaches the person now, so they are alerted to it.
+    fn alert_owner_of_handed_up_task(&self, interaction_id: &str) {
+        let Some((task_id, _)) = interaction_id
+            .strip_prefix(super::agent_task_owner_interactions::BLOCKED_TASK_DECISION_PREFIX)
+            .and_then(|rest| rest.rsplit_once('-'))
+        else {
+            return;
+        };
+        let Ok(Some(task)) = self.durable_state_store.agent_task(task_id) else {
+            return;
+        };
+        if let Err(error) = self.emit_task_owner_notification(&task, interaction_id) {
+            tracing::warn!(%error, interaction_id, "handed-up task alert failed");
+        }
     }
 
     /// The authority above or of `agent` changed (its permission or mode): every open decision of
@@ -407,8 +447,8 @@ impl KernelRuntimeOwnedState {
     }
 
     /// `agent` was just placed elsewhere in the tree; the caller holds the interaction lock. Every
-    /// open decision its subtree raised follows it: a card the user holds is shown in the new top
-    /// panel, and one held by an agent that is no longer above the asker, or can no longer hold
+    /// open decision its subtree raised follows it: every card is shown in the new top panel, and
+    /// one held by an agent that is no longer above the asker, or can no longer hold
     /// under the new parent chain, goes to the nearest ancestor that may hold it, or the user.
     /// Returns the moved count and the decisions to announce.
     pub(super) fn move_subtree_decisions(
@@ -428,7 +468,7 @@ impl KernelRuntimeOwnedState {
             .filter(|interaction| subject_agent(interaction).is_some_and(|s| subtree.contains(s)))
             .cloned()
             .collect::<Vec<_>>();
-        let (mut publish, mut announce, mut withdraw) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut placed, mut announce, mut withdraw) = (Vec::new(), Vec::new(), Vec::new());
         for interaction in open {
             let id = interaction.id().to_owned();
             let Some(mut pending) = self.pending_interactions.write().get(&id).cloned() else {
@@ -444,50 +484,47 @@ impl KernelRuntimeOwnedState {
                         })
                     })
             };
-            match pending.holder.clone() {
-                DecisionHolder::Agent(holder) if may_still_hold(&holder) => {}
+            let rehanded = match pending.holder.clone() {
+                DecisionHolder::Agent(holder) if may_still_hold(&holder) => false,
                 DecisionHolder::Agent(holder) => {
                     withdraw.push((holder, pending.holder_tenure, id.clone()));
                     let holder = self.decision_holder_at_raise(&session, &pending, &interaction);
                     self.hand_decision_to(session_id, &id, &holder)?;
                     pending.hand_to(holder);
-                    match pending.holder {
-                        DecisionHolder::Agent(_) => announce.push(id),
-                        DecisionHolder::User => publish.push((interaction, pending)),
+                    if let DecisionHolder::Agent(_) = pending.holder {
+                        announce.push(id.clone());
                     }
+                    true
                 }
-                DecisionHolder::User => publish.push((interaction, pending)),
+                DecisionHolder::User => false,
+            };
+            // Every card follows its subtree to the new top panel, whoever holds it.
+            let shown = self.decision_shown_in(session_id, &interaction);
+            if shown.as_deref() != interaction.shown_in_agent_id() || rehanded {
+                session.show_interaction_in(&id, shown.clone());
+                placed.push((interaction.shown_in(shown), pending));
             }
         }
-        let publish = publish
-            .into_iter()
-            .filter_map(|(interaction, pending)| {
-                let shown = self.decision_shown_in(session_id, &interaction);
-                let changed = shown.as_deref() != interaction.shown_in_agent_id()
-                    || withdraw.iter().any(|(_, _, id)| id == interaction.id());
-                changed.then(|| {
-                    session.show_interaction_in(interaction.id(), shown.clone());
-                    (interaction.shown_in(shown), pending)
-                })
-            })
-            .collect::<Vec<_>>();
         // A recheck that moved no card leaves the session as it is.
-        if !publish.is_empty() {
+        if !placed.is_empty() {
             sessions.restore_session(session);
         }
         drop(sessions);
         for (holder, tenure, id) in &withdraw {
             self.withdraw_child_decision_event(session_id, holder, *tenure, id);
         }
-        // The follower hears of each card where it is now listed.
-        for (interaction, pending) in &publish {
-            self.publish_outside_interaction(
-                session_id,
-                interaction,
-                InteractionPhase::Pending(pending),
-            )?;
+        // The follower hears of each card the user holds where it is now listed.
+        for (interaction, pending) in &placed {
+            if pending.holder == DecisionHolder::User {
+                self.publish_outside_interaction(
+                    session_id,
+                    interaction,
+                    InteractionPhase::Pending(pending),
+                )?;
+            }
         }
-        Ok((publish.len() + announce.len(), announce))
+        // A card handed to a new holder agent was placed again, so it is counted once.
+        Ok((placed.len(), announce))
     }
 }
 
@@ -912,7 +949,7 @@ impl KernelRuntimeState {
             false,
             false,
             None,
-            Some(holder),
+            Some(AgentInteractionAnswer::Holder(holder)),
         ) {
             Ok(()) => {
                 self.audit_interaction_answered(
@@ -920,7 +957,7 @@ impl KernelRuntimeState {
                     interaction_id,
                     &choice_id,
                     None,
-                    Some(ParentAnswer {
+                    Some(AgentDecisionAnswer::Parent {
                         holder,
                         child: &child,
                     }),

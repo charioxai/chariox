@@ -81,6 +81,11 @@ For client implementations across web/mobile/desktop/CLI:
 
 ## 3.4 Baseline Commands
 
+Linux installer and upgrade fixtures use `bubblewrap` (`bwrap`) and unprivileged
+user namespaces to create root-owned test files without host sudo. Install
+`bubblewrap` before running `pnpm test`; the fixtures fail if it is unavailable.
+
+
 Use these commands from the repository root for the current repository baseline:
 
 ```bash

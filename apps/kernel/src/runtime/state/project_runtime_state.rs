@@ -80,7 +80,7 @@ impl KernelRuntimeState {
     ) -> Vec<crate::session::RuntimeProject> {
         self.owned
             .session_store
-            .list_visible_projects(true, |session| {
+            .list_visible_projects(caller_user_id, true, |session| {
                 self.owned.is_room_member(session, caller_user_id)
             })
     }

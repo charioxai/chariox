@@ -4,7 +4,7 @@
 import http from "node:http"
 import { randomBytes } from "node:crypto"
 
-export async function startOwnerCloud({ token, note, realm, relayPort }) {
+export async function startOwnerCloud({ token, note, realm, relayPort, onServer, onPresence }) {
   const kernels = new Map()
   const answer = (res, body, code = 200) => res.writeHead(code, { "content-type": "application/json" }).end(JSON.stringify(body))
   const server = http.createServer((req, res) => {
@@ -16,14 +16,17 @@ export async function startOwnerCloud({ token, note, realm, relayPort }) {
         const ask = raw ? JSON.parse(raw) : {}
         if (req.method === "GET" && url.pathname === "/relay/targets") return answer(res, { targets: [...kernels.values()].map(k => ({ daemonId: k.kernelId, status: "ONLINE", alias: k.alias })) })
         if (url.pathname === "/auth/kernel/migrate") {
-          kernels.set(ask.kernelId, { kernelId: ask.kernelId, alias: null })
+          kernels.set(ask.kernelId, { kernelId: ask.kernelId, machineId: ask.machineId, thumbprint: ask.publicKeyThumbprint, alias: null })
           note("owner-cloud-migrate", { kernel: ask.kernelId })
           return answer(res, { kernelCredential: `kernel-credential-${randomBytes(8).toString("hex")}` })
         }
         if (url.pathname === "/kernels/presence") {
-          kernels.set(ask.kernelId, { kernelId: ask.kernelId, alias: ask.kernelAlias ?? null })
+          kernels.set(ask.kernelId, { ...kernels.get(ask.kernelId), kernelId: ask.kernelId, machineId: ask.machineId, publicKey: ask.metadata?.relay_public_key, alias: ask.kernelAlias ?? null })
+          const kernel = kernels.get(ask.kernelId)
+          onPresence?.({ kernelId: kernel.kernelId, keyThumbprint: kernel.thumbprint })
           return answer(res, {})
         }
+        if (req.method === "GET" && url.pathname === "/v1/owner-managed-context-tickets/peers") return answer(res, { peers: [...kernels.values()].filter(k => k.publicKey && k.thumbprint).map(k => ({ targetId: k.kernelId, peer: { relayRealmId: realm, machineId: k.machineId, kernelId: k.kernelId, relayPublicKey: k.publicKey, keyThumbprint: k.thumbprint } })) })
         if (url.pathname === "/relay/token") {
           const actions = ask.allowedActions ?? ["daemon.register", "daemon.heartbeat", "packet.route", "peer.request", "peer.event", "client.metadata.read"]
           note("owner-cloud-token", { subject: ask.subject, kind: ask.subjectKind, actions, bound: !!ask.publicKeyThumbprint, targets: ask.allowedTargets ?? null })
@@ -36,6 +39,7 @@ export async function startOwnerCloud({ token, note, realm, relayPort }) {
   })
   await new Promise(r => server.listen(0, "127.0.0.1", r))
   server.unref()
+  onServer?.(server)
   const profile = { api_url: `http://127.0.0.1:${server.address().port}`, email: "drill@example.invalid", account_id: "drill-account", user_id: "local", account_slug: "drill", realm_id: realm, relay_url: `ws://127.0.0.1:${relayPort}`, issuer_id: realm, machine_id: "machine-drill", machine_credential: randomBytes(16).toString("hex") }
   return { CHARIOX_CLOUD_RELAY_CONFIG_JSON: JSON.stringify(profile) }
 }

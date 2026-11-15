@@ -1,0 +1,11 @@
+{
+  "local_protocol": 1008,
+  "response": {
+    "KernelBrowser": {
+      "result": {
+        "revision": "5ce59cf62298ff4e.7",
+        "unchanged": true
+      }
+    }
+  }
+}

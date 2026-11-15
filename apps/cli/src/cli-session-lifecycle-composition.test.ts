@@ -1,6 +1,8 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import { LocalIpcError } from "@chariox/kernel-client/ipc"
+
 import {
   createCliSessionLifecycleComposition,
   type CliSessionLifecycleCompositionDeps,
@@ -143,7 +145,7 @@ test("MP-08/MP-10 recovery retries a failed session subscription before declarin
   }
   const deps = new Proxy(values, { get: (target, key) => key in target ? target[key as keyof typeof target] : () => {} }) as unknown as CliSessionLifecycleCompositionDeps
   await createCliSessionLifecycleComposition(deps).recoverAttachedSessionAfterKernelRestart()
-  assert.deepEqual({ subscriptions, repairs, recovered, retries }, { subscriptions: 2, repairs: 2, recovered: 1, retries: 1 })
+  assert.deepEqual({ subscriptions, repairs, recovered, retries }, { subscriptions: 3, repairs: 0, recovered: 1, retries: 1 })
 })
 
 // MP-08 / MP-10 (panes R12, PANE-15; panetest-d T-10 RED): a remote TUI whose
@@ -177,4 +179,40 @@ test("a stale attachment subscription failure runs session-unavailable recovery"
 
   assert.equal(recoveries.length, 1)
   assert.match(recoveries[0] ?? "", /does not belong to session/)
+})
+
+// RR-07 (MP-08 / MP-10): after a >30s relay outage the kernel sweeps the attachment
+// and the next subscribe returns the typed `attachment_not_found`. The main Room TUI
+// re-attaches the same Room (driven by onKernelTransportClosed ->
+// recoverAttachedSessionAfterKernelRestart) instead of tearing it down to the waiting
+// room. A swept attachment is NOT session-unavailable.
+test("a swept-attachment subscription failure re-attaches the Room instead of returning to the waiting room", async () => {
+  const transportClosed: string[] = []
+  const recoveries: string[] = []
+  const deps = {
+    client: {
+      subscribeToKernelEvents: async () => {
+        throw new LocalIpcError("subscribe", "attachment `att-old` was not found", "attachment_not_found", false)
+      },
+    },
+    options: {}, renderer: {}, appLogger: { error: () => {}, debug: () => {} },
+    closingStateController: { isClosing: () => false, setClosing: () => {} },
+    supportsKernelEventStream: true,
+    kernelConnected: () => true,
+    attachmentState: () => ({ id: "att-old", session_id: "s-1" }),
+    sessionState: () => ({ id: "s-1" }),
+    isAttached: () => true,
+    formatError: (error: Error) => error.message,
+    setDaemonDisconnected: () => {},
+    setStatusLine: () => {},
+    appendNotice: () => {},
+    updateSessionChrome: () => {},
+    onKernelTransportClosed: (message: string) => { transportClosed.push(message) },
+    handleSessionUnavailable: (message: string) => { recoveries.push(message) },
+  } as unknown as CliSessionLifecycleCompositionDeps
+
+  await createCliSessionLifecycleComposition(deps).syncKernelEventSubscription()
+
+  assert.equal(recoveries.length, 0, "a swept attachment must not be treated as an unavailable session")
+  assert.equal(transportClosed.length, 1, "the swept attachment drives a re-attach through the shared connection chrome")
 })

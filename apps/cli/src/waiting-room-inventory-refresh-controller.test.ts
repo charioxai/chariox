@@ -23,7 +23,7 @@ import {
   waitingRoomInventoryCacheScopeKey,
 } from "./waiting-room-inventory-cache.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
-import type { ManagedEnvironmentCatalog } from "@chariox/kernel-client/ipc-managed-environment-requests"
+import type { MachineAllocationCapability } from "./machine-allocation-api.js"
 
 test("waiting room inventory refresh is idle while kernel is disconnected", async () => {
   const harness = createHarness({ connected: false })
@@ -54,22 +54,19 @@ test("waiting room inventory refresh applies snapshots and filters hidden inacti
 })
 
 test("waiting room inventory refresh applies managed catalog and exact launch target", async () => {
-  const managedEnvironmentCatalog: ManagedEnvironmentCatalog = {
-    computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
-    contextSources: [],
-    environments: [],
-    rentUnavailable: null,
+  const machineAllocationCapability: MachineAllocationCapability = {
+    revision: "offer-1", actions: ["acquire"], job_offers: [], job_default_class_id: null, offer: null,
   }
   const harness = createHarness({
     snapshots: [inventory("v1", {
-      managedEnvironmentCatalog,
+      machineAllocationCapability,
       launchTarget: { workspaceId: "workspace-1", worktreeId: "worktree-1" },
     })],
   })
 
   await harness.controller.refreshNow()
 
-  assert.equal(harness.managedEnvironmentCatalog(), managedEnvironmentCatalog)
+  assert.equal(harness.machineAllocationCapability(), machineAllocationCapability)
   assert.deepEqual(harness.launchTarget(), {
     workspaceId: "workspace-1",
     worktreeId: "worktree-1",
@@ -77,15 +74,12 @@ test("waiting room inventory refresh applies managed catalog and exact launch ta
 })
 
 test("waiting room inventory refresh preserves the last managed catalog on transient omission", async () => {
-  const managedEnvironmentCatalog: ManagedEnvironmentCatalog = {
-    computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
-    contextSources: [],
-    environments: [],
-    rentUnavailable: null,
+  const machineAllocationCapability: MachineAllocationCapability = {
+    revision: "offer-1", actions: ["acquire"], job_offers: [], job_default_class_id: null, offer: null,
   }
   const harness = createHarness({
     snapshots: [
-      inventory("v1", { managedEnvironmentCatalog }),
+      inventory("v1", { machineAllocationCapability }),
       inventory("v2"),
     ],
   })
@@ -94,19 +88,16 @@ test("waiting room inventory refresh preserves the last managed catalog on trans
   await harness.controller.refreshNow()
 
   assert.equal(harness.inventoryStatus(), "ready")
-  assert.equal(harness.managedEnvironmentCatalog(), managedEnvironmentCatalog)
+  assert.equal(harness.machineAllocationCapability(), machineAllocationCapability)
 })
 
 test("waiting room inventory refresh clears retained managed catalog across kernel scope", async () => {
-  const managedEnvironmentCatalog: ManagedEnvironmentCatalog = {
-    computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
-    contextSources: [],
-    environments: [],
-    rentUnavailable: null,
+  const machineAllocationCapability: MachineAllocationCapability = {
+    revision: "offer-1", actions: ["acquire"], job_offers: [], job_default_class_id: null, offer: null,
   }
   const harness = createHarness({
     snapshots: [
-      inventory("v1", { kernelId: "kernel-a", managedEnvironmentCatalog }),
+      inventory("v1", { kernelId: "kernel-a", machineAllocationCapability }),
       inventory("v2", { kernelId: "kernel-b" }),
     ],
   })
@@ -114,30 +105,27 @@ test("waiting room inventory refresh clears retained managed catalog across kern
   await harness.controller.refreshNow()
   await harness.controller.refreshNow()
 
-  assert.equal(harness.managedEnvironmentCatalog(), undefined)
+  assert.equal(harness.machineAllocationCapability(), undefined)
 })
 
 test("waiting room inventory refresh clears retained managed catalog across Cloud account scope", async () => {
   let scope = "kernel-a:account-a"
-  const managedEnvironmentCatalog: ManagedEnvironmentCatalog = {
-    computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
-    contextSources: [],
-    environments: [],
-    rentUnavailable: null,
+  const machineAllocationCapability: MachineAllocationCapability = {
+    revision: "offer-1", actions: ["acquire"], job_offers: [], job_default_class_id: null, offer: null,
   }
   const harness = createHarness({
     snapshots: [
-      inventory("v1", { kernelId: "kernel-a", managedEnvironmentCatalog }),
+      inventory("v1", { kernelId: "kernel-a", machineAllocationCapability }),
       inventory("v2", { kernelId: "kernel-a" }),
     ],
-    getManagedEnvironmentCatalogScope: () => scope,
+    getMachineAllocationCapabilityScope: () => scope,
   })
 
   await harness.controller.refreshNow()
   scope = "kernel-a:account-b"
   await harness.controller.refreshNow()
 
-  assert.equal(harness.managedEnvironmentCatalog(), undefined)
+  assert.equal(harness.machineAllocationCapability(), undefined)
 })
 
 test("waiting room inventory refresh reconciles unchanged versions without replacing state", async () => {
@@ -742,7 +730,7 @@ function createHarness(options: {
   getCacheScopeKey?: () => string
   loadCachedInventories?: () => readonly WaitingRoomInventory[]
   persistInventory?: (inventory: WaitingRoomInventory) => void
-  getManagedEnvironmentCatalogScope?: (inventory: WaitingRoomInventory) => string
+  getMachineAllocationCapabilityScope?: (inventory: WaitingRoomInventory) => string
 } = {}) {
   const catalog = fallbackProviderCatalog()
   const hiddenKernelIds = options.hiddenKernelIds ?? new Set<string>()
@@ -755,7 +743,7 @@ function createHarness(options: {
   let projects: WaitingRoomProjectSummary[] = []
   let externalProviderSessions: ExternalProviderSessionRecord[] = []
   let externalProviderSessionsPage = { hasMore: false, nextCursor: null as string | null }
-  let managedEnvironmentCatalog: ManagedEnvironmentCatalog | undefined
+  let machineAllocationCapability: MachineAllocationCapability | null | undefined
   let launchTarget: WaitingRoomInventory["launchTarget"]
   let inventoryCalls = 0
   let reconcileCount = 0
@@ -798,11 +786,11 @@ function createHarness(options: {
     },
     setTerminals: () => {},
     setSlices: () => {},
-    setManagedEnvironmentCatalog: (catalog) => {
-      managedEnvironmentCatalog = catalog
+    setMachineAllocationCapability: (catalog) => {
+      machineAllocationCapability = catalog
     },
-    ...(options.getManagedEnvironmentCatalogScope
-      ? { getManagedEnvironmentCatalogScope: options.getManagedEnvironmentCatalogScope }
+    ...(options.getMachineAllocationCapabilityScope
+      ? { getMachineAllocationCapabilityScope: options.getMachineAllocationCapabilityScope }
       : {}),
     setLaunchTarget: (target) => {
       launchTarget = target
@@ -846,7 +834,7 @@ function createHarness(options: {
     projects: () => projects,
     externalProviderSessions: () => externalProviderSessions,
     externalProviderSessionsPage: () => externalProviderSessionsPage,
-    managedEnvironmentCatalog: () => managedEnvironmentCatalog,
+    machineAllocationCapability: () => machineAllocationCapability,
     launchTarget: () => launchTarget,
     reconcileCount: () => reconcileCount,
     warnings: () => warnings,

@@ -1042,3 +1042,75 @@ async fn sudo_operations_app_validation_stays_with_the_owner_decision() {
         .unwrap();
     assert_eq!(status.state, ValidationState::Pending);
 }
+
+/// A remote job of an agent whose /sudo task is live is already owner-authorized work: the
+/// acquisition raises no second owner decision, with the global automatic setting off.
+#[tokio::test]
+async fn sudo_task_job_acquisition_asks_no_second_owner_decision() {
+    use crate::local::{
+        ControlPlaneRequest, JobMachineOffer, JobMachineRate, JobNeeds, KernelConnectionClass,
+        LocalDaemonRequest, MachineAllocationCapability,
+    };
+    let f = fixture();
+    let turn = running(&f);
+    assert_eq!(
+        f.state
+            .owned
+            .config_projection
+            .snapshot()
+            .user_config
+            .agents
+            .offload_without_asking,
+        None,
+        "the global automatic setting is off"
+    );
+    let request = ControlPlaneRequest::AcquireJob {
+        capability_revision: "v1".into(),
+        request_id: "request".into(),
+        job_ref: "job".into(),
+        needs: JobNeeds::default(),
+        timeout_s: 60,
+    };
+    let mut command = crate::runtime::command::KernelCommand::from_local_request(
+        "acquire-job",
+        None,
+        None,
+        &LocalDaemonRequest::ControlPlane(request.clone()),
+    );
+    command.agent_id = Some(turn.agent_id.clone());
+    command.session_id = Some(turn.session_id.clone());
+    command.caller.metaagent_id = Some(turn.agent_id.clone());
+    command.caller.connection_class = Some(KernelConnectionClass::KernelAgent);
+    let capability = MachineAllocationCapability {
+        revision: "v1".into(),
+        actions: vec!["acquire_job".into()],
+        offer: None,
+        job_default_class_id: Some("build".into()),
+        job_offers: vec![JobMachineOffer {
+            class_id: "build".into(),
+            vcpu: 4,
+            usable_memory_mib: 7000,
+            disk_gib: 40,
+            rate_per_minute: JobMachineRate {
+                amount_micros: 600,
+                currency: "USD".into(),
+            },
+        }],
+    };
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        f.state
+            .approve_machine_acquisition(&command, &request, Some(&capability)),
+    )
+    .await
+    .expect("a sudo task's job waited for an owner decision")
+    .unwrap();
+    assert!(f
+        .state
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+}

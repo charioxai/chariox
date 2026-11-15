@@ -110,33 +110,32 @@ impl Uploads {
     }
 
     /// True when the lane has a chunk the window has room for; one chunk always
-    /// fits when nothing is unacknowledged.
-    pub(crate) fn ready(&self, lane: Lane) -> bool {
+    /// fits when nothing is unacknowledged. A chunk that waits tells the window
+    /// that the link, not the application, limits what it measures.
+    pub(crate) fn ready(&mut self, lane: Lane) -> bool {
         let upload = match lane {
             Lane::Priority => &self.priority,
             Lane::Event => &self.event,
         };
         let frame = match upload {
-            Some(Upload {
-                message: Message::Text(_),
-                ..
-            }) => self.window.chunk_bytes(),
-            Some(_) if self.adaptive_binary => self.window.first_chunk_bytes(),
+            Some(upload) if matches!(&upload.message, Message::Text(_)) || self.adaptive_binary => {
+                self.window.chunk_bytes()
+            }
             Some(_) => CHUNK_BYTES,
             None => return false,
         };
-        self.bytes == 0 || self.bytes + frame <= self.window.bytes()
+        let fits = self.bytes == 0 || self.bytes + frame <= self.window.bytes();
+        if !fits {
+            self.window.blocked(Instant::now());
+        }
+        fits
     }
 
     /// The lane's next chunk; the lane is free again after its last one.
     pub(crate) fn next_chunk(&mut self, lane: Lane) -> Option<Message> {
         let next_id = self.last_id.checked_add(1)?;
         let adaptive = self.adaptive_binary;
-        let limit = if adaptive {
-            self.window.first_chunk_bytes()
-        } else {
-            self.window.chunk_bytes()
-        };
+        let limit = self.window.chunk_bytes();
         let upload = self.slot(lane).as_mut()?;
         let id = if upload.id == 0 { next_id } else { upload.id };
         let (chunk, end) = upload.next_chunk(id, limit, adaptive)?;

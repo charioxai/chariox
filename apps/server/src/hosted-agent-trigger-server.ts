@@ -23,7 +23,12 @@ export function buildHostedAgentTriggerServer(options: Options) {
   app.addContentTypeParser("*", {parseAs: "buffer"}, (_request, body, done) => done(null, body))
   const admitted = new WeakMap<FastifyRequest, {row: TriggerDeployment; headers: Record<string, string>}>()
   const limits = new Map<string, {tokens: number; at: number}>()
-  const access = (request: FastifyRequest) => request.method === "POST" || (request.method === "GET" && !String(request.headers["sec-purpose"] ?? request.headers.purpose ?? "").toLowerCase().includes("prefetch") && Object.hasOwn(request.query as object, "prompt")) ? "operate" : "read"
+  // Reading the page at the base is "read"; any other request may fire the trigger.
+  const access = (request: FastifyRequest) => {
+    const path = (request.params as {"*"?: string})["*"] ?? ""
+    const prefetch = String(request.headers["sec-purpose"] ?? request.headers.purpose ?? "").toLowerCase().includes("prefetch")
+    return !path && (request.method === "HEAD" || (request.method === "GET" && (prefetch || !request.url.includes("?")))) ? "read" : "operate"
+  }
   const metadata = async (request: FastifyRequest, reply: FastifyReply, thumbprint?: string): Promise<Admission | undefined> => {
     const saved = admitted.get(request)
     const headers: Record<string, string> = saved?.headers ?? {}
@@ -51,19 +56,18 @@ export function buildHostedAgentTriggerServer(options: Options) {
   }
   app.addHook("onClose", async () => {limits.clear()})
   app.get("/ready", async () => ({status: "ready"}))
-  for (const url of ["/agent-triggers/:id", "/agent-triggers/:id/", "/agent-triggers/:id/*"]) app.route({method: ["GET", "HEAD", "POST"], url, logLevel: "silent",
+  for (const url of ["/agent-triggers/:id", "/agent-triggers/:id/", "/agent-triggers/:id/*"]) app.route({method: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], url, logLevel: "silent", exposeHeadRoute: false,
     onRequest: async (request, reply) => {await metadata(request, reply)},
     handler: async (request, reply) => {
       const row = admitted.get(request)!.row, base = `/agent-triggers/${encodeURIComponent(row.id)}/`
       const path = (request.params as {"*"?: string})["*"] ?? ""
       if (["events", "history", "resend"].includes(path)) return reply.code(410).send({error: "Runtime history uses the browser's encrypted kernel connection"})
-      if (path) return reply.code(404).send({error: "trigger not found"})
       if (access(request) === "read") return reply.header("Cache-Control", "private, no-cache").type("text/html; charset=utf-8").send(agentTriggerPage({alias: "Chariox", online: false, busy: false, enabled: true, entries: [], turns: [], nextCursor: null, unconfirmed: []}, base, undefined, {scriptUrl: "/assets/agent-trigger-viewer.js", deploymentId: row.id}))
       const now = performance.now(), limit = limits.get(row.id) ?? {tokens: 3, at: now}
       limit.tokens = Math.min(3, limit.tokens + (now - limit.at) / 10_000); limit.at = now; limits.set(row.id, limit)
       if (limit.tokens < 1) return reply.code(429).header("Retry-After", "10").send({error: "too many requests; retry shortly"})
       limit.tokens--
-      return invokeAgentTrigger(request, reply, row, base, async (): Promise<TriggerIngressConnection> => {
+      return invokeAgentTrigger(request, reply, row, base, path, async (): Promise<TriggerIngressConnection> => {
         const connect = options.connect ?? AgentTriggerIngressClient.connect
         const client = await connect(row.kernelId, async thumbprint => {
           const next = await metadata(request, reply, thumbprint)

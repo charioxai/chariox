@@ -1086,6 +1086,70 @@ fn runtime_with_idle_workflow_owned_by(
 }
 
 #[test]
+fn owned_workflow_launch_retires_idle_ordinary_provider_without_flushing_context() {
+    let (runtime, session_id, workflow_id, endpoint_id, _test_root) = runtime_with_idle_workflow();
+    runtime
+        .owned
+        .session_store
+        .write()
+        .set_workflow_flush_agent_context_before_run(&session_id, &workflow_id, false)
+        .expect("workflow should preserve provider context");
+    let old_run_id = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("session should resolve")
+        .active_provider_run_id()
+        .expect("idle ordinary provider should exist")
+        .to_string();
+    let old_run = runtime
+        .owned
+        .provider_store
+        .get_run(&old_run_id)
+        .expect("ordinary provider should resolve");
+    runtime
+        .owned
+        .agent_store
+        .update_agent_profile(
+            old_run
+                .agent_instance_id()
+                .expect("run should name its agent"),
+            None,
+            Some(old_run.model().to_string()),
+            None,
+        )
+        .expect("agent and ordinary provider should use the same profile");
+
+    let (_, dispatches) = runtime
+        .owned
+        .workflow_enqueue_prompt_and_maybe_start(
+            &session_id,
+            &workflow_id,
+            &endpoint_id,
+            Some("preserve context while enabling workflow tools".to_string()),
+            None,
+            None,
+        )
+        .expect("workflow should launch");
+
+    assert_eq!(dispatches.starting_provider_runs.len(), 1);
+    assert_eq!(
+        dispatches.provider_run_retirements,
+        std::collections::BTreeMap::from([(
+            dispatches.starting_provider_runs[0].clone(),
+            vec![old_run_id],
+        )])
+    );
+    let replacement = runtime
+        .owned
+        .provider_store
+        .get_run(&dispatches.starting_provider_runs[0])
+        .expect("workflow provider should exist");
+    assert!(!replacement.resume_state().is_empty());
+    assert!(replacement.workflow_tools_enabled());
+}
+
+#[test]
 fn owned_workflow_launch_retires_idle_provider_and_suppresses_resume_state() {
     let (runtime, session_id, workflow_id, endpoint_id, _test_root) = runtime_with_idle_workflow();
     let old_provider_run_id = runtime

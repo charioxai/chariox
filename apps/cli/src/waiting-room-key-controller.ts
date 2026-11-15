@@ -9,7 +9,7 @@ import {
   type WaitingRoomSessionLifecycleAction,
 } from "./waiting-room-controller.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
-import { waitingRoomConfiguresNewManagedMachine } from "./waiting-room-managed-environments.js"
+import { waitingRoomConfiguresNewManagedMachine } from "./waiting-room-machine-allocation.js"
 
 export type WaitingRoomKeyControllerEvent = {
   name: string

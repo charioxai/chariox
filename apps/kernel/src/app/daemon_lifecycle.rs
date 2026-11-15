@@ -310,6 +310,7 @@ impl DaemonApp {
             }
             #[cfg(not(unix))]
             wait_for_shutdown_signal().await;
+            crate::shutdown::begin();
             runtime_state.finish_outside_waits_on_shutdown().await;
             let _ = shutdown_tx.send(true);
         };
@@ -327,16 +328,25 @@ impl DaemonApp {
         };
 
         let _ = shutdown_tx.send(true);
+        crate::shutdown::stage("relay connector");
         let _ = relay_task.await;
+        crate::shutdown::stage("managed context completion");
         if let Some(task) = empty_context_completion_task {
             let _ = task.await;
         }
+        crate::shutdown::stage("event delivery");
         let _ = event_delivery_task.await;
+        crate::shutdown::stage("external provider discovery");
         let _ = external_provider_session_discovery_task.await;
+        crate::shutdown::stage("provider usage refresh");
         let _ = provider_usage_refresh_task.await;
+        crate::shutdown::stage("provider account discovery");
         let _ = provider_discovery_task.await;
+        crate::shutdown::stage("event connection reconciliation");
         let _ = event_connection_reconciliation_task.await;
+        crate::shutdown::stage("event connection refresh");
         let _ = ready_event_connection_refresh_task.await;
+        crate::shutdown::stage("managed activity reporting");
         if let Some(task) = managed_activity_task {
             match task.await {
                 Ok(Ok(())) => {}
@@ -352,9 +362,11 @@ impl DaemonApp {
                 ),
             }
         }
+        crate::shutdown::stage("history migration");
         if let Some(task) = history_migration_task {
             let _ = task.await;
         }
+        crate::shutdown::stage("remote execution lease reaper");
         if let Some(task) = remote_execution_lease_reaper_task {
             let _ = task.await;
         }

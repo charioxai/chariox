@@ -449,6 +449,48 @@ async fn worker_inode_stays_pinned_across_executable_path_replacement() {
     println!("DRILL executable path replacement cannot change identity/compile/launch inode; installation data/tmp exist: PASS");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires real source App; use install-drill.sh"]
+async fn another_valid_worker_build_swapped_in_after_open_never_runs() {
+    let installed = Installed::new();
+    let program = installed.root.join("pinned-worker");
+    fs::copy(worker(), &program).unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o500)).unwrap();
+    let runtime = WasmRuntime::open(&program).unwrap();
+    let pinned_build = runtime.identity().worker_build.clone();
+    // A runnable worker with a different build: path-based exec would start it,
+    // and only its own digest (not the kernel's check) would tell the builds apart.
+    fs::remove_file(&program).unwrap();
+    fs::copy(worker(), &program).unwrap();
+    {
+        use std::io::Write;
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&program)
+            .unwrap()
+            .write_all(b"swapped build\n")
+            .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o500)).unwrap();
+    }
+    assert_ne!(
+        WasmRuntime::open(&program).unwrap().identity().worker_build,
+        pinned_build
+    );
+    assert_eq!(runtime.identity().worker_build, pinned_build);
+    let prepared = PreparedWorker::prepare_wasm(
+        runtime,
+        installed.lease(),
+        &installed.binding,
+        &installed.database,
+    )
+    .unwrap();
+    echo(prepared).await;
+    println!(
+        "DRILL a valid worker build swapped in after the check is never the one that runs: PASS"
+    );
+}
+
 #[test]
 #[ignore = "requires native worker; use install-drill.sh"]
 fn writable_runtime_is_refused_before_compilation() {

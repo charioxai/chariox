@@ -32,10 +32,9 @@ COPY patches/ureq patches/ureq
 COPY adapters/rust adapters/rust
 COPY apps/aegs-dummy apps/aegs-dummy
 COPY apps/kernel apps/kernel
-# MP-08/MP-11: managed update helpers are embedded by the kernel compiler.
-COPY deploy/managed-kernel/extract-release.py deploy/managed-kernel/release-update-storage.py deploy/managed-kernel/
 COPY apps/relay apps/relay
-COPY deploy/managed-kernel deploy/managed-kernel
+COPY deploy/runtime-release deploy/runtime-release
+COPY deploy/local-linux deploy/local-linux
 COPY examples/workflow-code examples/workflow-code
 COPY packages/aegs-sdk packages/aegs-sdk
 COPY packages/event-protocol packages/event-protocol
@@ -223,7 +222,7 @@ COPY apps/kernel/slice-linux-docker/docker/slice-selkies.py \
 
 WORKDIR /opt/chariox-toolchain
 COPY apps/kernel/slice-linux-docker/toolchain/package.json apps/kernel/slice-linux-docker/toolchain/package-lock.json ./
-COPY deploy/managed-kernel/provider-versions.env ./
+COPY deploy/runtime-release/provider-versions.env ./
 RUN . ./provider-versions.env \
   && npm_config_cache=/tmp/chariox-npm-cache npm ci --omit=dev \
   && test "$(node_modules/.bin/codex --version)" = "codex-cli ${CHARIOX_CODEX_VERSION}" \
@@ -274,6 +273,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-resto
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-drafts.mjs /opt/chariox-slice/browser-app-drafts.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-input-callers.mjs /opt/chariox-slice/browser-app-input-callers.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-view-actions.mjs /opt/chariox-slice/browser-app-view-actions.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-confirmation-views.mjs /opt/chariox-slice/browser-app-confirmation-views.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs /opt/chariox-slice/browser-controller-events.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-page-permissions.mjs \
      apps/kernel/slice-linux-docker/docker/browser-page-permission-shim.mjs \

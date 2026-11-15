@@ -141,16 +141,18 @@ pub(in crate::runtime::state) fn add_due_trigger(
 ) {
     let mut session = runtime.owned.session_store.get_session(session_id).unwrap();
     // Created long ago, so the first run is already due.
-    session.add_agent_trigger(AgentTrigger::schedule(
-        id,
-        agent_id,
-        "owner",
-        60,
-        AgentTriggerRepeat::Every,
-        busy_policy,
-        format!("fire {id}"),
-        1,
-    ));
+    session.add_agent_trigger(
+        AgentTrigger::schedule(
+            id,
+            agent_id,
+            "owner",
+            crate::session::AgentSchedule::interval(60, AgentTriggerRepeat::Every),
+            busy_policy,
+            format!("fire {id}"),
+            1,
+        )
+        .expect("schedule should be valid"),
+    );
     runtime.owned.session_store.restore_session(session);
 }
 
@@ -359,16 +361,18 @@ async fn triggers_of_one_agent_fire_in_claim_order_across_pumps() {
             .session_store
             .get_session(&session_id)
             .unwrap();
-        session.add_agent_trigger(AgentTrigger::schedule(
-            id,
-            &agent_id,
-            "owner",
-            60,
-            AgentTriggerRepeat::Every,
-            busy_policy,
-            format!("fire {id}"),
-            created_ms,
-        ));
+        session.add_agent_trigger(
+            AgentTrigger::schedule(
+                id,
+                &agent_id,
+                "owner",
+                crate::session::AgentSchedule::interval(60, AgentTriggerRepeat::Every),
+                busy_policy,
+                format!("fire {id}"),
+                created_ms,
+            )
+            .expect("schedule should be valid"),
+        );
         runtime.owned.session_store.restore_session(session);
     }
     // The steer of `first` waits for the lane of the running turn.
@@ -455,4 +459,44 @@ async fn a_launch_retry_rejected_for_lack_of_a_place_is_admitted_before_the_bloc
         );
     }
     drop(held);
+}
+
+#[tokio::test]
+async fn concurrent_agent_triggers_share_one_live_attachment() {
+    let (_worktree, runtime, session_id, _, _, _, _) = runtime_with_active_prompt().await;
+    for _ in 0..32 {
+        let start = std::sync::Barrier::new(8);
+        let ids = std::thread::scope(|scope| {
+            let handles = (0..8)
+                .map(|_| {
+                    let start = &start;
+                    let owned = &runtime.owned;
+                    let session_id = &session_id;
+                    scope.spawn(move || {
+                        start.wait();
+                        owned.ensure_agent_trigger_attachment(session_id).unwrap()
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert!(ids.iter().all(|id| id == &ids[0]), "{ids:?}");
+        runtime
+            .owned
+            .ensure_attachment_in_session(&session_id, &ids[0])
+            .expect("the shared attachment survives every concurrent ensure");
+        assert_eq!(
+            runtime
+                .owned
+                .attachment_store
+                .list_client_attachments(&format!("agent-schedules:{session_id}"))
+                .len(),
+            1,
+            "one attachment owns every firing's input"
+        );
+        runtime.owned.detach(&ids[0]).unwrap();
+    }
 }

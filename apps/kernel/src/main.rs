@@ -139,6 +139,12 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
         std::env::remove_var(name);
     }
     let config_load_ms = config_started.elapsed().as_millis();
+    let shutdown = chariox_kernel::shutdown::ShutdownWatchdog::install().map_err(|error| {
+        chariox_kernel::DaemonError::LocalTransport {
+            operation: "shutdown watchdog",
+            message: format!("failed to start shutdown watchdog: {error}"),
+        }
+    })?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(chariox_kernel::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
@@ -147,7 +153,19 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
             operation: "daemon runtime",
             message: format!("failed to start Tokio runtime: {error}"),
         })?;
-    runtime.block_on(async_main(config, process_started, config_load_ms))
+    let result = runtime.block_on(async_main(config, process_started, config_load_ms));
+    chariox_kernel::shutdown::begin();
+    chariox_kernel::shutdown::stage("Tokio runtime blocking jobs");
+    // Runtime::drop waits forever for spawn_blocking work, even after all
+    // async tasks have stopped. A filesystem or discovery call may still run.
+    let teardown_started = Instant::now();
+    let teardown_budget = std::time::Duration::from_secs(1);
+    runtime.shutdown_timeout(teardown_budget);
+    let runtime_abandoned = teardown_started.elapsed() >= teardown_budget;
+    chariox_kernel::shutdown::stage("process log writer");
+    drop(_process_logs);
+    shutdown.finish(runtime_abandoned);
+    result
 }
 
 async fn async_main(

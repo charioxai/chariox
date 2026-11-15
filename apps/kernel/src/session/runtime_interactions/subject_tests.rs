@@ -1,6 +1,23 @@
 use super::*;
 use serde_json::{json, Value};
 
+#[test]
+fn an_app_confirmation_keeps_its_kernel_written_frame_in_the_card() {
+    let mut wire = serde_json::to_value(decision()).unwrap();
+    let frame = json!({
+        "installation_id":"campaign", "app_id":"com.chariox.campaign",
+        "app_name":"Campaign", "publisher_id":"com.chariox",
+        "publisher_name":"Chariox", "action_name":"pay"
+    });
+    wire["app_confirmation"] = frame.clone();
+    let card: RuntimeInteraction = serde_json::from_value(wire).unwrap();
+    assert_eq!(
+        serde_json::to_value(card).unwrap()["app_confirmation"],
+        frame,
+        "App confirmation cards must retain the kernel-written App and publisher frame"
+    );
+}
+
 fn decision() -> RuntimeInteraction {
     RuntimeInteraction::for_kernel_operation(
         "decision",

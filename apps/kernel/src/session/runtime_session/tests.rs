@@ -51,8 +51,7 @@ fn lifecycle_projection_obeys_private_and_transparent_collaboration() {
             serde_json::from_value(json!({
                 "task_id": agent, "room_id": "room", "agent_id": agent, "prompt_id": agent,
                 "revision": 1, "state": "waiting", "reason": "private source review",
-                "obligations": [], "last_progress_at_ms": 0, "progress_sequence": 0,
-                "no_progress_wakes": 0, "correction_used": false
+                "obligations": [], "last_progress_at_ms": 0, "correction_used": false
             }))
             .unwrap(),
         );
@@ -146,8 +145,7 @@ fn agent_tasks_and_wakes_follow_agent_trace_visibility() {
         serde_json::from_value(serde_json::json!({
             "task_id": "task", "room_id": "room", "agent_id": agent, "prompt_id": "task",
             "provider_run_id": null, "revision": 1, "state": "blocked", "reason": "private",
-            "obligations": [], "wait": null, "last_progress_at_ms": 1, "progress_sequence": 0,
-            "no_progress_wakes": 0, "correction_used": false, "pending_prompt_id": null,
+            "obligations": [], "wait": null, "last_progress_at_ms": 1, "correction_used": false, "pending_prompt_id": null,
         }))
         .unwrap()
     };

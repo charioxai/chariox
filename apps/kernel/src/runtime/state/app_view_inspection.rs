@@ -191,4 +191,51 @@ impl KernelRuntimeState {
         .await
         .map_err(|_| error("App storage is unavailable; retry /app actions"))?
     }
+
+    /// The App and publisher a person confirms for, read from the verified active release
+    /// of this exact generation; never from the page.
+    pub(super) async fn app_confirmation_frame(
+        &self,
+        binding: &AppViewBinding,
+        action_name: &str,
+    ) -> Result<crate::local::AppConfirmationFrame, DaemonError> {
+        let store = self.owned.durable_state_store.clone();
+        let binding = binding.clone();
+        let action_name = action_name.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let release = store
+                .active_app_release(&binding.owner, &binding.installation)
+                .map_err(|_| {
+                    error("The App release is unavailable or no longer trusted; check /app status")
+                })?;
+            let verified = release
+                .verify()
+                .map_err(|_| error("The App release failed verification; reinstall it"))?;
+            if release.generation() != binding.generation {
+                return Err(error(
+                    "This App view uses an old generation; reopen it before App actions",
+                ));
+            }
+            use chariox_app_package::VerifiedApp;
+            let app_id = verified.manifest().app_id.to_owned();
+            let (display_name, publisher_name) = match verified.release_manifest() {
+                chariox_app_package::ReleaseManifest::Wasm(manifest) => {
+                    (manifest.display_name, manifest.publisher.name)
+                }
+                chariox_app_package::ReleaseManifest::Node(manifest) => {
+                    (None, manifest.publisher.name)
+                }
+            };
+            Ok(crate::local::AppConfirmationFrame {
+                installation_id: binding.installation,
+                app_name: display_name.unwrap_or_else(|| app_id.clone()),
+                app_id,
+                publisher_id: release.publisher_id(),
+                publisher_name,
+                action_name,
+            })
+        })
+        .await
+        .map_err(|_| error("App storage is unavailable; retry the action"))?
+    }
 }

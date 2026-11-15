@@ -159,7 +159,8 @@ export function createAgentScheduleTriggerRequest(options: {
     CreateAgentTrigger: {
       session_id: options.sessionId,
       agent_id: options.agentId,
-      source: { kind: "schedule", interval_seconds: options.intervalSeconds, repeat: options.repeat },
+      // `/wait-every` never stops by itself: no max runs.
+      source: { kind: "schedule", trigger: { kind: "interval", every_seconds: options.intervalSeconds }, repeat: options.repeat, ...(options.repeat === "every" ? { max_runs: null } : {}) },
       busy_policy: options.busyPolicy,
       ...(options.prompt?.trim() ? { prompt: options.prompt.trim() } : {}),
     },
@@ -486,8 +487,9 @@ export function createAgentHttpTriggerRequest(options: { sessionId: string; agen
     ...(options.prompt?.trim() ? { prompt: options.prompt.trim() } : {}) } }
 }
 
-export function invokeAgentTriggerRequest(sessionId: string, triggerId: string, payload: unknown) {
-  return { InvokeAgentTrigger: { session_id: sessionId, trigger_id: triggerId, payload } }
+/** `input` is what the trigger's parser made of a request; `http` is its body as it arrived. */
+export function invokeAgentTriggerRequest(sessionId: string, triggerId: string, input: unknown, http?: { body_base64: string; content_type: string }) {
+  return { InvokeAgentTrigger: { session_id: sessionId, trigger_id: triggerId, input, ...(http ? { http } : {}) } }
 }
 
 export function readAgentTriggerTranscriptRequest(sessionId: string, triggerId: string, cursor: { before_sequence: number } | null = null) {

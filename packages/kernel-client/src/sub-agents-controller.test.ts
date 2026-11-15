@@ -209,3 +209,15 @@ test("a late read older than the empty tree that closed the stripe does not brin
   controller.apply(three(5))
   assert.ok(controller.stripe("room") === null, "a read older than rev 6 must not show agents again")
 })
+
+test("repeated tree revisions do not redraw unchanged stripes, including empty trees", () => {
+  for (const snapshot of [three(), tree(1, [])]) {
+    const h = make()
+    h.controller.apply(snapshot)
+    const changes = h.changes()
+    h.controller.apply(structuredClone(snapshot))
+    assert.equal(h.changes(), changes)
+    h.controller.apply({ ...snapshot, rev: 2 })
+    assert.equal(h.changes(), changes + 1)
+  }
+})

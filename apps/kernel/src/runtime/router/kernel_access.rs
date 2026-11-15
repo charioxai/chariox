@@ -275,6 +275,39 @@ impl CommandRouter {
         })
     }
 
+    pub(crate) fn authorize_file_watch(
+        &self,
+        source: crate::runtime::command::KernelCommandSource,
+        caller: crate::runtime::command::KernelCaller,
+    ) -> Result<crate::machine_files::StateGuard, DaemonError> {
+        let request = LocalDaemonRequest::StatKernelFile(crate::local::StatKernelFileRequest {
+            path: "/".into(),
+            with_sha256: false,
+        });
+        let command = KernelCommand::from_local_request_with_caller(
+            "file-watch",
+            source,
+            caller,
+            None,
+            None,
+            &request,
+        );
+        crate::runtime::kernel_runtime_role_policy::ensure_public_request_allowed(
+            &self.config_projection.snapshot(),
+            &request,
+        )?;
+        self.authorize_external_request(&command, &request)?;
+        self.authorize_relay_collaborator_request(&command, &request)?;
+        if !matches!(
+            command.caller.connection_class,
+            Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
+        ) || command_caller_user_id(&command) != self.config_projection.local_owner_user_id()
+        {
+            return Err(denied("only the kernel owner can watch machine files"));
+        }
+        Ok(self.runtime_state.machine_state_guard())
+    }
+
     /// The kernel file requests belong to the kernel's owner, at a Chariox terminal
     /// or as a local grant holder (or the gateway acting for one).
     async fn machine_file(

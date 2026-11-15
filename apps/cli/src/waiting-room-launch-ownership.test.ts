@@ -48,25 +48,6 @@ test("waiting room launch ownership synchronizes derived target inventory withou
   assert.equal(tracker.revision(), 1)
 })
 
-test("waiting room launch ownership tracks managed provider account selection", () => {
-  const initial = state({
-    selectedMachineRef: "managed:new",
-    managedProviderAccountSource: "selected_account",
-    managedProviderAccountSelection: [{ provider: "codex", accountProfile: "work" }],
-  })
-  const tracker = createWaitingRoomLaunchOwnershipTracker(initial)
-
-  tracker.update({
-    ...initial,
-    managedProviderAccountSelection: [
-      { provider: "codex", accountProfile: "work" },
-      { provider: "claude", accountProfile: "default" },
-    ],
-  })
-
-  assert.equal(tracker.revision(), 1)
-})
-
 function state(update: Partial<WaitingRoomState>): WaitingRoomState {
   return {
     focus: "new",

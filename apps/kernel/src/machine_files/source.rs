@@ -148,7 +148,7 @@ impl FileSource {
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, LinkError> {
-    tokio::task::spawn_blocking(work)
+    crate::shutdown::spawn_blocking("Files source I/O", work)
         .await
         .map_err(|_| LinkError::Refused("The file request stopped unexpectedly".to_owned()))?
         .map_err(LinkError::Refused)

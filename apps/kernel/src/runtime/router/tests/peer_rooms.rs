@@ -173,6 +173,29 @@ impl Rooms {
             .any(|task| task.prompt_id == prompt)
     }
 
+    async fn wait_for_message_delivery(&self, room: &str, agent: &str) -> bool {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !self.message_was_delivered(room, agent).await {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
+    // The abort task may have settled the turn before the fixture gets here.
+    async fn settle_cancelled_turn(&self) {
+        match self
+            .router
+            .runtime_state
+            .end_agent_turn_for_tests(&self.peer_room, self.peer.id(), true)
+            .await
+        {
+            Ok(()) | Err(DaemonError::NoActivePrompt { .. }) => {}
+            Err(error) => panic!("the cancelled turn settles: {error}"),
+        }
+    }
+
     /// The owner's Stop on `agent`'s running turn, left in flight: the provider abort is not
     /// dispatched, so the prompt stays cancelling until the turn is settled.
     async fn owner_stop(&self, room: &str, agent: &str) {

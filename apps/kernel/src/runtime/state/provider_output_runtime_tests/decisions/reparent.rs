@@ -204,7 +204,14 @@ async fn a_deeper_subtree_moves_its_cards_and_keeps_a_holder_still_above_the_ask
     let q = t.room_agent("q").await;
 
     t.place(&t.p, Some(&q)).await;
-    assert_eq!(t.panels(), vec![(q.clone(), cards(&["reparent-secret-d"]))]);
+    assert_eq!(
+        t.panels(),
+        vec![(
+            q.clone(),
+            cards(&["reparent-perm-held", "reparent-secret-d"])
+        )],
+        "both cards follow the subtree to q's panel, the held one too"
+    );
     assert_eq!(
         t.holder("reparent-perm-held"),
         DecisionHolder::Agent(t.p.clone()),
@@ -250,9 +257,10 @@ async fn a_holder_no_longer_above_the_asker_hands_the_decision_on() {
     );
     assert!(t.all_closed(&t.p), "p's event is withdrawn");
     assert_eq!(t.decision_events(&t.g).len(), 1, "g is told once");
-    assert!(
-        t.panels().is_empty(),
-        "an agent holds it, the user sees nothing"
+    assert_eq!(
+        t.panels(),
+        vec![(t.g.clone(), cards(&["reparent-perm-moved"]))],
+        "g holds it and the user sees it in g's panel"
     );
 
     // c detached: no agent is above it, so the user holds it in c's own panel.
@@ -281,7 +289,10 @@ async fn a_holder_made_ineligible_by_its_new_parent_hands_the_decision_to_the_us
         t.holder("reparent-perm-ineligible"),
         DecisionHolder::Agent(t.p.clone())
     );
-    assert!(t.panels().is_empty());
+    assert_eq!(
+        t.panels(),
+        vec![(t.g.clone(), cards(&["reparent-perm-ineligible"]))]
+    );
 
     // p stays above c, but under a Required root it would ask the user itself.
     t.place(&t.p, Some(&q)).await;
@@ -338,7 +349,11 @@ async fn an_ineligible_holder_hands_the_decision_to_an_eligible_ancestor() {
     );
     assert!(t.all_closed(&t.p), "p's event is withdrawn");
     assert_eq!(t.decision_events(&q).len(), 1, "q is told once");
-    assert!(t.panels().is_empty(), "an agent holds it");
+    assert_eq!(
+        t.panels(),
+        vec![(q, cards(&["reparent-perm-up"]))],
+        "q holds it and the user sees it in q's panel"
+    );
 }
 
 #[tokio::test]

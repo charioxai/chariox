@@ -507,9 +507,27 @@ mod tests {
     fn workflow_yield_wait_survives_app_settlement() {
         let (mut app, session, prompt, _worktree) = fixture();
         let run = launch_delivered_run(&mut app, &session, &prompt);
+        let (workflow_run, node_run) = (
+            prompt.workflow_run_id().unwrap(),
+            prompt.workflow_node_run_id().unwrap(),
+        );
+        // Queue promotion keys the started node's worktree claim by node, not by provider run.
+        app.acquire_workflow_node_workspace_claim(
+            &session,
+            &format!("workflow-node:{session}:{workflow_run}:{node_run}"),
+            prompt.target_agent_id(),
+            workflow_run,
+            node_run,
+        )
+        .expect("the started node should own its worktree claim");
         yield_first_turn(&app, &session, &prompt, &run);
         settle_app_completion(&mut app, &session, &run);
         assert_supervised_wait(&app, &session, &prompt, 0);
+        assert!(
+            !app.prompt_workspace_claims
+                .any_matching(|claim| claim.operation == "workflow_node_dispatch"),
+            "WFCLAIM-02: the ended turn releases the node's worktree claim while its task waits"
+        );
     }
 
     #[test]

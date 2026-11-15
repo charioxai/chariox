@@ -26,6 +26,28 @@ fn executable_of(pid: u32) -> String {
         .executable
 }
 
+/// The executable a running `sh` has, which the OS may resolve elsewhere than
+/// `/bin/sh` itself (macOS selects the shell binary), settled once its exec is over.
+async fn running_sh() -> String {
+    let mut shell = Command::new("sh")
+        .args(["-c", "read line"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut executable = executable_of(shell.id());
+    for _ in 0..20 {
+        sleep(Duration::from_millis(50)).await;
+        let current = executable_of(shell.id());
+        if current == executable {
+            break;
+        }
+        executable = current;
+    }
+    shell.kill().unwrap();
+    shell.wait().unwrap();
+    executable
+}
+
 async fn result_of(kernel: &Kernel) -> Value {
     let result = file_text(kernel.root.join("waiter-result")).await;
     for file in ["waiter-sent", "waiter-result"] {
@@ -71,9 +93,9 @@ async fn a_listed_holder_is_granted_without_a_popup_and_revoking_does_not_stop_t
 // each one is granted without the owner.
 #[tokio::test]
 async fn a_restarted_listed_holder_is_granted_again() {
-    let sh = std::fs::canonicalize("/bin/sh").unwrap();
-    let mut kernel = kernel_for(&sh).await;
-    list_holders(&kernel, &entry("claude", sh.to_str().unwrap()));
+    let sh = running_sh().await;
+    let mut kernel = kernel_for(Path::new(&sh)).await;
+    list_holders(&kernel, &entry("claude", &sh));
     let mut pids = Vec::new();
     for _ in 0..2 {
         let mut shell = shell_with_waiter(&kernel.root, "parent");
@@ -95,8 +117,8 @@ async fn a_restarted_listed_holder_is_granted_again() {
 // goes to the owner's popup, and a malformed entry neither grants nor hides a valid one.
 #[tokio::test]
 async fn requests_outside_the_list_wait_for_the_owner() {
-    let sh = std::fs::canonicalize("/bin/sh").unwrap();
-    let sh = sh.to_str().unwrap();
+    let sh = running_sh().await;
+    let sh = sh.as_str();
     let mut kernel = kernel_for(Path::new(sh)).await;
     let listed = entry("claude", sh);
     let minutes = serde_json::json!({"minutes": 30});

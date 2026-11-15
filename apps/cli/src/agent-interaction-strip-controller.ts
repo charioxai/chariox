@@ -22,6 +22,8 @@ type AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent extends { id: st
   queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
   subAgentStripeForAgent?: (agentId: string | null | undefined) => SubAgentStripeItem | null
   queuedJobsForAgent?: (agentId: string | null | undefined) => readonly QueuedJob[]
+  onQueuedJobAction?: (job: QueuedJob, action: "remote" | "stop") => void
+  remoteJobLinesForAgent?: (agentId: string | null | undefined) => readonly string[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
   agentTriggerStripItemsForAgent: (agentId: string | null | undefined) => readonly AgentTriggerStripItem[]
@@ -51,6 +53,8 @@ export type AgentInteractionStripControllerDeps<
   queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
   subAgentStripeForAgent?: (agentId: string | null | undefined) => SubAgentStripeItem | null
   queuedJobsForAgent?: (agentId: string | null | undefined) => readonly QueuedJob[]
+  onQueuedJobAction?: (job: QueuedJob, action: "remote" | "stop") => void
+  remoteJobLinesForAgent?: (agentId: string | null | undefined) => readonly string[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
   agentTriggerStripItemsForAgent: (agentId: string | null | undefined) => readonly AgentTriggerStripItem[]
@@ -86,6 +90,8 @@ export function createAgentInteractionStripController<
         queuedPromptStripItemsForAgent: deps.queuedPromptStripItemsForAgent,
         ...(deps.subAgentStripeForAgent ? { subAgentStripeForAgent: deps.subAgentStripeForAgent } : {}),
         ...(deps.queuedJobsForAgent ? { queuedJobsForAgent: deps.queuedJobsForAgent } : {}),
+        ...(deps.onQueuedJobAction ? { onQueuedJobAction: deps.onQueuedJobAction } : {}),
+        ...(deps.remoteJobLinesForAgent ? { remoteJobLinesForAgent: deps.remoteJobLinesForAgent } : {}),
         selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
         onQueuedPromptAction: deps.onQueuedPromptAction,
         agentTriggerStripItemsForAgent: deps.agentTriggerStripItemsForAgent,

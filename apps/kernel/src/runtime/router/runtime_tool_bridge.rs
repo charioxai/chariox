@@ -205,6 +205,7 @@ impl CommandRouter {
                     .await;
             }
             self.runtime_state
+                .with_job_router(self.clone())
                 .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
                 .await
         })

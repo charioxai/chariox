@@ -11,13 +11,13 @@ fn with_room_tools() -> HomePersistenceEnvironment {
     HomePersistenceEnvironment::set("CHARIOX_ROOM_AGENT_TOOLS", "1".as_ref())
 }
 
-async fn spawn_leased(fixture: &mut LiveWorker, room: &str) -> (String, String) {
+async fn spawn_leased(fixture: &mut LiveWorker, room: &str, model: &str) -> (String, String) {
     fixture.create_slice().await;
     let placement = fixture.placement();
     let spawned = dispatch_json(
         &fixture.home,
         json!({"SpawnAgent":{
-            "session_id":room, "provider":"managed-dev-stub", "model":"terminal-echo-a",
+            "session_id":room, "provider":"managed-dev-stub", "model":model,
             "slice_ref":"desktop", "worktree_placement":placement
         }}),
     )
@@ -215,7 +215,7 @@ async fn leased_delegate_completion_wakes_the_home_delegator(worker_completes: b
     let _tools = with_room_tools();
     let mut fixture = LiveWorker::start().await;
     let room = fixture.rooms[0].clone();
-    let (child, attachment) = spawn_leased(&mut fixture, &room).await;
+    let (child, attachment) = spawn_leased(&mut fixture, &room, "terminal-echo-a").await;
     let parent = local_agent(&fixture, &room, &child).await;
     let store = store(&fixture).await;
     delegator_waiting_on(&store, &room, &parent, &child);
@@ -307,7 +307,7 @@ async fn killed_worker_provider_wakes_the_delegator_with_the_exit_status() {
     let _tools = with_room_tools();
     let mut fixture = LiveWorker::start().await;
     let room = fixture.rooms[0].clone();
-    let (child, attachment) = spawn_leased(&mut fixture, &room).await;
+    let (child, attachment) = spawn_leased(&mut fixture, &room, "native-tui-idle").await;
     let parent = local_agent(&fixture, &room, &child).await;
     let store = store(&fixture).await;
     delegator_waiting_on(&store, &room, &parent, &child);
@@ -328,18 +328,39 @@ async fn killed_worker_provider_wakes_the_delegator_with_the_exit_status() {
     .expect("submit the delegated turn through the real relay");
     leased_run(&fixture, &room, &child).await;
     let leased = binding(&fixture, &child).await.leased_agent_id;
-    let (backing_session, worker_run) = {
+    let (backing_session, backing_agent, worker_run) = {
         let mut worker = fixture.worker.app.lock().await;
         let leases = crate::app::RemoteLeaseRuntime::new(&mut worker);
-        let (backing_session, _) = leases
+        let (backing_session, backing_agent) = leases
             .leased_agent_backing(&leased)
             .expect("worker backing agent");
         let run = leases
             .leased_agent_provider_run_id(&leased)
             .unwrap()
             .expect("the worker runs the turn");
-        (backing_session, run)
+        (backing_session, backing_agent, run)
     };
+    timeout(Duration::from_secs(10), async {
+        loop {
+            let delivered = fixture
+                .worker
+                .app
+                .lock()
+                .await
+                .prompt_owner_active_prompt_for_agent_snapshot(&backing_session, &backing_agent)
+                .unwrap()
+                .is_some_and(|prompt| {
+                    prompt.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                });
+            if delivered {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("kill the provider only after the worker has delivered its turn");
     let killed =
         crate::provider::ProviderRunTermination::process_exit(137, crate::session::unix_epoch_ms());
     fixture
@@ -395,7 +416,7 @@ async fn leased_requested_reply_carries_worker_answer() {
     let _tools = with_room_tools();
     let mut fixture = LiveWorker::start().await;
     let room = fixture.rooms[0].clone();
-    let (child, _) = spawn_leased(&mut fixture, &room).await;
+    let (child, _) = spawn_leased(&mut fixture, &room, "terminal-echo-a").await;
     let parent = local_agent(&fixture, &room, &child).await;
     let store = store(&fixture).await;
     let task = delegator_waiting_on(&store, &room, &parent, "unused-source");
@@ -475,7 +496,7 @@ async fn wake_to_leased_agent_is_home_ordered_with_one_worker_run() {
     let _tools = with_room_tools();
     let mut fixture = LiveWorker::start().await;
     let room = fixture.rooms[0].clone();
-    let (leased, _) = spawn_leased(&mut fixture, &room).await;
+    let (leased, _) = spawn_leased(&mut fixture, &room, "terminal-echo-a").await;
     let store = store(&fixture).await;
     let Outcome::Event(event) = store
         .agent_lifecycle(Operation::Occur(ledger::occurrence(
@@ -612,7 +633,7 @@ async fn urgent_message_steers_a_busy_leased_turn() {
 /// Starts a leased turn that stays running; returns its room, agent and home prompt.
 async fn start_busy_leased_turn(fixture: &mut LiveWorker) -> (String, String, String) {
     let room = fixture.rooms[0].clone();
-    let (leased, attachment) = spawn_leased(fixture, &room).await;
+    let (leased, attachment) = spawn_leased(fixture, &room, "terminal-echo-a").await;
     run_turn(fixture, &room, &attachment, &leased, "MP-10 A10 busy turn").await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     while binding(fixture, &leased)
@@ -927,7 +948,7 @@ async fn eventually_async<T, F: std::future::Future<Output = Option<T>>>(
 }
 
 async fn spawn_on_agent_worker(fixture: &mut LiveWorker, room: &str) -> String {
-    spawn_on_agent_worker_with_model(fixture, room, "terminal-echo-a").await
+    spawn_on_agent_worker_with_model(fixture, room, "native-tui-idle").await
 }
 
 async fn spawn_on_agent_worker_with_model(

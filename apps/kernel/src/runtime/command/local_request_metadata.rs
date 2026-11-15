@@ -257,8 +257,8 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::ControlPlane(_) => {
             LocalRequestMetadata::new("control_plane", Interactive)
         }
-        LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(_) => {
-            LocalRequestMetadata::new("managed_environment.reimage.observe", Interactive)
+        LocalDaemonRequest::ObserveKernelRuntimeIdentity(_) => {
+            LocalRequestMetadata::new("kernel.runtime_identity.observe", Interactive)
         }
         LocalDaemonRequest::StartManagedContextTransfer(_) => {
             LocalRequestMetadata::new("managed_context.transfer.start", Background)
@@ -313,6 +313,14 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("agent_trigger.transcript", Background)
                 .session(&request.session_id)
         }
+        LocalDaemonRequest::ReadAgentTriggerReply(request) => {
+            LocalRequestMetadata::new("agent_trigger.reply", Background)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::ReadAgentTriggerHttpOptions(request) => {
+            LocalRequestMetadata::new("agent_trigger.http_options", Background)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::CancelActivePrompt(request) => {
             let mut metadata = LocalRequestMetadata::new("prompt.cancel", Interactive)
                 .session(&request.session_id)
@@ -329,6 +337,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         }
         LocalDaemonRequest::CancelAgentWake(request) => {
             LocalRequestMetadata::new("agent_wake.cancel", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+        }
+        LocalDaemonRequest::CancelAgentWait(request) => {
+            LocalRequestMetadata::new("agent_wait.cancel", Interactive)
                 .session(&request.session_id)
                 .attachment(&request.attachment_id)
         }
@@ -521,6 +534,16 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         }
         LocalDaemonRequest::GetSessionHistoryBlobContents(request) => {
             LocalRequestMetadata::new("session.history.blobs", Background)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
+        LocalDaemonRequest::PeekAgentTranscript(request) => {
+            LocalRequestMetadata::new("agent.transcript.peek", Background)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
+        LocalDaemonRequest::ReadAgentTranscriptEntry(request) => {
+            LocalRequestMetadata::new("agent.transcript.entry", Background)
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
@@ -809,6 +832,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetTerminalCommandCatalog(_) => "terminal.command_catalog.get",
         LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
         LocalDaemonRequest::GetClientCatalogSnapshot(_) => "client.catalog_snapshot.get",
+        LocalDaemonRequest::WatchKernelResources(_) => "kernel_resources.watch",
         LocalDaemonRequest::GetClientCatalogRevisions(_) => "client.catalog_revisions.get",
         LocalDaemonRequest::GetProviderCommandCatalogs(_) => "provider.command_catalogs.get",
         LocalDaemonRequest::GetProviderUsageSnapshot(_) => "provider_account.usage_snapshot.get",
@@ -964,6 +988,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::LogoutProvider(_) => "provider.logout",
         LocalDaemonRequest::StopSessionProcesses(_) => "session_process.stop",
         LocalDaemonRequest::StartSessionProcessNow(_) => "session_process.start_now",
+        LocalDaemonRequest::RunSessionProcessRemotely(_) => "session_process.run_remotely",
+        LocalDaemonRequest::GetRemoteJobPolicy(_) => "remote_jobs.policy.get",
+        LocalDaemonRequest::SetRemoteJobPolicy(_) => "remote_jobs.policy.set",
         LocalDaemonRequest::ListProviderProcesses(_) => "provider_process.list",
         LocalDaemonRequest::TeardownProviderProcesses(_) => "provider_process.teardown",
         LocalDaemonRequest::QueryRecall(_) => "recall.query",
@@ -988,6 +1015,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::InvokeAgentTrigger(_) => "agent_trigger.invoke",
         LocalDaemonRequest::ResendTriggerDelivery(_) => "agent_trigger.resend_delivery",
         LocalDaemonRequest::ReadAgentTriggerTranscript(_) => "agent_trigger.transcript",
+        LocalDaemonRequest::ReadAgentTriggerReply(_) => "agent_trigger.reply",
+        LocalDaemonRequest::ReadAgentTriggerHttpOptions(_) => "agent_trigger.http_options",
         LocalDaemonRequest::UpdateSessionConfig(_) => "session.config.update",
         LocalDaemonRequest::UpdateAgentConfig(_) => "agent.config.update",
         LocalDaemonRequest::UpdateAgentSubstitutes(_) => "agent.substitutes.update",
@@ -1174,6 +1203,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::CancelActivePrompt(_)
         | LocalDaemonRequest::CancelAgentTask(_)
         | LocalDaemonRequest::CancelAgentWake(_)
+        | LocalDaemonRequest::CancelAgentWait(_)
         | LocalDaemonRequest::SteerQueuedPrompt(_)
         | LocalDaemonRequest::SteerActivePrompt(_)
         | LocalDaemonRequest::CancelQueuedPrompt(_)
@@ -1190,13 +1220,15 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::GetKernelResourceTelemetry(_)
         | LocalDaemonRequest::ExportDebugBundle(_)
         | LocalDaemonRequest::PreflightProviderAccountPortability(_)
-        | LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(_)
+        | LocalDaemonRequest::ObserveKernelRuntimeIdentity(_)
         | LocalDaemonRequest::StartManagedContextTransfer(_)
         | LocalDaemonRequest::GetManagedContextTransferStatus(_)
         | LocalDaemonRequest::GetManagedContextLaunchTarget(_)
         | LocalDaemonRequest::GetSessionHistoryOutline(_)
         | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
         | LocalDaemonRequest::GetSessionHistoryBlobContents(_)
+        | LocalDaemonRequest::PeekAgentTranscript(_)
+        | LocalDaemonRequest::ReadAgentTranscriptEntry(_)
         | LocalDaemonRequest::GetProviderRun(_) => unreachable!("handled by metadata matcher"),
     }
 }

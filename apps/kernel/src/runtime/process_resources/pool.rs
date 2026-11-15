@@ -1,9 +1,7 @@
-//! The one memory ceiling every agent and terminal shares. Nothing is stopped
-//! while it has room, however far one owner is above its fair share; under
-//! real pressure one command yields: a fast-growing runaway, else the
-//! largest command of the owner furthest above its share. Admission runs in
-//! the same pass: a heavy command waits for room, and a growing one is paused
-//! before anything is stopped.
+//! Last-resort resource intervention for kernel-owned workloads. Physical
+//! headroom decides memory emergencies; accounting and predicted peaks alone
+//! must not interrupt a healthy machine. Each resource has an independent
+//! machine-local permission, and disabling it releases its waiting commands.
 use super::*;
 #[cfg(target_os = "macos")]
 use crate::runtime::bounded_process::BoundedCommandExt as _;
@@ -24,6 +22,7 @@ const PAUSE_LIMIT_MS: u64 = 60_000;
 
 pub(super) struct Pool {
     pub(super) ceiling: u64,
+    protection: std::sync::RwLock<crate::config::ResourceProtection>,
     /// Pressure starts when less than this is left under the ceiling.
     margin: u64,
     /// The host's own free memory counts too (the kernel's shared pool).
@@ -116,12 +115,15 @@ impl Pool {
         peaks: Option<std::path::PathBuf>,
         volume: Box<admission::Volume>,
     ) -> Self {
-        let margin = (ceiling / 20).max((512 * MIB).min(ceiling / 10));
+        // At most 512 MiB of physical headroom: a large host must not reserve
+        // gigabytes or hold routine work merely because predictions overlap.
+        let margin = (ceiling / 100).clamp(64 * MIB, 512 * MIB).min(ceiling / 10);
         Self {
             ceiling,
+            protection: std::sync::RwLock::new(crate::config::ResourceProtection::default()),
             margin,
             host,
-            machine_pressure: Box::new(move || host_short(margin) || machine_stalled()),
+            machine_pressure: Box::new(move || host_short(margin)),
             #[cfg(target_os = "linux")]
             budget: Mutex::new(Weak::new()),
             members: Mutex::default(),
@@ -174,9 +176,39 @@ impl Pool {
         if let Some(budget) = slot.upgrade() {
             return Some(budget);
         }
-        let budget = cgroup::Budget::create(self.ceiling, self.margin)?;
+        let budget = cgroup::Budget::create()?;
         *slot = Arc::downgrade(&budget);
         Some(budget)
+    }
+
+    pub(super) fn configure(&self, settings: crate::config::ResourceProtection) {
+        {
+            let mut current = self.protection.write().unwrap_or_else(|e| e.into_inner());
+            if *current == settings {
+                return;
+            }
+            *current = settings;
+        }
+        for member in self.members() {
+            let control = member
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .control
+                .clone();
+            if let Some(control) = control {
+                let _ = control.send(WatchCommand::Apply);
+            }
+        }
+    }
+
+    pub(super) fn protection(
+        &self,
+    ) -> std::sync::RwLockReadGuard<'_, crate::config::ResourceProtection> {
+        self.protection.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(super) fn memory_emergency(&self) -> bool {
+        !self.host || self.under_pressure()
     }
 
     pub(super) fn join(&self, member: &Arc<Mutex<Observation>>) {
@@ -213,6 +245,7 @@ impl Pool {
     /// Called by every workload's watch after each sample. `unit_charged` is
     /// the unit's cgroup charge when it has one.
     pub(super) fn enforce(&self, current: &Arc<Mutex<Observation>>, unit_charged: Option<u64>) {
+        let protection = self.protection();
         let members = self.members();
         let light = admission::light(self.ceiling);
         let mut ledger = self.ledger.lock().unwrap_or_else(|e| e.into_inner());
@@ -221,7 +254,7 @@ impl Pool {
             let current = current.lock().unwrap_or_else(|e| e.into_inner());
             (current.unit.clone(), current.cap)
         };
-        if let Some(cap) = cap {
+        if let Some(cap) = cap.filter(|_| protection.memory) {
             let used = unit_charged.unwrap_or_else(|| {
                 members
                     .iter()
@@ -241,11 +274,17 @@ impl Pool {
         // Unused predictions gate admission, not pressure. Charging them here
         // can strand a paused descendant while its parent keeps the reservation.
         let room = admission::Room {
-            memory: sampled.memory,
+            memory: if protection.memory {
+                sampled.memory
+            } else {
+                u64::MAX
+            },
             margin: self.margin,
             growing,
             host_bound: sampled.host_bound,
-            pressured: !self.host || self.under_pressure(),
+            pressured: protection.memory && (!self.host || self.under_pressure()),
+            memory_protection: protection.memory,
+            disk_protection: protection.disk,
             light,
             growth_room: admission::growth_room(self.ceiling),
             capacity: self.ceiling.saturating_sub(self.margin),
@@ -261,9 +300,13 @@ impl Pool {
         let fillers = ledger.take_fillers(current);
         let capacity = room.capacity;
         drop(ledger);
-        self.end_oversized(current, refused, capacity);
-        self.end_fillers(current, fillers);
-        self.end_overdue_wait(&members, &room);
+        if room.pressured {
+            self.end_oversized(current, refused, capacity);
+            self.end_overdue_wait(&members, &room);
+        }
+        if protection.disk {
+            self.end_fillers(current, fillers);
+        }
         if let Some(window) = stalled {
             drop(launches);
             self.stop_one(&members, None, Cause::Stalled(window));
@@ -272,7 +315,7 @@ impl Pool {
         drop(launches);
         // Paused and held commands do not grow: with nothing growing the
         // pool waits rather than stops.
-        if may_stop && growing > 0 && self.pressed(&members) {
+        if protection.memory && may_stop && growing > 0 && self.pressed(&members) {
             self.stop_one(&members, None, Cause::Pressure);
         }
     }
@@ -418,17 +461,6 @@ impl Pool {
                 // paused during real pressure could stay stranded after it ends.
                 room = host;
                 host_bound = true;
-                #[cfg(target_os = "linux")]
-                if budget.is_some() {
-                    let budget_room = self
-                        .ceiling
-                        .saturating_sub(self.margin)
-                        .saturating_sub(charged);
-                    if budget_room < room {
-                        room = budget_room;
-                        host_bound = false;
-                    }
-                }
             }
         }
         MemoryRoom {
@@ -453,32 +485,19 @@ impl Pool {
             .unwrap_or_else(|e| e.into_inner())
             .upgrade();
         #[cfg(target_os = "linux")]
-        let (charged, stalled) = budget
-            .as_ref()
-            .map_or((0, false), |budget| (budget.used(), budget.stalled()));
+        let charged = budget.as_ref().map_or(0, |budget| budget.used());
         #[cfg(not(target_os = "linux"))]
-        let (charged, stalled): (u64, bool) = (0, false);
-        stalled
-            || if self.host {
-                self.under_pressure()
-            } else {
-                charged.saturating_add(outside_cgroup) > self.ceiling.saturating_sub(self.margin)
-            }
+        let charged: u64 = 0;
+        if self.host {
+            self.under_pressure()
+        } else {
+            charged.saturating_add(outside_cgroup) > self.ceiling.saturating_sub(self.margin)
+        }
     }
 
-    /// The workload budget can be full while the host has plenty of memory.
-    /// Unlike RSS accounting, its hard limit is an actual allocation boundary.
+    /// Only physical host/ancestor headroom is an emergency. The kernel's
+    /// accounting domain does not impose an artificial allocation boundary.
     fn under_pressure(&self) -> bool {
-        #[cfg(target_os = "linux")]
-        if self
-            .budget
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .upgrade()
-            .is_some_and(|budget| budget.pressured(self.margin))
-        {
-            return true;
-        }
         (self.machine_pressure)()
     }
 
@@ -726,23 +745,6 @@ fn host_short(margin: u64) -> bool {
         || cgroup::bounding()
             .iter()
             .any(|limited| cgroup::headroom(limited).is_some_and(|bytes| bytes < margin))
-}
-
-/// Tasks of the machine stall on memory a tenth of the time or more.
-#[cfg(target_os = "linux")]
-fn machine_stalled() -> bool {
-    std::fs::read_to_string("/proc/pressure/memory").is_ok_and(|text| {
-        text.lines()
-            .find_map(|line| line.strip_prefix("full avg10="))
-            .and_then(|value| value.split_whitespace().next())
-            .and_then(|value| value.parse::<f64>().ok())
-            .is_some_and(|share| share >= 10.0)
-    })
-}
-
-#[cfg(not(target_os = "linux"))]
-fn machine_stalled() -> bool {
-    false
 }
 
 /// Memory the host itself has left above `margin`: the user's apps or other

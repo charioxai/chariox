@@ -1,4 +1,4 @@
-use chrono::{TimeZone, Utc};
+use chrono::{TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use croner::{
     parser::{CronParser, Seconds, Year},
@@ -95,7 +95,11 @@ impl WorkflowScheduleTrigger {
                     .timestamp_millis_opt(after_ms as i64)
                     .single()
                     .ok_or_else(|| "schedule start timestamp is out of range".to_string())?;
-                let start_local = start_utc.with_timezone(&timezone);
+                // Cron fields name whole seconds; croner keeps the start's fraction in the result.
+                let start_local = start_utc
+                    .with_timezone(&timezone)
+                    .with_nanosecond(0)
+                    .ok_or_else(|| "schedule start timestamp is out of range".to_string())?;
                 let next = cron
                     .find_next_occurrence(&start_local, false)
                     .map_err(|err| format!("invalid cron schedule: {err}"))?;

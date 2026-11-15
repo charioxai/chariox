@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use serde::{Deserialize, Serialize};
@@ -33,11 +33,14 @@ pub struct WorkspaceOperationClaimSnapshot {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct WorkspaceCoordinator {
     state: Arc<StdMutex<WorkspaceCoordinatorState>>,
+    contended_release: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Debug, Default)]
 struct WorkspaceCoordinatorState {
     claims: BTreeMap<String, WorkspaceOperationClaimSnapshot>,
+    /// Claims another operation was refused for: their release must wake it.
+    contended: BTreeSet<String>,
     next_claim_number: u64,
 }
 
@@ -113,16 +116,22 @@ impl WorkspaceCoordinator {
             .state
             .lock()
             .expect("workspace coordinator lock should not be poisoned");
-        if let Some(conflict) = state.claims.values().find(|claim| {
-            claim.workspace_id == workspace_id
-                && claim.worktree_id == worktree_id
-                && claims_conflict(claim, mode)
-        }) {
+        if let Some(conflict) = state
+            .claims
+            .values()
+            .find(|claim| {
+                claim.workspace_id == workspace_id
+                    && claim.worktree_id == worktree_id
+                    && claims_conflict(claim, mode)
+            })
+            .cloned()
+        {
+            state.contended.insert(conflict.claim_id);
             return Err(DaemonError::WorkspaceClaimConflict {
                 workspace_id,
                 worktree_id,
-                existing_session_id: conflict.session_id.clone(),
-                existing_operation: Box::new(conflict.operation.clone()),
+                existing_session_id: conflict.session_id,
+                existing_operation: Box::new(conflict.operation),
                 requested_session_id: session_id,
                 requested_operation: Box::new(operation.to_string()),
             });
@@ -169,12 +178,21 @@ impl WorkspaceCoordinator {
             .cloned()
     }
 
+    /// Resolves once a claim that another operation was refused for is released.
+    /// A release while nobody waits is kept for the next wait.
+    pub(crate) async fn contended_claim_released(&self) {
+        self.contended_release.notified().await;
+    }
+
     fn release_claim(&self, claim_id: &str) {
-        self.state
+        let mut state = self
+            .state
             .lock()
-            .expect("workspace coordinator lock should not be poisoned")
-            .claims
-            .remove(claim_id);
+            .expect("workspace coordinator lock should not be poisoned");
+        state.claims.remove(claim_id);
+        if state.contended.remove(claim_id) {
+            self.contended_release.notify_one();
+        }
     }
 }
 
@@ -254,6 +272,41 @@ mod tests {
             )
             .expect_err("second claim should conflict");
         assert!(conflict.to_string().contains("workspace claim conflict"));
+    }
+
+    #[tokio::test]
+    async fn only_a_contended_release_wakes_the_refused_operation() {
+        let coordinator = WorkspaceCoordinator::default();
+        let quiet = coordinator
+            .acquire_worktree_write_claim("workspace", "worktree", "session", None, "file_edit")
+            .expect("claim should acquire");
+        drop(quiet);
+        let woken = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            coordinator.contended_claim_released(),
+        )
+        .await;
+        assert!(woken.is_err(), "a release nobody waited for wakes nothing");
+
+        let held = coordinator
+            .acquire_worktree_write_claim("workspace", "worktree", "session", None, "file_edit")
+            .expect("claim should acquire");
+        coordinator
+            .acquire_worktree_write_claim(
+                "workspace",
+                "worktree",
+                "session",
+                None,
+                "workflow_node_dispatch",
+            )
+            .expect_err("the node should be refused while the claim is held");
+        drop(held);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            coordinator.contended_claim_released(),
+        )
+        .await
+        .expect("the refused node should be woken by the release");
     }
 
     #[test]

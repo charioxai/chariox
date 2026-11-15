@@ -9,6 +9,8 @@ use super::{CancelReason, Inner, RoomExecService};
 
 // Longer than the maximum four-minute read wait, including its transport margin.
 pub(super) const READER_LEASE: Duration = Duration::from_secs(300);
+/// Jobs tolerate the ten-minute reconnect window independently of provider turns.
+pub(super) const JOB_READER_LEASE: Duration = Duration::from_secs(600);
 
 pub(super) fn start(exec_id: String, inner: Weak<Inner>, mut deadline: watch::Receiver<Instant>) {
     tokio::spawn(async move {

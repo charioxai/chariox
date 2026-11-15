@@ -62,6 +62,7 @@ impl KernelRuntimeState {
         card_id: &str,
         target: &RequestPopupBrowserRegionArgs,
         previous: Option<&RuntimeInteractionBrowserRegion>,
+        app_confirmation: bool,
     ) -> Result<RegionObservation, DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
@@ -84,11 +85,55 @@ impl KernelRuntimeState {
                 "viewport_height":previous.viewport_height,
             });
         }
+        // The kernel shows its own App's preview: it needs no browser grant of the asking agent.
+        let admitted = (!app_confirmation).then_some(agent_id);
         let result = self
-            .kernel_browser_operation(&user, Some(agent_id), "host.browser", params)
+            .kernel_browser_operation(&user, admitted, "host.browser", params)
             .await?;
         serde_json::from_value(result)
             .map_err(|_| region_error("browser region observation is invalid"))
+    }
+
+    /// The App's confirmation preview, found by the browser host in the App's own Tab; the
+    /// agent and the App name no element.
+    pub(super) async fn resolve_app_confirmation_view(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        card_id: &str,
+        tab_id: &str,
+        generation: u64,
+    ) -> Result<RuntimeInteractionView, DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(region_error(
+                "browser region agent does not belong to this room",
+            ));
+        }
+        let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+        let params = serde_json::json!({"op":"popup_region", "card_id":card_id, "tab_id":tab_id, "generation":generation, "app_confirmation":true});
+        let result = self
+            .kernel_browser_operation(&user, None, "host.browser", params)
+            .await?;
+        match serde_json::from_value(result)
+            .map_err(|_| region_error("browser region observation is invalid"))?
+        {
+            RegionObservation::Present { region } => Ok(RuntimeInteractionView {
+                browser_region: *region,
+            }),
+            RegionObservation::ConditionMet { reason }
+            | RegionObservation::Unavailable { reason } => Err(region_error(&reason)),
+        }
+    }
+
+    pub(super) async fn release_app_confirmation_view(
+        &self,
+        agent_id: &str,
+        card_id: &str,
+        tab_id: &str,
+    ) {
+        self.release_browser_region_card(agent_id, card_id, tab_id, true)
+            .await;
     }
 
     pub(super) async fn resolve_popup_view(
@@ -99,7 +144,7 @@ impl KernelRuntimeState {
         target: &RequestPopupBrowserRegionArgs,
     ) -> Result<RuntimeInteractionView, DaemonError> {
         match self
-            .observe_card_region(session_id, agent_id, card_id, target, None)
+            .observe_card_region(session_id, agent_id, card_id, target, None, false)
             .await?
         {
             RegionObservation::Present { region } => Ok(RuntimeInteractionView {
@@ -143,6 +188,7 @@ impl KernelRuntimeState {
                     .tab_id
                     .clone();
                 let id = interaction.id().to_owned();
+                let app_confirmation = interaction.app_confirmation().is_some();
                 if !self
                     .owned
                     .browser_region_cards
@@ -161,7 +207,7 @@ impl KernelRuntimeState {
                 tokio::spawn(async move {
                     state.follow_browser_region_card(&room, &watch.id).await;
                     state
-                        .release_browser_region_card(&agent, &watch.id, &tab)
+                        .release_browser_region_card(&agent, &watch.id, &tab, app_confirmation)
                         .await;
                     drop(watch);
                 });
@@ -181,6 +227,7 @@ impl KernelRuntimeState {
             let (Some(agent), Some(view)) = (card.agent_id(), card.view()) else {
                 return;
             };
+            let app_confirmation = card.app_confirmation().is_some();
             let previous = &view.browser_region;
             let target = RequestPopupBrowserRegionArgs {
                 tab_id: previous.tab_id.clone(),
@@ -188,7 +235,7 @@ impl KernelRuntimeState {
                 verification: previous.verification.clone(),
             };
             let result = self
-                .observe_card_region(room, agent, id, &target, Some(previous))
+                .observe_card_region(room, agent, id, &target, Some(previous), app_confirmation)
                 .await;
             match result {
                 Ok(RegionObservation::Present { region }) => {
@@ -294,14 +341,21 @@ impl KernelRuntimeState {
         self.schedule_question_answer_delivery(id)
     }
 
-    async fn release_browser_region_card(&self, agent: &str, card: &str, tab: &str) {
+    async fn release_browser_region_card(
+        &self,
+        agent: &str,
+        card: &str,
+        tab: &str,
+        app_confirmation: bool,
+    ) {
         let Ok(agent_record) = self.owned.agent_store.get_agent(agent) else {
             return;
         };
         let user = self.provider_account_authority_owner_user_id(agent_record.owner_user_id());
         // Revocation can prevent cleanup admission. The bounded controller
         // lease then expires without another watcher renewal.
-        let _ = self.kernel_browser_operation(&user, Some(agent), "host.browser", serde_json::json!({"op":"popup_region", "card_id":card, "tab_id":tab, "release":true})).await;
+        let admitted = (!app_confirmation).then_some(agent);
+        let _ = self.kernel_browser_operation(&user, admitted, "host.browser", serde_json::json!({"op":"popup_region", "card_id":card, "tab_id":tab, "release":true})).await;
     }
 
     pub(super) fn close_unavailable_browser_region_card(

@@ -252,7 +252,7 @@ mod tests {
         });
         let request = LocalDaemonRequest::PreflightProviderAccountPortability(
             crate::local::PreflightProviderAccountPortabilityRequest {
-                provider_accounts: crate::local::ManagedEnvironmentProviderAccounts::None,
+                provider_accounts: crate::local::ProviderAccountTransferSelection::None,
                 launch_id: None,
             },
         );

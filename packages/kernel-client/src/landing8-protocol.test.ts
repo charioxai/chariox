@@ -1,4 +1,4 @@
-// MP-08 / MP-09 / MP-10 / MP-11: a client at local 1003 reads the Landing 8 shapes from the fixture the
+// MP-08 / MP-09 / MP-10 / MP-11: the client reads the Landing 8 shapes at the current pair from the fixture the
 // kernel round-trips (`protocol_shapes/landing8.rs`).
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
@@ -17,7 +17,7 @@ type Landing8Fixture = {
 const fixture = async () =>
   JSON.parse(await readFile(new URL("../../../fixtures/landing8-protocol.json", import.meta.url), "utf8")) as Landing8Fixture
 
-test("a client at 1003 sends HideAgent, reads a notification trigger's source_available and an App install prompt", async () => {
+test("the client sends HideAgent, reads a notification trigger's source_available and an App install prompt", async () => {
   const shapes = await fixture()
   assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, shapes.local)
   assert.deepEqual(hideAgentRequest("room-1", "agent-1", true), shapes.hideAgent)

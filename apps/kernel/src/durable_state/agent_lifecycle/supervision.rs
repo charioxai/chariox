@@ -12,9 +12,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             current(&t, &prompt)?;
             let inserted=tx.execute("INSERT INTO agent_progress_receipts VALUES(?1,?2,?3) ON CONFLICT(task_id,receipt_id) DO NOTHING",params![task,receipt,sql_integer(now)?]).map_err(sql)?;
             if inserted != 0 {
-                t.no_progress_wakes = 0;
                 t.last_progress_at_ms = now;
-                t.progress_sequence += 1;
                 t.revision += 1;
                 save(tx, &t)?;
             }
@@ -108,7 +106,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let _completion_observed_at_ms = now;
             if let Some(answer) = public_answer.as_mut() {
                 crate::secret_redaction::redact_json_secrets(answer);
-                if encode(answer)?.len() > 8_192 {
+                let job: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_wakes WHERE id=?1 AND room_id=?2 AND json_extract(payload,'$.kind')='job')", params![source, room], |row| row.get(0)).map_err(sql)?;
+                if encode(answer)?.len() > if job { 256 * 1024 } else { 8_192 } {
                     return Err(error("public answer excerpt limit"));
                 }
             }
@@ -189,7 +188,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         && !(success && super::delegation::unbound(&t, &reg))
                     {
                         peers_ended |= reg.peer;
-                        if !super::peer_follows::outlives(&reg, &id) {
+                        if !super::peer_follows::outlives(tx, &reg, &id)? {
                             reg.live = false;
                             tx.execute(
                                 "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
@@ -218,7 +217,18 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         &public_answer,
                         peers_ended && !obligations_changed,
                     );
-                    event(tx, e)?;
+                    let told = event(tx, e)?;
+                    // The child's end was already handled through its child_finished, so its
+                    // receipt arrives handled: it settles what it reports as a handled ack does.
+                    if told.state == "handled" && folded_into_handled_child_end(tx, &told)? {
+                        for o in &mut t.obligations {
+                            if o.completion_source() == Some(&source)
+                                && matches!(o.status.as_str(), "failed" | "settling")
+                            {
+                                o.status = "satisfied".into();
+                            }
+                        }
+                    }
                     t.revision += 1;
                     save(tx, &t)?;
                 }
@@ -261,6 +271,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             continue;
                         }
                     };
+                    if super::settled_waits::finish(tx, &mut t)? {
+                        t.revision += 1;
+                        save(tx, &t)?;
+                        changed.push(t);
+                        continue;
+                    }
                     let next_check_in = t.goal.as_ref().and_then(|goal| goal.next_check_in_ms);
                     let source_deadline = if let Some(wait) = t.wait.as_ref() {
                         wakes::source_deadline(tx, &t, &wait.registration_ids)?
@@ -604,7 +620,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 cancel_intent(tx, &mut t, false)?;
             }
             t.owner_action = None;
-            t.no_progress_wakes = 0;
             if !retry_wake {
                 t.wait = None;
             }

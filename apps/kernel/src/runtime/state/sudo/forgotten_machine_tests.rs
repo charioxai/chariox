@@ -87,6 +87,15 @@ async fn forgetting_the_worker_machine_ends_the_leased_sudo_window_and_refuses_l
     let worker = crate::config::DaemonConfig::for_tests();
     crate::config::DaemonConfig::approve_remote_machine(MACHINE).unwrap();
     lease_agent_to_machine(&f, &worker.daemon_id);
+    // This authorization fixture has no worker to answer a new dispatch. Keep
+    // its current lease stable while opening and revoking the real sudo window.
+    let _dispatch = f
+        .state
+        .try_claim_remote_prompt_cancellation_send(
+            &f.request.session_id,
+            f.request.target_agent_id.as_deref().unwrap(),
+        )
+        .expect("the fixture owns remote dispatch");
     let window = open(&f, None).await;
     let state = f.state.with_relay_peer_authority(
         crate::runtime::relay_peer_authority::test_peer_authority(&worker.daemon_id),

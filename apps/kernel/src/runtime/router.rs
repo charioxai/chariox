@@ -80,6 +80,7 @@ pub(crate) struct CommandRouter {
     history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,
     provider_catalog_projection: ProviderCatalogProjectionStore,
+    kernel_resource_changes: crate::transport::kernel_resource_feed::KernelResourceChanges,
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
     credential_enrollment_control: CredentialEnrollmentControl,
@@ -234,6 +235,7 @@ mod tests {
     }
 
     mod agent_messaging;
+    mod agent_trigger_schedule_options;
     mod agent_triggers;
     mod app_bindings;
     mod app_capability_grants;

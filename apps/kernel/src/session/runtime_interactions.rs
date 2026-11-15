@@ -249,15 +249,22 @@ pub struct RuntimeInteraction {
     /// Person cards: the existing wake source whose occurrence closes this card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     closes_with_wake: Option<String>,
-    /// A sub-agent's decision the user holds is listed with the top parent, whose panel shows it.
+    /// A sub-agent's decision is listed with the top parent, whose panel shows it, whoever holds it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     shown_in_agent_id: Option<String>,
+    /// The asking agent's alias (else its ref), projected with the card so a client names who
+    /// asks in its first paint; never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    asker_name: Option<String>,
     /// MP-08 / MP-11 protocol 538: kernel-established sudo presentation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sudo_request: Option<crate::local::SudoRequestPresentation>,
     /// An App install, update or reinstall the owner decides on, from the verified package.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     app_install: Option<crate::local::AppInstallPresentation>,
+    /// A person-confirmed App action: the verified App and publisher the person confirms for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    app_confirmation: Option<crate::local::AppConfirmationFrame>,
     /// Protocol 470: structured OS requester for external access decisions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     requester: Option<crate::local::KernelAccessRequester>,
@@ -398,6 +405,7 @@ impl RuntimeInteraction {
             related_agent_id: None,
             closes_with_wake: None,
             shown_in_agent_id: None,
+            asker_name: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::Agent {
                 agent_id: agent_id.into(),
@@ -419,6 +427,7 @@ impl RuntimeInteraction {
             decision_expires_at: None,
             sudo_request: None,
             app_install: None,
+            app_confirmation: None,
         }
     }
 
@@ -459,6 +468,14 @@ impl RuntimeInteraction {
         self
     }
 
+    pub fn asker_name(&self) -> Option<&str> {
+        self.asker_name.as_deref()
+    }
+
+    pub(crate) fn set_asker_name(&mut self, name: Option<String>) {
+        self.asker_name = name;
+    }
+
     pub fn closes_with_wake(&self) -> Option<&str> {
         self.closes_with_wake.as_deref()
     }
@@ -478,6 +495,16 @@ impl RuntimeInteraction {
     }
     pub fn app_install(&self) -> Option<&crate::local::AppInstallPresentation> {
         self.app_install.as_ref()
+    }
+    pub fn app_confirmation(&self) -> Option<&crate::local::AppConfirmationFrame> {
+        self.app_confirmation.as_ref()
+    }
+    pub(crate) fn with_app_confirmation(
+        mut self,
+        frame: crate::local::AppConfirmationFrame,
+    ) -> Self {
+        self.app_confirmation = Some(frame);
+        self
     }
     pub(crate) fn with_app_install(
         mut self,
@@ -603,6 +630,7 @@ impl RuntimeInteraction {
             related_agent_id: None,
             closes_with_wake: None,
             shown_in_agent_id: None,
+            asker_name: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::KernelOperation {
                 kernel_operation_id: operation_id.into(),
@@ -624,6 +652,7 @@ impl RuntimeInteraction {
             decision_expires_at: None,
             sudo_request: None,
             app_install: None,
+            app_confirmation: None,
         }
     }
 

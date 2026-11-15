@@ -107,9 +107,15 @@ use outside_events::InteractionPhase;
 pub(crate) use outside_events::{is_outside_event_request, source_not_available};
 mod environment_tools;
 mod file_copy_tool;
+mod file_watch_runtime;
+mod job_compute;
+mod jobs;
 mod leased_agent_file_serve;
+mod machine_acquisition;
 mod machine_files_runtime;
+pub(crate) use file_watch_runtime::{FileWatchPermit, RemoteFileWatch};
 mod machine_files_tools;
+mod remote_jobs;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_browser;
@@ -176,6 +182,7 @@ pub(crate) use managed_kernel_quiescence_state::{
     ManagedKernelAdmissionGuard, ManagedKernelQuiescenceChallenge, ManagedKernelQuiescenceGate,
     ManagedKernelQuiescenceOutcome,
 };
+mod agent_grants;
 mod claude_permission_rules;
 mod provider_launch_defaults_owned_state;
 mod provider_relaunch_runtime;
@@ -203,7 +210,6 @@ mod room_setup_runtime;
 mod room_shared_display;
 mod room_terminal_runtime_state;
 mod runtime_tool_call_activity;
-mod terminal_input_grants;
 mod usage_snapshot;
 mod visible_region_capture;
 mod web_bot_auth_runtime;
@@ -224,6 +230,7 @@ pub(crate) struct KernelRuntimeState {
     relay_peer_authority: Option<crate::runtime::relay_peer_authority::RelayPeerAuthority>,
     forwarded_peer_binding: Option<forwarded_peer_authority::ForwardedPeerBinding>,
     gateway_requester: Option<gateway_requester::GatewayRequester>,
+    job_router: Option<Arc<crate::runtime::router::CommandRouter>>,
     #[cfg(test)]
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
     #[cfg(test)]
@@ -244,6 +251,7 @@ pub(crate) struct KernelRuntimeState {
     peer_spawns_in_flight: peer_agent_inbound::PeerSpawnsInFlight,
     /// File transfers whose destination is this kernel.
     file_transfers: Arc<crate::machine_files::TransferJobs>,
+    peer_file_watches: Arc<file_watch_runtime::PeerFileWatches>,
     /// One pass at a time deletes the peers whose creator ended.
     created_peer_release: Arc<tokio::sync::Mutex<()>>,
     /// When Cloud's kernel directory was last read, and the kernels it listed as unlinked.
@@ -263,12 +271,15 @@ pub(crate) struct KernelRuntimeState {
     /// agent, so a restarted Claude process starts with it again.
     claude_session_grants: claude_permission_rules::StandingGrants,
     /// The agents whose terminal input a person allowed for the session.
-    terminal_input_grants: terminal_input_grants::TerminalInputGrants,
+    terminal_input_grants: agent_grants::AgentGrants,
+    /// The agents whose watched commands and jobs a person allowed outside the provider sandbox.
+    watched_process_grants: agent_grants::AgentGrants,
     /// The only strong handle on the terminal wake driver. The driver holds a runtime copy made
     /// before this field was set, and the Room terminal service and wake registry hold it weakly,
     /// so dropping the runtime frees the kernel instead of leaving a cycle.
     terminal_wake_driver: Option<Arc<terminal_wake::TerminalWakeDriver>>,
     interaction_wake_driver: Option<Arc<interaction_wake::InteractionWakeDriver>>,
+    job_wake_driver: Option<Arc<jobs::JobDriver>>,
     /// MP-08 / MP-09 / MP-10 / MP-11: work services retain this callback weakly
     /// so it cannot own the runtime state that owns those services.
     managed_work_activity: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -282,6 +293,7 @@ type UncertainLeasedTasks = Arc<
 
 #[derive(Clone)]
 struct KernelRuntimeOwnedState {
+    agent_deadline_edit: Arc<tokio::sync::Mutex<()>>,
     app_control: crate::runtime::app_control::AppControlService,
     dev_app_bindings: Arc<app_dev_runtime::DevAppBindings>,
     critical_approval_passkeys: critical_approval_passkey::CriticalApprovalPasskeys,
@@ -682,6 +694,7 @@ mod vault_unlock_requests;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
 mod kernel_browser_audience;
 mod kernel_browser_command_error;
+mod kernel_browser_find;
 mod kernel_browser_mirror;
 mod kernel_browser_qr;
 mod kernel_browser_receipts;
@@ -1122,6 +1135,7 @@ impl KernelRuntimeState {
             relay_peer_authority: None,
             forwarded_peer_binding: None,
             gateway_requester: None,
+            job_router: None,
             #[cfg(test)]
             app_lock_wait_probe: None,
             #[cfg(test)]
@@ -1137,6 +1151,7 @@ impl KernelRuntimeState {
             unknown_peer_follows: Default::default(),
             peer_spawns_in_flight: Default::default(),
             file_transfers: Default::default(),
+            peer_file_watches: Default::default(),
             created_peer_release: Default::default(),
             unlinked_kernels: Default::default(),
             lifecycle_sweeps: Default::default(),
@@ -1146,11 +1161,14 @@ impl KernelRuntimeState {
             task_work: Default::default(),
             trigger_firings: Default::default(),
             claude_session_grants: claude_permission_rules::StandingGrants::default(),
-            terminal_input_grants: terminal_input_grants::TerminalInputGrants::default(),
+            terminal_input_grants: agent_grants::AgentGrants::default(),
+            watched_process_grants: agent_grants::AgentGrants::default(),
             terminal_wake_driver: None,
             interaction_wake_driver: None,
+            job_wake_driver: None,
             managed_work_activity: None,
             owned: KernelRuntimeOwnedState {
+                agent_deadline_edit: Arc::new(tokio::sync::Mutex::new(())),
                 provider_usage_refresher:
                     crate::runtime::provider_usage_refresh::ProviderUsageRefresher::for_kernel(
                         provider_account_profiles.clone(),
@@ -1340,6 +1358,7 @@ impl KernelRuntimeState {
         };
         runtime.link_work_to_managed_kernel();
         runtime.register_terminal_wake_driver();
+        runtime.register_job_wake_driver();
         runtime.register_interaction_wake_driver();
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
@@ -1644,6 +1663,8 @@ pub(crate) mod peer_agent_inbound;
 pub(crate) use peer_agent_inbound::peer_message_stamp;
 pub(crate) mod peer_agent_outbound;
 mod peer_rooms;
+mod room_cards;
+use room_cards::AgentInteractionAnswer;
 mod room_agent_admission;
 
 mod agent_assessment_result;
@@ -1668,6 +1689,7 @@ mod agent_lifecycle_runtime;
 mod agent_membership_read_tests;
 mod agent_parent_runtime;
 mod agent_subtree_cascade;
+mod agent_task_completion;
 mod agent_tree_runtime;
 mod background_hold;
 mod child_finished_event;
@@ -1688,6 +1710,7 @@ mod agent_task_human_control_wait;
 mod agent_task_owner_interactions;
 mod agent_task_owner_resolution;
 mod agent_task_projection;
+mod agent_task_settlement;
 mod agent_trigger_firings;
 #[cfg(test)]
 mod agent_turn_task_tests;

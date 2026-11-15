@@ -1009,7 +1009,10 @@ fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
         LocalDaemonResponse::PromptSubmitted {
             outcome: PromptSubmissionOutcome::Started { prompt },
             ..
-        } => assert_eq!(prompt.target_agent_id(), prompt_agent.id()),
+        } => {
+            assert_eq!(prompt.target_agent_id(), prompt_agent.id());
+            harness.wait_for_prompt_delivery(session.id(), prompt_agent.id(), prompt.id());
+        }
         other => panic!("unexpected local response: {other:?}"),
     }
 
@@ -1100,7 +1103,12 @@ fn direct_prompt_cancel_uses_explicit_target_agent_when_multiple_agents_are_acti
             LocalDaemonResponse::PromptSubmitted {
                 outcome: PromptSubmissionOutcome::Started { prompt },
                 ..
-            } => assert_eq!(prompt.target_agent_id(), agent.id()),
+            } => {
+                assert_eq!(prompt.target_agent_id(), agent.id());
+                // A prompt cancelled before it reaches the provider is settled
+                // as Cancelled at once; the interrupt below needs it delivered.
+                harness.wait_for_prompt_delivery(session.id(), agent.id(), prompt.id());
+            }
             other => panic!("unexpected local response: {other:?}"),
         }
     }

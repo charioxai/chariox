@@ -57,67 +57,6 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeState {
-    /// The subtree (the child first) a handled `child_finished` receipt ends, if any.
-    /// Only a child the parent spawned (it carries the spawn key) whose reported task
-    /// is over and which has no other unfinished task goes: an agent a person moved
-    /// under the parent, or one with work still going, stays.
-    pub(super) fn finished_child_subtree(
-        &self,
-        room: &str,
-        parent: &str,
-        receipt: &serde_json::Value,
-    ) -> Result<Option<Vec<String>>, DaemonError> {
-        let (Some(child_id), Some(task_id)) = (
-            receipt["child_agent_id"].as_str(),
-            receipt["child_task_id"].as_str(),
-        ) else {
-            return Ok(None);
-        };
-        let Ok(child) = self.owned.agent_store.get_agent(child_id) else {
-            return Ok(None);
-        };
-        if child.session_id() != room
-            || child.parent_agent_id() != Some(parent)
-            || child.spawn_key().is_none()
-        {
-            return Ok(None);
-        }
-        let store = &self.owned.durable_state_store;
-        let reported_is_terminal = store.agent_task(task_id)?.is_some_and(|task| {
-            matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
-        });
-        if !reported_is_terminal
-            || store.agent_has_other_unfinished_task(room, child_id, task_id)?
-        {
-            return Ok(None);
-        }
-        Ok(Some(
-            std::iter::once(child.clone())
-                .chain(self.descendants_depth_first(child_id))
-                .map(|agent| agent.id().to_owned())
-                .collect(),
-        ))
-    }
-
-    /// Ends the sub-agents whose handled receipts already recorded their deletion. A
-    /// failure is not the parent's to retry: the deletion is durable and the lifecycle
-    /// pass finishes it.
-    pub(super) async fn end_handled_children(&self, subtrees: &[Vec<String>]) {
-        for child_id in subtrees.iter().filter_map(|subtree| subtree.first()) {
-            let Ok(child) = self.owned.agent_store.get_agent(child_id) else {
-                continue;
-            };
-            match self
-                .destroy_one_agent(child_id, child.owner_user_id(), true)
-                .await
-            {
-                Ok(_) => self.destroy_sub_agents_of(child_id).await,
-                Err(error) => tracing::warn!(%error, agent_id = child_id,
-                    "A4: handled sub-agent cleanup retained for the next pass"),
-            }
-        }
-    }
-
     /// A restart ended the child's turn; its parent reads that as an interruption it can retry.
     pub(super) async fn announce_child_interrupted(
         &self,

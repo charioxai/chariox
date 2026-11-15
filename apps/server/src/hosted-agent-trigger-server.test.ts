@@ -3,10 +3,11 @@ import assert from "node:assert/strict"
 import Fastify from "fastify"
 import {buildHostedAgentTriggerServer} from "./hosted-agent-trigger-server.js"
 import {remoteAdmission} from "./agent-trigger-admission.js"
+import type {AgentHttpOptions, TriggerReply} from "@chariox/agent-trigger-gateway/http-trigger"
 
 // MP-08 / MP-09 / MP-10 / MP-11: runtime bytes never enter the control-plane request.
-async function fixture() {
-  const control = Fastify(), metadata: Array<{url: string; body: unknown; cookie: string | undefined}> = [], requests: unknown[] = []
+async function fixture(options: AgentHttpOptions = {route: "/", methods: ["GET", "POST"], parser: {kind: "json"}, mode: "async"}) {
+  const control = Fastify(), metadata: Array<{url: string; body: unknown; cookie: string | undefined}> = [], requests: unknown[] = [], reads: unknown[] = [], replies: TriggerReply[] = []
   let denied = 0, closed = 0
   control.post("/admission-service/deployments/:id/admission", async (request, reply) => {
     metadata.push({url: request.url, body: request.body, cookie: request.headers.cookie})
@@ -21,9 +22,13 @@ async function fixture() {
   const address = control.server.address();assert(address && typeof address === "object")
   const app = buildHostedAgentTriggerServer({publicOrigin: "https://cloud.example", signInPath: "/auth/login", admission: remoteAdmission({url: `http://127.0.0.1:${address.port}/admission-service/deployments/{id}/admission`, publicOrigin: new URL("https://cloud.example"), forwardedHeaders: ["cookie", "x-chariox-browser-session", "accept"]}), connect: (async (kernel: string, bootstrap: (key: string) => Promise<unknown>, origin: string) => {
     assert.equal(kernel, "kernel");assert.equal(origin, "https://cloud.example");await bootstrap("a".repeat(64))
-    return {send: async (value: unknown) => {requests.push(value);return {AgentTriggerInvoked: {invocation: {status: "accepted", prompt_id: `prompt-${requests.length}`, outcome: "queued"}}}}, close: async () => {closed++}}
+    return {send: async (value: unknown) => {
+      if (Object.hasOwn(value as object, "ReadAgentTriggerHttpOptions")) {reads.push(value);return {AgentTriggerHttpOptionsRead: {enabled: true, options}}}
+      if (Object.hasOwn(value as object, "ReadAgentTriggerReply")) {reads.push(value);return {AgentTriggerReplyRead: {reply: replies.shift() ?? {status: "pending"}}}}
+      requests.push(value);return {AgentTriggerInvoked: {invocation: {status: "accepted", prompt_id: `prompt-${requests.length}`, outcome: "queued"}}}
+    }, close: async () => {closed++}}
   }) as never})
-  return {app, metadata, requests, closed: () => closed, deny: (status: number) => {denied = status}, close: async () => {await app.close();await control.close()}}
+  return {app, metadata, requests, reads, replies, closed: () => closed, deny: (status: number) => {denied = status}, close: async () => {await app.close();await control.close()}}
 }
 
 test("hosted runtime ingress preserves JSON, form, text and large bodies without sending them to Cloud", async () => {
@@ -32,7 +37,7 @@ test("hosted runtime ingress preserves JSON, form, text and large bodies without
     for (const [index, type, raw] of [[0, "application/json", JSON.stringify({value: "x".repeat(30_000)})], [1, "application/x-www-form-urlencoded", "prompt=RUNTIME_ONLY_MARKER+%CE%BB&extra=%2B"], [2, "text/plain", "RUNTIME_ONLY_MARKER\r\nλ"]] as const) {
       const response = await f.app.inject({method: "POST", url: `/agent-triggers/deployment-${index}/?extra=RUNTIME_QUERY_MARKER`, headers: {"content-type": type, "x-chariox-browser-session": "owner", cookie: "other=value"}, payload: raw})
       assert.equal(response.statusCode, 202);assert.equal(response.json().prompt_id, `prompt-${index + 1}`)
-      const payload = (f.requests.at(-1) as {InvokeAgentTrigger: {payload: {http: {body_base64: string; content_type: string}}}}).InvokeAgentTrigger.payload
+      const payload = (f.requests.at(-1) as {InvokeAgentTrigger: {http: {body_base64: string; content_type: string}}}).InvokeAgentTrigger
       assert.deepEqual(Buffer.from(payload.http.body_base64, "base64"), Buffer.from(raw));assert.equal(payload.http.content_type, type)
     }
     assert.equal(f.closed(), 3)
@@ -95,4 +100,30 @@ test("hosted ingress refuses unauthorized work, oversized bodies and excess requ
     assert.equal((await f.app.inject({method: "POST", url: "/agent-triggers/deployment/", payload: "limited"})).statusCode, 429)
     assert.equal(f.requests.length, 3)
   } finally {await f.close()}
+})
+
+test("AT-30: the hosted ingress honours the trigger's route, methods, parser and sync response", async () => {
+  const f = await fixture({route: "/hooks/build", methods: ["POST"], parser: {kind: "webhook"}, mode: "sync", sync_timeout_ms: 2_000, poll_ms: 50})
+  const owner = {"x-chariox-browser-session": "owner", "content-type": "application/json", "x-hub-signature-256": "sha256=abc"}
+  try {
+    f.replies.push({status: "pending"}, {status: "completed", text: "Deployed."})
+    const done = await f.app.inject({method: "POST", url: "/agent-triggers/deployment/hooks/build?run=9", headers: owner, payload: JSON.stringify({ref: "main"})})
+    assert.equal(done.statusCode, 200);assert.equal(done.json().reply, "Deployed.")
+    const input = (f.requests.at(-1) as {InvokeAgentTrigger: {input: {headers: Record<string, string>; body: unknown; query: unknown}}}).InvokeAgentTrigger.input
+    assert.deepEqual(input.body, {ref: "main"});assert.deepEqual(input.query, {run: "9"});assert.equal(input.headers["x-hub-signature-256"], "sha256=abc")
+    const wrong = await f.app.inject({method: "GET", url: "/agent-triggers/deployment/hooks/build?prompt=x", headers: owner})
+    assert.equal(wrong.statusCode, 405);assert.equal(wrong.headers.allow, "POST")
+    assert.equal((await f.app.inject({method: "POST", url: "/agent-triggers/deployment/", headers: owner, payload: "{}"})).statusCode, 404)
+    assert.equal(f.requests.length, 1, "refused requests deliver nothing")
+    assert(!JSON.stringify(f.metadata).includes("main"), "runtime bytes never reach Cloud admission")
+  } finally {await f.close()}
+  const paths = await fixture({route: "/ask", methods: ["GET"], parser: {kind: "path_template", template: "/ask/:prompt"}, mode: "async"})
+  try {
+    const fired = await paths.app.inject({url: "/agent-triggers/deployment/ask/what%20changed", headers: {"x-chariox-browser-session": "owner", accept: "application/json"}})
+    assert.equal(fired.statusCode, 202)
+    assert.deepEqual((paths.requests[0] as {InvokeAgentTrigger: {input: unknown}}).InvokeAgentTrigger.input, {prompt: "what changed"})
+    const sent = await paths.app.inject({method: "POST", url: "/agent-triggers/deployment/send", headers: {"x-chariox-browser-session": "owner", "content-type": "application/json"}, payload: JSON.stringify({prompt: "from the page"})})
+    assert.equal(sent.statusCode, 202)
+    assert.deepEqual((paths.requests[1] as {InvokeAgentTrigger: {input: unknown}}).InvokeAgentTrigger.input, {prompt: "from the page"})
+  } finally {await paths.close()}
 })

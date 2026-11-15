@@ -37,3 +37,18 @@ pub(crate) fn process_alive(pid: i32) -> bool {
             !status.trim().is_empty() && !status.trim().starts_with('Z')
         })
 }
+
+/// Whether `sleep <seconds>` is running (not a zombie), found by its arguments.
+pub(crate) fn detached_sleeper_running(seconds: u32) -> bool {
+    let listing = std::process::Command::new("ps")
+        .args(["-eo", "stat=,args="])
+        .output()
+        .expect("ps should list processes");
+    String::from_utf8_lossy(&listing.stdout)
+        .lines()
+        .any(|line| {
+            let mut fields = line.split_whitespace();
+            fields.next().is_some_and(|stat| !stat.starts_with('Z'))
+                && fields.eq(["sleep", seconds.to_string().as_str()])
+        })
+}

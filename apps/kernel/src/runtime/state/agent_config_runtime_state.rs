@@ -949,7 +949,7 @@ impl KernelRuntimeState {
             if changed.get(&agent_id).is_some_and(|next| *next != scope) {
                 rescoped.push(agent_id.clone());
                 self.claude_session_grants.forget(&agent_id);
-                self.terminal_input_grants.forget(&agent_id);
+                self.forget_agent_grants(&agent_id);
             }
         }
         // Every local agent may follow the room default or sit under an agent that does.
@@ -982,6 +982,13 @@ impl KernelRuntimeState {
             .await?;
         }
         Ok(config)
+    }
+
+    /// Ends what a person allowed the agent for terminal input and watched commands, as its
+    /// permissions or scope change.
+    pub(in crate::runtime::state) fn forget_agent_grants(&self, agent_id: &str) {
+        self.terminal_input_grants.forget(agent_id);
+        self.watched_process_grants.forget(agent_id);
     }
 
     /// What each agent of the session runs under, as the session's own configuration decides it.
@@ -1020,7 +1027,7 @@ impl KernelRuntimeState {
             .limit_local_runs(operation, session_id, &agent_ids, retry)?;
         for agent_id in &limits.relimited {
             self.claude_session_grants.forget(agent_id);
-            self.terminal_input_grants.forget(agent_id);
+            self.forget_agent_grants(agent_id);
         }
         self.remove_terminated_provider_processes(limits.terminated_run_ids)
             .await;
@@ -1178,7 +1185,7 @@ impl KernelRuntimeState {
         )?;
         if update.scope_changed && update.remote_update.is_none() {
             self.claude_session_grants.forget(agent_id);
-            self.terminal_input_grants.forget(agent_id);
+            self.forget_agent_grants(agent_id);
         }
         self.remove_terminated_provider_processes(update.terminated_run_ids)
             .await;
@@ -1194,7 +1201,7 @@ impl KernelRuntimeState {
             )?;
             if update.scope_changed {
                 self.claude_session_grants.forget(agent_id);
-                self.terminal_input_grants.forget(agent_id);
+                self.forget_agent_grants(agent_id);
             }
         }
         if execution_mode_override.is_some() || permission_level_override.is_some() {

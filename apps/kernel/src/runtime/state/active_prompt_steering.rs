@@ -27,6 +27,7 @@ impl KernelRuntimeState {
             active.id() != request.expected_active_prompt_id
                 || active.status() != crate::session::PromptStatus::Running
                 || active.is_external()
+                || active.prompt_origin() == crate::session::PromptOrigin::CompletionCheck
         }) {
             return Err(DaemonError::LocalTransport {
                 operation: "steer active prompt",
@@ -142,6 +143,11 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
+        // Recheck at steer preparation: the active work turn can have ended
+        // and entered assessment since inbox delivery first inspected it.
+        if active_prompt.prompt_origin() == crate::session::PromptOrigin::CompletionCheck {
+            return Ok(None);
+        }
         if active_prompt.status() != crate::session::PromptStatus::Running {
             return Err(DaemonError::LocalTransport {
                 operation: "steer agent message",

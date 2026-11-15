@@ -135,7 +135,7 @@ try {
         await writeFile(path.join(evidence,`goal-${task.revision}.json`),JSON.stringify({date:new Date().toISOString(),ansi_bytes:ptyLog.bytesWritten,task,plain_tasks:session.agent_tasks.filter(t=>!t.goal&&t.completion_check).map(t=>({task_id:t.task_id,agent_id:t.agent_id,state:t.state,completion_check:t.completion_check})),tui:{statusLine:screen.statusLine,agents:screen.session.agents}},null,2))
         lastSignature=signature
       }
-      if (['source-loss-restart','source-delete-restart'].includes(args.get('--expect')) && task.state==='waiting' && task.no_progress_wakes>=Number(args.get('--min-guard')??0) && !restarted) {
+      if (['source-loss-restart','source-delete-restart'].includes(args.get('--expect')) && task.state==='waiting' && !restarted) {
         assert(task.goal.next_check_in_ms>Date.now()+5000, 'restart must precede the check-in deadline')
         if(args.get('--expect')==='source-delete-restart') {
           const delegated=new Set(task.obligations.filter(o=>o.kind==='delegate'&&o.status==='open').map(o=>o.resource_id))
@@ -155,14 +155,14 @@ try {
         await client.close();client=new LocalIpcClient(url,{localAuthEnvironment:env})
         const recovered=await waitUntil(async()=>{try {return unwrap(await client.send(getSessionStateRequest(sessionId)))?.agent_tasks?.find(t=>t.goal)}catch{}},Boolean,'same persisted goal after real restart',45000)
         await writeFile(path.join(evidence,'after-restart.json'),JSON.stringify({date:new Date().toISOString(),task:recovered,ansi_bytes:ptyLog.bytesWritten},null,2))
-        assert.equal(recovered.goal.id,task.goal.id);assert.equal(recovered.goal.objective,task.goal.objective);assert(recovered.no_progress_wakes>=task.no_progress_wakes,'restart must not erase progress guard')
+        assert.equal(recovered.goal.id,task.goal.id);assert.equal(recovered.goal.objective,task.goal.objective)
         let observation=0; const settled=await waitUntil(async()=>{const state=unwrap(await client.send(getSessionStateRequest(sessionId)));const t=state?.agent_tasks?.find(t=>t.goal);if(t)await writeFile(path.join(evidence,`restart-state-${observation++}.json`),JSON.stringify({date:new Date().toISOString(),task:t,agents:state.agents.map(a=>({id:a.id,state:a.state,is_processing:a.is_processing})),ansi_bytes:ptyLog.bytesWritten},null,2));return t},t=>t?.state==='blocked'||t?.state==='done', 'bounded source-loss recovery or verified reconciliation',360000)
         await writeFile(path.join(evidence,'source-loss-recovery.json'),JSON.stringify({date:new Date().toISOString(),task:settled,ansi_bytes:ptyLog.bytesWritten},null,2))
         if(settled.state==='done')assert(settled.obligations.every(o=>['satisfied','cancelled'].includes(o.status))&&settled.goal.final_answer&&settled.goal.evidence.length,'reconciled goal needs verified completion and zero open obligations')
         const lossEvents=db.prepare("SELECT sequence,source_id,occurrence_id,json_extract(payload,'$.kind') AS kind,json_extract(payload,'$.state') AS state FROM agent_inbox WHERE room_id=? AND agent_id=? AND json_extract(payload,'$.kind')='source_lost' AND json_extract(payload,'$.payload.task_id')=?").all(sessionId,task.agent_id,task.task_id)
         assert(lossEvents.length>0,'actual lost-source occurrence must exist')
         await writeFile(path.join(evidence,'source-loss-events.json'),JSON.stringify(lossEvents,null,2))
-        result={status:['blocked','done'].includes(settled.state)?'PASS':'FAIL',cell:'real source loss and kernel restart before due',goal_id:task.goal.id,guard_before:task.no_progress_wakes,guard_after:recovered.no_progress_wakes,disposition:settled.state,reason:settled.reason,scope:'all provider sources were lost; separate required-subset kill and overdue multi-interval coalescing are not established'}
+        result={status:['blocked','done'].includes(settled.state)?'PASS':'FAIL',cell:'real source loss and kernel restart before due',goal_id:task.goal.id,disposition:settled.state,reason:settled.reason,scope:'all provider sources were lost; separate required-subset kill and overdue multi-interval coalescing are not established'}
         assert.equal(result.status,'PASS','lost sources must visibly block or independently reconcile, not silently wait');restarted=true;break
       }
       sawWaiting ||= task.state==='waiting'

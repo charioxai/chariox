@@ -499,3 +499,23 @@ test("/trigger notification keeps its words for the source and the prompt", () =
   const bare = parseSlashCommand("/trigger notification") as { error: string | null }
   assert.match(bare.error ?? "", /notification <source> \[prompt\]/)
 })
+
+test("/trigger add rejects ambiguous or malformed options before sending", () => {
+  for (const command of [
+    "/trigger add schedule", "/trigger add schedule --every 0m", "/trigger add schedule --every 2x",
+    "/trigger add schedule --every 2m --cron '0 0 9 * * *'", "/trigger add schedule --every 2m --timezone UTC",
+    "/trigger add schedule --cron", "/trigger add schedule --cron '0 0 9 * * *' --cron '0 0 8 * * *'",
+    "/trigger add schedule --every 1m --agent peer", "/trigger add http --methods DELETE",
+    "/trigger add http --parser invalid", "/trigger add http --parser path_template",
+    "/trigger add http --template '/:id'", "/trigger add http --mode invalid", "/trigger add http --poll-ms NaN",
+    "/trigger add http --input-schema '{'", "/trigger add http --queue --steer",
+  ]) {
+    const parsed = parseSlashCommand(command)
+    assert.equal(parsed?.kind, "trigger")
+    assert.ok((parsed as { error: string | null }).error, command)
+    assert.equal((parsed as { action: unknown }).action, null, command)
+  }
+  const parsed = parseSlashCommand("/trigger add http --parser path_template --template '/:id' --methods GET,POST")
+  assert.equal(parsed?.kind, "trigger")
+  assert.deepEqual((parsed as { action: unknown }).action, { type: "add", source: { kind: "http", methods: ["GET", "POST"], parser: { kind: "path_template", template: "/:id" } }, busyPolicy: "queue" })
+})

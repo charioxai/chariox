@@ -71,7 +71,7 @@ async function apiProxy() {
   const server=createServer(async(req,res)=>{
     try {
       let body='';for await(const chunk of req){body+=chunk;assert(body.length<=256*1024)}
-      const consume=req.url==='/v1/managed-kernels/context/ticket' && body && JSON.parse(body).ownerManaged
+      const consume=req.url==='/v1/kernels/context/ticket' && body && JSON.parse(body).ownerManaged
       const issue=req.url==='/v1/owner-managed-context-tickets' && req.method==='POST'
       if(issue && mode==='expired')body=JSON.stringify({...JSON.parse(body),ttl_seconds:1})
       if(consume) {

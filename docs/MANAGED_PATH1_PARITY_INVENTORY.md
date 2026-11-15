@@ -1,5 +1,15 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 notification source Room removal (2026-11-12)
+
+Ending or deleting a source Room recomputes and durably publishes the availability
+of notification triggers in other local Rooms. The subscriptions remain attached;
+an unavailable source is not a detached listener. Refresh errors are reported after
+the source Room's process cleanup. Both lifecycle paths use the same ordinary and
+managed kernel implementation. The change adds no activity lease, shutdown-policy
+branch or protocol shape. Focused regressions exercise both source Room operations;
+they do not establish the full hosted, App-source or managed acceptance matrix.
+
 
 ## MP-08 / MP-09 / MP-10 / MP-11 disk maintenance isolation (2026-11-05)
 

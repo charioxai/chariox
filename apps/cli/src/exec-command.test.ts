@@ -384,3 +384,19 @@ for (const [code, probedLoss] of [
   })
   assert.equal(ended, false)
 })
+
+
+test("exec reports a typed memory stop after collecting the command", async () => {
+  const calls: string[] = []
+  const send = async (body: Record<string, unknown>) => {
+    if ("RelayStatus" in body) return capabilities()
+    const op = (body.RoomTerminal as { operation: { operation: string } }).operation.operation
+    calls.push(op)
+    return result(op === "exec_open" ? { result: "exec_opened", exec_id: "exec-1" }
+      : op === "exec_read" ? { result: "exec_output", output: { chunks: [], next_cursor: 0, outcome: { kind: "memory_limit", limit_bytes: 100663296 } } }
+        : { result: "exec_closed" })
+  }
+  await assert.rejects(runExec(options, send, { stdin: new PassThrough(), stdout: sink([]), stderr: sink([]) }),
+    (error: unknown) => error instanceof CommandFailure && error.code === "memory_limit" && error.message.includes("100663296 bytes"))
+  assert.deepEqual(calls, ["exec_open", "exec_read", "exec_close"])
+})

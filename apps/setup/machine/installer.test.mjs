@@ -15,7 +15,7 @@ async function harness(t, kernelBytes) {
   const home = join(dir, "home"), stage = join(dir, "upload"); await mkdir(home); await mkdir(stage)
   const f = await createFixture(dir, kernelBytes)
   for (const [name, p] of [["release.tar.gz", f.archive], ["release-public-pin", f.releasePublicKey], ["builder-public-pin", f.builderPublicKey]]) await copyFile(p, join(stage, name))
-  for (const [name, p] of [["extract-release.py", "../../../deploy/managed-kernel/extract-release.py"], ["verify-image-release.mjs", "../../../deploy/managed-kernel/verify-image-release.mjs"], ["path1-service-policy.mjs", "../../../deploy/managed-kernel/path1-service-policy.mjs"]]) await copyFile(new URL(p, import.meta.url), join(stage, name))
+  for (const [name, p] of [["extract-release.py", "../../../deploy/runtime-release/extract-release.py"], ["verify-rootfs.mjs", "../../../deploy/runtime-release/verify-rootfs.mjs"]]) await copyFile(new URL(p, import.meta.url), join(stage, name))
   const calls = [], request = { action: "install", installId: "byom-test", port: 55129, releaseDigest: f.releaseDigest }
   const options = { home, stage, servicePersistence: async () => {}, serviceManager: async args => { calls.push(args); return "LoadState=not-found\nFragmentPath=\nDropInPaths=\nActiveState=inactive\nUnitFileState=disabled\n" } }
   const root = join(home, ".local/share/chariox/machines/byom-test")

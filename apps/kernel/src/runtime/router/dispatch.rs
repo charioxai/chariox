@@ -32,6 +32,8 @@ impl CommandRouter {
             crate::runtime::capability_executor::CapabilityRuntimeStore::new(
                 router.runtime_state.clone(),
             );
+        let may_change_resources =
+            crate::transport::kernel_resource_feed::may_change_resources(&command.command_type);
         // MD-4: admission policy remains shared; unrelated branches stay off caller stacks.
         let response_command = command.clone();
         let follow_request = request.clone();
@@ -84,6 +86,9 @@ impl CommandRouter {
             )
         {
             self.finish_created_peers_in_background();
+        }
+        if may_change_resources {
+            self.kernel_resource_changes.notify();
         }
         crate::runtime::external_response::finish_response(&response_command, response)
     }

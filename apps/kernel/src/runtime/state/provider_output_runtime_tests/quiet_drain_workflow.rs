@@ -1022,6 +1022,22 @@ async fn assert_workflow_output_follow_up(
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
+    // Queue promotion hands the started node its worktree claim.
+    let claim_id = runtime.owned.workflow_dispatch_claim_id(
+        session.id(),
+        workflow_run.id(),
+        &first_node_run_id,
+    );
+    runtime
+        .owned
+        .acquire_workflow_node_workspace_claim(
+            session.id(),
+            &claim_id,
+            agent.id(),
+            workflow_run.id(),
+            &first_node_run_id,
+        )
+        .expect("the started node should own its worktree claim");
     if helpers {
         runtime
             .owned
@@ -1410,6 +1426,13 @@ async fn assert_yield_waits_then_helper_completes(
         .remove(0);
     assert_eq!(task.state, ExecutionState::Waiting);
     assert!(task.wait.is_some());
+    assert!(
+        !runtime
+            .owned
+            .prompt_workspace_claims
+            .any_matching(|claim| claim.operation == "workflow_node_dispatch"),
+        "WFCLAIM-02: the ended turn releases the node's worktree claim while its task waits"
+    );
     assert!(waiting
         .workflow_run(workflow_run)
         .unwrap()

@@ -66,20 +66,20 @@ test('MP-08 / MP-11 kernel-browser pixels are revealed only under a fenced CDP m
   assert.deepEqual(await adapter.request({op:'screenshot',surface_id:'surface',generation:'generation'},{values:[],targets:[],unknown:false}),{data_base64:'',surface_id:'surface',generation:'generation'});
   assert.deepEqual(withheld,[]);
 });
-// Vault (Miguel 2026-10-09): no desktop blackout; values reach the AT-SPI text
-// check, OCR text is redacted, and a clipboard read stays withheld.
-test('MP-08 / MP-11 Vault values never black out the desktop; OCR is redacted, clipboard withheld', async () => {
+// Clipboard reads are the agent's deliberate copy/read workflow; screenshot
+// and OCR observations still protect the exact Vault-filled target.
+test('MP-08 / MP-11 Vault values never black out the desktop or withhold chosen clipboard reads', async () => {
   const sent=[];
   const browser={ensureConnection:async()=>({send:async method=>{if(method!=='Target.getTargets')throw new Error('unexpected');return {targetInfos:[]};}})};
   const bound={...binding,browser:()=>browser};
   const adapter=new NativeComputer({placement:'host',binding:()=>bound,execute:async request=>{sent.push(request);
-    return request.op==='ocr'?{text:'token v-secret here'}:request.op==='clipboard_read'?{text:'[protected]'}:{data_base64:''};}});
+    return request.op==='ocr'?{text:'token v-secret here'}:request.op==='clipboard_read'?{text:'chosen v-secret copy'}:{data_base64:''};}});
   const vault={values:['v-secret'],targets:[],unknown:false},at={surface_id:'surface',generation:'generation'};
   await adapter.request({op:'screenshot',...at},vault);
   assert.deepEqual([sent[0].mask,sent[0].values,sent[0].browser_protection],[false,['v-secret'],{pages:[]}]);
   assert.equal((await adapter.request({op:'ocr',...at},vault)).text,'token [redacted] here');
-  await adapter.request({op:'clipboard_read',...at},vault);
-  assert.equal(sent.at(-1).mask,true);
+  assert.equal((await adapter.request({op:'clipboard_read',...at},vault)).text,'chosen v-secret copy');
+  assert.equal(sent.at(-1).mask,false);
   await adapter.request({op:'clipboard_read',...at},{values:[],targets:[],unknown:false});
   assert.equal(sent.at(-1).mask,false);
 });
@@ -222,19 +222,17 @@ test('MP-08 / MP-10 / MP-11 human text and committed composition use the warm ch
   await adapter.close();
 });
 
-// MP-08 / MP-11 (owner 2026-10-09): registered Vault values are masked best effort
-// where they appear as accessible text and are redacted from OCR and clipboard text.
-test('MP-08 / MP-11 Vault values never black out the desktop and are redacted from OCR and clipboard text', async () => {
+test('MP-08 / MP-11 Vault protects OCR while preserving agent-chosen clipboard text', async () => {
   const sent=[];
   const replies={screenshot:{data_base64:'',protected:false},ocr:{text:'header synthetic-vault-value footer',targets:[{text:'synthetic-vault-value',x:1,y:1},{text:'Save',x:2,y:2}]},clipboard_read:{text:'copied synthetic-vault-value'},input:{}};
   const bound={...binding,ownedProcesses:async()=>[]};
   const adapter=new NativeComputer({placement:'host',binding:()=>bound,execute:async request=>{sent.push(request);return structuredClone(replies[request.op]);}});
   const policy={values:['synthetic-vault-value'],targets:[{kind:'native',target:{focus_window:1,active_window:2}}],unknown:false};
   for(const op of ['screenshot','ocr','clipboard_read'])await adapter.request({op,surface_id:'surface',generation:'generation'},policy).then(result=>replies[op].result=result);
-  assert(sent.every(request=>request.mask===(request.op==='clipboard_read')&&JSON.stringify(request.values)===JSON.stringify(policy.values)),'best-effort boxes leave desktop visible; clipboard stays withheld');
+  assert(sent.every(request=>request.mask===false&&JSON.stringify(request.values)===JSON.stringify(policy.values)),'filled-field masks do not veto the clipboard');
   assert.equal(replies.ocr.result.text,'header [redacted] footer');
   assert.deepEqual(replies.ocr.result.targets.map(target=>target.text),['Save'],'OCR targets that echo a value are dropped');
-  assert.equal(replies.clipboard_read.result.text,'copied [redacted]');
+  assert.equal(replies.clipboard_read.result.text,'copied synthetic-vault-value');
   // UX-first: a registered Vault value never stops the agent clicking or typing elsewhere.
   sent.length=0;
   for(const input of [{kind:'click',x:1,y:1},{kind:'text',text:'Landsmall Tester'}])await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},policy);

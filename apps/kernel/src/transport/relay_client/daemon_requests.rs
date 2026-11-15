@@ -240,6 +240,12 @@ pub(super) async fn handle_prepared_daemon_request(
                     }
                 }
             }
+            if let LocalDaemonRequest::WatchKernelResources(watch) = &request.request {
+                let watched =
+                    super::kernel_resources::watch(display_subscriptions, caller, watch.clone())
+                        .await;
+                return kernel_resources_outcome(watched, &daemon_private_key, &client_public_key);
+            }
             let request_kind = relay_request_kind(&request.request);
             let bind_import_response = is_browser_import_request(&request.request);
             let mut result = match request.on_behalf_of {
@@ -522,7 +528,7 @@ pub(super) async fn handle_prepared_daemon_request(
                     response,
                 })
             } else {
-                serde_json::to_vec(&response)
+                crate::transport::terminal_output_wire::encode_reply(&mut response)
             };
             let plaintext = match serialized {
                 Ok(bytes) => bytes,
@@ -649,7 +655,7 @@ fn seal_reply(
             }),
         );
     }
-    let plaintext = if framed {
+    let plaintext = if framed && !plaintext.starts_with(b"CXT1") {
         crate::transport::framed_plaintext::frame(&plaintext)
     } else {
         plaintext
@@ -691,6 +697,42 @@ fn display_ack_outcome(
     };
     let response = crate::local::LocalDaemonResponse::KernelBrowser {
         result: serde_json::json!({"acknowledged":true,"push":status,"ack_timing":true}),
+    };
+    match serde_json::to_vec(&response).ok().and_then(|plaintext| {
+        relay_crypto::encrypt_payload_for_peer(daemon_private_key, client_public_key, &plaintext)
+            .ok()
+    }) {
+        Some(encrypted_response) => RelayRequestOutcome {
+            display_event: None,
+            encrypted_response: Some(encrypted_response),
+            error: None,
+        },
+        None => RelayRequestOutcome {
+            display_event: None,
+            encrypted_response: None,
+            error: Some(relay_error(
+                "relay_request_failed",
+                "failed to encrypt relay response",
+                false,
+            )),
+        },
+    }
+}
+
+fn kernel_resources_outcome(
+    watched: Result<crate::local::LocalDaemonResponse, RelayError>,
+    daemon_private_key: &str,
+    client_public_key: &str,
+) -> RelayRequestOutcome {
+    let response = match watched {
+        Ok(response) => response,
+        Err(error) => {
+            return RelayRequestOutcome {
+                display_event: None,
+                encrypted_response: None,
+                error: Some(error),
+            }
+        }
     };
     match serde_json::to_vec(&response).ok().and_then(|plaintext| {
         relay_crypto::encrypt_payload_for_peer(daemon_private_key, client_public_key, &plaintext)
@@ -1349,11 +1391,11 @@ mod tests {
     }
 
     #[test]
-    fn pre_reimage_observation_uses_the_normal_encrypted_daemon_request_envelope() {
+    fn runtime_identity_observation_uses_the_normal_encrypted_daemon_request_envelope() {
         let payload = serde_json::json!({
             "command_id": "observe-1",
             "request": {
-                "ObserveManagedEnvironmentPreReimage": {
+                "ObserveKernelRuntimeIdentity": {
                     "environmentId": "environment-1",
                     "expectedGeneration": 4
                 }
@@ -1367,8 +1409,8 @@ mod tests {
         assert_eq!(request.command_id.as_deref(), Some("observe-1"));
         assert!(matches!(
             request.request,
-            crate::local::LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
-                crate::local::ObserveManagedEnvironmentPreReimageRequest {
+            crate::local::LocalDaemonRequest::ObserveKernelRuntimeIdentity(
+                crate::local::ObserveKernelRuntimeIdentityRequest {
                     environment_id,
                     expected_generation: 4,
                 }

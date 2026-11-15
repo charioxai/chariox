@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::error::DaemonError;
@@ -10,6 +10,8 @@ use super::{AttachRequest, ClientCapabilityLevel, RuntimeAttachment};
 pub struct AttachmentService {
     attachments: BTreeMap<String, RuntimeAttachment>,
     last_heartbeat_at_ms: BTreeMap<String, u64>,
+    /// Attachments a live subscription heartbeats for: when the subscription ends they go stale whatever their level.
+    watched: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -167,6 +169,17 @@ impl AttachmentServiceStore {
             .record_heartbeat(session_id, attachment_id, now_ms)
     }
 
+    /// A subscription's own heartbeat: from now on the attachment lives only as long as its subscription.
+    pub fn record_subscription_heartbeat(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        self.write()
+            .record_subscription_heartbeat(session_id, attachment_id, now_ms)
+    }
+
     pub fn stale_terminal_attachment_ids(&self, now_ms: u64, stale_after_ms: u64) -> Vec<String> {
         self.read()
             .stale_terminal_attachment_ids(now_ms, stale_after_ms)
@@ -229,6 +242,7 @@ impl AttachmentService {
             }
         })?;
         self.last_heartbeat_at_ms.remove(attachment_id);
+        self.watched.remove(attachment_id);
 
         let (_, effect) =
             sessions.remove_attachment_from_session(attachment.session_id(), attachment_id)?;
@@ -310,6 +324,7 @@ impl AttachmentService {
             .iter()
             .filter_map(|attachment_id| {
                 self.last_heartbeat_at_ms.remove(attachment_id);
+                self.watched.remove(attachment_id);
                 self.attachments.remove(attachment_id)
             })
             .collect();
@@ -335,10 +350,24 @@ impl AttachmentService {
         Ok(())
     }
 
+    pub fn record_subscription_heartbeat(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        self.record_heartbeat(session_id, attachment_id, now_ms)?;
+        self.watched.insert(attachment_id.to_string());
+        Ok(())
+    }
+
     pub fn stale_terminal_attachment_ids(&self, now_ms: u64, stale_after_ms: u64) -> Vec<String> {
         self.attachments
             .values()
-            .filter(|attachment| terminal_attachment_requires_heartbeat(attachment))
+            .filter(|attachment| {
+                terminal_attachment_requires_heartbeat(attachment)
+                    || self.watched.contains(attachment.id())
+            })
             .filter(|attachment| {
                 self.last_heartbeat_at_ms
                     .get(attachment.id())
@@ -508,6 +537,49 @@ mod tests {
             attachments.stale_terminal_attachment_ids(31_000, 30_000),
             vec![stale.id().to_string()]
         );
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (transport4): a page closed without detaching left its message
+    // attachments (page-terminal, sub-agents) in every session snapshot for good; only terminal levels expired.
+    #[test]
+    fn a_watched_message_attachment_expires_with_its_subscription() {
+        let mut sessions = session_service();
+        let session_id = create_session(&mut sessions);
+        let mut attachments = AttachmentService::new();
+        let attach =
+            |attachments: &mut AttachmentService, sessions: &mut SessionService, client: &str| {
+                attachments
+                    .attach(
+                        sessions,
+                        AttachRequest::new(
+                            &session_id,
+                            client,
+                            ClientCapabilityLevel::MessageTransport,
+                        ),
+                    )
+                    .expect("message attachment should attach")
+            };
+        let viewer = attach(&mut attachments, &mut sessions, "page-terminal");
+        let held = attach(&mut attachments, &mut sessions, "leased-agent");
+
+        attachments
+            .record_subscription_heartbeat(&session_id, viewer.id(), 1_000)
+            .expect("subscription heartbeat should record");
+        attachments
+            .record_heartbeat(&session_id, held.id(), 1_000)
+            .expect("command heartbeat should record");
+
+        assert_eq!(
+            attachments.stale_terminal_attachment_ids(31_000, 30_000),
+            vec![viewer.id().to_string()],
+            "only the attachment a subscription watched goes stale"
+        );
+        attachments
+            .record_subscription_heartbeat(&session_id, viewer.id(), 25_000)
+            .expect("subscription heartbeat should record");
+        assert!(attachments
+            .stale_terminal_attachment_ids(31_000, 30_000)
+            .is_empty());
     }
 
     #[test]

@@ -12,6 +12,7 @@ mod forward;
 mod hosted;
 mod identity;
 mod inventory;
+mod job_targets;
 mod join;
 mod keeper;
 pub(crate) mod ledger;
@@ -86,6 +87,7 @@ enum ForwardAccess<'a> {
 
 pub(crate) struct KernelGateway {
     directory: Directory,
+    job_targets: job_targets::JobTargets,
     config: DaemonConfigProjectionStore,
     runtime_state: KernelRuntimeState,
     identity: std::sync::Mutex<Option<GatewayIdentity>>,
@@ -120,6 +122,7 @@ impl KernelGateway {
         });
         Self {
             directory: Directory::new(source),
+            job_targets: Default::default(),
             config,
             runtime_state,
             identity: std::sync::Mutex::new(None),
@@ -204,6 +207,36 @@ impl KernelGateway {
         )
         .await
         .map(|_| ())
+    }
+
+    /// The connected service supplies a private allocation target and its canonical enrollment.
+    /// It is addressable only by this exact id, without adding a user machine to any directory.
+    pub(crate) async fn attach_job_machine(
+        &self,
+        target: &crate::local::ControlPlaneMachineTarget,
+        origin: &Origin,
+        command_id: &str,
+    ) -> Result<(), GatewayError> {
+        self.job_targets.bind(target)?;
+        let result = self
+            .send(
+                &target.kernel_id,
+                origin,
+                command_id,
+                &LocalDaemonRequest::GetDaemonHealth(crate::local::GetDaemonHealthRequest),
+                REQUEST_DEADLINE,
+                ForwardAccess::Granted(Some(target)),
+            )
+            .await
+            .map(|_| ());
+        if result.is_err() {
+            self.job_targets.remove(&target.kernel_id);
+        }
+        result
+    }
+    pub(crate) async fn forget_job_machine(&self, kernel_id: &str) {
+        self.job_targets.remove(kernel_id);
+        self.links.lock().await.remove(kernel_id);
     }
 
     /// Tells `target` that the grant `origin` acted under has ended. The one request
@@ -787,6 +820,7 @@ mod machine_binding_tests {
             key_thumbprint: crate::runtime::terminal_pairings::public_key_thumbprint(
                 &kernel.public_key,
             ),
+            presence: None,
         };
         validate_machine_target(&expected, &kernel).unwrap();
         for field in ["kernel_id", "machine_id", "key_thumbprint"] {

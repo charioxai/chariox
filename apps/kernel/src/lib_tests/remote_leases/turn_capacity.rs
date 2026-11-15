@@ -64,18 +64,9 @@ fn submit_with_home_prompt(
         external_provider_turn_id: None,
         prompt_summary: "held turn cancellation".to_string(),
     };
-    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(app)
-        .submit_leased_prompt_with_workflow_context(
-            leased_agent_id,
-            "remote leased prompt\n",
-            Vec::new(),
-            None,
-            Some(context),
-            Vec::new(),
-            None,
-            crate::extension::RemoteExtensionManifest::default(),
-        )
-        .expect("leased prompt should be accepted");
+    let (provider_run_id, outcome) =
+        submit_leased_prompt_with_receipt(app, leased_agent_id, "remote leased prompt\n", context)
+            .expect("leased prompt should be accepted");
     assert!(
         matches!(outcome, PromptSubmissionOutcome::Started { .. }),
         "the home must see an accepted turn as running: {outcome:?}"

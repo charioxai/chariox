@@ -43,6 +43,113 @@ fn bootstrap_restores_created_session_and_agents_from_durable_state() {
 }
 
 #[test]
+fn bootstrap_ignores_empty_prompt_cleanup_after_agent_deletion() {
+    for sent_at in [None, Some(123_456)] {
+        let config = DaemonConfig::for_tests();
+        let (session_id, removed_id, surviving_id) = {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
+            let (session, surviving) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should create");
+            let removed = crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(CreateAgentRequest::new(session.id(), "codex").with_alias("helper"))
+                .expect("helper should spawn");
+            let mut cached = app.sessions.get_session(session.id()).unwrap();
+            cached.set_agents(app.agents.get_session_agents(session.id()));
+            app.sessions.restore_session(cached);
+            if let Some(timestamp) = sent_at {
+                app.agents
+                    .note_prompt_sent_at(removed.id(), timestamp)
+                    .unwrap();
+                app.sessions
+                    .note_prompt_sent(session.id(), removed.id(), timestamp)
+                    .unwrap();
+            }
+            app.save_durable_state_snapshot()
+                .expect("snapshot should save");
+            crate::app::KernelSessionService::new(&mut app)
+                .destroy_agent(removed.id())
+                .expect("helper should delete");
+            // An admitted queue cleanup can finish after the helper has gone.
+            app.mirror_prompt_owner_agent_state(session.id(), removed.id())
+                .expect("empty cleanup should settle");
+            let events = app.durable_state_store().load_events_after(0).unwrap();
+            let cleanup = events.last().expect("cleanup must be durable");
+            assert_eq!(
+                cleanup.kind,
+                crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND
+            );
+            assert_eq!(cleanup.payload["last_prompt_sent_at_ms"].as_u64(), sent_at);
+            (
+                session.id().to_string(),
+                removed.id().to_string(),
+                surviving.id().to_string(),
+            )
+        };
+        let app = DaemonApp::bootstrap(config).expect("cleanup must not prevent restart");
+        assert!(app.agents.get_agent(&removed_id).is_err());
+        let session = app
+            .sessions
+            .get_session(&session_id)
+            .expect("room should restore");
+        assert!(session
+            .agents()
+            .iter()
+            .all(|agent| agent.id() != removed_id));
+        assert!(session
+            .agents()
+            .iter()
+            .any(|agent| agent.id() == surviving_id));
+        assert!(session.active_prompt_for_agent(&removed_id).is_none());
+        assert!(session
+            .queued_prompts_for_agent(&removed_id)
+            .is_none_or(|queue| queue.is_empty()));
+    }
+}
+
+#[test]
+fn bootstrap_rejects_prompt_work_for_a_deleted_agent() {
+    for queued in [false, true] {
+        let config = DaemonConfig::for_tests();
+        let removed_id = {
+            let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+            let (session, _) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .unwrap();
+            let removed = crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(CreateAgentRequest::new(session.id(), "codex"))
+                .unwrap();
+            crate::app::KernelSessionService::new(&mut app)
+                .destroy_agent(removed.id())
+                .unwrap();
+            let mut state = app.sessions.get_session(session.id()).unwrap();
+            let prompt = PromptQueueItem::new(
+                "orphan-prompt",
+                "attachment",
+                removed.id(),
+                "unfinished work",
+                PromptStatus::Queued,
+            );
+            if queued {
+                state.mirror_agent_prompt_state(removed.id(), None, [prompt].into());
+            } else {
+                state.mirror_agent_prompt_state(removed.id(), Some(prompt), Default::default());
+            }
+            crate::durable_prompt_state::append_durable_prompt_state_event(
+                &app.durable_state_store(),
+                &state,
+                removed.id(),
+            )
+            .unwrap();
+            removed.id().to_string()
+        };
+        assert!(
+            matches!(DaemonApp::bootstrap(config), Err(DaemonError::AgentNotFound { agent_id }) if agent_id == removed_id)
+        );
+    }
+}
+
+#[test]
 fn lease_worker_bootstrap_rejects_every_restored_durable_session() {
     for hidden in [false, true] {
         let mut config = DaemonConfig::for_tests();

@@ -98,30 +98,30 @@ pub(super) struct ProcessTree {
     cgroup: Option<std::sync::Arc<super::cgroup::Domain>>,
     /// Without a cgroup: the environment entry the workload's processes
     /// inherit, however far they detach from it.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     marker: Option<Vec<u8>>,
     /// Processes already read without the marker, by the birth they had then.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     unmarked: BTreeMap<u32, String>,
     /// Since when the workload owned nothing, while it is still waited on.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     empty_since: Option<std::time::Instant>,
 }
 
 /// A job that is mid-exec cannot be told from a stranger yet; the workload
 /// is over once nothing of it showed up for this long.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 const NOTHING_LEFT_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 const MARKER_NAME: &str = "CHARIOX_RESOURCE_DOMAIN";
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub(super) fn new_marker() -> String {
     format!("{:032x}", rand::random::<u128>())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub(super) fn marker_entry(marker: &str) -> String {
     format!("{MARKER_NAME}={marker}")
 }
@@ -139,11 +139,11 @@ impl ProcessTree {
             launchers: BTreeMap::new(),
             #[cfg(target_os = "linux")]
             cgroup: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             marker: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             unmarked: BTreeMap::new(),
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             empty_since: None,
         };
         // A first read under resource pressure leaves identification for the next sample.
@@ -178,7 +178,7 @@ impl ProcessTree {
         self.ids.insert(pid, fresh_process_id());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     pub fn set_marker(&mut self, marker: &str) {
         self.marker = Some(marker_entry(marker).into_bytes());
     }
@@ -197,11 +197,11 @@ impl ProcessTree {
             launchers: BTreeMap::new(),
             #[cfg(target_os = "linux")]
             cgroup: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             marker: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             unmarked: BTreeMap::new(),
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             empty_since: None,
         };
         for process in owned.processes {
@@ -371,7 +371,7 @@ impl ProcessTree {
                 }
             }
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         self.adopt_marked(rows);
         let mut changed = true;
         while changed {
@@ -387,7 +387,7 @@ impl ProcessTree {
                 }
             }
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         if !self.owned.is_empty() {
             self.empty_since = None;
         }
@@ -397,7 +397,7 @@ impl ProcessTree {
     /// A job that detached (`setsid job &`) and lost its parent is no
     /// descendant any more. Without a cgroup it is still the workload's:
     /// it inherited the marker from the process that started it.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn adopt_marked(&mut self, rows: &[Row]) {
         let Some(marker) = self.marker.clone() else {
             return;
@@ -417,7 +417,7 @@ impl ProcessTree {
             if known || self.owned.contains_key(&row.pid) {
                 continue;
             }
-            match std::fs::read(format!("/proc/{}/environ", row.pid)) {
+            match super::process_environment::read(row.pid) {
                 Ok(environment)
                     if environment
                         .split(|byte| *byte == 0)
@@ -444,7 +444,7 @@ impl ProcessTree {
 
     /// Only successful process observations separated by the grace interval
     /// establish emptiness. Re-reading a retained table cannot end a watch.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     pub fn left_nothing_running(&mut self) -> bool {
         if self.marker.is_none() {
             return true;
@@ -902,7 +902,7 @@ fn shortage(error: &std::io::Error) -> Option<i32> {
 #[derive(Clone)]
 struct RowObservation {
     rows: std::sync::Arc<Vec<Row>>,
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     started_at: std::time::Instant,
 }
 
@@ -933,7 +933,7 @@ impl Sampler {
             loop {
                 // Start time prevents a slow pre-fork read from looking fresh
                 // when it finally publishes after the parent has exited.
-                #[cfg(target_os = "linux")]
+                #[cfg(unix)]
                 let started_at = std::time::Instant::now();
                 let result = read();
                 let mut state = published.lock().unwrap_or_else(|e| e.into_inner());
@@ -941,7 +941,7 @@ impl Sampler {
                     Ok(rows) => {
                         state.rows = Some(RowObservation {
                             rows: std::sync::Arc::new(rows),
-                            #[cfg(target_os = "linux")]
+                            #[cfg(unix)]
                             started_at,
                         });
                         state.error = None;
@@ -983,7 +983,7 @@ impl Sampler {
             })
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn successful_observation(&self) -> Result<RowObservation, SamplingError> {
         let state = self.snapshot.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(error) = &state.error {
@@ -1038,7 +1038,7 @@ pub(super) fn process_rows(root: u32) -> Result<std::sync::Arc<Vec<Row>>, Sampli
     sampler().rows()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn process_observation(root: u32) -> Result<RowObservation, SamplingError> {
     if let Some(errno) = ps_failure::injected(root) {
         return Err(SamplingError::Short(errno));
@@ -1204,7 +1204,7 @@ fn elapsed_ms(text: &str) -> Option<u64> {
         .checked_mul(1000)
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, unix))]
 mod marker_cache_tests {
     use super::*;
 
@@ -1252,7 +1252,6 @@ mod snapshot_stall_tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn stale_pre_fork_snapshot_cannot_retire_a_detached_workload() {
         use crate::runtime::bounded_process::BoundedChildExt as _;

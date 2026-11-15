@@ -7,6 +7,15 @@ current release and the previous release (636 and 629), plus the new target
 discontinued and re-provisioned when that simplifies the code, regardless of
 whether an older protocol shipped.
 
+### Machine resource protection (local1006 / peer445)
+
+`UserConfig.config.kernel.resource_protection` and the corresponding
+`UserConfigUpdated` configuration contain independent `memory`, `disk` and `cpu`
+booleans, all true by default. `SetUserConfigValue` and `UnsetUserConfigValue`
+apply these machine-local settings immediately through the kernel. Runtime
+clients and forwarded requests read the same values. See
+[Resource protection](RESOURCE_PROTECTION.md) for their behavior and public drill.
+
 ### MP-08 / MP-09 / MP-10 / MP-11 artifact read pages (local993 / peer432)
 
 `chariox.read_artifact` accepts optional `offset_bytes` (default 0) and
@@ -728,30 +737,38 @@ set|get`, `agent children`, `agent steer`, `agent message` and `agent spawn`, an
 `agent profiles`. `agent spawn` takes `--account-profile`, `--permission
 required|yolo`, `--deadline 90s|30m|2h|1d` and `--command-id`; a child never
 has a higher permission level or mode than its parent, and a retry with the
-same command id returns the same child. The end of a child's work reaches its
+same command id returns the same child. A child's directory may be inside the
+parent's workspace or worktree, or in another Git worktree sharing the canonical
+Git common directory of the parent's worktree. `agent spawn --dir <path>` selects
+an existing directory; `--worktree <path> --branch <branch>` creates a worktree
+from the parent's repository, including outside the parent's folders. An unrelated
+existing directory or repository outside those folders is refused. The end of a child's work reaches its
 parent as one urgent `child_finished` inbox event carrying `child_agent_id`,
 `success`, the typed turn `outcome` and `deadline_reached`; a turn that waited
-on a question when the kernel restarted ends as `interrupted_by_restart`. When the
-parent acks that event with `handled: true`, the kernel deletes the sub-agent the
-parent spawned (an agent a person moved under the parent stays). The relay peer
-protocol needs no change for it.
+on a question when the kernel restarted ends as `interrupted_by_restart`. The kernel
+never deletes a finished sub-agent for its parent: it can still own running units,
+live wakes or results nobody collected. Acking the event with `handled: true` keeps
+the child, and only `agent delete` removes it. The relay peer protocol needs no
+change for it.
 
 Relay peer 442 adds `SetLeasedAgentDeadline {leased_agent_id, deadline_ms}`, answered by
 `LeasedAgentDeadlineSet {leased_agent_id}`. The home sends it before it records the
 deadline of an agent it leased to a worker (`agent spawn --kernel K --deadline`, `agent
-deadline set`, or a parent's deadline reaching a remote descendant). The worker arms the
+deadline`, or a parent's deadline reaching a remote descendant). The worker arms the
 deadline on the backing agent of the leased agent, so its own scheduler stops the run with
-the home offline. A deadline only shortens: the worker refuses a later time with
-`agent_deadline_extension_refused`. No local shape changes.
+the home offline. The deadline-edit protocol makes `deadline_ms` required and nullable on both
+local and peer requests: a time extends or shortens, and null clears. The worker
+confirms the edit before the home commits it. Reached deadlines cannot be reset.
 
 Local daemon protocol 1000 makes a
 sub-agent's decision one card with one holder. The kernel keeps the holder (the
 nearest parent that may answer, else the user) as state for routing and audit and
-does not project it. While the user holds a sub-agent's decision, the session
-interaction carries `shown_in_agent_id`, the room agent whose panel shows it, and
-an external agent following the room hears the same interaction id as an
-`interaction` event with `value.shown_in` set; a decision a parent agent holds is
-not listed to the user until it reaches the user. A holder agent gets an urgent
+does not project it. A sub-agent's decision carries `shown_in_agent_id`, the room agent
+whose panel shows it, from the moment it is raised (local 1006): the user sees it and may
+answer it while a parent agent holds it, and the first answer wins. An external agent
+following the room hears the same interaction id as an `interaction` event with
+`value.shown_in` set once the user holds it; a decision a parent agent holds is not
+listed to followers until it reaches the user. A holder agent gets an urgent
 `child_decision` inbox event (`interaction_id`, `child_agent_id`, `child_alias`,
 `question`, optional `detail` and `detail_truncated`, `choices`, `text_allowed`,
 `needs_answer`). `detail` is the card's own text beyond its title (the command a permission
@@ -814,7 +831,8 @@ Those lifecycle semantics belong to PR2.
 Allocated local protocol **585** adds `SetAgentDeadline {session_id, agent_id,
 deadline_ms}` and `GetAgentDeadline {session_id, agent_id}`. Both return
 `AgentDeadline {deadline}` with the executing kernel's durable deadline receipt.
-A deadline can shorten, never extend. The kernel rejects new work after it is
+The owner or an authorized coordinator may extend, shorten or clear a deadline
+with the same request; a required null `deadline_ms` clears it. The kernel rejects new work after it is
 reached and retries physical cleanup; `reached_at_ms` and `stopped_at_ms` distinguish
 admission fencing from completed cleanup. The first stopped receipt and the
 outside agent event with `reason:"deadline_reached"` commit together; cleanup
@@ -958,9 +976,8 @@ retains those registrations as a wait. Other unfinished work still requires
 normal completion or an explicit valid yield. The question survives native turn
 completion and kernel restart, including its original absolute deadline.
 The retained wait uses the latest outstanding question deadline, bounded by
-clients' four-digit ISO year range. If any such question has no timeout, the wait
-uses `9999-12-31T23:59:59.999Z` (`253_402_300_799_999` milliseconds since the Unix
-epoch), so an unrelated periodic retention cap cannot spend provider wake turns.
+clients' four-digit ISO year range. A question without a timeout contributes a
+deadline 30 minutes after settlement, using the same default as explicit waits.
 
 A failed provider turn keeps the task blocked with the provider failure reason
 and its pending questions intact. The owner must reconcile and resume or cancel;
@@ -987,9 +1004,11 @@ Ordinary provider runs receive `chariox.events.subscribe`, `subscriptions`,
 `unsubscribe`, `inbox`, `ack`, `yield` and `blocked`. Each requires current
 `task_id` and `origin_prompt_id`; room/run/turn fences precede resource lookup
 or mutation. A valid yield names admitted completion registrations, covers all
-unresolved obligations. `deadline_ms` is optional (a goal task must give a future one):
-without it the wait ends when a registered source completes, with no timed wake
-(`wait.deadline_ms` is then null). Waiting commits only
+unresolved obligations. `deadline_ms` is optional for ordinary and goal tasks:
+without it the kernel sets `wait.deadline_ms` to 30 minutes after the yield.
+A source may wake the task earlier; reaching the deadline closes the transcript
+wait row as timed out and wakes the retained task with `deadline_reached`.
+Waiting commits only
 when the official provider turn settles. Source completion/loss and overdue
 waits wake the retained task; ACK and provider acceptance remain distinct.
 
@@ -1018,10 +1037,8 @@ A final answer with unresolved obligations other than the async-question wait
 described above gets one persisted corrective turn,
 then blocks if still invalid. Unfinished work without a live wake source is
 corrected or shown as blocked, never silently left idle. The kernel sweeps every
-30 seconds. Three consecutive settled wake turns without real progress block
-further automatic wakes; the third turn may still handle progress. A handled
-result or verified public artifact resets the counter; repeated status, ACK,
-cursor or deadline changes do not. Fifteen minutes waiting without progress
+30 seconds. Timer acknowledgements and repeated continuations do not limit
+automatic wakes. Fifteen minutes waiting without progress
 produces a notice. Unconfirmed provider delivery blocks within two minutes and
 requires reconciliation of the original receipt; uncertainty never permits
 blind replay. Damaged ledger/source rows are retained and quarantined.
@@ -1040,11 +1057,17 @@ retained for a later wake and uncertainty pinned. Explicitly stopped receivers
 keep pending items. `reply_requested=true` creates one correlated reply
 obligation; ordinary messages must not produce courtesy feedback loops.
 
-Blocked tasks create one kernel-owned **Agent needs your action** interaction,
-projected to every session client. In the TUI, open it with F8, Ctrl+G or
-`/approvals`, explicitly select Resume or Cancel, then confirm. Resume
-revalidates the blocked revision and retained receipts; progress or reconnect
-alone cannot resume. Cancellation retains obligations until actual owned
+Blocked tasks create one kernel-owned **Agent needs your action** interaction.
+A helper's decision goes first to its nearest eligible parent as an urgent
+`child_decision` inbox event. The holder answers with `agent answer <interaction>
+resume|cancel`, or hands the same decision up with `agent pass <interaction>`.
+A root task, or a decision no eligible ancestor can hold, keeps the person's
+card. Browser-access consent stays with the person. The correction and Resume
+instruction name every unresolved obligation, its source label when available,
+and the calls that settle it, using the actual registrations and receipt sequences.
+For a person-held card in the TUI, open it with F8, Ctrl+G or `/approvals`, select
+Resume or Cancel, then confirm. Resume revalidates the blocked revision and
+retained receipts; progress or reconnect alone cannot resume. Cancellation retains obligations until actual owned
 resource settlement. MP-08/MP-10/MP-11: cancellation applies to the addressed
 task; an older independent wait still receives its source completion or deadline
 wake. Historical task ordering is not an agent stop disposition.
@@ -1080,8 +1103,7 @@ It cannot use sudo, recursively evaluate or count its assessment as progress. Th
 validates achieved/continue/waiting/blocked against current objective and ledger
 bindings. Achieved requires no open, settling or failed obligations. Valid
 continue retains sources and admits one durable continuation; valid waiting
-requires coverage and a deadline no later than the goal interval. Both immediate
-continuations and periodic wakes share the no-progress guard. Malformed/timeout
+requires coverage and a deadline no later than the goal interval. Malformed/timeout
 checks block once with explicit owner recovery. A plain turn (no goal, obligation
 or wait) only gets a task row and its task id in hidden context: it is never
 checked, corrected, held to a wait or blocked, and a failed plain turn is
@@ -1350,6 +1372,21 @@ Current pushed event contract:
 
 - all pushed events use the `KernelOutgoingFrame::Event` envelope with monotonic `event_id` plus an `event` payload tagged by its `event` string
 - `terminal_output` carries terminal records and should be used for terminal append/update rendering without forcing `session.state.get`
+
+MP-08 / MP-09 / MP-10 / MP-11, local protocol 1006: the encrypted
+plaintext of a relayed `terminal_output` event starts with `CXT1`, a big-endian
+u32 JSON header length, the JSON event header, and the terminal bytes. Each
+record's `bytes` field in the header is `[offset, length]` into that payload.
+Ranges are contiguous, in record order, and cover the payload exactly; empty
+records have a zero-length range. The header is at most 1 MiB. Live events and
+replayed events use the same encoding. Polled `TerminalOutput` replies use the
+same CXT1 framing, with the ordinary `{"TerminalOutput":{"records":…}}` header;
+they are not nested in CXF1 framing. Other ordinary events and replies remain JSON.
+Clients restore the existing byte-array record shape before delivery, and an
+origin gateway restores it before forwarding an event to its local caller.
+The relay continues carrying opaque encrypted frames; its peer protocol stays
+444. Local socket events and persisted history retain their existing shapes.
+See [the terminal transport drill](drills/MP08_TRANSPORT_TERMINAL_BYTES.md).
 - Local daemon protocol v370 keeps recipient-scoped bounded output drains scheduled while records remain, even after the producer stops. Local and relay subscriptions preserve byte order and heartbeat scheduling; an empty drain does not schedule more work. Event shapes, relay peer protocol, and client minimum versions are unchanged (MP-08 / MP-10).
 - `runtime_notices` carries runtime notices for the subscribed attachment/session
 - `assistant_message_completed` carries `session_id`, `provider_run_id`, optional `agent_id`, `message_id`, and `completed_at_ms`
@@ -2575,12 +2612,37 @@ Protocol v295 clients may render Actor colors and pointer presence and may publi
 
 No minimum version changes for clients that do not use these Environment controls. A released client that invokes `environment.start`, `environment.stop`, or `environment.retry` must require protocol v270 or newer; one that updates the canonical viewport must require v271 or newer; one that requests or depends on human takeover state must require v272 or newer; one that releases input must require v273 or newer; one that renders Action ordering or queue state must require v274 or newer; one that replays Environment events must require v275 or newer; one that renders active cancellation state must require v276 or newer; one that cancels Actions must require v277 or newer; one that renders Action timing or terminal outcomes must require v278 or newer; one that lists Action history must require v279 or newer; one that submits human pointer clicks must require v294 or newer; one that renders or publishes pointer presence must require v295 or newer; one that captures a Room screenshot or reads its chunks must require v296 or newer; one that submits human pointer movement, drag, scroll, text, or key input must require v302 or newer; one that writes or reads the human clipboard contract must require v303 or newer.
 
-## 4.1.1 Kernel Resource Subscription (proposed)
+## 4.1.1 Kernel Resource Subscription
 
-Status: proposed for Landing 9 (Cloud `docs/CLIENT_DATA_PLANE.md` section 6); not
-implemented. The protocol number is allocated when it lands; the relay peer
-protocol is unchanged because the relay forwards `subscription_scope` as an opaque
-string.
+Status: protocol 1006 serves `vault_status`, `vault_entries`, `provider_accounts`
+and `app_installations` (Cloud `docs/CLIENT_DATA_PLANE.md` section 6); the other
+resources listed below, `changes`, multi-part snapshots and the conditional
+`AttachSessionView` are not implemented yet. The relay peer protocol is unchanged
+because the relay forwards `subscription_scope` as an opaque string.
+
+What 1006 implements:
+
+- The subscription is served over the relay. A direct socket refuses the scope with
+  `kernel_resources_relay_only`, and `WatchKernelResources` sent anywhere but a relay
+  link is refused with the same code.
+- `subscription_request_id` is the relay subscription id. A browser signs each
+  subscription with its own key and its requests with another, so the kernel finds
+  the subscription by this id; every watch is read as the sender of the watch set.
+- Each watch is read with the request it replaces (`GetCredentialVaultStatus`,
+  `ListCredentials`, `ListProviderAccountProfiles`, `ListAppInstallations` with every
+  page) through the router, as that caller: the same collaborator gate and capability
+  checks apply, and a refused read is listed in `refused`. `data` is the fields of
+  that request's response, except `last_validated_at_ms` of each provider account:
+  every account check (each kernel start runs one) moves it and no client draws it,
+  so a client's remembered accounts are answered `unchanged` after a restart.
+- Answers to a new watch may arrive before or after `KernelResourcesWatched`.
+- A request that changes Vault entries, the Vault lock, provider accounts or App
+  installations signals the feed, which reads every watched resource again and sends
+  a snapshot only when its revision changed. An unlocked Vault is read again when its
+  lease ends. Changes no request makes (a login finishing in the provider's CLI) are
+  read within 10 s.
+- A re-subscribe starts the feed over: the client sends its watch set again after the
+  transport reports `transport_resumed` for `__kernel_resources__`.
 
 One generic contract replaces request/response polling for every value a client
 shows: the client says which resources it shows and the revision it holds; the
@@ -4395,6 +4457,9 @@ ungated invoke returns. The shared Landing 7 protocol pair carries the field.
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — transitional durable agent lifecycle (A02)
 
+Local 1006 / relay peer 445 removes the idle-wake counters from task snapshots.
+Repeated timer acknowledgements and continuations keep the task live.
+
 Local daemon protocol **452** adds `RuntimeSession.agent_tasks`; relay82 is inherited
 from #885. The room agent tools surface publishes
 `chariox.events.subscribe/subscriptions/inbox/ack/yield/blocked`. Tools require the
@@ -4408,9 +4473,9 @@ through the shared SQLite writer. Native provider settlement commits the wait;
 a result racing it remains in the inbox. Done requires public output and no
 unresolved obligation. One persisted correction is permitted; another invalid
 end blocks on one kernel-owned interaction. Provider failures also block.
-The kernel sweeps every30 seconds; three consecutive wakes without handling a
-real result block;15 minutes without progress notifies attached/reconnecting
-clients; uncertain submission escalates after2 minutes without replay.
+The kernel sweeps every 30 seconds; 15 minutes without progress notifies
+attached/reconnecting clients; uncertain submission escalates after 2 minutes
+without replay.
 
 `send_agent_message` adds `urgent=false` and `reply_requested=false`. Default
 messages wait behind busy turns in the event inbox. Urgent delivery targets the
@@ -4633,8 +4698,9 @@ next and unsubscribe operations address these leases. This section adds no
 relay frame of its own; its events use the display encoding below. Peer 97
 remains unused.
 
-Display event encoding (local 466, peer 96). Only `kernel_browser_frame`
-events change; every other event stays JSON. On the local WebSocket they are
+Display event encoding (local 466, peer 96). This encoding applies to
+`kernel_browser_frame`; terminal output has its separate CXT1 encoding above.
+Other events stay JSON. On the local WebSocket display events are
 binary messages; over the relay they are the encrypted plaintext. The format is
 `CXD1`, a big-endian u32 header length, the JSON event header naming its
 segments, then the raw segment bytes in order. JSON plaintexts never start with
@@ -5129,7 +5195,7 @@ MP-08 / MP-10: allocated 556/164 adds the `KernelBrowser` command `state_wait {a
 viewer no longer polls `state` every 250 ms. Its reply is the `state` reply plus
 `revision`, an opaque string the viewer sends back as `after` (empty or invalid:
 read at once). The kernel answers when the state, as the caller sees it, differs
-from `after`, or after `wait_ms` (at most 2000), and re-reads Chromium once per
+from `after`, or after `wait_ms` (at most 2000; at most 10000 from 1008), and re-reads Chromium once per
 wake, not per tick. The host raises a signal on Tab creation, destruction, retitle
 and navigation, loads, native window/active-Tab/zoom/resize events, popup and
 window changes, Tab or agent requests and a policy change; a person's keys and
@@ -5139,6 +5205,13 @@ Vault insertion never waits on a parked viewer. `state` itself is unchanged.
 `browser-state-wait-556.json` pins the shape (Rust hash test
 `mp08_mp10_browser_state_wait_556_snapshot`). Viewers feature-detect 556 and poll
 older kernels as before; no client floor moves.
+
+Local 1008: a `state_wait` that reaches `wait_ms` without a change answers only
+`{"revision": ..., "unchanged": true}` (an idle Browser view re-read the whole state, Tabs with their
+icons, every two seconds). The viewer keeps the state it read last and waits after the same revision.
+`browser-state-wait-unchanged-1008.json` pins the reply (`mp08_browser_state_wait_unchanged_1008_snapshot`).
+The same release lets an idle viewer park one `state_wait` and one `mirror_next` credit for up to 10000 ms (2000 before), so a quiet
+Browser view asks the kernel once per wait; a change still answers the parked request at once.
 
 MP-08 / MP-10 / MP-11: allocated 560/168 adds the `display_subscribe` target
 `{kind:"browser_window", window_generation}`: the owner's view of the Chrome window's page area. It
@@ -5217,6 +5290,13 @@ subscription, so a client draws from events instead of reading again. Fixture: `
   `ListHomeExtensionAudit` once for each watched agent, replacing its cached list, then resumes applying
   appended rows (deduplicated by audit `event_id` or `sequence`). Unrelated durable-state events share
   the backlog, so their sequences cannot detect gaps in this audit feed.
+- `subscription_scope: "session_metadata"` (local protocol 1006, MP-08 / MP-09 / MP-10 / MP-11)
+  retains an attachment's Room events, notices, completions and heartbeat, while draining its terminal
+  records without sending their bytes. Replay also excludes terminal records. A browser page uses this
+  for view subscriptions and holds one ordinary session subscription per Room for terminal bytes,
+  distributing that stream locally to its Room consumers. Each view still retires its own attachment;
+  the page releases the byte attachment when its last consumer leaves. The relay forwards the scope
+  opaquely; its peer protocol does not change.
 - `heartbeat_interval_ms` on the subscribe frame of a Room-list (`waiting_room_inventory`) or session
   subscription: how often this subscription's `heartbeat` event arrives, at least 500. Left out, the interval
   is as before (5 s). Below 500 the subscribe is refused with the error code `invalid_heartbeat_interval`.
@@ -5382,6 +5462,32 @@ create request sends `{"kind": "http"}` and the kernel picks both), `InvokeAgent
 `ReadAgentTriggerTranscript {session_id, trigger_id, cursor?}` answering `AgentTriggerTranscript`.
 The `schedule`, `http` and `notification` prompt origins also travel in
 `SubmitLeasedPrompt.git_context.prompt_origin`: the home refuses a worker below peer 381 instead of sending one. `local_daemon_protocol_http_agent_trigger_shape_is_versioned` pins the shapes.
+
+Allocated 1006 (relay peer 445) gives agent triggers the Workflows panel's trigger options. A
+`schedule` source is `{"kind": "schedule", "trigger": {"kind": "interval", "every_seconds"} |
+{"kind": "cron", "expression", "timezone"}, "repeat": "once"|"every", "overlap_policy"?:
+"skip"|"queue", "max_runs"?}`: the workflow schedule's trigger (six-field cron in an IANA timezone,
+validated with the same messages), `skip` (the default, as `/wait-every` always did) skips a firing
+while the previous one is queued or running and `queue` lets one firing wait behind it. `max_runs`
+left out takes the workflow schedule default (100), `null` never stops and N makes the trigger done
+after N firings: it stays in `agent_triggers`, never fires and wakes nothing; `/wait-in` (`once`)
+takes none. Clients preview with `PreviewWorkflowSchedule`. An `http` source takes `route` (default
+`/`, below the trigger's address; the page's own paths are refused), `methods` (`GET`, `POST`;
+default both), `parser` (`{"kind": "path_template", "template"}` with a `:prompt` segment, `json`
+(default), `query_params`, `webhook`), `mode` (`async` default, or `sync` with `sync_timeout_ms`
+1..300000, default 300000, and `poll_ms` 50..timeout, default 500; refused with `async`) and
+`input_schema` (a JSON Schema object, compiled at creation). The stored source carries them and
+`recent_firings` (the last 64 HTTP firings). `InvokeAgentTrigger` is now `{session_id, trigger_id,
+input, http?: {body_base64, content_type}}`: `input` is what the gateway's parser (the publication
+parser) made of the request; a non-conforming `input` answers `invalid_input {message}` and
+delivers nothing. `ReadAgentTriggerHttpOptions {session_id, trigger_id}` answers
+`AgentTriggerHttpOptionsRead {enabled, options}` for the local gateway and the hosted ingress, and
+`ReadAgentTriggerReply {session_id, trigger_id, prompt_id}` answers `AgentTriggerReplyRead {reply:
+pending | completed {text} | failed {message}}` for a sync response, only for the trigger's own
+recent firings. Create, update and invoke requests refuse unknown fields. Relay peer 445 follows
+the local allocation (the hosted ingress admits the two reads). The shapes are pinned by
+`local_daemon_protocol_agent_trigger_shape_is_versioned` and
+`local_daemon_protocol_http_agent_trigger_shape_is_versioned`.
 
 Allocated 931 (relay peer 380) makes every trigger firing a labelled prompt and lets a person
 resend one the provider did not confirm. A firing's transcript prompt carries `prompt_origin`
@@ -5587,15 +5693,22 @@ hidden agent comes back for every client; hiding an idle agent holds until
 There is no agent-level archive: `ArchiveAgent`, `ListArchivedAgents`, `AgentArchived` and the
 agent `archived` flag are removed (Rooms are still archived). Drill: `local::api::tests::agent_hide`.
 
-### MP-08 / MP-10 / MP-11: parked-task Stop reply (643 / peer 239)
+### MP-08 / MP-09 / MP-10 / MP-11: Stop replies (1006 / peer 445)
 
 `CancelActivePrompt` keeps its request shape. When the targeted agent has no active
-prompt but owns a parked task (a Waiting task whose provider turn has ended), the
-kernel cancels that task and answers `AgentTaskUpdated { session_id, task }` instead
+prompt but owns parked tasks (Waiting tasks whose provider turns have ended), the
+kernel cancels all those tasks and answers `AgentTaskUpdated { session_id, task }` instead
 of `PromptCancelled`. A request that names `expected_prompt_id` never cancels a
-parked task. Clients treat `AgentTaskUpdated` as a successful Stop only with
-protocol 643 or newer; older kernels keep answering `PromptCancelled` or an error.
-The relay peer protocol is unchanged.
+parked task. Shared clients accept `AgentTaskUpdated` as a successful Stop.
+An unconditional Stop with no active prompt and no unfinished task succeeds with `NothingToStop { session_id, agent_id }`. A Stop
+that names `expected_prompt_id` still returns `no_active_prompt` when that
+prompt is no longer active. Shared shell Stop and rendered Claude interruption
+accept the idle success, including when work finishes after an activity read.
+Focused drill: `node apps/cli/scripts/live-idle-stop-drill.mjs --kernel-url URL
+--session SESSION --evidence-dir DIR`, after building the real CLI and launching
+an idle Room with an authenticated provider on the kernel under test. It checks
+repeated Stop before and after a real provider turn and retains the terminal
+recording and request results outside the repository.
 
 ### Staging new UI union (599/205)
 
@@ -5742,6 +5855,34 @@ a home restart ends the wake as lost, and the terminal itself is not affected.
 - Peer 177 only re-binds the embedded local response union to local 569; no
   peer request is added.
 
+#### Pushed output stream — local 1006 (Landing 10)
+
+A viewer that shows a terminal live subscribes once instead of sending one `read_output` per page.
+The relay subscription has `subscription_scope: "room_terminal"`, `session_id` the Room,
+`attachment_id` the terminal as `<terminal_id>` or `<terminal_id>@<host_agent>` (a terminal on the
+machine of a Room agent), and `resume_from_event_id` the output offset the viewer has drawn
+(required). The kernel answers the subscription only after a first read with the same access check
+and routing as `read_output`; a refusal is the subscription's error. It then reads on its side and
+pushes (a live read, polled or pushed, waits while the program keeps writing: one more 16 ms frame
+each time the output grew, at most four, so a burst is one page and an echo waits one frame):
+
+- `room_terminal_output` (CXT1: JSON header, raw bytes after it): `next_offset`, `bytes: [0, n]`,
+  `gap: true` only when the offset is no longer retained (the viewer rebuilds from a snapshot and
+  subscribes again), and `terminal` (the summary) only on the first page and when anything but its
+  `output_offset` changed. The event id is `next_offset`. After a gap, or the page that reaches the end
+  of an ended terminal, the stream sends nothing more.
+- `room_terminals_listed { terminals }` (JSON): the Room-wide `list` result (the viewer's tabs), first
+  before the first page, then whenever a terminal came, went or changed in anything but its
+  `output_offset`; the kernel compares every 3 s. A list that fails while a worker is away is skipped.
+- `heartbeat` (JSON) after a heartbeat interval in which the stream sent nothing.
+- `room_terminal_stream_ended { message }` when a read fails (worker away, terminal closed); the
+  viewer subscribes again from its offset.
+
+Nothing is retained for replay: a lost stream is resumed by subscribing again from the offset reached.
+A hidden view unsubscribes and receives nothing until it is shown again; while a view streams it
+does not poll `list`. `read_output` and `list` stay for replaying retained output, the TUI and agent
+tools.
+
 #### Terminal clients (TUI)
 
 `chariox terminal --session REF [--kernel-url URL] [list | new [TITLE] | close TERMINAL | TERMINAL]` and the TUI's
@@ -5857,9 +5998,10 @@ failed turn retains its original kind and controlled public reason while the
 existing recovery notice explains what happened.
 
 `interrupted_by_restart` is a turn the kernel restarted in the middle of and could
-not resume (for example the Vault stayed locked, or no provider session identified
-the turn). The turn settles as failed, not cancelled; the agent is in the `error`
-state; one `SubmitPrompt` on the same agent continues the same provider
+not resume (its reason names only what the kernel observed, such as a locked Vault
+that refused the launch, or that no provider session identified the turn). A turn the
+task already went on from under a continuation prompt ends without an outcome. The
+turn settles as failed, not cancelled; the agent is in the `error` state; one `SubmitPrompt` on the same agent continues the same provider
 conversation and its turn ends `completed` with its own turn id. A turn that
 restart recovery does resume ends with the outcome of the resumed turn.
 A provider run whose process is gone and whose exit the kernel never saw is
@@ -6894,6 +7036,12 @@ with the browser state; the host refuses it for an agent. A person's typing, cli
 input to that same Tab until the person has been idle for two seconds. Each agent's native tab group is titled with
 its status dot, and with a spinner while the agent acts in one of its Tabs.
 
+Rendering follows use, so a kernel browser nobody watches costs next to nothing. An agent's Tab behind the shown one
+renders at full speed while the agent acts in it and for 30 seconds after its last action; then it stops scheduling
+frames until the agent's next action wakes it before acting. The shown Tab is frozen (hidden: no frames, no page tasks)
+once no viewer stream watches it and the host has had no request for 30 seconds; the next request wakes it before it
+runs. A parked state read and the kernel's park of an unwatched display are not requests in this sense.
+
 
 ### Owner cancellation of retained work — local 987
 
@@ -7203,6 +7351,20 @@ client (`landing8-protocol.test.ts`). Focused checks:
 `cargo test -p chariox-kernel --lib -- landing8 protocol_shapes client_protocol_conformance` and
 `node --test packages/kernel-client/dist/landing8-protocol.test.js`.
 
+Landing 10 peek (local daemon protocol 1006, relay peer 445): `PeekAgentTranscript {session_id, agent_id, limit?, before?}`
+answers `AgentTranscriptPeek {peek: {agent_id, entries, before?}}`: an agent's latest transcript rows (at most
+50, 10 by default), oldest first, each `{entry_id, kind, title, status, at_ms, duration_ms?, chars}` with `kind`
+one of `prompt`, `assistant`, `thinking`, `tool_call`, `wait`, `error`, `notice` and `status` one of `running`,
+`completed`, `failed`, `cancelled`, `timed_out`; a running row's `duration_ms` is how long it has been running.
+`before` pages back. `ReadAgentTranscriptEntry {session_id, agent_id, entry_id, offset, limit?}` answers
+`AgentTranscriptEntryPage {page: {entry_id, kind, title, offset, text, total_chars, next_offset?}}` with at most
+`limit` characters (4000 by default, at most 16000); a tool call reads as `input: <json>` and then its output.
+Both read the outline the pane reads, under the history trace rule, and mask Vault values. Agents use
+`chariox.peek_agent` and `chariox.read_agent_entry`. A wait (`chariox.events.yield`, a retained question) without
+a deadline now gets `deadline_ms = now + 30 min`; the wait row it ends with names `woken_by.kind`
+`deadline_reached`. Focused check: `cargo test -p chariox-kernel --lib -- session_outline::peek
+a_wait_without_a_deadline protocol_shapes`.
+
 Landing 9 carries local daemon protocol 1005 and relay peer 444. Local 1005: the sub-agent tree node fields and
 the wait row of the sub-agent panes (above), Files on the owner's
 machines (listings with `revision` and `mode`, `ListKernelDirectory.offset`, the file transfer jobs),
@@ -7210,6 +7372,47 @@ Room setup (`CreateSession.setup`, `RuntimeSession.room_setup`, `RetryRoomSetup`
 `SuggestSessionAlias` and `git_available` on the launch target, and an agent's `wait.deadline_ms` that
 is `null` for a yield without a deadline (`protocol_shapes/agent_lifecycle.rs`). Relay peer 444 renames
 the leased agent file answers. Managed upgrades admit 1002 and 1003.
+
+Landing 10 carries local daemon protocol 1006 and relay peer 445, one number pair for all of its wire
+changes: generic runtime identity observation and enrollment evidence (machine acquisition through the
+kernel requires 1006), the kernel resource feed, owner wait cancel with the `waiting` state and
+`system_prompt` turns, `asker_name` on person cards, transcript peek and the default 30-minute wait
+deadline, the idle Stop result `NothingToStop`, CXT1 raw terminal bytes and Room view interests, agent
+trigger options, owner room card commands across Rooms, the required nullable deadline edit, task
+snapshots without idle-wake counters, machine resource protection settings and durable remote jobs. Each
+is described in its own section. The managed-upgrade policy lives in Cloud.
+
+The kernel resource feed is part of local daemon protocol 1006 (the relay forwards the subscription
+scope unread). It adds the
+`kernel_resources` subscription scope, `WatchKernelResources` / `KernelResourcesWatched` and the
+`kernel_resource_changed` event (§4.1.1). Web clients require 1006. Focused check:
+`cargo test -p chariox-kernel --lib -- kernel_resource`.
+
+Person cards carry local daemon protocol 1006 and relay peer 445.
+An active interaction carries `asker_name`, the asking agent's alias (else its ref), projected with
+the session and never stored, so a client names who asks in the card's first paint. A sub-agent's
+card is shown in its top parent's panel (`shown_in_agent_id`) whoever holds it (above). Focused check: `cargo test -p chariox-kernel --lib --
+a_sub_agent_card_carries a_projected_card_names_its_asker the_user_answers_a_decision protocol_shapes`.
+
+### APP-CONFIRM-01: person-confirmed App actions — local 1008 / relay peer 447
+
+A signed `schemas/ui-actions.json` action may have `effect: "person_confirmed"` with a
+`confirmationView` (the name of the compact view the App registers with
+`chariox.view.confirmation`); every other effect refuses the field. The kernel runs such an action only after
+the person confirms the exact input on one card. The card is an agent interaction (`app-confirm-*`, kind
+`choice`, `Confirm` / `Cancel`, 300 s, default `cancel`) with two additions a client reads:
+
+- `app_confirmation`: `{installation_id, app_id, app_name, publisher_id, publisher_name, action_name}`,
+  written by the kernel from the verified release (all six present, none other). A client frames the
+  preview with these words and never with text the App supplied.
+- `view.browser_region`: the App's own preview, found by the browser host (not the App or the agent) in the
+  App's Tab, shown through the existing protected card region. A client that cannot show it offers no
+  Confirm; the card's `message` carries the exact input (at most 2000 characters) for clients that read text.
+
+Only the person answers: no agent holder or owner agent, `/sudo`, session approval or earlier answer stands
+in for it. `AppViewAction.effect` in a catalog may be `person_confirmed`, with `confirmationView`. Relay peer
+447 forwards `app_confirmation` with its interaction. Focused check: `cargo test -p chariox-kernel --lib --
+view_agent protocol_shapes::app_confirmation user_only`. Contracts: `docs/APPS_V2_CONTRACTS.md`.
 
 ### MP-08 / MP-09 / MP-10 / MP-11: Files on the owner's machines — local 1005 / relay peer 444
 
@@ -7382,3 +7585,120 @@ While a step is pending or running, or `git_init` or `worktree` failed and was n
 `WaitingRoomLaunchTarget.git_available` (always serialized, `false` for readers that lack it) reports whether a `git` executable runs on the kernel's machine; a client offers "Initialize Git" only when it is true.
 
 Focused checks: `cargo test -p chariox-kernel --test kernel_websocket_runtime_integration room_setup`, `cargo test -p chariox-kernel --lib room_setup`.
+
+Landing 10 carries local daemon protocol 1006 and relay peer 445. An agent's wait
+can be ended by its owner: `CancelAgentWait { session_id, attachment_id, task_id, started_at_ms }` (the room owner's terminal,
+like `CancelAgentTask`) stops what the wait is on (its timers, watched processes and sources), ends the task and answers
+`AgentTaskUpdated`. The agent is not woken: nothing is delivered to its inbox, and on its next turn it simply is no longer
+registered for the wait. The wait's `provider_tool` row (which now also carries `task_id`) is rewritten in place as
+`"status":"completed"` with `woken_by {kind:"cancelled"}`. A goal's wait is refused (stop the goal), and so is a task that has
+other open work. `WaitingRoomPublicItemActivitySummary.waiting` and `AgentRuntimeActivity.waiting` (omitted when false) say that
+an agent has armed waits or events (a task in a wait, or a scheduled, starting or running timer or source); the Room summary
+carries the count as `waiting_agent_count`. A `SessionHistoryOutlineTurn` the kernel started itself (an inbox wake of a
+waiting agent, or a schedule, HTTP or notification trigger) carries `system_prompt: true`; the outline now keeps the text of a
+wake prompt, which it used to blank. Focused check: `cargo test -p chariox-kernel --lib -- owner_wait system_prompt r16_ protocol_shapes`.
+
+### Agent transcript peek (MP-08 / MP-09 / MP-10 / MP-11)
+
+Local protocol 1006 / relay peer 445 adds `PeekAgentTranscript` and
+`ReadAgentTranscriptEntry`. Both use the kernel-owned history outline read by
+the pane, with its room membership, trace visibility and external-agent grant
+checks. No separate transcript state is stored.
+
+`PeekAgentTranscript` takes `session_id`, `agent_id`, optional `limit` (10 by
+default, at most 50) and an opaque `before` cursor from a previous response.
+It returns `AgentTranscriptPeek.peek`: the latest titled entries oldest first,
+each with `entry_id`, `kind`, `title`, `status`, `at_ms`, optional `duration_ms`
+and source `chars`. Running entries report elapsed duration; tool calls finish
+with their final status and duration. A response's optional `before` retrieves
+older rows.
+
+`ReadAgentTranscriptEntry` takes that agent and `entry_id`, a character `offset`
+(default 0) and optional character `limit` (4000 by default, at most 16000).
+`AgentTranscriptEntryPage.page` contains `text`, `offset`, `total_chars` and
+optional `next_offset`. A tool entry reads as its input followed by its output.
+Registered Vault values are scrubbed before shortening titles or slicing pages;
+offsets refer to the resulting protected text.
+
+Agents use `chariox.peek_agent` (`agent`, optional `limit`, `before`) and
+`chariox.read_agent_entry` (`agent`, `entry_id`, optional `offset`, `limit`).
+The reference resolves within the calling room, like other agent-read tools.
+External agents use the same kernel requests through their existing grants.
+
+
+MP-08 / MP-09 / MP-10 / MP-11, local protocol 1006: CXT1 replies also
+carry `RoomTerminal.result` variants `output` and `snapshot`. The header replaces
+`output.data_base64`, or `snapshot.screen_ansi_base64`, `screen_text` and
+`scrollback_text`, with contiguous `[offset, length]` ranges into the raw suffix,
+in that order. ANSI/output fields are raw decoded base64 bytes; text fields are
+UTF-8. Clients and gateways reconstruct the ordinary response before handing it
+to their caller. Other Room Terminal result variants remain ordinary JSON.
+
+
+The same 1006 subscription contract distinguishes view interests:
+`session_terminal` carries terminal data without session projection samples;
+`session_metadata` carries Room state and admission-wait changes without terminal
+bytes or periodic process samples; `session_metadata_processes` additionally keeps
+the process/disk sample feed used by Health. Ordinary `session` subscriptions keep
+their full feed. Private provider-run changes do not repeat an unchanged public
+projection. Activity timestamps accompany the next state or usage update instead
+of resending the whole run on their own. Ordinary metadata sends only admission
+waits, including on its initial projection; full process and disk samples stay on
+Health. Admission holds, pauses and resumptions still reach ordinary views.
+
+
+### Owner room cards through runtime commands — local 1006 / peer 445
+
+`chariox.room.run_command` admits `room agents <room-id>` and `room cards <room-id>`
+for rooms returned by `room list`. The first returns public agent identity, state, processing,
+active prompt id and the latest task's id, prompt id and execution state. Sub-agents stay inside
+their tree. The second returns pending card ids, complete question text, button ids and labels,
+text input metadata, and `answerable` with a refusal reason under the caller's current authority.
+No Vault value is returned.
+
+`agent answer <interaction> <choice-id|text> --room <room-id>` answers a non-secret card in
+any room of the same owner on this kernel, including the caller's own room. It requires no
+sudo beyond the authority needed at home. The kernel rechecks the live caller, the user who
+started its turn, its current inherited permissions and mode, and the card under the interaction
+lock. Secrets, Vault unlock, passkeys, payments and owner verification remain owner-only;
+guests' agents never gain this reach. The ordinary holder path without `--room` and
+`agent pass` still follow the child decision routing rule. Other kernels are outside this command.
+
+The answer uses shared interaction resolution: every attached client sees the same card close,
+only the first answer wins, and asynchronous questions wake their asking agent with the exact
+reply and answering agent identity. The answer audit names `answered_by_agent` and
+`answering_room_id`; it does not claim the peer is the asker's parent.
+
+Focused regressions: `cargo test -p chariox-kernel --lib cross_room_cards`.
+Real provider drill: `node apps/cli/scripts/live-cross-room-cards-drill.mjs` with isolated
+`XROOM_STATE`, `XROOM_WORKSPACE`, `XROOM_EVIDENCE`, `XROOM_BIN`, `XROOM_BUN` and a product-linked `XROOM_CODEX_PROFILE`.
+
+### Machine resource protection — local 1006 / relay peer 445
+
+`UserConfig.config.kernel.resource_protection` contains independent boolean
+`memory`, `disk` and `cpu` settings, all defaulting to `true`. Existing
+`GetUserConfig`, `GetUserConfigSchema`, `SetUserConfigValue` and
+`UnsetUserConfigValue` requests read and update these per-machine values. Setting
+`kernel.resource_protection.<resource>` applies immediately and persists; unset
+restores `true`. Disabling a resource releases its waits and prevents proactive
+pauses/stops for it. Memory protection off also disables owner-set process caps.
+
+Default memory intervention requires near-exhausted physical host or ancestor
+cgroup headroom. A private accounting pool, a predicted peak or PSI alone cannot
+hold, pause or stop healthy work. Accounting cgroups impose no private memory,
+swap or CPU throttle. Disk intervention requires the actual receiving volume to
+approach its bounded 64–512 MiB reserve; predictions alone cannot hold work while
+that volume is healthy. CPU permission is represented independently; no proactive
+CPU pause/stop controller currently runs. OS OOM handling and explicit user Stop
+commands retain their normal authority.
+
+The shared configuration response crosses peer connections, so both version
+numbers advance. `resource-protection-1006.json` and its SHA-256 test pin the shape.
+
+### Native Files invalidations (local1054 / peer492)
+
+`kernel_resources` also accepts one `file_changes` interest: `params:{paths:[absoluteOrHomePath],kernel?:kernelReference}`. A client may hold64 paths across its subscriptions. Each resource change carries a fresh epoch/sequence revision and a snapshot `{resync:true,error:null|string}`. The client refreshes existing directory/file data on every invalidation, including the initial snapshot; it does not replay invalidations or poll. A backend failure sends its reason and requires re-registration. Invalid/protected paths and excess interests are explicit `KernelResourcesWatched.refused` entries. Closing/replacing the subscription releases its native watches.
+
+The implementation uses notify's native inotify/FSEvents backend, non-recursive directories and their parents, with a bounded one-slot queue and20ms coalescing. Parent watches cover atomic replacement and removal/recreation; overflow invalidates the whole interest set. A native backend failure never selects a polling backend.
+
+For a remote machine the home kernel sends `WatchMachineFiles{subscription_id,paths}` over the authenticated same-owner encrypted peer link. The worker pushes `MachineFilesChanged{subscription_id}`; the home acknowledges with `MachineFilesWatched{created:false}` and forwards a resource invalidation to its client. Registration returns `created:true` after worker restart, forcing resync.30s lease renewals perform no filesystem reads;90s expiry bounds abandoned workers, and `UnwatchMachineFiles{subscription_id}` releases promptly. Each worker bounds clients per peer to16 and total clients to256, with64 paths each. Lost event acknowledgements retry; reconnect/native overflow resyncs complete interests.

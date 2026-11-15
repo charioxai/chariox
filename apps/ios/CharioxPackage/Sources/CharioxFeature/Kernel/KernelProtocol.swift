@@ -130,6 +130,7 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
     case skillsListed([CharioxSkillMetadata])
     case promptSubmitted(RuntimeSession)
     case promptCancelled
+    case nothingToStop
     case agentTaskUpdated(taskID: String)
     case interactionResponded(interactionID: String, session: RuntimeSession)
     case workspaceLiveSyncStatus(WorkspaceLiveSyncStatus)
@@ -219,6 +220,10 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
         }
         if container.allKeys.contains(where: { $0.stringValue == "PromptCancelled" }) {
             self = .promptCancelled
+            return
+        }
+        if container.allKeys.contains(where: { $0.stringValue == "NothingToStop" }) {
+            self = .nothingToStop
             return
         }
         if let key = container.allKeys.first(where: { $0.stringValue == "AgentTaskUpdated" }) {

@@ -216,6 +216,37 @@ fn validate(
     profile: &ProviderAccountProfile,
     config: &DaemonConfig,
 ) -> bool {
+    // Defaults use file credentials. An absent native login cannot authenticate;
+    // leave Unknown so the next discovery can find a login made in the CLI,
+    // without starting a resident app-server just to learn that nobody signed in.
+    if profile.provider == "codex"
+        && profile.origin == ProviderAccountProfileOrigin::Default
+        && profile.auth_state != ProviderAccountAuthState::Authenticated
+    {
+        let environment =
+            match registry.resolve_environment(owner_user_id, "codex", &profile.profile_id) {
+                Ok(environment) => environment,
+                Err(error) => {
+                    log_failure("codex", "resolve machine login location", &error);
+                    return false;
+                }
+            };
+        match Path::new(&environment["CODEX_HOME"])
+            .join("auth.json")
+            .try_exists()
+        {
+            Ok(false) => return false,
+            Ok(true) => {}
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.provider_discovery",
+                    "machine Codex login location is unreadable",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+                return false;
+            }
+        }
+    }
     // Authentication only: a usage probe that fails must not hide a valid login,
     // and a running Codex server that owns a pending device login is left alone.
     let result = crate::local::provider_requests::refresh_provider_account_auth_with_config(

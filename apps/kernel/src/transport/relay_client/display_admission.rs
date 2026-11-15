@@ -47,6 +47,7 @@ pub(super) async fn enqueue(
             display_id: None,
             display_pump: None,
             _terminal_lease: None,
+            resource_watch: None,
             handle,
         },
     );
@@ -152,6 +153,7 @@ mod tests {
                         display_id: Some("id".into()),
                         display_pump: None,
                         _terminal_lease: None,
+                        resource_watch: None,
                         handle: tokio::spawn(tokio::time::sleep(Duration::from_secs(60))),
                     },
                 );

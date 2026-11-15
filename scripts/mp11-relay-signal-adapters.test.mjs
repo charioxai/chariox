@@ -6,7 +6,6 @@ import test from "node:test"
 const unsafeSignal = /\b(?:process\s*\.\s*kill|\w+\s*\.\s*kill|libc\s*::\s*kill|os\s*\.\s*(?:kill|killpg))\s*\(|\b(?:pkill|killall)\b/
 const paths = [
   "apps/kernel/src/managed_context/kernel/import.rs",
-  "apps/kernel/src/managed_bootstrap/worker.rs",
   "apps/kernel/src/slice/local_docker/state.rs",
   "apps/kernel/slice-linux-docker/slice-command-guard.py",
   "apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",

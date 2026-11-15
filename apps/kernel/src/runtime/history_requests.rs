@@ -17,6 +17,7 @@ pub(crate) use semantic::{
     semantic_recall_utility_input_from_search_request,
 };
 pub(crate) use session_outline::{
+    execute_agent_transcript_entry_read, execute_agent_transcript_peek,
     execute_scoped_session_history_blob_content_request,
     execute_scoped_session_history_blob_contents_request,
     execute_scoped_session_history_outline_request, execute_session_history_blob_content_request,

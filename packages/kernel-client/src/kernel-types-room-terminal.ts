@@ -81,7 +81,7 @@ export type RoomTerminalWaitResult = {
   readonly output_offset: number
 }
 
-export type ExecOutcome = { kind: "exited"; code: number } | { kind: "signaled"; signal: number } | { kind: "failed"; message: string }
+export type ExecOutcome = { kind: "exited"; code: number } | { kind: "signaled"; signal: number } | { kind: "memory_limit"; limit_bytes: number } | { kind: "failed"; message: string }
 export type ExecOutput = { chunks: readonly { cursor: number; stream: "stdout" | "stderr"; data_base64: string }[]; next_cursor: number; outcome: ExecOutcome | null }
 
 export type ExecState = { kind: "queued"; wait: { reason: "memory" | "disk"; need_bytes: number; free_bytes: number } } | { kind: "starting" | "running" | "finished" }
@@ -90,6 +90,7 @@ export type ExecSummary = { exec_id: string; state: ExecState; age_ms: number; b
 export type RoomTerminalOperation =
   | { readonly operation: "exec_list" }
   | { readonly operation: "exec_open"; readonly command: readonly string[] }
+  | { readonly operation: "exec_open_job"; readonly command: readonly string[]; readonly needs?: { readonly memory_gib?: number; readonly cpus?: number } }
   | { readonly operation: "exec_write"; readonly exec_id: string; readonly offset: number; readonly data_base64: string }
   | { readonly operation: "exec_stdin_close"; readonly exec_id: string; readonly offset: number }
   | { readonly operation: "exec_read"; readonly exec_id: string; readonly after_cursor: number; readonly wait_ms?: number }

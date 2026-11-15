@@ -651,7 +651,7 @@ mod tests {
                 continue;
             };
             let headers = String::from_utf8_lossy(&request[..header_end]);
-            assert!(headers.starts_with("POST /v1/managed-kernels/context/complete "));
+            assert!(headers.starts_with("POST /v1/kernels/context/complete "));
             let content_length = headers
                 .lines()
                 .find_map(|line| {

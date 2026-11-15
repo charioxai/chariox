@@ -174,34 +174,21 @@ fn catalog_handoff_has_a_bounded_fresh_executor_window_after_long_work() {
         false,
         false
     ));
-    assert_eq!(task.progress_sequence, 0);
-    assert_eq!(task.no_progress_wakes, 1);
 }
 
-// MP-08 / MP-10 / MP-11: tool reloads cannot evade the existing no-progress bound.
 #[test]
-fn catalog_reload_chain_blocks_without_real_progress() {
+fn repeated_catalog_reloads_retain_the_working_task() {
     let f = Fixture::new();
     f.begin("p");
-    for _ in 0..NO_PROGRESS_LIMIT {
+    for _ in 0..6 {
         let prompt = f.task().prompt_id;
         f.apply(prepare("room", "parent", &prompt, "run"));
-        let next = f.task().pending_prompt_id.unwrap();
-        f.begin(&next);
+        let task = f.task();
+        assert_eq!(task.state, ExecutionState::Working);
+        assert_eq!(task.task_id, "p");
+        assert!(task.pending_prompt_id.is_some());
+        f.begin(&task.pending_prompt_id.unwrap());
     }
-    let prompt = f.task().prompt_id;
-    f.apply(prepare("room", "parent", &prompt, "run"));
-    let stopped = f.task();
-    assert_eq!(stopped.state, ExecutionState::Blocked);
-    assert!(stopped.pending_prompt_id.is_none());
-    assert!(stopped.reason.contains("resume or cancel"));
-    assert_eq!(stopped.blocked_revision, stopped.revision);
-    f.apply(prepare("room", "parent", &stopped.prompt_id, "run"));
-    assert_eq!(
-        f.task(),
-        stopped,
-        "a blocked chain keeps one owner decision"
-    );
 }
 
 #[test]
@@ -261,30 +248,6 @@ fn catalog_begin_rechecks_owner_disposition_and_exact_scope() {
         }
         assert_eq!(f.task(), before);
     }
-}
-
-#[test]
-fn handled_progress_renews_catalog_wake_budget_without_spending_completion_checks() {
-    let f = Fixture::new();
-    f.begin("p");
-    for _ in 0..NO_PROGRESS_LIMIT {
-        let prompt = f.task().prompt_id;
-        f.apply(prepare("room", "parent", &prompt, "run"));
-        f.begin(&f.task().pending_prompt_id.unwrap());
-    }
-    let prompt = f.task().prompt_id;
-    f.apply(Operation::Progress {
-        task: "p".into(),
-        prompt: prompt.clone(),
-        receipt: "handled-public-result".into(),
-        now: 5,
-    });
-    f.apply(prepare("room", "parent", &prompt, "run"));
-    let task = f.task();
-    assert_eq!(task.state, ExecutionState::Working);
-    assert!(task.pending_prompt_id.is_some());
-    assert_eq!(task.no_progress_wakes, 1);
-    assert_eq!(task.progress_sequence, 1);
 }
 
 #[test]

@@ -579,9 +579,20 @@ async fn a_hot_reload_hands_over_who_launched_the_terminals_commands() {
 }
 
 /// The PTY a master descriptor refers to, or `None` when the descriptor is not an open PTY master.
+#[cfg(target_os = "linux")]
 fn pty_number(fd: i32) -> Option<libc::c_uint> {
     let mut number: libc::c_uint = 0;
     (unsafe { libc::ioctl(fd, libc::TIOCGPTN, &mut number) } == 0).then_some(number)
+}
+
+/// The PTY a master descriptor refers to (its replica's device name; macOS has no `TIOCGPTN`),
+/// or `None` when the descriptor is not an open PTY master.
+#[cfg(target_os = "macos")]
+fn pty_number(fd: i32) -> Option<std::ffi::CString> {
+    let mut name = [0 as libc::c_char; 128];
+    // SAFETY: TIOCPTYGNAME writes at most 128 bytes, NUL-terminated, into `name`.
+    (unsafe { libc::ioctl(fd, libc::TIOCPTYGNAME as libc::c_ulong, name.as_mut_ptr()) } == 0)
+        .then(|| unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_owned())
 }
 
 #[tokio::test]
@@ -1929,7 +1940,7 @@ async fn typed_commands_report_finish_and_exit_code_even_when_instant() {
     for (line, expected) in [
         ("echo builtin-done\r", 0),
         ("false\r", 1),
-        ("/bin/true\r", 0),
+        ("/usr/bin/env true\r", 0),
         ("(exit 7)\r", 7),
         ("(:)&\r", 0),
     ] {
@@ -2995,7 +3006,7 @@ async fn exited_terminal_does_not_become_work_when_its_state_is_locked() {
             rows: 24,
             title: None,
             opened_by: TerminalActor::User,
-            command: Some(vec!["/bin/true".into()]),
+            command: Some(vec!["/usr/bin/env".into(), "true".into()]),
         })
         .unwrap();
     let owner = service.terminal_for_test(&terminal.terminal_id);
@@ -3040,4 +3051,73 @@ async fn live_terminal_state_contention_remains_managed_work() {
     );
     drop(state);
     service.end_session("room-1");
+}
+
+#[tokio::test]
+async fn small_live_writes_share_one_terminal_reply() {
+    use base64::Engine as _;
+    let root = TempDir::new();
+    let service = Arc::new(service(root.path()));
+    let terminal = service.open(OpenRoomTerminal {
+        project_environment: Default::default(), session_id: "room-1".into(), working_directory: root.path().into(), cols: 100, rows: 30, title: None, opened_by: TerminalActor::User,
+        command: Some(vec!["python3".into(), "-c".into(), "import os,time; time.sleep(.15); os.write(1,b'one'); time.sleep(.005); os.write(1,b'two'); time.sleep(1)".into()]),
+    }).unwrap();
+    let pumping = Arc::clone(&service);
+    let pump = tokio::spawn(async move {
+        loop {
+            pumping.pump_once();
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    });
+    let result = service
+        .read_output("room-1", &terminal.terminal_id, 0, Duration::from_secs(1))
+        .await;
+    pump.abort();
+    let _ = pump.await;
+    service
+        .close("room-1", &terminal.terminal_id, &TerminalActor::User)
+        .unwrap();
+    let output = result.unwrap();
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(output.data_base64)
+            .unwrap(),
+        b"onetwo"
+    );
+}
+
+#[tokio::test]
+async fn a_burst_shares_one_reply_for_up_to_four_frames() {
+    use base64::Engine as _;
+    let root = TempDir::new();
+    let service = Arc::new(service(root.path()));
+    // Twenty parts, one every 8 ms: one frame of gathering takes two or three of them.
+    let terminal = service.open(OpenRoomTerminal {
+        project_environment: Default::default(), session_id: "room-1".into(), working_directory: root.path().into(), cols: 100, rows: 30, title: None, opened_by: TerminalActor::User,
+        command: Some(vec!["python3".into(), "-c".into(), "import os,time\ntime.sleep(.15)\nfor n in range(20):\n os.write(1,b'p%02d' % n); time.sleep(.008)\ntime.sleep(1)".into()]),
+    }).unwrap();
+    let pumping = Arc::clone(&service);
+    let pump = tokio::spawn(async move {
+        loop {
+            pumping.pump_once();
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    });
+    let result = service
+        .read_output("room-1", &terminal.terminal_id, 0, Duration::from_secs(2))
+        .await;
+    pump.abort();
+    let _ = pump.await;
+    service
+        .close("room-1", &terminal.terminal_id, &TerminalActor::User)
+        .unwrap();
+    let parts = base64::engine::general_purpose::STANDARD
+        .decode(result.unwrap().data_base64)
+        .unwrap()
+        .len()
+        / 3;
+    assert!(
+        (6..20).contains(&parts),
+        "a burst that keeps writing is one reply for about four frames, not one frame or until it ends ({parts} parts)"
+    );
 }

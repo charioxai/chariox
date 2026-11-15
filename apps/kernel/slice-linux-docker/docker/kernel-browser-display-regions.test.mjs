@@ -12,7 +12,7 @@ function fixture(kind='region') {
   attachDisplay:s=>host.displays.set(s.subscription_id,s),resolveInput:async()=>({guard:async()=>{calls.push('hit');},input:{kind:'click',x:11,y:22}})};
  const binding={browser_generation:2,window_generation:7,role:'tabbed',xid:42,bounds:{width:2560,height:1774},content_top:174,page_rect:{left:0,top:174,width:2560,height:1600},scale:2,isCurrent:()=>alive,isPageCurrent:async target=>alive&&(target===undefined||target===front)};
  const host={generation:2,protection:{unknown:false},displays:new Map(),scales:new Map([['t',2]]),tabs:new Map([['t',tab]]),timing:()=>{},
-  chromium:{display:{},child:{pid:42},scale:2,policy:'managed'},browser:{resolvePageTarget:async()=>({connection:{},sessionId:'s'})},
+  chromium:{display:{},child:{pid:42},scale:2,policy:'managed'},browser:{inputCapture:{hold:async()=>async()=>{}},resolvePageTarget:async()=>({connection:{},sessionId:'s'})},
   displayTarget:async()=>tab,displayScreenshot:async()=>{},armDisplayExpiry:()=>{},
   mirror:{v2:{regions:{resolve:async(target,scope)=>{calls.push([target,scope]);return lease;}}}},
   arbiter:{isActiveTab:async tab=>tab.target_id===front},chromeWindows:{current:()=>({tabbed:binding,auxiliary:[]}),resolve:async()=>{throw Error("MP-11 viewer must not mutate the window binding")},band:()=>({surface:'browser_chrome',window:{id:42,width:2560,height:1774},rect:{left:0,top:0,width:2560,height:174},contentHeight:1600,isCurrent:()=>alive})}};

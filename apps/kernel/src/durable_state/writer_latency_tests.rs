@@ -166,3 +166,65 @@ fn a_typed_durable_commit_does_not_hold_its_runtime_worker() {
         "negative control must detect the old typed recv path"
     );
 }
+
+#[test]
+fn a_prompt_commit_decodes_its_queue_once() {
+    let scratch = scratch("prompt-decode");
+    let store = DurableKernelStateStore::open(scratch.0.join("kernel.db")).unwrap();
+    let mut connection = Connection::open(&store.path).unwrap();
+    let mut session = crate::session::RuntimeSession::new(
+        "room",
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "kernel",
+    );
+    let text = "x".repeat(8 * 1024);
+    let queued = (0..128)
+        .map(|i| {
+            crate::session::PromptQueueItem::new(
+                format!("q-{i}"),
+                "attachment",
+                "agent",
+                &text,
+                crate::session::PromptStatus::Queued,
+            )
+        })
+        .collect();
+    session.mirror_agent_prompt_state("agent", None, queued);
+    let payload_json = serde_json::to_string(
+        &crate::durable_prompt_state::DurablePromptStateEventPayload::capture(&session, "agent"),
+    )
+    .unwrap();
+    let budget = payload_json.len() * 2 + 512 * 1024;
+    let (reply, received) = mpsc::channel();
+    let request = DurableWriteRequest {
+        observation: None,
+        operation: DurableWriteOperation::Event {
+            event_id: "prompt-decode".into(),
+            kind: crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND.into(),
+            subject_id: Some("room".into()),
+            timestamp_ms: 1,
+            payload_json,
+        },
+        response: reply,
+    };
+    let health = DurableWriterHealth::default();
+    let started = Instant::now();
+    let ((), allocated) = crate::test_support::allocation::measure(|| {
+        commit_durable_write_batch(&mut connection, vec![request], &health)
+    });
+    received.recv().unwrap().unwrap();
+    assert_eq!(health.committed_records.load(Ordering::Acquire), 1);
+    eprintln!(
+        "prompt commit allocated={} budget={} elapsed_us={}",
+        allocated.allocated,
+        budget,
+        started.elapsed().as_micros()
+    );
+    assert!(
+        allocated.allocated < budget,
+        "a prompt commit should decode its queue once: {allocated:?}, budget={budget}"
+    );
+}

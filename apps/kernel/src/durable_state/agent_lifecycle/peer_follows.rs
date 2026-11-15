@@ -10,10 +10,34 @@ const OUTBOX_TTL_MS: u64 = 24 * 60 * 60 * 1_000;
 /// The occurrence of a followed agent or room that is gone; the follower's event says so.
 pub(crate) const SOURCE_LOST_OCCURRENCE: &str = "source-lost-";
 
-/// A follow reports every turn of its peer, so it outlives the turns it reports; only the loss
-/// of the peer (`agent-gone-*`, `source-lost-*`) or an unfollow ends it.
-pub(super) fn outlives(registration: &Registration, occurrence: &str) -> bool {
-    registration.peer && occurrence.starts_with("task-terminal-")
+/// A follow of an agent reports every turn of its peer, so it outlives the turns it reports; only
+/// the loss of the peer (`agent-gone-*`, `source-lost-*`) or an unfollow ends it. A follow of one
+/// task ends with that task.
+pub(super) fn outlives(
+    tx: &Transaction<'_>,
+    registration: &Registration,
+    occurrence: &str,
+) -> Result<bool, DaemonError> {
+    let Some(ended) = occurrence.strip_prefix("task-terminal-") else {
+        return Ok(false);
+    };
+    Ok(registration.peer
+        && followed_task(tx, &registration.source_id)?.is_none_or(|task| task != ended))
+}
+
+/// The task a follow names by its task or prompt id; `None` when it follows an agent. A task id
+/// names one task in every room, so a follow from another room finds it too.
+pub(super) fn followed_task(
+    tx: &Transaction<'_>,
+    source: &str,
+) -> Result<Option<String>, DaemonError> {
+    tx.query_row(
+        "SELECT task_id FROM agent_tasks WHERE task_id=?1 OR prompt_id=?1 ORDER BY task_id=?1 DESC LIMIT 1",
+        params![source],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(sql)
 }
 
 /// The live follows an agent made in any of its tasks: a follow outlives the turn that made it.

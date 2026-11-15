@@ -1,4 +1,5 @@
 mod agent_config;
+mod agent_trigger_http_options;
 mod agent_triggers;
 mod internal_prompts;
 pub(crate) use internal_prompts::{
@@ -148,10 +149,14 @@ pub(crate) fn is_false(value: &bool) -> bool {
 pub(crate) fn is_zero(value: &usize) -> bool {
     *value == 0
 }
+pub use agent_trigger_http_options::{
+    AgentHttpMethod, AgentHttpOptions, AgentHttpOptionsRequest, AgentHttpParser, AgentHttpResponse,
+    AgentHttpResponseMode,
+};
 pub use agent_triggers::{
-    AgentTrigger, AgentTriggerBusyPolicy, AgentTriggerDispatch, AgentTriggerNotificationSource,
-    AgentTriggerOutcome, AgentTriggerRepeat, AgentTriggerSource, TriggerDelivery,
-    TriggerDeliveryState, TriggerInputKind,
+    AgentSchedule, AgentTrigger, AgentTriggerBusyPolicy, AgentTriggerDispatch,
+    AgentTriggerNotificationSource, AgentTriggerOutcome, AgentTriggerRepeat, AgentTriggerSource,
+    TriggerDelivery, TriggerDeliveryState, TriggerInputKind,
 };
 
 pub(crate) use service::{PreparedWorkflowQueueRun, WorkflowQueueRun};

@@ -30,6 +30,7 @@ test("admitted session repair finishes when a control read clears disconnected h
     isClosing: () => false, isAttached: () => true,
     isDisconnected: () => disconnected, getSessionId: () => "session-1",
     getSessionState: async () => { disconnected = false; return { id: "session-1" } },
+    resumeAttachedSession: async () => true,
     attachToSession: async () => { attached++; return { id: "new-attachment" } },
     projectSession: session => session, applyAttachment: () => {}, applySession: () => {},
     resetKernelEventSubscription: () => {},
@@ -39,7 +40,7 @@ test("admitted session repair finishes when a control read clears disconnected h
     sleep: async () => { throw Error("unexpected retry") },
   })
   await controller.recover()
-  assert.deepEqual({ attached, subscribed, recovered }, { attached: 1, subscribed: 1, recovered: 1 })
+  assert.deepEqual({ attached, subscribed, recovered }, { attached: 0, subscribed: 1, recovered: 1 })
 })
 
 test("recover reattaches the current disconnected session", async () => {
@@ -54,6 +55,7 @@ test("recover reattaches the current disconnected session", async () => {
       events.push("session")
       return { id: sessionId }
     },
+    resumeAttachedSession: async () => false,
     attachToSession: async (sessionId) => {
       assert.equal(sessionId, "session-1")
       events.push("attach")
@@ -117,6 +119,7 @@ test("recover is idle when detached or no session is selected", () => {
     isDisconnected: () => true,
     getSessionId: () => "session-1",
     getSessionState: async () => ({ id: "session-1" }),
+    resumeAttachedSession: async () => false,
     attachToSession: async () => ({ id: "attachment-1" }),
     projectSession: (session) => session,
     applyAttachment: () => {},
@@ -145,6 +148,7 @@ test("recover returns the current in-flight recovery", async () => {
       sessionFetches += 1
       return deferred.promise
     },
+    resumeAttachedSession: async () => false,
     attachToSession: async () => ({ id: "attachment-1" }),
     projectSession: (session) => session,
     applyAttachment: () => {},
@@ -185,6 +189,7 @@ test("recover retries failed attempts with capped backoff", async () => {
       }
       return { id: "session-1" }
     },
+    resumeAttachedSession: async () => false,
     attachToSession: async () => ({ id: "attachment-1" }),
     projectSession: (session) => session,
     applyAttachment: () => {},
@@ -221,6 +226,7 @@ test("recover aborts when the selected session changes during recovery", async (
       currentSessionId = "session-2"
       return { id: "session-1" }
     },
+    resumeAttachedSession: async () => false,
     attachToSession: async () => {
       attached = true
       return { id: "attachment-1" }

@@ -33,7 +33,7 @@ impl CommandRouter {
         session_id: Option<&'a str>,
     ) -> Option<PreLaneRequestFuture<'a>> {
         match request {
-            LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(request) => {
+            LocalDaemonRequest::ObserveKernelRuntimeIdentity(request) => {
                 Some(Box::pin(async move {
                     execute_managed_bootstrap_observation_request(
                         self.config_projection.snapshot(),

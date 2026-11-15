@@ -238,7 +238,7 @@ async fn parent_deadline_cancels_running_leased_child_on_its_worker() {
             crate::local::SetAgentDeadlineRequest {
                 session_id: session.id().into(),
                 agent_id: parent.id().into(),
-                deadline_ms,
+                deadline_ms: Some(deadline_ms),
             },
         )
         .await

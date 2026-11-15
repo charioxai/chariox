@@ -15,7 +15,7 @@ test("MP-08 MP-10 permissions for agent A are bounded while agent B keeps output
   const client = fakeClient(request => requestVariant(request) === "GetSessionState"
     ? { SessionState: { session: { active_interactions: [interaction] }, agent_activity: {} } }
     : { TerminalOutput: { records: (++pages, [{ agent_id: "agent-b", kind: "provider_output", bytes: [66] }]) } })
-  const pump = startNativeKernelPumpLoop(client, "session", "attachment", {
+  const pump = startNativeKernelPumpLoop(client, "session", { id: "attachment" }, {
     onTerminalRecords: () => {}, onAgentActivity: () => {},
     onInteractions: interactions => { projected.push(interactions) }, pollRuntimeNotices: false,
   })
@@ -35,7 +35,7 @@ test("MP-08 MP-10 native kernel pump drives home settlement when the provider re
   })
 
   try {
-    const pump = startNativeKernelPumpLoop(client, "session-1", "attachment-1")
+    const pump = startNativeKernelPumpLoop(client, "session-1", { id: "attachment-1" })
     await flushPromises()
 
     assert.equal(harness.intervalMs(), 250)
@@ -55,7 +55,7 @@ test("native kernel pump keeps remote output projection responsive without notic
   })
 
   try {
-    const pump = startNativeKernelPumpLoop(client, "session-1", "attachment-1", {
+    const pump = startNativeKernelPumpLoop(client, "session-1", { id: "attachment-1" }, {
       onTerminalRecords: () => {},
       pollRuntimeNotices: false,
     })
@@ -114,7 +114,7 @@ test("MP-08 MP-10 native pump drains final output after snapshot and before sett
       ? { SessionState: { agent_activity: { agent: {} } } }
       : { TerminalOutput: { records: order.filter(k => k === "PumpTerminalOutput").length === 1 ? [{ kind: "provider_output" }] : [] } }
   })
-  const pump = startNativeKernelPumpLoop(client, "session", "attachment", {
+  const pump = startNativeKernelPumpLoop(client, "session", { id: "attachment" }, {
     onTerminalRecords: () => { order.push("output") },
     onAgentActivity: () => { order.push("settlement") },
     pollRuntimeNotices: false,
@@ -130,7 +130,7 @@ test("MP-08 MP-10 stopped native pump suppresses an in-flight snapshot callback"
   let release!: (value: unknown) => void
   let calls = 0
   const client = { send: () => new Promise(resolve => { release = resolve }) } as unknown as LocalIpcClient
-  const pump = startNativeKernelPumpLoop(client, "session", "attachment", {
+  const pump = startNativeKernelPumpLoop(client, "session", { id: "attachment" }, {
     onTerminalRecords: () => { calls++ }, onAgentActivity: () => { calls++ }, pollRuntimeNotices: false,
   })
   try {
@@ -148,7 +148,7 @@ test("MP-08 MP-10 native settlement waits for every bounded terminal output page
   const client = fakeClient(request => requestVariant(request) === "GetSessionState"
     ? { SessionState: { agent_activity: { agent: {} } } }
     : { TerminalOutput: { records: ++page <= 2 ? [{ kind: "provider_output" }] : [] } })
-  const pump = startNativeKernelPumpLoop(client, "session", "attachment", {
+  const pump = startNativeKernelPumpLoop(client, "session", { id: "attachment" }, {
     onTerminalRecords: () => { order.push("output") }, onAgentActivity: () => { order.push("settlement") }, pollRuntimeNotices: false,
   })
   try { await flushPromises(); assert.deepEqual(order, ["output", "output", "settlement"]) }

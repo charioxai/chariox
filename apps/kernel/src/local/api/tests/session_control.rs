@@ -1362,6 +1362,24 @@ fn envp01_project_environment_follows_the_project_owner_and_is_removed_with_the_
         crate::session::RuntimeProjectKind::Named,
     );
     harness.with_app_mut(|app| app.sessions_mut().restore_projects(vec![project]));
+    let snapshot = |owner: &str| match harness
+        .dispatch_as_user(
+            owner,
+            LocalDaemonRequest::GetWaitingRoomPublicSnapshot(GetWaitingRoomPublicSnapshotRequest),
+        )
+        .unwrap()
+    {
+        LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } => snapshot,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    assert!(snapshot("local")
+        .projects
+        .iter()
+        .any(|project| project.id == "envp01-no-agent"));
+    assert!(snapshot("foreign")
+        .projects
+        .iter()
+        .all(|project| project.id != "envp01-no-agent"));
     let read =
         LocalDaemonRequest::GetProjectEnvironment(crate::local::GetProjectEnvironmentRequest {
             project_id: "envp01-no-agent".into(),

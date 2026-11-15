@@ -33,7 +33,9 @@ mod socket_path;
 mod storage;
 pub(crate) use paths::{default_state_dir, kernel_state_roots};
 pub(crate) use socket_path::validate_local_socket_path;
+mod resource_protection;
 mod totp;
+pub use resource_protection::ResourceProtection;
 mod user_config_mutation;
 mod user_config_schema;
 mod validation;
@@ -167,6 +169,8 @@ pub struct DaemonConfig {
     pub relay_request_timeout_ms: u64,
     /// Transitional all-agent room surface; /meta continues to drain.
     pub room_agent_tools: bool,
+    /// Lets a job run on a remote machine; off, every job runs on this kernel's local queue.
+    pub remote_jobs: bool,
     pub accept_remote_leases: bool,
     pub kernel_runtime_role: KernelRuntimeRole,
     /// Optional operator limit on leased turns running at once; further turns
@@ -294,6 +298,7 @@ impl DaemonConfig {
             relay_heartbeat_ms: DEFAULT_RELAY_HEARTBEAT_MS,
             relay_request_timeout_ms: 60_000,
             room_agent_tools: std::env::var("CHARIOX_ROOM_AGENT_TOOLS").as_deref() == Ok("1"),
+            remote_jobs: false,
             accept_remote_leases: true,
             kernel_runtime_role: KernelRuntimeRole::General,
             remote_lease_capacity: None,
@@ -620,9 +625,9 @@ pub struct UserUiConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserAgentsConfig {
-    /// On by default: an agent of the kernel owner needs the person's yes before each acquisition.
+    /// Off by default: the owner may allow agents to offload jobs and acquire machines without a decision each time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ask_before_acquiring_machines: Option<bool>,
+    pub offload_without_asking: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -635,6 +640,8 @@ pub struct UserRelayConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserKernelConfig {
+    #[serde(default)]
+    pub resource_protection: ResourceProtection,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub websocket_host: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

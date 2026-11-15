@@ -12,7 +12,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             room,
             agent,
             deadline,
-        } => super::deadlines::set(tx, room, agent, deadline),
+            inherited,
+        } => super::deadlines::set(tx, room, agent, deadline, inherited),
         Operation::ReachDeadline {
             room,
             agent,
@@ -446,11 +447,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     "nothing to wait on: every tracked obligation is resolved; reply with the final answer",
                 ));
             }
-            if t.goal.is_some() && deadline.is_none() {
-                return Err(error("a goal yield requires a finite future deadline_ms"));
-            }
+            let deadline = deadline.unwrap_or(now.saturating_add(super::DEFAULT_WAIT_TIMEOUT_MS));
             if ids.is_empty()
-                || deadline.is_some_and(|d| d <= now || d > i64::MAX as u64)
+                || deadline <= now
+                || deadline > i64::MAX as u64
                 || reason.trim().is_empty()
             {
                 return Err(error(
@@ -493,7 +493,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             // deadline so an early check-in cannot turn a live source into a timeout.
             t.wait = Some(AgentWait {
                 registration_ids: ids,
-                deadline_ms: deadline,
+                deadline_ms: Some(deadline),
                 started_at_ms: now,
                 inbox_cursor: cursor,
                 long_wait_notified: false,
@@ -683,10 +683,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 if is_plain(tx, &t)? || (!open && has_answer && t.wait.is_none()) {
                     t.state = ExecutionState::Done;
                     t.reason.clear();
-                } else if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
-                    t.state = ExecutionState::Blocked;
-                    t.blocked_revision = t.revision + 1;
-                    t.reason="Three consecutive wakes without handled progress; owner must resume or cancel".into();
                 } else if valid_wait {
                     t.state = ExecutionState::Waiting;
                 } else if !t.correction_used {
@@ -712,35 +708,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 task: t,
                 correction,
             })
-        }
-        Operation::AckHandledChild {
-            room,
-            agent,
-            sequence,
-            subtree,
-            now,
-        } => {
-            let outcome = super::delivery::apply(
-                tx,
-                Operation::Ack {
-                    room: room.clone(),
-                    agent,
-                    sequence,
-                    handled: true,
-                    now,
-                },
-            )?;
-            if let (Outcome::Event(event), Some(root)) = (&outcome, subtree.first()) {
-                if event.state == "handled" {
-                    migration::audit(
-                        tx,
-                        crate::durable_state::agent_subtree_deletion::AGENT_SUBTREE_DELETING,
-                        root,
-                        serde_json::json!({ "session_id": room, "agent_ids": subtree }),
-                    )?;
-                }
-            }
-            Ok(outcome)
         }
         op @ (Operation::Send { .. }
         | Operation::Occur(_)
@@ -772,6 +739,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::ProcessExited { .. }
         | Operation::CancelWake { .. }
         | Operation::CancelOwnerTimer { .. }
+        | Operation::CancelOwnerWait { .. }
         | Operation::WakeAlerted { .. }
         | Operation::RetireWakes { .. }) => super::wakes::apply(tx, op),
         op @ (Operation::RecordCreatedPeer { .. } | Operation::ReleaseCreatedPeer { .. }) => {
@@ -857,7 +825,10 @@ pub(super) fn recover_source(
     task: &mut AgentTaskExecution,
     mut registration: Registration,
 ) -> Result<(), DaemonError> {
-    let source: Option<(i64,String,bool,Option<String>)> = tx.query_row("SELECT sequence,occurrence_id,success,public_answer FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2 AND sequence>?3 ORDER BY sequence DESC LIMIT 1",params![task.room_id,registration.source_id,sql_integer(registration.source_cursor)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+    // A followed task may end in another room of the owner; its outcome is recorded there.
+    let any_room = registration.peer
+        && super::peer_follows::followed_task(tx, &registration.source_id)?.is_some();
+    let source: Option<(i64,String,bool,Option<String>)> = tx.query_row("SELECT sequence,occurrence_id,success,public_answer FROM agent_source_occurrences WHERE (room_id=?1 OR ?4) AND source_id=?2 AND sequence>?3 ORDER BY sequence DESC LIMIT 1",params![task.room_id,registration.source_id,sql_integer(registration.source_cursor)?,any_room],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
     if let Some((seq, id, success, answer)) = source {
         if success && super::delegation::unbound(task, &registration) {
             return Ok(());
@@ -876,7 +847,7 @@ pub(super) fn recover_source(
                 registration.peer && registration.obligation_id.is_none(),
             ),
         )?;
-        registration.live = super::peer_follows::outlives(&registration, &id);
+        registration.live = super::peer_follows::outlives(tx, &registration, &id)?;
         registration.source_cursor =
             u64::try_from(seq).map_err(|_| error("corrupt source sequence"))?;
         tx.execute(
@@ -930,7 +901,43 @@ fn yield_refusal(
             }
         }
     }
-    Ok("yield sources must cover every unresolved obligation".into())
+    let mut uncovered = Vec::new();
+    for obligation in t.obligations.iter().filter(|o| o.needs_live_source()) {
+        let bindings: Vec<_> = own
+            .iter()
+            .filter(|r| r.obligation_id.as_deref() == Some(&obligation.id) && r.live)
+            .collect();
+        if bindings.iter().any(|r| ids.contains(&r.id)) {
+            continue;
+        }
+        let wake: Option<String> = tx
+            .query_row(
+                "SELECT payload FROM agent_wakes WHERE id=?1 AND task_id=?2",
+                params![obligation.resource_id, t.task_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sql)?;
+        let mut item = serde_json::json!({"obligation_id":obligation.id,"kind":obligation.kind,
+            "resource_id":obligation.resource_id,"registration_ids":bindings.iter().map(|r| &r.id).collect::<Vec<_>>()});
+        if let Some(wake) = wake {
+            let wake: types::AgentWake = decode(&wake)?;
+            item["label"] = wake.label.into();
+            item["cancel_call"] = serde_json::json!({"tool":"chariox.events.cancel_wake","arguments":{
+                "task_id":t.task_id,"origin_prompt_id":t.prompt_id,"wake_id":wake.id}});
+        } else {
+            item["subscribe_call"] = serde_json::json!({"tool":"chariox.events.subscribe","arguments":{
+                "task_id":t.task_id,"origin_prompt_id":t.prompt_id,"source_id":obligation.completion_source(),"obligation_id":obligation.id}});
+        }
+        if obligation.kind == "delegate" {
+            if let Some(agent) = obligation.resource_id.as_deref() {
+                item["cancel_call"] = serde_json::json!({"tool":"chariox.room.run_command","arguments":{
+                    "command":format!("agent cancel {agent}")}});
+            }
+        }
+        uncovered.push(item);
+    }
+    Ok(format!("yield sources must cover every unresolved obligation. Uncovered: {}. Add the listed registration_ids to chariox.events.yield; if a binding is missing, use subscribe_call first. To stop a source instead, use its cancel_call, then handle its completion receipt with chariox.events.inbox and chariox.events.ack (handled:true). Unknown registration_ids: {}. chariox.events.subscriptions lists admitted registrations.", encode(&uncovered)?, encode(&foreign)?))
 }
 
 /// Questions are the only source allowed to outlive a normal turn without an
@@ -946,7 +953,6 @@ fn retain_question_wait(
         .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
     if t.wait.is_none()
         && t.goal.is_none()
-        && t.no_progress_wakes < NO_PROGRESS_LIMIT
         && open
         && t.obligations
             .iter()
@@ -964,7 +970,7 @@ fn retain_question_wait(
                 })
             })
             .collect();
-        let deadline_ms = super::wakes::question_deadline(tx, t, &selected)?;
+        let deadline_ms = super::wakes::question_deadline(tx, t, &selected, now)?;
         t.wait = Some(AgentWait {
             registration_ids: selected.into_iter().map(|r| r.id).collect(),
             deadline_ms: Some(deadline_ms),

@@ -37,6 +37,32 @@ function page(forms = [], request = () => Promise.resolve(null), inputs) {
 const closed = { type: 'object', additionalProperties: false };
 const addTodo = { name: 'add_todo', description: 'Add a todo', inputSchema: { ...closed, properties: { text: { type: 'string' } } }, effect: 'write' };
 
+test('a person-confirmed action keeps its signed confirmation view without running the action', () => {
+  const { api } = page();
+  const declaration = { name: 'pay', description: 'Pay for the campaign', inputSchema: closed,
+    effect: 'person_confirmed', confirmationView: 'review_payment' };
+  let runs = 0;
+  api.action(declaration, () => { runs++; });
+  assert.deepEqual(JSON.parse(JSON.stringify(api.agent.registrations())), [declaration]);
+  assert.equal(runs, 0, 'registering a confirmation must never run the payment');
+});
+
+test('an agent-driven DOM call cannot run a person-confirmed action, a person can', async () => {
+  const agentEvent = {}, personEvent = {};
+  const inputs = { token: source => source === agentEvent ? 'agent-token' : undefined, track() {} };
+  const { api, context } = page([], async () => null, inputs);
+  const declaration = { name: 'pay', description: 'Pay for the campaign', inputSchema: closed,
+    effect: 'person_confirmed', confirmationView: 'review_payment' };
+  let runs = 0;
+  const wrapped = api.action(declaration, () => { runs++; return 'paid'; });
+  context.event = agentEvent;
+  await assert.rejects(() => wrapped({}), error => error.code === 'person_confirmation_required');
+  assert.equal(runs, 0, 'an agent clicking the button must not run the payment');
+  context.event = personEvent;
+  assert.equal(await wrapped({}), 'paid');
+  assert.equal(runs, 1);
+});
+
 test('a registered action is listed with the declaration shape and runs the user function', async () => {
   const { api } = page();
   const calls = [];

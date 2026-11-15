@@ -390,12 +390,14 @@ async fn a_fresh_context_node_queued_behind_a_native_stop_starts_on_a_fresh_run(
 
 async fn queued_behind_native_stop(workflow_node_with_fresh_context: Option<bool>) {
     crate::test_support::isolated_env_test!();
-    let (_worktree, runtime, session_id, agent_id, source_id, run, dispatch) =
+    let (worktree, runtime, session_id, agent_id, source_id, run, dispatch) =
         runtime_with_claude_headless_active_prompt().await;
     // Like Claude, the fixture survives the Stop's Ctrl-C.
+    let ready = worktree.path().join("native-stop-ready");
+    let ready_path = shell_words::quote(ready.to_str().expect("fixture path should be UTF-8"));
     std::fs::write(
         std::env::var_os("CHARIOX_CLAUDE_BIN").unwrap(),
-        "#!/bin/sh\ntrap '' INT\nprintf '❯ '\nwhile IFS= read -r line; do printf '❯ '; done\n",
+        format!("#!/bin/sh\ntrap '' INT\nprintf ready > {ready_path}\nprintf '❯ '\nwhile IFS= read -r line; do printf '❯ '; done\n"),
     )
     .unwrap();
     runtime
@@ -404,6 +406,13 @@ async fn queued_behind_native_stop(workflow_node_with_fresh_context: Option<bool
         })
         .await
         .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !ready.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the fixture must install its interrupt handler before Stop");
     let stopped_prompt_id = dispatch.prompt_id.clone();
     let cancellation = runtime
         .owned

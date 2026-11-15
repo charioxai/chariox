@@ -5,6 +5,7 @@ import type {
   CharioxUserConfigSchemaPayload,
 } from "./kernel-types.js"
 import {
+  createCredentialVaultRequest,
   deleteCredentialSecretRequest,
   getCredentialVaultStatusRequest,
   getCredentialRequest,
@@ -43,6 +44,16 @@ export async function executeConfigCommand(
   deps: ShellConfigCommandDeps,
 ): Promise<ShellCommandResult> {
   const [action, keyPath, ...rest] = parsed.args
+  if (action === "agents-offload") {
+    if (rest.length || (keyPath && keyPath !== "on" && keyPath !== "off")) return { ok: false, message: "usage: config agents-offload [on|off]" }
+    if (keyPath) {
+      const changed = await deps.client.send(setUserConfigValueRequest("agents.offload_without_asking", keyPath === "on" ? "true" : "false"))
+      expectVariant<CharioxUserConfigPayload>(changed, "UserConfigUpdated")
+    }
+    const response = await deps.client.send(getUserConfigRequest())
+    const payload = expectVariant<CharioxUserConfigPayload>(response, "UserConfig")
+    return { ok: true, message: `Agents may offload and acquire machines without asking: ${payload.config.agents?.offload_without_asking === true ? "On" : "Off"}`, data: payload }
+  }
   if (!action || action === "show") {
     const response = await deps.client.send(getUserConfigRequest())
     const payload = expectVariant<CharioxUserConfigPayload>(response, "UserConfig")
@@ -130,7 +141,7 @@ export async function executeCredentialCommand(
       const status = expectVariant<{ status: Record<string, unknown> }>(response, "CredentialVaultStatus").status
       return {
         ok: true,
-        message: status.unlocked === true ? "vault unlocked" : "vault locked",
+        message: credentialVaultStatusMessage(status),
         data: { status },
         format: "json",
       }
@@ -139,6 +150,13 @@ export async function executeCredentialCommand(
       const response = await deps.client.send(lockCredentialVaultRequest())
       const status = expectVariant<{ status: Record<string, unknown> }>(response, "CredentialVaultLocked").status
       return { ok: true, message: "vault locked", data: { status }, format: "json" }
+    }
+    if (vaultAction === "create") {
+      const input = await readNewVaultPassphrase(deps.readSecret)
+      if (!input.ok) return input
+      const response = await deps.client.send(createCredentialVaultRequest(input.passphrase))
+      const payload = expectVariant<{ action: string; status: Record<string, unknown> }>(response, "CredentialVaultUnlocked")
+      return { ok: true, message: `vault ${payload.action}`, data: payload, format: "json" }
     }
     if (vaultAction === "unlock") {
       if (!deps.readSecret) {
@@ -164,7 +182,7 @@ export async function executeCredentialCommand(
       const payload = expectVariant<{ action: string; status: Record<string, unknown> }>(response, "CredentialVaultManaged")
       return { ok: true, message: `vault ${payload.action}`, data: payload, format: "json" }
     }
-    return { ok: false, message: "usage: credential vault status|lock|unlock [once|30m|2h|kernel]|manage" }
+    return { ok: false, message: "usage: credential vault status|create|lock|unlock [once|30m|2h|kernel]|manage" }
   }
   if (!action || action === "list" || action === "ls") {
     const response = await deps.client.send(listCredentialsRequest())
@@ -262,4 +280,20 @@ function credentialVaultContext(context: ShellContext) {
     ...(context.sessionId ? { sessionId: context.sessionId } : {}),
     ...(context.agentId ? { agentId: context.agentId } : {}),
   }
+}
+
+/** Status reads never start a secret prompt, including on a fresh kernel. */
+export function credentialVaultStatusMessage(status: Record<string, unknown>): string {
+  if (status.awaiting_passphrase === true) return "vault needs a passphrase; run /credential vault create"
+  return status.unlocked === true ? "vault unlocked" : "vault locked"
+}
+
+export async function readNewVaultPassphrase(readSecret?: (prompt: string) => Promise<string>): Promise<
+  { ok: true; passphrase: string } | { ok: false; message: string }
+> {
+  if (!readSecret) return { ok: false, message: "credential vault create requires hidden input support; run it from an interactive terminal" }
+  const passphrase = await readSecret("New Vault passphrase: ")
+  if (!passphrase) return { ok: false, message: "the Vault passphrase must not be empty" }
+  if (passphrase !== await readSecret("Confirm Vault passphrase: ")) return { ok: false, message: "the Vault passphrases do not match; try again" }
+  return { ok: true, passphrase }
 }

@@ -283,7 +283,6 @@ fn spawn_kernel_with_handoff(
         .env_remove("CHARIOX_DAEMON_ID")
         .env_remove("CHARIOX_MACHINE_ID")
         .env_remove("CHARIOX_RELAY_TOKEN")
-        .env_remove(super::worker::ACTIVITY_RECEIPT_ENV)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -927,8 +926,6 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             managed_repository_root: Some("/srv/managed workspaces".to_string()),
             confirmed_at: Some("2026-09-20T20:00:00Z".to_string()),
             context_plan: None,
-            provider_rebuild_action_id: None,
-            freshness_evidence: None,
         }
         .persist(&config.receipt_path)
         .expect("managed receipt should persist");
@@ -1204,9 +1201,9 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         fn report_runtime_identity(
             &self,
             _: &str,
-            _: &super::super::freshness::ManagedKernelRuntimeIdentityReport,
+            _: &super::super::runtime_identity::ManagedKernelRuntimeIdentityReport,
         ) -> Result<super::super::cloud::RuntimeIdentityReportResponse, DaemonError> {
-            panic!("confirmation restart must not report reimage identity")
+            panic!("confirmation restart must not report runtime identity")
         }
     }
 
@@ -1259,9 +1256,8 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             expires_at: "2026-09-23T00:00:00Z".to_string(),
             runtime_release_digest: runtime_release_digest.to_string(),
             managed_repository_root: None,
-            provider_rebuild_action_id: None,
-            expected_data_volume_serial: None,
-            expected_data_volume_size_gb: None,
+            confirmation_evidence: None,
+            authority_data: None,
         }
     }
 
@@ -1278,9 +1274,6 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             "expiresAt": &envelope.expires_at,
             "runtimeReleaseDigest": &envelope.runtime_release_digest,
             "managedRepositoryRoot": &envelope.managed_repository_root,
-            "providerRebuildActionId": &envelope.provider_rebuild_action_id,
-            "expectedDataVolumeSerial": &envelope.expected_data_volume_serial,
-            "expectedDataVolumeSizeGb": envelope.expected_data_volume_size_gb,
         }))
         .expect("confirmation envelope fixture should serialize");
         std::fs::write(path, bytes).expect("confirmation envelope fixture should persist");
@@ -1421,8 +1414,6 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             managed_repository_root: None,
             confirmed_at: None,
             context_plan: None,
-            provider_rebuild_action_id: None,
-            freshness_evidence: None,
         };
         receipt
             .persist(&config.receipt_path)
@@ -1979,8 +1970,6 @@ while :; do sleep 0.05; done
             managed_repository_root: Some("/srv/managed workspaces".to_string()),
             confirmed_at: Some("2026-09-20T20:00:00Z".to_string()),
             context_plan: None,
-            provider_rebuild_action_id: None,
-            freshness_evidence: None,
         }
         .persist(&config.receipt_path)
         .unwrap();

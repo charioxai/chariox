@@ -969,7 +969,8 @@ pub(crate) const PACKAGE_METADATA: &[(&str, &[u8])] = &[
 
 #[test]
 fn mp08_mp11_target_classification_table_in_overlay_and_history() {
-    crate::test_support::isolated_env_test!();
+    // Every row builds and imports a real Git archive in both modes.
+    crate::test_support::isolated_env_test!(std::time::Duration::from_secs(600));
     let _lock = crate::env_lock::lock();
     for history in [false, true] {
         for (path, bytes, data) in boundary_cases() {

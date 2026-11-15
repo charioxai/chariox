@@ -121,6 +121,38 @@ impl KernelRuntimeState {
                 None => Err(denied("cancel names the agent whose turn it stops")),
             };
         }
+        let deadline_target = |room: &str, agent: &str| {
+            self.owned
+                .agent_store
+                .get_agent(agent)
+                .ok()
+                .filter(|target| target.session_id() == room)
+                .ok_or_else(|| denied("agent is unavailable in that room"))
+        };
+        if let LocalDaemonRequest::SetAgentDeadline(r) = request {
+            let target = deadline_target(&r.session_id, &r.agent_id)?;
+            if target.id() == actor.id() {
+                return Err(denied(
+                    "only the owner or another authorized agent can change your deadline",
+                ));
+            }
+            return self.authorize_peer_control(
+                &actor,
+                &target,
+                super::peer_rooms::PeerControl::Cancel,
+            );
+        }
+        // Who may change a deadline in another room may read it there.
+        if let LocalDaemonRequest::GetAgentDeadline(r) = request {
+            if r.session_id != actor.session_id() {
+                let target = deadline_target(&r.session_id, &r.agent_id)?;
+                return self.authorize_peer_control(
+                    &actor,
+                    &target,
+                    super::peer_rooms::PeerControl::Cancel,
+                );
+            }
+        }
         if rooms_named(request)
             .iter()
             .any(|room| room != actor.session_id())
@@ -128,7 +160,6 @@ impl KernelRuntimeState {
             return Err(denied("request is outside the caller room"));
         }
         let (room, target_id, deleting) = match request {
-            LocalDaemonRequest::SetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::GetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::ListDescendants(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::AliasAgent(r) => (&r.session_id, &r.agent_id, false),

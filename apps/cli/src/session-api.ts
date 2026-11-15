@@ -41,13 +41,14 @@ export async function attachSessionView(client: LocalIpcClient, sessionId: strin
     agent_activity_revision?: number | null
     room_workflows?: import("@chariox/kernel-client/kernel-types").RoomWorkflowInventory
     processes: import("@chariox/kernel-client/kernel-events").SessionProcess[]
+    jobs?: import("@chariox/kernel-client/kernel-events").JobView[]
   }>(view.state, "SessionState")
   if (state.session.id !== sessionId || view.attachment.session_id !== sessionId) throw new Error("initial view session mismatch")
   const history = expectVariant<SessionHistoryOutline>(view.history, "SessionHistoryOutline")
   if (history.agents.some(agent => !state.session.agents.some(visible => visible.id === agent.agent_id))) throw new Error("initial view history agent mismatch")
   return {
     attachment: view.attachment,
-    session: normalizeRuntimeSessionWithAgentActivity({ ...state, session: { ...state.session, processes: state.processes, room_workflows: state.room_workflows, room_workflows_fresh: true } }),
+    session: normalizeRuntimeSessionWithAgentActivity({ ...state, session: { ...state.session, processes: state.processes, jobs: state.jobs ?? [], room_workflows: state.room_workflows, room_workflows_fresh: true } }),
     history: { ...history, agents: history.agents.map(agent => ({ ...agent, loadedBlobs: agent.prefetched_blobs ?? [] })) },
   }
 }
@@ -151,8 +152,9 @@ export async function getSessionState(client: LocalIpcClient, sessionId: string)
     agent_activity_revision?: number | null
     room_workflows?: import("@chariox/kernel-client/kernel-types").RoomWorkflowInventory
     processes: import("@chariox/kernel-client/kernel-events").SessionProcess[]
+    jobs?: import("@chariox/kernel-client/kernel-events").JobView[]
   }>(response, "SessionState")
-  return normalizeRuntimeSessionWithAgentActivity({ ...payload, session: { ...payload.session, processes: payload.processes, room_workflows: payload.room_workflows, room_workflows_fresh: true } })
+  return normalizeRuntimeSessionWithAgentActivity({ ...payload, session: { ...payload.session, processes: payload.processes, jobs: payload.jobs ?? [], room_workflows: payload.room_workflows, room_workflows_fresh: true } })
 }
 
 export async function updateMetaagentTask(

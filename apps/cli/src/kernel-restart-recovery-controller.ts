@@ -6,6 +6,7 @@ type KernelRestartRecoveryControllerOptions<TSession, TAttachment> = {
   isDisconnected: () => boolean
   getSessionId: () => string | null
   getSessionState: (sessionId: string) => Promise<TSession>
+  resumeAttachedSession: () => Promise<boolean>
   attachToSession: (sessionId: string) => Promise<TAttachment>
   projectSession: (session: TSession) => TSession
   applyAttachment: (attachment: TAttachment) => void
@@ -58,11 +59,14 @@ export function createKernelRestartRecoveryController<TSession, TAttachment>(
             if (!stillRecoveringSession(sessionId)) {
               return
             }
-            const nextAttachment = await options.attachToSession(sessionId)
-            if (!stillRecoveringSession(sessionId)) {
-              return
+            // Planned reloads transfer this attachment. Replace it only when
+            // the kernel rejects the existing subscription, not on carrier loss.
+            if (!await options.resumeAttachedSession()) {
+              const nextAttachment = await options.attachToSession(sessionId)
+              if (!stillRecoveringSession(sessionId)) return
+              options.applyAttachment(nextAttachment)
             }
-            options.applyAttachment(nextAttachment)
+            if (!stillRecoveringSession(sessionId)) return
             options.applySession(options.projectSession(nextSession))
             options.resetKernelEventSubscription()
             await options.syncKernelEventSubscription()

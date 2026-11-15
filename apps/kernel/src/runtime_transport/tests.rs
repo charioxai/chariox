@@ -7,6 +7,12 @@ mod task_subscriptions;
 
 use std::path::{Path, PathBuf};
 
+// A pump that does not stop must not use up the process budget the cleanup after it needs.
+#[test]
+fn stopping_the_output_pump_leaves_half_the_shutdown_budget_for_cleanup() {
+    assert!(PROVIDER_OUTPUT_PUMP_STOP_TIMEOUT * 2 <= crate::shutdown::SHUTDOWN_BUDGET);
+}
+
 use crate::local::{
     CreateSliceRequest, LocalDaemonRequest, ReleaseRoomEnvironmentInputRequest,
     RequestRoomEnvironmentInputTakeoverRequest, SliceCreateBase, SliceStateSaveMode,

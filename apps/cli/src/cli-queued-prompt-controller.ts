@@ -108,12 +108,13 @@ export function createCliQueuedPromptController(deps: CliQueuedPromptControllerD
       return
     }
 
-    updateQueuedPromptEntryStatus(
-      queuedPrompt.agentId,
-      queuedPrompt.promptId,
-      action === "steer" ? "steering" : "cancelling",
-    )
     void (async () => {
+      // Let the request reach the socket before rebuilding a long queue's layout.
+      const pendingLayout = setTimeout(() => updateQueuedPromptEntryStatus(
+        queuedPrompt.agentId,
+        queuedPrompt.promptId,
+        action === "steer" ? "steering" : "cancelling",
+      ), 0)
       try {
         const payload = action === "steer"
           ? await steerQueuedPrompt(
@@ -144,7 +145,7 @@ export function createCliQueuedPromptController(deps: CliQueuedPromptControllerD
       } catch (error) {
         updateQueuedPromptEntryStatus(queuedPrompt.agentId, queuedPrompt.promptId, "queued")
         deps.flashFooter(deps.formatError(error), "error")
-      }
+      } finally { clearTimeout(pendingLayout) }
     })()
   }
 

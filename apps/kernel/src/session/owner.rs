@@ -102,11 +102,12 @@ impl SessionStateStore {
 
     pub(crate) fn list_visible_projects(
         &self,
+        owner_user_id: &str,
         include_archived: bool,
         is_member: impl Fn(&RuntimeSession) -> bool,
     ) -> Vec<RuntimeProject> {
         self.read()
-            .list_visible_projects(include_archived, is_member)
+            .list_visible_projects(owner_user_id, include_archived, is_member)
     }
 
     pub(crate) fn get_project(&self, project_id: &str) -> Result<RuntimeProject, DaemonError> {
@@ -741,6 +742,14 @@ impl SessionStateStore {
     ) -> Result<RuntimeSession, DaemonError> {
         self.write()
             .note_prompt_sent(session_id, agent_id, timestamp_ms)
+    }
+
+    pub(crate) fn clear_agent_unread_output(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.write().clear_agent_unread_output(session_id, agent_id)
     }
 
     pub(crate) fn note_agent_output_sequence(

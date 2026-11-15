@@ -263,3 +263,70 @@ fn an_export_offers_a_copy_of_one_private_file_for_the_owner_to_save_once() {
         );
     });
 }
+
+#[test]
+fn an_import_with_a_lost_publication_reply_never_releases_its_one_use_grant() {
+    use crate::durable_state::app_files::TestPublicationFault;
+    use std::sync::atomic::Ordering;
+
+    let fixture = Fixture::new(Mode::Ready);
+    let fault = Arc::new(TestPublicationFault {
+        drop_reply: true,
+        ..Default::default()
+    });
+    fixture.runtime.block_on(async {
+        let service = AppFileGrantBroker::fixture(
+            fixture.store.clone(),
+            "alice".into(),
+            fixture.catalog.clone(),
+            fixture.admission.clone(),
+            fixture.data(),
+            true,
+        )
+        .fixture_with_publication_fault(fault.clone());
+        let mut peer = TestPeer::start_with(Arc::new(GrantDelegate(service)));
+        peer.send("pick", "host.pick_file", serde_json::json!({}))
+            .await;
+        let operation = peer.response().await.1.unwrap()["operationId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let store = fixture.store.clone();
+        let granted = tokio::task::spawn_blocking(move || {
+            store
+                .app_file_grant(FileGrantCommand::Grant {
+                    owner: "alice".into(),
+                    operation_id: operation,
+                    files: vec![GrantedFile {
+                        name: "notes.md".into(),
+                        contents: b"published once".to_vec(),
+                    }],
+                    now_ms: crate::session::unix_epoch_ms(),
+                })
+                .unwrap()
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        let import = serde_json::json!({"grantId":granted.grants[0],"destination":"fixture-file"});
+        peer.send("lost", "files.import", import.clone()).await;
+        let lost = peer.response().await.1.unwrap_err();
+        peer.send("replay", "files.import", import).await;
+        let replay = peer.response().await.1.unwrap_err();
+        peer.close().await;
+        assert_eq!(
+            fault.publications.load(Ordering::SeqCst),
+            1,
+            "a lost publication ACK must not make a consumed import grant reusable"
+        );
+        assert_eq!(lost.code, "APP_FILE_OUTCOME_UNCERTAIN");
+        assert_eq!(lost.retryable, Some(false));
+        assert_eq!(replay.code, "NOT_FOUND");
+    });
+    assert_eq!(
+        fixture.observed.private_file().unwrap(),
+        Some(b"published once".to_vec())
+    );
+    assert_eq!(fixture.observed.pending_file_replacements().unwrap(), 0);
+    assert_eq!(fixture.admission.available_permits(), 8);
+}
