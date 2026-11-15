@@ -7702,3 +7702,9 @@ numbers advance. `resource-protection-1006.json` and its SHA-256 test pin the sh
 The implementation uses notify's native inotify/FSEvents backend, non-recursive directories and their parents, with a bounded one-slot queue and20ms coalescing. Parent watches cover atomic replacement and removal/recreation; overflow invalidates the whole interest set. A native backend failure never selects a polling backend.
 
 For a remote machine the home kernel sends `WatchMachineFiles{subscription_id,paths}` over the authenticated same-owner encrypted peer link. The worker pushes `MachineFilesChanged{subscription_id}`; the home acknowledges with `MachineFilesWatched{created:false}` and forwards a resource invalidation to its client. Registration returns `created:true` after worker restart, forcing resync.30s lease renewals perform no filesystem reads;90s expiry bounds abandoned workers, and `UnwatchMachineFiles{subscription_id}` releases promptly. Each worker bounds clients per peer to16 and total clients to256, with64 paths each. Lost event acknowledgements retry; reconnect/native overflow resyncs complete interests.
+
+### OF-13: offload policy per project, Room and agent — local 1010 (provisional)
+
+`GetRemoteJobPolicy` and `SetRemoteJobPolicy` take `{session_id, agent_id?, project?}`. `project: true` reads or writes the
+Room's project setting (not with `agent_id`); an agent's own setting wins over its Room's, and the Room's over its project's. The
+answer's `source` is `agent`, `session`, `project` or `default` (nothing set, `off`). `fixtures/remote-jobs-protocol.json` pins the shapes.

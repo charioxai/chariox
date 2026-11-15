@@ -1,5 +1,5 @@
 {
-  "local": 1008,
+  "local": 1010,
   "relayPeer": 447,
   "shapes": [
     {
@@ -7,10 +7,11 @@
       "wire": {
         "GetRemoteJobPolicy": {
           "session_id": "room",
-          "agent_id": null
+          "agent_id": null,
+          "project": false
         }
       },
-      "sha256": "507c489006663edee7d89ef9b1b9f476aa67da2f58780d4c6368cbc1bf9fd88e"
+      "sha256": "f912718142ca433f1cda144ee787ff96fc525b22202bc6a0e14c8791fac6220a"
     },
     {
       "kind": "request",
@@ -18,10 +19,11 @@
         "SetRemoteJobPolicy": {
           "session_id": "room",
           "agent_id": "agent",
+          "project": false,
           "policy": "when_busy"
         }
       },
-      "sha256": "acfda5a964580245a36e86a03cc6ccd3b614f8c60f22ea5202449bbc8bbd2f43"
+      "sha256": "f3b096a8b165a363420643f2cdc63bcd7cb28b670c9a321e8b42a85de2c378d4"
     },
     {
       "kind": "request",
@@ -29,10 +31,23 @@
         "SetRemoteJobPolicy": {
           "session_id": "room",
           "agent_id": "agent",
+          "project": false,
           "policy": null
         }
       },
-      "sha256": "02075a6dc955e76c00f133461b82eb7e98490da8423a0bed8b0820fc20c082d2"
+      "sha256": "cbe0f887d5c2907b215866b89b7f3a346483b8180ab28712fef89a51b34df9cf"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "SetRemoteJobPolicy": {
+          "session_id": "room",
+          "agent_id": null,
+          "project": true,
+          "policy": "always_heavy"
+        }
+      },
+      "sha256": "7d609444fabc7bd17691136e0df4b964fd5c574f25beddb43b1885c106308bea"
     },
     {
       "kind": "request",
