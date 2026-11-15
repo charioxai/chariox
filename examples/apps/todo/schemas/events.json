@@ -39,7 +39,7 @@
           },
           "notes": {
             "type": "string",
-            "maxLength": 2000
+            "maxLength": 1000
           },
           "due_at_ms": {
             "type": "integer",

@@ -1,6 +1,6 @@
 //! Sign an App directory with a self-contained client view as its UI entry, for the native-open drill.
 //! usage: client-view-package <core.wasm> <view html> <app directory> <output directory>
-//! The manifest, the tool and the action declarations and the icon are the App's own (`app.json`, `schemas/`);
+//! The manifest, the tool, event and action declarations and the icon are the App's own (`app.json`, `schemas/`);
 //! only the publisher (the drill's, which the drill enrolls like any other) is not. The package is written as `<last part of the app id>.cxapp`.
 use chariox_app_package::{
     v2::{self, ManifestV2},
@@ -33,9 +33,14 @@ fn main() {
         ),
         (manifest.ui.entry.clone(), std::fs::read(view).unwrap()),
     ]);
-    for declared in [&manifest.tools, &manifest.ui_actions, &manifest.icon]
-        .into_iter()
-        .flatten()
+    for declared in [
+        &manifest.tools,
+        &manifest.events,
+        &manifest.ui_actions,
+        &manifest.icon,
+    ]
+    .into_iter()
+    .flatten()
     {
         files.insert(declared.clone(), std::fs::read(app.join(declared)).unwrap());
     }
