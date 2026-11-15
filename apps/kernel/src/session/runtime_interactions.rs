@@ -321,6 +321,9 @@ pub struct RuntimeInteractionBrowserRegion {
     pub verification: Option<RuntimeInteractionBrowserVerification>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_result: Option<RuntimeInteractionBrowserVerificationResult>,
+    /// Text the page shows once the person's step is done; the card then closes by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_text: Option<String>,
 }
 
 /// A positive HTTP result for this card's exact document and challenge.

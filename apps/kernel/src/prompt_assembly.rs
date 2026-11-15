@@ -1510,12 +1510,14 @@ mod tests {
 
     // AU-03: a step the person does inside a page is one live card, never a chat request plus a Confirm.
     #[test]
-    fn runtime_instructions_put_a_person_step_in_a_page_on_one_live_card() {
+    fn runtime_instructions_put_a_person_step_on_one_live_card_and_sign_up_through_auth_md() {
         for expected in [
             "do not ask them to do it in the chat",
             "`view.browser_region`",
             "only a Cancel choice",
             "it closes by itself when the step is done",
+            "`done_text`",
+            "`chariox.agent_auth_register`",
         ] {
             assert!(RUNTIME_BASE.contains(expected), "missing {expected}");
         }

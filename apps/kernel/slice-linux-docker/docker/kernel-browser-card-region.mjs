@@ -116,11 +116,12 @@ async function childFrameBox(browser, connection, sessionId, tab, command) {
 // Runs in a controller-owned isolated world. A long read returns on the next
 // geometry change, including scroll, resize, animation and element removal.
 // The timer also settles hidden documents where animation frames are paused.
-function watchBox(previous, resolveAnchor) {
+function watchBox(previous, doneText, resolveAnchor) {
   const original = this;
   const read = () => {
     const node = resolveAnchor ? resolveAnchor() : original;
     if (!node?.isConnected || node.ownerDocument !== document) return null;
+    if (doneText !== null && node.innerText.toLowerCase().includes(doneText.toLowerCase())) return { done: true };
     const r = node.getBoundingClientRect(), w = innerWidth, h = innerHeight;
     if (r.right <= r.left || r.bottom <= r.top) return { rect: { x: 0, y: 0, width: 0, height: 0 }, viewport_width: w, viewport_height: h };
     const x = Math.max(0, Math.min(w, Math.floor(r.left - 16)));
@@ -190,6 +191,8 @@ export async function resolveCardRegion(host, command, scope, signal) {
   if (command.document_id !== undefined && command.document_id !== remembered.document_id) return gone('Browser document changed');
   const tab = await host.displayTarget({ tab_id: command.tab_id, generation: remembered.generation });
   if (tab.document_id !== remembered.document_id) return gone('Browser document changed');
+  if (command.done_text !== undefined && (typeof command.done_text !== 'string' || !command.done_text.trim() || command.done_text.length > 200)) throw new Error('Browser card done text must be 1 to 200 characters');
+  if (command.done_text !== undefined && remembered.children.has(command.ref)) throw new Error('Browser card done text needs a page element, not a frame');
   const config = command.verification ? validateCardVerification(command.verification, new URL(tab.url).origin) : null;
   if (config && (!key || !command.ref.startsWith('backend:'))) throw new Error('Browser verification requires a card identity and a Tab-document region');
   if (anchor && JSON.stringify(anchor.verification?.config ?? null) !== JSON.stringify(config)) throw new UserDomainRefusal('stale_reference');
@@ -239,19 +242,20 @@ export async function resolveCardRegion(host, command, scope, signal) {
       const resolved = objectId ? {object:{objectId}} : await connection.send('DOM.resolveNode', { backendNodeId: Number(command.ref.slice(8)), executionContextId: world.contextId }, sessionId);
       objectId = resolved.object?.objectId;
       if (!objectId) return gone('Browser element disappeared');
-      const reply = await connection.send('Runtime.callFunctionOn', { objectId, functionDeclaration: String(watchBox), arguments: [{ value: command.after ?? null }, ...(anchor?.elementResolver ? [{ objectId: anchor.elementResolver }] : [])], returnByValue: true, awaitPromise: true }, sessionId);
+      const reply = await connection.send('Runtime.callFunctionOn', { objectId, functionDeclaration: String(watchBox), arguments: [{ value: command.after ?? null }, { value: command.done_text ?? null }, ...(anchor?.elementResolver ? [{ objectId: anchor.elementResolver }] : [])], returnByValue: true, awaitPromise: true }, sessionId);
       if (signal?.aborted) throw new Error('Browser card observation cancelled');
       if (reply.exceptionDetails) throw new Error('Browser card geometry could not be read');
       box = reply.result?.value;
     }
     if ((await current())?.loaderId !== remembered.document_id) return gone('Browser document changed');
     if (box === null) return gone('Browser element disappeared');
+    if (box.done === true) return { state: 'condition_met', reason: 'The page shows what the person was asked to reach' };
     if (!box || ![box.rect?.x, box.rect?.y, box.rect?.width, box.rect?.height, box.viewport_width, box.viewport_height].every(v => Number.isSafeInteger(v) && v >= 0)) throw new Error('Invalid browser card geometry');
     // Only the site origin is projected: URLs can contain userinfo and secret query parameters.
     let origin;
     try { origin = new URL(tab.url).origin; } catch { throw new Error('Invalid browser card site address'); }
     const region = { tab_id: tab.tab_id, ref: command.ref, generation: host.generation, document_id: tab.document_id, origin, ...box,
-      ...(config ? {verification:config} : {}), ...(anchor?.verification?.receipt ? {verification_result:anchor.verification.receipt} : {}) };
+      ...(config ? {verification:config} : {}), ...(command.done_text === undefined ? {} : {done_text:command.done_text}), ...(anchor?.verification?.receipt ? {verification_result:anchor.verification.receipt} : {}) };
     if (anchor) anchor.region = region;
     return {state:'present',region};
   } catch (error) {

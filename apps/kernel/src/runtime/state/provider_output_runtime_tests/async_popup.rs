@@ -18,6 +18,7 @@ fn browser_region() -> crate::session::RuntimeInteractionBrowserRegion {
         viewport_height: 800,
         verification: None,
         verification_result: None,
+        done_text: None,
     }
 }
 
