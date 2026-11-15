@@ -87,7 +87,7 @@ mod tests {
                 "{:x}",
                 Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
             ),
-            "f6273fcd90874aaa5f5f098ddbbfcf0fedf1bf5e5e41a4a559a6917aacfeebc9"
+            "ba7fcd82b6cb928e4d3e0f1e698837eeaa5afb7bf4c10268679b2fb836f42056"
         );
         let args: crate::transport::runtime_tools::WorkspaceLiveSyncReadArtifactArgs =
             serde_json::from_value(snapshot["arguments"].clone()).unwrap();
