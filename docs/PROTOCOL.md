@@ -7473,6 +7473,15 @@ Peer 444 also renames the 442 answers `leased_agent_file_read` and `leased_agent
 1002 and 1003. Focused checks: `cargo test -p chariox-kernel --lib -- machine_files kernel_files
 agent_file_copy file_copy_tool machine_file_requests protocol_shapes::machine_files`.
 
+### Files: what a link points to — local 1009 / relay peer 448
+
+A listing entry for a link keeps `kind: "symlink"` (the transfer skips links by that kind) and adds `target_kind`
+(`file`, `directory` or `other`), what the name resolves to; a link to nothing has none, and any other entry omits
+it. A Files window opens a link as its `target_kind`. The same field travels in a remote folder listing between
+kernels of one owner (relay peer 448). The shape is pinned by `link_entry` in
+`protocol_shapes/machine_files.rs`; the behaviour by `a_link_lists_as_a_link_that_says_what_it_points_to` and
+`a_folder_arrives_as_the_same_tree_published_all_at_once` (a link to a folder is still not copied).
+
 ### Source availability of a notification trigger — local 1003
 
 The summary of an agent's notification
