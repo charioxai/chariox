@@ -327,7 +327,7 @@ impl Refusal {
             Self::CoverOutside => "Only a process your access already reaches can be covered: the agent you approved, the programs it starts, and processes it covered before.",
             Self::CoverLimit => "Access already covers as many background processes as it may. Stop one first.",
             Self::HolderOutside => "That pid is not this process or one of its OS ancestors: `chariox access status` reports only your own access. Run it without --holder-pid.",
-            Self::SubAgent => "A sub-agent cannot ask for kernel access. Ask your parent agent.",
+            Self::SubAgent => "An agent cannot ask for kernel access. Only the person can grant it, in a Chariox terminal.",
             Self::HolderUnavailable => "The kernel cannot tell which program should hold access: this program has no running parent to hold it, or it runs in a sandbox with no installed Codex, Claude Code or OpenCode. Start it from a shell or agent that keeps running, or pass --holder-pid with the host pid of the program that should hold access.",
         }
     }
