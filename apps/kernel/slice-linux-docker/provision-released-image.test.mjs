@@ -29,7 +29,7 @@ if (args[0] === "image" && args[1] === "inspect") {
   const image = state.tags[args[args.length - 1]];
   if (!image) process.exit(1);
   const format = args[3];
-  if (format === "{{.Id}}") console.log("sha256:" + "c".repeat(64));
+  if (format === "{{.Id}}") console.log(image.id);
   else if (format.includes("RootFS")) process.stdout.write(image.layers.map(layer => layer + ",").join(""));
   else { const label = /index \\.Config\\.Labels "([^"]+)"/.exec(format); console.log(labels[label[1]] ?? ""); }
   process.exit(0);
@@ -39,7 +39,9 @@ if (args[0] === "load") {
   process.stdin.on("end", () => {
     const bytes = Buffer.concat(chunks);
     appendFileSync(process.env.CHARIOX_TEST_DOCKER_LOG, JSON.stringify({ loadedBytes: bytes.length }) + "\\n");
-    state.tags["sha256:" + "c".repeat(64)] = { layers: JSON.parse(process.env.CHARIOX_TEST_LOADED_LAYERS) };
+    const id = process.env.CHARIOX_TEST_STORE_IMAGE_ID || "sha256:" + "c".repeat(64);
+    state.tags[id] = { id, layers: JSON.parse(process.env.CHARIOX_TEST_LOADED_LAYERS) };
+    console.log("Loaded image ID: " + id);
     save(); process.exit(0);
   });
   return;
@@ -50,7 +52,7 @@ if (args[0] === "buildx" || args[0] === "build") {
   if (process.env.CHARIOX_TEST_BUILD_SUCCESS === "1" && args[1] === "version") process.exit(0);
   appendFileSync(process.env.CHARIOX_TEST_DOCKER_LOG, "BUILD\\n");
   if (process.env.CHARIOX_TEST_BUILD_SUCCESS !== "1") process.exit(1);
-  state.tags[args[args.indexOf("-t") + 1]] = { layers: JSON.parse(process.env.CHARIOX_TEST_LOADED_LAYERS) };
+  state.tags[args[args.indexOf("-t") + 1]] = { id: "sha256:" + "c".repeat(64), layers: JSON.parse(process.env.CHARIOX_TEST_LOADED_LAYERS) };
   save(); process.exit(0);
 }
 console.error("unexpected Docker operation " + JSON.stringify(args)); process.exit(2);
@@ -80,7 +82,7 @@ async function install(root, { descriptor = {}, archive = archiveBytes, withImag
   return join(provisionerDirectory, "provision-linux-docker-slice.sh")
 }
 
-function run(root, provisioner, { loadedLayers = layers, action = "build-image", buildSuccess = false } = {}) {
+function run(root, provisioner, { loadedLayers = layers, action = "build-image", buildSuccess = false, storeImageId = "" } = {}) {
   const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("CHARIOX_SLICE_")))
   return spawnSync("bash", [provisioner, action], {
     encoding: "utf8", timeout: 60_000,
@@ -88,7 +90,7 @@ function run(root, provisioner, { loadedLayers = layers, action = "build-image",
       ...environment, PATH: `${root}:${environment.PATH}`, TMPDIR: root,
       CHARIOX_TEST_DOCKER_LOG: join(root, "docker.log"), CHARIOX_TEST_DOCKER_STATE: join(root, "docker.json"),
       CHARIOX_TEST_IMAGE_REVISION: revision, CHARIOX_TEST_LOADED_LAYERS: JSON.stringify(loadedLayers),
-      CHARIOX_TEST_BUILD_SUCCESS: buildSuccess ? "1" : "0",
+      CHARIOX_TEST_BUILD_SUCCESS: buildSuccess ? "1" : "0", CHARIOX_TEST_STORE_IMAGE_ID: storeImageId,
       CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: revision, CHARIOX_SLICE_NAME: "chariox-released-image-fixture",
     },
   })
@@ -119,6 +121,21 @@ test("an image that is already loaded and matches is not loaded again", () => wi
   const result = run(root, provisioner)
   assert.equal(result.status, 0, result.stderr)
   assert.ok(!(await dockerCalls(root)).some(call => call.includes("loadedBytes")))
+}))
+
+// The release builder's Docker may use the containerd image store (the image id is the OCI index digest) while a managed
+// machine runs the classic store (the id is the config digest): the id of the loaded image is the store's own, the
+// layers and labels are what the signed release pins.
+test("an image store that names the loaded image differently still loads the signed layers once", () => withRoot(async root => {
+  const provisioner = await install(root)
+  const storeImageId = `sha256:${"d".repeat(64)}`
+  const result = run(root, provisioner, { storeImageId })
+  assert.equal(result.status, 0, result.stderr)
+  assert.ok((await dockerCalls(root)).includes(JSON.stringify(["tag", storeImageId, "chariox-slice-linux:0.1.0"])))
+  await rm(join(root, "docker.log"))
+  const again = run(root, provisioner, { storeImageId })
+  assert.equal(again.status, 0, again.stderr)
+  assert.ok(!(await dockerCalls(root)).some(call => call.includes("loadedBytes")), "a matching loaded image is not loaded again")
 }))
 
 test("an archive that differs from the signed digest never reaches docker load", () => withRoot(async root => {

@@ -823,34 +823,39 @@ released_image_directory() {
   (cd "$REPO_ROOT/../slice-image" && pwd)
 }
 
+# The release pins layers and labels, not an image id: the builder's Docker and this host's may name the same image
+# differently (containerd image store: OCI index digest, classic store: config digest).
 released_image_loaded() {
-  local tag="$1" layers="$2" image_id="$3" loaded
-  loaded="$(docker image inspect -f '{{range .RootFS.Layers}}{{.}},{{end}}' "$tag" 2>/dev/null)" || return 1
-  [[ "$(docker image inspect -f '{{.Id}}' "$tag" 2>/dev/null)" == "$image_id" && "$loaded" == "$layers," ]] && image_runtime_compatible "$tag" && image_selkies_capable "$tag"
+  local ref="$1" layers="$2" loaded
+  loaded="$(docker image inspect -f '{{range .RootFS.Layers}}{{.}},{{end}}' "$ref" 2>/dev/null)" || return 1
+  [[ "$loaded" == "$layers," ]] && image_runtime_compatible "$ref" && image_selkies_capable "$ref"
 }
 
 load_released_image() {
-  local image="$1" directory description tag archive size sha256 layers image_id
+  local image="$1" directory description tag archive size sha256 layers load_output loaded
   directory="$(released_image_directory)" || return 1
   description="$(python3 "$SCRIPT_DIR/released-slice-image.py" describe "$directory" \
     "$SLICE_RUNTIME_SOURCE_REVISION" "$SLICE_RELAY_PEER_PROTOCOL_VERSION" "$(docker_target_arch)")" || exit 1
-  IFS=$'\t' read -r tag archive size sha256 layers image_id <<<"$description"
+  IFS=$'\t' read -r tag archive size sha256 layers _ <<<"$description"
   python3 "$SCRIPT_DIR/released-slice-image.py" verify "$archive" "$size" "$sha256" || exit 1
-  if released_image_loaded "$image_id" "$layers" "$image_id"; then
+  if released_image_loaded "$tag" "$layers"; then
     log "release runtime image $tag is already loaded"
+    loaded="$tag"
   else
     log "loading the signed release's runtime image ($size bytes); no build is needed"
-    if ! { python3 "$SCRIPT_DIR/released-slice-image.py" stream "$archive" \
-      | run_guarded_command unbounded -- docker load -q; }; then
+    if ! load_output="$({ python3 "$SCRIPT_DIR/released-slice-image.py" stream "$archive" \
+      | run_guarded_command unbounded -- docker load -q; })"; then
       fail "docker load of the release runtime image failed. Free disk space for Docker (about $((size * 3 / 1000000000 + 1)) GB) and start the slice again."
     fi
-    if ! released_image_loaded "$image_id" "$layers" "$image_id"; then
-      docker rmi "$image_id" >/dev/null 2>&1 || true
+    loaded="$(sed -n 's/^Loaded image ID: \(sha256:[a-f0-9]\{64\}\)$/\1/p' <<<"$load_output" | tail -n 1)"
+    [[ -n "$loaded" ]] || fail "docker load did not report the loaded release runtime image. Start the slice again."
+    if ! released_image_loaded "$loaded" "$layers"; then
+      docker rmi "$loaded" >/dev/null 2>&1 || true
       fail "the loaded release runtime image does not match the signed release; it was removed. Reinstall the Chariox release bundle."
     fi
   fi
-  docker tag "$image_id" "$tag"
-  docker tag "$image_id" "$image"
+  docker tag "$loaded" "$tag"
+  docker tag "$loaded" "$image"
   if [[ "${CHARIOX_SLICE_BUILD_CONTEXT_DIGEST:-}" =~ ^sha256:[a-f0-9]{64}$ && -n "${CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT:-}" ]]; then
     node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-image-proof.mjs" --record-standard-build "$image"
   fi
