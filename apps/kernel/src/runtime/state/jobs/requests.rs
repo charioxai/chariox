@@ -22,25 +22,32 @@ impl KernelRuntimeState {
                 && record.placement == JobPlacement::Remote
                 && !record.deleted
             {
-                if record.return_pending && name == "chariox.jobs.cancel" {
-                    self.settle_pending_return(&mut record);
-                    driver.save(&record)?;
-                } else if record.return_pending {
-                    match tokio::time::timeout(
-                        Duration::from_secs(120),
-                        self.collect_pending_return(&mut record),
-                    )
-                    .await
-                    {
-                        Ok(Ok(())) => {}
-                        Ok(Err(error)) => collection_error = Some(error.to_string()),
-                        Err(_) => collection_error = Some("Collecting the files timed out".into()),
+                match record.remote {
+                    RemoteStage::Finished { .. } if name == "chariox.jobs.cancel" => {
+                        self.give_up_pending_return(&mut record);
+                        driver.save(&record)?;
+                        self.forget_pending_return(&record.job_id);
                     }
+                    RemoteStage::Finished { .. } => {
+                        match tokio::time::timeout(
+                            Duration::from_secs(120),
+                            self.collect_pending_return(&mut record),
+                        )
+                        .await
+                        {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => collection_error = Some(error.to_string()),
+                            Err(_) => {
+                                collection_error = Some("Collecting the files timed out".into())
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 if let (Some(allocation), Some(revision), false) = (
                     &record.allocation_ref,
                     &record.capability_revision,
-                    record.return_pending,
+                    record.remote.holds_worker(),
                 ) {
                     // Status stays responsive while the service is unavailable;
                     // repeated reads can reconcile a confirmed deletion later.
@@ -141,8 +148,7 @@ impl KernelRuntimeState {
             remote_refusal: None,
             estimated_minutes: None,
             memory_mib: None,
-            return_pending: false,
-            return_outcome: None,
+            remote: RemoteStage::Idle,
         };
         if let Some(reach) =
             self.reach_for_id(&format!("{}{}", super::reach::REACH_PREFIX, run.id()))

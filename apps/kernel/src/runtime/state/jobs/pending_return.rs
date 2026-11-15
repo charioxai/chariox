@@ -38,7 +38,7 @@ impl PendingReturn {
         .map_err(|e| ledger::error(format!("Cannot keep the job's file return plan: {e}")))
     }
 
-    fn load(state: &KernelRuntimeState, job_id: &str) -> Result<Self, DaemonError> {
+    pub(super) fn load(state: &KernelRuntimeState, job_id: &str) -> Result<Self, DaemonError> {
         let bytes = std::fs::read(Self::path(state, job_id))
             .map_err(|e| ledger::error(format!("The job's file return plan is missing: {e}")))?;
         serde_json::from_slice(&bytes)
@@ -47,54 +47,39 @@ impl PendingReturn {
 }
 
 impl KernelRuntimeState {
-    /// The worker's files are home (or given up): the plan and the live grant are no longer needed.
-    pub(super) fn settle_pending_return(&self, record: &mut Record) {
-        record.return_pending = false;
-        record.return_outcome = None;
-        let _ = std::fs::remove_file(PendingReturn::path(self, &record.job_id));
+    /// The worker's plan and live grant are no longer needed.
+    pub(super) fn forget_pending_return(&self, job_id: &str) {
+        let _ = std::fs::remove_file(PendingReturn::path(self, job_id));
         if let Some(driver) = &self.job_wake_driver {
             driver
                 .return_grants
                 .lock()
                 .expect("job return grants")
-                .remove(&record.job_id);
+                .remove(job_id);
         }
     }
 
-    /// Fetches the files a finished job's worker still holds and records them in its result.
-    /// Files an earlier attempt already brought home apply again as no-ops.
+    /// The command is stopped or its files are given up; the worker may now be released.
+    pub(super) fn give_up_pending_return(&self, record: &mut Record) {
+        if let Ok(next) = record.remote.next(StageEvent::GiveUp) {
+            record.remote = next;
+        }
+        self.forget_pending_return(&record.job_id);
+    }
+
+    /// Fetches the files of a finished command and records them in its result. Files an earlier
+    /// attempt already brought home apply again as no-ops.
     pub(super) async fn collect_pending_return(
         &self,
         record: &mut Record,
     ) -> Result<(), DaemonError> {
-        let plan = PendingReturn::load(self, &record.job_id)?;
-        let driver = self
-            .job_wake_driver
-            .as_ref()
-            .ok_or_else(|| ledger::error("Job service unavailable"))?;
-        let live = driver
-            .return_grants
-            .lock()
-            .expect("job return grants")
-            .get(&record.job_id)
-            .cloned();
-        let grant = match live {
-            Some(grant) => grant,
-            None => {
-                self.job_machine_reattach(
-                    &record.job_id,
-                    record
-                        .allocation_ref
-                        .as_deref()
-                        .ok_or_else(|| ledger::error("The kept job has no allocation"))?,
-                    &plan.kernel_id,
-                    &self
-                        .agent_harness_name(&record.room_id, &record.agent_id)
-                        .unwrap_or_else(|| "Chariox".into()),
-                )
-                .await?
-            }
+        let RemoteStage::Finished { outcome } = record.remote else {
+            return Err(ledger::error(
+                "The job's command has not ended; its files are collected once it has",
+            ));
         };
+        let plan = PendingReturn::load(self, &record.job_id)?;
+        let grant = self.return_grant(record, &plan.kernel_id).await?;
         let remote = Remote::new(grant, String::new(), record.job_id.clone());
         let (files, conflicts) = remote
             .return_files(&plan.root, record, &plan.base, &plan.uploaded)
@@ -105,13 +90,48 @@ impl KernelRuntimeState {
             .ok_or_else(|| ledger::error("The job has no result to complete"))?;
         result.files_back = files;
         result.conflicts = conflicts;
-        if let Some(outcome) = record.return_outcome {
-            result.outcome = outcome;
-        }
+        result.outcome = outcome;
         result
             .output_tail
             .push_str("The files the worker still held were collected.\n");
-        self.settle_pending_return(record);
-        save_record(self, record)
+        record.advance(StageEvent::Home)?;
+        save_record(self, record)?;
+        self.forget_pending_return(&record.job_id);
+        Ok(())
+    }
+
+    /// The live grant to the job's worker, or one rebuilt from the saved allocation after a restart.
+    pub(super) async fn return_grant(
+        &self,
+        record: &Record,
+        kernel_id: &str,
+    ) -> Result<Arc<dyn crate::room_exec::gateway_placement::GrantedSend>, DaemonError> {
+        let driver = self
+            .job_wake_driver
+            .as_ref()
+            .ok_or_else(|| ledger::error("Job service unavailable"))?;
+        let live = driver
+            .return_grants
+            .lock()
+            .expect("job return grants")
+            .get(&record.job_id)
+            .cloned();
+        match live {
+            Some(grant) => Ok(grant),
+            None => {
+                self.job_machine_reattach(
+                    &record.job_id,
+                    record
+                        .allocation_ref
+                        .as_deref()
+                        .ok_or_else(|| ledger::error("The kept job has no allocation"))?,
+                    kernel_id,
+                    &self
+                        .agent_harness_name(&record.room_id, &record.agent_id)
+                        .unwrap_or_else(|| "Chariox".into()),
+                )
+                .await
+            }
+        }
     }
 }

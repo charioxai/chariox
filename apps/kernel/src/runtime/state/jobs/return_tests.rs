@@ -52,8 +52,7 @@ pub(super) fn remote_record(source: &Path, script: &str, outputs: &[&str]) -> Re
         remote_refusal: None,
         estimated_minutes: None,
         memory_mib: None,
-        return_pending: false,
-        return_outcome: None,
+        remote: RemoteStage::Idle,
     }
 }
 
@@ -176,10 +175,14 @@ async fn offload_job_return_applies_a_mode_only_change_and_checks_it_for_conflic
 }
 
 /// Fails one artifact read as a relay outage would, until it is disarmed.
-struct Outage {
+pub(super) struct Outage {
     worker: Arc<Worker>,
     path: &'static str,
-    cut: std::sync::atomic::AtomicBool,
+    pub(super) cut: std::sync::atomic::AtomicBool,
+    /// Every request fails, as when the relay or the worker is gone.
+    pub(super) down: std::sync::atomic::AtomicBool,
+    /// Opening the command fails, as when the worker refuses it.
+    pub(super) open_down: std::sync::atomic::AtomicBool,
 }
 impl GrantedSend for Outage {
     fn send<'a>(
@@ -187,8 +190,21 @@ impl GrantedSend for Outage {
         id: String,
         request: &'a LocalDaemonRequest,
     ) -> crate::room_exec::gateway_placement::SendFuture<'a> {
-        if self.cut.load(std::sync::atomic::Ordering::SeqCst)
-            && matches!(request, LocalDaemonRequest::ReadKernelFile(read) if read.path.ends_with(self.path))
+        if self.open_down.load(std::sync::atomic::Ordering::SeqCst)
+            && matches!(request, LocalDaemonRequest::RoomTerminal(room) if matches!(room.operation, crate::local::RoomTerminalOperation::ExecOpenJob { .. }))
+        {
+            return Box::pin(async {
+                Err(crate::runtime::kernel_gateway::GatewayError::Remote {
+                    name: "worker".into(),
+                    code: "open_refused".into(),
+                    message: "the worker refused the command".into(),
+                    retryable: false,
+                })
+            });
+        }
+        if self.down.load(std::sync::atomic::Ordering::SeqCst)
+            || (self.cut.load(std::sync::atomic::Ordering::SeqCst)
+                && matches!(request, LocalDaemonRequest::ReadKernelFile(read) if read.path.ends_with(self.path)))
         {
             return Box::pin(async {
                 Err(crate::runtime::kernel_gateway::GatewayError::Remote {
@@ -203,35 +219,53 @@ impl GrantedSend for Outage {
     }
 }
 
-struct HeldWorker {
-    state: KernelRuntimeState,
-    run: crate::provider::RuntimeProviderRun,
-    task: AgentTaskExecution,
-    workspace: crate::test_support::TestWorktree,
-    _home: crate::test_support::TestWorktree,
-    outage: Arc<Outage>,
-    job_id: String,
+pub(super) struct HeldWorker {
+    pub(super) state: KernelRuntimeState,
+    pub(super) run: crate::provider::RuntimeProviderRun,
+    pub(super) task: AgentTaskExecution,
+    pub(super) workspace: crate::test_support::TestWorktree,
+    pub(super) _home: crate::test_support::TestWorktree,
+    pub(super) outage: Arc<Outage>,
+    pub(super) job_id: String,
 }
 
 /// A job record of a remote command whose worker is the test's own second kernel.
-struct Prepared {
-    state: KernelRuntimeState,
-    run: crate::provider::RuntimeProviderRun,
-    task: AgentTaskExecution,
-    workspace: crate::test_support::TestWorktree,
-    home: crate::test_support::TestWorktree,
-    outage: Arc<Outage>,
-    record: Record,
-    machine: super::super::job_compute::JobMachine,
+pub(super) struct Prepared {
+    pub(super) state: KernelRuntimeState,
+    pub(super) run: crate::provider::RuntimeProviderRun,
+    pub(super) task: AgentTaskExecution,
+    pub(super) workspace: crate::test_support::TestWorktree,
+    pub(super) home: crate::test_support::TestWorktree,
+    pub(super) outage: Arc<Outage>,
+    pub(super) record: Record,
+    pub(super) machine: super::super::job_compute::JobMachine,
 }
 
-async fn prepared(script: &str, outputs: &[&str]) -> Prepared {
+pub(super) fn test_machine(grant: Arc<Outage>) -> super::super::job_compute::JobMachine {
+    super::super::job_compute::JobMachine {
+        allocation_ref: "cleanup-test".into(),
+        machine_label: "offload-test".into(),
+        address: None,
+        capability_revision: "v1".into(),
+        kernel_id: "worker".into(),
+        grant,
+        class_id: "test-class".into(),
+        rate_per_minute: crate::local::JobMachineRate {
+            amount_micros: 1,
+            currency: "usd".into(),
+        },
+    }
+}
+
+pub(super) async fn prepared(script: &str, outputs: &[&str]) -> Prepared {
     let (state, run, task, workspace) = super::tests::fixture().await;
     let home = crate::test_support::TestWorktree::new("offload-outage-home");
     let outage = Arc::new(Outage {
         worker: worker_kernel(home.path()),
         path: "target/second.bin",
         cut: true.into(),
+        down: false.into(),
+        open_down: false.into(),
     });
     let started = state
         .dispatch_job_tool(
@@ -251,19 +285,7 @@ async fn prepared(script: &str, outputs: &[&str]) -> Prepared {
     record.allocation_ref = Some("cleanup-test".into());
     record.capability_revision = Some("v1".into());
     record.deleted = false;
-    let machine = super::super::job_compute::JobMachine {
-        allocation_ref: "cleanup-test".into(),
-        machine_label: "offload-test".into(),
-        address: None,
-        capability_revision: "v1".into(),
-        kernel_id: "worker".into(),
-        grant: outage.clone(),
-        class_id: "test-class".into(),
-        rate_per_minute: crate::local::JobMachineRate {
-            amount_micros: 1,
-            currency: "usd".into(),
-        },
-    };
+    let machine = test_machine(outage.clone());
     Prepared {
         state,
         run,
@@ -278,7 +300,7 @@ async fn prepared(script: &str, outputs: &[&str]) -> Prepared {
 
 impl Prepared {
     /// Runs the command and settles its job the way the driver does.
-    async fn run(&mut self) -> Result<JobResult, DaemonError> {
+    pub(super) async fn run(&mut self) -> Result<JobResult, DaemonError> {
         let mut output = super::execute::Output::new(&self.state, &self.record).unwrap();
         let (_cancel, mut cancelled) = watch::channel(false);
         let result = self
@@ -298,7 +320,7 @@ impl Prepared {
 }
 
 /// A command that made two artifacts finished on the worker while the read of the second failed.
-async fn worker_held_after_failed_return() -> HeldWorker {
+pub(super) async fn worker_held_after_failed_return() -> HeldWorker {
     let mut job = prepared(
         "mkdir -p target; printf one > target/first.bin; printf two > target/second.bin",
         &["target/*.bin"],
@@ -324,7 +346,7 @@ async fn worker_held_after_failed_return() -> HeldWorker {
     let driver = job.state.job_wake_driver.as_ref().unwrap();
     driver.save(&job.record).unwrap();
     let saved = driver.read(&job.record.job_id).unwrap();
-    assert!(saved.return_pending && !saved.deleted);
+    assert!(saved.remote.holds_worker() && !saved.deleted);
     assert!(saved
         .result
         .unwrap()
@@ -346,7 +368,7 @@ async fn worker_held_after_failed_return() -> HeldWorker {
     }
 }
 
-async fn release_service(state: &KernelRuntimeState) -> tokio::task::JoinHandle<()> {
+pub(super) async fn release_service(state: &KernelRuntimeState) -> tokio::task::JoinHandle<()> {
     super::cleanup_tests::service(
         state,
         vec![("get", 200, super::cleanup_tests::machine("deleted"))],
@@ -355,7 +377,7 @@ async fn release_service(state: &KernelRuntimeState) -> tokio::task::JoinHandle<
 }
 
 impl HeldWorker {
-    async fn job_tool(&self, name: &str) -> serde_json::Value {
+    pub(super) async fn job_tool(&self, name: &str) -> serde_json::Value {
         self.state
             .dispatch_job_tool(
                 Some(&self.run),
@@ -415,7 +437,7 @@ async fn offload_job_cancel_gives_up_the_files_and_deletes_the_worker() {
     assert!(!held.workspace.path().join("target/second.bin").exists());
 }
 
-fn job_state_path(state: &KernelRuntimeState, relative: &str) -> PathBuf {
+pub(super) fn job_state_path(state: &KernelRuntimeState, relative: &str) -> PathBuf {
     state
         .owned
         .config_projection
@@ -437,7 +459,7 @@ async fn offload_job_has_its_return_plan_and_worker_hold_saved_before_the_comman
         "/bin/sh".into(),
         "-c".into(),
         format!(
-            "grep -q '\"return_pending\":true' {record:?} && test -f {plan:?} && printf kept > {marker:?}"
+            "grep -Eq '\"remote\":(\"Planned\"|[{{]\"Running\")' {record:?} && test -f {plan:?} && printf kept > {marker:?}"
         ),
     ]);
     job.outage
@@ -488,7 +510,7 @@ async fn offload_job_does_not_run_its_command_when_its_return_plan_cannot_be_kep
         "the command ran although its outputs could not be tracked"
     );
     assert!(result.output_tail.contains("return plan"));
-    assert!(job.record.deleted && !job.record.return_pending);
+    assert!(job.record.deleted && !job.record.remote.holds_worker());
 }
 
 #[tokio::test]
@@ -521,4 +543,156 @@ async fn offload_job_after_a_restart_reconciles_the_kept_worker_with_the_service
         .as_str()
         .unwrap()
         .contains("no reachable"));
+}
+
+/// A home kernel that died while the command still ran on its worker: the record is what the
+/// last save left, the worker kept running, and the grant of the dead process is gone with it.
+pub(super) struct Crashed {
+    pub(super) held: HeldWorker,
+    pub(super) service: tokio::task::JoinHandle<()>,
+}
+
+pub(super) async fn crashed_while_running(
+    script: &str,
+    responses: Vec<(&'static str, u16, serde_json::Value)>,
+) -> Crashed {
+    let job = prepared(script, &["target/*.bin"]).await;
+    job.outage
+        .cut
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let driver = job.state.job_wake_driver.as_ref().unwrap();
+    driver.save(&job.record).unwrap();
+    let service = super::cleanup_tests::service(&job.state, responses).await;
+    let home = {
+        let state = job.state.clone();
+        let mut record = driver.read(&job.record.job_id).unwrap();
+        let machine = test_machine(job.outage.clone());
+        tokio::spawn(async move {
+            let mut output = super::execute::Output::new(&state, &record).unwrap();
+            let (_cancel, mut cancelled) = watch::channel(false);
+            let _ = state
+                .run_remote_job(
+                    &mut record,
+                    &machine,
+                    &BTreeMap::new(),
+                    &mut output,
+                    &mut cancelled,
+                )
+                .await;
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while driver.read(&job.record.job_id).unwrap().state != "running" {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the command never started");
+    home.abort();
+    let _ = home.await;
+    Crashed {
+        held: HeldWorker {
+            state: job.state,
+            run: job.run,
+            task: job.task,
+            workspace: job.workspace,
+            _home: job.home,
+            outage: job.outage,
+            job_id: job.record.job_id,
+        },
+        service,
+    }
+}
+
+impl Crashed {
+    /// The restarted kernel recovers the job's wake the way startup does.
+    pub(super) fn restart(&self) {
+        recover_job(&self.held.state, &self.held.job_id);
+    }
+
+    pub(super) async fn finished(&self) -> serde_json::Value {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let status = self.held.job_tool("chariox.jobs.status").await;
+                if status["state"] == "finished" {
+                    return status;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("the job never finished")
+    }
+}
+
+/// The restarted kernel recovers the job's wake the way startup does.
+pub(super) fn recover_job(state: &KernelRuntimeState, job_id: &str) {
+    let driver = state.job_wake_driver.as_ref().unwrap();
+    let wake_id = driver.read(job_id).unwrap().wake_id;
+    let wake = state
+        .owned
+        .durable_state_store
+        .agent_wake(&wake_id)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(driver.recover(&wake), Recovery::Reattached));
+}
+
+pub(super) const TWO_ARTIFACTS: &str =
+    "mkdir -p target; printf one > target/first.bin; sleep 3; printf two > target/second.bin";
+
+#[tokio::test]
+async fn offload_job_after_a_restart_waits_for_its_running_command_before_collecting_or_releasing()
+{
+    let crashed = crashed_while_running(
+        TWO_ARTIFACTS,
+        vec![
+            ("job_started", 200, super::cleanup_tests::machine("ready")),
+            ("get", 200, super::cleanup_tests::machine("deleted")),
+        ],
+    )
+    .await;
+    crashed.restart();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let early = crashed.held.job_tool("chariox.jobs.status").await;
+    assert_ne!(early["state"], "finished");
+    assert_eq!(early["deleted"], false);
+    assert!(
+        !crashed
+            .held
+            .workspace
+            .path()
+            .join("target/first.bin")
+            .exists(),
+        "a file was accepted while its command still ran"
+    );
+    assert!(
+        !crashed.service.is_finished(),
+        "the worker was released while its command still ran"
+    );
+    let status = crashed.finished().await;
+    crashed.service.await.unwrap();
+    assert_eq!(status["deleted"], true);
+    assert_eq!(
+        status["result"]["outcome"], "completed",
+        "{}",
+        status["result"]["output_tail"]
+    );
+    assert_eq!(
+        status["result"]["files_back"],
+        serde_json::json!(["target/first.bin", "target/second.bin"])
+    );
+    for (name, body) in [("first", "one"), ("second", "two")] {
+        assert_eq!(
+            std::fs::read(
+                crashed
+                    .held
+                    .workspace
+                    .path()
+                    .join(format!("target/{name}.bin"))
+            )
+            .unwrap(),
+            body.as_bytes()
+        );
+    }
 }

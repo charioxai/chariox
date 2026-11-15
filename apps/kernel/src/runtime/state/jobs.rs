@@ -21,6 +21,9 @@ mod remote;
 mod requests;
 #[cfg(test)]
 mod return_tests;
+mod stage;
+#[cfg(test)]
+mod stage_tests;
 #[cfg(test)]
 mod tests;
 
@@ -29,6 +32,7 @@ use driver::completion_payload;
 use projection::effective_needs;
 use record::{public_record, save_record, Record};
 use requests::validate;
+use stage::{RemoteStage, StageEvent};
 
 pub(super) const KIND: &str = "job";
 const TAIL_BYTES: usize = 64 * 1024;
@@ -39,7 +43,12 @@ struct Pending {
 }
 
 pub(super) struct JobDriver {
+    /// The state this driver was built from; it does not yet hold the driver itself.
     state: KernelRuntimeState,
+    /// This driver, so recovery can run a job with a state that holds it.
+    this: std::sync::OnceLock<std::sync::Weak<JobDriver>>,
+    /// The kernel's command router, bound at startup, so recovery can reach the job gateway.
+    router: std::sync::OnceLock<std::sync::Weak<crate::runtime::router::CommandRouter>>,
     pending: std::sync::Mutex<BTreeMap<String, Pending>>,
     live: Arc<std::sync::Mutex<BTreeMap<String, watch::Sender<bool>>>>,
     remote_requested: std::sync::Mutex<BTreeSet<String>>,

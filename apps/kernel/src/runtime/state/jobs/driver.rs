@@ -43,15 +43,34 @@ impl WakeDriver for JobDriver {
         let Ok(mut record) = self.read(id) else {
             return Recovery::Lost("job record missing".into());
         };
-        let state = self.state.clone();
+        let (Some(driver), Some(router)) = (
+            self.this.get().and_then(std::sync::Weak::upgrade),
+            self.router.get().and_then(std::sync::Weak::upgrade),
+        ) else {
+            return Recovery::Lost("job service unavailable".into());
+        };
+        let mut state = self.state.with_job_router((*router).clone());
+        state.job_wake_driver = Some(driver);
         let wake = wake.clone();
-        let (cancel, _cancelled) = watch::channel(false);
+        let (cancel, cancelled) = watch::channel(false);
         self.live
             .lock()
             .expect("job live")
             .insert(wake.id.clone(), cancel);
         let live = self.live.clone();
         tokio::spawn(async move {
+            // The command still runs on its worker: follow it to its end before anything else.
+            if matches!(record.remote, RemoteStage::Running { .. }) {
+                state.execute_job(wake.clone(), record, cancelled).await;
+                live.lock().expect("job live").remove(&wake.id);
+                return;
+            }
+            // A command not yet confirmed open is stopped with its worker, as nothing is known
+            // of its files.
+            if record.remote == RemoteStage::Planned {
+                state.give_up_pending_return(&mut record);
+                state.forget_pending_return(&record.job_id);
+            }
             if record.placement == JobPlacement::Local {
                 let markers = BTreeMap::from([(record.job_id.clone(), record.started_at_ms)]);
                 if let Err(error) = tokio::task::spawn_blocking(move || {
@@ -67,7 +86,7 @@ impl WakeDriver for JobDriver {
             if let (Some(allocation), Some(revision), false) = (
                 &record.allocation_ref,
                 &record.capability_revision,
-                record.return_pending,
+                record.remote.holds_worker(),
             ) {
                 match state.job_compute_release_ref(allocation, revision).await {
                     Ok(()) => record.deleted = true,
@@ -78,7 +97,7 @@ impl WakeDriver for JobDriver {
             }
             if record.placement == JobPlacement::Remote
                 && record.allocation_ref.is_none()
-                && !record.return_pending
+                && !record.remote.holds_worker()
             {
                 match state.job_compute_release_job_ref(&record.job_id).await {
                     Ok(()) => record.deleted = true,
@@ -89,8 +108,8 @@ impl WakeDriver for JobDriver {
             }
             let result = record.result.clone().unwrap_or_else(|| JobResult {
                 exit_code: None,
-                output_tail: if record.return_pending {
-                    "The kernel restarted while this job ran on its remote machine. The machine is kept so no file it produced is lost: check this job with chariox.jobs.status to collect them, or cancel it to give them up.".into()
+                output_tail: if record.remote.holds_worker() {
+                    "The kernel restarted after this job's command ended on its remote machine. The machine is kept so no file it produced is lost: check this job with chariox.jobs.status to collect them, or cancel it to give them up.".into()
                 } else {
                     "The kernel restarted; this job was not relaunched.".into()
                 },
@@ -105,7 +124,7 @@ impl WakeDriver for JobDriver {
                     ip: record.address.clone(),
                 },
                 duration_ms: crate::session::unix_epoch_ms().saturating_sub(record.started_at_ms),
-                outcome: if record.return_pending {
+                outcome: if record.remote.holds_worker() {
                     JobOutcome::OutsideEnd
                 } else {
                     JobOutcome::MachineLost
@@ -129,6 +148,8 @@ impl KernelRuntimeState {
     pub(in crate::runtime::state) fn register_job_wake_driver(&mut self) {
         let driver = Arc::new(JobDriver {
             state: self.clone(),
+            this: Default::default(),
+            router: Default::default(),
             pending: Default::default(),
             live: Default::default(),
             remote_requested: Default::default(),
@@ -137,9 +158,17 @@ impl KernelRuntimeState {
             remote_origins: Default::default(),
             return_grants: Default::default(),
         });
+        let _ = driver.this.set(Arc::downgrade(&driver));
         let source: Arc<dyn WakeDriver> = driver.clone();
         self.register_wake_driver(Arc::downgrade(&source));
         self.job_wake_driver = Some(driver);
+    }
+
+    /// Lets a restarted kernel's job recovery reach the job gateway through its router.
+    pub(crate) fn bind_job_recovery(&self, router: &Arc<crate::runtime::router::CommandRouter>) {
+        if let Some(driver) = &self.job_wake_driver {
+            let _ = driver.router.set(Arc::downgrade(router));
+        }
     }
 
     pub(super) async fn finish_job(

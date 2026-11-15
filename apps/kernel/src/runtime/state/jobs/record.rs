@@ -39,12 +39,9 @@ pub(super) struct Record {
     pub(super) estimated_minutes: Option<u64>,
     #[serde(default)]
     pub(super) memory_mib: Option<u64>,
-    /// The worker may hold files not yet home (set before the command can run) and is kept for them.
+    /// Where the job's worker stands from the saved return plan until its files are home.
     #[serde(default)]
-    pub(super) return_pending: bool,
-    /// The command's own outcome, restored once its files are home; unknown until the command ends.
-    #[serde(default)]
-    pub(super) return_outcome: Option<JobOutcome>,
+    pub(super) remote: RemoteStage,
 }
 
 impl JobDriver {
@@ -104,6 +101,6 @@ pub(super) fn save_record(state: &KernelRuntimeState, record: &Record) -> Result
 
 pub(super) fn public_record(record: Record) -> Result<serde_json::Value, DaemonError> {
     Ok(
-        serde_json::json!({"job_id":record.job_id,"registration_id":record.registration_id,"placement":record.placement,"state":record.state,"machine":record.machine_label,"address":record.address,"class_id":record.class_id,"rate_per_minute":record.rate_per_minute,"estimate_micros":record.estimate_micros,"deleted":record.deleted,"return_pending":record.return_pending,"result":record.result}),
+        serde_json::json!({"job_id":record.job_id,"registration_id":record.registration_id,"placement":record.placement,"state":record.state,"machine":record.machine_label,"address":record.address,"class_id":record.class_id,"rate_per_minute":record.rate_per_minute,"estimate_micros":record.estimate_micros,"deleted":record.deleted,"return_pending":record.remote.holds_worker(),"result":record.result}),
     )
 }

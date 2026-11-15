@@ -21,6 +21,9 @@ impl Remote {
             job_id,
         }
     }
+    pub(super) fn room(&self) -> &str {
+        &self.room
+    }
     async fn call(
         &self,
         suffix: &str,

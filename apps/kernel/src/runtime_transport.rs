@@ -757,6 +757,7 @@ where
     let quiescence_task = router
         .runtime_state()
         .spawn_managed_kernel_quiescence(quiescence_shutdown_rx);
+    router.runtime_state().bind_job_recovery(&router);
     let _restart_recovery_task = router.runtime_state().spawn_durable_restart_recovery();
     router.runtime_state().resume_file_transfers();
     let wake_state = router.runtime_state();

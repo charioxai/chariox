@@ -174,26 +174,43 @@ impl KernelRuntimeState {
         mut record: Record,
         mut cancelled: watch::Receiver<bool>,
     ) {
-        let environment = selected_environment(self, &record);
         let mut output = match Output::new(self, &record) {
             Ok(output) => output,
             Err(error) => {
+                if record.remote.awaits_command() {
+                    // Without its output the command cannot be followed: stop it and its worker.
+                    self.give_up_pending_return(&mut record);
+                    self.forget_pending_return(&record.job_id);
+                    if let (Some(allocation), Some(revision)) =
+                        (&record.allocation_ref, &record.capability_revision)
+                    {
+                        record.deleted = self
+                            .job_compute_release_ref(allocation, revision)
+                            .await
+                            .is_ok();
+                    }
+                }
                 let result = failed(&record, error.to_string());
                 self.finish_job(&wake, &mut record, result).await;
                 return;
             }
         };
-        let result = match environment {
-            Err(error) => Err(error),
-            Ok(environment) => {
-                self.run_job(
-                    &mut record,
-                    &environment,
-                    &mut output,
-                    &mut cancelled,
-                    false,
-                )
+        let result = if matches!(record.remote, RemoteStage::Running { .. }) {
+            self.resume_remote_job(&mut record, &mut output, &mut cancelled)
                 .await
+        } else {
+            match selected_environment(self, &record) {
+                Err(error) => Err(error),
+                Ok(environment) => {
+                    self.run_job(
+                        &mut record,
+                        &environment,
+                        &mut output,
+                        &mut cancelled,
+                        false,
+                    )
+                    .await
+                }
             }
         };
         if record.allocation_ref.is_none() {
@@ -396,11 +413,16 @@ impl KernelRuntimeState {
     ) -> Result<JobResult, DaemonError> {
         let result = match result {
             Err(_) if cancelled => uncollected_stop(self, record, output, JobOutcome::Cancelled),
+            Err(error) if record.remote.awaits_command() => {
+                // Its end was never read: stop it by deleting its worker; nothing is collected.
+                self.give_up_pending_return(record);
+                Err(error)
+            }
             result => result,
         };
         let mut result = result.unwrap_or_else(|error| {
             let _ = output.push(self, &record.room_id, error.to_string().as_bytes(), true);
-            if record.return_pending {
+            if record.remote.holds_worker() {
                 let _ = output.push(self, &record.room_id, KEPT_WORKER_NOTICE.as_bytes(), true);
             }
             failed(record, "Job failed; see the protected output log".into())
@@ -416,12 +438,13 @@ impl KernelRuntimeState {
         // Execution and file return are complete. A service restart during
         // deletion must not erase their result, including after kernel recovery.
         record.result = Some(result.clone());
-        if record.return_pending {
+        if record.remote.holds_worker() {
             save_record(self, record)?;
             return Ok(result);
         }
         record.state = "deleting".into();
         save_record(self, record)?;
+        self.forget_pending_return(&record.job_id);
         match self
             .job_compute_release_ref(
                 record.allocation_ref.as_deref().expect("remote allocation"),
@@ -567,7 +590,7 @@ impl KernelRuntimeState {
         }
         // From here the worker may come to hold the only copy of the outputs: keep what collecting
         // them needs before the command can run, so nothing after it can lose them. The worker is
-        // released only once they are home or given up.
+        // released only once the command's end is read and its files are home, or it is stopped.
         let plan = PendingReturn {
             root,
             kernel_id: machine.kernel_id.clone(),
@@ -575,9 +598,10 @@ impl KernelRuntimeState {
             uploaded: upload,
         };
         plan.save(self, &record.job_id)?;
-        record.return_pending = true;
+        record.advance(StageEvent::Plan)?;
         if let Err(error) = save_record(self, record) {
-            self.settle_pending_return(record);
+            self.give_up_pending_return(record);
+            self.forget_pending_return(&record.job_id);
             return Err(error);
         }
         if let Some(driver) = &self.job_wake_driver {
@@ -594,14 +618,82 @@ impl KernelRuntimeState {
                 "command-open",
             )
             .await?;
+        // The command runs from its open: keep which execution it is before anything else can fail.
+        record.advance(StageEvent::Open {
+            room: remote.room().into(),
+            exec_id: exec_id.clone(),
+        })?;
+        record.running_at_ms = Some(crate::session::unix_epoch_ms());
+        save_record(self, record)?;
         let input = command_input(&record.request, environment, &record.job_id)?;
         let next = remote.write(&exec_id, 0, input.as_bytes()).await?;
         remote.close_stdin(&exec_id, next).await?;
         self.job_compute_started(machine).await?;
-        record.running_at_ms = Some(crate::session::unix_epoch_ms());
         record.state = "running".into();
         save_record(self, record)?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(record.request.timeout_s);
+        self.supervise_remote(record, &remote, &plan, &exec_id, output, cancelled)
+            .await
+    }
+
+    /// After a restart: reattaches to the command the record names and waits for its end, so no
+    /// file is accepted and the worker is not released while it still runs.
+    async fn resume_remote_job(
+        &self,
+        record: &mut Record,
+        output: &mut Output,
+        cancelled: &mut watch::Receiver<bool>,
+    ) -> Result<JobResult, DaemonError> {
+        let RemoteStage::Running { room, exec_id } = record.remote.clone() else {
+            return Err(ledger::error("The job has no running command to resume"));
+        };
+        let result = async {
+            let plan = PendingReturn::load(self, &record.job_id)?;
+            let since = tokio::time::Instant::now();
+            let grant = loop {
+                match self.return_grant(record, &plan.kernel_id).await {
+                    Ok(grant) => break grant,
+                    Err(error) if *cancelled.borrow() || since.elapsed() >= WORKER_PATIENCE => {
+                        return Err(error)
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "job worker not reachable after restart; retrying");
+                        tokio::time::sleep(Duration::from_secs(2)).await
+                    }
+                }
+            };
+            if let Some(driver) = &self.job_wake_driver {
+                driver
+                    .return_grants
+                    .lock()
+                    .expect("job return grants")
+                    .insert(record.job_id.clone(), grant.clone());
+            }
+            let remote = Remote::new(grant, room, record.job_id.clone());
+            self.supervise_remote(record, &remote, &plan, &exec_id, output, cancelled)
+                .await
+        }
+        .await;
+        let was_cancelled = *cancelled.borrow();
+        self.complete_remote_job(record, output, result, was_cancelled)
+            .await
+    }
+
+    /// Follows the command on the worker to its end, then brings its files home.
+    async fn supervise_remote(
+        &self,
+        record: &mut Record,
+        remote: &Remote,
+        plan: &PendingReturn,
+        exec_id: &str,
+        output: &mut Output,
+        cancelled: &mut watch::Receiver<bool>,
+    ) -> Result<JobResult, DaemonError> {
+        let started = record
+            .running_at_ms
+            .unwrap_or_else(crate::session::unix_epoch_ms);
+        let left = (started + record.request.timeout_s * 1000)
+            .saturating_sub(crate::session::unix_epoch_ms());
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(left);
         let (mut cursor, mut stopped) = (0, None);
         let mut disconnected = None;
         let mut last_samples = tokio::time::Instant::now() - Duration::from_secs(1);
@@ -613,7 +705,7 @@ impl KernelRuntimeState {
                 } else {
                     JobOutcome::TimeLimit
                 });
-                if remote.cancel(&exec_id).await.is_err() {
+                if remote.cancel(exec_id).await.is_err() {
                     return uncollected_stop(
                         self,
                         record,
@@ -632,8 +724,8 @@ impl KernelRuntimeState {
                         sample.process.process_id =
                             format!("{}:{}", record.job_id, sample.process.process_id);
                         sample.placement = Some(crate::local::RemoteJobPlacement {
-                            machine_label: machine.machine_label.clone(),
-                            address: machine.address.clone(),
+                            machine_label: record.machine_label.clone().unwrap_or_default(),
+                            address: record.address.clone(),
                         });
                     }
                     if let Some(driver) = &self.job_wake_driver {
@@ -649,7 +741,7 @@ impl KernelRuntimeState {
                 }
                 last_samples = tokio::time::Instant::now();
             }
-            match remote.read(&exec_id, cursor).await {
+            match remote.read(exec_id, cursor).await {
                 Ok(page) => {
                     if disconnected.take().is_some() {
                         record.state = "running".into();
@@ -666,7 +758,7 @@ impl KernelRuntimeState {
                         return uncollected_stop(self, record, output, outcome);
                     }
                     let since = disconnected.get_or_insert_with(tokio::time::Instant::now);
-                    if since.elapsed() >= Duration::from_secs(600) {
+                    if since.elapsed() >= WORKER_PATIENCE {
                         return Err(error);
                     }
                     record.state = "reconnecting".into();
@@ -676,8 +768,10 @@ impl KernelRuntimeState {
             }
         };
         let mut result = result_from_exit(record, outcome, stopped);
-        record.return_outcome = Some(result.outcome);
+        // The command's end is saved before any of its files are accepted.
+        record.advance(StageEvent::End(result.outcome))?;
         record.state = "returning".into();
+        save_record(self, record)?;
         match remote
             .return_files(&plan.root, record, &plan.base, &plan.uploaded)
             .await
@@ -685,7 +779,7 @@ impl KernelRuntimeState {
             Ok((files, conflicts)) => {
                 result.files_back = files;
                 result.conflicts = conflicts;
-                self.settle_pending_return(record);
+                record.advance(StageEvent::Home)?;
             }
             Err(error) => {
                 let notice = format!(
@@ -698,6 +792,9 @@ impl KernelRuntimeState {
         Ok(result)
     }
 }
+
+/// How long a worker may stay out of reach, while its command runs, before it is stopped and reaped.
+const WORKER_PATIENCE: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 600 });
 
 const KEPT_WORKER_NOTICE: &str = "The remote machine is kept so none are lost. Check this job with chariox.jobs.status to collect them; chariox.jobs.cancel gives them up. The machine is deleted once they are home, or when its lease ends.\n";
 
@@ -769,7 +866,7 @@ fn uncollected_stop(
     output: &mut Output,
     outcome: JobOutcome,
 ) -> Result<JobResult, DaemonError> {
-    state.settle_pending_return(record);
+    state.give_up_pending_return(record);
     let notice = if outcome == JobOutcome::TimeLimit {
         "Time limit reached. Command output is partial and returned files are unavailable.\n"
     } else {
