@@ -78,48 +78,7 @@ impl KernelRuntimeState {
         {
             return Ok(());
         }
-        let description = match (request, capability) {
-            (
-                ControlPlaneRequest::AcquireJob {
-                    needs, timeout_s, ..
-                },
-                Some(capability),
-            ) => {
-                let class = super::job_compute::select_job_class(capability, needs)?;
-                let minutes = timeout_s.saturating_add(59) / 60;
-                format!("Run this job on a VM ({}, {} CPUs, {} MiB) at {} {} per minute? The command limit is {minutes} minutes; charges continue through startup and until deletion.", class.class_id, class.vcpu, class.usable_memory_mib, money(class.rate_per_minute.amount_micros), class.rate_per_minute.currency)
-            }
-            (_, Some(capability)) => capability
-                .offer
-                .as_ref()
-                .map(|offer| {
-                    if let Some(rate) = &offer.rate_per_minute {
-                        return format!(
-                            "Acquire {} ({} CPUs, {} GB) at {} {} per minute? The total depends on how long you keep it.",
-                            offer.machine_type, offer.vcpu, offer.ram_gb,
-                            money(rate.amount_micros), rate.currency
-                        );
-                    }
-                    format!(
-                        "Acquire {} ({} CPUs, {} GB) for {} {} per {:?}?",
-                        offer.machine_type,
-                        offer.vcpu,
-                        offer.ram_gb,
-                        offer.terms.amount,
-                        offer.terms.currency,
-                        offer.terms.period
-                    )
-                })
-                .unwrap_or_else(|| {
-                    "Acquire a machine at the connected service's quoted rate?".into()
-                }),
-            _ => {
-                return Err(acquisition_error(
-                    "capacity_unavailable",
-                    "The connected service has no machine offer; nothing was allocated",
-                ))
-            }
-        };
+        let description = acquisition_description(request, capability)?;
         let mut interaction = RuntimeInteraction::for_kernel_operation(
             &id,
             &id,
@@ -168,6 +127,56 @@ impl KernelRuntimeState {
         Ok(())
     }
 }
+const NO_MACHINE_OFFER: &str =
+    "The connected service offers no machine right now; nothing was allocated";
+
+/// What the owner is asked to approve; without a quote there is nothing to approve and nothing is asked.
+fn acquisition_description(
+    request: &ControlPlaneRequest,
+    capability: Option<&MachineAllocationCapability>,
+) -> Result<String, DaemonError> {
+    let no_offer = |message: &str| acquisition_error("capacity_unavailable", message);
+    match (request, capability) {
+        (
+            ControlPlaneRequest::AcquireJob {
+                needs, timeout_s, ..
+            },
+            Some(capability),
+        ) => {
+            let class = super::job_compute::select_job_class(capability, needs)?;
+            let minutes = timeout_s.saturating_add(59) / 60;
+            Ok(format!("Run this job on a VM ({}, {} CPUs, {} MiB) at {} {} per minute? The command limit is {minutes} minutes; charges continue through startup and until deletion.", class.class_id, class.vcpu, class.usable_memory_mib, money(class.rate_per_minute.amount_micros), class.rate_per_minute.currency))
+        }
+        (_, Some(capability)) => capability
+            .offer
+            .as_ref()
+            .map(|offer| {
+                if let Some(rate) = &offer.rate_per_minute {
+                    return format!(
+                        "Acquire {} ({} CPUs, {} GB) at {} {} per minute? The total depends on how long you keep it.",
+                        offer.machine_type, offer.vcpu, offer.ram_gb,
+                        money(rate.amount_micros), rate.currency
+                    );
+                }
+                format!(
+                    "Acquire {} ({} CPUs, {} GB) for {} {} per {:?}?",
+                    offer.machine_type,
+                    offer.vcpu,
+                    offer.ram_gb,
+                    offer.terms.amount,
+                    offer.terms.currency,
+                    offer.terms.period
+                )
+            })
+            .ok_or_else(|| {
+                no_offer(NO_MACHINE_OFFER)
+            }),
+        _ => Err(no_offer(
+            "The connected service has no machine offer; nothing was allocated",
+        )),
+    }
+}
+
 /// Dropping a waiting job withdraws its decision before an agent can leave a stale stripe.
 struct PendingAcquisition(Option<(KernelRuntimeState, String, String)>);
 impl Drop for PendingAcquisition {
@@ -259,6 +268,10 @@ impl KernelRuntimeState {
         };
         let result = match tool {
             "chariox.machines.acquire" => {
+                // Without a quote the service would refuse the request anyway, whoever approves it.
+                if capability.offer.is_none() {
+                    return Err(acquisition_error("capacity_unavailable", NO_MACHINE_OFFER));
+                }
                 let request_id = args
                     .request_id
                     .unwrap_or_else(|| format!("machine-{:032x}", rand::random::<u128>()));

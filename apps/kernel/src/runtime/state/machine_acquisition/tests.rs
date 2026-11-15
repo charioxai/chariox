@@ -266,3 +266,30 @@ async fn offload_manual_machine_request_uses_the_same_owner_gate_and_service_min
         .to_string()
         .contains("nothing was allocated or charged"));
 }
+
+#[tokio::test]
+async fn acquire_without_a_quoted_offer_asks_nobody_and_says_so() {
+    let (state, command, _job, caps, _workspace) = fixture(false);
+    let acquire = ControlPlaneRequest::Acquire {
+        capability_revision: "v1".into(),
+        request_id: "request".into(),
+    };
+    let room = command.session_id.clone().unwrap();
+    let error = state
+        .approve_machine_acquisition(&command, &acquire, Some(&caps))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("offers no machine right now"), "{error}");
+    assert!(error.contains("nothing was allocated"), "{error}");
+    assert!(
+        state
+            .owned
+            .session_store
+            .get_session(&room)
+            .unwrap()
+            .active_interactions()
+            .is_empty(),
+        "the owner is not asked to approve a rental nobody quoted"
+    );
+}
