@@ -170,10 +170,8 @@ mod tests {
     fn remote_job_policy_inherits_and_persists() {
         let dir = crate::test_support::TestWorktree::new("remote-job-policy");
         let path = dir.path().join("policies.json");
-        let get = |policies: &Policies| {
-            policies
-                .get("room", "project", PolicyScope::Agent("agent"))
-        };
+        let get =
+            |policies: &Policies| policies.get("room", "project", PolicyScope::Agent("agent"));
         let mut policies = Policies::load(&path).unwrap();
         assert_eq!(get(&policies).effective_policy, OffloadPolicy::Off);
         assert_eq!(get(&policies).source, "default");
