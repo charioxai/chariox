@@ -36,6 +36,23 @@ GitHub -> dev.chariox.github generator -> event delivery -> App inbox route
 | Issue opened | `issues.opened` | `issue_opened` | `issue_opened_notification` |
 | Workflow run completed | `workflow_run.completed` | `workflow_run_completed` | `workflow_run_completed_notification` |
 
+The generator emits the five types above through the `github-events` App. It also
+normalizes, with the same payload shape, `pull_request.{closed, ready_for_review,
+reopened, labeled}`, `pull_request_review.submitted`,
+`pull_request_review_comment.created`, `issue_comment.created`, `issues.{closed, labeled}`,
+`check_run.completed`, `check_suite.completed`, `release.published` and `push`. A
+GitHub App installation delivers the new types only after its owner accepts the updated
+permissions (Checks and Contents: read) on GitHub; the five types above are unaffected.
+Signed payload fixtures for every type are in `docs/fixtures/event-generators/github/`.
+
+Every event's `metadata.chariox` holds facts GitHub only gives in nested lists, so a
+`--filter-json` such as `{"chariox.labels": "needs-review"}` works without calling GitHub:
+`labels` (names), `merged`, `pr_numbers` (the pull requests of a check, workflow run,
+comment or pull request event), `body_mentions` (`@logins` of the comment, review, release,
+pull request or issue body; team mentions and addresses excluded), and when present
+`base_ref`, `branch` (base of a pull request, head of a check or workflow run, the pushed
+branch), `head_sha`, `sender_login`, and for pushes `is_default_branch_push`.
+
 The outgoing payload is the incoming payload unchanged. Its `text` is the prompt the
 workflow run or agent turn starts with, and `metadata` carries the GitHub payload
 (for example `repository.full_name` and `pull_request.number`).
