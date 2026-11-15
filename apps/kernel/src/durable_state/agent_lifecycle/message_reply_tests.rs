@@ -107,6 +107,43 @@ fn a_message_answering_a_question_read_in_turn_settles_the_askers_reply() {
     );
 }
 
+/// The question is steered into the peer's running task: its delivery is still in flight (no
+/// receipt yet) when the peer already answers by message.
+#[test]
+fn a_message_answering_a_question_whose_delivery_is_in_flight_settles_the_askers_reply() {
+    for state in ["submitting", "uncertain"] {
+        let f = Fixture::new();
+        let question = ask(&f);
+        f.apply(Operation::Attempt {
+            room: "room".into(),
+            agent: "peer".into(),
+            sequence: question.sequence,
+            prompt: "pt".into(),
+            target: Some("pt".into()),
+            run: None,
+            now: 2,
+            work: None,
+            through: 0,
+        });
+        if state == "uncertain" {
+            f.apply(Operation::Receipt {
+                room: "room".into(),
+                agent: "peer".into(),
+                sequence: question.sequence,
+                state: "uncertain".into(),
+                now: 3,
+            });
+        }
+        answer(&f);
+        assert_ne!(
+            reply_obligation(&f).status,
+            "open",
+            "delivery {state}: {:?}",
+            reply_obligation(&f)
+        );
+    }
+}
+
 #[test]
 fn a_message_before_the_question_was_read_is_not_its_reply() {
     let f = Fixture::new();
