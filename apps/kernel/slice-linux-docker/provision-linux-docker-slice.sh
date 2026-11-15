@@ -1264,9 +1264,10 @@ ensure_container() {
 }
 
 prepare_development_workspace_access() {
-  # Managed publication ACLs are prepared by the broker. Ordinary Docker
+  # Managed publication ACLs are prepared by the broker's host: the rootless
+  # container cannot chown files owned by an unmapped host uid. Ordinary Docker
   # publications need access for the image's non-root worker as well.
-  if [[ -n "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" || "$SLICE_DEVELOPMENT_MOUNT_COUNT" -eq 0 ]]; then
+  if [[ -n "${CHARIOX_SLICE_MANAGED_DOCKER_HOST:-}" || -n "${CHARIOX_SLICE_BROKER_PREPARED_PUBLICATION_ACCESS:-}" || "$SLICE_DEVELOPMENT_MOUNT_COUNT" -eq 0 ]]; then
     return
   fi
   local mounts=() index variable
