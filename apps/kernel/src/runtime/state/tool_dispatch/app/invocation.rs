@@ -23,6 +23,32 @@ fn needs_view_path(actions: &[chariox_app_package::v2::UiActionDeclaration], too
         .any(|action| action.name == tool && matches!(action.effect, Approval | PersonConfirmed))
 }
 
+/// Whether the catalog's tool `called` (the installation-namespaced name the agent calls) is the
+/// backend tool of such an action: the signed declarations name actions by their local tool names.
+fn gated_backend_tool(
+    catalog: &chariox_app_runtime::app_catalog::AppCatalog,
+    called: &str,
+) -> bool {
+    is_gated(
+        catalog.ui_actions(),
+        catalog
+            .tools()
+            .map(|tool| (tool.name.as_str(), tool.local_name.as_str())),
+        called,
+    )
+}
+
+fn is_gated<'a>(
+    actions: &[chariox_app_package::v2::UiActionDeclaration],
+    tools: impl IntoIterator<Item = (&'a str, &'a str)>,
+    called: &str,
+) -> bool {
+    tools
+        .into_iter()
+        .find(|(namespaced, _)| *namespaced == called)
+        .is_some_and(|(_, local)| needs_view_path(actions, local))
+}
+
 #[cfg(test)]
 mod needs_view_path_tests {
     use super::*;
@@ -57,6 +83,18 @@ mod needs_view_path_tests {
         for tool in ["get_pull_request", "comment", "undeclared"] {
             assert!(!needs_view_path(&actions, tool), "{tool}");
         }
+        // An agent names the namespaced tool; the declarations name the local one.
+        let tools = [
+            ("app_merge_82bd", "merge_pull_request"),
+            ("app_get_82bd", "get_pull_request"),
+        ];
+        assert!(is_gated(&actions, tools, "app_merge_82bd"));
+        assert!(!is_gated(&actions, tools, "app_get_82bd"));
+        assert!(
+            !is_gated(&actions, tools, "merge_pull_request"),
+            "the local name is not a callable tool"
+        );
+        assert!(!is_gated(&actions, tools, "app_unknown"));
         let refused = app_call_errors::needs_approval_path("merge_pull_request", "github");
         assert_eq!(refused.0, "USE_APP_VIEW_INVOKE");
         assert!(
@@ -131,7 +169,7 @@ impl KernelRuntimeState {
         }
         // An action the person must approve is asked for only on the view path: a tool call
         // would run it without the card, whatever the App's own code checks.
-        if needs_view_path(lease.catalog().app_catalog().ui_actions(), &tool.tool_name) {
+        if gated_backend_tool(lease.catalog().app_catalog(), &tool.tool_name) {
             return Err(coded(app_call_errors::needs_approval_path(
                 &tool.tool_name,
                 &tool.name,

@@ -3313,6 +3313,15 @@ Workflow trigger and deployment direction:
   entry must be made for HTTP use at the destination's origin, and the value is never part of
   any reply. `capabilities.network[].credential` and `routes` plus the required feature
   `credentialed-http` declare the destination (`APPS_V2_CONTRACTS.md` §10).
+- protocol 1011 / relay peer 450 (provisional, GHA-5): standing permissions and a backend preview. `GrantAppStanding
+  {installation_id, account, repo, class: merge|close|delete_branch|review, expires_at_ms?}`, `RevokeAppStanding
+  {installation_id, standing_id}` and `ListAppStanding {installation_id}` answer `AppStanding {installation_id,
+  standing: [{standing_id, account, repo, class, created_at_ms, expires_at_ms?, uses, last_used_ms?}]}`; only the
+  owner can, the account must be bound and the installation must declare an action of that class
+  (`standing: {class, repo}` in `schemas/ui-actions.json`). `AppInstallationSummary.standing_permissions` counts
+  them (absent when none). `app_confirmation.preview` (`[{label, value}]`, 1 to 12 rows of plain text) carries the
+  rows a backend-served App answered when no App Tab shows the preview; the card then has no `view`. A direct tool
+  call of an action that needs approval or confirmation is refused with `USE_APP_VIEW_INVOKE`.
 - protocol 359: App connection grants. `GrantAppConnection {installation_id,
   generator_id, connection_id}`, `RevokeAppConnection {installation_id,
   connection_id}` and `ListAppConnections {installation_id}` answer
@@ -7422,6 +7431,9 @@ the person confirms the exact input on one card. The card is an agent interactio
 - `app_confirmation`: `{installation_id, app_id, app_name, publisher_id, publisher_name, action_name}`,
   written by the kernel from the verified release (all six present, none other). A client frames the
   preview with these words and never with text the App supplied.
+- `app_confirmation.preview`: for an App whose backend serves its view and so has no Tab, the rows its
+  backend answered (`[{label, value}]`, at most 12, plain text); the card then carries no `view`, and a client
+  that shows the rows offers Confirm.
 - `view.browser_region`: the App's own preview, found by the browser host (not the App or the agent) in the
   App's Tab, shown through the existing protected card region. A client that cannot show it offers no
   Confirm; the card's `message` carries the exact input (at most 2000 characters) for clients that read text.

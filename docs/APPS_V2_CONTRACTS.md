@@ -49,7 +49,12 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   person_confirmed`, an `approvalReason` for, and only for, `approval`, and a
   `confirmationView` for, and only for, `person_confirmed` (APP-CONFIRM-01: the
   name of the view the App registers with `chariox.view.confirmation(name,
-  render)`; also `data-chariox-confirmation-view` on an annotated form). Backend `actions` keep their
+  render)`; also `data-chariox-confirmation-view` on an annotated form; for an App
+  whose backend serves its view, the name of the backend tool that answers with
+  the preview rows). An optional `standing` `{class, repo}` on an `approval` or
+  `person_confirmed` action lets the owner decide once, per repository, that this
+  class (`merge | close | delete_branch | review`, a closed set) needs no card;
+  `repo` names the required text input property that holds `owner/name`. Backend `actions` keep their
   protected effect routes unchanged; an effect class grants no capability.
 - Signature slots: `signatures/publisher.sig` plus up to 8
   `signatures/reviews/<reviewer-key-id>.json` (`chariox.package-review.v1`, at
@@ -225,7 +230,28 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   timeout, disconnect or a stale view run nothing and say so. The preview is
   removed on every path. Input an agent drove through the browser into a
   `person_confirmed` form or button is refused by the page bridge
-  (`person_confirmation_required`). It needs the App open in an App Tab.
+  (`person_confirmation_required`). A page view needs the App open in an App Tab.
+  An App whose backend serves the view has no page or Tab: the kernel calls the
+  backend tool the signed action names as its `confirmationView` with the exact
+  input, and the answer, `{rows: [{label, value}]}` (one to twelve rows of plain
+  text, labels up to 48 and values up to 400 characters, nothing else), travels
+  in the frame as `app_confirmation.preview`; the card has no protected region.
+  The card is otherwise the same, and an answer that does not fit refuses the
+  call before any card.
+- **Tool calls of gated actions.** An action that needs approval or the person's
+  confirmation is asked for only through `chariox.app_view_invoke`: an agent
+  that calls the backend tool of the same name directly is refused with
+  `USE_APP_VIEW_INVOKE` and the App never runs.
+- **Standing permissions.** The owner, never an App or an agent, can give a
+  standing permission with `GrantAppStanding {installation_id, account, repo,
+  class, expires_at_ms?}` (CLI `/app standing grant|list|revoke`; 30 days unless
+  `--days n` or `--never`). When an agent invokes an `approval` or
+  `person_confirmed` action whose signed `standing` names that class and whose
+  input names that repository, no card is raised and the use is counted. It
+  covers only the named repository and class, and exists only while the account
+  binding it was made under (the same Vault entry) and the installation's active
+  release do. Force pushes, deleting a default branch, grants and bindings are not
+  classes; refusing the default or a protected branch stays the App's own rule.
 - **Batch.** Every step is checked first (`plan_batch`), then run in order. It
   stops at the first error, approval or person-confirmed action and reports
   `completed` and `stopped`; there is no rollback.
