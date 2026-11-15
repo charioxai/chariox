@@ -8,6 +8,8 @@ const PENDING_ENTRIES: usize = 64;
 const PENDING_BYTES: usize = 256 * 1024;
 const IDENTITY_BYTES: usize = 256;
 const MESSAGE_BLOCKS: usize = 64;
+/// Nested background tasks tracked at once.
+const BACKGROUND_TASKS: usize = 64;
 const RESULT_BYTES: usize = 16 * 1024;
 const RESULT_BLOCKS: usize = 256;
 const RESULT_IMAGES: usize = 4;
@@ -153,6 +155,10 @@ pub(super) struct ClaudeToolTranscript {
     /// Launched background commands by tool call id: the call's last snapshot
     /// and the task id Claude names it by. They outlive the turn that started them.
     background: BTreeMap<String, BackgroundCall>,
+    /// Background tasks a helper agent started itself, by task id, with the helper's task id:
+    /// while one runs, the helper's own completion notice is interim.
+    #[serde(default)]
+    nested: BTreeMap<String, String>,
     /// Background calls that ended outside `observe`, waiting to be emitted.
     ended: Vec<Value>,
 }
@@ -297,7 +303,16 @@ impl ClaudeToolTranscript {
     fn observe_at(&mut self, value: &Value, now_ms: u64) -> Vec<Value> {
         self.unsupported_results.clear();
         let kind = value.get("type").and_then(Value::as_str);
+        self.note_nested_task_start(value);
         if let Some(end) = super::task_notification::finished_background_task(value) {
+            if let Some(task_id) = end.task_id {
+                // A helper agent that stopped with its own background work still running reports
+                // `completed`, and notifies again when that work ends.
+                if self.nested.values().any(|parent| parent == task_id) {
+                    return Vec::new();
+                }
+                self.nested.remove(task_id);
+            }
             return self.finish_background_task(end.tool_use_id, end.task_id, now_ms);
         }
         let message = value.get("message").unwrap_or(value);
@@ -455,6 +470,25 @@ impl ClaudeToolTranscript {
             .map(|call| call.finished(now_ms))
             .into_iter()
             .collect()
+    }
+
+    fn note_nested_task_start(&mut self, value: &Value) {
+        if value.get("type").and_then(Value::as_str) != Some("system")
+            || value.get("subtype").and_then(Value::as_str) != Some("task_started")
+            || self.nested.len() >= BACKGROUND_TASKS
+        {
+            return;
+        }
+        let id = |field: &str| {
+            value
+                .get(field)
+                .and_then(Value::as_str)
+                .filter(|id| id.len() <= IDENTITY_BYTES)
+                .map(str::to_string)
+        };
+        if let (Some(task), Some(parent)) = (id("task_id"), id("parent_task_id")) {
+            self.nested.insert(task, parent);
+        }
     }
 
     /// The Claude process that ran the background commands is gone: each one
@@ -743,6 +777,35 @@ mod tests {
             transcript.observe_at(&task_notification("aauto1", "other", "completed"), 3_000);
         assert_eq!(ended[0]["id"], id);
         assert_eq!(ended[0]["finished_at_ms"], 3_000);
+    }
+
+    // Live (orchfix6, stream-json): a helper that stopped with its own background command still
+    // running is reported `completed` by the stream's `task_notification`, which names no note; the
+    // `task_started` of that command names the helper as its parent, and the helper notifies again
+    // when the command ends.
+    #[test]
+    fn a_helper_notification_while_its_own_background_task_runs_does_not_end_the_call() {
+        let started = |task: &str, parent: &str| {
+            json!({"type":"system","subtype":"task_started","task_id":task,"tool_use_id":"nested",
+                "parent_task_id":parent,"task_type":"local_bash","is_backgrounded":true})
+        };
+        let mut transcript = ClaudeToolTranscript::default();
+        transcript.observe_at(&helper_launch("toolu_auto", false), 1_000);
+        transcript.observe_at(&helper_launch_result("toolu_auto", "aauto1"), 1_200);
+        transcript.observe_at(&started("bnested1", "aauto1"), 2_000);
+        assert!(transcript
+            .observe_at(
+                &task_notification("aauto1", "toolu_auto", "completed"),
+                3_000
+            )
+            .is_empty());
+        transcript.observe_at(&task_notification("bnested1", "nested", "completed"), 8_000);
+        let ended = transcript.observe_at(
+            &task_notification("aauto1", "toolu_auto", "completed"),
+            9_000,
+        );
+        assert_eq!(ended[0]["id"], "toolu_auto");
+        assert_eq!(ended[0]["finished_at_ms"], 9_000);
     }
 
     // Live (l10orch r1, L10-CHILD-BACKGROUND): Claude reports a helper that stopped with background

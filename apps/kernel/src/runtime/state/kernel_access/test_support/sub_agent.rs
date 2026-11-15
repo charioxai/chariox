@@ -3,7 +3,8 @@
 use super::*;
 use std::process::{Command, Stdio};
 
-const SUB_AGENT_SENTENCE: &str = "An agent cannot ask for kernel access. Only the person can grant it, in a Chariox terminal.";
+const SUB_AGENT_SENTENCE: &str =
+    "An agent cannot ask for kernel access. Only the person can grant it, in a Chariox terminal.";
 
 struct Launched(std::process::Child);
 
