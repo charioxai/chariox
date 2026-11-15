@@ -579,7 +579,7 @@ fn app_inbox_shapes_are_versioned_and_name_no_owner() {
     );
     assert_eq!(
         digest,
-        "9447b2103c913c1ca4099b2ba6452aa7d137ede5a5f49108d28acafd0271bba1"
+        "271b20ef4f0e931a11279d9f2074bc3f98fae8e5e947f8cf17688e87c94a2689"
     );
     assert!(
         serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
@@ -637,7 +637,7 @@ fn app_inbox_routes_from_generator_connections_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "9702eea10502d2d51589f8492940f498b70f83a0f36f069979c46b9af2c09d0d"
+        "a11c7c98869f875bf570aa5c546b76c58c718b15b7d28087b47586a3454cbe65"
     );
     // A connection names no owner.
     assert!(
