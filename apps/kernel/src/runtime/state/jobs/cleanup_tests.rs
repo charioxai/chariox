@@ -262,17 +262,19 @@ async fn job_refused_by_the_service(
         "revision":"v1","actions":["acquire_job"],"offer":null,"job_default_class_id":"build",
         "job_offers":[{"class_id":"build","vcpu":4,"usable_memory_mib":7000,"disk_gib":40,
         "rate_per_minute":{"amount_micros":600,"currency":"USD"}}]}});
-    let server = service_by_action(&state, move |request| match request["action"].as_str().unwrap() {
-        "capabilities" => (200, offer.clone()),
-        "acquire_job" => (
-            status,
-            serde_json::json!({"error":{"code":code,"message":"The service said no"}}),
-        ),
-        "cancel_job" => (
-            200,
-            serde_json::json!({"kind":"job_cancelled","job_ref":request["job_ref"]}),
-        ),
-        _ => (404, serde_json::json!({"error":{"code":"not_found"}})),
+    let server = service_by_action(&state, move |request| {
+        match request["action"].as_str().unwrap() {
+            "capabilities" => (200, offer.clone()),
+            "acquire_job" => (
+                status,
+                serde_json::json!({"error":{"code":code,"message":"The service said no"}}),
+            ),
+            "cancel_job" => (
+                200,
+                serde_json::json!({"kind":"job_cancelled","job_ref":request["job_ref"]}),
+            ),
+            _ => (404, serde_json::json!({"error":{"code":"not_found"}})),
+        }
     })
     .await;
     let value = state
@@ -295,18 +297,35 @@ async fn offload_job_follows_the_project_policy_until_the_room_overrides_it() {
             .set_remote_job_policy(&task.room_id, None, project, &task.owner_user_id, policy)
             .unwrap();
     };
-    let tail = |value: &serde_json::Value| value["result"]["output_tail"].as_str().unwrap().to_owned();
+    let tail =
+        |value: &serde_json::Value| value["result"]["output_tail"].as_str().unwrap().to_owned();
     let by_project = job_refused_by_the_service(409, "capacity_exceeded", |state, task| {
-        policy(state, task, true, Some(crate::local::OffloadPolicy::AlwaysHeavy));
+        policy(
+            state,
+            task,
+            true,
+            Some(crate::local::OffloadPolicy::AlwaysHeavy),
+        );
     })
     .await;
-    assert!(tail(&by_project).contains("No remote machine free"), "{by_project}");
+    assert!(
+        tail(&by_project).contains("No remote machine free"),
+        "{by_project}"
+    );
     let overridden = job_refused_by_the_service(409, "capacity_exceeded", |state, task| {
-        policy(state, task, true, Some(crate::local::OffloadPolicy::AlwaysHeavy));
+        policy(
+            state,
+            task,
+            true,
+            Some(crate::local::OffloadPolicy::AlwaysHeavy),
+        );
         policy(state, task, false, Some(crate::local::OffloadPolicy::Off));
     })
     .await;
-    assert!(!tail(&overridden).contains("No remote machine free"), "{overridden}");
+    assert!(
+        !tail(&overridden).contains("No remote machine free"),
+        "{overridden}"
+    );
     assert!(tail(&overridden).contains("ran-here"), "{overridden}");
 }
 
@@ -317,12 +336,22 @@ async fn offload_job_waits_locally_when_the_service_refuses_for_capacity() {
 
 #[tokio::test]
 async fn offload_job_waits_locally_when_the_service_rate_limits_it() {
-    refused_job_waits_locally(429, "rate_limited", "rate limited right now; waiting locally").await;
+    refused_job_waits_locally(
+        429,
+        "rate_limited",
+        "rate limited right now; waiting locally",
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn offload_job_waits_locally_when_the_service_is_unavailable() {
-    refused_job_waits_locally(503, "dependency_unavailable", "service is unavailable right now").await;
+    refused_job_waits_locally(
+        503,
+        "dependency_unavailable",
+        "service is unavailable right now",
+    )
+    .await;
 }
 
 #[tokio::test]
