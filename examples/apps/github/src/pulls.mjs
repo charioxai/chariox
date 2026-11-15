@@ -161,11 +161,16 @@ export function createPulls({ accounts, github }) {
     async get_check_output(input) {
       return call(input, async account => {
         const params = { ...where(input), check_run_id: input.check_run_id };
-        const [run, annotations] = await Promise.all([
+        const [run, annotations, job] = await Promise.all([
           github.get(account, '/repos/{owner}/{repo}/check-runs/{check_run_id}', params),
           github.get(account, '/repos/{owner}/{repo}/check-runs/{check_run_id}/annotations', params, { query: { per_page: 50 } }),
+          // The id of a GitHub Actions check run is the id of its job; any other check has no steps.
+          github.get(account, '/repos/{owner}/{repo}/actions/jobs/{job_id}', { ...where(input), job_id: input.check_run_id }).then(({ data }) => data, () => null),
         ]);
-        return { check: n.checkRun(run.data), title: run.data.output?.title ?? null, summary: run.data.output?.summary ?? null, text: run.data.output?.text ?? null, annotations: annotations.data.map(n.annotation) };
+        return {
+          check: n.checkRun(run.data), title: run.data.output?.title ?? null, summary: run.data.output?.summary ?? null, text: run.data.output?.text ?? null,
+          annotations: annotations.data.map(n.annotation), steps: (job?.steps ?? []).map(n.step),
+        };
       });
     },
 
@@ -196,7 +201,7 @@ export function createPulls({ accounts, github }) {
       return call(input, async account => {
         const { data: pull } = await fetchPull(account, input);
         const base = { ...where(input) };
-        const [behind, protection] = await Promise.all([
+        const [behind, protection, settings] = await Promise.all([
           github.get(account, '/repos/{owner}/{repo}/compare/{basehead}', { ...base, basehead: `${pull.base.ref}...${pull.head.sha}` })
             .then(({ data }) => ({ behindBy: data.behind_by, aheadBy: data.ahead_by }), () => ({ behindBy: null, aheadBy: null })),
           github.get(account, '/repos/{owner}/{repo}/branches/{branch}/protection', { ...base, branch: pull.base.ref })
@@ -209,11 +214,15 @@ export function createPulls({ accounts, github }) {
               const cause = error?.payload ?? error;
               return { state: /not protected/i.test(cause?.github ?? '') ? 'unprotected' : 'unknown' };
             }),
+          github.get(account, '/repos/{owner}/{repo}', base).then(({ data }) => ({
+            methods: [['merge', data.allow_merge_commit], ['squash', data.allow_squash_merge], ['rebase', data.allow_rebase_merge]].filter(([, allowed]) => allowed !== false).map(([method]) => method),
+            autoMergeAllowed: Boolean(data.allow_auto_merge), deleteBranchOnMerge: Boolean(data.delete_branch_on_merge),
+          }), () => ({ methods: ['merge', 'squash', 'rebase'], autoMergeAllowed: false, deleteBranchOnMerge: false })),
         ]);
         const detail = n.pullDetail(pull);
         return {
           mergeable: detail.mergeable, mergeableState: detail.mergeableState, rebaseable: detail.rebaseable, draft: detail.state === 'draft',
-          merged: detail.merged, autoMerge: detail.autoMerge, ...behind, protection,
+          merged: detail.merged, autoMerge: detail.autoMerge, ...behind, protection, ...settings,
         };
       });
     },
@@ -222,6 +231,20 @@ export function createPulls({ accounts, github }) {
       return call(input, async account => {
         const { items, page, hasNext } = await github.list(account, '/repos/{owner}/{repo}/branches', where(input), { page: input.page, perPage: input.perPage ?? 100 });
         return { branches: items.map(b => ({ name: b.name, protected: b.protected, sha: b.commit.sha })), page, hasNext };
+      });
+    },
+
+    async list_labels(input) {
+      return call(input, async account => {
+        const { items, page, hasNext } = await github.list(account, '/repos/{owner}/{repo}/labels', where(input), { page: input.page, perPage: input.perPage ?? 100 });
+        return { labels: items.map(l => ({ name: l.name, color: l.color, description: l.description ?? null })), page, hasNext };
+      });
+    },
+
+    async list_assignees(input) {
+      return call(input, async account => {
+        const { items, page, hasNext } = await github.list(account, '/repos/{owner}/{repo}/assignees', where(input), { page: input.page, perPage: input.perPage ?? 100 });
+        return { people: items.map(u => ({ login: u.login, type: u.type })), page, hasNext };
       });
     },
 

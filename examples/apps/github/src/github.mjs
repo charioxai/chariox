@@ -96,6 +96,22 @@ export function createGitHub({ state, fetch, now = () => Date.now() }) {
     `The GitHub ${resource} rate limit is used up until ${new Date(limit.reset * 1000).toISOString()}.`,
     { resetAt: limit.reset * 1000, resource });
 
+  /** One call as the account, asked again while the kernel's own pool of HTTP operations is full. */
+  async function exchange(account, method, url, headers, body) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await fetch(url, { method, headers, connectionId: `account:${account}`, ...(body === undefined ? {} : { body }) });
+      } catch (error) {
+        const code = (error?.payload ?? error)?.code;
+        // The kernel's own pool was full (another view of this App, or a call still closing): wait a moment and ask again.
+        if (code === 'APP_BUSY' && attempt < BUSY_RETRIES) { await pause(80 + Math.floor(Math.random() * 220)); continue; }
+        const refusal = kernelRefusals[code];
+        if (refusal) fail(refusal[0], refusal[1](account));
+        throw error;
+      }
+    }
+  }
+
   /** One GET. Answers `{data, headers, link, stale, cached}`; `data` is the parsed JSON or, for a diff, text. */
   async function get(account, template, params, { query, accept = 'application/vnd.github+json', fresh = false } = {}) {
     const url = ORIGIN + expand(template, params) + queryString(query);
@@ -108,20 +124,7 @@ export function createGitHub({ state, fetch, now = () => Date.now() }) {
     }
     const headers = { accept, 'x-github-api-version': API_VERSION };
     if (cached?.value.etag) headers['if-none-match'] = cached.value.etag;
-    let response;
-    for (let attempt = 0; ; attempt++) {
-      try {
-        response = await fetch(url, { method: 'GET', headers, connectionId: `account:${account}` });
-        break;
-      } catch (error) {
-        const code = (error?.payload ?? error)?.code;
-        // The kernel's own pool was full (another view of this App, or a call still closing): wait a moment and ask again.
-        if (code === 'APP_BUSY' && attempt < BUSY_RETRIES) { await pause(80 + Math.floor(Math.random() * 220)); continue; }
-        const refusal = kernelRefusals[code];
-        if (refusal) fail(refusal[0], refusal[1](account));
-        throw error;
-      }
-    }
+    const response = await exchange(account, 'GET', url, headers);
     if (response.status === 304 && cached) return answer(cached.value, { cached: true });
     const body = await response.text();
     if (response.status === 200 || response.status === 201) {
@@ -135,6 +138,23 @@ export function createGitHub({ state, fetch, now = () => Date.now() }) {
     return refuse(account, resource, response, body);
   }
 
+  /**
+   * One call that changes something: a JSON body, never cached, and GitHub's own refusal worded for the person.
+   * Answers `{data, status}`; `data` is the parsed JSON or null for an empty answer.
+   */
+  async function send(account, method, template, params, { body, query } = {}) {
+    const url = ORIGIN + expand(template, params) + queryString(query);
+    const limit = await rate(account, 'core');
+    if (limit && limit.remaining < RESERVE.core && limit.reset * 1000 > now()) limited('core', limit);
+    const headers = { accept: 'application/vnd.github+json', 'x-github-api-version': API_VERSION };
+    if (body !== undefined) headers['content-type'] = 'application/json';
+    const response = await exchange(account, method, url, headers, body === undefined ? undefined : JSON.stringify(body));
+    const text = await response.text();
+    await noteRate(account, response.headers);
+    if (response.status >= 200 && response.status < 300) return { data: text ? JSON.parse(text) : null, status: response.status };
+    return refuse(account, 'core', response, text);
+  }
+
   function answer(entry, { stale = false, cached = false } = {}) {
     return {
       data: entry.accept.includes('json') ? (entry.body ? JSON.parse(entry.body) : null) : entry.body,
@@ -144,7 +164,12 @@ export function createGitHub({ state, fetch, now = () => Date.now() }) {
 
   function refuse(account, resource, response, body) {
     let message = '';
-    try { message = JSON.parse(body).message ?? ''; } catch { /* not JSON */ }
+    try {
+      const parsed = JSON.parse(body);
+      // A validation failure says what is wrong only in its list of errors.
+      const detail = (parsed.errors ?? []).map(error => typeof error === 'string' ? error : error.message).filter(Boolean).join('; ');
+      message = [parsed.message, detail].filter(Boolean).join(': ');
+    } catch { /* not JSON */ }
     const status = response.status;
     const remaining = response.headers.get('x-ratelimit-remaining');
     const retryAfter = response.headers.get('retry-after');
@@ -155,6 +180,8 @@ export function createGitHub({ state, fetch, now = () => Date.now() }) {
     if (status === 401) fail('ACCOUNT_UNAUTHORIZED', `GitHub did not accept the account "${account}". Its token may have expired or been revoked.`, { status });
     if (status === 404) fail('NOT_FOUND', `Not found, or the account "${account}" cannot see it.`, { status, github: message });
     if (status === 403) fail('FORBIDDEN', message || `The account "${account}" may not do this.`, { status });
+    if (status === 405) fail('NOT_ALLOWED', message || 'GitHub does not allow this right now.', { status });
+    if (status === 409) fail('CONFLICT', message || 'The pull request changed since it was read.', { status });
     if (status === 406 || status === 422) fail('UNPROCESSABLE', message || 'GitHub could not produce this answer.', { status });
     fail('GITHUB_ERROR', `GitHub answered ${status}${message ? `: ${message}` : ''}.`, { status });
   }
@@ -165,5 +192,5 @@ export function createGitHub({ state, fetch, now = () => Date.now() }) {
     return { items: result.data, page, hasNext: Boolean(result.link.next), stale: result.stale };
   }
 
-  return { get, list, rate };
+  return { get, list, send, rate };
 }

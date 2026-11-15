@@ -56,3 +56,14 @@ td.diff-num.diff-hunk { background: var(--diffBlob-hunkNum-bgColor-rest, #b6e3ff
 .TimelineItem-badge { margin-left: -32px; margin-right: 8px; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 2px solid var(--bgColor-default, #fff); border-radius: 50%; background: var(--bgColor-muted, #f6f8fa); flex-shrink: 0; }
 .TimelineItem-body { flex: auto; min-width: 0; }
 .paginate-container { display: flex; justify-content: center; }
+
+/* Writing: the blue "+" of a diff line, a review's popover, the merge method list. */
+.diff-num { position: relative; }
+.diff-line-comment { position: absolute; left: 4px; top: 2px; width: 20px; height: 20px; padding: 0; line-height: 0; border: 0; border-radius: 6px; color: #fff; background: var(--bgColor-accent-emphasis, #0969da); visibility: hidden; cursor: pointer; }
+tr:hover > .diff-num > .diff-line-comment, .diff-line-comment:focus-visible { visibility: visible; }
+.diff-composer > td { background: var(--bgColor-default, #fff); white-space: normal; font-family: inherit; font-size: 14px; line-height: 1.5; }
+.Popover.right-0 { right: 0; left: auto; width: 420px; max-width: 90vw; }
+.SelectMenu-item.flex-column { align-items: flex-start; }
+.SelectMenu-item[aria-checked="false"] .SelectMenu-icon--check { visibility: hidden; }
+.btn-octicon { cursor: pointer; }
+.diff-composer textarea, .diff-composer input { font: inherit; }

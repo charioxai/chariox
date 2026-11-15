@@ -44,11 +44,19 @@ const FIXTURE_OF = [
   [/\/pulls\/2\/reviews$/, () => 'pull_2_reviews'],
   [/\/pulls\/2\/comments$/, () => 'pull_2_line_comments'],
   [/\/issues\/2\/comments$/, () => 'pull_2_comments'],
+  [/\/actions\/jobs\/\d+$/, () => 'job_failing'],
   [/\/check-runs\/\d+\/annotations$/, () => 'check_run_annotations'],
   [/\/check-runs\/\d+$/, () => 'check_run_failing'],
   [/\/commits\/[^/]+\/check-runs$/, () => 'pull_2_check_runs'],
   [/\/commits\/[^/]+\/status$/, () => 'pull_2_status'],
   [/\/branches$/, () => 'branches'],
+  [/\/branches\/main$/, () => 'branch_main'],
+  [/\/branches\/[^/]+$/, () => 'branch_rich'],
+  [/^\/repos\/[^/]+\/[^/]+$/, () => 'repo'],
+  [/\/labels$/, () => 'labels'],
+  [/\/assignees$/, () => 'assignees'],
+  [/\/pulls$/, () => 'pulls_by_head'],
+  [/\/actions\/runs$/, () => 'actions_runs_2'],
   [/\/branches\/[^/]+\/protection$/, () => 'protection'],
   [/\/compare\/[^/]+$/, () => 'compare_2'],
 ];
@@ -59,13 +67,15 @@ export function fakeGitHub({ override, unbound = [] } = {}) {
   const fetch = async (urlText, init = {}) => {
     const url = new URL(urlText);
     const headers = Object.fromEntries(Object.entries(init.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
-    calls.push({ url: urlText, path: url.pathname, query: url.searchParams, headers, connectionId: init.connectionId });
+    calls.push({ url: urlText, path: url.pathname, query: url.searchParams, headers, connectionId: init.connectionId, method: init.method, body: init.body === undefined ? undefined : JSON.parse(init.body) });
+    if (init.body !== undefined) assert.equal(headers['content-type'], 'application/json', 'a body is JSON and says so');
     assert.equal(url.origin, 'https://api.github.com');
     assert.equal(headers.authorization, undefined, 'the App never sets Authorization');
     assert.match(init.connectionId ?? '', /^account:[a-z0-9-]+$/, 'every call is made as an account');
     if (unbound.includes(init.connectionId.slice('account:'.length))) throw { payload: { code: 'APP_HTTP_ACCOUNT_UNKNOWN', message: 'no binding' } };
     let answer = override?.(url, init);
     if (!answer) {
+      assert.equal(init.method, 'GET', `the loopback double has no answer for ${init.method} ${url.pathname}`);
       const hit = FIXTURE_OF.map(([pattern, pick]) => [pattern.exec(url.pathname), pick]).find(([match]) => match);
       assert.ok(hit, `the loopback double has no answer for ${url.pathname}`);
       const recorded = fixture(hit[1](url, hit[0], headers));

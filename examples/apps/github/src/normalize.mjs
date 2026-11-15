@@ -31,7 +31,7 @@ export function pullDetail(pull) {
   return {
     ...pullRow(pull),
     body: pull.body ?? '', merged: Boolean(pull.merged), mergedAt: pull.merged_at, mergedBy: user(pull.merged_by),
-    base: { ref: pull.base.ref, sha: pull.base.sha, repo: pull.base.repo.full_name },
+    base: { ref: pull.base.ref, sha: pull.base.sha, repo: pull.base.repo.full_name, defaultBranch: pull.base.repo.default_branch ?? null },
     head: { ref: pull.head.ref, sha: pull.head.sha, label: pull.head.label, repo: pull.head.repo?.full_name ?? null },
     assignees: (pull.assignees ?? []).map(user),
     requestedReviewers: (pull.requested_reviewers ?? []).map(user),
@@ -84,6 +84,8 @@ export const checkRun = r => ({
   startedAt: r.started_at ?? null, completedAt: r.completed_at ?? null,
   app: r.app?.name ?? null, title: r.output?.title ?? null, summary: r.output?.summary?.slice(0, 500) ?? null, url: r.details_url ?? r.html_url,
 });
+
+export const step = s => ({ number: s.number, name: s.name, status: s.status, conclusion: s.conclusion ?? null, startedAt: s.started_at ?? null, completedAt: s.completed_at ?? null });
 
 export const annotation = a => ({ path: a.path, line: a.start_line, endLine: a.end_line, level: a.annotation_level, title: a.title ?? null, message: a.message });
 

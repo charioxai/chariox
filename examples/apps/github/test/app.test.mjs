@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createApp } from '../src/app.mjs';
+import { tools as catalog } from '../src/catalog.mjs';
 import { searchQuery } from '../src/pulls.mjs';
 import { FAILING_CHECK, fakeGitHub, fixture, heads, memoryState, REPO } from './support.mjs';
 
@@ -96,6 +97,9 @@ test('what a check reports: its summary and the annotations that carry the failu
   assert.deepEqual([output.check.name, output.check.conclusion], ['failing', 'failure']);
   assert.equal(output.annotations[0].message, 'Process completed with exit code 1.');
   assert.equal(output.annotations[0].level, 'failure');
+  assert.deepEqual(output.steps.map(step => [step.number, step.name, step.conclusion]), [[1, 'Set up job', 'success'], [2, 'Run echo "e2e: expected a green banner"', 'failure'], [3, 'Complete job', 'success']]);
+  const plain = app({ override: url => /\/actions\/jobs\//.test(url.pathname) ? { status: 404, headers: {}, body: '{"message":"Not Found"}' } : undefined });
+  assert.deepEqual((await plain.call('get_check_output', { repo: REPO, check_run_id: FAILING_CHECK })).steps, [], 'a check that is not a GitHub Actions job has no steps');
 });
 
 test('check state: none, pending, success, failure from runs and statuses', async () => {
@@ -149,6 +153,16 @@ test('mergeability: behind the base branch, and protection that the account may 
   assert.deepEqual((await unprotected.call('get_mergeability', pull)).protection, { state: 'unprotected' });
   const protectedBranch = app({ override: url => url.pathname.endsWith('/protection') ? { status: 200, headers: {}, body: JSON.stringify({ required_pull_request_reviews: { required_approving_review_count: 2 }, required_status_checks: { strict: true, contexts: ['ci'] } }) } : undefined });
   assert.deepEqual((await protectedBranch.call('get_mergeability', pull)).protection, { state: 'protected', requiredApprovals: 2, requiredChecks: ['ci'], requireUpToDate: true });
+});
+
+test('mergeability carries what the repository allows: the merge methods, auto-merge, deleting the branch after a merge', async () => {
+  const open = await app().call('get_mergeability', pull);
+  assert.deepEqual([open.methods, open.autoMergeAllowed, open.deleteBranchOnMerge], [['merge', 'squash', 'rebase'], false, false]);
+  const squashOnly = app({ override: url => /^\/repos\/[^/]+\/[^/]+$/.test(url.pathname) ? { status: 200, headers: {}, body: JSON.stringify({ ...JSON.parse(fixture('repo').body), allow_merge_commit: false, allow_rebase_merge: false, allow_auto_merge: true, delete_branch_on_merge: true }) } : undefined });
+  const only = await squashOnly.call('get_mergeability', pull);
+  assert.deepEqual([only.methods, only.autoMergeAllowed, only.deleteBranchOnMerge], [['squash'], true, true]);
+  const unreadable = app({ override: url => /^\/repos\/[^/]+\/[^/]+$/.test(url.pathname) ? { status: 403, headers: {}, body: '{"message":"Forbidden"}' } : undefined });
+  assert.deepEqual((await unreadable.call('get_mergeability', pull)).methods, ['merge', 'squash', 'rebase'], 'settings that cannot be read leave every method to GitHub to refuse');
 });
 
 test('a branch with a slash in its name stays one path segment', async () => {
@@ -219,7 +233,8 @@ test('status reads the rate limits GitHub counts now and flags a paused resource
 test('the view: signed actions, state and a change feed written with the change itself', async () => {
   const { call, state } = app();
   const actions = await call('view_actions');
-  assert.deepEqual(actions.map(a => a.name), ['list_accounts', 'add_account', 'remove_account', 'set_default_account', 'set_repo_account', 'get_status', 'list_repositories', 'list_pull_requests', 'get_pull_request', 'get_pull_request_summary', 'get_pull_request_files', 'get_pull_request_diff', 'list_commits', 'get_checks', 'get_check_output', 'list_reviews', 'list_comments', 'get_mergeability', 'list_branches', 'get_compare']);
+  assert.deepEqual(actions.map(a => a.name), catalog.map(tool => tool.name));
+  assert.ok(actions.length > 40, 'the read tools and the write tools of the pull request');
   assert.deepEqual((await call('view_state')).accounts.labels, ['github']);
   assert.deepEqual(await call('view_changes', { since: 0 }), { latest: 0, dropped: false, changes: [] });
   await call('add_account', { account: 'work' });

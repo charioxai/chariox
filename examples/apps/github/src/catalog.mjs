@@ -17,9 +17,21 @@ const number = integer(1, 2147483647);
 const page = integer(1, 1000);
 const perPage = integer(1, 100);
 const pull = { account, repo, number };
+const sha = string({ pattern: '^[0-9a-f]{40}$', description: 'The full commit sha the person saw; GitHub refuses the call when the head moved.' });
+const body = (extra = {}) => string({ maxLength: 65536, ...extra });
+const names = (maximum, extra = {}) => ({ type: 'array', minItems: 1, maxItems: maximum, uniqueItems: true, items: string({ minLength: 1, maxLength: 100 }), ...extra });
+const logins = { type: 'array', maxItems: 15, uniqueItems: true, items: string({ pattern: '^[A-Za-z0-9-]{1,39}$' }) };
+const lineComments = { type: 'array', maxItems: 50, items: object({
+  path: string({ minLength: 1, maxLength: 1024 }), line: integer(1), side: { enum: ['LEFT', 'RIGHT'] },
+  start_line: integer(1), start_side: { enum: ['LEFT', 'RIGHT'] }, body: body({ minLength: 1 }),
+}, ['path', 'line', 'body']) };
+export const MERGE_METHODS = ['merge', 'squash', 'rebase'];
 
 export const SCOPES = ['mine', 'review_requested', 'repo', 'org', 'all'];
 export const PULL_STATES = ['open', 'closed', 'merged', 'all'];
+
+const branch = string({ minLength: 1, maxLength: 255 });
+const mergeInput = object({ ...pull, method: { enum: MERGE_METHODS }, sha, commit_title: string({ maxLength: 256 }), commit_message: body() }, ['repo', 'number', 'method', 'sha']);
 
 /** Every tool is also the action of the same name that the window and agents run through the view. */
 export const tools = [
@@ -49,21 +61,57 @@ export const tools = [
   { name: 'get_pull_request_diff', effect: 'read', description: 'The unified diff of a pull request, or of one file, at most maxBytes (default 262144).', input: object({ ...pull, path: string({ maxLength: 1024 }), maxBytes: integer(1024, 1048576) }, ['repo', 'number']) },
   { name: 'list_commits', effect: 'read', description: 'The commits of a pull request, oldest first.', input: object({ ...pull, page, perPage }, ['repo', 'number']) },
   { name: 'get_checks', effect: 'read', description: 'Check runs and commit statuses of the pull request head, with the overall state.', input: object(pull, ['repo', 'number']) },
-  { name: 'get_check_output', effect: 'read', description: 'What one check run reports: its title, summary and annotations (the failure messages with file and line). The job log itself lives on GitHub storage, which this App does not reach.', input: object({ account, repo, check_run_id: integer(1) }, ['repo', 'check_run_id']) },
+  { name: 'get_check_output', effect: 'read', description: 'What one check run reports: its title, summary, annotations (the failure messages with file and line) and, for a GitHub Actions job, its steps with their result. The text of the job log lives on GitHub storage, which this App does not reach.', input: object({ account, repo, check_run_id: integer(1) }, ['repo', 'check_run_id']) },
   { name: 'list_reviews', effect: 'read', description: 'Reviews of a pull request, who was asked to review, and the review decision.', input: object(pull, ['repo', 'number']) },
   { name: 'list_comments', effect: 'read', description: 'Comments of a pull request: conversation comments and comments on lines of the diff.', input: object({ ...pull, page, perPage }, ['repo', 'number']) },
   { name: 'get_mergeability', effect: 'read', description: 'Whether a pull request can be merged: conflicts, how far behind the base branch it is, protection of the base branch, auto-merge.', input: object(pull, ['repo', 'number']) },
   { name: 'list_branches', effect: 'read', description: 'Branches of a repository.', input: object({ account, repo, page, perPage }, ['repo']) },
   { name: 'get_compare', effect: 'read', description: 'How far two refs of a repository differ.', input: object({ account, repo, base: string({ minLength: 1, maxLength: 255 }), head: string({ minLength: 1, maxLength: 255 }) }, ['repo', 'base', 'head']) },
+
+  { name: 'list_labels', effect: 'read', description: 'The labels of a repository.', input: object({ account, repo, page, perPage }, ['repo']) },
+  { name: 'list_assignees', effect: 'read', description: 'The people who can be asked to review in a repository.', input: object({ account, repo, page, perPage }, ['repo']) },
+  { name: 'preview_merge_pull_request', effect: 'read', description: 'What merging this pull request with this method and head sha would do; refuses what can never be merged.', input: mergeInput },
+  { name: 'preview_close_pull_request', effect: 'read', description: 'What closing this pull request would do.', input: object(pull, ['repo', 'number']) },
+  { name: 'preview_delete_branch', effect: 'read', description: 'What deleting this branch would do; refuses the default and protected branches.', input: object({ account, repo, branch }, ['repo', 'branch']) },
+
+  // Low risk, no card.
+  { name: 'comment', effect: 'write', description: 'Add a comment to the conversation of a pull request.', input: object({ ...pull, body: body({ minLength: 1 }) }, ['repo', 'number', 'body']) },
+  { name: 'reply_to_review_comment', effect: 'write', description: 'Reply to a comment on a line of the diff.', input: object({ ...pull, comment_id: integer(1), body: body({ minLength: 1 }) }, ['repo', 'number', 'comment_id', 'body']) },
+  { name: 'submit_review', effect: 'write', description: 'Review a pull request without a verdict: a summary and comments on lines of the diff. Approving or requesting changes are the actions of those names.', input: object({ ...pull, body: body(), comments: lineComments, sha }, ['repo', 'number']) },
+  { name: 'add_labels', effect: 'write', description: 'Add labels to a pull request.', input: object({ ...pull, labels: names(20) }, ['repo', 'number', 'labels']) },
+  { name: 'remove_labels', effect: 'write', description: 'Remove labels from a pull request.', input: object({ ...pull, labels: names(20) }, ['repo', 'number', 'labels']) },
+  { name: 'request_reviewers', effect: 'write', description: 'Ask people or teams to review a pull request.', input: object({ ...pull, reviewers: logins, team_reviewers: { type: 'array', maxItems: 15, uniqueItems: true, items: string({ minLength: 1, maxLength: 100 }) } }, ['repo', 'number']) },
+  { name: 'remove_reviewers', effect: 'write', description: 'Withdraw a request for review.', input: object({ ...pull, reviewers: logins, team_reviewers: { type: 'array', maxItems: 15, uniqueItems: true, items: string({ minLength: 1, maxLength: 100 }) } }, ['repo', 'number']) },
+  { name: 'rerun_failed_checks', effect: 'write', description: 'Run the failed jobs of the checks of a pull request again.', input: object(pull, ['repo', 'number']) },
+
+  // Visible to others, one approval by the person (once, for the session, or denied).
+  { name: 'approve_pull_request', effect: 'approval', approvalReason: 'Approves the pull request in the name of the GitHub account', standing: { class: 'review', repo: 'repo' }, description: 'Approve a pull request, with the comments on lines of the diff collected for the review.', input: object({ ...pull, body: body(), comments: lineComments, sha }, ['repo', 'number']) },
+  { name: 'request_changes', effect: 'approval', approvalReason: 'Asks for changes on the pull request in the name of the GitHub account', standing: { class: 'review', repo: 'repo' }, description: 'Review a pull request asking for changes, with comments on lines of the diff.', input: object({ ...pull, body: body({ minLength: 1 }), comments: lineComments, sha }, ['repo', 'number', 'body']) },
+  { name: 'open_pull_request', effect: 'approval', approvalReason: 'Opens a pull request on GitHub', description: 'Open a pull request from a branch; the base is the default branch when none is given.', input: object({ account, repo, title: string({ minLength: 1, maxLength: 256 }), head: string({ minLength: 1, maxLength: 255 }), base: string({ minLength: 1, maxLength: 255 }), body: body(), draft: { type: 'boolean' } }, ['repo', 'title', 'head']) },
+  { name: 'mark_ready_for_review', effect: 'approval', approvalReason: 'Takes the pull request out of draft so reviewers are notified', description: 'Mark a draft pull request ready for review.', input: object(pull, ['repo', 'number']) },
+  { name: 'convert_to_draft', effect: 'approval', approvalReason: 'Turns the pull request back into a draft', description: 'Convert a pull request to a draft.', input: object(pull, ['repo', 'number']) },
+  { name: 'update_branch', effect: 'approval', approvalReason: 'Merges the base branch into the pull request branch on GitHub', description: 'Update the branch of a pull request with the latest changes of its base branch.', input: object({ ...pull, sha }, ['repo', 'number']) },
+  { name: 'reopen_pull_request', effect: 'approval', approvalReason: 'Reopens the pull request', description: 'Reopen a closed pull request.', input: object(pull, ['repo', 'number']) },
+  { name: 'enable_auto_merge', effect: 'approval', approvalReason: 'Lets GitHub merge the pull request by itself once its requirements are met', description: 'Merge a pull request automatically when its requirements are met.', input: object({ ...pull, method: { enum: MERGE_METHODS } }, ['repo', 'number', 'method']) },
+  { name: 'disable_auto_merge', effect: 'approval', approvalReason: 'Stops GitHub from merging the pull request by itself', description: 'Turn automatic merging of a pull request off.', input: object(pull, ['repo', 'number']) },
+
+  // Hard to undo: the person confirms exactly this input on a card.
+  { name: 'merge_pull_request', effect: 'person_confirmed', confirmationView: 'preview_merge_pull_request', standing: { class: 'merge', repo: 'repo' }, description: 'Merge a pull request with a method, only if its head is still the commit given.', input: mergeInput },
+  { name: 'close_pull_request', effect: 'person_confirmed', confirmationView: 'preview_close_pull_request', standing: { class: 'close', repo: 'repo' }, description: 'Close a pull request without merging it.', input: object(pull, ['repo', 'number']) },
+  { name: 'delete_branch', effect: 'person_confirmed', confirmationView: 'preview_delete_branch', standing: { class: 'delete_branch', repo: 'repo' }, description: 'Delete a branch of a repository. The default branch and protected branches are never deleted.', input: object({ account, repo, branch }, ['repo', 'branch']) },
 ];
 
-/** The REST calls the App may make: the signed route table of the manifest, read-only for now. */
+/** The REST calls the App may make: the signed route table of the manifest. The owner's binding must allow the safety class. */
 export const routes = [
   ['GET', '/user'],
   ['GET', '/rate_limit'],
   ['GET', '/user/repos'],
   ['GET', '/orgs/{org}/repos'],
   ['GET', '/search/issues'],
+  ['GET', '/repos/{owner}/{repo}'],
+  ['GET', '/repos/{owner}/{repo}/labels'],
+  ['GET', '/repos/{owner}/{repo}/assignees'],
+  ['GET', '/repos/{owner}/{repo}/pulls'],
   ['GET', '/repos/{owner}/{repo}/pulls/{number}'],
   ['GET', '/repos/{owner}/{repo}/pulls/{number}/files'],
   ['GET', '/repos/{owner}/{repo}/pulls/{number}/commits'],
@@ -74,10 +122,27 @@ export const routes = [
   ['GET', '/repos/{owner}/{repo}/commits/{ref}/status'],
   ['GET', '/repos/{owner}/{repo}/check-runs/{check_run_id}'],
   ['GET', '/repos/{owner}/{repo}/check-runs/{check_run_id}/annotations'],
+  ['GET', '/repos/{owner}/{repo}/actions/runs'],
+  ['GET', '/repos/{owner}/{repo}/actions/jobs/{job_id}'],
   ['GET', '/repos/{owner}/{repo}/branches'],
+  ['GET', '/repos/{owner}/{repo}/branches/{branch}'],
   ['GET', '/repos/{owner}/{repo}/branches/{branch}/protection'],
   ['GET', '/repos/{owner}/{repo}/compare/{basehead}'],
-].map(([method, path]) => ({ method, path, safety: 'read' }));
+  ['POST', '/repos/{owner}/{repo}/issues/{number}/comments', 'write'],
+  ['POST', '/repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies', 'write'],
+  ['POST', '/repos/{owner}/{repo}/pulls/{number}/reviews', 'write'],
+  ['POST', '/repos/{owner}/{repo}/issues/{number}/labels', 'write'],
+  ['DELETE', '/repos/{owner}/{repo}/issues/{number}/labels/{name}', 'write'],
+  ['POST', '/repos/{owner}/{repo}/pulls/{number}/requested_reviewers', 'write'],
+  ['DELETE', '/repos/{owner}/{repo}/pulls/{number}/requested_reviewers', 'write'],
+  ['POST', '/repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs', 'write'],
+  ['POST', '/repos/{owner}/{repo}/pulls', 'write'],
+  ['PUT', '/repos/{owner}/{repo}/pulls/{number}/update-branch', 'write'],
+  ['POST', '/graphql', 'write'],
+  ['PUT', '/repos/{owner}/{repo}/pulls/{number}/merge', 'destructive'],
+  ['PATCH', '/repos/{owner}/{repo}/pulls/{number}', 'destructive'],
+  ['DELETE', '/repos/{owner}/{repo}/git/refs/heads/{branch}', 'destructive'],
+].map(([method, path, safety = 'read']) => ({ method, path, safety }));
 
 const viewTools = [
   { name: 'view_actions', description: 'The actions this backend registers for its view', input: object() },
@@ -108,12 +173,15 @@ export const toolsDocument = () => ({
 });
 
 export const uiActionsDocument = () => ({
-  uiActions: tools.map(({ name, description, effect, input }) => ({ name, description, effect, inputSchema: input })),
+  uiActions: tools.map(({ name, description, effect, input, approvalReason, confirmationView, standing }) => ({
+    name, description, effect, ...(approvalReason ? { approvalReason } : {}), ...(confirmationView ? { confirmationView } : {}),
+    ...(standing ? { standing } : {}), inputSchema: input,
+  })),
 });
 
 export const networkCapability = () => ({
   origin: 'https://api.github.com',
-  methods: ['GET'],
+  methods: [...new Set(routes.map(route => route.method))].sort(),
   credential: 'github',
   routes,
 });

@@ -440,7 +440,7 @@
     },
     {
       "name": "get_check_output",
-      "description": "What one check run reports: its title, summary and annotations (the failure messages with file and line). The job log itself lives on GitHub storage, which this App does not reach.",
+      "description": "What one check run reports: its title, summary, annotations (the failure messages with file and line) and, for a GitHub Actions job, its steps with their result. The text of the job log lives on GitHub storage, which this App does not reach.",
       "effect": "read",
       "inputSchema": {
         "type": "object",
@@ -634,6 +634,1114 @@
           "repo",
           "base",
           "head"
+        ]
+      }
+    },
+    {
+      "name": "list_labels",
+      "description": "The labels of a repository.",
+      "effect": "read",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "perPage": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "repo"
+        ]
+      }
+    },
+    {
+      "name": "list_assignees",
+      "description": "The people who can be asked to review in a repository.",
+      "effect": "read",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "perPage": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "repo"
+        ]
+      }
+    },
+    {
+      "name": "preview_merge_pull_request",
+      "description": "What merging this pull request with this method and head sha would do; refuses what can never be merged.",
+      "effect": "read",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "method": {
+            "enum": [
+              "merge",
+              "squash",
+              "rebase"
+            ]
+          },
+          "sha": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$",
+            "description": "The full commit sha the person saw; GitHub refuses the call when the head moved."
+          },
+          "commit_title": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "commit_message": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "repo",
+          "number",
+          "method",
+          "sha"
+        ]
+      }
+    },
+    {
+      "name": "preview_close_pull_request",
+      "description": "What closing this pull request would do.",
+      "effect": "read",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "repo",
+          "number"
+        ]
+      }
+    },
+    {
+      "name": "preview_delete_branch",
+      "description": "What deleting this branch would do; refuses the default and protected branches.",
+      "effect": "read",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "branch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          }
+        },
+        "required": [
+          "repo",
+          "branch"
+        ]
+      }
+    },
+    {
+      "name": "comment",
+      "description": "Add a comment to the conversation of a pull request.",
+      "effect": "write",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 65536,
+            "minLength": 1
+          }
+        },
+        "required": [
+          "repo",
+          "number",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "reply_to_review_comment",
+      "description": "Reply to a comment on a line of the diff.",
+      "effect": "write",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "comment_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 65536,
+            "minLength": 1
+          }
+        },
+        "required": [
+          "repo",
+          "number",
+          "comment_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "submit_review",
+      "description": "Review a pull request without a verdict: a summary and comments on lines of the diff. Approving or requesting changes are the actions of those names.",
+      "effect": "write",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "comments": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                },
+                "line": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "side": {
+                  "enum": [
+                    "LEFT",
+                    "RIGHT"
+                  ]
+                },
+                "start_line": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "start_side": {
+                  "enum": [
+                    "LEFT",
+                    "RIGHT"
+                  ]
+                },
+                "body": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "path",
+                "line",
+                "body"
+              ]
+            }
+          },
+          "sha": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$",
+            "description": "The full commit sha the person saw; GitHub refuses the call when the head moved."
+          }
+        },
+        "required": [
+          "repo",
+          "number"
+        ]
+      }
+    },
+    {
+      "name": "add_labels",
+      "description": "Add labels to a pull request.",
+      "effect": "write",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "labels": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            }
+          }
+        },
+        "required": [
+          "repo",
+          "number",
+          "labels"
+        ]
+      }
+    },
+    {
+      "name": "remove_labels",
+      "description": "Remove labels from a pull request.",
+      "effect": "write",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "labels": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            }
+          }
+        },
+        "required": [
+          "repo",
+          "number",
+          "labels"
+        ]
+      }
+    },
+    {
+      "name": "request_reviewers",
+      "description": "Ask people or teams to review a pull request.",
+      "effect": "write",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "reviewers": {
+            "type": "array",
+            "maxItems": 15,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9-]{1,39}$"
+            }
+          },
+          "team_reviewers": {
+            "type": "array",
+            "maxItems": 15,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            }
+          }
+        },
+        "required": [
+          "repo",
+          "number"
+        ]
+      }
+    },
+    {
+      "name": "remove_reviewers",
+      "description": "Withdraw a request for review.",
+      "effect": "write",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "reviewers": {
+            "type": "array",
+            "maxItems": 15,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9-]{1,39}$"
+            }
+          },
+          "team_reviewers": {
+            "type": "array",
+            "maxItems": 15,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            }
+          }
+        },
+        "required": [
+          "repo",
+          "number"
+        ]
+      }
+    },
+    {
+      "name": "rerun_failed_checks",
+      "description": "Run the failed jobs of the checks of a pull request again.",
+      "effect": "write",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "repo",
+          "number"
+        ]
+      }
+    },
+    {
+      "name": "approve_pull_request",
+      "description": "Approve a pull request, with the comments on lines of the diff collected for the review.",
+      "effect": "approval",
+      "approvalReason": "Approves the pull request in the name of the GitHub account",
+      "standing": {
+        "class": "review",
+        "repo": "repo"
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "comments": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                },
+                "line": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "side": {
+                  "enum": [
+                    "LEFT",
+                    "RIGHT"
+                  ]
+                },
+                "start_line": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "start_side": {
+                  "enum": [
+                    "LEFT",
+                    "RIGHT"
+                  ]
+                },
+                "body": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "path",
+                "line",
+                "body"
+              ]
+            }
+          },
+          "sha": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$",
+            "description": "The full commit sha the person saw; GitHub refuses the call when the head moved."
+          }
+        },
+        "required": [
+          "repo",
+          "number"
+        ]
+      }
+    },
+    {
+      "name": "request_changes",
+      "description": "Review a pull request asking for changes, with comments on lines of the diff.",
+      "effect": "approval",
+      "approvalReason": "Asks for changes on the pull request in the name of the GitHub account",
+      "standing": {
+        "class": "review",
+        "repo": "repo"
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 65536,
+            "minLength": 1
+          },
+          "comments": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                },
+                "line": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "side": {
+                  "enum": [
+                    "LEFT",
+                    "RIGHT"
+                  ]
+                },
+                "start_line": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "start_side": {
+                  "enum": [
+                    "LEFT",
+                    "RIGHT"
+                  ]
+                },
+                "body": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "path",
+                "line",
+                "body"
+              ]
+            }
+          },
+          "sha": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$",
+            "description": "The full commit sha the person saw; GitHub refuses the call when the head moved."
+          }
+        },
+        "required": [
+          "repo",
+          "number",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "open_pull_request",
+      "description": "Open a pull request from a branch; the base is the default branch when none is given.",
+      "effect": "approval",
+      "approvalReason": "Opens a pull request on GitHub",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "head": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "base": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "draft": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "repo",
+          "title",
+          "head"
+        ]
+      }
+    },
+    {
+      "name": "mark_ready_for_review",
+      "description": "Mark a draft pull request ready for review.",
+      "effect": "approval",
+      "approvalReason": "Takes the pull request out of draft so reviewers are notified",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "repo",
+          "number"
+        ]
+      }
+    },
+    {
+      "name": "convert_to_draft",
+      "description": "Convert a pull request to a draft.",
+      "effect": "approval",
+      "approvalReason": "Turns the pull request back into a draft",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "repo",
+          "number"
+        ]
+      }
+    },
+    {
+      "name": "update_branch",
+      "description": "Update the branch of a pull request with the latest changes of its base branch.",
+      "effect": "approval",
+      "approvalReason": "Merges the base branch into the pull request branch on GitHub",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "sha": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$",
+            "description": "The full commit sha the person saw; GitHub refuses the call when the head moved."
+          }
+        },
+        "required": [
+          "repo",
+          "number"
+        ]
+      }
+    },
+    {
+      "name": "reopen_pull_request",
+      "description": "Reopen a closed pull request.",
+      "effect": "approval",
+      "approvalReason": "Reopens the pull request",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "repo",
+          "number"
+        ]
+      }
+    },
+    {
+      "name": "enable_auto_merge",
+      "description": "Merge a pull request automatically when its requirements are met.",
+      "effect": "approval",
+      "approvalReason": "Lets GitHub merge the pull request by itself once its requirements are met",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "method": {
+            "enum": [
+              "merge",
+              "squash",
+              "rebase"
+            ]
+          }
+        },
+        "required": [
+          "repo",
+          "number",
+          "method"
+        ]
+      }
+    },
+    {
+      "name": "disable_auto_merge",
+      "description": "Turn automatic merging of a pull request off.",
+      "effect": "approval",
+      "approvalReason": "Stops GitHub from merging the pull request by itself",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "repo",
+          "number"
+        ]
+      }
+    },
+    {
+      "name": "merge_pull_request",
+      "description": "Merge a pull request with a method, only if its head is still the commit given.",
+      "effect": "person_confirmed",
+      "confirmationView": "preview_merge_pull_request",
+      "standing": {
+        "class": "merge",
+        "repo": "repo"
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "method": {
+            "enum": [
+              "merge",
+              "squash",
+              "rebase"
+            ]
+          },
+          "sha": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$",
+            "description": "The full commit sha the person saw; GitHub refuses the call when the head moved."
+          },
+          "commit_title": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "commit_message": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "repo",
+          "number",
+          "method",
+          "sha"
+        ]
+      }
+    },
+    {
+      "name": "close_pull_request",
+      "description": "Close a pull request without merging it.",
+      "effect": "person_confirmed",
+      "confirmationView": "preview_close_pull_request",
+      "standing": {
+        "class": "close",
+        "repo": "repo"
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "repo",
+          "number"
+        ]
+      }
+    },
+    {
+      "name": "delete_branch",
+      "description": "Delete a branch of a repository. The default branch and protected branches are never deleted.",
+      "effect": "person_confirmed",
+      "confirmationView": "preview_delete_branch",
+      "standing": {
+        "class": "delete_branch",
+        "repo": "repo"
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "branch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          }
+        },
+        "required": [
+          "repo",
+          "branch"
         ]
       }
     }

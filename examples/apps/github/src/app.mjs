@@ -4,6 +4,7 @@ import { createGitHub } from './github.mjs';
 import { createPulls } from './pulls.mjs';
 import { createStatus } from './status.mjs';
 import { createView } from './view.mjs';
+import { createWrites } from './writes.mjs';
 import { tools as catalog, uiActionsDocument } from './catalog.mjs';
 
 export function createApp({ state, events, now }) {
@@ -16,9 +17,11 @@ export function createApp({ state, events, now }) {
     state, events,
     changed: delta => view.transactWithChange({ schemaVersion: 0, checks: [], writes: [], occurrences: [], wakes: [] }, delta),
   });
+  const notify = delta => view.transactWithChange({ schemaVersion: 0, checks: [], writes: [], occurrences: [], wakes: [] }, delta);
   const services = ctx => {
     const github = createGitHub({ state, fetch: ctx.fetch, now });
-    return { github, ...createStatus({ accounts, github }), ...createPulls({ accounts, github }) };
+    const pulls = createPulls({ accounts, github });
+    return { github, ...createStatus({ accounts, github }), ...pulls, ...createWrites({ accounts, github, pulls, notify }) };
   };
 
   // An account is added only once GitHub accepts it: the owner has bound the label and its token works.
@@ -32,10 +35,12 @@ export function createApp({ state, events, now }) {
     async set_default_account({ account }, ctx) { await accounts.setDefault(account); return services(ctx).list_accounts(); },
     async set_repo_account({ repo, account }, ctx) { await accounts.setRepo(repo, account); return services(ctx).list_accounts(); },
   };
-  const reads = Object.fromEntries(catalog.filter(tool => tool.effect === 'read').map(({ name }) => [name, (input, ctx) => services(ctx)[name](input ?? {}, ctx)]));
+  // Every other tool of the catalog is served by the read and write services; a test fails when one is missing.
+  const served = Object.fromEntries(catalog.filter(({ name }) => !Object.hasOwn(accountTools, name))
+    .map(({ name }) => [name, (input, ctx) => services(ctx)[name](input ?? {}, ctx)]));
 
   return {
-    tools: { ...eventsApp.tools, ...reads, ...accountTools, ...view.tools },
+    tools: { ...eventsApp.tools, ...served, ...accountTools, ...view.tools },
     events: eventsApp.events,
   };
 }

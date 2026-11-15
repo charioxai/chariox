@@ -22,10 +22,11 @@ test('the backend registers exactly the signed tools and the signed incoming eve
   assert.deepEqual(read('bundle/schemas/ui-actions.json').uiActions.map(a => a.name), catalog.map(t => t.name));
 });
 
-test('every GitHub call the tools make is a route the signed manifest declares, as a read', async () => {
+test('every GitHub call the read tools make is a declared read route, and nothing declared as a read is changed', async () => {
   const manifest = read('app.json');
   const [network] = manifest.capabilities.network;
-  assert.deepEqual([network.origin, network.credential, network.methods], ['https://api.github.com', 'github', ['GET']]);
+  assert.deepEqual([network.origin, network.credential], ['https://api.github.com', 'github']);
+  assert.deepEqual(network.methods, [...new Set(network.routes.map(route => route.method))].sort(), 'the methods are the methods of the routes');
   const double = fakeGitHub();
   const definition = createApp({ state: memoryState(), events: {} });
   const ctx = { fetch: double.fetch };
@@ -34,21 +35,56 @@ test('every GitHub call the tools make is a route the signed manifest declares, 
     list_repositories: {}, list_pull_requests: { scope: 'mine' }, get_pull_request: pull, get_pull_request_summary: pull,
     get_pull_request_files: pull, get_pull_request_diff: pull, list_commits: pull, get_checks: pull, get_check_output: { repo: REPO, check_run_id: FAILING_CHECK }, list_reviews: pull,
     list_comments: pull, get_mergeability: pull, list_branches: { repo: REPO }, get_compare: { repo: REPO, base: 'main', head: heads[2] },
-    list_accounts: {}, get_status: {},
+    list_accounts: {}, get_status: {}, list_labels: { repo: REPO }, list_assignees: { repo: REPO },
   };
-  assert.deepEqual(Object.keys(inputs).sort(), catalog.filter(t => t.effect === 'read').map(t => t.name).sort(), 'every read tool is exercised');
+  const readTools = catalog.filter(t => t.effect === 'read' && !t.name.startsWith('preview_')).map(t => t.name);
+  assert.deepEqual(Object.keys(inputs).sort(), readTools.sort(), 'every read tool is exercised');
   for (const [name, input] of Object.entries(inputs)) await definition.tools[name](input, ctx);
   await definition.tools.list_repositories({ org: 'charioxai' }, ctx);
-  const declared = network.routes.map(route => route.path.split('/'));
-  for (const call of double.calls) {
-    const segments = call.path.split('/');
-    assert.ok(declared.some(route => route.length === segments.length && route.every((part, i) => /^\{\w+\}$/.test(part) ? segments[i] !== '' : part === segments[i])), `${call.path} is not declared`);
+  assert.ok(double.calls.every(call => call.method === 'GET'), 'a read tool changes nothing');
+  const reads = network.routes.filter(route => route.safety === 'read');
+  assert.ok(reads.every(route => route.method === 'GET'));
+  const matches = (route, path) => { const wanted = route.path.split('/'), got = path.split('/'); return wanted.length === got.length && wanted.every((part, i) => /^\{\w+\}$/.test(part) ? got[i] !== '' : part === got[i]); };
+  for (const call of double.calls) assert.ok(reads.some(route => matches(route, call.path)), `${call.path} is not a declared read`);
+});
+
+test('the routes the write tools use are declared with the class of what they do, and no other route changes anything', () => {
+  const [network] = read('app.json').capabilities.network;
+  const safety = Object.fromEntries(network.routes.map(route => [`${route.method} ${route.path}`, route.safety]));
+  const expected = {
+    'POST /repos/{owner}/{repo}/issues/{number}/comments': 'write', 'POST /repos/{owner}/{repo}/pulls/{number}/reviews': 'write',
+    'PUT /repos/{owner}/{repo}/pulls/{number}/merge': 'destructive', 'PATCH /repos/{owner}/{repo}/pulls/{number}': 'destructive',
+    'DELETE /repos/{owner}/{repo}/git/refs/heads/{branch}': 'destructive', 'POST /graphql': 'write',
+  };
+  for (const [route, level] of Object.entries(expected)) assert.equal(safety[route], level, route);
+  for (const route of network.routes) assert.equal(route.method === 'GET', route.safety === 'read', `${route.method} ${route.path} is read only when it reads`);
+  assert.ok(network.routes.length <= 128, 'the kernel allows 128 routes');
+});
+
+test('every tool has a handler, and the gating of each action is declared: a card names what it shows, a standing class names its repository input', () => {
+  const definition = createApp({ state: memoryState(), events: {} });
+  for (const tool of catalog) assert.equal(typeof definition.tools[tool.name], 'function', tool.name);
+  const actions = read('bundle/schemas/ui-actions.json').uiActions;
+  const byName = Object.fromEntries(actions.map(action => [action.name, action]));
+  const tier = effect => actions.filter(action => action.effect === effect).map(action => action.name).sort();
+  assert.deepEqual(tier('person_confirmed'), ['close_pull_request', 'delete_branch', 'merge_pull_request']);
+  assert.deepEqual(tier('approval'), ['approve_pull_request', 'convert_to_draft', 'disable_auto_merge', 'enable_auto_merge', 'mark_ready_for_review', 'open_pull_request', 'reopen_pull_request', 'request_changes', 'update_branch']);
+  assert.deepEqual(tier('write').filter(name => !/account/.test(name)), ['add_labels', 'comment', 'remove_labels', 'remove_reviewers', 'reply_to_review_comment', 'request_reviewers', 'rerun_failed_checks', 'submit_review']);
+  for (const action of actions.filter(a => a.effect === 'person_confirmed')) {
+    const preview = byName[action.confirmationView];
+    assert.equal(preview?.effect, 'read', `${action.name} shows ${action.confirmationView}, a read`);
+    assert.deepEqual(preview.inputSchema, action.inputSchema, `${action.name}: the preview takes exactly the input of the action`);
   }
-  assert.ok(network.routes.every(route => route.safety === 'read' && route.method === 'GET'));
-  // no authority beyond what a tool uses
-  for (const route of declared) {
-    assert.ok(double.calls.some(call => { const segments = call.path.split('/'); return route.length === segments.length && route.every((part, i) => /^\{\w+\}$/.test(part) || part === segments[i]); }), `${route.join('/')} is declared but no tool calls it`);
-  }
+  for (const action of actions.filter(a => a.effect === 'approval')) assert.ok(action.approvalReason, `${action.name} says why it asks`);
+  const standing = Object.fromEntries(actions.filter(a => a.standing).map(a => [a.name, a.standing]));
+  assert.deepEqual(standing, {
+    approve_pull_request: { class: 'review', repo: 'repo' }, request_changes: { class: 'review', repo: 'repo' },
+    merge_pull_request: { class: 'merge', repo: 'repo' }, close_pull_request: { class: 'close', repo: 'repo' }, delete_branch: { class: 'delete_branch', repo: 'repo' },
+  });
+  for (const action of actions.filter(a => a.standing)) assert.ok(action.inputSchema.required.includes(action.standing.repo), `${action.name} requires the repository input`);
+  assert.ok(!('force_push' in byName), 'a force push is not an action');
+  const merge = byName.merge_pull_request.inputSchema;
+  assert.ok(merge.required.includes('sha') && merge.required.includes('method'), 'a merge names the method and the head it was shown');
 });
 
 test('the manifest needs the features the App uses', () => {

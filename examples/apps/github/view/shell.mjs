@@ -1,6 +1,7 @@
 // The frame around every page: GitHub's header row with the pull requests tab and the account menu.
 import { h, icon } from './dom.mjs';
 import { avatar, flash } from './parts.mjs';
+import { defaultList } from './list.mjs';
 import { selectMenu } from './menu.mjs';
 import { clock } from './time.mjs';
 
@@ -39,7 +40,7 @@ export function shell(ctx) {
   const header = h('header.d-flex.flex-items-center.px-3.py-2.color-bg-subtle.border-bottom', {},
     icon('mark-github', { size: 24, className: 'mr-3' }),
     h('nav.UnderlineNav-body', { 'aria-label': 'GitHub' },
-      h('a.UnderlineNav-item.selected', { href: '#', on: { click: event => { event.preventDefault(); ctx.go({ name: 'list' }); } } }, icon('git-pull-request', { size: 16, className: 'UnderlineNav-octicon' }), 'Pull requests')),
+      h('a.UnderlineNav-item.selected', { href: '#', on: { click: event => { event.preventDefault(); ctx.go(defaultList); } } }, icon('git-pull-request', { size: 16, className: 'UnderlineNav-octicon' }), 'Pull requests')),
     h('span.flex-1'),
     ctx.refreshing ? h('span.color-fg-muted.text-small.mr-3', {}, 'Updating…') : null,
     accountMenu(ctx));

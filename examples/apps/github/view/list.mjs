@@ -45,7 +45,8 @@ export function listPage(ctx, route) {
   });
   load('list_repositories', {}).then(() => { repoMenu.refill(); orgMenu.refill(); }, () => {});
 
-  const toolbar = h('div.d-flex.flex-items-center.flex-wrap.mb-3', {}, tabs, h('span.flex-1'), h('span.mr-2', {}, orgMenu.element), repoMenu.element);
+  const create = h('a.btn.btn-primary.btn-sm.ml-2', { href: '#', on: { click: event => { event.preventDefault(); ctx.go({ name: 'new', repo: route.scope === 'repo' && route.repos.length ? route.repos[0] : null }); } } }, 'New pull request');
+  const toolbar = h('div.d-flex.flex-items-center.flex-wrap.mb-3', {}, tabs, h('span.flex-1'), h('span.mr-2', {}, orgMenu.element), repoMenu.element, create);
 
   const stateLink = (state, text, iconName) => h('a.btn-link.mr-3', {
     href: '#', class: route.state === state ? 'text-bold color-fg-default' : 'color-fg-muted',

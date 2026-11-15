@@ -36,7 +36,11 @@
       {
         "origin": "https://api.github.com",
         "methods": [
-          "GET"
+          "DELETE",
+          "GET",
+          "PATCH",
+          "POST",
+          "PUT"
         ],
         "credential": "github",
         "routes": [
@@ -63,6 +67,26 @@
           {
             "method": "GET",
             "path": "/search/issues",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/labels",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/assignees",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/pulls",
             "safety": "read"
           },
           {
@@ -117,7 +141,22 @@
           },
           {
             "method": "GET",
+            "path": "/repos/{owner}/{repo}/actions/runs",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/actions/jobs/{job_id}",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
             "path": "/repos/{owner}/{repo}/branches",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/branches/{branch}",
             "safety": "read"
           },
           {
@@ -129,6 +168,76 @@
             "method": "GET",
             "path": "/repos/{owner}/{repo}/compare/{basehead}",
             "safety": "read"
+          },
+          {
+            "method": "POST",
+            "path": "/repos/{owner}/{repo}/issues/{number}/comments",
+            "safety": "write"
+          },
+          {
+            "method": "POST",
+            "path": "/repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies",
+            "safety": "write"
+          },
+          {
+            "method": "POST",
+            "path": "/repos/{owner}/{repo}/pulls/{number}/reviews",
+            "safety": "write"
+          },
+          {
+            "method": "POST",
+            "path": "/repos/{owner}/{repo}/issues/{number}/labels",
+            "safety": "write"
+          },
+          {
+            "method": "DELETE",
+            "path": "/repos/{owner}/{repo}/issues/{number}/labels/{name}",
+            "safety": "write"
+          },
+          {
+            "method": "POST",
+            "path": "/repos/{owner}/{repo}/pulls/{number}/requested_reviewers",
+            "safety": "write"
+          },
+          {
+            "method": "DELETE",
+            "path": "/repos/{owner}/{repo}/pulls/{number}/requested_reviewers",
+            "safety": "write"
+          },
+          {
+            "method": "POST",
+            "path": "/repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs",
+            "safety": "write"
+          },
+          {
+            "method": "POST",
+            "path": "/repos/{owner}/{repo}/pulls",
+            "safety": "write"
+          },
+          {
+            "method": "PUT",
+            "path": "/repos/{owner}/{repo}/pulls/{number}/update-branch",
+            "safety": "write"
+          },
+          {
+            "method": "POST",
+            "path": "/graphql",
+            "safety": "write"
+          },
+          {
+            "method": "PUT",
+            "path": "/repos/{owner}/{repo}/pulls/{number}/merge",
+            "safety": "destructive"
+          },
+          {
+            "method": "PATCH",
+            "path": "/repos/{owner}/{repo}/pulls/{number}",
+            "safety": "destructive"
+          },
+          {
+            "method": "DELETE",
+            "path": "/repos/{owner}/{repo}/git/refs/heads/{branch}",
+            "safety": "destructive"
           }
         ]
       }
@@ -147,12 +256,17 @@
     "get_pull_request_summary",
     "get_status",
     "list_accounts",
+    "list_assignees",
     "list_branches",
     "list_comments",
     "list_commits",
+    "list_labels",
     "list_pull_requests",
     "list_repositories",
     "list_reviews",
+    "preview_close_pull_request",
+    "preview_delete_branch",
+    "preview_merge_pull_request",
     "view_actions",
     "view_changes",
     "view_state"

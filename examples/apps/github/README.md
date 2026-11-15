@@ -5,9 +5,11 @@ words): the pull request list with Open and Closed counts, labels, check and rev
 Conversation, Commits, Checks and Files changed (unified or split diff, comments under their lines). Every function is
 also a tool any agent granted the App can call; the window and the tools are the same backend.
 
-This is the read side. The write side (comment, review, merge ...) is the next lane; subscriptions and the live event
-settings follow. The events-only App this one replaces lives on as `src/events.mjs`: the event fan-out, unchanged, which
-still sets which automations a delivered event reaches (`get_automations`, `configure_automations`).
+It also writes: comment, review with comments on lines, approve or ask for changes, merge, close and reopen, update or
+delete a branch, ready for review and back to draft, auto-merge, reviewers, labels, re-run failed checks and open a pull
+request. Subscriptions and the live event settings follow. The events-only App this one replaces lives on as
+`src/events.mjs`: the event fan-out, unchanged, which still sets which automations a delivered event reaches
+(`get_automations`, `configure_automations`).
 
 ## Accounts
 
@@ -30,6 +32,31 @@ Reads: `list_accounts`, `get_status`, `list_repositories`, `list_pull_requests` 
 `get_mergeability`, `list_branches`, `get_compare`. Account settings (App state only): `add_account`, `remove_account`,
 `set_default_account`, `set_repo_account`. `src/catalog.mjs` is the one list; `node scripts/generate.mjs` writes the
 signed tool and UI action declarations and the manifest's routes from it (`--check` fails when they differ).
+
+## Writing: tiers, cards and refusals
+
+Each changing tool has a tier, declared in the signed UI actions (`effect`), so what asks the person is not up to the App:
+
+| Tier | Tools | What happens |
+|---|---|---|
+| `write` | `comment`, `reply_to_review_comment`, `submit_review` (comments and a summary, no verdict), `add_labels`, `remove_labels`, `request_reviewers`, `remove_reviewers`, `rerun_failed_checks` | runs |
+| `approval` | `approve_pull_request`, `request_changes`, `open_pull_request`, `mark_ready_for_review`, `convert_to_draft`, `update_branch`, `reopen_pull_request`, `enable_auto_merge`, `disable_auto_merge` | an agent asks through the kernel: allow once, for the session, or deny |
+| `person_confirmed` | `merge_pull_request`, `close_pull_request`, `delete_branch` | an agent's call raises a card that shows the rows of `preview_merge_pull_request`, `preview_close_pull_request` or `preview_delete_branch` (the signed `confirmationView`) |
+
+The person at the window acts for themselves, as on GitHub: merging has its own confirmation step, the other buttons run
+at once. An agent calling the backend tool of a gated action directly is refused by the kernel (`USE_APP_VIEW_INVOKE`);
+it asks through `chariox.app_view_invoke`. `approve_pull_request` and `request_changes` carry the standing class `review`,
+the merge, close and branch actions their own (`merge`, `close`, `delete_branch`): the owner may let one repository skip
+its card (`/app standing`).
+
+What GitHub would also refuse, and what it would not, is refused here first, with the reason and no card: a merge for a head
+that is no longer the commit that was shown (`HEAD_MOVED`), of a draft, a closed or a merged pull request, or of the
+default branch; deleting the default branch or a protected branch; approving or asking for changes on a pull request the
+account opened. A force push is not a tool at all. The account must be bound at the level of the most that a route does
+(`write` for the writing tools, `destructive` for merge, close and delete; the install card binds the highest the App
+declares). `merge_pull_request` always carries the head `sha` the person saw. The text of a job log lives on GitHub's
+storage behind a redirect to a host the kernel does not let the App reach, so the check details show the output,
+the annotations and the steps of the job.
 
 ## The window
 

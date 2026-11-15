@@ -1,5 +1,6 @@
 // The GitHub window. It talks only to the App's backend (window.chariox.call) and follows its change feed.
 import { call, describe, forget, load } from './api.mjs';
+import { newPullPage } from './create.mjs';
 import { pullPage } from './detail.mjs';
 import { h, clear } from './dom.mjs';
 import { defaultList, listPage, describeFailure } from './list.mjs';
@@ -16,6 +17,9 @@ document.documentElement.setAttribute('data-dark-theme', 'dark');
 const root = document.getElementById('github');
 const ctx = {
   accounts: null, account: null, limited: null, route: defaultList, history: [],
+  // What the person is writing (comments, a review in progress), kept while the page behind it reloads.
+  drafts: new Map(), deletedBranches: new Set(), mergeMethod: null,
+  writing: () => writing(),
   go(route) { this.history.push(this.route); this.route = route; draw(); },
   back() { this.route = this.history.pop() ?? defaultList; draw(); },
   async useAccount(account) { await call('set_default_account', { account: account.label }); await follow(); },
@@ -27,6 +31,16 @@ const ctx = {
 
 let page = null;
 let frame = null;
+
+/**
+ * A page is not reloaded under someone who is in the middle of something: typing, a menu or a popover open, the merge
+ * confirmation, a comment on a line being written, or text left in a comment box.
+ */
+const writing = () => {
+  const active = document.activeElement;
+  if (root.contains(active) && ['TEXTAREA', 'INPUT'].includes(active.tagName)) return true;
+  return Boolean(root.querySelector('details[open], .diff-composer, [data-transient]')) || [...root.querySelectorAll('textarea')].some(area => area.value.trim());
+};
 
 function drawHeader() {
   if (!frame) return;
@@ -50,7 +64,7 @@ function draw() {
     body.append(h('div.p-4', {}, blankslate('mark-github', 'Connect a GitHub account', 'This App has no GitHub account yet.', 'The owner of this kernel binds one in the App\'s permissions; this window picks it up by itself.')));
     return;
   }
-  page = ctx.route.name === 'pr' ? pullPage(ctx, ctx.route) : listPage(ctx, ctx.route);
+  page = ctx.route.name === 'pr' ? pullPage(ctx, ctx.route) : ctx.route.name === 'new' ? newPullPage(ctx, ctx.route) : listPage(ctx, ctx.route);
   body.append(page.element);
 }
 
@@ -77,7 +91,7 @@ async function follow() {
     const events = feed.changes.filter(change => change.delta?.kind === 'event').map(change => change.delta);
     const about = ctx.route.name === 'pr' ? events.some(event => event.repo === ctx.route.repo && (event.number === null || event.number === ctx.route.number)) : events.length > 0;
     since = feed.latest;
-    if (accountsChanged && ctx.accounts) { forget(); await loadAccounts(); draw(); } else if (about) { forget(); await page?.refresh?.(); }
+    if (accountsChanged && ctx.accounts) { forget(); await loadAccounts(); draw(); } else if (about && !writing()) { forget(); await page?.refresh?.(); }
   } catch { /* the next tick tries again */ }
 }
 
@@ -86,5 +100,5 @@ if (ctx.accounts) {
   since = (await call('view_changes', { since: 0 }).catch(() => ({ latest: 0 }))).latest;
   draw();
   setInterval(follow, FEED_MS);
-  setInterval(() => { if (!document.hidden) page?.refresh?.().catch(() => {}); }, REFRESH_MS);
+  setInterval(() => { if (!document.hidden && !writing()) page?.refresh?.().catch(() => {}); }, REFRESH_MS);
 }
