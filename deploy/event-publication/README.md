@@ -105,7 +105,7 @@ node ./host-acceptance.mjs \
   --relay-host root@relay.example \
   --ssh-key ~/.ssh/chariox_event_staging \
   --aeds-url https://aeds.example \
-  --aegs-url https://github-events.example
+  --aegs-url https://aegs-github.example
 ```
 
 Acceptance accepts one shared `--ssh-key`, or the preferred host-specific

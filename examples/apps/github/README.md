@@ -6,7 +6,7 @@ Conversation, Commits, Checks and Files changed (unified or split diff, comments
 also a tool any agent granted the App can call; the window and the tools are the same backend.
 
 This is the read side. The write side (comment, review, merge ...) is the next lane; subscriptions and the live event
-settings follow. The old `github-events` App became this one: its event fan-out is `src/events.mjs`, unchanged, and
+settings follow. The events-only App this one replaces lives on as `src/events.mjs`: the event fan-out, unchanged, which
 still sets which automations a delivered event reaches (`get_automations`, `configure_automations`).
 
 ## Accounts
@@ -52,9 +52,9 @@ header from the App and checks every call against the declared routes. The event
 Wasmtime drill (`test/component-drill.rs`, entry `test/events-entry.ts`):
 
 ```sh
-node packages/app-sdk-tools/build-js.mjs examples/apps/github/test/events-entry.ts "$TMPDIR/github-events.wasm"
-CHARIOX_GITHUB_EVENTS_COMPONENT="$TMPDIR/github-events.wasm" \
-  cargo test -p chariox-app-sdk-tools --features component-drills --test github-events-drill
+node packages/app-sdk-tools/build-js.mjs examples/apps/github/test/events-entry.ts "$TMPDIR/github-fanout.wasm"
+CHARIOX_GITHUB_FANOUT_COMPONENT="$TMPDIR/github-fanout.wasm" \
+  cargo test -p chariox-app-sdk-tools --features component-drills --test github-fanout-drill
 ```
 
 Third-party notices: `THIRD-PARTY-NOTICES.md` (Primer CSS, Primer Primitives and Octicons, MIT).
