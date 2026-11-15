@@ -18,7 +18,13 @@ export const browserMirror2MinimumProtocolVersion = 550
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
 const styledResourcePattern = /url\("mr:(r[0-9]{1,9})"\)(\s*(?:format\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)\s*)?(?:tech\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\))?)?/g
-const CREDIT_WINDOW = 4 // credits in flight at most (attachBrowserMirror2)
+// One packet answers one credit and the kernel waits for credits, so a page that changes every frame is limited to
+// window / round trip packets a second: 4 credits over a 74 ms round trip were 54 a second (the drill's DOM mirror
+// animated at 49 against Selkies' 60). Eight cover 60 a second up to 130 ms. The window shrinks to the old four
+// while packets are big (a typical packet above CREDIT_BYTES / 8), so an input echo never queues behind many of them.
+const CREDIT_WINDOW = 8 // credits in flight at most (attachBrowserMirror2)
+const CREDIT_FLOOR = 4 // ...and at least, once packets are big
+const CREDIT_BYTES = 96 * 1024 // wire bytes one window of typical packets may hold
 const IMAGE_HOLD_MS = 3000 // resource-quiet time after which a missing visible image stops holding the handover
 const TEXT_LIMIT = 16384 // UTF-8 bytes per text action, matching the Rust boundary
 const DELETIONS: Record<string, string[]> = {
@@ -35,6 +41,12 @@ const PICKED = new Set('date time datetime-local month week color range'.split('
 const picked = (el: Element): boolean => el.localName === 'select' || el.closest('select') !== null || el.localName === 'input' && PICKED.has((el as HTMLInputElement).type)
 type Styled = { kind: 'css' | 'attr'; raw: string; node: Element; keys: string[]; fontStyle?: Mirror2FontStyle } | { kind: 'adopted'; raw: string[]; node: Document | ShadowRoot; keys: string[] }
 
+/** What a reply put on the wire: its deflated body and the base64 of the resources and tiles beside it. */
+function wireBytes(packet: Mirror2WirePacket): number {
+  let bytes = packet.packet?.byteLength ?? packet.packet_base64?.length ?? 0
+  for (const media of [...packet.resources ?? [], ...packet.tiles ?? []]) bytes += media.data_base64.length
+  return bytes
+}
 function bytesOf(data: string): Uint8Array { return Uint8Array.from(atob(data), c => c.charCodeAt(0)) }
 async function digest(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>)), b => b.toString(16).padStart(2, '0')).join('')
@@ -1016,6 +1028,9 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
   let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, wantResend = false, resendOutstanding = false, activeAt = -Infinity, gapSince = 0, failures = 0, failingSince = 0, failGeneration = 0
   const buffered = new Map<number, Mirror2WirePacket>()
+  // The credits in flight follow the size of recent replies: all `credits` while they are small, the floor once they are big.
+  let typical = 0
+  const window = (): number => Math.min(credits, Math.max(Math.min(CREDIT_FLOOR, credits), Math.floor(CREDIT_BYTES / Math.max(typical, 1))))
   const outstanding: Array<{ reset: boolean, oldestAt: number }> = [] // credits in flight, oldest first
   // In sequence order: inflate in the context, then restore what a compact delta implies.
   let inflater: Mirror2Inflater | null = null, base: Mirror2Packet | null = null
@@ -1073,7 +1088,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       if (next.reset) { wantReset = false; wantResend = false }
       if (next.fallback !== 'navigation_preview' || !handlers.preparing) handlers.packet?.(next)
     }
-    if (buffered.size > 8) { buffered.clear(); wantReset = true }
+    if (buffered.size > CREDIT_WINDOW) { buffered.clear(); wantReset = true }
     // A gap is a reply lost with a dropped socket (or one overtaken by milliseconds: its duplicate is ignored):
     // the missing packet is asked for at once (protocol 501 resend). A gap that outlives its resend resets.
     if (buffered.size && transport.receiving?.()) setTimeout(() => { if (!closed) void drain().catch(() => { wantReset = true; fill() }) }, GAP_MS)
@@ -1108,6 +1123,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
         answered = true
         if (!packet || packet.wire !== 2 || !Number.isSafeInteger(packet.sequence) || packet.sequence <= 0) throw Error('MP-11: foreign mirror packet')
         if (packet.reset) resetOutstanding = false
+        typical += (wireBytes(packet) - typical) / 4
         // A replayed or late copy of an applied packet is not a gap.
         if (packet.sequence > applied) buffered.set(packet.sequence, packet)
         await drain()
@@ -1135,7 +1151,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     else if (!closed && applied && wantResend && !resendOutstanding) credit()
     // A packet received before its base (a small one overtaking a large one) still holds its credit: the kernel
     // never runs further ahead of the applied base than the window.
-    while (!closed && inflight + buffered.size < (wantReset || !applied || performance.now() - activeAt > 3000 ? 1 : credits)) credit()
+    while (!closed && inflight + buffered.size < (wantReset || !applied || performance.now() - activeAt > 3000 ? 1 : window())) credit()
   }
   fill()
   const firstWait=setTimeout(()=>{if(!closed&&!applied)handlers.diagnostic?.("mirror_first_packet_wait","no_applied_packet",0)},8000)

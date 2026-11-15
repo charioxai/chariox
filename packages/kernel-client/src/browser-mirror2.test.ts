@@ -474,6 +474,45 @@ test('MP-10: credits that fail together (a dropped socket) count as one failure:
   assert.deepEqual([after[0]!.after_sequence, after[0]!.resend], [1, true], 'MP-10: the first credit after the drop is the resend that ends the lost long polls')
 })
 
+// transport10 quiet-host drill: one packet answers one credit, so throughput is window / round trip. Four credits cap an
+// animating page at 4 / 74 ms = 54 packets/s on the drill's link (the viewer saw 49 against Selkies' 60).
+const holdingTransport = (answer: (command: Record<string, unknown>, sequence: number) => Record<string, unknown> | null) => {
+  let sequence = 0, waiting = 0, held = 0
+  const applied: number[] = []
+  const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push(p.sequence) } })
+  const transport = { protocolVersion: 550, request: async (request: unknown) => {
+    const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command
+    if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
+    if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
+    if (command.after_sequence === 0) return { KernelBrowser: { result: packet(++sequence, true) } }
+    const reply = answer(command, sequence + 1)
+    if (reply) { sequence++; return { KernelBrowser: { result: reply } } }
+    waiting++; held = Math.max(held, waiting)
+    await new Promise(() => {})
+    return null
+  } }
+  return { applied, renderer, transport, waiting: () => waiting }
+}
+test('MP-08/MP-10: a quiet page keeps enough credits in flight for 60 packets a second over a long round trip', async () => {
+  const quiet = holdingTransport(() => null)
+  const view = await attachBrowserMirror2(quiet.transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: () => {} }, { waitMs: 0, renderer: quiet.renderer })
+  try {
+    await until(() => quiet.applied.length >= 1)
+    await until(() => quiet.waiting() >= 8, 1000)
+    assert.equal(quiet.waiting(), 8, 'eight long polls wait for the page: 8 credits / 0.1 s round trip covers 60 packets a second')
+  } finally { await view.close() }
+})
+test('MP-08/MP-10: big packets keep four credits so a click never queues behind many of them', async () => {
+  const big = holdingTransport((_command, sequence) => sequence <= 8 ? { wire: 2, sequence, ops: [], resources: [{ key: 'r1', resource_id: `x${sequence}`, mime_type: 'image/png', data_base64: 'A'.repeat(48 * 1024) }] } : null)
+  const view = await attachBrowserMirror2(big.transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: () => {} }, { waitMs: 0, renderer: big.renderer })
+  try {
+    await until(() => big.applied.length >= 8, 3000)
+    await new Promise(resolve => setTimeout(resolve, 200))
+    assert.ok(big.applied.length >= 8, `the big packets applied (${big.applied.length})`)
+    assert.equal(big.waiting(), 4, 'after 48 KB packets only four long polls wait')
+  } finally { await view.close() }
+})
+
 // r47 quiet-host GitHub drill (8 Mbit/s): small deltas overtook a 420 KB reset on the relay. Each one was buffered
 // (its base not applied) yet released its credit, so the kernel answered credits past its 8-packet history while the
 // reset was still arriving, and reset again: ~70 full 420 KB snapshots a minute and the page never left video.
