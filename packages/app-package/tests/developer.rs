@@ -672,8 +672,7 @@ fn cli_packs_and_validates_the_excalidraw_v2_app() {
 fn cli_packs_and_validates_the_github_v2_app() {
     let fixture = Fixture::new();
     let publisher = fixture.keygen();
-    let source =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/apps/github");
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/apps/github");
     let mut manifest: Value =
         serde_json::from_slice(&fs::read(source.join("app.json")).unwrap()).unwrap();
     manifest["publisher"] = serde_json::to_value(&publisher.publisher).unwrap();
@@ -695,7 +694,11 @@ fn cli_packs_and_validates_the_github_v2_app() {
         )
         .unwrap();
     }
-    fs::copy(source.join("ui/icon.svg"), fixture.path("bundle/ui/icon.svg")).unwrap();
+    fs::copy(
+        source.join("ui/icon.svg"),
+        fixture.path("bundle/ui/icon.svg"),
+    )
+    .unwrap();
     let packed = developer::run_cli(
         &[
             "pack",
