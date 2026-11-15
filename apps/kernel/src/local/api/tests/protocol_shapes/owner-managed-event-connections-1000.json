@@ -1,6 +1,6 @@
 {
-  "local_protocol": 1008,
-  "peer_protocol": 447,
+  "local_protocol": 1010,
+  "peer_protocol": 449,
   "request": {
     "StartManagedContextTransfer": {
       "interactive": true,
