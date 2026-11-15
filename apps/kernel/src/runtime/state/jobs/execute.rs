@@ -488,18 +488,16 @@ impl KernelRuntimeState {
                     let shortfall = shortfall.as_ref().expect("guarded");
                     return self.refuse_never_fit(record, output, shortfall, &answer);
                 }
-                Err(error) if is_capacity_failure(&error) => {
+                Err(error) if local_fallback_notice(&error).is_some() => {
+                    let capacity = is_capacity_failure(&error);
                     record.placement = JobPlacement::Local;
-                    record.remote_refusal = record.remote_available.then(|| "no_capacity".into());
+                    record.remote_refusal =
+                        (record.remote_available && capacity).then(|| "no_capacity".into());
                     record.state = "queued".into();
                     save_record(self, record)?;
                     if record.remote_available {
-                        output.push(
-                            self,
-                            &record.room_id,
-                            b"No remote machine free; waiting locally.\n",
-                            false,
-                        )?;
+                        let notice = local_fallback_notice(&error).expect("checked by the guard");
+                        output.push(self, &record.room_id, notice.as_bytes(), false)?;
                     }
                 }
                 Err(error) => return Err(error),
@@ -898,6 +896,22 @@ fn is_capacity_failure(error: &DaemonError) -> bool {
             )
         }
         _ => false,
+    }
+}
+/// The sentence a job prints when the machine service cannot give it a machine and it runs here instead.
+fn local_fallback_notice(error: &DaemonError) -> Option<&'static str> {
+    if is_capacity_failure(error) {
+        return Some("No remote machine free; waiting locally.\n");
+    }
+    match crate::runtime::cloud_api_client::cloud_error_code(error)? {
+        "rate_limited" => Some("Remote machines are rate limited right now; waiting locally.\n"),
+        "dependency_unavailable" => {
+            Some("The remote machine service is unavailable right now; waiting locally.\n")
+        }
+        "internal_error" => {
+            Some("The remote machine service had an internal error; waiting locally.\n")
+        }
+        _ => None,
     }
 }
 pub(super) fn cancelled_result(record: &Record) -> JobResult {
