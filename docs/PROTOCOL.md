@@ -3305,7 +3305,7 @@ Workflow trigger and deployment direction:
   targets inside the one connection the owner granted with `GrantAppConnection`
   (`AppConnectionSummary.event_routing {max_routes, routes, paused}`); revoking the grant removes
   the App's routes. See `APPS_V2_CONTRACTS.md` §11.
-- GitHub App GHA-1 (provisional): App accounts. `GrantAppAccount {installation_id, account,
+- protocol 1009 / relay peer 448 (provisional, GHA-1): App accounts. `GrantAppAccount {installation_id, account,
   credential, vault_credential_id, allow: read|write|destructive}`, `RevokeAppAccount
   {installation_id, account}` and `ListAppAccounts {installation_id}` answer `AppAccounts
   {installation_id, credentials: [{credential, origin, routes, safety}], accounts: [{account,
