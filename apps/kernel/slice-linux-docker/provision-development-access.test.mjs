@@ -16,7 +16,7 @@ async function prepare(environment) {
     const script = join(root, "invoke.sh")
     await writeFile(script, source.replace(/^SCRIPT_DIR=.*$/m, `SCRIPT_DIR='${directory}'`).replace('main "$@"', "prepare_development_workspace_access"))
     await mkdir(join(root, "bin"))
-    await writeFile(join(root, "bin/docker"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${root}/docker.log'\ncat > /dev/null\n`, { mode: 0o755 })
+    await writeFile(join(root, "bin/docker"), ["#!/bin/sh", `echo "$*" >> '${root}/docker.log'`, "cat > /dev/null", ""].join("\n"), { mode: 0o755 })
     const result = spawnSync("bash", [script], {
       encoding: "utf8", timeout: 30_000,
       env: { PATH: `${join(root, "bin")}:${process.env.PATH}`, TMPDIR: root, HOME: root, CHARIOX_SLICE_NAME: "chariox-slice-access-fixture",
