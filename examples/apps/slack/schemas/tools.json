@@ -94,6 +94,20 @@
         ],
         "additionalProperties": false
       }
+    },
+    {
+      "name": "view_changes",
+      "description": "The changes made to the notifications after a feed position: what a Slack window reads to follow notifications that arrive or are cleared elsewhere.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "since": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      }
     }
   ]
 }
