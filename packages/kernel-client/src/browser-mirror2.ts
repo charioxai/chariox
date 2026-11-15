@@ -1025,7 +1025,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   const releasePriority = () => { if (!priorityReleased) { priorityReleased = true; releaseHold() } }
   const subscribe = { op: 'mirror_subscribe', ...binding, wire: 2, font_requirements:true, ...(transport.protocolVersion >= 567 ? {font_absent:true} : {}), ...(handlers.preparing ? {navigation_preview:true} : {}) }
   const subscribed = await request(subscribe).catch(error => { releasePriority(); throw error }); const subscription_id = subscribed.subscription_id as string
-  // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
+  // Up to eight credits while the page or the viewer is active (four once packets are big), one when idle (one heartbeat per wait).
   let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, wantResend = false, resendOutstanding = false, activeAt = -Infinity, gapSince = 0, failures = 0, failingSince = 0, failGeneration = 0
   const buffered = new Map<number, Mirror2WirePacket>()
   // The credits in flight follow the size of recent replies: all `credits` while they are small, the floor once they are big.
