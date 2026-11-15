@@ -1508,6 +1508,19 @@ mod tests {
         assert!(!RUNTIME_BASE.contains("Its `started` or `queued` result is the authoritative"));
     }
 
+    // AU-03: a step the person does inside a page is one live card, never a chat request plus a Confirm.
+    #[test]
+    fn runtime_instructions_put_a_person_step_in_a_page_on_one_live_card() {
+        for expected in [
+            "do not ask them to do it in the chat",
+            "`view.browser_region`",
+            "only a Cancel choice",
+            "it closes by itself when the step is done",
+        ] {
+            assert!(RUNTIME_BASE.contains(expected), "missing {expected}");
+        }
+    }
+
     #[test]
     fn prompt_registry_materializes_bundled_defaults_on_first_run() {
         let root = temp_prompt_root("materializes");
