@@ -579,17 +579,17 @@ impl KernelRuntimeState {
         }
         WakeDisposition::Deliver
     }
-    /// Whether message `sequence` waits for the owner's next prompt to `agent`, which the owner
-    /// stopped: the sender is told so instead of expecting a turn.
-    pub(super) fn message_waits_for_stopped_agent(
+    /// What the sender is told when message `sequence` waits for the owner's next prompt to
+    /// `agent`, which the owner stopped: no turn is coming, so it must not wait for an answer.
+    pub(super) fn held_for_stopped_agent_note(
         &self,
         room: &str,
         agent: &str,
         sequence: u64,
-    ) -> Result<bool, DaemonError> {
+    ) -> Result<Option<String>, DaemonError> {
         let session = self.owned.session_store.get_session(room)?;
         let store = &self.owned.durable_state_store;
-        Ok(self
+        let waits = self
             .owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent)
@@ -601,7 +601,13 @@ impl KernelRuntimeState {
             && store
                 .agent_work_inbox(room, agent, 0, None)?
                 .iter()
-                .any(|event| event.sequence == sequence && event.state == "pending"))
+                .any(|event| event.sequence == sequence && event.state == "pending");
+        Ok(waits.then(|| {
+            let name = self.agent_notice_name(agent);
+            format!(
+                "{name} was stopped by its owner and runs nothing until the owner's next prompt to it; this message is held until then. Do not wait for an answer."
+            )
+        }))
     }
     /// Marks the oldest unrelated pending event deferred once and says so.
     /// The owner sees once that a message waits for the agent they stopped.

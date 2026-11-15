@@ -494,7 +494,7 @@ fn durable_message_to_an_owner_stopped_peer_tells_the_sender_it_is_held() {
             .await
             .expect("the message should be accepted");
         assert!(result.ok);
-        assert_eq!(result.payload["status"], "durable");
+        assert_eq!(result.payload["status"], "queued");
         assert_eq!(result.payload["held"], true, "{}", result.payload);
         assert!(
             result.payload["note"].as_str().is_some_and(|note| note
