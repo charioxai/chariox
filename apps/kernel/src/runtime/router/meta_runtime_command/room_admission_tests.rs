@@ -211,7 +211,7 @@ fn settings_set_changes_the_callers_own_profile_by_default() {
     let a = agent("a", None);
     let request = settings(
         &a,
-        &[a.clone()],
+        std::slice::from_ref(&a),
         &[
             "--model",
             "sonnet",
@@ -236,7 +236,7 @@ fn settings_set_changes_mode_permission_and_directory_as_a_config() {
     let a = agent("a", None);
     let request = settings(
         &a,
-        &[a.clone()],
+        std::slice::from_ref(&a),
         &[
             "--mode",
             "plan",
@@ -279,9 +279,14 @@ fn settings_set_reaches_an_agent_below_and_no_other() {
 #[test]
 fn settings_set_refuses_a_mixed_command_and_an_empty_one() {
     let a = agent("a", None);
-    assert!(settings(&a, &[a.clone()], &["--model", "sonnet", "--mode", "plan"]).is_err());
-    assert!(settings(&a, &[a.clone()], &[]).is_err());
-    assert!(settings(&a, &[a.clone()], &["--mode", "sideways"]).is_err());
+    assert!(settings(
+        &a,
+        std::slice::from_ref(&a),
+        &["--model", "sonnet", "--mode", "plan"]
+    )
+    .is_err());
+    assert!(settings(&a, std::slice::from_ref(&a), &[]).is_err());
+    assert!(settings(&a, std::slice::from_ref(&a), &["--mode", "sideways"]).is_err());
 }
 
 #[test]

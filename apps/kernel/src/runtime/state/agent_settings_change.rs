@@ -11,12 +11,6 @@ pub(crate) enum SettingsOrigin {
     Agent(String),
 }
 
-impl SettingsOrigin {
-    pub(crate) fn from_caller_agent(caller_agent_id: Option<&str>) -> Self {
-        caller_agent_id.map_or(Self::Person, |agent_id| Self::Agent(agent_id.to_string()))
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SettingChange {
     pub(crate) field: &'static str,
@@ -58,11 +52,14 @@ impl AgentSettingsView {
     }
 }
 
+/// One agent of one session.
+type AgentKey = (String, String);
+
 /// Changes accepted for a running turn that its process has not taken yet, by agent: the oldest
 /// value and the newest of each field, so one swap shows one line.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PendingSettingsNotices {
-    inner: Arc<std::sync::Mutex<BTreeMap<(String, String), Vec<SettingChange>>>>,
+    inner: Arc<std::sync::Mutex<BTreeMap<AgentKey, Vec<SettingChange>>>>,
 }
 
 impl PendingSettingsNotices {

@@ -2,7 +2,6 @@
 //! step and the same turn goes on in a new one.
 
 use super::automatic_substitutes::{failing_turn_on, FailingTurn};
-use super::*;
 use crate::provider::ProviderRunState;
 
 const NEXT_MODEL: &str = "next-model";
@@ -222,7 +221,7 @@ async fn several_changes_of_one_step_restart_the_process_once() {
     // The new process is current: another step boundary changes nothing.
     assert!(!turn
         .runtime
-        .swap_turn_process_at_step_boundary(&turn.session_id, &run.id().to_string())
+        .swap_turn_process_at_step_boundary(&turn.session_id, run.id())
         .await
         .unwrap());
 }

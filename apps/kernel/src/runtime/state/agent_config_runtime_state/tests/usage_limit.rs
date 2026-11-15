@@ -8,10 +8,6 @@ use crate::durable_state::agent_lifecycle::ExecutionState;
 const OWNER: &str = crate::session::DEFAULT_LOCAL_USER_ID;
 const WEEKLY: &str =
     "Claude StopFailure [rate_limit]: You've hit your weekly limit \u{b7} resets 4pm (UTC)";
-// 2026-11-15 14:59:00 UTC: the minute the weekly limit stopped two lanes.
-const STOPPED_AT: u64 = 1_794_754_740_000;
-// 16:00:00 UTC the same day.
-const RESET: u64 = 1_794_758_400_000;
 
 struct Lane {
     agent_id: String,
@@ -111,7 +107,7 @@ async fn team(config: crate::config::DaemonConfig, count: usize) -> Team {
                 app.providers_mut().insert_run_for_test(run_for_app.clone());
                 let attachment = crate::app::KernelSessionService::new(app).attach(
                     crate::attachment::AttachRequest::new(
-                        &run_for_app.session_id().to_string(),
+                        run_for_app.session_id(),
                         "usage-limit-test",
                         crate::attachment::ClientCapabilityLevel::FullTerminal,
                     ),
