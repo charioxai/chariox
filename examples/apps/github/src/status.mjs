@@ -1,7 +1,7 @@
 // The accounts the App uses with what GitHub says about each: who it is and how much of its rate limit is left.
 import { RESERVE } from './github.mjs';
 
-const user = data => ({ login: data.login, name: data.name ?? null, avatarUrl: data.avatar_url });
+const user = data => ({ login: data.login, name: data.name ?? null });
 /** The reason an account does not work, in words the window can state. */
 const failure = error => {
   const cause = error?.payload ?? error;

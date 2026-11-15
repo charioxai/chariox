@@ -18,7 +18,7 @@ export function createAccounts({ state, view }) {
     let last;
     for (let attempt = 0; attempt < 4; attempt++) {
       const { value, version } = await read();
-      const next = mutate(structuredClone(value));
+      const next = mutate(JSON.parse(JSON.stringify(value)));
       try {
         await view.transactWithChange({
           schemaVersion: 0, checks: [{ key: KEY, version }],

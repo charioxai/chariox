@@ -1,5 +1,5 @@
 // GitHub's answers reduced to what the window and agents use. Pure functions: no calls, no state.
-const user = u => u ? { login: u.login, avatarUrl: u.avatar_url, type: u.type } : null;
+const user = u => u ? { login: u.login, type: u.type } : null;
 const label = l => ({ name: l.name, color: l.color, description: l.description ?? null });
 
 export const repoOf = item => text(item.repository_url).replace(/^.*\/repos\//, '');
@@ -51,7 +51,7 @@ export const file = f => ({
 });
 
 export const commit = c => ({
-  sha: c.sha, message: c.commit.message, author: user(c.author) ?? { login: c.commit.author?.name ?? null, avatarUrl: null },
+  sha: c.sha, message: c.commit.message, author: user(c.author) ?? { login: c.commit.author?.name ?? null, type: null },
   authoredAt: c.commit.author?.date ?? null, url: c.html_url,
 });
 

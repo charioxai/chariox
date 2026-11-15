@@ -173,7 +173,7 @@ export function createPulls({ accounts, github }) {
     async list_reviews(input) {
       return call(input, async account => {
         const [{ data: pull }, reviews] = await Promise.all([fetchPull(account, input), reviewsOf(account, input)]);
-        const requested = (pull.requested_reviewers ?? []).map(u => ({ login: u.login, avatarUrl: u.avatar_url }));
+        const requested = (pull.requested_reviewers ?? []).map(u => ({ login: u.login }));
         const teams = (pull.requested_teams ?? []).map(t => ({ slug: t.slug, name: t.name }));
         return { reviews, requestedReviewers: requested, requestedTeams: teams, decision: n.reviewDecision(reviews, requested.length + teams.length) };
       });

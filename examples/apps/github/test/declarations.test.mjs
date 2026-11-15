@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 import { outputs } from '../scripts/generate.mjs';
 import { createApp } from '../src/app.mjs';
@@ -56,4 +56,13 @@ test('the manifest needs the features the App uses', () => {
   assert.deepEqual(manifest.requiredFeatures, ['wasm-component', 'ui-actions', 'directed-events', 'credentialed-http'], 'the features the App uses, in the kernel\'s order');
   assert.equal(manifest.appId, 'com.chariox.github');
   assert.equal(manifest.displayName, 'GitHub');
+});
+
+test('the backend sources use only what the App\'s QuickJS runtime has: no structuredClone, URL, Intl, timers beyond setTimeout, Node or browser globals', () => {
+  // The runtime provides the language and the SDK's TextEncoder/TextDecoder, AbortController, Headers, setTimeout, console, crypto.getRandomValues.
+  const forbidden = /\b(structuredClone|URL|URLSearchParams|Intl|setInterval|setImmediate|process|Buffer|btoa|atob|window|document|localStorage|require)\b/;
+  for (const file of readdirSync(new URL('../src/', import.meta.url))) {
+    const source = readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '').replace(/'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g, "''");
+    assert.doesNotMatch(source, forbidden, `${file} uses a global the App runtime lacks`);
+  }
 });
