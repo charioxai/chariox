@@ -372,3 +372,32 @@ async fn client_app_view_router_uses_terminal_owner_and_refuses_agents() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_dev_install_of_a_room_opens_in_the_window_like_an_installed_app() {
+    let (scratch, store) = setup();
+    rusqlite::Connection::open(scratch.0.join("kernel.db"))
+        .unwrap()
+        .execute(
+            "UPDATE app_installations SET channel='dev', dev_room_id='room-1' WHERE installation_id='installed'",
+            [],
+        )
+        .unwrap();
+    let views = ClientAppViews::default();
+    let view = open(&views, &store);
+    assert!(matches!(
+        views.handle(&store, "alice", read(&view.view_id, 0, 1)),
+        Ok(Response::Chunk { .. })
+    ));
+    // The installation is still its owner's alone.
+    assert!(matches!(
+        views.handle(
+            &store,
+            "bob",
+            Request::Open {
+                installation_id: "installed".into()
+            }
+        ),
+        Err(Error::NotFound | Error::Conflict)
+    ));
+}
