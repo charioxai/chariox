@@ -949,6 +949,15 @@ or lost supervision produces source loss; a persisted PID is not a live handle.
 Older workers fail admission before creating a launch. Kernel-managed cwd,
 permission approval, output protection and pinned process signals apply on worker.
 
+A watched command that the provider's own sandbox does not cover asks one kernel
+interaction ("Run watched command outside the provider sandbox?") with the choices
+Allow once, Allow for this agent and Deny. Allow for this agent is the only grant: it covers every
+later watched command and job of that agent on this kernel until the agent's
+permissions change, its room ends or a parent revokes it. There is no per-command
+or per-watch grant, so an agent that polls with many watches raises one card, not
+one per watch. A command a leased worker runs for its home has no grant (Allow once
+and Deny only), because a grant would sit on the worker, out of the parent's reach.
+
 
 Local protocol 452 projects independent
 `agent_tasks` in the shared session snapshot. The kernel owns their SQLite
