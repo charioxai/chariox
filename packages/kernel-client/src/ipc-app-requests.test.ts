@@ -5,6 +5,7 @@ import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { beginAppInstallRequest, beginAppUpdateRequest, getAppInstallOperationRequest, cancelAppInstallOperationRequest } from "./ipc-app-requests.js"
 import { beginAppPublisherEnrollmentRequest, getAppPublisherEnrollmentRequest, cancelAppPublisherEnrollmentRequest } from "./ipc-app-requests.js"
 import { createAppInboxRouteRequest, listAppInboxRoutesRequest, removeAppInboxRouteRequest, testAppInboxRouteRequest } from "./ipc-app-requests.js"
+import { pauseAppAutomationRequest, setAppInboxRoutePausedRequest } from "./ipc-app-requests.js"
 import { grantAppFileRequest, saveAppFileExportRequest } from "./ipc-app-requests.js"
 import { prepareDeploymentAppsRequest, previewDeploymentAppsRequest } from "./ipc-app-requests.js"
 
@@ -56,6 +57,8 @@ test("inbox routes name an installation and its signed incoming event only", () 
     source_event_type: "dev.chariox.dummy/dummy.test", source_event_version: 1 } })
   assert.deepEqual(listAppInboxRoutesRequest("todo"), { ListAppInboxRoutes: { installation_id: "todo" } })
   assert.deepEqual(removeAppInboxRouteRequest("todo", "mail"), { RemoveAppInboxRoute: { installation_id: "todo", route_id: "mail" } })
+  assert.deepEqual(setAppInboxRoutePausedRequest("todo", "mail", true), { SetAppInboxRoutePaused: { installation_id: "todo", route_id: "mail", paused: true } })
+  assert.deepEqual(pauseAppAutomationRequest("todo", "reminders", 2), { PauseAppAutomation: { installation_id: "todo", automation_id: "reminders", expected_revision: 2 } })
   assert.deepEqual(testAppInboxRouteRequest("todo", "mail", "occ-1", { title: "x" }),
     { TestAppInboxRoute: { installation_id: "todo", route_id: "mail", occurrence_id: "occ-1", payload: { title: "x" } } })
 })

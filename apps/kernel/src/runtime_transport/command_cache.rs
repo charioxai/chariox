@@ -245,6 +245,8 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::UninstallApp(_)
             | LocalDaemonRequest::CreateAppInboxRoute(_)
             | LocalDaemonRequest::RemoveAppInboxRoute(_)
+            | LocalDaemonRequest::SetAppInboxRoutePaused(_)
+            | LocalDaemonRequest::PauseAppAutomation(_)
             | LocalDaemonRequest::TestAppInboxRoute(_)
             | LocalDaemonRequest::GrantAppConnection(_)
             | LocalDaemonRequest::PreviewDeploymentApps(_)

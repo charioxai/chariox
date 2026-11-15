@@ -204,6 +204,22 @@ retryable only when the App supplied `idempotencyKey`. Any other
 `CONNECTION_ACTION_FAILED` is retryable unless the generator refused the action
 itself.
 
+`routing.*` (kernel protocol 1010; only an App whose signed manifest declares
+`capabilities.eventRouting`, in the 1.1.0 world; the WIT `event-routing` interface carries the same
+calls): `routing.ensure_route {routeId, event, repository, sourceEventType, sourceEventVersion}`,
+`routing.remove_route {routeId}`, `routing.set_route_active {routeId, active}` and
+`routing.list_routes {}` manage the App's own inbox routes inside the one connection the owner
+granted (`GrantAppConnection`); a route is `{routeId, event, repository, sourceEventType,
+sourceEventVersion, active, pending, delivered, failed, expired}`. `routing.connection_status {}`,
+`routing.connection_resources {query?, cursor?, limit}` and `routing.start_authorization
+{returnUrl?}` read that connection and start the generator's consent. `routing.bind_agent {event,
+agentId?}`, `routing.bind_workflow {event, sessionId, publicationRef, queueRef?}`,
+`routing.unbind_target {automationId}` and `routing.list_targets {}` manage where the App's outgoing
+events go; the kernel decides whom a call acts for from its own caller record, so an agent binds only
+itself. Errors: `EVENT_NOT_DECLARED`, `CONNECTION_NOT_GRANTED`, `CONNECTION_AMBIGUOUS`,
+`CONNECTION_UNAVAILABLE`, `REPOSITORY_NOT_IN_CONNECTION`, `ROUTE_LIMIT`, `ROUTE_NOT_FOUND`,
+`ROUTE_EXISTS`, `NOT_ALLOWED`, `TARGET_LIMIT`, `TARGET_NOT_FOUND`.
+
 ## Worker-to-supervisor requests
 
 `worker.ready` reports `{tools:string[],events:string[],lifecycle:string[]}` after

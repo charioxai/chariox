@@ -3,7 +3,7 @@ import {
   getAppInstallationRequest, getAppWorkerRequest, listAppAutomationsRequest, listAppInstallationsRequest,
   getAppLogsRequest, openAppViewRequest, uninstallAppRequest, createAppInboxRouteRequest, listAppInboxRoutesRequest,
   type AppInboxConnection,
-  removeAppInboxRouteRequest, testAppInboxRouteRequest,
+  removeAppInboxRouteRequest, setAppInboxRoutePausedRequest, pauseAppAutomationRequest, testAppInboxRouteRequest,
   grantAppConnectionRequest, revokeAppConnectionRequest, listAppConnectionsRequest, getAppSetRequest,
   grantAppAccountRequest, revokeAppAccountRequest, listAppAccountsRequest, type AppAccountAllow,
   revokeAppFileGrantsRequest, inspectAppViewRequest,
@@ -21,8 +21,8 @@ const usage = [
   "       app open <installation-id> [--session <session-id>] | uninstall <installation-id> [--generation <n>] [--delete-data]",
   "       app automation list <installation-id>",
   "       app automation add <installation-id> <automation-id> <event> <session-id> <workflow> [--queue <queue>] [--scheduled] [--revision <n>]",
-  "       app automation disable <installation-id> <automation-id> <revision>",
-  "       app inbox list <installation-id> | remove <installation-id> <route-id>",
+  "       app automation disable <installation-id> <automation-id> <revision> | pause <installation-id> <automation-id> <revision>",
+  "       app inbox list <installation-id> | remove <installation-id> <route-id> | pause <installation-id> <route-id> | resume <installation-id> <route-id>",
   "       app inbox add <installation-id> <route-id> <event> <source-event-type> [--version <n>] [--connection <generator>/<connection-id>/<scope>] [--filter-json <object>]",
   "       app inbox test <installation-id> <route-id> <occurrence-id> '<json-payload>'",
   "       app connection list <installation-id> | grant <installation-id> <generator>/<connection-id> | revoke <installation-id> <connection-id>",
@@ -238,6 +238,9 @@ function automationRequest(args: string[]): Record<string, unknown> | null {
   if (verb === "disable" && rest.length === 2 && /^\d+$/.test(rest[1] ?? "")) {
     return disableAppAutomationRequest(installation, rest[0] ?? "", Number(rest[1]))
   }
+  if (verb === "pause" && rest.length === 2 && /^\d+$/.test(rest[1] ?? "")) {
+    return pauseAppAutomationRequest(installation, rest[0] ?? "", Number(rest[1]))
+  }
   if (verb !== "add" || rest.length < 4) return null
   const [automationId, eventName, sessionId, publicationRef, ...flags] = rest
   let queueRef: string | undefined
@@ -264,6 +267,9 @@ export function inboxRequest(args: string[]): Record<string, unknown> | null {
   if (!installation) return null
   if (verb === "list" && rest.length === 0) return listAppInboxRoutesRequest(installation)
   if (verb === "remove" && rest.length === 1 && rest[0]) return removeAppInboxRouteRequest(installation, rest[0])
+  if ((verb === "pause" || verb === "resume") && rest.length === 1 && rest[0]) {
+    return setAppInboxRoutePausedRequest(installation, rest[0], verb === "pause")
+  }
   // The JSON payload is the rest of the line: a terminal splits it at spaces.
   if (verb === "test" && rest.length >= 3 && rest[0] && rest[1]) {
     try {
@@ -302,7 +308,7 @@ export function inboxRequest(args: string[]): Record<string, unknown> | null {
 function formatInboxRoute(route: AppInboxRouteSummary): string {
   const counts = `${route.pending} pending, ${route.delivered} delivered, ${route.failed} failed, ${route.expired} expired`
   const source = route.connection ? ` from ${route.connection.generator_id} (${route.connection.connection_scope})` : ""
-  return `${route.route_id} · ${route.source_event_type} v${route.source_event_version}${source} → ${route.event_name} · ${counts}`
+  return `${route.route_id} · ${route.source_event_type} v${route.source_event_version}${source} → ${route.event_name}${route.paused ? " · paused" : ""} · ${counts}`
 }
 
 function workerFailureHint(worker: AppWorkerSummary): string {

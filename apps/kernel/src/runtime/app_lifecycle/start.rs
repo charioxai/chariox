@@ -186,6 +186,7 @@ pub(super) fn register(
             )),
         },
         context.event_config.clone(),
+        context.routing_host.clone(),
     )
     .map_err(preparation_failed(
         installation,

@@ -37,6 +37,8 @@ impl KernelRuntimeState {
             | LocalDaemonRequest::GetAppLogs(_)
             | LocalDaemonRequest::CreateAppInboxRoute(_)
             | LocalDaemonRequest::RemoveAppInboxRoute(_)
+            | LocalDaemonRequest::SetAppInboxRoutePaused(_)
+            | LocalDaemonRequest::PauseAppAutomation(_)
             | LocalDaemonRequest::ListAppInboxRoutes(_)
             | LocalDaemonRequest::TestAppInboxRoute(_)
             | LocalDaemonRequest::GrantAppConnection(_)
@@ -154,10 +156,12 @@ impl KernelRuntimeState {
             LocalDaemonRequest::ListAppAutomations(request) => &request.installation_id,
             LocalDaemonRequest::ConfigureAppAutomation(request) => &request.installation_id,
             LocalDaemonRequest::DisableAppAutomation(request) => &request.installation_id,
+            LocalDaemonRequest::PauseAppAutomation(request) => &request.installation_id,
             LocalDaemonRequest::UninstallApp(request) => &request.installation_id,
             LocalDaemonRequest::GetAppLogs(request) => &request.installation_id,
             LocalDaemonRequest::CreateAppInboxRoute(request) => &request.installation_id,
             LocalDaemonRequest::RemoveAppInboxRoute(request) => &request.installation_id,
+            LocalDaemonRequest::SetAppInboxRoutePaused(request) => &request.installation_id,
             LocalDaemonRequest::ListAppInboxRoutes(request) => &request.installation_id,
             LocalDaemonRequest::TestAppInboxRoute(request) => &request.installation_id,
             LocalDaemonRequest::GrantAppConnection(request) => &request.installation_id,
@@ -176,6 +180,7 @@ impl KernelRuntimeState {
         let scoped_room = match request {
             LocalDaemonRequest::ListAppAutomations(request) => request.session_id.as_deref(),
             LocalDaemonRequest::DisableAppAutomation(request) => request.session_id.as_deref(),
+            LocalDaemonRequest::PauseAppAutomation(request) => request.session_id.as_deref(),
             _ => None,
         };
         if let Some(room_id) = scoped_room {
@@ -373,6 +378,29 @@ impl KernelRuntimeState {
                     automation: summary(&disabled),
                 });
             }
+            LocalDaemonRequest::PauseAppAutomation(request) => {
+                let catalog = self.app_catalog(&owner, &installation).await?;
+                let owned = self.owned.clone();
+                let permit = self.app_control().try_admit()?;
+                let paused = tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    owned.deactivate_app_automation(
+                        &owner,
+                        catalog,
+                        request.automation_id,
+                        request.expected_revision,
+                        AutomationStatus::Paused,
+                        budget(),
+                    )
+                })
+                .await
+                .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
+                .map_err(automation_error)?;
+                return Ok(LocalDaemonResponse::AppAutomation {
+                    installation_id: installation,
+                    automation: summary(&paused),
+                });
+            }
             LocalDaemonRequest::GetAppLogs(request) => {
                 let after = match request.after_sequence.as_deref() {
                     Some(value) => value
@@ -407,6 +435,7 @@ impl KernelRuntimeState {
             }
             request @ (LocalDaemonRequest::CreateAppInboxRoute(_)
             | LocalDaemonRequest::RemoveAppInboxRoute(_)
+            | LocalDaemonRequest::SetAppInboxRoutePaused(_)
             | LocalDaemonRequest::ListAppInboxRoutes(_)
             | LocalDaemonRequest::TestAppInboxRoute(_)) => {
                 return self.app_inbox_request(owner, installation, request).await;

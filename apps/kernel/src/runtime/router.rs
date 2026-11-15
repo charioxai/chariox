@@ -63,6 +63,9 @@ pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 
 #[derive(Clone)]
 pub(crate) struct CommandRouter {
+    /// Keeps the host App calls reach the kernel through alive as long as this router.
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    _routing_host: Arc<crate::runtime::app_event_routing_broker::RoutingHost>,
     _native_interaction_bridge: Option<Arc<dyn crate::provider::ProviderNativeInteractionBridge>>,
     app: Arc<Mutex<DaemonApp>>,
     runtime_state: KernelRuntimeState,

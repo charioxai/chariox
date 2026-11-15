@@ -89,6 +89,7 @@ impl Fixture {
                 vault: Arc::new(crate::runtime::app_http::FixtureVault(None)),
             },
             Default::default(),
+            Default::default(),
         )
         .unwrap();
         let (starting, events) = AppWorkerOwner::start_blocking(

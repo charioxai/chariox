@@ -3296,6 +3296,15 @@ Workflow trigger and deployment direction:
   as the event payload, deduplicated by the source occurrence id.
   `AppInboxRouteSummary` shows the `connection`. The route grants the App no
   use of the connection beyond receiving these occurrences.
+- protocol 1010 / relay peer 449 (provisional, GHA-2): event routing. `SetAppInboxRoutePaused
+  {installation_id, route_id, paused}` and `PauseAppAutomation {installation_id, automation_id,
+  expected_revision}` give the owner a pause that outlives a deployment handover
+  (`AppInboxRouteSummary.paused`; an automation resumes with `ConfigureAppAutomation`). A manifest
+  with `capabilities.eventRouting {generator, incoming, maxRoutes}` (feature `event-routing`, world
+  1.1.0) lets the App create, pause and remove its own inbox routes and its agent and workflow
+  targets inside the one connection the owner granted with `GrantAppConnection`
+  (`AppConnectionSummary.event_routing {max_routes, routes, paused}`); revoking the grant removes
+  the App's routes. See `APPS_V2_CONTRACTS.md` §11.
 - GitHub App GHA-1 (provisional): App accounts. `GrantAppAccount {installation_id, account,
   credential, vault_credential_id, allow: read|write|destructive}`, `RevokeAppAccount
   {installation_id, account}` and `ListAppAccounts {installation_id}` answer `AppAccounts

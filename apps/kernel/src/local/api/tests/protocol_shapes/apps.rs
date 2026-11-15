@@ -549,6 +549,7 @@ fn app_inbox_shapes_are_versioned_and_name_no_owner() {
                 source_event_type: "dev.chariox.dummy/dummy.test".into(),
                 source_event_version: 1,
                 active: true,
+                paused: false,
                 connection: None,
                 pending: 1,
                 delivered: 2,
@@ -616,6 +617,7 @@ fn app_inbox_routes_from_generator_connections_are_versioned() {
             source_event_type: "app.mentioned".into(),
             source_event_version: 1,
             active: true,
+            paused: false,
             connection: Some(connection),
             pending: 0,
             delivered: 0,
@@ -675,6 +677,7 @@ fn app_connection_grants_are_versioned_and_name_no_owner() {
             connection_id: "connection-1".into(),
             granted_at_ms: 5,
             actions: vec!["notification.reply".into()],
+            event_routing: None,
         }],
     };
     for request in &requests {

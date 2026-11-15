@@ -108,6 +108,8 @@ export interface AppInboxRouteSummary {
   source_event_type: string
   source_event_version: number
   active: boolean
+  /** Protocol 1010: paused by the owner or the App; independent of `active`. */
+  paused: boolean
   /** Protocol 358: the generator connection that feeds the route. */
   connection?: { generator_id: string; connection_id: string; connection_scope: string; filter?: unknown }
   pending: number
@@ -122,6 +124,8 @@ export interface AppConnectionSummary {
   connection_id: string
   granted_at_ms: number
   actions: string[]
+  /** Protocol 1010: set when the App's manifest routes this generator's events itself. */
+  event_routing?: { max_routes: number; routes: number; paused: number }
 }
 
 /** An account the owner bound to an App: the Vault entry is named by id, never by value. */

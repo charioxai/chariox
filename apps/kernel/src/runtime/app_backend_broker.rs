@@ -30,6 +30,7 @@ pub(crate) fn broker(
     package: &impl VerifiedApp,
     http: HttpContext,
     event_config: super::app_lifecycle::EventConfig,
+    routing_host: super::app_event_routing_broker::RoutingHostSlot,
 ) -> Result<Arc<dyn Broker>, AppWorkerError> {
     Ok(Arc::new(build(
         store,
@@ -40,6 +41,7 @@ pub(crate) fn broker(
         package,
         http,
         event_config,
+        routing_host,
     )?))
 }
 #[allow(
@@ -55,6 +57,7 @@ fn build(
     package: &impl VerifiedApp,
     http: HttpContext,
     event_config: super::app_lifecycle::EventConfig,
+    routing_host: super::app_event_routing_broker::RoutingHostSlot,
 ) -> Result<BackendBroker, AppWorkerError> {
     let data = process
         .private_data()
@@ -80,6 +83,12 @@ fn build(
             package.manifest().capabilities.connections.clone(),
             admission.clone(),
             event_config,
+        ),
+        routing: super::app_event_routing_broker::AppEventRoutingBroker::new(
+            owner.clone(),
+            catalog.installation_id().to_owned(),
+            package.manifest().capabilities.event_routing.clone(),
+            routing_host,
         ),
         state: AppStorageBroker::new(
             store.clone(),
@@ -144,6 +153,7 @@ struct BackendBroker {
     http: AppHttpBroker,
     snapshots: super::app_snapshot_broker::AppSnapshotBroker,
     connections: super::app_connection_broker::AppConnectionBroker,
+    routing: super::app_event_routing_broker::AppEventRoutingBroker,
     /// SDK writes share it; a quiescent snapshot holds it alone.
     fence: Arc<tokio::sync::RwLock<()>>,
 }
@@ -187,6 +197,7 @@ impl Broker for BackendBroker {
                 "connections.list" | "connections.action" => {
                     delegate.connections.dispatch(request).await
                 }
+                name if name.starts_with("routing.") => delegate.routing.dispatch(request).await,
                 "host.pick_file" | "host.pick_file_status" | "files.export" => {
                     delegate.file_grants.dispatch(request).await
                 }
@@ -228,6 +239,7 @@ pub(crate) fn fixture_http(
         process,
         package,
         http,
+        Default::default(),
         Default::default(),
     )?;
     broker.http.fixture_network(network);

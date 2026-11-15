@@ -734,6 +734,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetAppLogs(_) => "app.logs",
         LocalDaemonRequest::CreateAppInboxRoute(_) => "app.inbox.route.create",
         LocalDaemonRequest::RemoveAppInboxRoute(_) => "app.inbox.route.remove",
+        LocalDaemonRequest::SetAppInboxRoutePaused(_) => "app.inbox.route.pause",
+        LocalDaemonRequest::PauseAppAutomation(_) => "app.automation.pause",
         LocalDaemonRequest::ListAppInboxRoutes(_) => "app.inbox.route.list",
         LocalDaemonRequest::GrantAppConnection(_) => "app.connection.grant",
         LocalDaemonRequest::GetAppSet(_) => "app.set",

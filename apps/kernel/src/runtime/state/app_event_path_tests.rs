@@ -24,6 +24,7 @@ use chariox_event_protocol::EventDeliveryEnvelope;
 use serde_json::{json, Value};
 use std::{path::PathBuf, time::Duration};
 use tokio::sync::{watch, Mutex};
+mod routing;
 mod services;
 mod workflow_and_agent;
 use services::{Services, GENERATOR};

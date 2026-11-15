@@ -286,6 +286,41 @@ The same origin without an account (`APP_HTTP_ACCOUNT_REQUIRED`) and an account 
 origin without credentials (`APP_HTTP_ACCOUNT_UNKNOWN`) are refused. The App never sees the
 value; neither do App state, logs, history, traces or the agent's tool results.
 
+## 11. Event routing (`capabilities.eventRouting`, world 1.1.0)
+
+An App that routes one generator's events for itself declares
+`eventRouting: {generator, incoming: [event names], maxRoutes}` (1 to 200 routes, at most 32
+incoming events). The package needs the required feature `event-routing` and the world
+`chariox:app/app@1.1.0` (1.0.0 plus the `event-routing` import; `chariox_app_wit::APP_WORLD_1_1`);
+`AuthoritySet` counts the generator, each incoming event and the route limit, so growing
+any of them asks the owner again. A v1 manifest refuses the capability.
+
+The owner grants the connection exactly as for connection actions (`GrantAppConnection`,
+`/app connection grant`, owner only: no agent tool). The grant names the generator the manifest
+declares under `connections` or `eventRouting`. `ListAppConnections` then shows
+`event_routing: {max_routes, routes, paused}` for it, and revoking the grant removes the routes the
+App created itself (never the owner's hand-made ones).
+
+The App calls (WIT `event-routing`, wire `routing.*`; every call is scoped to the installation and
+takes no connection, token or Room):
+
+- `ensure-route {route-id, event, repository, source-event-type, source-event-version}`: the event
+  must be declared, the repository (the generator's `connection_scope`) must be one of the granted
+  connection's resources, and the generator must declare the source event; the route's scope and
+  filter come from the generator, not the App. Ensuring the same route again answers it
+  (`ROUTE_EXISTS` if the id names another shape); beyond `maxRoutes` it is `ROUTE_LIMIT`.
+  `remove-route`, `set-route-active` (a pause: the route is claimed inactive and takes nothing, and a
+  deployment handover never resumes it) and `list-routes` act only on the App's own routes.
+- `connection-status`, `connection-resources` and `start-authorization` read the one granted
+  connection and start the generator's consent (the owner still grants the new connection).
+- `bind-agent {event, agent-id?}` delivers an outgoing event to an agent through the ordinary agent
+  trigger. The kernel names the caller from its own record: an agent binds only itself (alone or
+  beside a person's call); a person may name any agent. `bind-workflow` needs a person's call;
+  `unbind-target` ends only the caller's own agent target (a person any); `list-targets` lists them.
+
+`PauseAppAutomation` and `SetAppInboxRoutePaused` give the owner the same pause
+(`/app automation pause`, `/app inbox pause|resume`).
+
 ## A4 inspection (MP-08 / MP-10 / MP-11)
 
 `InspectAppView` (local 933; peer 381) reads an **existing** Room App Tab.

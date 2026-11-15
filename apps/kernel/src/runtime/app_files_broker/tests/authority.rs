@@ -107,6 +107,7 @@ fn backend_broker_rejects_another_real_worker_installation_before_channel_use() 
             vault: Arc::new(crate::runtime::app_http::FixtureVault(None)),
         },
         Default::default(),
+        Default::default(),
     );
     assert!(matches!(result, Err(AppWorkerError::Identity)));
     drop(process);

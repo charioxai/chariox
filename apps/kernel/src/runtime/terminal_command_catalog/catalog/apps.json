@@ -290,6 +290,16 @@
               "session",
               "waiting_room"
             ]
+          },
+          {
+            "id": "app-automation-pause",
+            "label": "pause",
+            "description": "Pause an App automation",
+            "value": "/app automation pause ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
           }
         ]
       },
@@ -328,6 +338,26 @@
             "label": "remove",
             "description": "Remove an App inbox route",
             "value": "/app inbox remove ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-inbox-pause",
+            "label": "pause",
+            "description": "Pause an App inbox route",
+            "value": "/app inbox pause ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-inbox-resume",
+            "label": "resume",
+            "description": "Resume a paused App inbox route",
+            "value": "/app inbox resume ",
             "surfaces": [
               "session",
               "waiting_room"

@@ -228,15 +228,17 @@ impl DurableKernelStateStore {
             .map_err(|_| ActiveReleaseError::Invalid)
     }
 
-    /// The active release's signed `capabilities.connections` (protocol 359).
-    pub(crate) fn active_app_connection_access(
+    /// The active release's signed `capabilities.connections` (protocol 359)
+    /// and `capabilities.eventRouting` (protocol 1010): what an owner's
+    /// connection grant lets the App do.
+    pub(crate) fn active_app_connection_capabilities(
         &self,
         owner: &str,
         installation: &str,
-    ) -> Result<Vec<chariox_app_package::ConnectionAccess>, ActiveReleaseError> {
+    ) -> Result<chariox_app_package::Capabilities, ActiveReleaseError> {
         let release = self.active_app_release(owner, installation)?;
         let verified = release.verify()?;
-        Ok(verified.manifest().capabilities.connections.clone())
+        Ok(verified.manifest().capabilities.clone())
     }
 
     /// The active release's credentialed destinations: where an owner may bind
