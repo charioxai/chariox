@@ -1085,6 +1085,7 @@ async fn sudo_task_job_acquisition_asks_no_second_owner_decision() {
         revision: "v1".into(),
         actions: vec!["acquire_job".into()],
         offer: None,
+        offers: vec![],
         job_default_class_id: Some("build".into()),
         job_offers: vec![JobMachineOffer {
             class_id: "build".into(),

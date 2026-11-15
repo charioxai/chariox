@@ -1,6 +1,6 @@
 //! One owner decision before an agent can start charged work.
 use super::*;
-use crate::local::{ControlPlaneRequest, MachineAllocationCapability};
+use crate::local::{ControlPlaneRequest, MachineAllocationCapability, MachineOption};
 use crate::runtime::command::KernelCommand;
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle};
 use sha2::Digest;
@@ -88,6 +88,21 @@ impl KernelRuntimeState {
                 let class = super::job_compute::select_job_class(capability, needs)?;
                 let minutes = timeout_s.saturating_add(59) / 60;
                 format!("Run this job on a VM ({}, {} CPUs, {} MiB) at {} {} per minute? The command limit is {minutes} minutes; charges continue through startup and until deletion.", class.class_id, class.vcpu, class.usable_memory_mib, money(class.rate_per_minute.amount_micros), class.rate_per_minute.currency)
+            }
+            (
+                ControlPlaneRequest::Acquire {
+                    class_id: Some(class_id),
+                    region,
+                    ..
+                },
+                Some(capability),
+            ) => {
+                let option = chosen_option(capability, class_id, region.as_deref())?;
+                format!(
+                    "Acquire {} in {} ({} CPUs, {} GB) at {} {} per minute? The total depends on how long you keep it.",
+                    option.class_id, option.region, option.vcpu, option.ram_gb,
+                    money(option.rate_per_minute.amount_micros), option.rate_per_minute.currency
+                )
             }
             (_, Some(capability)) => capability
                 .offer
@@ -187,6 +202,44 @@ fn money(amount_micros: u64) -> String {
         .trim_end_matches('.')
         .to_owned()
 }
+/// The offered option a caller named, or the reason it cannot be acquired as named; the service decides everything else.
+fn chosen_option<'a>(
+    capability: &'a MachineAllocationCapability,
+    class_id: &str,
+    region: Option<&str>,
+) -> Result<&'a MachineOption, DaemonError> {
+    let rows: Vec<&MachineOption> = capability
+        .offers
+        .iter()
+        .filter(|option| option.class_id == class_id)
+        .collect();
+    if rows.is_empty() {
+        return Err(acquisition_error(
+            "invalid_request",
+            &format!("{class_id} is not an offered machine; list the options with chariox.machines.options"),
+        ));
+    }
+    match region {
+        Some(region) => rows
+            .into_iter()
+            .find(|option| option.region == region)
+            .ok_or_else(|| {
+                acquisition_error(
+                    "invalid_request",
+                    &format!("{class_id} is not offered in {region}"),
+                )
+            }),
+        None if rows.len() == 1 => Ok(rows[0]),
+        None => Err(acquisition_error(
+            "invalid_request",
+            &format!(
+                "Choose a region for {class_id}: {}",
+                rows.iter().map(|option| option.region.as_str()).collect::<Vec<_>>().join(", ")
+            ),
+        )),
+    }
+}
+
 pub(super) fn acquisition_error(code: &str, message: &str) -> DaemonError {
     DaemonError::MachineRequest {
         code: code.into(),
@@ -194,11 +247,21 @@ pub(super) fn acquisition_error(code: &str, message: &str) -> DaemonError {
     }
 }
 
+#[cfg(test)]
+pub(super) fn chosen_option_for_tests<'a>(
+    capability: &'a MachineAllocationCapability,
+    class_id: &str,
+    region: Option<&str>,
+) -> Result<&'a MachineOption, DaemonError> {
+    chosen_option(capability, class_id, region)
+}
+
 pub(crate) fn machine_tool_specs() -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
     use crate::transport::runtime_tools::RuntimeToolSpec;
     let schema = |properties, required| serde_json::json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
     [
-        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. The kernel asks the person first unless they enabled automatic offload and allocation. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Release it when finished. Reuse request_id for a retry.", schema(serde_json::json!({"request_id":{"type":"string"}}),serde_json::json!([]))),
+        ("chariox.machines.options", "List the machines you can acquire now, as the connected service offers them: class_id, region, size, rate per minute in the account's currency and whether it is in stock. Pick one for chariox.machines.acquire. An option that is not available cannot be acquired.", schema(serde_json::json!({}),serde_json::json!([]))),
+        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the service's default option is acquired. Nothing else is acquired in place of an option that is not available. The kernel asks the person first unless they enabled automatic offload and allocation. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Release it when finished. Reuse request_id for a retry.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"}}),serde_json::json!([]))),
         ("chariox.machines.status", "Read a allocation's state and its verified target kernel. Use the allocation_ref returned by acquire. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
         ("chariox.machines.release", "Delete an acquired machine when its work is finished. Returns the allocation state; poll status until deleted to confirm the allocation has ended.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
     ].into_iter().map(|(name,description,input_schema)|RuntimeToolSpec{name:name.into(),description:description.into(),input_schema}).collect()
@@ -215,11 +278,13 @@ impl KernelRuntimeState {
         struct Args {
             request_id: Option<String>,
             allocation_ref: Option<String>,
+            class_id: Option<String>,
+            region: Option<String>,
         }
         let args: Args = serde_json::from_value(args).map_err(|_| {
             acquisition_error(
                 "invalid_request",
-                "Use request_id for acquire or allocation_ref for status and release",
+                "Use request_id, class_id and region for acquire, allocation_ref for status and release, and no arguments for options",
             )
         })?;
         let runs = self
@@ -258,21 +323,46 @@ impl KernelRuntimeState {
             ));
         };
         let result = match tool {
+            "chariox.machines.options" => {
+                serde_json::json!({"options":capability.offers,"default":capability.offer})
+            }
             "chariox.machines.acquire" => {
                 let request_id = args
                     .request_id
                     .unwrap_or_else(|| format!("machine-{:032x}", rand::random::<u128>()));
+                let chosen = match args.class_id.as_deref() {
+                    Some(class_id) => {
+                        let option = chosen_option(&capability, class_id, args.region.as_deref())?;
+                        if !option.available {
+                            return Err(acquisition_error(
+                                "capacity_unavailable",
+                                "This machine is not available right now. Choose another option or try again in a few minutes.",
+                            ));
+                        }
+                        Some(option.clone())
+                    }
+                    None => None,
+                };
                 let result = self
                     .job_control_plane(
                         &origin,
                         &ControlPlaneRequest::Acquire {
                             capability_revision: capability.revision.clone(),
                             request_id: request_id.clone(),
+                            class_id: chosen.as_ref().map(|option| option.class_id.clone()),
+                            region: chosen.as_ref().map(|option| option.region.clone()),
                         },
                         &format!("machine:{request_id}:acquire"),
                     )
                     .await?;
-                serde_json::json!({"allocation":result,"offer":capability.offer,"estimate":{"kind":"unknown","reason":"No duration was specified; the total depends on when the machine is deleted"}})
+                match chosen {
+                    Some(option) => {
+                        serde_json::json!({"allocation":result,"option":option,"estimate":{"kind":"unknown","reason":"No duration was specified; the total depends on when the machine is deleted"}})
+                    }
+                    None => {
+                        serde_json::json!({"allocation":result,"offer":capability.offer,"estimate":{"kind":"unknown","reason":"No duration was specified; the total depends on when the machine is deleted"}})
+                    }
+                }
             }
             "chariox.machines.status" => {
                 let allocation_ref = args.allocation_ref.ok_or_else(|| {
