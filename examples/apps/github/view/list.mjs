@@ -21,7 +21,8 @@ export function listPage(ctx, route) {
   let disposed = false;
   let counts = {};
 
-  const go = patch => ctx.go({ ...route, ...(patch.scope && patch.scope !== route.scope ? { repos: [], org: '' } : {}), ...patch, page: patch.page ?? 1 });
+  // Another list starts from its open pull requests, as GitHub's tabs do.
+  const go = patch => ctx.go({ ...route, ...(patch.scope && patch.scope !== route.scope ? { repos: [], org: '', state: 'open' } : {}), ...patch, page: patch.page ?? 1 });
 
   const tabs = h('nav.UnderlineNav-body.mb-3', { 'aria-label': 'Pull request lists' }, SCOPES.map(([scope, text, name]) => h('a.UnderlineNav-item', {
     href: '#', class: route.scope === scope ? 'selected' : '', 'aria-current': route.scope === scope ? 'page' : undefined,
@@ -92,7 +93,7 @@ export function listPage(ctx, route) {
         } catch { /* a row without its extras is still a row */ }
       }
     };
-    for (let i = 0; i < 4; i++) worker();
+    for (let i = 0; i < 2; i++) worker();
   }
 
   function paginate(result) {

@@ -87,13 +87,12 @@ export function createPulls({ accounts, github }) {
     async get_pull_request_summary(input) {
       return call(input, async account => {
         const { data: pull } = await fetchPull(account, input);
-        const [checks, reviews] = await Promise.all([
-          checksOf(account, input, pull.head.sha).then(({ runs, statuses }) => n.checksSummary(runs, statuses)),
-          reviewsOf(account, input),
-        ]);
+        // two requests at a time at most, so several rows can load together within the kernel's four HTTP operations
+        const { runs, statuses } = await checksOf(account, input, pull.head.sha);
+        const reviews = await reviewsOf(account, input);
         return {
           repo: input.repo, number: input.number, additions: pull.additions, deletions: pull.deletions, changedFiles: pull.changed_files,
-          checks, review: n.reviewDecision(reviews, (pull.requested_reviewers ?? []).length + (pull.requested_teams ?? []).length),
+          checks: n.checksSummary(runs, statuses), review: n.reviewDecision(reviews, (pull.requested_reviewers ?? []).length + (pull.requested_teams ?? []).length),
         };
       });
     },

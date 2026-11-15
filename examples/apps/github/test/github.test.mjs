@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { createGitHub, expand, parseLink, queryString } from '../src/github.mjs';
 import { fakeGitHub, memoryState } from './support.mjs';
@@ -100,4 +101,15 @@ test('an answer too large to keep is not stored, so a slot never holds more than
   const { github, state } = client({ override: () => ({ status: 200, headers: { etag: 'W/"big"' }, body }) });
   await github.get('github', '/user/repos', {});
   assert.equal([...state.saved.keys()].filter(k => k.startsWith('cache:')).length, 0);
+});
+
+test('a full kernel pool is waited out and asked again, then reported if it stays full', async () => {
+  let refusals = 2;
+  const busy = () => { if (refusals-- > 0) throw { payload: { code: 'APP_BUSY', message: 'capacity is occupied' } }; return { status: 200, headers: {}, body: '{"login":"me"}' }; };
+  const ok = client({ override: busy });
+  assert.equal((await ok.github.get('github', '/user', {}, { fresh: true })).data.login, 'me');
+  assert.equal(ok.calls.length, 3, 'two refusals, then the answer');
+  assert.equal(readFileSync(new URL('../src/github.mjs', import.meta.url), 'utf8').includes('waiting.push'), false, 'no queue shared between invocations');
+  refusals = 99;
+  await assert.rejects(client({ override: busy }).github.get('github', '/user', {}, { fresh: true }), error => (error.payload ?? error).code === 'APP_BUSY');
 });

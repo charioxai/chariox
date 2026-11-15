@@ -112,7 +112,7 @@ function checkRow(run, input) {
     detail.dataset.loaded = '1';
     clear(detail).append('Loading…');
     try {
-      const output = await load('get_check_output', { ...input, check_run_id: run.id });
+      const output = await load('get_check_output', { repo: input.repo, check_run_id: run.id });
       clear(detail);
       if (output.title) detail.append(h('div.text-bold.color-fg-default', {}, output.title));
       for (const note of output.annotations) detail.append(h('div.d-flex.mt-1', {}, icon(note.level === 'failure' ? 'x-circle-fill' : 'alert', { size: 16, className: `${note.level === 'failure' ? 'color-fg-danger' : 'color-fg-attention'} mr-2 flex-shrink-0` }), h('span', {}, h('span.text-mono', {}, `${note.path}:${note.line ?? ''}`), ' ', note.message)));

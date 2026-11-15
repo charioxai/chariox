@@ -5,10 +5,24 @@ const kept = new Map();
 
 const key = (name, input) => `${name}\n${JSON.stringify(input)}`;
 
+// The App's backend may have four HTTP operations open at once and a call can use two, so the page keeps two calls open.
+const MAX_CALLS = 2;
+let open = 0;
+const queued = [];
+function send(name, input) {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      open++;
+      globalThis.chariox.call(name, input).then(resolve, reject).finally(() => { open--; queued.shift()?.(); });
+    };
+    if (open < MAX_CALLS) run(); else queued.push(run);
+  });
+}
+
 /** One call; the same call made while it runs shares it. */
 export function call(name, input = {}) {
   const k = key(name, input);
-  if (!inflight.has(k)) inflight.set(k, globalThis.chariox.call(name, input).finally(() => inflight.delete(k)));
+  if (!inflight.has(k)) inflight.set(k, send(name, input).finally(() => inflight.delete(k)));
   return inflight.get(k);
 }
 

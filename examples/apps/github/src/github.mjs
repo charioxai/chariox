@@ -10,6 +10,14 @@ const CACHE_SLOTS = 48;
 const CACHE_VALUE_LIMIT = 120 * 1024;
 const API_VERSION = '2022-11-28';
 
+/**
+ * The kernel lets an App have 4 HTTP operations open at once. The window asks for many things together, so a call that
+ * finds the pool full waits a moment of its own and asks again. A shared queue between calls would be tidier but is not
+ * allowed: a promise one invocation resolves for another leaves the other's host call tied to a task that has ended.
+ */
+const BUSY_RETRIES = 30;
+const pause = ms => new Promise(resume => setTimeout(resume, ms));
+
 const fail = (code, message, extra) => { throw { code, message, retryable: false, ...extra }; };
 const text = value => String(value ?? '');
 
@@ -101,13 +109,18 @@ export function createGitHub({ state, fetch, now = () => Date.now() }) {
     const headers = { accept, 'x-github-api-version': API_VERSION };
     if (cached?.value.etag) headers['if-none-match'] = cached.value.etag;
     let response;
-    try {
-      response = await fetch(url, { method: 'GET', headers, connectionId: `account:${account}` });
-    } catch (error) {
-      const code = (error?.payload ?? error)?.code;
-      const refusal = kernelRefusals[code];
-      if (refusal) fail(refusal[0], refusal[1](account));
-      throw error;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        response = await fetch(url, { method: 'GET', headers, connectionId: `account:${account}` });
+        break;
+      } catch (error) {
+        const code = (error?.payload ?? error)?.code;
+        // The kernel's own pool was full (another view of this App, or a call still closing): wait a moment and ask again.
+        if (code === 'APP_BUSY' && attempt < BUSY_RETRIES) { await pause(80 + Math.floor(Math.random() * 220)); continue; }
+        const refusal = kernelRefusals[code];
+        if (refusal) fail(refusal[0], refusal[1](account));
+        throw error;
+      }
     }
     if (response.status === 304 && cached) return answer(cached.value, { cached: true });
     const body = await response.text();
