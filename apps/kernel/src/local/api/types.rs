@@ -540,4 +540,7 @@ pub use workspace::*;
 /// resource feed, including home-relayed worker invalidations; 1008 adds the person-confirmed App action card
 /// (`app_confirmation` on an `app-confirm-*` interaction, with the App's own preview as its protected browser
 /// `view`), and a `state_wait` that ended without a change answers only `revision` and `unchanged: true`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1008;
+/// 1055 (provisional, after Landing 10): a viewer's subscriptions on one lane share one `heartbeat` per interval,
+/// a subscription whose kernel task ended alone says so (`subscription_ended`), and a Browser reply carries a mirror
+/// packet's deflated body, whole resources and a screenshot's picture as raw bytes (`CXT1`) instead of base64 text.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1055;
