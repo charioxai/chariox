@@ -171,15 +171,21 @@ impl KernelRuntimeState {
     }
 
     /// The one-second scheduler: resumes every agent whose armed time has come, one per stagger.
-    pub(super) async fn tick_usage_limit_stops(&self, now: u64) -> Result<(), DaemonError> {
+    /// Each send runs on its own task, since a provider that cannot start (a locked Vault) waits
+    /// for the person and the scheduler must not wait with it; the handles are for tests.
+    pub(super) async fn tick_usage_limit_stops(
+        &self,
+        now: u64,
+    ) -> Result<Vec<tokio::task::JoinHandle<()>>, DaemonError> {
+        let mut sends = Vec::new();
         for agent in self.owned.agent_store.list_agents() {
             let Some(stop) = agent.usage_limit_stop().cloned() else {
                 continue;
             };
             match stop.state {
                 UsageLimitStopState::Armed { at_ms } if at_ms <= now => {
-                    if let Err(error) = self.resume_stopped_agent(&agent, &stop, now).await {
-                        tracing::warn!(agent_id = agent.id(), %error, "usage limit resume retained for the next tick");
+                    if self.claim_resume(&agent, &stop, now, true).await? {
+                        sends.push(self.spawn_resume(agent, stop));
                     }
                 }
                 UsageLimitStopState::Resuming { since_ms }
@@ -192,7 +198,7 @@ impl KernelRuntimeState {
                 _ => {}
             }
         }
-        Ok(())
+        Ok(sends)
     }
 
     fn agent_has_turn(&self, agent: &crate::agent::AgentInstance) -> bool {
@@ -210,16 +216,18 @@ impl KernelRuntimeState {
                 > 0
     }
 
-    /// Sends the continuation of a stopped agent, if the kernel has not just sent another.
-    async fn resume_stopped_agent(
+    /// Takes the resume of a stopped agent: marks it as going on, so no other tick or decision
+    /// sends it again. `staggered` holds it back until the kernel has not sent another for a while.
+    async fn claim_resume(
         &self,
         agent: &crate::agent::AgentInstance,
         stop: &UsageLimitStop,
         now: u64,
-    ) -> Result<(), DaemonError> {
+        staggered: bool,
+    ) -> Result<bool, DaemonError> {
         // A person's own prompt is running: usage is back for it, or it ends the stop itself.
         if self.agent_has_turn(agent) {
-            return Ok(());
+            return Ok(false);
         }
         {
             let mut last = self
@@ -227,25 +235,86 @@ impl KernelRuntimeState {
                 .usage_limit_resumes
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if now < last.saturating_add(RESUME_STAGGER_MS) {
-                return Ok(());
+            if staggered && now < last.saturating_add(RESUME_STAGGER_MS) {
+                return Ok(false);
             }
             *last = now;
         }
-        // Marked before the send, so the next tick cannot send it again.
+        crate::logging::info_with_fields(
+            "daemon.usage_limit",
+            "resuming a stopped agent",
+            serde_json::json!({"agent_id": agent.id(), "now_ms": now}),
+        );
         let resuming = UsageLimitStop {
             state: UsageLimitStopState::Resuming { since_ms: now },
             ..stop.clone()
         };
         self.store_usage_limit_stop(agent, Some(resuming), "")
             .await?;
-        if let Err(error) = self.send_resume(agent, stop).await {
-            // Not sent: it stays armed for the next tick.
-            self.store_usage_limit_stop(agent, Some(stop.clone()), "")
-                .await?;
-            return Err(error);
+        Ok(true)
+    }
+
+    fn spawn_resume(
+        &self,
+        agent: crate::agent::AgentInstance,
+        stop: UsageLimitStop,
+    ) -> tokio::task::JoinHandle<()> {
+        let state = self.clone();
+        tokio::spawn(async move { state.finish_resume(&agent, &stop).await })
+    }
+
+    /// Sends the continuation. When it cannot be sent the stop is armed again for the next tick,
+    /// and the pane says why once.
+    async fn finish_resume(&self, agent: &crate::agent::AgentInstance, stop: &UsageLimitStop) {
+        match self.send_resume(agent, stop).await {
+            Ok(()) => {
+                self.owned
+                    .usage_limit_resume_failures
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(agent.id());
+            }
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.usage_limit",
+                    "resume retained for the next tick",
+                    serde_json::json!({"agent_id": agent.id(), "error": error.to_string()}),
+                );
+                if let Err(store_error) = self
+                    .store_usage_limit_stop(agent, Some(stop.clone()), "")
+                    .await
+                {
+                    crate::logging::warn_with_fields(
+                        "daemon.usage_limit",
+                        "could not arm a refused resume again",
+                        serde_json::json!({"agent_id": agent.id(), "error": store_error.to_string()}),
+                    );
+                }
+                self.note_resume_failure(agent, &error);
+            }
         }
-        Ok(())
+    }
+
+    /// Says once, in the agent's pane, why the kernel could not resume it, such as a locked Vault.
+    fn note_resume_failure(&self, agent: &crate::agent::AgentInstance, error: &DaemonError) {
+        let first = self
+            .owned
+            .usage_limit_resume_failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(agent.id().to_string());
+        if first {
+            let reason = crate::provider::sanitize_provider_diagnostic(&error.to_string());
+            self.owned.record_notice_for_agent(
+                agent.session_id(),
+                None,
+                Some(agent.id()),
+                self.owned
+                    .attachment_store
+                    .list_session_attachment_ids(agent.session_id()),
+                format!("The kernel could not resume this agent yet: {reason}. It tries again."),
+            );
+        }
     }
 
     /// The same task goes on when it has one that is waiting on the stop; otherwise the agent gets a
@@ -400,16 +469,8 @@ impl KernelRuntimeState {
         stop: &UsageLimitStop,
         now: u64,
     ) -> Result<(), DaemonError> {
-        let resuming = UsageLimitStop {
-            state: UsageLimitStopState::Resuming { since_ms: now },
-            ..stop.clone()
-        };
-        self.store_usage_limit_stop(agent, Some(resuming), "")
-            .await?;
-        if let Err(error) = self.send_resume(agent, stop).await {
-            self.store_usage_limit_stop(agent, Some(stop.clone()), "")
-                .await?;
-            return Err(error);
+        if self.claim_resume(agent, stop, now, false).await? {
+            self.spawn_resume(agent.clone(), stop.clone());
         }
         Ok(())
     }

@@ -4,7 +4,8 @@
 //! A failed turn gets its kind from the harness's own error (EA2-75). Chariox
 //! reports the kind and retryability, preserving the harness's explicit
 //! retryability when it supplies one. Native diagnostics go to the kernel log.
-//! It never retries, backs off or tracks usage limits; the provider's
+//! It never retries or backs off a failed turn itself; a usage-limit stop is
+//! recorded and resumed by the kernel (`usage_limit_runtime`), and the provider's
 //! native behaviour stays as it is. A reader decides to retry or stop from `kind` and
 //! `retryable` only; `reason` is for people.
 

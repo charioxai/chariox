@@ -1,3 +1,5 @@
+import type { AgentSelfSettings, UsageLimitStopAction } from "./kernel-types-runtime.js"
+
 export function aliasAgentRequest(sessionId: string, agentId: string, alias: string) {
   return {
     AliasAgent: {
@@ -106,6 +108,11 @@ export function updateAgentConfigRequest(options: {
   clearWorkspaceId?: boolean
   worktreeId?: string | null
   clearWorktreeId?: boolean
+  /** What the agent may change about itself without asking; only the person sets it. */
+  selfSettings?: AgentSelfSettings | null
+  /** Settles the agent's usage-limit stop; sent alone. */
+  usageLimit?: UsageLimitStopAction | null
+  reason?: string | null
 }) {
   return {
     UpdateAgentConfig: {
@@ -119,6 +126,9 @@ export function updateAgentConfigRequest(options: {
       clear_workspace_id: options.clearWorkspaceId ?? false,
       worktree_id: options.worktreeId ?? null,
       clear_worktree_id: options.clearWorktreeId ?? false,
+      ...(options.selfSettings ? { self_settings: options.selfSettings } : {}),
+      ...(options.usageLimit ? { usage_limit: options.usageLimit } : {}),
+      ...(options.reason ? { reason: options.reason } : {}),
     },
   }
 }

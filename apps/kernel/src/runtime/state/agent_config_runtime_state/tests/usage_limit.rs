@@ -241,6 +241,13 @@ async fn restarted(team: &mut Team) -> KernelRuntimeState {
     owned_runtime_state(&Arc::new(Mutex::new(app))).await
 }
 
+/// One scheduler tick, and every resume it sent.
+async fn tick(runtime: &KernelRuntimeState, now: u64) {
+    for send in runtime.tick_usage_limit_stops(now).await.unwrap() {
+        send.await.unwrap();
+    }
+}
+
 fn count_resuming(team: &Team) -> usize {
     (0..team.lanes.len())
         .filter(|lane| {
@@ -273,31 +280,22 @@ async fn with_no_agent_awake_the_kernel_resumes_every_stopped_agent_at_the_reset
     }
 
     // Before the reset nothing starts.
-    team.rt().tick_usage_limit_stops(reset - 1).await.unwrap();
+    tick(team.rt(), reset - 1).await;
     assert_eq!(count_resuming(&team), 0);
 
     // At the reset one agent resumes; the others wait their turn, a stagger apart.
-    team.rt().tick_usage_limit_stops(reset).await.unwrap();
+    tick(team.rt(), reset).await;
     assert_eq!(count_resuming(&team), 1);
-    team.rt()
-        .tick_usage_limit_stops(reset + 1_000)
-        .await
-        .unwrap();
+    tick(team.rt(), reset + 1_000).await;
     assert_eq!(
         count_resuming(&team),
         1,
         "the stagger holds the second agent back"
     );
     let stagger = super::super::usage_limit_runtime::RESUME_STAGGER_MS;
-    team.rt()
-        .tick_usage_limit_stops(reset + stagger)
-        .await
-        .unwrap();
+    tick(team.rt(), reset + stagger).await;
     assert_eq!(count_resuming(&team), 2);
-    team.rt()
-        .tick_usage_limit_stops(reset + 2 * stagger)
-        .await
-        .unwrap();
+    tick(team.rt(), reset + 2 * stagger).await;
     assert_eq!(count_resuming(&team), 3);
 
     // Each agent goes on with a turn of its own in its own conversation.
@@ -329,7 +327,7 @@ async fn a_restart_before_the_reset_loses_nothing() {
             "the stop is still armed on the restarted kernel"
         );
     }
-    after.tick_usage_limit_stops(reset).await.unwrap();
+    tick(&after, reset).await;
     let session = after
         .owned
         .session_store
@@ -350,6 +348,24 @@ async fn a_restart_before_the_reset_loses_nothing() {
         running, 1,
         "the restarted kernel resumes at the reset, staggered"
     );
+    let stagger = super::super::usage_limit_runtime::RESUME_STAGGER_MS;
+    tick(&after, reset + stagger).await;
+    let session = after
+        .owned
+        .session_store
+        .get_session(&team.session_id)
+        .unwrap();
+    for lane in &team.lanes {
+        assert!(
+            after
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &lane.agent_id)
+                .is_some(),
+            "agent {} resumed after the stagger",
+            lane.agent_id
+        );
+    }
 }
 
 #[tokio::test]
@@ -363,7 +379,7 @@ async fn the_provider_refusing_at_the_reset_is_retried_a_few_times_and_then_asks
     for (refused, wait) in waits.iter().enumerate() {
         // The scheduler's clock is the test's; it never runs back.
         ticked = at.max(ticked + stagger);
-        team.rt().tick_usage_limit_stops(ticked).await.unwrap();
+        tick(team.rt(), ticked).await;
         assert!(matches!(
             team.stop(0).unwrap().state,
             UsageLimitStopState::Resuming { .. }
@@ -388,7 +404,7 @@ async fn the_provider_refusing_at_the_reset_is_retried_a_few_times_and_then_asks
         at = at_ms;
     }
     ticked = at.max(ticked + stagger);
-    team.rt().tick_usage_limit_stops(ticked).await.unwrap();
+    tick(team.rt(), ticked).await;
     let live = team
         .rt()
         .owned
@@ -462,7 +478,7 @@ async fn a_stopped_task_with_work_owed_goes_on_as_the_same_task() {
     team.hit_the_limit(0).await;
     assert_eq!(team.task_state(0), Some(ExecutionState::Blocked));
     let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
-    team.rt().tick_usage_limit_stops(reset).await.unwrap();
+    tick(team.rt(), reset).await;
 
     let task = team
         .rt()
@@ -488,10 +504,7 @@ async fn asking_waits_for_the_person_and_an_agent_cannot_take_the_decision() {
     let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
 
     // Nothing fires without the person's decision, however late.
-    team.rt()
-        .tick_usage_limit_stops(reset + 3_600_000)
-        .await
-        .unwrap();
+    tick(team.rt(), reset + 3_600_000).await;
     assert_eq!(team.stop(0).unwrap().state, UsageLimitStopState::Asking);
 
     // A parent cannot arm it under Ask me.
@@ -540,9 +553,6 @@ async fn asking_waits_for_the_person_and_an_agent_cannot_take_the_decision() {
         .await
         .unwrap();
     assert_eq!(team.stop(0).unwrap().state, UsageLimitStopState::Declined);
-    team.rt()
-        .tick_usage_limit_stops(reset + 3_600_000)
-        .await
-        .unwrap();
+    tick(team.rt(), reset + 3_600_000).await;
     assert!(!team.has_turn(0), "a cancelled resume never fires");
 }

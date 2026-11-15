@@ -573,6 +573,10 @@ export type AgentInstance = {
   /** Tried in order, each for one turn whose provider failed (protocol 397). */
   substitutes?: AgentSubstituteProfile[]
   substitution_timeout_ms?: number | null
+  /** What the person lets this agent change about itself without asking; `"*"` allows any value. */
+  self_settings?: AgentSelfSettings
+  /** Set while a provider usage limit has stopped this agent's turn. */
+  usage_limit_stop?: UsageLimitStop | null
   archived?: boolean
   visible_in_freeform?: boolean
   external_provider_import?: ExternalProviderImportMetadata | null
@@ -584,6 +588,38 @@ export type AgentInstance = {
   grid_col_span: number
   created_at_ms: number
   last_activity_at_ms: number
+}
+
+export type AgentSelfSettings = {
+  models?: string[]
+  efforts?: string[]
+  account_profiles?: string[]
+  directories?: string[]
+}
+
+/** The decision for an agent a usage limit stopped (`UpdateAgentConfig.usage_limit`). */
+export type UsageLimitStopAction =
+  | { action: "resume_when_back" }
+  | { action: "not_now" }
+  | { action: "cancel" }
+  | { action: "continue_on"; account_profile: string }
+
+export type UsageLimitStop = {
+  /** The stopped turn. */
+  prompt_id: string
+  provider: string
+  account_profile: string
+  account_label: string
+  stopped_at_ms: number
+  /** When the provider says usage is back; absent when it named no time. */
+  resumes_at_ms?: number | null
+  /** Resumes the provider refused again. */
+  refused?: number
+  state:
+    | { state: "asking" }
+    | { state: "armed"; at_ms: number }
+    | { state: "resuming"; since_ms: number }
+    | { state: "declined" }
 }
 
 export type RemoteExtensionManifestSyncStatus = {
