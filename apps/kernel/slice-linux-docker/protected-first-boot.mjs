@@ -33,7 +33,18 @@ function publishBootPin(docker, container, receipt) {
   return receipt
 }
 
-export function ensureFirstBootRetention({privateRoot, backupRoot, sliceId, container, port, docker, dataOwner, containerUid = SLICE_CONTAINER_UID}) {
+// The home kernel owns the slice's machine id and the Cloud runtime token is issued for it, so the
+// slice pins that id on first boot instead of inventing its own.
+export function prepareIdentityArguments({container, port, containerUid = SLICE_CONTAINER_UID, machineId}) {
+  if (machineId !== undefined && !/^[A-Za-z0-9._:-]{1,200}$/.test(machineId) || machineId?.startsWith("-")) refuse()
+  return ["exec", "-u", String(containerUid),
+    "-e", "CHARIOX_HOME=/var/lib/chariox/slice-private/kernel",
+    "-e", "CHARIOX_SLICE_PRIVATE_ROOT=/var/lib/chariox/slice-private",
+    ...machineId === undefined ? [] : ["-e", `CHARIOX_MACHINE_ID=${machineId}`], container,
+    "/opt/chariox-slice/bin/chariox-kernel", "--prepare-protected-slice-identity", String(port)]
+}
+
+export function ensureFirstBootRetention({privateRoot, backupRoot, sliceId, container, port, docker, dataOwner, machineId, containerUid = SLICE_CONTAINER_UID}) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,179}$/.test(sliceId)
       || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,179}$/.test(container)
       || !Number.isInteger(port) || port < 1 || port > 65535) refuse()
@@ -56,10 +67,7 @@ export function ensureFirstBootRetention({privateRoot, backupRoot, sliceId, cont
   } finally { closeSync(fd) }
   const directoryFd = openSync(backupRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
   try { fsyncSync(directoryFd) } finally { closeSync(directoryFd) }
-  const result = docker(["exec", "-u", String(containerUid),
-    "-e", "CHARIOX_HOME=/var/lib/chariox/slice-private/kernel",
-    "-e", "CHARIOX_SLICE_PRIVATE_ROOT=/var/lib/chariox/slice-private", container,
-    "/opt/chariox-slice/bin/chariox-kernel", "--prepare-protected-slice-identity", String(port)])
+  const result = docker(prepareIdentityArguments({container, port, containerUid, machineId}))
   if (result.status !== 0) refuse()
   // Do not trust or relay child output. Verify the actual protected files instead.
   return publishBootPin(docker, container, retainFreshIdentity({privateRoot, backupRoot, sliceId, dataOwner, port}))
@@ -94,7 +102,7 @@ if (process.argv[1]?.endsWith("/protected-first-boot.mjs")) {
     const dataOwner = authority.dataUid
     ensureFirstBootRetention({privateRoot, backupRoot, sliceId, dataOwner,
       container: environment.CHARIOX_SLICE_NAME, port: Number(environment.CHARIOX_SLICE_KERNEL_PORT ?? 43119),
-      docker})
+      machineId: environment.CHARIOX_SLICE_MACHINE_ID || undefined, docker})
     const runtimeProofRoot = join(DURABLE_LAYOUT_ROOT, "runtime-proofs")
     try { mkdirSync(runtimeProofRoot, {mode: 0o700}) } catch (error) { if (error.code !== "EEXIST") throw error }
     verifyPrivateHostDirectory(runtimeProofRoot, 0)

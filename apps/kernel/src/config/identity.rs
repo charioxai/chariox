@@ -123,6 +123,9 @@ pub(super) fn load_retained_slice_identity(
         &fs::read(DaemonConfig::default_machine_identity_path()).map_err(|_| unavailable)?,
     )
     .map_err(|_| unavailable)?;
+    if machine_id_from_owner().is_some_and(|machine_id| machine_id != machine.machine_id) {
+        return Err(unavailable);
+    }
     let registry: KernelRegistry = serde_json::from_slice(
         &fs::read(DaemonConfig::default_kernel_registry_path()).map_err(|_| unavailable)?,
     )
@@ -313,7 +316,9 @@ pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeI
 /// is told its ID by the kernel that starts it.
 fn resolve_machine_id() -> String {
     if protected_slice_identity_required() {
-        return load_or_create_slice_machine_identity().machine_id;
+        return load_or_create_slice_machine_identity()
+            .unwrap_or_else(|reason| panic!("{reason}"))
+            .machine_id;
     }
     if let Some(machine_id) = std::env::var("CHARIOX_MACHINE_ID")
         .ok()
@@ -436,25 +441,62 @@ fn is_pinned_local_kernel(record: &KernelIdentityRecord) -> bool {
         && PINNED_LOCAL_KERNEL_PORTS.contains(&record.port)
 }
 
-fn load_or_create_slice_machine_identity() -> MachineIdentity {
-    let path = DaemonConfig::default_machine_identity_path();
-    if let Ok(contents) = fs::read_to_string(&path) {
-        if let Ok(identity) = serde_json::from_str::<MachineIdentity>(&contents) {
-            if !identity.machine_id.trim().is_empty() {
-                return identity;
-            }
-        }
+/// The identity the owner that starts a slice tells it (`CHARIOX_MACHINE_ID`).
+fn machine_id_from_owner() -> Option<String> {
+    std::env::var("CHARIOX_MACHINE_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn machine_id_shape_is_valid(machine_id: &str) -> bool {
+    machine_id.len() <= 200
+        && machine_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
+}
+
+fn load_or_create_slice_machine_identity() -> Result<MachineIdentity, &'static str> {
+    slice_machine_identity_at(
+        &DaemonConfig::default_machine_identity_path(),
+        machine_id_from_owner().as_deref(),
+    )
+}
+
+/// A protected slice pins its machine identity once, on its first boot, and
+/// keeps it: the owner tells the slice the identity its relay token and its
+/// recorded worker carry, and a later start with another identity is refused.
+fn slice_machine_identity_at(
+    path: &Path,
+    from_owner: Option<&str>,
+) -> Result<MachineIdentity, &'static str> {
+    if from_owner.is_some_and(|machine_id| !machine_id_shape_is_valid(machine_id)) {
+        return Err("The machine ID the owner passed to this protected slice is not valid");
+    }
+    let pinned = fs::read_to_string(path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<MachineIdentity>(&contents).ok())
+        .filter(|identity| !identity.machine_id.trim().is_empty());
+    if let Some(identity) = pinned {
+        return match from_owner {
+            Some(machine_id) if machine_id != identity.machine_id => Err(
+                "This protected slice keeps its pinned machine ID; the owner passed a different one",
+            ),
+            _ => Ok(identity),
+        };
     }
     let identity = MachineIdentity {
-        machine_id: format!("machine-{}", generate_identity_suffix()),
+        machine_id: from_owner
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("machine-{}", generate_identity_suffix())),
     };
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
     if let Ok(contents) = serde_json::to_string_pretty(&identity) {
-        let _ = write_private_file(&path, contents.as_bytes());
+        let _ = write_private_file(path, contents.as_bytes());
     }
-    identity
+    Ok(identity)
 }
 
 fn identity_is_invalid(identity: &RuntimeIdentity) -> bool {
@@ -520,6 +562,7 @@ pub(super) fn generate_identity_suffix() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn kernel_registry_retains_current_pinned_and_recent_identities_only() {
@@ -547,6 +590,54 @@ mod tests {
             assert!(registry.kernels.contains_key(&format!("127.0.0.1:{port}")));
         }
         assert!(!registry.kernels.contains_key("127.0.0.1:50001"));
+    }
+
+    #[test]
+    fn a_protected_slice_pins_the_machine_id_its_owner_passes_on_first_boot() {
+        let path = scratch_identity_path("owner-first-boot");
+        let identity = slice_machine_identity_at(&path, Some("machine-owner")).unwrap();
+        assert_eq!(identity.machine_id, "machine-owner");
+        assert!(fs::read_to_string(&path).unwrap().contains("machine-owner"));
+        assert_eq!(
+            slice_machine_identity_at(&path, Some("machine-owner")).unwrap(),
+            identity
+        );
+        assert_eq!(slice_machine_identity_at(&path, None).unwrap(), identity);
+    }
+
+    #[test]
+    fn a_pinned_protected_slice_refuses_another_machine_id() {
+        let path = scratch_identity_path("owner-changes");
+        slice_machine_identity_at(&path, Some("machine-owner")).unwrap();
+        assert!(slice_machine_identity_at(&path, Some("machine-other")).is_err());
+        assert!(fs::read_to_string(&path).unwrap().contains("machine-owner"));
+    }
+
+    #[test]
+    fn a_protected_slice_without_an_owner_id_generates_one_and_keeps_it() {
+        let path = scratch_identity_path("generated");
+        let first = slice_machine_identity_at(&path, None).unwrap();
+        assert!(first.machine_id.starts_with("machine-"));
+        assert_eq!(slice_machine_identity_at(&path, None).unwrap(), first);
+        assert!(slice_machine_identity_at(&path, Some("machine-owner")).is_err());
+    }
+
+    #[test]
+    fn an_owner_machine_id_with_a_path_or_space_is_refused() {
+        let path = scratch_identity_path("invalid");
+        assert!(slice_machine_identity_at(&path, Some("machine/../x")).is_err());
+        assert!(slice_machine_identity_at(&path, Some("machine x")).is_err());
+        assert!(!path.exists());
+    }
+
+    fn scratch_identity_path(name: &str) -> PathBuf {
+        std::env::temp_dir()
+            .join(format!(
+                "chariox-slice-machine-identity-{name}-{}",
+                generate_identity_suffix()
+            ))
+            .join("machine")
+            .join("identity.json")
     }
 
     fn record(port: u16, last_seen_at_ms: u64) -> KernelIdentityRecord {
