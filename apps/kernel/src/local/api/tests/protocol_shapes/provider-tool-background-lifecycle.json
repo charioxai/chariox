@@ -1,6 +1,6 @@
 {
-  "local_protocol": 1008,
-  "peer_protocol": 447,
+  "local_protocol": 1009,
+  "peer_protocol": 448,
   "claude_foreground_completed": {
     "tool": "Read",
     "status": "completed",

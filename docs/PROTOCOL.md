@@ -3296,7 +3296,7 @@ Workflow trigger and deployment direction:
   as the event payload, deduplicated by the source occurrence id.
   `AppInboxRouteSummary` shows the `connection`. The route grants the App no
   use of the connection beyond receiving these occurrences.
-- GitHub App GHA-1 (provisional): App accounts. `GrantAppAccount {installation_id, account,
+- protocol 1009 / relay peer 448 (provisional, GHA-1): App accounts. `GrantAppAccount {installation_id, account,
   credential, vault_credential_id, allow: read|write|destructive}`, `RevokeAppAccount
   {installation_id, account}` and `ListAppAccounts {installation_id}` answer `AppAccounts
   {installation_id, credentials: [{credential, origin, routes, safety}], accounts: [{account,

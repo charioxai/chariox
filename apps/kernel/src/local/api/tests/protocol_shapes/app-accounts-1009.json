@@ -1,0 +1,49 @@
+{
+  "local_protocol": 1009,
+  "requests": [
+    {
+      "GrantAppAccount": {
+        "installation_id": "github",
+        "account": "work",
+        "credential": "github",
+        "vault_credential_id": "cpy-1",
+        "allow": "write"
+      }
+    },
+    {
+      "RevokeAppAccount": {
+        "installation_id": "github",
+        "account": "work"
+      }
+    },
+    {
+      "ListAppAccounts": {
+        "installation_id": "github"
+      }
+    }
+  ],
+  "responses": [
+    {
+      "AppAccounts": {
+        "installation_id": "github",
+        "credentials": [
+          {
+            "credential": "github",
+            "origin": "https://api.github.com",
+            "routes": 40,
+            "safety": "destructive"
+          }
+        ],
+        "accounts": [
+          {
+            "account": "work",
+            "credential": "github",
+            "vault_credential_id": "cpy-1",
+            "allow": "write",
+            "bound_at_ms": 5
+          }
+        ]
+      }
+    }
+  ]
+}
