@@ -1,0 +1,63 @@
+{
+  "local_protocol": 1010,
+  "requests": [
+    {
+      "SetAppInboxRoutePaused": {
+        "installation_id": "github",
+        "route_id": "o-r-pull_request",
+        "paused": true
+      }
+    },
+    {
+      "PauseAppAutomation": {
+        "installation_id": "github",
+        "automation_id": "wf_1",
+        "expected_revision": 2
+      }
+    }
+  ],
+  "responses": [
+    {
+      "AppInboxRoutes": {
+        "installation_id": "github",
+        "routes": [
+          {
+            "route_id": "o-r-pull_request",
+            "event_name": "pull_request",
+            "source_event_type": "pull_request.opened",
+            "source_event_version": 1,
+            "active": true,
+            "paused": true,
+            "connection": {
+              "generator_id": "dev.chariox.github",
+              "connection_id": "connection-1",
+              "connection_scope": "o/r"
+            },
+            "pending": 0,
+            "delivered": 3,
+            "failed": 0,
+            "expired": 0
+          }
+        ]
+      }
+    },
+    {
+      "AppConnections": {
+        "installation_id": "github",
+        "connections": [
+          {
+            "generator_id": "dev.chariox.github",
+            "connection_id": "connection-1",
+            "granted_at_ms": 5,
+            "actions": [],
+            "event_routing": {
+              "max_routes": 200,
+              "routes": 4,
+              "paused": 1
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
