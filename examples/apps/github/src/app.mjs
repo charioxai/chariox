@@ -7,12 +7,15 @@ import { createView } from './view.mjs';
 import { tools as catalog, uiActionsDocument } from './catalog.mjs';
 
 export function createApp({ state, events, now }) {
-  const eventsApp = createEventsApp({ state, events });
   const view = createView({
     state, actions: uiActionsDocument().uiActions,
     snapshot: async () => ({ accounts: await accounts.settings() }),
   });
   const accounts = createAccounts({ state, view });
+  const eventsApp = createEventsApp({
+    state, events,
+    changed: delta => view.transactWithChange({ schemaVersion: 0, checks: [], writes: [], occurrences: [], wakes: [] }, delta),
+  });
   const services = ctx => {
     const github = createGitHub({ state, fetch: ctx.fetch, now });
     return { github, ...createStatus({ accounts, github }), ...createPulls({ accounts, github }) };

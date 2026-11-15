@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createApp } from '../src/app.mjs';
 import { searchQuery } from '../src/pulls.mjs';
-import { fakeGitHub, fixture, heads, memoryState, REPO } from './support.mjs';
+import { FAILING_CHECK, fakeGitHub, fixture, heads, memoryState, REPO } from './support.mjs';
 
 const NOW = Date.parse('2026-11-15T12:00:00Z');
 function app(options = {}, state = memoryState()) {
@@ -89,6 +89,13 @@ test('checks: every run of the head commit, failing ones make the state failure'
   assert.deepEqual([checks.state, checks.total, checks.failed, checks.pending], ['failure', 4, 2, 0]);
   assert.deepEqual(checks.checks.map(c => [c.name, c.conclusion]), [['failing', 'failure'], ['passing', 'success'], ['failing', 'failure'], ['passing', 'success']]);
   assert.equal(checks.checks[0].app, 'GitHub Actions');
+});
+
+test('what a check reports: its summary and the annotations that carry the failure message', async () => {
+  const output = await app().call('get_check_output', { repo: REPO, check_run_id: FAILING_CHECK });
+  assert.deepEqual([output.check.name, output.check.conclusion], ['failing', 'failure']);
+  assert.equal(output.annotations[0].message, 'Process completed with exit code 1.');
+  assert.equal(output.annotations[0].level, 'failure');
 });
 
 test('check state: none, pending, success, failure from runs and statuses', async () => {
@@ -212,7 +219,7 @@ test('status reads the rate limits GitHub counts now and flags a paused resource
 test('the view: signed actions, state and a change feed written with the change itself', async () => {
   const { call, state } = app();
   const actions = await call('view_actions');
-  assert.deepEqual(actions.map(a => a.name), ['list_accounts', 'add_account', 'remove_account', 'set_default_account', 'set_repo_account', 'get_status', 'list_repositories', 'list_pull_requests', 'get_pull_request', 'get_pull_request_summary', 'get_pull_request_files', 'get_pull_request_diff', 'list_commits', 'get_checks', 'list_reviews', 'list_comments', 'get_mergeability', 'list_branches', 'get_compare']);
+  assert.deepEqual(actions.map(a => a.name), ['list_accounts', 'add_account', 'remove_account', 'set_default_account', 'set_repo_account', 'get_status', 'list_repositories', 'list_pull_requests', 'get_pull_request', 'get_pull_request_summary', 'get_pull_request_files', 'get_pull_request_diff', 'list_commits', 'get_checks', 'get_check_output', 'list_reviews', 'list_comments', 'get_mergeability', 'list_branches', 'get_compare']);
   assert.deepEqual((await call('view_state')).accounts.labels, ['github']);
   assert.deepEqual(await call('view_changes', { since: 0 }), { latest: 0, dropped: false, changes: [] });
   await call('add_account', { account: 'work' });
@@ -230,4 +237,19 @@ test('the feed keeps 128 changes and tells an older reader to read the state aga
   assert.equal(feed.dropped, true);
   assert.deepEqual([feed.changes.length, feed.changes[0].seq], [128, 3]);
   assert.equal(state.saved.has('chariox.view.change.2'), false);
+});
+
+test('an event delivery is a change of the feed, so an open window reloads what it is about, even before any automation is set', async () => {
+  const state = memoryState();
+  const { definition, call } = app({}, state);
+  const delivery = {
+    source: { generator_id: 'dev.chariox.github', connection_id: 'c', event_type: 'pull_request.synchronize', event_type_version: 1 },
+    occurred_at: '2026-11-15T12:00:00.000Z', text: 'x', metadata: { repository: { full_name: REPO }, pull_request: { number: 2 } }, artifacts: [],
+  };
+  await assert.rejects(definition.events.pull_request_updated(delivery, { occurrenceId: 'o1' }), { code: 'NOT_CONFIGURED' });
+  const feed = await call('view_changes', { since: 0 });
+  assert.deepEqual(feed.changes.map(c => c.delta), [{ kind: 'event', repo: REPO, number: 2 }]);
+  await call('configure_automations', { automations: { pull_request_updated_notification: [] } });
+  await definition.events.pull_request_updated({ ...delivery, metadata: { repository: { full_name: REPO } } }, { occurrenceId: 'o2' });
+  assert.deepEqual((await call('view_changes', { since: 1 })).changes.map(c => c.delta), [{ kind: 'event', repo: REPO, number: null }]);
 });

@@ -5,12 +5,12 @@ import { selectMenu } from './menu.mjs';
 import { blankslate, checkIcon, flash, labelPill, reviewBadge, stateIcon } from './parts.mjs';
 import { ago } from './time.mjs';
 
-export const defaultList = { name: 'list', scope: 'mine', state: 'open', repos: [], page: 1, review: '', draft: 'any', label: '' };
+export const defaultList = { name: 'list', scope: 'mine', state: 'open', repos: [], org: '', page: 1, review: '', draft: 'any', label: '' };
 const SCOPES = [['mine', 'Created', 'git-pull-request'], ['review_requested', 'Review requests', 'eye'], ['all', 'Involved', 'people']];
 const PER_PAGE = 25;
 
 const input = route => ({
-  scope: route.scope, state: route.state, repos: route.repos, draft: route.draft,
+  scope: route.scope, state: route.state, repos: route.repos, draft: route.draft, ...(route.org ? { org: route.org } : {}),
   ...(route.review ? { review: route.review } : {}), ...(route.label ? { labels: [route.label] } : {}), page: route.page, perPage: PER_PAGE,
 });
 
@@ -21,25 +21,30 @@ export function listPage(ctx, route) {
   let disposed = false;
   let counts = {};
 
-  const go = patch => ctx.go({ ...route, ...patch, page: patch.page ?? 1 });
+  const go = patch => ctx.go({ ...route, ...(patch.scope && patch.scope !== route.scope ? { repos: [], org: '' } : {}), ...patch, page: patch.page ?? 1 });
 
   const tabs = h('nav.UnderlineNav-body.mb-3', { 'aria-label': 'Pull request lists' }, SCOPES.map(([scope, text, name]) => h('a.UnderlineNav-item', {
     href: '#', class: route.scope === scope ? 'selected' : '', 'aria-current': route.scope === scope ? 'page' : undefined,
     on: { click: event => { event.preventDefault(); go({ scope }); } },
   }, icon(name, { size: 16, className: 'UnderlineNav-octicon' }), text)));
 
+  // Every pull request of one repository, or of one organization: the owners of the repositories the account sees.
+  const known = () => peek('list_repositories', {})?.repos ?? [];
   const repoMenu = selectMenu({
-    summary: h('span', {}, icon('repo', { size: 16, className: 'mr-1' }), route.repos.length ? route.repos.join(', ') : 'Repository'),
-    title: 'Filter by repository', filter: 'Filter repositories', empty: 'No repositories found',
-    items: query => {
-      const known = (peek('list_repositories', {})?.repos ?? []).filter(repo => !query || repo.fullName.toLowerCase().includes(query));
-      const entries = known.slice(0, 50).map(repo => ({ key: repo.fullName, text: repo.fullName, selected: route.repos.includes(repo.fullName), onSelect: () => go({ repos: route.repos.includes(repo.fullName) ? [] : [repo.fullName] }) }));
-      return route.repos.length && !query ? [{ key: 'clear', text: 'Clear repository filter', onSelect: () => go({ repos: [] }) }, ...entries] : entries;
-    },
+    summary: h('span', {}, icon('repo', { size: 16, className: 'mr-1' }), route.scope === 'repo' && route.repos.length ? route.repos[0] : 'Repository'),
+    title: 'Pull requests of a repository', align: 'SelectMenu--right', filter: 'Filter repositories', empty: 'No repositories found',
+    items: query => known().filter(repo => !query || repo.fullName.toLowerCase().includes(query)).slice(0, 50)
+      .map(repo => ({ key: repo.fullName, text: repo.fullName, selected: route.scope === 'repo' && route.repos[0] === repo.fullName, onSelect: () => go({ scope: 'repo', repos: [repo.fullName], org: '' }) })),
   });
-  load('list_repositories', {}).then(() => repoMenu.refill(), () => {});
+  const orgMenu = selectMenu({
+    summary: h('span', {}, icon('organization', { size: 16, className: 'mr-1' }), route.scope === 'org' ? route.org : 'Organization'),
+    title: 'Pull requests of an organization', align: 'SelectMenu--right', empty: 'No organizations found',
+    items: () => [...new Set(known().map(repo => repo.fullName.split('/')[0]))].sort()
+      .map(org => ({ key: org, text: org, selected: route.scope === 'org' && route.org === org, onSelect: () => go({ scope: 'org', org, repos: [] }) })),
+  });
+  load('list_repositories', {}).then(() => { repoMenu.refill(); orgMenu.refill(); }, () => {});
 
-  const toolbar = h('div.d-flex.flex-items-center.flex-wrap.mb-3', {}, tabs, h('span.flex-1'), repoMenu.element);
+  const toolbar = h('div.d-flex.flex-items-center.flex-wrap.mb-3', {}, tabs, h('span.flex-1'), h('span.mr-2', {}, orgMenu.element), repoMenu.element);
 
   const stateLink = (state, text, iconName) => h('a.btn-link.mr-3', {
     href: '#', class: route.state === state ? 'text-bold color-fg-default' : 'color-fg-muted',
@@ -62,7 +67,7 @@ export function listPage(ctx, route) {
   function row(pull) {
     const status = h('span.d-flex.flex-items-center.flex-shrink-0.ml-3.text-small.color-fg-muted', { 'data-summary': `${pull.repo}#${pull.number}` });
     const comments = pull.comments ? h('span.d-inline-flex.flex-items-center.ml-3.color-fg-muted', { title: `${pull.comments} comments` }, icon('comment', { size: 16, className: 'mr-1' }), String(pull.comments)) : null;
-    const meta = [`${route.repos.length === 1 ? '' : pull.repo + ' '}#${pull.number}`, pull.state === 'merged' ? `by ${pull.author?.login ?? 'ghost'} was merged ${ago(pull.closedAt)}` : pull.state === 'closed' ? `by ${pull.author?.login ?? 'ghost'} was closed ${ago(pull.closedAt)}` : `opened ${ago(pull.createdAt)} by ${pull.author?.login ?? 'ghost'}`];
+    const meta = [`${route.scope === 'repo' ? '' : pull.repo + ' '}#${pull.number}`, pull.state === 'merged' ? `by ${pull.author?.login ?? 'ghost'} was merged ${ago(pull.closedAt)}` : pull.state === 'closed' ? `by ${pull.author?.login ?? 'ghost'} was closed ${ago(pull.closedAt)}` : `opened ${ago(pull.createdAt)} by ${pull.author?.login ?? 'ghost'}`];
     const el = h('div.Box-row.Box-row--hover-gray.d-flex.flex-items-start.px-3.py-2', { role: 'link', tabindex: '0', 'data-pull': `${pull.repo}#${pull.number}`,
       on: { click: () => ctx.go({ name: 'pr', repo: pull.repo, number: pull.number, tab: 'conversation' }), keydown: event => { if (event.key === 'Enter') ctx.go({ name: 'pr', repo: pull.repo, number: pull.number, tab: 'conversation' }); } } },
       h('span.flex-shrink-0.mr-2.mt-1', {}, stateIcon(pull.state)),

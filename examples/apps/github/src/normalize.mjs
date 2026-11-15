@@ -85,6 +85,8 @@ export const checkRun = r => ({
   app: r.app?.name ?? null, title: r.output?.title ?? null, summary: r.output?.summary?.slice(0, 500) ?? null, url: r.details_url ?? r.html_url,
 });
 
+export const annotation = a => ({ path: a.path, line: a.start_line, endLine: a.end_line, level: a.annotation_level, title: a.title ?? null, message: a.message });
+
 export const commitStatus = s => ({ context: s.context, state: s.state, description: s.description ?? null, url: s.target_url ?? null });
 
 /** What the reviews add up to: each reviewer's latest review that says something, comments and dismissed ones aside. */

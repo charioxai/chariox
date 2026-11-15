@@ -4,7 +4,7 @@ import test from 'node:test';
 import { outputs } from '../scripts/generate.mjs';
 import { createApp } from '../src/app.mjs';
 import { tools as catalog } from '../src/catalog.mjs';
-import { fakeGitHub, heads, memoryState, REPO } from './support.mjs';
+import { FAILING_CHECK, fakeGitHub, heads, memoryState, REPO } from './support.mjs';
 
 const read = path => JSON.parse(readFileSync(new URL(`../${path}`, import.meta.url), 'utf8'));
 
@@ -32,7 +32,7 @@ test('every GitHub call the tools make is a route the signed manifest declares, 
   const pull = { repo: REPO, number: 2 };
   const inputs = {
     list_repositories: {}, list_pull_requests: { scope: 'mine' }, get_pull_request: pull, get_pull_request_summary: pull,
-    get_pull_request_files: pull, get_pull_request_diff: pull, list_commits: pull, get_checks: pull, list_reviews: pull,
+    get_pull_request_files: pull, get_pull_request_diff: pull, list_commits: pull, get_checks: pull, get_check_output: { repo: REPO, check_run_id: FAILING_CHECK }, list_reviews: pull,
     list_comments: pull, get_mergeability: pull, list_branches: { repo: REPO }, get_compare: { repo: REPO, base: 'main', head: heads[2] },
     list_accounts: {}, get_status: {},
   };

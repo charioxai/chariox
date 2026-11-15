@@ -1,0 +1,13 @@
+{
+ "path": "/repos/charioxai/chariox-github-app-drill/check-runs/132710337474/annotations?per_page=50",
+ "status": 200,
+ "headers": {
+  "etag": "W/\"62a6b4dc2d5f34095f2a7d9990bd4234dc80df4c6e9f347d20d060a274ea184e\"",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4776",
+  "x-ratelimit-reset": "1794722101",
+  "x-ratelimit-resource": "core",
+  "content-type": "application/json; charset=utf-8"
+ },
+ "body": "[\n {\n  \"path\": \".github\",\n  \"blob_href\": \"https://github.com/charioxai/chariox-github-app-drill/blob/271de153c2b8c196681165cc32ff2688634e1238/.github\",\n  \"start_line\": 7,\n  \"start_column\": null,\n  \"end_line\": 7,\n  \"end_column\": null,\n  \"annotation_level\": \"failure\",\n  \"title\": \"\",\n  \"message\": \"Process completed with exit code 1.\",\n  \"raw_details\": \"\"\n },\n {\n  \"path\": \".github\",\n  \"blob_href\": \"https://github.com/charioxai/chariox-github-app-drill/blob/271de153c2b8c196681165cc32ff2688634e1238/.github\",\n  \"start_line\": 1,\n  \"start_column\": null,\n  \"end_line\": 1,\n  \"end_column\": null,\n  \"annotation_level\": \"notice\",\n  \"title\": \"\",\n  \"message\": \"\\\"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\\\"\",\n  \"raw_details\": \"\"\n }\n]"
+}

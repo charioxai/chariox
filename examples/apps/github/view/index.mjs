@@ -18,8 +18,8 @@ const ctx = {
   accounts: null, account: null, limited: null, route: defaultList, history: [],
   go(route) { this.history.push(this.route); this.route = route; draw(); },
   back() { this.route = this.history.pop() ?? defaultList; draw(); },
-  async useAccount(account) { await call('set_default_account', { account: account.label }); },
-  async addAccount(label) { await call('add_account', { account: label }); },
+  async useAccount(account) { await call('set_default_account', { account: account.label }); await follow(); },
+  async addAccount(label) { await call('add_account', { account: label }); await follow(); },
   noteFailure(error) {
     if (error?.code === 'RATE_LIMITED') { this.limited = { resetAt: error.resetAt ?? Date.now() + 60_000 }; drawHeader(); }
   },
@@ -72,9 +72,12 @@ let since = 0;
 async function follow() {
   try {
     const feed = await call('view_changes', { since });
-    const changed = feed.dropped || feed.changes.some(change => change.delta?.kind === 'accounts');
+    const accountsChanged = feed.dropped || feed.changes.some(change => change.delta?.kind === 'accounts');
+    // A GitHub event arrived for a pull request: reload the page when it shows that pull request or a list.
+    const events = feed.changes.filter(change => change.delta?.kind === 'event').map(change => change.delta);
+    const about = ctx.route.name === 'pr' ? events.some(event => event.repo === ctx.route.repo && (event.number === null || event.number === ctx.route.number)) : events.length > 0;
     since = feed.latest;
-    if (changed && since > 0 && ctx.accounts) { forget(); await loadAccounts(); draw(); }
+    if (accountsChanged && ctx.accounts) { forget(); await loadAccounts(); draw(); } else if (about) { forget(); await page?.refresh?.(); }
   } catch { /* the next tick tries again */ }
 }
 

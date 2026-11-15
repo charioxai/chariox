@@ -12,7 +12,10 @@ const SETTINGS = 'automations';
 const outgoing = new Set(Object.keys(eventTypes).map(name => `${name}_notification`));
 const fail = (code, message) => { throw { code, message, retryable: false }; };
 
-export function createEventsApp({ state, events }) {
+/** The pull request a delivery is about, for the window: repository and number (absent for events that name none). */
+const subject = payload => ({ repo: payload.metadata?.repository?.full_name ?? null, number: payload.metadata?.pull_request?.number ?? null });
+
+export function createEventsApp({ state, events, changed = async () => {} }) {
   async function settings() {
     const record = await state.get(SETTINGS);
     return { record, automations: record ? JSON.parse(record.value) : {} };
@@ -50,6 +53,8 @@ export function createEventsApp({ state, events }) {
         || !Number.isSafeInteger(time) || time < 0) {
         fail('INVALID_ARGUMENT', 'Use a GitHub delivery with its original event type and occurrence time');
       }
+      // An open window follows this change and reloads what the event is about.
+      await changed({ kind: 'event', ...subject(payload) }).catch(() => {});
       const { automations } = await settings();
       const event = `${name}_notification`;
       if (!Object.hasOwn(automations, event)) {

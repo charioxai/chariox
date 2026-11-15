@@ -498,6 +498,34 @@
       }
     },
     {
+      "name": "get_check_output",
+      "description": "What one check run reports: its title, summary and annotations (the failure messages with file and line). The job log itself lives on GitHub storage, which this App does not reach.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "check_run_id": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "repo",
+          "check_run_id"
+        ]
+      }
+    },
+    {
       "name": "list_reviews",
       "description": "Reviews of a pull request, who was asked to review, and the review decision.",
       "inputSchema": {

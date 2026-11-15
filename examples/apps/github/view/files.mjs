@@ -46,6 +46,8 @@ export function diffTable(patch, comments, mode) {
   const index = commentIndex(comments);
   const table = h('table.diff-table', { class: mode === 'split' ? 'diff-split' : 'diff-unified' });
   const span = mode === 'split' ? 4 : 3;
+  // table-layout: fixed takes its widths from these, not from whichever row comes first
+  table.append(h('colgroup', {}, (mode === 'split' ? ['num', 'code', 'num', 'code'] : ['num', 'num', 'code']).map(kind => h('col', { class: `diff-col-${kind}` }))));
   const notes = (row, side) => {
     const found = [];
     if (row?.new !== null && row?.new !== undefined && (row.kind === 'add' || row.kind === 'context') && side !== 'left') found.push(...(index.get(`RIGHT:${row.new}`) ?? []));

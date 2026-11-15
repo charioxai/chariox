@@ -107,6 +107,16 @@
           },
           {
             "method": "GET",
+            "path": "/repos/{owner}/{repo}/check-runs/{check_run_id}",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
+            "path": "/repos/{owner}/{repo}/check-runs/{check_run_id}/annotations",
+            "safety": "read"
+          },
+          {
+            "method": "GET",
             "path": "/repos/{owner}/{repo}/branches",
             "safety": "read"
           },
@@ -127,6 +137,7 @@
   "events": "schemas/events.json",
   "uiActions": "schemas/ui-actions.json",
   "idempotentTools": [
+    "get_check_output",
     "get_checks",
     "get_compare",
     "get_mergeability",

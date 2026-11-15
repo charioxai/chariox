@@ -64,7 +64,12 @@ function mergeBox(pull, checks, merge) {
   else if (merge.mergeable === null) rows.push(row('sync', 'color-fg-attention', 'Checking for ability to merge automatically…', 'GitHub is working out whether this branch can be merged.'));
   else if (merge.behindBy > 0) rows.push(row('alert', 'color-fg-attention', 'This branch is out-of-date with the base branch', `Merge the latest changes from ${pull.base.ref} into this branch (${merge.behindBy} commit${merge.behindBy === 1 ? '' : 's'} behind).`));
   else rows.push(row('check-circle-fill', 'color-fg-success', 'This branch has no conflicts with the base branch', 'Merging can be performed automatically.'));
-  if (merge.protection.state === 'protected') rows.push(row('shield', 'color-fg-muted', 'Branch protection', `${merge.protection.requiredApprovals} approving review${merge.protection.requiredApprovals === 1 ? '' : 's'} required.`));
+  if (pull.autoMerge) rows.push(row('git-merge', 'color-fg-done', 'Auto-merge enabled', `${pull.autoMerge.enabledBy?.login ?? 'Someone'} will merge this pull request (${{ MERGE: 'merge commit', SQUASH: 'squash', REBASE: 'rebase' }[pull.autoMerge.method] ?? pull.autoMerge.method}) when the requirements are met.`));
+  const protection = merge.protection;
+  if (protection.state === 'protected') {
+    const needs = [protection.requiredApprovals ? `${protection.requiredApprovals} approving review${protection.requiredApprovals === 1 ? '' : 's'}` : null, protection.requiredChecks.length ? `status checks: ${protection.requiredChecks.join(', ')}` : null, protection.requireUpToDate ? 'a branch up to date with the base' : null].filter(Boolean);
+    rows.push(row('shield', 'color-fg-muted', 'Branch protection', needs.length ? `Required: ${needs.join('; ')}.` : 'This branch is protected.'));
+  } else if (protection.state === 'unknown') rows.push(row('shield', 'color-fg-muted', 'Branch protection', 'The rules of the base branch could not be read with this account.'));
   return h('div.Box.mb-3', {}, rows);
 }
 
@@ -91,16 +96,36 @@ function commitsTab(commits) {
     h('code.color-fg-muted.text-small', {}, commit.sha.slice(0, 7)))));
 }
 
-function checkRow(run) {
+function checkRow(run, input) {
   const [name, color] = run.status !== 'completed' ? ['dot-fill', 'color-fg-attention'] : { success: ['check-circle-fill', 'color-fg-success'], failure: ['x-circle-fill', 'color-fg-danger'], timed_out: ['x-circle-fill', 'color-fg-danger'], cancelled: ['stop', 'color-fg-muted'], skipped: ['skip', 'color-fg-muted'], neutral: ['check-circle', 'color-fg-muted'] }[run.conclusion] ?? ['alert', 'color-fg-attention'];
   const result = run.status !== 'completed' ? (run.status === 'queued' ? 'Queued' : 'In progress') : `${{ success: 'Successful', failure: 'Failing', timed_out: 'Timed out', cancelled: 'Cancelled', skipped: 'Skipped', neutral: 'Neutral' }[run.conclusion] ?? run.conclusion} ${run.startedAt ? 'in ' + duration(run.startedAt, run.completedAt) : ''}`.trim();
-  return h('div.Box-row.d-flex.flex-items-center', {}, icon(name, { size: 16, className: `${color} mr-3` }), h('div.flex-auto', {}, h('span.text-bold', {}, run.name), run.app ? h('span.color-fg-muted.ml-2', {}, run.app) : null), h('span.color-fg-muted.text-small', {}, result));
+  const detail = h('div.mt-2.text-small.color-fg-muted', { hidden: true });
+  const failed = run.status === 'completed' && run.conclusion !== 'success' && run.conclusion !== 'skipped' && run.conclusion !== 'neutral';
+  const row = h('div.Box-row', { 'data-check': run.name }, h('div.d-flex.flex-items-center', {}, icon(name, { size: 16, className: `${color} mr-3` }), h('div.flex-auto', {}, h('span.text-bold', {}, run.name), run.app ? h('span.color-fg-muted.ml-2', {}, run.app) : null), h('span.color-fg-muted.text-small', {}, result),
+    failed ? h('button.btn-octicon.ml-2', { type: 'button', 'aria-label': `Details of ${run.name}`, 'aria-expanded': 'false' }, icon('chevron-down', { size: 16 })) : null), detail);
+  const toggle = row.querySelector('button');
+  if (toggle) toggle.addEventListener('click', async () => {
+    const open = detail.hidden;
+    detail.hidden = !open;
+    toggle.setAttribute('aria-expanded', String(open));
+    if (!open || detail.dataset.loaded) return;
+    detail.dataset.loaded = '1';
+    clear(detail).append('Loading…');
+    try {
+      const output = await load('get_check_output', { ...input, check_run_id: run.id });
+      clear(detail);
+      if (output.title) detail.append(h('div.text-bold.color-fg-default', {}, output.title));
+      for (const note of output.annotations) detail.append(h('div.d-flex.mt-1', {}, icon(note.level === 'failure' ? 'x-circle-fill' : 'alert', { size: 16, className: `${note.level === 'failure' ? 'color-fg-danger' : 'color-fg-attention'} mr-2 flex-shrink-0` }), h('span', {}, h('span.text-mono', {}, `${note.path}:${note.line ?? ''}`), ' ', note.message)));
+      if (!output.title && !output.annotations.length) detail.append('This check reported no details. Its log is on GitHub.');
+    } catch (error) { clear(detail).append(error.message); }
+  });
+  return row;
 }
 
-function checksTab(checks) {
+function checksTab(checks, input) {
   if (!checks.checks.length && !checks.statuses.length) return blankslate('check-circle', 'No checks have run', 'Checks that run on this pull request appear here.');
   return h('div.Box', {}, h('div.Box-header', {}, h('span.text-bold', {}, checks.state === 'failure' ? 'Some checks were not successful' : checks.state === 'pending' ? 'Checks are running' : 'All checks have passed'), h('span.color-fg-muted.ml-2', {}, `${checks.failed} failing, ${checks.pending} pending, ${checks.total - checks.failed - checks.pending} successful`)),
-    checks.checks.map(checkRow),
+    checks.checks.map(run => checkRow(run, input)),
     checks.statuses.map(status => h('div.Box-row.d-flex.flex-items-center', {}, icon(status.state === 'success' ? 'check-circle-fill' : status.state === 'pending' ? 'dot-fill' : 'x-circle-fill', { size: 16, className: `${status.state === 'success' ? 'color-fg-success' : status.state === 'pending' ? 'color-fg-attention' : 'color-fg-danger'} mr-3` }), h('span.text-bold.flex-auto', {}, status.context), h('span.color-fg-muted.text-small', {}, status.description ?? ''))));
 }
 
@@ -129,7 +154,7 @@ export function pullPage(ctx, route) {
       nav, content);
     clear(content);
     if (route.tab === 'commits') content.append(commitsTab({ commits }));
-    else if (route.tab === 'checks') content.append(checksTab(checks));
+    else if (route.tab === 'checks') content.append(checksTab(checks, input));
     else if (route.tab === 'files') content.append(filesTab(ctx, route, pull));
     else {
       const [discussion, reviews, merge] = await Promise.all([load('list_comments', input), load('list_reviews', input), load('get_mergeability', input)]);

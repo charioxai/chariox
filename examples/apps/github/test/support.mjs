@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 
 export const fixture = name => JSON.parse(readFileSync(new URL(`./fixtures/${name}.json`, import.meta.url), 'utf8'));
 export const heads = fixture('heads');
+export const FAILING_CHECK = 132710337474;
 export const REPO = 'charioxai/chariox-github-app-drill';
 
 export function memoryState() {
@@ -43,6 +44,8 @@ const FIXTURE_OF = [
   [/\/pulls\/2\/reviews$/, () => 'pull_2_reviews'],
   [/\/pulls\/2\/comments$/, () => 'pull_2_line_comments'],
   [/\/issues\/2\/comments$/, () => 'pull_2_comments'],
+  [/\/check-runs\/\d+\/annotations$/, () => 'check_run_annotations'],
+  [/\/check-runs\/\d+$/, () => 'check_run_failing'],
   [/\/commits\/[^/]+\/check-runs$/, () => 'pull_2_check_runs'],
   [/\/commits\/[^/]+\/status$/, () => 'pull_2_status'],
   [/\/branches$/, () => 'branches'],

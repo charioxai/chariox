@@ -19,9 +19,8 @@ summary.btn { display: inline-flex; align-items: center; }
 
 /* The diff: two number gutters and a marker column, one row per line; tinted as GitHub tints it. */
 .diff-table { width: 100%; border-collapse: collapse; table-layout: fixed; font: 12px/20px ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
-.diff-unified .diff-num { width: 52px; }
-.diff-split .diff-num { width: 44px; }
-.diff-split .diff-code { width: calc(50% - 44px); }
+.diff-unified .diff-col-num { width: 52px; }
+.diff-split .diff-col-num { width: 44px; }
 .diff-num { padding: 0 8px; text-align: right; color: var(--fgColor-muted, #656d76); user-select: none; vertical-align: top; box-sizing: border-box; }
 .diff-code { padding: 0 8px 0 0; white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; vertical-align: top; }
 .diff-marker { display: inline-block; width: 18px; padding-left: 6px; color: var(--fgColor-muted, #656d76); user-select: none; }

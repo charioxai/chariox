@@ -159,6 +159,17 @@ export function createPulls({ accounts, github }) {
       });
     },
 
+    async get_check_output(input) {
+      return call(input, async account => {
+        const params = { ...where(input), check_run_id: input.check_run_id };
+        const [run, annotations] = await Promise.all([
+          github.get(account, '/repos/{owner}/{repo}/check-runs/{check_run_id}', params),
+          github.get(account, '/repos/{owner}/{repo}/check-runs/{check_run_id}/annotations', params, { query: { per_page: 50 } }),
+        ]);
+        return { check: n.checkRun(run.data), title: run.data.output?.title ?? null, summary: run.data.output?.summary ?? null, text: run.data.output?.text ?? null, annotations: annotations.data.map(n.annotation) };
+      });
+    },
+
     async list_reviews(input) {
       return call(input, async account => {
         const [{ data: pull }, reviews] = await Promise.all([fetchPull(account, input), reviewsOf(account, input)]);
