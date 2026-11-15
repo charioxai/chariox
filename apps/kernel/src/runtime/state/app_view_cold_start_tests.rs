@@ -722,13 +722,18 @@ async fn app_view_asset_budget_installs_and_opens_under_eight_mib_and_refuses_ov
             .open_user_app_view("alice", "installed", None)
             .await
             .unwrap();
+        // A reply never carries the files and a client that fetches its own opens a view of any size; the 8 MiB
+        // limit is on handing the files to the kernel browser inside the kernel.
+        let (view, frontend) =
+            opened.expect("a view opens whatever its size: its files stay where they are");
+        assert_eq!(view.installation_id, "installed");
+        assert!(frontend.assets.is_empty());
+        let files = runtime.user_app_frontend("alice", "installed", true).await;
         if allowed {
-            let (view, frontend) = opened.expect("signed view just under 8 MiB opens");
-            assert_eq!(view.installation_id, "installed");
-            assert_eq!(frontend.assets.len(), 2);
+            assert_eq!(files.unwrap().1.assets.len(), 2);
         } else {
             assert!(matches!(
-                opened,
+                files,
                 Err(crate::local::AppRequestErrorCode::LimitExceeded)
             ));
         }
