@@ -8,7 +8,7 @@
 // --reach 1 --relay-binary R: a second kernel reaches this one over a private relay and a follower on it also follows the Room (OF-32).
 // --script-owners N [--script-command "python3 buildp1.py s{S} 1600 40 5" or a JSON argv array]: N outside scripts (own grant, `chariox exec`) join the --task round.
 // Usage: node process-admission-live.mjs --scenario memory|disk|temp|room-isolation|trim|trim-live|disk-volumes|disk-waits|disk-replay|stop-cycles|runaway --kernel-binary K --state-root DIR --evidence-dir DIR
-//   --login-file F [--agents 5] [--mem 7G] [--disk-gb 12] [--task a.txt:marker,b.txt:marker2] [--tui 1]
+//   --login-file F [--agents 5] [--mem 7G] [--disk-gb 12; runaway: 3] [--task a.txt:marker,b.txt:marker2] [--tui 1]
 //   [--codex-agents 5 --codex-profile-dir DIR] [--work-dir DIR] [--seed-peaks FILE]
 //   [--opencode-agents 3 --opencode-profile-dir DIR --opencode-model M] [--temp-idle-s 20]
 //   --tui-input 1: submit prompts and focus agents through the actual TUI keyboard; requires --tui 1.
@@ -73,8 +73,9 @@ const ports = await Promise.all([freePort(), freePort(), freePort(), freePort()]
 for (const sub of ["chariox", "home", "tmp", "work", "logs", "history", "config", "cache", "state"]) mkdirSync(join(dir, sub), { recursive: true, mode: 0o700 })
 const work = flags.has("--work-dir") ? resolve(flags.get("--work-dir")) : join(dir, "work")
 mkdirSync(work, { recursive: true })
-// Disk pressure only inside a small loop-mounted filesystem (the floor is max(5 %, 10 GiB) of the volume, so
-// 11 GiB leaves about half a GiB above it); nothing else on the machine is written to.
+// Disk pressure only inside a small loop-mounted filesystem; nothing else on the machine is written to. The kernel's floor is
+// clamp(total / 100, 64 MiB, 512 MiB) and an orphaned writer is ended below half of it, so the runaway scenario uses a 3 GiB volume
+// (floor 64 MiB) that the 9000 MB hog fills long before its own cap.
 const diskGb = Number(flags.get("--disk-gb") ?? 0)
 const image = join(dir, "volume.img")
 let loopDevice = null
@@ -266,7 +267,7 @@ try {
     loopDevice = execFileSync("losetup", ["-f", "--show", image], { encoding: "utf8" }).trim()
     execFileSync("mount", [loopDevice, work])
     const [total, free] = execFileSync("df", ["-B1", "--output=size,avail", work], { encoding: "utf8" }).trim().split("\n")[1].trim().split(/\s+/).map(Number)
-    console.log("volume", loopDevice, JSON.stringify({ total, free, floor: Math.max(total / 20, 10 * 1024 ** 3) }))
+    console.log("volume", loopDevice, JSON.stringify({ total, free, floor: Math.min(Math.max(total / 100, 64 * 1024 ** 2), 512 * 1024 ** 2) }))
   }
   for (const [name, text] of Object.entries(fixtures)) writeFileSync(join(work, name), text)
 
