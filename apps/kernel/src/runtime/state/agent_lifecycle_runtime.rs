@@ -666,10 +666,14 @@ impl KernelRuntimeState {
         // Only an urgent message acts on its recipient's turn; any other waits for the next one.
         if !event.urgent {
             self.publish_task_change(target_room);
-            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({"status":"queued","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":false,"reply_requested":event.reply_requested,"note":super::agent_queued_messages::queued_note(target.alias().unwrap_or(target.agent_ref()))}),
-            });
+            let mut payload = serde_json::json!({"status":"queued","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":false,"reply_requested":event.reply_requested,"note":super::agent_queued_messages::queued_note(target.alias().unwrap_or(target.agent_ref()))});
+            if let Some(note) =
+                self.held_for_stopped_agent_note(target_room, target.id(), event.sequence)?
+            {
+                payload["held"] = true.into();
+                payload["note"] = note.into();
+            }
+            return Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload });
         }
         if let Err(error) = Box::pin(self.deliver_agent_inbox(target_room, target.id())).await {
             self.owned.record_notice_for_agent(
@@ -687,13 +691,11 @@ impl KernelRuntimeState {
             );
         }
         let mut payload = serde_json::json!({"status":"durable","sequence":event.sequence,"urgent":true,"reply_requested":event.reply_requested});
-        if self.message_waits_for_stopped_agent(target_room, target.id(), event.sequence)? {
-            let name = self.agent_notice_name(target.id());
+        if let Some(note) =
+            self.held_for_stopped_agent_note(target_room, target.id(), event.sequence)?
+        {
             payload["held"] = true.into();
-            payload["note"] = format!(
-                "{name} was stopped by its owner and runs nothing until the owner's next prompt to it; this message is held until then. Do not wait for an answer."
-            )
-            .into();
+            payload["note"] = note.into();
         }
         Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
     }
