@@ -14,6 +14,8 @@ mod cleanup_tests;
 mod control;
 mod driver;
 mod execute;
+#[cfg(test)]
+mod off_tests;
 mod pending_return;
 mod projection;
 mod record;
