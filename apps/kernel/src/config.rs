@@ -623,11 +623,38 @@ pub struct UserUiConfig {
     pub worktree_aliases: std::collections::BTreeMap<String, String>,
 }
 
+/// What the kernel does when an agent's turn ends on the provider's usage limit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageLimitResume {
+    /// The person decides, on a card in the agent's pane.
+    #[default]
+    Ask,
+    /// The kernel goes on with the turn when usage is back.
+    Automatic,
+}
+
+impl UsageLimitResume {
+    pub(crate) fn parse(field: &'static str, value: &str) -> Result<Self, DaemonError> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "ask" => Ok(Self::Ask),
+            "automatic" => Ok(Self::Automatic),
+            _ => Err(DaemonError::InvalidConfig {
+                field,
+                message: "value must be `ask` or `automatic`",
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserAgentsConfig {
     /// Off by default: the owner may allow agents to offload jobs and acquire machines without a decision each time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offload_without_asking: Option<bool>,
+    /// Asks by default: the owner may let the kernel resume agents stopped by a usage limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_limit_resume: Option<UsageLimitResume>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

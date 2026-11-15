@@ -15,6 +15,13 @@ impl KernelRuntimeOwnedState {
     fn task_needs_owner_interaction(&self, task: &AgentTaskExecution) -> bool {
         task.state == ExecutionState::Blocked
             && !task.goal.as_ref().is_some_and(|goal| goal.paused)
+            // A usage-limit stop has its own stripe and its own resume.
+            && !self.agent_store.get_agent(&task.agent_id).is_ok_and(|agent| {
+                agent.usage_limit_stop().is_some_and(|stop| {
+                    stop.prompt_id == task.prompt_id
+                        && !matches!(stop.state, crate::agent::UsageLimitStopState::Declined)
+                })
+            })
             && !self
                 .durable_state_store
                 .agent_deletion_recorded(&task.agent_id)

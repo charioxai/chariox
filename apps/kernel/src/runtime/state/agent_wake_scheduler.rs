@@ -118,6 +118,12 @@ impl KernelRuntimeState {
             {
                 tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: deadline cleanup retained for retry");
             }
+            if let Err(error) = self
+                .tick_usage_limit_stops(crate::session::unix_epoch_ms())
+                .await
+            {
+                tracing::warn!(%error, "usage limit resume retained for retry");
+            }
             while orphan_sweep.try_join_next().is_some() {}
             if orphan_sweep.is_empty() {
                 let state = self.clone();

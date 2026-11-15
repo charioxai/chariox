@@ -1074,6 +1074,7 @@ fn local_request_api_spawns_and_focuses_agents() {
                 clear_worktree_id: false,
                 reason: None,
                 self_settings: None,
+                usage_limit: None,
             },
         ))
         .expect("agent workspace update should succeed")

@@ -222,6 +222,8 @@ impl KernelRuntimeState {
             let Some(completion) = completion else {
                 return Ok(false);
             };
+            self.note_usage_limit_stop(&agent_id, active_prompt.id(), &failure, &provider_run)
+                .await;
             expected_active_prompt = Some(active_prompt);
             expected_completion = Some(completion);
         } else if self
@@ -348,6 +350,10 @@ impl KernelRuntimeState {
         };
         if completion.is_none() {
             return Ok(false);
+        }
+        if expected_prompt_id.is_none() {
+            self.note_usage_limit_stop(&agent_id, active_prompt.id(), &failure, &provider_run)
+                .await;
         }
         Box::pin(self.finish_failed_agent_task_settlement(
             task_settlement,

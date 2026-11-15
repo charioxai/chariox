@@ -332,6 +332,7 @@ async fn folders_by_config() {
                 clear_worktree_id: false,
                 reason: None,
                 self_settings: None,
+                usage_limit: None,
             });
         let command = KernelCommand::from_local_request_with_caller(
             "authority-folders-config",

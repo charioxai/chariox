@@ -338,6 +338,23 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         description: "Change your own settings, or those of an agent below you. A change inside the set the person allowed applies at once; anything else, or a higher permission level or mode, takes one decision from the person. Mode and permission changes reach your next tool call; a model, effort, account or directory change takes effect when this command finishes: your turn goes on, in a new process with the new settings. One command changes the model, effort and account, or the mode, permission and directory.",
     },
     MetaCommandDoc {
+        name: "agent resume",
+        aliases: &["agent resume"],
+        usage: "agent resume <agent-ref> | agent resume cancel <agent-ref>",
+        examples: &["agent resume worker-1", "agent resume cancel worker-1"],
+        tags: &["agent", "usage", "limit", "resume", "orchestration"],
+        intents: &[
+            "resume an agent a usage limit stopped",
+            "take back an armed resume",
+        ],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "the agents above the stopped agent",
+        routed: true,
+        description: "The kernel itself resumes an agent a provider usage limit stopped, when usage is back and the person lets it: nothing depends on this command. `agent resume cancel` takes back an armed resume at any time; `agent resume` arms it again only when the person chose automatic resume, and is refused when they chose Ask me. The child's `child_finished` event names `resumes_at_ms` while a resume is armed.",
+    },
+    MetaCommandDoc {
         name: "agent profiles",
         aliases: &["agent profiles"],
         usage: "agent profiles",

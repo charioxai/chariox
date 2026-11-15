@@ -171,6 +171,7 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
                         | "usage"
                         | "profiles"
                         | "settings"
+                        | "resume"
                 )
             ) =>
         {

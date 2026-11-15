@@ -424,6 +424,8 @@ struct KernelRuntimeOwnedState {
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor,
     pending_agent_context_handoffs: PendingAgentContextHandoffStore,
     pending_settings_notices: agent_settings_change::PendingSettingsNotices,
+    /// When the kernel last sent a usage-limit resume, to stagger the next one.
+    usage_limit_resumes: Arc<std::sync::Mutex<u64>>,
     pending_mcp_continuations: PendingMcpContinuationStore,
     background_holds: background_hold::BackgroundHolds,
     private_assessment_results: agent_assessment_result::AssessmentResults,
@@ -567,6 +569,7 @@ mod browser_controller_action_execution_runtime_state;
 mod browser_controller_compatibility_runtime_state;
 mod owner_action_notifications;
 mod run_finished_notifications;
+mod usage_limit_runtime;
 mod wake_driver;
 mod workflow_notification_source_probe;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
@@ -1308,6 +1311,7 @@ impl KernelRuntimeState {
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
                 pending_agent_context_handoffs,
                 pending_settings_notices: Default::default(),
+                usage_limit_resumes: Default::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
                 background_holds: Default::default(),
                 private_assessment_results: Default::default(),

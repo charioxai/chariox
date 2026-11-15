@@ -17,6 +17,7 @@ pub use types::{
     calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance,
     AgentOperatingMode, AgentRef, AgentRole, AgentSelfSettings, AgentState, AgentSubstituteProfile,
     CreateAgentRequest, GitWorktreePlacement, GridPosition, RemoteAgentBinding, SelfSettingKind,
+    UsageLimitStop, UsageLimitStopState,
 };
 
 mod outside_events;

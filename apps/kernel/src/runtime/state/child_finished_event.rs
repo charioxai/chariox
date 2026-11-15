@@ -45,6 +45,10 @@ impl KernelRuntimeState {
                 "success": task.state == ExecutionState::Done,
                 "outcome": outcome,
                 "deadline_reached": deadline_reached,
+                "resumes_at_ms": child.usage_limit_stop().and_then(|stop| match stop.state {
+                    crate::agent::UsageLimitStopState::Armed { at_ms } => Some(at_ms),
+                    _ => None,
+                }),
                 "public_answer": public_answer,
             }),
         );

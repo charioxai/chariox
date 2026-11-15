@@ -138,6 +138,7 @@ fn create_publication_test_graph_in_workspace(
                 clear_worktree_id: false,
                 reason: None,
                 self_settings: None,
+                usage_limit: None,
             },
         ))
         .expect("publication test agent workspace should update")

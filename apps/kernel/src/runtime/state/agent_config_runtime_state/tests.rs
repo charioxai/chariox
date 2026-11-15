@@ -25,6 +25,9 @@ mod mid_turn_settings;
 #[path = "tests/self_settings.rs"]
 mod self_settings;
 
+#[path = "tests/usage_limit.rs"]
+mod usage_limit;
+
 #[path = "tests/failure_causes.rs"]
 mod failure_causes;
 

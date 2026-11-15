@@ -11,7 +11,7 @@ use crate::session::{RuntimeSession, SessionService, SessionStatus};
 use super::{
     calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance,
     AgentSelfSettings, AgentState, AgentStore, AgentSubstituteProfile, CreateAgentRequest,
-    FailedRequest, GridPosition, RemoteAgentBinding,
+    FailedRequest, GridPosition, RemoteAgentBinding, UsageLimitStop,
 };
 
 #[derive(Debug, Clone)]
@@ -1042,6 +1042,21 @@ impl AgentService {
                 agent_id: agent_id.to_string(),
             })?;
         agent.clear_substitutes();
+        Ok(agent.clone())
+    }
+
+    pub fn set_agent_usage_limit_stop(
+        &mut self,
+        agent_id: &str,
+        stop: Option<UsageLimitStop>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_usage_limit_stop(stop);
         Ok(agent.clone())
     }
 

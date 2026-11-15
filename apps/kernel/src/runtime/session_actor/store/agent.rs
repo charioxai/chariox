@@ -77,6 +77,31 @@ impl SessionRuntimeStore {
         Option<SessionProjectionAction>,
     ) {
         let session_id = request.session_id.clone();
+        if let Some(action) = request.usage_limit.clone() {
+            let result = match self
+                .state
+                .resolve_usage_limit_stop(
+                    &request.session_id,
+                    &request.agent_id,
+                    &caller_user_id,
+                    caller_agent_id.as_deref(),
+                    action,
+                )
+                .await
+            {
+                Ok(agent) => self
+                    .state
+                    .session_snapshot(&session_id)
+                    .await
+                    .map(|session| LocalDaemonResponse::AgentConfigUpdated {
+                        agent,
+                        session,
+                        applies: Default::default(),
+                    }),
+                Err(error) => Err(error),
+            };
+            return self.with_session_projection_action_result(result).await;
+        }
         let execution_mode_override = if request.clear_execution_mode {
             Some(None)
         } else {

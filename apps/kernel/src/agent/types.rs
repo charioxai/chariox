@@ -133,6 +133,43 @@ pub struct GridPosition {
     pub col_span: u32,
 }
 
+/// Where an agent stopped by the provider's usage limit stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum UsageLimitStopState {
+    /// The person decides whether the kernel resumes the turn.
+    Asking,
+    /// The kernel goes on with the turn at `at_ms`.
+    Armed { at_ms: u64 },
+    /// The kernel sent the resume at `since_ms`; the turn goes on.
+    Resuming { since_ms: u64 },
+    /// The person left it stopped.
+    Declined,
+}
+
+/// An agent whose turn ended on the provider's usage limit, until it is resumed or left.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageLimitStop {
+    /// The stopped turn.
+    pub prompt_id: String,
+    pub provider: String,
+    /// The account that ran out, by profile id and by name.
+    pub account_profile: String,
+    pub account_label: String,
+    pub stopped_at_ms: u64,
+    /// When the provider says usage is back; absent when it named no time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumes_at_ms: Option<u64>,
+    /// Resumes the provider refused again.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub refused: u32,
+    pub state: UsageLimitStopState,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
 /// One setting an agent may change about itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelfSettingKind {
@@ -332,6 +369,8 @@ pub struct AgentInstance {
     substitution_timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "AgentSelfSettings::is_empty")]
     self_settings: AgentSelfSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    usage_limit_stop: Option<UsageLimitStop>,
     #[serde(
         default = "default_visible_in_freeform",
         skip_serializing_if = "is_default_visible_in_freeform"
@@ -394,6 +433,7 @@ impl AgentInstance {
             substitutes: Vec::new(),
             substitution_timeout_ms: None,
             self_settings: AgentSelfSettings::default(),
+            usage_limit_stop: None,
             visible_in_freeform: true,
             archived: false,
             hidden: false,
@@ -599,6 +639,10 @@ impl AgentInstance {
         &self.self_settings
     }
 
+    pub fn usage_limit_stop(&self) -> Option<&UsageLimitStop> {
+        self.usage_limit_stop.as_ref()
+    }
+
     pub fn state(&self) -> AgentState {
         self.state
     }
@@ -677,6 +721,7 @@ impl AgentInstance {
         self.substitutes.clear();
         self.substitution_timeout_ms = None;
         self.self_settings = AgentSelfSettings::default();
+        self.usage_limit_stop = None;
         self
     }
 
@@ -964,6 +1009,11 @@ impl AgentInstance {
 
     pub fn clear_substitutes(&mut self) {
         self.substitutes.clear();
+        self.last_activity_at_ms = crate::session::unix_epoch_ms();
+    }
+
+    pub fn set_usage_limit_stop(&mut self, stop: Option<UsageLimitStop>) {
+        self.usage_limit_stop = stop;
         self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
 

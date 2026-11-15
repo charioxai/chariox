@@ -108,6 +108,7 @@ pub(super) fn meta_agent_settings_request(
                 worktree_id: directory,
                 clear_worktree_id: false,
                 self_settings: None,
+ usage_limit: None,
                 reason,
             },
         )),

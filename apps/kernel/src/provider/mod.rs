@@ -54,6 +54,7 @@ mod reported_transcript_file;
 mod run_actor;
 mod runtime_run;
 mod turn_outcome;
+mod usage_limit_reset;
 pub use public_run::PublicProviderRun;
 mod service;
 pub(crate) mod startup_diagnostic;
@@ -209,6 +210,7 @@ pub use types::{
     AgentEndpointMode, ControlCapability, ControlCapabilityMode, ControlOperation,
     ProviderClientInterface, ProviderRunState,
 };
+pub(crate) use usage_limit_reset::usage_limit_reset_at_ms;
 pub(crate) use usage_read_error::ProviderUsageReadError;
 pub(crate) use workspace_live_sync_policy::{
     native_tui_hidden_instructions_block, NATIVE_TUI_HIDDEN_INSTRUCTIONS_END,

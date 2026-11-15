@@ -1,0 +1,548 @@
+//! A turn that ends on the provider's usage limit goes on when usage is back, by the kernel alone.
+
+use super::*;
+use crate::agent::UsageLimitStopState;
+use crate::config::UsageLimitResume;
+use crate::durable_state::agent_lifecycle::ExecutionState;
+
+const OWNER: &str = crate::session::DEFAULT_LOCAL_USER_ID;
+const WEEKLY: &str =
+    "Claude StopFailure [rate_limit]: You've hit your weekly limit \u{b7} resets 4pm (UTC)";
+// 2026-11-15 14:59:00 UTC: the minute the weekly limit stopped two lanes.
+const STOPPED_AT: u64 = 1_794_754_740_000;
+// 16:00:00 UTC the same day.
+const RESET: u64 = 1_794_758_400_000;
+
+struct Lane {
+    agent_id: String,
+    run_id: String,
+    prompt_id: String,
+}
+
+struct Team {
+    runtime: Option<KernelRuntimeState>,
+    config: crate::config::DaemonConfig,
+    session_id: String,
+    lanes: Vec<Lane>,
+    worktree: std::path::PathBuf,
+}
+
+impl Drop for Team {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.worktree);
+    }
+}
+
+fn config(resume: UsageLimitResume) -> crate::config::DaemonConfig {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.agents.usage_limit_resume = Some(resume);
+    config
+}
+
+/// `count` Claude agents of one room, each with a turn running on its own provider run.
+async fn team(config: crate::config::DaemonConfig, count: usize) -> Team {
+    let worktree = crate::test_support::test_workspace_root().join(format!(
+        "chariox-usage-limit-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&worktree).unwrap();
+    let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+    let (session, first) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            worktree.to_string_lossy(),
+            worktree.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let mut agent_ids = vec![first.id().to_string()];
+    for _ in 1..count {
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(crate::agent::CreateAgentRequest::new(
+                &session_id,
+                "dev-stub",
+            ))
+            .expect("agent should spawn");
+        agent_ids.push(agent.id().to_string());
+    }
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let mut lanes = Vec::new();
+    for (index, agent_id) in agent_ids.iter().enumerate() {
+        runtime
+            .owned
+            .agent_store
+            .set_agent_runtime_profile_with_account_profile(
+                agent_id,
+                "dev-stub",
+                Some("claude-haiku-5-5".to_string()),
+                None,
+                None,
+                crate::provider::ProviderResumeState::default(),
+            )
+            .unwrap();
+        let run_id = format!("limited-run-{index}");
+        let request = crate::provider::LaunchProviderRequest::new(
+            &session_id,
+            "claude",
+            "claude",
+            "default",
+            "claude-haiku-5-5",
+        )
+        .with_agent_id(agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            &run_id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "test-claude".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test-claude-runtime".to_string()),
+            },
+        );
+        run.mark_running();
+        let (agent_for_prompt, run_for_app) = (agent_id.clone(), run.clone());
+        runtime
+            .with_app_side_effect(move |app| {
+                app.providers_mut().insert_run_for_test(run_for_app.clone());
+                let attachment = crate::app::KernelSessionService::new(app).attach(
+                    crate::attachment::AttachRequest::new(
+                        &run_for_app.session_id().to_string(),
+                        "usage-limit-test",
+                        crate::attachment::ClientCapabilityLevel::FullTerminal,
+                    ),
+                )?;
+                let prompt = crate::session::PromptQueueItem::new(
+                    "stopped-prompt",
+                    attachment.id(),
+                    &agent_for_prompt,
+                    "review this change",
+                    crate::session::PromptStatus::Queued,
+                );
+                app.prompt_owner_submit_prepared_prompt(run_for_app.session_id(), prompt, false)
+            })
+            .await
+            .unwrap();
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let prompt_id = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .expect("the turn is active")
+            .id()
+            .to_string();
+        runtime
+            .owned
+            .mark_active_prompt_delivery(
+                &session_id,
+                agent_id,
+                &prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(run_id.clone()),
+                None,
+            )
+            .unwrap();
+        lanes.push(Lane {
+            agent_id: agent_id.clone(),
+            run_id,
+            prompt_id,
+        });
+    }
+    Team {
+        runtime: Some(runtime),
+        config,
+        session_id,
+        lanes,
+        worktree,
+    }
+}
+
+impl Team {
+    fn rt(&self) -> &KernelRuntimeState {
+        self.runtime.as_ref().expect("the kernel runs")
+    }
+
+    fn agent(&self, lane: usize) -> crate::agent::AgentInstance {
+        self.rt()
+            .owned
+            .agent_store
+            .get_agent(&self.lanes[lane].agent_id)
+            .unwrap()
+    }
+
+    fn stop(&self, lane: usize) -> Option<crate::agent::UsageLimitStop> {
+        self.agent(lane).usage_limit_stop().cloned()
+    }
+
+    async fn hit_the_limit(&self, lane: usize) {
+        self.rt()
+            .fail_owned_provider_prompt(&self.session_id, &self.lanes[lane].run_id, WEEKLY, true)
+            .await
+            .expect("the limit settles the turn");
+    }
+
+    fn has_turn(&self, lane: usize) -> bool {
+        let session = self
+            .rt()
+            .owned
+            .session_store
+            .get_session(&self.session_id)
+            .unwrap();
+        self.rt()
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &self.lanes[lane].agent_id)
+            .is_some()
+    }
+
+    fn task_state(&self, lane: usize) -> Option<ExecutionState> {
+        self.rt()
+            .owned
+            .durable_state_store
+            .agent_turn_task(
+                &self.session_id,
+                &self.lanes[lane].agent_id,
+                &self.lanes[lane].prompt_id,
+            )
+            .unwrap()
+            .map(|task| task.state)
+    }
+}
+
+#[tokio::test]
+async fn a_turn_that_ends_on_the_limit_asks_by_default_and_names_when_usage_is_back() {
+    let team = team(config(UsageLimitResume::Ask), 1).await;
+
+    team.hit_the_limit(0).await;
+
+    let stop = team.stop(0).expect("the agent records the stop");
+    assert_eq!(stop.state, UsageLimitStopState::Asking);
+    assert_eq!(stop.prompt_id, team.lanes[0].prompt_id);
+    assert_eq!(stop.provider, "claude");
+    assert!(
+        stop.resumes_at_ms.is_some(),
+        "the provider's own words name the time"
+    );
+    assert!(!team.has_turn(0));
+}
+
+/// The kernel stops and starts again over the same durable state.
+async fn restarted(team: &mut Team) -> KernelRuntimeState {
+    drop(team.runtime.take());
+    let app = DaemonApp::bootstrap(team.config.clone()).expect("the kernel starts again");
+    owned_runtime_state(&Arc::new(Mutex::new(app))).await
+}
+
+fn count_resuming(team: &Team) -> usize {
+    (0..team.lanes.len())
+        .filter(|lane| {
+            matches!(
+                team.stop(*lane).map(|stop| stop.state),
+                Some(UsageLimitStopState::Resuming { .. })
+            )
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn with_no_agent_awake_the_kernel_resumes_every_stopped_agent_at_the_reset_staggered() {
+    let team = team(config(UsageLimitResume::Automatic), 3).await;
+    for lane in 0..3 {
+        team.hit_the_limit(lane).await;
+    }
+    let reset = team
+        .stop(0)
+        .unwrap()
+        .resumes_at_ms
+        .expect("the provider named a time");
+    for lane in 0..3 {
+        assert_eq!(
+            team.stop(lane).unwrap().state,
+            UsageLimitStopState::Armed { at_ms: reset },
+            "every agent on the account is armed for the one reset time"
+        );
+        assert!(!team.has_turn(lane));
+    }
+
+    // Before the reset nothing starts.
+    team.rt().tick_usage_limit_stops(reset - 1).await.unwrap();
+    assert_eq!(count_resuming(&team), 0);
+
+    // At the reset one agent resumes; the others wait their turn, a stagger apart.
+    team.rt().tick_usage_limit_stops(reset).await.unwrap();
+    assert_eq!(count_resuming(&team), 1);
+    team.rt()
+        .tick_usage_limit_stops(reset + 1_000)
+        .await
+        .unwrap();
+    assert_eq!(
+        count_resuming(&team),
+        1,
+        "the stagger holds the second agent back"
+    );
+    let stagger = super::super::usage_limit_runtime::RESUME_STAGGER_MS;
+    team.rt()
+        .tick_usage_limit_stops(reset + stagger)
+        .await
+        .unwrap();
+    assert_eq!(count_resuming(&team), 2);
+    team.rt()
+        .tick_usage_limit_stops(reset + 2 * stagger)
+        .await
+        .unwrap();
+    assert_eq!(count_resuming(&team), 3);
+
+    // Each agent goes on with a turn of its own in its own conversation.
+    for lane in 0..3 {
+        assert!(team.has_turn(lane), "agent {lane} has its turn back");
+    }
+}
+
+#[tokio::test]
+async fn a_restart_before_the_reset_loses_nothing() {
+    let team = team(config(UsageLimitResume::Automatic), 2).await;
+    for lane in 0..2 {
+        team.hit_the_limit(lane).await;
+    }
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+
+    let mut team = team;
+    let after = restarted(&mut team).await;
+
+    for lane in 0..2 {
+        let agent = after
+            .owned
+            .agent_store
+            .get_agent(&team.lanes[lane].agent_id)
+            .unwrap();
+        assert_eq!(
+            agent.usage_limit_stop().map(|stop| stop.state.clone()),
+            Some(UsageLimitStopState::Armed { at_ms: reset }),
+            "the stop is still armed on the restarted kernel"
+        );
+    }
+    after.tick_usage_limit_stops(reset).await.unwrap();
+    let session = after
+        .owned
+        .session_store
+        .get_session(&team.session_id)
+        .unwrap();
+    let running = team
+        .lanes
+        .iter()
+        .filter(|lane| {
+            after
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &lane.agent_id)
+                .is_some()
+        })
+        .count();
+    assert_eq!(
+        running, 1,
+        "the restarted kernel resumes at the reset, staggered"
+    );
+}
+
+#[tokio::test]
+async fn the_provider_refusing_at_the_reset_is_retried_a_few_times_and_then_asks() {
+    let team = team(config(UsageLimitResume::Automatic), 1).await;
+    team.hit_the_limit(0).await;
+    let mut at = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    let waits = [60_000u64, 300_000, 900_000];
+    let stagger = super::super::usage_limit_runtime::RESUME_STAGGER_MS;
+    let mut ticked = 0;
+    for (refused, wait) in waits.iter().enumerate() {
+        // The scheduler's clock is the test's; it never runs back.
+        ticked = at.max(ticked + stagger);
+        team.rt().tick_usage_limit_stops(ticked).await.unwrap();
+        assert!(matches!(
+            team.stop(0).unwrap().state,
+            UsageLimitStopState::Resuming { .. }
+        ));
+        let live = team
+            .rt()
+            .owned
+            .provider_store
+            .get_run_for_agent(&team.session_id, &team.lanes[0].agent_id)
+            .expect("the resume runs");
+        // The provider still refuses.
+        team.rt()
+            .fail_owned_provider_prompt(&team.session_id, live.id(), WEEKLY, true)
+            .await
+            .unwrap();
+        let stop = team.stop(0).unwrap();
+        assert_eq!(stop.refused as usize, refused + 1);
+        let UsageLimitStopState::Armed { at_ms } = stop.state else {
+            panic!("armed again after refusal {}", refused + 1);
+        };
+        assert!(at_ms >= crate::session::unix_epoch_ms() + wait - 5_000);
+        at = at_ms;
+    }
+    ticked = at.max(ticked + stagger);
+    team.rt().tick_usage_limit_stops(ticked).await.unwrap();
+    let live = team
+        .rt()
+        .owned
+        .provider_store
+        .get_run_for_agent(&team.session_id, &team.lanes[0].agent_id)
+        .unwrap();
+    team.rt()
+        .fail_owned_provider_prompt(&team.session_id, live.id(), WEEKLY, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        team.stop(0).unwrap().state,
+        UsageLimitStopState::Asking,
+        "after the last retry the person is asked again"
+    );
+}
+
+#[tokio::test]
+async fn a_stopped_task_with_work_owed_goes_on_as_the_same_task() {
+    let mut config = config(UsageLimitResume::Automatic);
+    config.room_agent_tools = true;
+    let team = team(config, 1).await;
+    let agent = team.agent(0);
+    let session = team
+        .rt()
+        .owned
+        .session_store
+        .get_session(&team.session_id)
+        .unwrap();
+    // The prompt carries an obligation, as a worker's does for its parent.
+    team.rt()
+        .owned
+        .admit_agent_task(&crate::app::KernelPreparedPromptSubmission {
+            session_id: team.session_id.clone(),
+            prompt: team
+                .rt()
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent.id())
+                .unwrap(),
+            force_queue: false,
+            refresh_projection: false,
+        })
+        .unwrap();
+    team.rt()
+        .owned
+        .durable_state_store
+        .agent_lifecycle(
+            crate::durable_state::agent_lifecycle::Operation::RegisterObligation {
+                owner: agent.owner_user_id().into(),
+                room: team.session_id.clone(),
+                agent: agent.id().into(),
+                prompt: team.lanes[0].prompt_id.clone(),
+                run: None,
+                id: "owed".into(),
+                kind: "message".into(),
+                resource: None,
+                now: crate::session::unix_epoch_ms(),
+            },
+        )
+        .unwrap();
+    let task_id = team
+        .rt()
+        .owned
+        .durable_state_store
+        .agent_turn_task(&team.session_id, agent.id(), &team.lanes[0].prompt_id)
+        .unwrap()
+        .unwrap()
+        .task_id;
+
+    team.hit_the_limit(0).await;
+    assert_eq!(team.task_state(0), Some(ExecutionState::Blocked));
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    team.rt().tick_usage_limit_stops(reset).await.unwrap();
+
+    let task = team
+        .rt()
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(&team.session_id), Some(agent.id()))
+        .unwrap()
+        .into_iter()
+        .find(|task| task.task_id == task_id)
+        .unwrap();
+    assert_eq!(
+        task.state,
+        ExecutionState::Working,
+        "the same task works again"
+    );
+    assert!(team.has_turn(0));
+}
+
+#[tokio::test]
+async fn asking_waits_for_the_person_and_an_agent_cannot_take_the_decision() {
+    let team = team(config(UsageLimitResume::Ask), 1).await;
+    team.hit_the_limit(0).await;
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+
+    // Nothing fires without the person's decision, however late.
+    team.rt()
+        .tick_usage_limit_stops(reset + 3_600_000)
+        .await
+        .unwrap();
+    assert_eq!(team.stop(0).unwrap().state, UsageLimitStopState::Asking);
+
+    // A parent cannot arm it under Ask me.
+    let refused = team
+        .rt()
+        .resolve_usage_limit_stop(
+            &team.session_id,
+            &team.lanes[0].agent_id,
+            OWNER,
+            Some("a-parent"),
+            crate::local::UsageLimitStopAction::ResumeWhenBack,
+        )
+        .await
+        .expect_err("Ask me is the person's decision");
+    assert!(
+        refused
+            .to_string()
+            .contains("the person chose Ask me for usage limits"),
+        "{refused}"
+    );
+
+    // The person arms it, and the kernel fires it at the reset.
+    team.rt()
+        .resolve_usage_limit_stop(
+            &team.session_id,
+            &team.lanes[0].agent_id,
+            OWNER,
+            None,
+            crate::local::UsageLimitStopAction::ResumeWhenBack,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        team.stop(0).unwrap().state,
+        UsageLimitStopState::Armed { .. }
+    ));
+    // A parent may take an armed resume back.
+    team.rt()
+        .resolve_usage_limit_stop(
+            &team.session_id,
+            &team.lanes[0].agent_id,
+            OWNER,
+            Some("a-parent"),
+            crate::local::UsageLimitStopAction::Cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(team.stop(0).unwrap().state, UsageLimitStopState::Declined);
+    team.rt()
+        .tick_usage_limit_stops(reset + 3_600_000)
+        .await
+        .unwrap();
+    assert!(!team.has_turn(0), "a cancelled resume never fires");
+}

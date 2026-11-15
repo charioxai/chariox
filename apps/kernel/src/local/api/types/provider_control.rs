@@ -36,6 +36,20 @@ pub struct ProviderRunBatchLaunchResult {
     pub reused: bool,
 }
 
+/// What the person, or an agent above, decides for an agent stopped by the provider's usage limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum UsageLimitStopAction {
+    /// Resume when usage is back.
+    ResumeWhenBack,
+    /// Leave the agent stopped.
+    NotNow,
+    /// Take back an armed resume.
+    Cancel,
+    /// Move the turn to another account of the same provider and go on now.
+    ContinueOn { account_profile: String },
+}
+
 /// When a settings change takes effect in the agent's provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,6 +92,9 @@ pub struct UpdateAgentConfigRequest {
     /// What the agent may change about itself without asking; only the person sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_settings: Option<crate::agent::AgentSelfSettings>,
+    /// Settles the agent's usage-limit stop; given alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_limit: Option<UsageLimitStopAction>,
     /// Why an agent asked for the change; shown with the change in history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,

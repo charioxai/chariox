@@ -458,6 +458,7 @@ fn publication_export_captures_exact_grants_and_rejects_missing_definitions() {
                 clear_worktree_id: false,
                 reason: None,
                 self_settings: None,
+                usage_limit: None,
             },
         ))
         .expect("unrelated agent workspace should update");

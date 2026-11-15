@@ -53,6 +53,7 @@ async fn update_agent_config_invalidates_only_that_agents_idle_provider_run() {
         clear_worktree_id: false,
         reason: None,
         self_settings: None,
+        usage_limit: None,
     });
     let command =
         KernelCommand::from_local_request("owned-agent-config-update", None, None, &request);
@@ -146,6 +147,7 @@ async fn update_agent_config_keeps_turn_scoped_provider_run_alive() {
         clear_worktree_id: false,
         reason: None,
         self_settings: None,
+        usage_limit: None,
     });
     let command =
         KernelCommand::from_local_request("owned-turn-scoped-config-update", None, None, &request);
