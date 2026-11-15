@@ -18,12 +18,14 @@ fn projected_open(route: &str, request: &BrowserAppViewRequest) -> Result<(), Da
         return Ok(());
     };
     if std::env::var(REFUSE_PROJECTED_ENV).as_deref() == Ok("1") {
-        tracing::warn!(route, installation = %installation_id, "refused: App view projected into a kernel browser");
+        eprintln!("refused: App view projected into a kernel browser ({route} route, installation {installation_id})");
         return Err(super::app_view_runtime::open_error(
             "This kernel does not project App views into its browser. Open the App in your client's own window.",
         ));
     }
-    tracing::info!(route, installation = %installation_id, "App view projected into a kernel browser");
+    eprintln!(
+        "App view projected into a kernel browser ({route} route, installation {installation_id})"
+    );
     Ok(())
 }
 
