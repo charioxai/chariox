@@ -330,6 +330,8 @@ async fn folders_by_config() {
                 clear_workspace_id: false,
                 worktree_id: worktree.map(|path| path.display().to_string()),
                 clear_worktree_id: false,
+                reason: None,
+                self_settings: None,
             });
         let command = KernelCommand::from_local_request_with_caller(
             "authority-folders-config",

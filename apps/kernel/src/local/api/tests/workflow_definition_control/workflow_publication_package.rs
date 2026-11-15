@@ -456,6 +456,8 @@ fn publication_export_captures_exact_grants_and_rejects_missing_definitions() {
                 clear_workspace_id: false,
                 worktree_id: Some(workspace_id.clone()),
                 clear_worktree_id: false,
+                reason: None,
+                self_settings: None,
             },
         ))
         .expect("unrelated agent workspace should update");

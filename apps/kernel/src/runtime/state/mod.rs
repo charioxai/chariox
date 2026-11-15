@@ -51,6 +51,10 @@ mod agent_move_transport;
 mod context_handoff;
 mod failed_request_owned_state;
 mod native_prompt_handoff;
+use crate::local::SettingsApplies;
+use agent_self_settings_gate as agent_self_settings;
+pub(crate) use agent_settings_change::SettingsContext;
+use agent_settings_change::SettingsOrigin;
 use context_handoff::PendingAgentContextHandoff;
 pub(crate) use context_handoff::PendingAgentContextHandoffStore;
 mod app_automation_owned_state;
@@ -419,6 +423,7 @@ struct KernelRuntimeOwnedState {
     workspace_identity_monitor:
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor,
     pending_agent_context_handoffs: PendingAgentContextHandoffStore,
+    pending_settings_notices: agent_settings_change::PendingSettingsNotices,
     pending_mcp_continuations: PendingMcpContinuationStore,
     background_holds: background_hold::BackgroundHolds,
     private_assessment_results: agent_assessment_result::AssessmentResults,
@@ -545,6 +550,9 @@ mod agent_notification_app;
 mod agent_notification_expiry;
 mod agent_profile_compaction;
 mod agent_profile_owned_state;
+mod agent_self_settings_gate;
+mod agent_settings_change;
+mod agent_settings_swap_runtime;
 mod agent_trigger_gateway;
 mod agent_trigger_http;
 mod agent_trigger_notification;
@@ -1299,6 +1307,7 @@ impl KernelRuntimeState {
                 workspace_identity_monitor:
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
                 pending_agent_context_handoffs,
+                pending_settings_notices: Default::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
                 background_holds: Default::default(),
                 private_assessment_results: Default::default(),

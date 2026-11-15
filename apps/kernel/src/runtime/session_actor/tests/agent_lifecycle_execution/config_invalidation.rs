@@ -51,6 +51,8 @@ async fn update_agent_config_invalidates_only_that_agents_idle_provider_run() {
         clear_workspace_id: false,
         worktree_id: None,
         clear_worktree_id: false,
+        reason: None,
+        self_settings: None,
     });
     let command =
         KernelCommand::from_local_request("owned-agent-config-update", None, None, &request);
@@ -59,7 +61,7 @@ async fn update_agent_config_invalidates_only_that_agents_idle_provider_run() {
         .await
         .expect("agent config update should succeed");
 
-    let LocalDaemonResponse::AgentConfigUpdated { agent, session } = response else {
+    let LocalDaemonResponse::AgentConfigUpdated { agent, session, .. } = response else {
         panic!("unexpected response");
     };
     assert_eq!(agent.id(), first_agent_id);
@@ -142,6 +144,8 @@ async fn update_agent_config_keeps_turn_scoped_provider_run_alive() {
         clear_workspace_id: false,
         worktree_id: None,
         clear_worktree_id: false,
+        reason: None,
+        self_settings: None,
     });
     let command =
         KernelCommand::from_local_request("owned-turn-scoped-config-update", None, None, &request);

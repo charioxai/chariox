@@ -393,7 +393,7 @@ async fn profile_compaction_reserves_local_agent_until_the_profile_is_committed(
 }
 
 #[tokio::test]
-async fn profile_compaction_validates_busy_and_unknown_account_before_compacting() {
+async fn profile_compaction_validates_unknown_account_and_leaves_a_busy_agent_running() {
     let (root, app, runtime, session, agent, run) = compact_fixture().await;
     let invalid = runtime
         .update_agent_profile(
@@ -420,7 +420,11 @@ async fn profile_compaction_validates_busy_and_unknown_account_before_compacting
             None,
         )
         .await;
-    assert!(busy.is_err());
+    // A running turn takes the change at its next finished step; it is never compacted under.
+    assert_eq!(
+        busy.expect("a busy agent accepts the change").model(),
+        Some("haiku")
+    );
     assert!(!root.path().join("started").exists());
     assert_eq!(
         runtime
@@ -728,6 +732,7 @@ async fn profile_compaction_does_not_block_session_commands_or_interaction_respo
             model: Some("haiku".into()),
             effort: None,
             clear_effort: false,
+            reason: None,
         },
     );
     let update_actor = actor.clone();

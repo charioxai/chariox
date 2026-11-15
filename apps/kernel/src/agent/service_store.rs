@@ -9,8 +9,8 @@ use crate::provider::{
 use crate::session::{RuntimeSession, SessionService};
 
 use super::{
-    AgentInstance, AgentService, AgentState, AgentSubstituteProfile, CreateAgentRequest,
-    RemoteAgentBinding,
+    AgentInstance, AgentSelfSettings, AgentService, AgentState, AgentSubstituteProfile,
+    CreateAgentRequest, RemoteAgentBinding,
 };
 
 #[derive(Debug, Clone)]
@@ -522,6 +522,15 @@ impl AgentServiceStore {
 
     pub fn clear_agent_substitutes(&self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
         self.write().clear_agent_substitutes(agent_id)
+    }
+
+    pub fn set_agent_self_settings(
+        &self,
+        agent_id: &str,
+        self_settings: AgentSelfSettings,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write()
+            .set_agent_self_settings(agent_id, self_settings)
     }
 
     pub fn set_agent_substitution_timeout(

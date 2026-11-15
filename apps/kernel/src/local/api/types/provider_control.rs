@@ -36,6 +36,25 @@ pub struct ProviderRunBatchLaunchResult {
     pub reused: bool,
 }
 
+/// When a settings change takes effect in the agent's provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsApplies {
+    /// The agent was idle, or its provider takes the setting in place.
+    #[default]
+    Now,
+    /// The running turn goes on in a new provider process at its next finished step.
+    AtStepBoundary,
+    /// The provider cannot go on in a new process: the next turn starts with the change.
+    AtTurnEnd,
+}
+
+impl SettingsApplies {
+    pub fn is_now(&self) -> bool {
+        *self == Self::Now
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateAgentConfigRequest {
     pub session_id: String,
@@ -56,6 +75,12 @@ pub struct UpdateAgentConfigRequest {
     pub worktree_id: Option<String>,
     #[serde(default)]
     pub clear_worktree_id: bool,
+    /// What the agent may change about itself without asking; only the person sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_settings: Option<crate::agent::AgentSelfSettings>,
+    /// Why an agent asked for the change; shown with the change in history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +97,9 @@ pub struct UpdateAgentProfileRequest {
     pub effort: Option<String>,
     #[serde(default)]
     pub clear_effort: bool,
+    /// Why an agent asked for the change; shown with the change in history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -125,6 +125,7 @@ async fn f4_legacy_agents_inner() {
                             model: Some("dev-model".into()),
                             effort: None,
                             clear_effort: false,
+                            reason: None,
                         },
                     ),
                 ),
@@ -141,6 +142,8 @@ async fn f4_legacy_agents_inner() {
                         clear_workspace_id: false,
                         worktree_id: None,
                         clear_worktree_id: false,
+                        reason: None,
+                        self_settings: None,
                     }),
                 ),
                 (

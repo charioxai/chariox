@@ -76,6 +76,19 @@ pub(crate) fn in_subtree(
     ))
 }
 
+/// The actor itself, or an agent below it.
+pub(crate) fn self_or_below(
+    actor: &AgentInstance,
+    target: &AgentInstance,
+    agents: &[AgentInstance],
+) -> Result<(), DaemonError> {
+    if target.id() == actor.id() && target.session_id() == actor.session_id() {
+        Ok(())
+    } else {
+        in_subtree(actor, target, agents)
+    }
+}
+
 /// Destructive identity changes belong only to the target's immediate parent.
 pub(crate) fn direct_child(
     actor: &AgentInstance,
@@ -157,6 +170,7 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
                         | "pass"
                         | "usage"
                         | "profiles"
+                        | "settings"
                 )
             ) =>
         {

@@ -123,19 +123,6 @@ impl KernelRuntimeOwnedState {
             });
         }
         self.ensure_agent_owner(agent_id, caller_user_id, "update agent profile")?;
-        let session = self.session_store.get_session(session_id)?;
-        if self
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, agent_id)
-            .is_some()
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "update agent profile",
-                message: format!(
-                    "agent `{agent_id}` has an active turn; update the profile after it finishes"
-                ),
-            });
-        }
         self.ensure_agent_config_not_provider_native_tui(
             session_id,
             agent_id,
@@ -241,7 +228,14 @@ impl KernelRuntimeOwnedState {
                     effort: target_effort.map(str::to_string),
                 });
         let mut terminated_run_ids = Vec::new();
+        // A running turn keeps its process: the step-boundary swap or the next dispatch replaces
+        // it, since the record now differs from the run.
+        let active_turn = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&self.session_store.get_session(session_id)?, agent_id)
+            .is_some();
         if remote_update.is_none()
+            && !active_turn
             && (provider_model_or_account_changed || target_effort != agent.effort())
         {
             if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {

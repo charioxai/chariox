@@ -138,6 +138,9 @@ pub(super) fn meta_agent_request(
                 _ => Err(usage()),
             }
         }
+        Some("settings") => {
+            super::settings_args::meta_agent_settings_request(session, metaagent, &args[1..], agents)
+        }
         Some("usage") if args.len() == 1 => Ok(LocalDaemonRequest::GetProviderUsageSnapshot(
             crate::local::GetProviderUsageSnapshotRequest {},
         )),
@@ -145,7 +148,7 @@ pub(super) fn meta_agent_request(
             crate::local::ListProviderAccountProfilesRequest { provider: None },
         )),
         _ => Err(meta_command_error(
-            "usage: agent <list|spawn|focus|alias|delete|destroy|cancel|deadline|children|revoke|usage|profiles> ...",
+            "usage: agent <list|spawn|focus|alias|delete|destroy|cancel|deadline|children|revoke|usage|profiles|settings> ...",
         )),
     }
 }

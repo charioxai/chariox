@@ -9,9 +9,9 @@ use crate::provider::{
 use crate::session::{RuntimeSession, SessionService, SessionStatus};
 
 use super::{
-    calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance, AgentState,
-    AgentStore, AgentSubstituteProfile, CreateAgentRequest, FailedRequest, GridPosition,
-    RemoteAgentBinding,
+    calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance,
+    AgentSelfSettings, AgentState, AgentStore, AgentSubstituteProfile, CreateAgentRequest,
+    FailedRequest, GridPosition, RemoteAgentBinding,
 };
 
 #[derive(Debug, Clone)]
@@ -1042,6 +1042,21 @@ impl AgentService {
                 agent_id: agent_id.to_string(),
             })?;
         agent.clear_substitutes();
+        Ok(agent.clone())
+    }
+
+    pub fn set_agent_self_settings(
+        &mut self,
+        agent_id: &str,
+        self_settings: AgentSelfSettings,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_self_settings(self_settings);
         Ok(agent.clone())
     }
 

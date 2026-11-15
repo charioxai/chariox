@@ -57,14 +57,14 @@ impl FailingTurn {
             .unwrap();
     }
 
-    fn live_run(&self) -> Option<crate::provider::RuntimeProviderRun> {
+    pub(super) fn live_run(&self) -> Option<crate::provider::RuntimeProviderRun> {
         self.runtime
             .owned
             .provider_store
             .get_run_for_agent(&self.session_id, &self.agent_id)
     }
 
-    fn notices(&self) -> Vec<String> {
+    pub(super) fn notices(&self) -> Vec<String> {
         self.runtime
             .owned
             .terminal_stream
@@ -172,7 +172,7 @@ impl FailingTurn {
             .append_operational_history_entry(&entry, None, None, None);
     }
 
-    fn provider_inputs(&self, provider_run_id: &str) -> String {
+    pub(super) fn provider_inputs(&self, provider_run_id: &str) -> String {
         self.runtime
             .owned
             .terminal_stream
