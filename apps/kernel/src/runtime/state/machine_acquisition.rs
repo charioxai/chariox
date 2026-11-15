@@ -97,12 +97,21 @@ impl KernelRuntimeState {
                 },
                 Some(capability),
             ) => {
-                let option = chosen_option(capability, class_id, region.as_deref())?;
-                format!(
-                    "Acquire {} in {} ({} CPUs, {} GB) at {} {} per minute? The total depends on how long you keep it.",
-                    option.class_id, option.region, option.vcpu, option.ram_gb,
-                    money(option.rate_per_minute.amount_micros), option.rate_per_minute.currency
-                )
+                // The service validates the choice; the card names what it lists, or the bare request.
+                match capability.offers.iter().find(|option| {
+                    &option.class_id == class_id
+                        && region.as_ref().is_none_or(|region| &option.region == region)
+                }) {
+                    Some(option) => format!(
+                        "Acquire {} in {} ({} CPUs, {} GB) at {} {} per minute? The total depends on how long you keep it.",
+                        option.class_id, option.region, option.vcpu, option.ram_gb,
+                        money(option.rate_per_minute.amount_micros), option.rate_per_minute.currency
+                    ),
+                    None => format!(
+                        "Acquire {class_id}{} at the connected service's quoted rate?",
+                        region.as_ref().map(|region| format!(" in {region}")).unwrap_or_default()
+                    ),
+                }
             }
             (_, Some(capability)) => capability
                 .offer
@@ -202,58 +211,11 @@ fn money(amount_micros: u64) -> String {
         .trim_end_matches('.')
         .to_owned()
 }
-/// The offered option a caller named, or the reason it cannot be acquired as named; the service decides everything else.
-fn chosen_option<'a>(
-    capability: &'a MachineAllocationCapability,
-    class_id: &str,
-    region: Option<&str>,
-) -> Result<&'a MachineOption, DaemonError> {
-    let rows: Vec<&MachineOption> = capability
-        .offers
-        .iter()
-        .filter(|option| option.class_id == class_id)
-        .collect();
-    if rows.is_empty() {
-        return Err(acquisition_error(
-            "invalid_request",
-            &format!("{class_id} is not an offered machine; list the options with chariox.machines.options"),
-        ));
-    }
-    match region {
-        Some(region) => rows
-            .into_iter()
-            .find(|option| option.region == region)
-            .ok_or_else(|| {
-                acquisition_error(
-                    "invalid_request",
-                    &format!("{class_id} is not offered in {region}"),
-                )
-            }),
-        None if rows.len() == 1 => Ok(rows[0]),
-        None => Err(acquisition_error(
-            "invalid_request",
-            &format!(
-                "Choose a region for {class_id}: {}",
-                rows.iter().map(|option| option.region.as_str()).collect::<Vec<_>>().join(", ")
-            ),
-        )),
-    }
-}
-
 pub(super) fn acquisition_error(code: &str, message: &str) -> DaemonError {
     DaemonError::MachineRequest {
         code: code.into(),
         message: message.into(),
     }
-}
-
-#[cfg(test)]
-pub(super) fn chosen_option_for_tests<'a>(
-    capability: &'a MachineAllocationCapability,
-    class_id: &str,
-    region: Option<&str>,
-) -> Result<&'a MachineOption, DaemonError> {
-    chosen_option(capability, class_id, region)
 }
 
 pub(crate) fn machine_tool_specs() -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
@@ -330,33 +292,25 @@ impl KernelRuntimeState {
                 let request_id = args
                     .request_id
                     .unwrap_or_else(|| format!("machine-{:032x}", rand::random::<u128>()));
-                let chosen = match args.class_id.as_deref() {
-                    Some(class_id) => {
-                        let option = chosen_option(&capability, class_id, args.region.as_deref())?;
-                        if !option.available {
-                            return Err(acquisition_error(
-                                "capacity_unavailable",
-                                "This machine is not available right now. Choose another option or try again in a few minutes.",
-                            ));
-                        }
-                        Some(option.clone())
-                    }
-                    None => None,
-                };
                 let result = self
                     .job_control_plane(
                         &origin,
                         &ControlPlaneRequest::Acquire {
                             capability_revision: capability.revision.clone(),
                             request_id: request_id.clone(),
-                            class_id: chosen.as_ref().map(|option| option.class_id.clone()),
-                            region: chosen.as_ref().map(|option| option.region.clone()),
+                            class_id: args.class_id.clone(),
+                            region: args.region.clone(),
                         },
                         &format!("machine:{request_id}:acquire"),
                     )
                     .await?;
-                match chosen {
-                    Some(option) => {
+                // The service decides whether the choice can be acquired, and replays a retry of one it accepted.
+                match args.class_id {
+                    Some(class_id) => {
+                        let option = capability.offers.iter().find(|option| {
+                            option.class_id == class_id
+                                && args.region.as_ref().is_none_or(|region| &option.region == region)
+                        });
                         serde_json::json!({"allocation":result,"option":option,"estimate":{"kind":"unknown","reason":"No duration was specified; the total depends on when the machine is deleted"}})
                     }
                     None => {

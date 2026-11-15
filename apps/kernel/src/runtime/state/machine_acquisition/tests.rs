@@ -298,26 +298,6 @@ fn listed(offers: Vec<MachineOption>) -> MachineAllocationCapability {
 }
 
 #[test]
-fn a_named_option_is_exactly_one_listed_row_and_never_a_guess() {
-    let caps = listed(vec![
-        option("small", "fsn1", true),
-        option("small", "nbg1", false),
-        option("solo", "auto", true),
-    ]);
-    let pick = |class: &str, region: Option<&str>| {
-        super::chosen_option_for_tests(&caps, class, region).map(|option| option.region.clone())
-    };
-    assert_eq!(pick("solo", None).unwrap(), "auto");
-    assert_eq!(pick("small", Some("nbg1")).unwrap(), "nbg1");
-    let ambiguous = pick("small", None).unwrap_err().to_string();
-    assert!(ambiguous.contains("Choose a region for small: fsn1, nbg1"), "{ambiguous}");
-    let elsewhere = pick("small", Some("ash")).unwrap_err().to_string();
-    assert!(elsewhere.contains("small is not offered in ash"), "{elsewhere}");
-    let unknown = pick("large", None).unwrap_err().to_string();
-    assert!(unknown.contains("large is not an offered machine"), "{unknown}");
-}
-
-#[test]
 fn the_machine_tools_list_options_and_acquire_takes_the_chosen_class() {
     let specs = super::machine_tool_specs();
     let names: Vec<_> = specs.iter().map(|spec| spec.name.as_str()).collect();
@@ -373,5 +353,37 @@ async fn the_owner_is_asked_about_the_option_the_agent_chose() {
     .unwrap();
     assert!(message.contains("agent-vm-s in auto"), "{message}");
     assert!(message.contains("EUR per minute"), "{message}");
+    gate.abort();
+}
+
+#[tokio::test]
+async fn the_owner_is_asked_about_a_named_option_even_when_it_is_no_longer_listed() {
+    // A retry of an accepted request must reach the service whatever the list says now.
+    let (state, command, _, caps, _workspace) = fixture(false);
+    let request = ControlPlaneRequest::Acquire {
+        capability_revision: "v1".into(),
+        request_id: "retry".into(),
+        class_id: Some("gone".into()),
+        region: Some("auto".into()),
+    };
+    let room = command.session_id.clone().unwrap();
+    let gate_state = state.clone();
+    let gate = tokio::spawn(async move {
+        gate_state
+            .approve_machine_acquisition(&command, &request, Some(&caps))
+            .await
+    });
+    let message = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = state.owned.session_store.get_session(&room).unwrap();
+            if let Some(card) = snapshot.active_interactions().first() {
+                break card.message().to_owned();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(message.contains("Acquire gone in auto"), "{message}");
     gate.abort();
 }
