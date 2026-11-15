@@ -132,6 +132,13 @@ test('MP-10: context-deflated bodies inflate in order; a repeat costs a few byte
   inflater.close(); kernel.close()
 })
 
+test('a body that arrived as raw bytes inflates the same as its base64 text', async () => {
+  const kernel = kernelContext(), inflater = new Mirror2Inflater()
+  const text = JSON.stringify({ wire: 2, sequence: 4, ops: [] }), packet = await kernel.encode(text)
+  assert.equal(await inflater.inflate(new Uint8Array(Buffer.from(packet.packet_base64, 'base64')), packet.packet_bytes), text)
+  inflater.close(); kernel.close()
+})
+
 test('MP-10/MP-11: compact rows decode to records (kernel encoder fixture) and refuse malformed rows', () => {
   const rows = [[1, 0, 1], [1, 1, 'html', { lang: 'en' }], [1, 1, 'body'], [2, 1, 0, 'Hello'], [1, 2, 4, 0, { size: [10, 20], display: 'inline-block', tag: 'span' }], [1, 3, 'svg', { viewBox: '0 0 1 1' }, { ns: 'svg' }], [999999994, 4, 3, 0, { tag: 'iframe' }], [1, 1, 1, 0, { fragment: 'section' }]]
   assert.deepEqual(decodeMirror2Records(rows, null), [

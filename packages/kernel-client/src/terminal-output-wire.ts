@@ -1,5 +1,9 @@
 /** CXT1: u32 JSON header length, record metadata with byte ranges, raw terminal bytes. */
-export function decodeTerminalOutput(bytes: Uint8Array): Record<string, unknown> | null {
+/**
+ * `rawPacket`: a reader of the decoded object (not of a JSON text made from it) takes a mirror packet's deflated body as
+ * bytes in `packet`; every other reader gets `packet_base64` as before.
+ */
+export function decodeTerminalOutput(bytes: Uint8Array, rawPacket = false): Record<string, unknown> | null {
   if (bytes.length < 4 || bytes[0] !== 0x43 || bytes[1] !== 0x58 || bytes[2] !== 0x54 || bytes[3] !== 0x31) return null
   const invalid = () => new Error("invalid terminal output event")
   if (bytes.length < 8) throw invalid()
@@ -33,19 +37,25 @@ export function decodeTerminalOutput(bytes: Uint8Array): Record<string, unknown>
     if (cursor !== payload.length) throw invalid()
     return output
   }
-  // A mirror packet's deflated body and whole resources keep their bytes raw, in this order: the body, then each resource.
+  // A Browser reply keeps its bytes raw, in this order: a mirror packet's deflated body (handed on as bytes, `packet`),
+  // each whole resource, then a picture's pixels.
   if (Object.keys(output).length === 1 && output.KernelBrowser) {
     const result = (output.KernelBrowser as { result?: Record<string, unknown> }).result
     if (!result || typeof result !== "object" || Array.isArray(result)) throw invalid()
     const holders: [Record<string, unknown>, string][] = [[result, "packet_base64"]]
     if (Array.isArray(result.resources)) for (const resource of result.resources) if (resource && typeof resource === "object") holders.push([resource as Record<string, unknown>, "data_base64"])
+    holders.push([result, "data_base64"])
     let cursor = 0
     for (const [holder, key] of holders) {
       const range = holder[key]
       if (!Array.isArray(range)) continue
       const [offset, length] = range
       if (range.length !== 2 || offset !== cursor || !Number.isSafeInteger(length) || length < 0 || length > payload.length - cursor) throw invalid()
-      holder[key] = base64Of(payload.subarray(cursor, cursor + length))
+      const data = payload.subarray(cursor, cursor + length)
+      if (rawPacket && key === "packet_base64") {
+        delete holder[key]
+        holder.packet = new Uint8Array(data)
+      } else holder[key] = base64Of(data)
       cursor += length
     }
     if (cursor !== payload.length) throw invalid()

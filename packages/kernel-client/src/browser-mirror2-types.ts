@@ -43,8 +43,8 @@ export type Mirror2Packet = {
 }
 // Protocol 489 wire form: a delta omits the binding, its base (sequence - 1),
 // header fields equal to the base's and empty lists; a body may travel deflated
-// in the subscription's context (`packet_base64`, fresh context per reset).
-export type Mirror2WirePacket = Partial<Mirror2Packet> & { wire: 2; sequence: number; encoding?: 'deflate'; packet_base64?: string; packet_bytes?: number }
+// in the subscription's context (`packet_base64`, or `packet` when its bytes arrived raw; fresh context per reset).
+export type Mirror2WirePacket = Partial<Mirror2Packet> & { wire: 2; sequence: number; encoding?: 'deflate'; packet_base64?: string; packet?: Uint8Array; packet_bytes?: number }
 export type Mirror2Action =
   | { kind: 'click'; node_id: string; x: number; y: number }
   | { kind: 'scroll'; node_id: string; x: number; y: number; delta_x: number; delta_y: number }

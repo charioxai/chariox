@@ -23,3 +23,13 @@ test("a mirror reply refuses a range that leaves its payload", () => {
     assert.throws(() => decodeTerminalOutput(frame({ KernelBrowser: { result: { packet_base64: range } } }, payload)))
   }
 })
+
+test("a reader of the decoded object takes the deflated body as bytes, a screenshot's picture as base64", () => {
+  const header = { KernelBrowser: { result: { wire: 2, sequence: 3, packet_base64: [0, 5], resources: [{ key: "f", data_base64: [5, 3] }] } } }
+  assert.deepEqual(decodeTerminalOutput(frame(header, Buffer.concat([body, font])), true), {
+    KernelBrowser: { result: { wire: 2, sequence: 3, packet: new Uint8Array(body), resources: [{ key: "f", data_base64: font.toString("base64") }] } },
+  })
+  assert.deepEqual(decodeTerminalOutput(frame({ KernelBrowser: { result: { mime_type: "image/png", data_base64: [0, 3] } } }, font)), {
+    KernelBrowser: { result: { mime_type: "image/png", data_base64: font.toString("base64") } },
+  })
+})

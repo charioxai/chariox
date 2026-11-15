@@ -124,8 +124,9 @@ fn room_terminal_fields(value: &Value) -> &'static [(&'static str, RoomByteEncod
     }
 }
 
-/// A mirror packet's byte fields in wire order: the deflated body, then each whole resource. A field holds
-/// base64 text before encoding and its `[offset, length]` in the payload after it.
+/// A Browser reply's byte fields in wire order: a mirror packet's deflated body, then each whole resource, then a
+/// picture's pixels (`screenshot`). A field holds base64 text before encoding and its `[offset, length]` in the
+/// payload after it.
 fn mirror_fields(response: &Value) -> Vec<String> {
     let Some(result) = response.pointer("/KernelBrowser/result") else {
         return Vec::new();
@@ -143,10 +144,13 @@ fn mirror_fields(response: &Value) -> Vec<String> {
             ));
         }
     }
+    if is_bytes(result.get("data_base64")) {
+        fields.push("/KernelBrowser/result/data_base64".to_string());
+    }
     fields
 }
 
-/// Moves the base64 of a mirror packet's body and resources out of the JSON as raw bytes. A resource slice
+/// Moves the base64 of a Browser reply's packet body, resources and picture out of the JSON as raw bytes. A resource slice
 /// that is not canonical base64 on its own stays text; `None` when no field moved.
 fn encode_mirror_reply(response: &mut Value) -> Result<Option<Vec<u8>>, serde_json::Error> {
     let engine = base64::engine::general_purpose::STANDARD;
@@ -451,6 +455,25 @@ mod mirror_reply_tests {
         assert!(
             wire.len() < 4096 + 300 + 512,
             "bytes still travel as base64: {}",
+            wire.len()
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&open(&wire).unwrap()).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn a_screenshot_reply_carries_its_picture_as_raw_bytes() {
+        let engine = base64::engine::general_purpose::STANDARD;
+        let original = serde_json::json!({"KernelBrowser":{"result":{
+            "tab_id":"t","generation":2,"mime_type":"image/png","width":800,"height":600,
+            "data_base64":engine.encode(vec![0x89u8; 6000])}}});
+        let mut response = original.clone();
+        let wire = encode_reply(&mut response).unwrap();
+        assert!(
+            wire.len() < 6000 + 512,
+            "the picture still travels as base64: {}",
             wire.len()
         );
         assert_eq!(

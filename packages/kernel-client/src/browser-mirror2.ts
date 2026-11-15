@@ -986,9 +986,9 @@ export class Mirror2Inflater {
   private writer: WritableStreamDefaultWriter<BufferSource>
   private reader: ReadableStreamDefaultReader<Uint8Array>
   constructor() { const stream = new DecompressionStream('deflate-raw'); this.writer = stream.writable.getWriter(); this.reader = stream.readable.getReader() }
-  async inflate(base64: unknown, size: unknown): Promise<string> {
-    if (typeof base64 !== 'string' || !Number.isSafeInteger(size) || (size as number) < 2 || (size as number) > 256 * 1024 * 1024) throw Error('MP-11: mirror packet bounds')
-    void this.writer.write(bytesOf(base64) as Uint8Array<ArrayBuffer>).catch(() => {})
+  async inflate(packet: unknown, size: unknown): Promise<string> {
+    if (!(typeof packet === 'string' || packet instanceof Uint8Array) || !Number.isSafeInteger(size) || (size as number) < 2 || (size as number) > 256 * 1024 * 1024) throw Error('MP-11: mirror packet bounds')
+    void this.writer.write((typeof packet === 'string' ? bytesOf(packet) : packet) as Uint8Array<ArrayBuffer>).catch(() => {})
     const body = new Uint8Array(size as number); let at = 0
     while (at < body.length) { const { done, value } = await this.reader.read(); if (done || value.length > body.length - at) throw Error('MP-11: mirror packet bounds'); body.set(value, at); at += value.length }
     return new TextDecoder('utf-8', { fatal: true }).decode(body)
@@ -1024,7 +1024,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     let body: Mirror2WirePacket = wire
     if (wire.encoding !== undefined) {
       if (wire.encoding !== 'deflate') throw Error('MP-11: mirror packet bounds')
-      const text = await (inflater ??= new Mirror2Inflater()).inflate(wire.packet_base64, wire.packet_bytes)
+      const text = await (inflater ??= new Mirror2Inflater()).inflate(wire.packet ?? wire.packet_base64, wire.packet_bytes)
       body = JSON.parse(text) as Mirror2WirePacket
       if (body.sequence !== wire.sequence || Boolean(body.reset) !== Boolean(wire.reset)) throw Error('MP-11: foreign mirror packet')
     }
