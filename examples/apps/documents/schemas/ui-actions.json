@@ -151,17 +151,46 @@
         ],
         "additionalProperties": false
       },
-      "effect": "write"
+      "effect": "approval",
+      "approvalReason": "Deleting a document also deletes its history and cannot be undone."
     },
     {
       "name": "import_documents",
-      "description": "Ask the owner to choose Markdown, HTML or text files to import as new documents. Waits for the owner's choice in their prompt, then returns the new documents and any file that could not be imported.",
+      "description": "Ask the owner to choose Markdown, HTML or text files to import as new documents. Waits up to 20 seconds for the owner's choice in their prompt, then returns the new documents and any file that could not be imported. While the owner has not chosen it returns {pending: true, importId}: call again with that importId to keep waiting (the request stays open for ten minutes).",
       "inputSchema": {
         "type": "object",
         "properties": {
           "folder": {
             "type": "string",
             "maxLength": 200
+          },
+          "importId": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "files": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "maxLength": 255
+                },
+                "content": {
+                  "type": "string",
+                  "maxLength": 524288
+                }
+              },
+              "required": [
+                "name",
+                "content"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Files already read as UTF-8 text (the window passes the files its person chose); the owner is not asked."
           }
         },
         "additionalProperties": false

@@ -9,6 +9,11 @@ Markdown and HTML documents the person and their agents write together, on the w
 - Every edit names the revision it started from; a stale editor is refused, never merged. Ten revisions
   of each document are kept. Files and state keep the layout the earlier runtime used, so an update
   keeps the documents.
+- Import: `import_documents` asks the owner for files in the kernel's prompt and waits up to 20 s per call;
+  while the owner has not chosen it returns `{pending, importId}` and the caller asks again with that id
+  (the kernel holds the request ten minutes), so no call outlasts the kernel's 30 s limit.
+- An agent's `delete_document` is an `approval` action: the person confirms it in the Room. The person's own
+  delete in the window is one click with the usual confirm.
 
 ```sh
 cargo test --manifest-path examples/apps/documents/backend/Cargo.toml

@@ -44,6 +44,10 @@ struct Host {
     tools: Vec<String>,
     /// What the person chooses next: (file name, bytes) per grant.
     chosen: Vec<(String, Vec<u8>)>,
+    /// How many times the owner is still asked before they choose; `None` when they decline.
+    waits: Option<u32>,
+    /// How many requests for files reached the owner's prompt.
+    asked: u32,
     offers: Vec<(String, Vec<u8>)>,
     snapshots: Vec<String>,
     /// Commits of the index the kernel refuses with a version conflict, as a concurrent writer would.
@@ -140,16 +144,47 @@ impl<T: Send> host::HostWithStore<T> for HasSelf<Host> {
     async fn write_clipboard(_: &Accessor<T, Self>, _: String) -> Result<host::Offer, AppError> {
         panic!("unexpected clipboard")
     }
-    async fn pick_file(
+    async fn pick_file(_: &Accessor<T, Self>, _: host::Pick) -> Result<Vec<String>, AppError> {
+        panic!("a call that waits for the owner cannot outlast the kernel's 30 s")
+    }
+    async fn request_file(
         accessor: &Accessor<T, Self>,
         request: host::Pick,
-    ) -> Result<Vec<String>, AppError> {
+    ) -> Result<host::Picked, AppError> {
         assert!(request.multiple && request.accept.contains(&".md".to_owned()));
         Ok(accessor.with(|mut access| {
-            (0..access.get().chosen.len())
-                .map(|n| format!("grant-{n}"))
-                .collect()
+            access.get().asked += 1;
+            access.get().picked()
         }))
+    }
+    async fn await_file(
+        accessor: &Accessor<T, Self>,
+        operation_id: String,
+        wait_ms: u32,
+    ) -> Result<host::Picked, AppError> {
+        assert_eq!(operation_id, "pick-1");
+        assert!(
+            wait_ms <= 25_000,
+            "a call waits less than the kernel's limit"
+        );
+        Ok(accessor.with(|mut access| access.get().picked()))
+    }
+}
+impl Host {
+    /// Where the owner's choice stands after one more ask.
+    fn picked(&mut self) -> host::Picked {
+        match &mut self.waits {
+            None => host::Picked::Declined,
+            Some(0) => host::Picked::Granted(
+                (0..self.chosen.len())
+                    .map(|n| format!("grant-{n}"))
+                    .collect(),
+            ),
+            Some(waits) => {
+                *waits -= 1;
+                host::Picked::Pending("pick-1".into())
+            }
+        }
     }
 }
 
@@ -274,6 +309,8 @@ async fn runtime(label: &str) -> wasmtime::Result<(Scratch, Store<Host>, Drill)>
             records: BTreeMap::new(),
             tools: vec![],
             chosen: vec![],
+            waits: Some(0),
+            asked: 0,
             offers: vec![],
             snapshots: vec![],
             conflicts: VecDeque::new(),
@@ -575,6 +612,82 @@ async fn the_view_serves_its_state_and_the_feed_of_every_change() -> wasmtime::R
         ok(store, app, "view_state", json!({})).await,
         json!({"documents": []})
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_owner_who_takes_longer_than_one_call_still_imports_with_the_same_request(
+) -> wasmtime::Result<()> {
+    let (_root, mut store, app) = runtime("slow-choice").await?;
+    let (store, app) = (&mut store, &app);
+    store.data_mut().chosen = vec![("Later.md".into(), b"# Later\n".to_vec())];
+    // The owner has not chosen when the first call ends, nor the second.
+    store.data_mut().waits = Some(3);
+    let first = ok(store, app, "import_documents", json!({})).await;
+    assert_eq!(first, json!({"pending": true, "importId": "pick-1"}));
+    let second = ok(
+        store,
+        app,
+        "import_documents",
+        json!({"importId": "pick-1"}),
+    )
+    .await;
+    assert_eq!(second, json!({"pending": true, "importId": "pick-1"}));
+    assert_eq!(
+        ok(store, app, "list_documents", json!({})).await,
+        json!({"documents": []}),
+        "nothing is imported before the choice"
+    );
+    let third = ok(
+        store,
+        app,
+        "import_documents",
+        json!({"importId": "pick-1", "folder": "inbox"}),
+    )
+    .await;
+    assert_eq!(third["imported"][0]["title"], "Later");
+    assert_eq!(third["imported"][0]["folder"], "inbox");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn files_the_window_read_become_documents_without_asking_the_owner() -> wasmtime::Result<()> {
+    let (_root, mut store, app) = runtime("uploaded").await?;
+    let (store, app) = (&mut store, &app);
+    let imported = ok(
+        store,
+        app,
+        "import_documents",
+        json!({"folder": "inbox", "files": [
+            {"name": "Meeting notes.MD", "content": "# Notes\n"},
+            {"name": "page.html", "content": "<p>hi</p>"},
+        ]}),
+    )
+    .await;
+    assert_eq!(imported["imported"][0]["title"], "Meeting notes");
+    assert_eq!(imported["imported"][1]["kind"], "html");
+    assert_eq!(imported["imported"][1]["folder"], "inbox");
+    assert_eq!(imported["skipped"], json!([]));
+    assert_eq!(store.data().asked, 0, "the window already has the files");
+    assert_eq!(
+        ok(store, app, "list_documents", json!({})).await["documents"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_owner_who_declines_ends_the_import_with_a_reason() -> wasmtime::Result<()> {
+    let (_root, mut store, app) = runtime("declined").await?;
+    let (store, app) = (&mut store, &app);
+    store.data_mut().waits = None;
+    let refused = call(store, app, "import_documents", json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, "CANCELLED");
     Ok(())
 }
 
