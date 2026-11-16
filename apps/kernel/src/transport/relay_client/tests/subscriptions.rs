@@ -260,13 +260,13 @@ async fn relay_event_store_recovers_both_subscription_scopes_after_append_failur
     let waiting_first = runtime
         .event_log
         .append(
-            WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+            ROOM_LIST_SUBSCRIPTION_SCOPE,
             KernelEvent::Heartbeat {
-                session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+                session_id: ROOM_LIST_SENTINEL_ID.to_string(),
             },
         )
         .await
-        .expect("waiting-room events should recover without a runtime restart");
+        .expect("room-list events should recover without a runtime restart");
     let session_second = runtime
         .event_log
         .append(
@@ -280,13 +280,13 @@ async fn relay_event_store_recovers_both_subscription_scopes_after_append_failur
     let waiting_second = runtime
         .event_log
         .append(
-            WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+            ROOM_LIST_SUBSCRIPTION_SCOPE,
             KernelEvent::Heartbeat {
-                session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+                session_id: ROOM_LIST_SENTINEL_ID.to_string(),
             },
         )
         .await
-        .expect("later waiting-room events should preserve order");
+        .expect("later room-list events should preserve order");
     assert!(session_first.event_id < waiting_first.event_id);
     assert!(waiting_first.event_id < session_second.event_id);
     assert!(session_second.event_id < waiting_second.event_id);
@@ -311,10 +311,7 @@ async fn relay_event_store_recovers_both_subscription_scopes_after_append_failur
     }
     match restarted
         .event_log
-        .replay_after(
-            WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
-            waiting_first.event_id,
-        )
+        .replay_after(ROOM_LIST_SUBSCRIPTION_SCOPE, waiting_first.event_id)
         .await
     {
         ReplayOutcome::Replayed(events) => {
@@ -323,11 +320,11 @@ async fn relay_event_store_recovers_both_subscription_scopes_after_append_failur
             assert!(matches!(
                 &events[0].event,
                 KernelEvent::Heartbeat { session_id }
-                    if session_id == WAITING_ROOM_INVENTORY_SENTINEL_ID
+                    if session_id == ROOM_LIST_SENTINEL_ID
             ));
         }
         ReplayOutcome::Gap(gap) => {
-            panic!("waiting-room events should replay in order: {gap:?}")
+            panic!("room-list events should replay in order: {gap:?}")
         }
     }
     drop(restarted);
@@ -335,7 +332,7 @@ async fn relay_event_store_recovers_both_subscription_scopes_after_append_failur
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn relay_waiting_room_subscription_sends_baseline_after_reload_and_observes_mutations() {
+async fn relay_room_list_subscription_sends_baseline_after_reload_and_observes_mutations() {
     let _relay_test_guard = relay_client_test_guard().await;
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
@@ -410,16 +407,16 @@ async fn relay_waiting_room_subscription_sends_baseline_after_reload_and_observe
     send_client_envelope(
         &mut client_socket,
         &RelayEnvelope::ClientSubscribe {
-            request_id: "waiting-room-subscribe".to_string(),
-            subscription_id: "waiting-room-subscription".to_string(),
+            request_id: "room-list-subscribe".to_string(),
+            subscription_id: "room-list-subscription".to_string(),
             target: ClientTarget {
                 daemon_id: Some(config.daemon_id.clone()),
                 daemon_alias: None,
             },
-            session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
-            attachment_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+            session_id: ROOM_LIST_SENTINEL_ID.to_string(),
+            attachment_id: ROOM_LIST_SENTINEL_ID.to_string(),
             client_public_key: subscription_public_key,
-            subscription_scope: Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE.to_string()),
+            subscription_scope: Some(ROOM_LIST_SUBSCRIPTION_SCOPE.to_string()),
             resume_from_event_id: None,
             heartbeat_interval_ms: None,
         },
@@ -427,21 +424,21 @@ async fn relay_waiting_room_subscription_sends_baseline_after_reload_and_observe
     .await;
     let _ = expect_json_client_response(
         &mut client_socket,
-        "waiting-room-subscribe",
+        "room-list-subscribe",
         &subscription_private_key,
     )
     .await;
     let first_inventory = expect_named_client_event(
         &mut client_socket,
         &subscription_private_key,
-        "waiting_room_rows_changed",
+        "room_list_rows_changed",
     )
     .await
     .1;
 
     let (mut reloaded_client_socket, _) = connect_async(&url)
         .await
-        .expect("reloaded waiting-room client should connect to relay");
+        .expect("reloaded room-list client should connect to relay");
     send_client_envelope(
         &mut reloaded_client_socket,
         &RelayEnvelope::ClientConnect {
@@ -462,16 +459,16 @@ async fn relay_waiting_room_subscription_sends_baseline_after_reload_and_observe
     send_client_envelope(
         &mut reloaded_client_socket,
         &RelayEnvelope::ClientSubscribe {
-            request_id: "waiting-room-reload-subscribe".to_string(),
-            subscription_id: "waiting-room-reload-subscription".to_string(),
+            request_id: "room-list-reload-subscribe".to_string(),
+            subscription_id: "room-list-reload-subscription".to_string(),
             target: ClientTarget {
                 daemon_id: Some(config.daemon_id.clone()),
                 daemon_alias: None,
             },
-            session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
-            attachment_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+            session_id: ROOM_LIST_SENTINEL_ID.to_string(),
+            attachment_id: ROOM_LIST_SENTINEL_ID.to_string(),
             client_public_key: reloaded_subscription_public_key,
-            subscription_scope: Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE.to_string()),
+            subscription_scope: Some(ROOM_LIST_SUBSCRIPTION_SCOPE.to_string()),
             resume_from_event_id: None,
             heartbeat_interval_ms: None,
         },
@@ -479,7 +476,7 @@ async fn relay_waiting_room_subscription_sends_baseline_after_reload_and_observe
     .await;
     let _ = expect_json_client_response(
         &mut reloaded_client_socket,
-        "waiting-room-reload-subscribe",
+        "room-list-reload-subscribe",
         &reloaded_subscription_private_key,
     )
     .await;
@@ -488,11 +485,11 @@ async fn relay_waiting_room_subscription_sends_baseline_after_reload_and_observe
         expect_named_client_event(
             &mut reloaded_client_socket,
             &reloaded_subscription_private_key,
-            "waiting_room_rows_changed",
+            "room_list_rows_changed",
         ),
     )
     .await
-    .expect("reloaded waiting-room subscriber should receive its own unchanged baseline")
+    .expect("reloaded room-list subscriber should receive its own unchanged baseline")
     .1;
     assert_eq!(
         reloaded_inventory["inventory_version"], first_inventory["inventory_version"],
@@ -521,11 +518,11 @@ async fn relay_waiting_room_subscription_sends_baseline_after_reload_and_observe
         expect_named_client_event(
             &mut client_socket,
             &subscription_private_key,
-            "waiting_room_rows_changed",
+            "room_list_rows_changed",
         ),
     )
     .await
-    .expect("relay waiting-room subscription should observe the shared router mutation")
+    .expect("relay room-list subscription should observe the shared router mutation")
     .1;
     assert_eq!(
         event["sessions"][0]["alias"],
@@ -536,11 +533,11 @@ async fn relay_waiting_room_subscription_sends_baseline_after_reload_and_observe
         expect_named_client_event(
             &mut reloaded_client_socket,
             &reloaded_subscription_private_key,
-            "waiting_room_rows_changed",
+            "room_list_rows_changed",
         ),
     )
     .await
-    .expect("every concurrent relay waiting-room subscriber should observe the mutation")
+    .expect("every concurrent relay room-list subscriber should observe the mutation")
     .1;
     assert_eq!(
         reloaded_event["sessions"][0]["alias"],

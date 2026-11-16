@@ -53,11 +53,10 @@ fn room_client_request(request: &LocalDaemonRequest) -> bool {
         request,
         // Connection health and kernel clock.
         LocalDaemonRequest::GetDaemonHealth(_)
-            // Entering a Room: the invite, then the waiting room until admitted.
+            // Entering a Room: the invite.
             | LocalDaemonRequest::JoinSessionInvite(_)
-            | LocalDaemonRequest::GetWaitingRoomInventory(_)
-            | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)
-            | LocalDaemonRequest::ListWaitingRoomSessions(_)
+            | LocalDaemonRequest::GetRoomListSnapshot(_)
+            | LocalDaemonRequest::ListRoomListSessions(_)
             // The composer's command and model catalogs, from the caller's own accounts.
             | LocalDaemonRequest::GetTerminalCommandCatalog(_)
             | LocalDaemonRequest::GetProviderCatalog(_)

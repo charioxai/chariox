@@ -4,54 +4,29 @@ use tokio::sync::RwLock;
 
 use crate::error::DaemonError;
 use crate::local::{
-    ListExternalProviderSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
-    WaitingRoomPublicSnapshot,
+    ListExternalProviderSessionsRequest, LocalDaemonRequest, LocalDaemonResponse, RoomListSnapshot,
 };
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore, SessionStateProjectionStore,
 };
 use crate::runtime::relay_config_control::projected_relay_status_view;
+use crate::runtime::room_list_projection::{
+    build_room_list_snapshot_from_cached_shared, RoomListCaller,
+    RoomListSessionSummaryProjectionStore,
+};
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::terminal_pairings::paired_terminal_records;
-use crate::runtime::waiting_room_public_projection::{
-    build_waiting_room_public_snapshot_from_cached_shared, WaitingRoomCaller,
-    WaitingRoomSessionSummaryProjectionStore,
-};
 use crate::session::unix_epoch_ms;
 use crate::transport::relay_client::RelayClientState;
 
-pub(crate) async fn execute_waiting_room_inventory_request(
-    runtime_state: &KernelRuntimeState,
-    session_projection: &SessionStateProjectionStore,
-    waiting_room_session_summaries: &WaitingRoomSessionSummaryProjectionStore,
-    relay_state: Arc<RwLock<RelayClientState>>,
-    config_projection: DaemonConfigProjectionStore,
-    remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
-    caller_user_id: &str,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    Ok(LocalDaemonResponse::WaitingRoomInventory {
-        snapshot: projected_waiting_room_public_snapshot(
-            runtime_state,
-            session_projection,
-            waiting_room_session_summaries,
-            relay_state,
-            config_projection,
-            remote_relay_inventory_projection,
-            caller_user_id,
-        )
-        .await?
-        .into(),
-    })
-}
-
 #[allow(
     clippy::too_many_arguments,
-    reason = "Preserve the existing execute_waiting_room_request operation signature and explicit context arguments"
+    reason = "Preserve the existing execute_room_list_request operation signature and explicit context arguments"
 )]
-pub(crate) async fn execute_waiting_room_request(
+pub(crate) async fn execute_room_list_request(
     runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
-    waiting_room_session_summaries: &WaitingRoomSessionSummaryProjectionStore,
+    room_list_session_summaries: &RoomListSessionSummaryProjectionStore,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
@@ -59,11 +34,11 @@ pub(crate) async fn execute_waiting_room_request(
     caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
-        LocalDaemonRequest::ListWaitingRoomSessions(request) => {
-            let snapshot = projected_waiting_room_full_snapshot(
+        LocalDaemonRequest::ListRoomListSessions(request) => {
+            let snapshot = projected_room_list_full_snapshot(
                 runtime_state,
                 session_projection,
-                waiting_room_session_summaries,
+                room_list_session_summaries,
                 relay_state,
                 config_projection,
                 remote_relay_inventory_projection,
@@ -76,33 +51,21 @@ pub(crate) async fn execute_waiting_room_request(
                 .is_some_and(|version| version != &snapshot.inventory_version)
             {
                 return Err(DaemonError::MachineRequest {
-                    code: "waiting_room_inventory_changed".into(),
+                    code: "room_list_changed".into(),
                     message:
                         "Session activity changed during listing. Read the session list again."
                             .into(),
                 });
             }
-            Ok(LocalDaemonResponse::WaitingRoomSessionsListed {
-                page: super::waiting_room_sessions::session_page(snapshot.sessions, request)?,
+            Ok(LocalDaemonResponse::RoomListSessionsListed {
+                page: super::room_list_sessions::session_page(snapshot.sessions, request)?,
             })
         }
-        LocalDaemonRequest::GetWaitingRoomInventory(_) => {
-            execute_waiting_room_inventory_request(
+        LocalDaemonRequest::GetRoomListSnapshot(_) => {
+            execute_room_list_snapshot_request(
                 runtime_state,
                 session_projection,
-                waiting_room_session_summaries,
-                relay_state,
-                config_projection,
-                remote_relay_inventory_projection,
-                caller_user_id,
-            )
-            .await
-        }
-        LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => {
-            execute_waiting_room_public_snapshot_request(
-                runtime_state,
-                session_projection,
-                waiting_room_session_summaries,
+                room_list_session_summaries,
                 relay_state,
                 config_projection,
                 remote_relay_inventory_projection,
@@ -111,26 +74,26 @@ pub(crate) async fn execute_waiting_room_request(
             .await
         }
         _ => Err(DaemonError::LocalTransport {
-            operation: "waiting room request",
-            message: "unsupported waiting room request".to_string(),
+            operation: "Room list request",
+            message: "unsupported Room list request".to_string(),
         }),
     }
 }
 
-pub(crate) async fn execute_waiting_room_public_snapshot_request(
+pub(crate) async fn execute_room_list_snapshot_request(
     runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
-    waiting_room_session_summaries: &WaitingRoomSessionSummaryProjectionStore,
+    room_list_session_summaries: &RoomListSessionSummaryProjectionStore,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    Ok(LocalDaemonResponse::WaitingRoomPublicSnapshot {
-        snapshot: projected_waiting_room_public_snapshot(
+    Ok(LocalDaemonResponse::RoomListSnapshot {
+        snapshot: projected_room_list_snapshot(
             runtime_state,
             session_projection,
-            waiting_room_session_summaries,
+            room_list_session_summaries,
             relay_state,
             config_projection,
             remote_relay_inventory_projection,
@@ -140,37 +103,37 @@ pub(crate) async fn execute_waiting_room_public_snapshot_request(
     })
 }
 
-pub(crate) async fn projected_waiting_room_public_snapshot(
+pub(crate) async fn projected_room_list_snapshot(
     runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
-    waiting_room_session_summaries: &WaitingRoomSessionSummaryProjectionStore,
+    room_list_session_summaries: &RoomListSessionSummaryProjectionStore,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     caller_user_id: &str,
-) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
-    let snapshot = projected_waiting_room_full_snapshot(
+) -> Result<RoomListSnapshot, DaemonError> {
+    let snapshot = projected_room_list_full_snapshot(
         runtime_state,
         session_projection,
-        waiting_room_session_summaries,
+        room_list_session_summaries,
         relay_state,
         config_projection,
         remote_relay_inventory_projection,
         caller_user_id,
     )
     .await?;
-    super::waiting_room_sessions::recent_snapshot(snapshot)
+    super::room_list_sessions::recent_snapshot(snapshot)
 }
 
-async fn projected_waiting_room_full_snapshot(
+async fn projected_room_list_full_snapshot(
     runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
-    waiting_room_session_summaries: &WaitingRoomSessionSummaryProjectionStore,
+    room_list_session_summaries: &RoomListSessionSummaryProjectionStore,
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     caller_user_id: &str,
-) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
+) -> Result<RoomListSnapshot, DaemonError> {
     let account_owner_user_id =
         runtime_state.provider_account_authority_owner_user_id(caller_user_id);
     let config = config_projection.snapshot();
@@ -185,7 +148,7 @@ async fn projected_waiting_room_full_snapshot(
         paired_terminal_records()
     };
     let (external_provider_session_page, metaagent_events) = runtime_state
-        .waiting_room_auxiliary_projection(
+        .room_list_auxiliary_projection(
             &account_owner_user_id,
             &ListExternalProviderSessionsRequest {
                 provider: None,
@@ -193,16 +156,16 @@ async fn projected_waiting_room_full_snapshot(
                 limit: Some(25),
             },
         );
-    let runtime_projects = runtime_state.list_waiting_room_projects(caller_user_id);
+    let runtime_projects = runtime_state.list_room_list_projects(caller_user_id);
     let slices = runtime_state.list_slices();
     let (runtime_sessions, external_working_agents, session_revision, external_working_generation) =
-        session_projection.waiting_room_snapshot();
+        session_projection.room_list_snapshot();
     let runtime_sessions = runtime_sessions.unwrap_or_else(|| Arc::from([]));
-    let caller = WaitingRoomCaller::new(caller_user_id, &config_projection);
-    let mut snapshot = build_waiting_room_public_snapshot_from_cached_shared(
+    let caller = RoomListCaller::new(caller_user_id, &config_projection);
+    let mut snapshot = build_room_list_snapshot_from_cached_shared(
         runtime_sessions.as_ref(),
         session_revision,
-        waiting_room_session_summaries,
+        room_list_session_summaries,
         &metaagent_events,
         external_working_generation,
         &external_working_agents,
@@ -236,7 +199,7 @@ async fn projected_waiting_room_full_snapshot(
             Err(_) => false,
         };
     let git_credentials = if github_credential_available {
-        vec![crate::local::WaitingRoomGitCredentialSummary {
+        vec![crate::local::RoomListGitCredentialSummary {
             credential_id: crate::managed_context::scm::GITHUB_CREDENTIAL_ID.to_string(),
             hostname: "github.com".to_string(),
             label: "GitHub".to_string(),
@@ -259,7 +222,7 @@ async fn projected_waiting_room_full_snapshot(
     }
     let account_fingerprint =
         serde_json::to_vec(&accounts).map_err(|error| DaemonError::LocalTransport {
-            operation: "project waiting room provider accounts",
+            operation: "project Room list provider accounts",
             message: error.to_string(),
         })?;
     use sha2::{Digest, Sha256};
@@ -268,7 +231,7 @@ async fn projected_waiting_room_full_snapshot(
     hasher.update(account_fingerprint);
     hasher.update(serde_json::to_vec(&git_credentials).map_err(|error| {
         DaemonError::LocalTransport {
-            operation: "project waiting room Git credentials",
+            operation: "project Room list Git credentials",
             message: error.to_string(),
         }
     })?);
@@ -286,8 +249,8 @@ async fn projected_waiting_room_full_snapshot(
 #[cfg(test)]
 mod architecture_tests {
     #[test]
-    fn waiting_room_hot_path_uses_owned_projections_only() {
-        let source = include_str!("waiting_room_control.rs");
+    fn room_list_hot_path_uses_owned_projections_only() {
+        let source = include_str!("room_list_control.rs");
         for forbidden in [
             ["lock", "_app"].concat(),
             ["list_session", "_snapshots"].concat(),
@@ -295,7 +258,7 @@ mod architecture_tests {
         ] {
             assert!(
                 !source.contains(&forbidden),
-                "waiting-room hot path must not contain {forbidden}"
+                "room-list hot path must not contain {forbidden}"
             );
         }
     }

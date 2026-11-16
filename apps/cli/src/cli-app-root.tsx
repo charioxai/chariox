@@ -215,7 +215,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     terminalPairingState, setTerminalPairingState, terminalPairingQrLines, setTerminalPairingQrLines,
     sessionBrowserOpen, setSessionBrowserOpen, managedMachineDialogOpen, setManagedMachineDialogOpen,
     agentLocationLabel, sessionBrowserIndex,
-    setSessionBrowserIndex, waitingRoomState, setWaitingRoomState, setWaitingRoomStateProjection,
+    setSessionBrowserIndex, startState, setWaitingRoomState, setWaitingRoomStateProjection,
     waitingRoomLaunchOwnershipRevision, pendingWorkspaceTarget,
     setPendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorktreeTarget, multiAgentResponseLayout,
     setMultiAgentResponseLayout, entries, setEntries, activeStatusLabel,
@@ -467,7 +467,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   } = createCliWaitingRoomComposition({
     onLaunchRefused: (message, retry) => providerAccountRecovery.showLaunchRefusal(message, retry),
     client, cloudClient, options, appLogger, formatError,
-    isAttached, kernelConnected, waitingRoomState, setWaitingRoomState, setWaitingRoomStateProjection,
+    isAttached, kernelConnected, startState, setWaitingRoomState, setWaitingRoomStateProjection,
     waitingRoomLaunchOwnershipRevision,
     availableSessions, setAvailableSessions, waitingRoomProjects, setWaitingRoomProjects,
     providerCatalogState, setProviderCatalogState,
@@ -615,7 +615,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     subAgentsOpen: subAgents.cardOpen, closeSubAgents: subAgents.closeCard, subAgentsRows: subAgents.cardRows,
     terminalPairingState, setTerminalPairingState, terminalPairingQrLines, setTerminalPairingQrLines,
     sessionBrowserOpen, setSessionBrowserOpen, managedMachineDialogOpen, setManagedMachineDialogOpen,
-    waitingRoomState, reconcileWaitingRoom, providerCatalogState, themeRegistryState,
+    startState, reconcileWaitingRoom, providerCatalogState, themeRegistryState,
     waitingRoomRemoteState: () => {
       const targets = waitingRoomTargets()
       return {
@@ -718,11 +718,11 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     dimensions,
     actions: target => {
       const agent = (!target || target.sessionId === sessionState().id) ? sessionState().agents.find(candidate => candidate.id === (target?.agentId ?? focusedAgentId())) : undefined
-      const provider = agent?.provider ?? waitingRoomState().providerId
-      const currentProfile = agent?.account_profile ?? waitingRoomState().accountProfileId
+      const provider = agent?.provider ?? startState().providerId
+      const currentProfile = agent?.account_profile ?? startState().accountProfileId
       const alternative = providerAccountsForProvider(providerAccountsState(), provider)
         .find(profile => profile.auth_state === "authenticated" && profile.profile_id !== currentProfile
-          && !providerAccountAdmissionBlocked(profile, Date.now(), agent?.model ?? waitingRoomState().modelId))
+          && !providerAccountAdmissionBlocked(profile, Date.now(), agent?.model ?? startState().modelId))
       return [
         { label: "Open Provider Accounts", run: () => { setFatalError(null); void executeCommandCenterCommand("/provider accounts"); promptInputRefController.focus() } },
         { label: alternative ? `Switch account to ${alternative.label}` : "Switch account", run: () => {
@@ -741,7 +741,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
               label: `${profile.label} · ${profile.auth_state.replaceAll("_", " ")}`,
               run: () => { void applyAccountSelection(profile.profile_id, rejectedTarget).catch(error => flashFooter(formatError(error), "error")) },
             })))
-          } else { setWaitingRoomState({ ...waitingRoomState(), focus: "account" }); reconcileWaitingRoom(waitingRoomState()) }
+          } else { setWaitingRoomState({ ...startState(), focus: "account" }); reconcileWaitingRoom(startState()) }
         } },
         { label: "Retry", run: () => {
           setFatalError(null)
@@ -951,7 +951,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     attachmentState, sessionState, selectedWorkflowId, selectedWorkflowNodeId,
     setSelectedWorkflowNodeId, selectedWorkflowComponent, setSelectedWorkflowComponent, setWorkflowInspectorMode,
     workflowScreenActive: () => workflowActions.workflowScreenActive(),
-    workflowInspector, workspaceShellEntries, workspaceShellContext, waitingRoomState,
+    workflowInspector, workspaceShellEntries, workspaceShellContext, startState,
     availableSessions, waitingRoomProjects, providerCatalogState, waitingRoomCloudNotice, waitingRoomInventoryStatus, preferencesState,
     relayStatusState, remoteMachinesState, remoteKernelsState, providerAccountsState, terminalsState,
     externalProviderSessionsState, externalProviderSessionsPageState, slicesState, waitingRoomTargets,
@@ -1029,7 +1029,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     drainAppInstall: async () => { await Promise.all([appDevLoop.dispose(), appFileInstaller.dispose(), appPublisherEnrollment.dispose()]) },
     sleep, formatError, supportsKernelEventStream, kernelConnected, closingStateController,
     isAttached, daemonDisconnected, attachmentState, sessionState,
-    providerRunState, createdSessionState, waitingRoomState, preferencesState,
+    providerRunState, createdSessionState, startState, preferencesState,
     connectedClientCount, persistablePromptDraft, syncPromptTextSnapshot, flushPendingPromptDraftPersist,
     persistSessionPromptState, applySessionState, refreshAgentPanes, refreshSplitPaneFocusRepaint,
     maybeResize: (sessionId) => maybeResize(client, sessionId),
@@ -1126,8 +1126,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     showProviderLoginLink: providerLoginLink, providerLoginInteractions,
     attachBinding, beginSessionSelection, isSessionSelecting, transitionToNoSession, applyProviderSelection, applyAccountSelection, applyModelSelection,
     applyVariantSelection, applyModeSelection, applyPermissionSelection,
-    currentExecutionMode: () => waitingRoomState().executionMode ?? "build",
-    currentPermissionLevel: () => waitingRoomState().permissionLevel ?? "yolo",
+    currentExecutionMode: () => startState().executionMode ?? "build",
+    currentPermissionLevel: () => startState().permissionLevel ?? "yolo",
     refreshWaitingRoomData, editWaitingRoomWorkspace, setSlicesState, setMultiAgentResponseLayout,
     applyResponseLayout, applySessionState, refreshAgentPanes, setWorkspaceLiveSyncStatus,
     ...workflowActions,
@@ -1160,7 +1160,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     hydrateComposer, hydratePromptInputHistory, dialogOverlayOpen, closeActiveDialogOverlay, activePrompt, handleCommandCenterKey,
     handleQueuedPromptKey: handleQueuedPromptStripKey,
     commandCenterOpen, promptHistoryIndex, promptHistoryDraft, navigatePromptHistoryInput,
-    visibleTranscriptEntries, transcriptScrollboxRefController, commandCenterController, waitingRoomState,
+    visibleTranscriptEntries, transcriptScrollboxRefController, commandCenterController, startState,
     availableSessions, waitingRoomProjects, waitingRoomTargets, providerCatalogState, relayStatusState, remoteMachinesState,
     setRemoteMachinesState, remoteKernelsState, providerAccountsState, terminalsState, slicesState,
     themeRegistryState, reconcileWaitingRoom, setWaitingRoomState, applyWaitingRoomSessionLifecycleAction,
@@ -1192,7 +1192,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     workflowScreenActive: workflowActions.workflowScreenActive,
     daemonDisconnected, statusLine, sessionState, focusedAgentId,
     agentActivityLabels, streamingAgentId, agentBusyLatch, isAttached,
-    waitingRoomState, setWaitingRoomState, availableSessions, waitingRoomProjects, providerCatalogState,
+    startState, setWaitingRoomState, availableSessions, waitingRoomProjects, providerCatalogState,
     applyWaitingRoomSessionLifecycleAction, restoreWaitingRoomProject, renameWaitingRoomProject,
     waitingRoomCloudNotice, waitingRoomInventoryStatus, relayStatusState, remoteMachinesState,
     remoteKernelsState, terminalsState, externalProviderSessionsState, externalProviderSessionsPageState,

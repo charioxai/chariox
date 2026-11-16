@@ -148,7 +148,7 @@ impl KernelRuntimeState {
         self.ensure_notification_home_role()?;
         self.ensure_notification_profile_owner(owner)?;
         let projection = self.owned.notification_inventory_projection.clone();
-        // Refresh uses the same Cloud inventory credential as the waiting room.
+        // Refresh uses the same Cloud inventory credential as the Room list.
         // No workflow data is sent to Cloud. A picker failure retains cache offline.
         let refresh = crate::transport::relay_client::refresh_remote_inventory_projection(
             self.owned.config_projection.clone(),

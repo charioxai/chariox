@@ -237,11 +237,10 @@ async fn output_seen_ack_clears_unread_activity_for_same_user_attachments_only_i
         before_collaborator.agent_activity[&agent_id].unread_idle_output,
         "collaborator should have an independent unread receipt"
     );
-    let public_snapshot_request = LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
-        crate::local::GetWaitingRoomPublicSnapshotRequest,
-    );
+    let public_snapshot_request =
+        LocalDaemonRequest::GetRoomListSnapshot(crate::local::GetRoomListSnapshotRequest);
     let public_snapshot_command = KernelCommand::from_local_request(
-        "cmd-output-unseen-waiting-room",
+        "cmd-output-unseen-room-list",
         None,
         None,
         &public_snapshot_request,
@@ -249,20 +248,20 @@ async fn output_seen_ack_clears_unread_activity_for_same_user_attachments_only_i
     let response = router
         .dispatch(public_snapshot_command, public_snapshot_request)
         .await
-        .expect("waiting room unread refresh should succeed");
-    let LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } = response else {
-        panic!("unexpected waiting room response before ack");
+        .expect("Room list unread refresh should succeed");
+    let LocalDaemonResponse::RoomListSnapshot { snapshot } = response else {
+        panic!("unexpected Room list response before ack");
     };
     let unread_session = snapshot
         .sessions
         .iter()
         .find(|candidate| candidate.id == session_id)
-        .expect("session should be in unread waiting room snapshot");
+        .expect("session should be in unread Room list snapshot");
     let unread_agent = unread_session
         .agents
         .iter()
         .find(|candidate| candidate.id == agent_id)
-        .expect("agent should be in unread waiting room snapshot");
+        .expect("agent should be in unread Room list snapshot");
     assert_eq!(unread_session.activity.unread_idle_agent_count, 1);
     assert!(unread_agent.activity.unread_idle_output);
 
@@ -322,11 +321,10 @@ async fn output_seen_ack_clears_unread_activity_for_same_user_attachments_only_i
             if !agent_activity[&agent_id].unread_idle_output
     ));
 
-    let public_snapshot_request = LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
-        crate::local::GetWaitingRoomPublicSnapshotRequest,
-    );
+    let public_snapshot_request =
+        LocalDaemonRequest::GetRoomListSnapshot(crate::local::GetRoomListSnapshotRequest);
     let public_snapshot_command = KernelCommand::from_local_request(
-        "cmd-output-seen-refresh-waiting-room",
+        "cmd-output-seen-refresh-room-list",
         None,
         None,
         &public_snapshot_request,
@@ -334,20 +332,20 @@ async fn output_seen_ack_clears_unread_activity_for_same_user_attachments_only_i
     let response = router
         .dispatch(public_snapshot_command, public_snapshot_request)
         .await
-        .expect("waiting room refresh should succeed");
-    let LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } = response else {
-        panic!("unexpected waiting room response");
+        .expect("Room list refresh should succeed");
+    let LocalDaemonResponse::RoomListSnapshot { snapshot } = response else {
+        panic!("unexpected Room list response");
     };
     let refreshed_session = snapshot
         .sessions
         .iter()
         .find(|candidate| candidate.id == session_id)
-        .expect("session should be in waiting room snapshot");
+        .expect("session should be in Room list snapshot");
     let refreshed_agent = refreshed_session
         .agents
         .iter()
         .find(|candidate| candidate.id == agent_id)
-        .expect("agent should be in waiting room snapshot");
+        .expect("agent should be in Room list snapshot");
     assert_eq!(refreshed_session.activity.unread_idle_agent_count, 0);
     assert!(!refreshed_agent.activity.unread_idle_output);
 }

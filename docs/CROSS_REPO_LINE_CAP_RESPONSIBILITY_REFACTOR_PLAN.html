@@ -327,8 +327,8 @@
             <tr>
               <td><code>chariox</code></td>
               <td><code>731f3519b</code> <span class="muted">Split local API protocol envelopes</span></td>
-              <td><code>types.rs</code> now acts as the local API protocol facade with the version constant and re-exports, while daemon/common DTOs, terminal command catalog DTOs, metaagent request DTOs, the request envelope, and the response envelope live in focused modules. Waiting-room request markers moved beside the waiting-room projection DTOs.</td>
-              <td><code>rustfmt --edition 2024</code> for touched local API type modules; <code>cargo test -p chariox-kernel local::api::tests::protocol_shapes --lib</code> (47 passed); <code>cargo check -p chariox-kernel</code>; <code>node scripts/check-line-cap.mjs</code> (14 allowlisted files remain, no new offenders); staged <code>git diff --check</code>. Broader <code>cargo test -p chariox-kernel local::api --lib</code> currently repeats a stack overflow in <code>waiting_room_agent_workspace_update_drill_updates_public_projection</code>, outside this DTO split.</td>
+              <td><code>types.rs</code> now acts as the local API protocol facade with the version constant and re-exports, while daemon/common DTOs, terminal command catalog DTOs, metaagent request DTOs, the request envelope, and the response envelope live in focused modules. Room list request markers moved beside the Room list projection DTOs.</td>
+              <td><code>rustfmt --edition 2024</code> for touched local API type modules; <code>cargo test -p chariox-kernel local::api::tests::protocol_shapes --lib</code> (47 passed); <code>cargo check -p chariox-kernel</code>; <code>node scripts/check-line-cap.mjs</code> (14 allowlisted files remain, no new offenders); staged <code>git diff --check</code>. Broader <code>cargo test -p chariox-kernel local::api --lib</code> currently repeats a stack overflow in <code>room_list_agent_workspace_update_drill_updates_public_projection</code>, outside this DTO split.</td>
             </tr>
             <tr>
               <td><code>chariox</code></td>
@@ -345,7 +345,7 @@
             <tr>
               <td><code>chariox</code></td>
               <td><code>ebb1b5595</code> <span class="muted">Split kernel client protocol types</span></td>
-              <td>The public <code>kernel-types.ts</code> path is now a 10-line facade that preserves imports and the protocol version export, while extension/config, session/waiting-room/workspace sync, daemon health, runtime/session control, cloud/remote/workspace records, provider/prompt payloads, history/recall/transcript, and workflow DTOs live in focused protocol type modules.</td>
+              <td>The public <code>kernel-types.ts</code> path is now a 10-line facade that preserves imports and the protocol version export, while extension/config, session/Room list/workspace sync, daemon health, runtime/session control, cloud/remote/workspace records, provider/prompt payloads, history/recall/transcript, and workflow DTOs live in focused protocol type modules.</td>
               <td><code>pnpm --dir packages/kernel-client lint</code>; <code>pnpm --dir packages/kernel-client test</code> (798 passed); <code>cargo test -p chariox-kernel client_protocol_conformance</code> (4 focused tests passed); <code>node scripts/check-line-cap.mjs</code> (17 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
@@ -483,7 +483,7 @@
             <tr>
               <td><code>chariox</code></td>
               <td><code>8a8662545</code> <span class="muted">Split kernel protocol tests</span></td>
-              <td>Kernel protocol production types, event construction, frame serialization, and error mapping now stay in the transport protocol module, while terminal-output batching, waiting-room delta, workflow-run delta, provider-run delta, agent-activity, metadata, and runtime-interaction coverage lives in a sibling test module.</td>
+              <td>Kernel protocol production types, event construction, frame serialization, and error mapping now stay in the transport protocol module, while terminal-output batching, Room list delta, workflow-run delta, provider-run delta, agent-activity, metadata, and runtime-interaction coverage lives in a sibling test module.</td>
               <td><code>rustfmt --edition 2024</code> for the parent and child module, <code>cargo test --manifest-path apps/kernel/Cargo.toml transport::kernel_protocol::tests -- --nocapture</code> (9 passed), <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
             </tr>
             <tr>
@@ -668,7 +668,7 @@
           <tbody>
             <tr>
               <td>Browser terminal app</td>
-              <td>Separate bootstrap shell, runtime surface wiring, waiting-room sync, route rendering, publication commands, collaboration/invites, downloads, and browser-drill fixtures.</td>
+              <td>Separate bootstrap shell, runtime surface wiring, Room list sync, route rendering, publication commands, collaboration/invites, downloads, and browser-drill fixtures.</td>
               <td>Keep <code>startTerminalBrowserApp()</code> in the existing file and delegate to extracted modules.</td>
             </tr>
             <tr>
@@ -678,7 +678,7 @@
             </tr>
             <tr>
               <td>Styles</td>
-              <td>Separate token, layout, surface, workflow, freeform, waiting-room, and component-specific CSS strings.</td>
+              <td>Separate token, layout, surface, workflow, freeform, Room list, and component-specific CSS strings.</td>
               <td>Compose smaller CSS fragments through the existing <code>styles.ts</code> path and preserve selectors during migration.</td>
             </tr>
             <tr>

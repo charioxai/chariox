@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { waitingRoomTimestampLabel } from "@chariox/kernel-client/waiting-room-activity"
+import { roomListTimestampLabel } from "@chariox/kernel-client/room-list-activity"
 
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import {
@@ -241,8 +241,8 @@ test("waiting room renders indented sections and only previews the last two acti
       "-",
       "-",
       "-",
-      waitingRoomTimestampLabel(Date.UTC(2026, 3, 6, 11, 4)),
-      waitingRoomTimestampLabel(Date.UTC(2026, 3, 6, 10, 4)),
+      roomListTimestampLabel(Date.UTC(2026, 3, 6, 11, 4)),
+      roomListTimestampLabel(Date.UTC(2026, 3, 6, 10, 4)),
     ],
   )
   assert.equal(firstWindow.filter((row) => row.id.startsWith("session:")).length, MAX_VISIBLE_WAITING_ROOM_SESSIONS)

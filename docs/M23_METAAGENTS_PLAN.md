@@ -64,7 +64,7 @@ session.
 
 Required surfaces:
 
-- TUI waiting room session/agent creation.
+- TUI Room list session/agent creation.
 - TUI slash commands and completions.
 - TUI agent pane footer.
 - Chariox shell command docs and command parsing.
@@ -533,7 +533,7 @@ Unit/protocol tests:
 
 TUI drills:
 
-- create session with metaagent from waiting room.
+- create session with metaagent from Room list.
 - spawn metaagent from slash command.
 - verify agent pane footer shows `meta`.
 - spawn regular agent and verify turn completion injects inline event prompt.

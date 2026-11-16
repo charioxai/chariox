@@ -2,14 +2,14 @@ use std::collections::HashSet;
 
 use crate::agent::{AgentInstance, AgentState};
 use crate::extension::{ExtensionKind, RemoteExtensionManifestSyncState};
-use crate::local::{WaitingRoomPublicItemActivitySummary, WaitingRoomSessionActivitySummary};
+use crate::local::{RoomListItemActivitySummary, RoomListSessionActivitySummary};
 use crate::session::{RuntimeSession, WorkflowRunStatus};
 
-pub(crate) fn waiting_room_agent_activity_summary(
+pub(crate) fn room_list_agent_activity_summary(
     session: &RuntimeSession,
     agent: &AgentInstance,
     caller_user_id: &str,
-) -> WaitingRoomPublicItemActivitySummary {
+) -> RoomListItemActivitySummary {
     let active_prompt_count = usize::from(session.active_prompt_for_agent(agent.id()).is_some());
     let queued_prompt_count = session
         .queued_prompts_for_agent(agent.id())
@@ -17,7 +17,7 @@ pub(crate) fn waiting_room_agent_activity_summary(
         .unwrap_or(0);
     let error = agent.state() == AgentState::Error;
     let working = active_prompt_count > 0;
-    WaitingRoomPublicItemActivitySummary {
+    RoomListItemActivitySummary {
         working,
         active_prompt_count,
         queued_prompt_count,
@@ -28,10 +28,10 @@ pub(crate) fn waiting_room_agent_activity_summary(
     }
 }
 
-pub(crate) fn waiting_room_workflow_activity_summary(
+pub(crate) fn room_list_workflow_activity_summary(
     session: &RuntimeSession,
     workflow_id: &str,
-) -> WaitingRoomPublicItemActivitySummary {
+) -> RoomListItemActivitySummary {
     let working = session.workflow_runs().iter().any(|run| {
         run.workflow_id() == workflow_id
             && matches!(
@@ -45,7 +45,7 @@ pub(crate) fn waiting_room_workflow_activity_summary(
     let error = session.workflow_runs().iter().any(|run| {
         run.workflow_id() == workflow_id && matches!(run.status(), WorkflowRunStatus::Failed)
     });
-    WaitingRoomPublicItemActivitySummary {
+    RoomListItemActivitySummary {
         working,
         active_prompt_count: 0,
         queued_prompt_count: 0,
@@ -60,10 +60,10 @@ fn counted_in_room(agent: &crate::agent::AgentInstance) -> bool {
     !agent.archived() && !agent.is_sub_agent()
 }
 
-pub(crate) fn waiting_room_session_activity_summary(
+pub(crate) fn room_list_session_activity_summary(
     session: &RuntimeSession,
     caller_user_id: &str,
-) -> WaitingRoomSessionActivitySummary {
+) -> RoomListSessionActivitySummary {
     let uncounted_agent_ids: HashSet<&str> = session
         .agents()
         .iter()
@@ -89,7 +89,7 @@ pub(crate) fn waiting_room_session_activity_summary(
         .agents()
         .iter()
         .filter(|agent| counted_in_room(agent))
-        .filter(|agent| waiting_room_agent_has_active_work(agent, &active_prompt_agent_ids))
+        .filter(|agent| room_list_agent_has_active_work(agent, &active_prompt_agent_ids))
         .count();
     if working_agent_count == 0 && active_prompt_count > 0 {
         working_agent_count = 1;
@@ -115,7 +115,7 @@ pub(crate) fn waiting_room_session_activity_summary(
                 .unwrap_or_default()
                 .is_empty();
             active_worker_run_missing
-                && waiting_room_agent_has_active_work(agent, &active_prompt_agent_ids)
+                && room_list_agent_has_active_work(agent, &active_prompt_agent_ids)
         })
         .count();
     let home_proxy_extension_agents = session
@@ -124,7 +124,7 @@ pub(crate) fn waiting_room_session_activity_summary(
         .filter(|agent| counted_in_room(agent))
         .filter(|agent| agent.remote_execution().is_some())
         .filter_map(home_proxy_extension_activity);
-    WaitingRoomSessionActivitySummary {
+    RoomListSessionActivitySummary {
         pending_interaction_count: session.active_interactions().len(),
         agent_count: session
             .agents()
@@ -171,7 +171,7 @@ pub(crate) fn waiting_room_session_activity_summary(
     }
 }
 
-fn waiting_room_agent_has_active_work(
+fn room_list_agent_has_active_work(
     agent: &AgentInstance,
     active_prompt_agent_ids: &HashSet<&str>,
 ) -> bool {
@@ -220,9 +220,9 @@ mod tests {
         ExtensionGrant, ExtensionKind, RemoteExtensionManifestSyncState,
         RemoteExtensionManifestSyncStatus,
     };
-    use crate::runtime::waiting_room_activity::{
-        waiting_room_agent_activity_summary, waiting_room_session_activity_summary,
-        waiting_room_workflow_activity_summary,
+    use crate::runtime::room_list_activity::{
+        room_list_agent_activity_summary, room_list_session_activity_summary,
+        room_list_workflow_activity_summary,
     };
     use crate::session::{
         PromptQueueItem, PromptStatus, RuntimeSession, WorkflowRun, WorkflowRunStatus,
@@ -357,7 +357,7 @@ mod tests {
             None,
         ));
         let summary =
-            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
+            room_list_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
         assert_eq!(session.attachment_ids().len(), 0);
         assert_eq!(summary.pending_interaction_count, 1);
         assert_eq!(summary.active_prompt_count, 0);
@@ -377,7 +377,7 @@ mod tests {
         ]);
 
         assert!(
-            !waiting_room_agent_activity_summary(
+            !room_list_agent_activity_summary(
                 &session,
                 &idle,
                 crate::session::DEFAULT_LOCAL_USER_ID
@@ -385,7 +385,7 @@ mod tests {
             .working
         );
         assert!(
-            !waiting_room_agent_activity_summary(
+            !room_list_agent_activity_summary(
                 &session,
                 &working,
                 crate::session::DEFAULT_LOCAL_USER_ID
@@ -393,7 +393,7 @@ mod tests {
             .working
         );
         assert!(
-            !waiting_room_agent_activity_summary(
+            !room_list_agent_activity_summary(
                 &session,
                 &processing,
                 crate::session::DEFAULT_LOCAL_USER_ID
@@ -401,7 +401,7 @@ mod tests {
             .working
         );
         assert!(
-            waiting_room_agent_activity_summary(
+            room_list_agent_activity_summary(
                 &session,
                 &error,
                 crate::session::DEFAULT_LOCAL_USER_ID
@@ -418,7 +418,7 @@ mod tests {
         let session = session_with_agents(vec![agent("root", AgentState::Idle, false), worker]);
 
         let summary =
-            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
+            room_list_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
 
         assert_eq!(summary.agent_count, 1);
         assert_eq!(summary.working_agent_count, 0);
@@ -437,7 +437,7 @@ mod tests {
             .find(|agent| agent.id() == "agent-1")
             .expect("agent exists");
 
-        let summary = waiting_room_agent_activity_summary(
+        let summary = room_list_agent_activity_summary(
             &session,
             agent,
             crate::session::DEFAULT_LOCAL_USER_ID,
@@ -460,7 +460,7 @@ mod tests {
             .find(|agent| agent.id() == "agent-1")
             .expect("agent exists");
 
-        let summary = waiting_room_agent_activity_summary(
+        let summary = room_list_agent_activity_summary(
             &session,
             agent,
             crate::session::DEFAULT_LOCAL_USER_ID,
@@ -484,8 +484,8 @@ mod tests {
             Vec::new(),
             Vec::new(),
         ));
-        assert!(waiting_room_workflow_activity_summary(&active_session, "workflow").working);
-        assert!(!waiting_room_workflow_activity_summary(&active_session, "workflow").error);
+        assert!(room_list_workflow_activity_summary(&active_session, "workflow").working);
+        assert!(!room_list_workflow_activity_summary(&active_session, "workflow").error);
 
         let mut failed_session = session_with_agents(Vec::new());
         let mut failed = WorkflowRun::new(
@@ -500,8 +500,8 @@ mod tests {
         );
         failed.set_status(WorkflowRunStatus::Failed);
         failed_session.create_workflow_run(failed);
-        assert!(!waiting_room_workflow_activity_summary(&failed_session, "workflow").working);
-        assert!(waiting_room_workflow_activity_summary(&failed_session, "workflow").error);
+        assert!(!room_list_workflow_activity_summary(&failed_session, "workflow").working);
+        assert!(room_list_workflow_activity_summary(&failed_session, "workflow").error);
     }
 
     #[test]
@@ -513,7 +513,7 @@ mod tests {
         ]);
 
         let summary =
-            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
+            room_list_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
         assert_eq!(summary.agent_count, 3);
         assert_eq!(summary.working_agent_count, 0);
         assert_eq!(summary.error_agent_count, 1);
@@ -529,7 +529,7 @@ mod tests {
         );
 
         let summary =
-            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
+            room_list_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
 
         assert_eq!(summary.working_agent_count, 0);
         assert_eq!(summary.active_prompt_count, 0);
@@ -559,7 +559,7 @@ mod tests {
             .find(|agent| agent.id() == "agent-1")
             .expect("agent exists");
         assert_eq!(
-            waiting_room_agent_activity_summary(
+            room_list_agent_activity_summary(
                 &restored,
                 agent,
                 crate::session::DEFAULT_LOCAL_USER_ID
@@ -569,7 +569,7 @@ mod tests {
         );
 
         let summary =
-            waiting_room_session_activity_summary(&restored, crate::session::DEFAULT_LOCAL_USER_ID);
+            room_list_session_activity_summary(&restored, crate::session::DEFAULT_LOCAL_USER_ID);
         assert_eq!(summary.working_agent_count, 0);
         assert_eq!(summary.active_prompt_count, 0);
         assert_eq!(summary.queued_prompt_count, 0);
@@ -594,7 +594,7 @@ mod tests {
         );
 
         let summary =
-            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
+            room_list_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
         assert_eq!(summary.remote_agent_count, 4);
         assert_eq!(summary.missing_worker_provider_run_count, 2);
     }
@@ -631,7 +631,7 @@ mod tests {
         ]);
 
         let summary =
-            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
+            room_list_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
         assert_eq!(summary.remote_agent_count, 5);
         assert_eq!(summary.home_proxy_agent_count, 4);
         assert_eq!(summary.remote_extension_sync_issue_count, 3);
@@ -648,14 +648,14 @@ mod tests {
             .iter()
             .find(|agent| agent.id() == "agent-1")
             .expect("agent exists");
-        let summary = waiting_room_agent_activity_summary(
+        let summary = room_list_agent_activity_summary(
             &session,
             agent,
             crate::session::DEFAULT_LOCAL_USER_ID,
         );
         assert!(summary.unread_idle_output);
         assert_eq!(
-            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)
+            room_list_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)
                 .unread_idle_agent_count,
             1
         );
@@ -669,7 +669,7 @@ mod tests {
             .find(|agent| agent.id() == "agent-1")
             .expect("agent exists");
         assert!(
-            !waiting_room_agent_activity_summary(
+            !room_list_agent_activity_summary(
                 &session,
                 agent,
                 crate::session::DEFAULT_LOCAL_USER_ID
@@ -691,7 +691,7 @@ mod tests {
             .find(|agent| agent.id() == "agent-1")
             .expect("agent exists");
         assert!(
-            waiting_room_agent_activity_summary(
+            room_list_agent_activity_summary(
                 &session,
                 agent,
                 crate::session::DEFAULT_LOCAL_USER_ID
@@ -699,7 +699,7 @@ mod tests {
             .unread_idle_output
         );
         assert_eq!(
-            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)
+            room_list_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)
                 .unread_idle_agent_count,
             1
         );
@@ -708,7 +708,7 @@ mod tests {
             session.acknowledge_agent_output_seen(crate::session::DEFAULT_LOCAL_USER_ID, "agent-1")
         );
         assert_eq!(
-            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)
+            room_list_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)
                 .unread_idle_agent_count,
             0
         );
@@ -725,7 +725,7 @@ mod tests {
         assert!(session.note_agent_output_sequence("agent-2", 41));
 
         assert_eq!(
-            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)
+            room_list_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)
                 .unread_idle_agent_count,
             1
         );
@@ -733,7 +733,7 @@ mod tests {
             session.acknowledge_agent_output_seen(crate::session::DEFAULT_LOCAL_USER_ID, "agent-2")
         );
         assert_eq!(
-            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)
+            room_list_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)
                 .unread_idle_agent_count,
             0
         );

@@ -157,12 +157,9 @@ async fn session_lookup_snapshots_project_runtime_view_from_owned_state() {
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
 
-    let waiting_room_sequence = runtime.waiting_room_change_sequence();
+    let room_list_sequence = runtime.room_list_change_sequence();
     let listed = runtime.list_session_snapshots();
-    assert_eq!(
-        runtime.waiting_room_change_sequence(),
-        waiting_room_sequence
-    );
+    assert_eq!(runtime.room_list_change_sequence(), room_list_sequence);
     let listed_session = listed
         .iter()
         .find(|listed| listed.id() == session.id())
@@ -204,7 +201,7 @@ async fn session_lookup_snapshots_project_runtime_view_from_owned_state() {
 }
 
 #[tokio::test]
-async fn unchanged_session_lookup_does_not_wake_waiting_room_subscribers() {
+async fn unchanged_session_lookup_does_not_wake_room_list_subscribers() {
     let worktree = crate::test_support::TestWorktree::new("history-projection-idle-lookup");
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
@@ -219,7 +216,7 @@ async fn unchanged_session_lookup_does_not_wake_waiting_room_subscribers() {
         .session_snapshot(&session_id)
         .await
         .expect("first lookup should warm the projection");
-    let waiting_room_sequence = runtime.waiting_room_change_sequence();
+    let room_list_sequence = runtime.room_list_change_sequence();
 
     runtime
         .session_snapshot(&session_id)
@@ -227,9 +224,9 @@ async fn unchanged_session_lookup_does_not_wake_waiting_room_subscribers() {
         .expect("unchanged lookup should succeed");
 
     assert_eq!(
-        runtime.waiting_room_change_sequence(),
-        waiting_room_sequence,
-        "read-only session lookup must not wake every waiting-room subscriber"
+        runtime.room_list_change_sequence(),
+        room_list_sequence,
+        "read-only session lookup must not wake every room-list subscriber"
     );
 }
 

@@ -1203,8 +1203,8 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                     let pin =
                         crate::runtime::terminal_pairings::public_key_thumbprint(&sender_public);
                     let cache = Arc::new(CommandResultCache::default());
-                    let request = LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
-                        crate::local::GetWaitingRoomPublicSnapshotRequest,
+                    let request = LocalDaemonRequest::GetRoomListSnapshot(
+                        crate::local::GetRoomListSnapshotRequest,
                     );
                     let encrypted = relay_crypto::encrypt_payload_for_peer(
                         &sender,

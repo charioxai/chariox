@@ -72,7 +72,7 @@ export type CliPrimaryTranscriptCompositionDeps = {
   workspaceShellContext: AnyFn
   waitingRoomLaunchOwnershipRevision?: AnyFn
   applyWaitingRoomBootstrapDefaults?: AnyFn
-  waitingRoomState: AnyFn
+  startState: AnyFn
   availableSessions: AnyFn
   waitingRoomProjects: AnyFn
   providerCatalogState: AnyFn
@@ -192,12 +192,12 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
       ? buildLoadingTranscriptRenderable(deps.renderer, deps.sessionState().alias?.trim() || deps.sessionState().id)
       : deps.isAttached()
         ? buildEmptyTranscriptRenderable(deps.renderer)
-        : followedWaitingRoom(buildNoSessionRenderable(deps.renderer, deps.waitingRoomState(), deps.availableSessions(), deps.providerCatalogState(), {
+        : followedWaitingRoom(buildNoSessionRenderable(deps.renderer, deps.startState(), deps.availableSessions(), deps.providerCatalogState(), {
         ...waitingRoomRemoteTargets(),
         collaborationBackend: relayCloudProfile(deps.preferencesState()) ? "cloud" : deps.relayStatusState()?.configured ? "relay" : "local",
         cloudNotice: deps.waitingRoomCloudNotice(),
         inventoryStatus: deps.waitingRoomInventoryStatus(),
-        loadingFrame: deps.waitingRoomState().introStep,
+        loadingFrame: deps.startState().introStep,
         relay: deps.relayStatusState(),
         machines: deps.remoteMachinesState(),
         kernels: deps.remoteKernelsState(),
@@ -322,7 +322,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
   const primeAttachedSessionBinding = attachedSessionPrimeController.prime
 
   const bootstrapDefaultsController = createWaitingRoomBootstrapDefaultsController({
-    state: deps.waitingRoomState,
+    state: deps.startState,
     ownershipRevision: deps.waitingRoomLaunchOwnershipRevision ?? (() => 0),
     isAttached: deps.isAttached,
     apply: (state) => deps.applyWaitingRoomBootstrapDefaults?.(state),

@@ -7,9 +7,7 @@ use super::*;
 use crate::runtime::projection::SessionSnapshotProjection;
 use crate::transport::agent_turn_feed::AgentTurnFeed;
 use crate::transport::home_audit_feed::HomeAuditFeed;
-use crate::transport::kernel_protocol::{
-    requested_heartbeat_interval, WaitingRoomInventoryEventProjection,
-};
+use crate::transport::kernel_protocol::{requested_heartbeat_interval, RoomListEventProjection};
 use crate::transport::passkey_prompt_feed::PasskeyPromptFeed;
 use chariox_relay::protocol::RelayCallerIdentity;
 
@@ -204,7 +202,7 @@ pub(super) async fn handle_relay_subscribe(
         },
     };
     let is_inventory_subscription =
-        subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE);
+        subscription_scope.as_deref() == Some(ROOM_LIST_SUBSCRIPTION_SCOPE);
     if resume_from_event_id.is_none() {
         crate::logging::info_with_fields(
             "daemon.relay_client",
@@ -216,7 +214,7 @@ pub(super) async fn handle_relay_subscribe(
                 "attachment_id": attachment_id,
                 "subscription_scope": subscription_scope,
                 "resume_from_event_id": resume_from_event_id,
-                "is_waiting_room_inventory_subscription": is_inventory_subscription,
+                "is_room_list_subscription": is_inventory_subscription,
             }),
         );
     } else {
@@ -230,24 +228,23 @@ pub(super) async fn handle_relay_subscribe(
                 "attachment_id": attachment_id,
                 "subscription_scope": subscription_scope,
                 "resume_from_event_id": resume_from_event_id,
-                "is_waiting_room_inventory_subscription": is_inventory_subscription,
+                "is_room_list_subscription": is_inventory_subscription,
             }),
         );
     }
     if !is_inventory_subscription
-        && (session_id == WAITING_ROOM_INVENTORY_SENTINEL_ID
-            || attachment_id == WAITING_ROOM_INVENTORY_SENTINEL_ID)
+        && (session_id == ROOM_LIST_SENTINEL_ID || attachment_id == ROOM_LIST_SENTINEL_ID)
     {
         crate::logging::warn_with_fields(
             "daemon.relay_client",
-            "waiting-room inventory sentinel arrived without subscription scope",
+            "room-list inventory sentinel arrived without subscription scope",
             serde_json::json!({
                 "relay_request_id": relay_request_id,
                 "relay_subscription_id": relay_subscription_id,
                 "session_id": session_id,
                 "attachment_id": attachment_id,
                 "subscription_scope": subscription_scope,
-                "diagnosis": "relay or client likely dropped subscription_scope=waiting_room_inventory",
+                "diagnosis": "relay or client likely dropped subscription_scope=room_list",
             }),
         );
     }
@@ -509,8 +506,8 @@ pub(super) async fn run_relay_subscription_loop(
     resumed: bool,
     subscriber: RelaySubscriber,
 ) {
-    if subscription_scope.as_deref() == Some("waiting_room_inventory") {
-        run_relay_waiting_room_inventory_subscription_loop(
+    if subscription_scope.as_deref() == Some("room_list") {
+        run_relay_room_list_subscription_loop(
             router,
             outgoing_tx,
             subscription_id,
@@ -1001,7 +998,7 @@ fn advance_relay_subscription_deadline(mut deadline: Instant, interval: Duration
     deadline
 }
 
-async fn run_relay_waiting_room_inventory_subscription_loop(
+async fn run_relay_room_list_subscription_loop(
     router: Arc<CommandRouter>,
     outgoing_tx: RelayOutgoingSender,
     subscription_id: String,
@@ -1013,7 +1010,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     let mut passkey_prompts =
         PasskeyPromptFeed::new(subscriber.connection_class, &subscriber.user_id);
     let mut previous_catalog_revision = None;
-    let mut waiting_room_event_projection = WaitingRoomInventoryEventProjection::default();
+    let mut room_list_event_projection = RoomListEventProjection::default();
     let mut previous_relay_status = if resumed {
         Some(router.transport_relay_status_snapshot().await)
     } else {
@@ -1039,7 +1036,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
                 &subscription_id,
                 &client_public_key,
                 &event_runtime,
-                WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                ROOM_LIST_SUBSCRIPTION_SCOPE,
                 event,
             )
             .await
@@ -1057,7 +1054,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
                 &subscription_id,
                 &client_public_key,
                 &event_runtime,
-                WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                ROOM_LIST_SUBSCRIPTION_SCOPE,
                 KernelEvent::ClientCatalogChanged {
                     revision: client_catalog_sequence,
                 },
@@ -1068,25 +1065,23 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
                 break;
             }
         }
-        let waiting_room_change_sequence = router.waiting_room_change_sequence();
+        let room_list_change_sequence = router.room_list_change_sequence();
         let session_projection_change_sequence = router.session_projection_change_sequence();
-        if inventory_dirty
-            || (!resumed && tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS))
-        {
+        if inventory_dirty || (!resumed && tick.is_multiple_of(RELAY_ROOM_LIST_INTERVAL_TICKS)) {
             match router
-                .waiting_room_public_snapshot(&subscriber.user_id, Some(&subscriber.caller))
+                .room_list_snapshot(&subscriber.user_id, Some(&subscriber.caller))
                 .await
             {
                 Ok(snapshot) => {
                     inventory_dirty = false;
-                    for event in waiting_room_event_projection.project(snapshot) {
+                    for event in room_list_event_projection.project(snapshot) {
                         if emit_relay_event(
                             &router,
                             &outgoing_tx,
                             &subscription_id,
                             &client_public_key,
                             &event_runtime,
-                            WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                            ROOM_LIST_SUBSCRIPTION_SCOPE,
                             event,
                         )
                         .await
@@ -1099,7 +1094,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
                 Err(error) => {
                     crate::logging::warn_with_fields(
                         "daemon.relay_client",
-                        "relay waiting-room inventory subscription failed to build snapshot",
+                        "relay room-list inventory subscription failed to build snapshot",
                         serde_json::json!({ "error": error.to_string() }),
                     );
                 }
@@ -1112,9 +1107,9 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
                 &subscription_id,
                 &client_public_key,
                 &event_runtime,
-                WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                ROOM_LIST_SUBSCRIPTION_SCOPE,
                 KernelEvent::Heartbeat {
-                    session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+                    session_id: ROOM_LIST_SENTINEL_ID.to_string(),
                 },
             )
             .await
@@ -1131,7 +1126,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
                     &subscription_id,
                     &client_public_key,
                     &event_runtime,
-                    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                    ROOM_LIST_SUBSCRIPTION_SCOPE,
                     KernelEvent::RelayStatusChanged { status },
                 )
                 .await
@@ -1155,7 +1150,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
                     &subscription_id,
                     &client_public_key,
                     &event_runtime,
-                    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                    ROOM_LIST_SUBSCRIPTION_SCOPE,
                     KernelEvent::RemoteMachinesChanged { machines },
                 )
                 .await
@@ -1174,7 +1169,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
                     &subscription_id,
                     &client_public_key,
                     &event_runtime,
-                    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                    ROOM_LIST_SUBSCRIPTION_SCOPE,
                     KernelEvent::ProviderCatalogChanged {
                         generated_at_ms: crate::session::unix_epoch_ms(),
                         catalog,
@@ -1196,7 +1191,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
                 &subscription_id,
                 &client_public_key,
                 &event_runtime,
-                WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                ROOM_LIST_SUBSCRIPTION_SCOPE,
                 KernelEvent::SlicesChanged {
                     generated_at_ms: crate::session::unix_epoch_ms(),
                     slices,
@@ -1215,8 +1210,8 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
                 .unwrap_or(Duration::ZERO),
             async {
                 tokio::select! {
-                    _ = wait_for_relay_waiting_room_inventory_change(
-                        router.wait_for_waiting_room_change_after(waiting_room_change_sequence),
+                    _ = wait_for_relay_room_list_change(
+                        router.wait_for_room_list_change_after(room_list_change_sequence),
                         router.wait_for_session_projection_change_after(
                             session_projection_change_sequence,
                         ),
@@ -1229,7 +1224,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
         )
         .await;
         if matches!(wait_result, Ok(true)) {
-            sleep(Duration::from_millis(WAITING_ROOM_ROW_COALESCE_MS)).await;
+            sleep(Duration::from_millis(ROOM_LIST_ROW_COALESCE_MS)).await;
             inventory_dirty = true;
         }
         let elapsed_ticks =
@@ -1238,14 +1233,14 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     }
 }
 
-async fn wait_for_relay_waiting_room_inventory_change(
-    waiting_room_change: impl Future<Output = ()>,
+async fn wait_for_relay_room_list_change(
+    room_list_change: impl Future<Output = ()>,
     session_projection_change: impl Future<Output = ()>,
 ) {
-    tokio::pin!(waiting_room_change);
+    tokio::pin!(room_list_change);
     tokio::pin!(session_projection_change);
     tokio::select! {
-        _ = &mut waiting_room_change => {}
+        _ = &mut room_list_change => {}
         _ = &mut session_projection_change => {}
     }
 }
@@ -1255,9 +1250,9 @@ mod tests {
     use super::{
         await_relay_subscription_watch_with_heartbeats, relay_subscription_caller_user_id,
         relay_subscription_task_key, relay_subscription_task_matches,
-        remove_relay_subscription_task_by_relay_id, wait_for_relay_waiting_room_inventory_change,
-        RelaySubscriptionTask, RelaySubscriptionTasks, WAITING_ROOM_INVENTORY_SENTINEL_ID,
-        WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+        remove_relay_subscription_task_by_relay_id, wait_for_relay_room_list_change,
+        RelaySubscriptionTask, RelaySubscriptionTasks, ROOM_LIST_SENTINEL_ID,
+        ROOM_LIST_SUBSCRIPTION_SCOPE,
     };
 
     use std::collections::BTreeMap;
@@ -1290,23 +1285,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relay_waiting_room_inventory_wakes_for_either_projection_source() {
+    async fn relay_room_list_wakes_for_either_projection_source() {
         tokio::time::timeout(
             Duration::from_secs(1),
-            wait_for_relay_waiting_room_inventory_change(
-                std::future::ready(()),
-                std::future::pending::<()>(),
-            ),
+            wait_for_relay_room_list_change(std::future::ready(()), std::future::pending::<()>()),
         )
         .await
-        .expect("waiting-room changes should wake relay inventory projection");
+        .expect("room-list changes should wake relay inventory projection");
 
         tokio::time::timeout(
             Duration::from_secs(1),
-            wait_for_relay_waiting_room_inventory_change(
-                std::future::pending::<()>(),
-                std::future::ready(()),
-            ),
+            wait_for_relay_room_list_change(std::future::pending::<()>(), std::future::ready(())),
         )
         .await
         .expect("session projection changes should wake relay inventory projection");
@@ -1421,17 +1410,17 @@ mod tests {
     }
 
     #[test]
-    fn waiting_room_inventory_tasks_are_owned_by_relay_subscription() {
+    fn room_list_tasks_are_owned_by_relay_subscription() {
         let first_key = relay_subscription_task_key(
-            WAITING_ROOM_INVENTORY_SENTINEL_ID,
-            WAITING_ROOM_INVENTORY_SENTINEL_ID,
-            Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+            ROOM_LIST_SENTINEL_ID,
+            ROOM_LIST_SENTINEL_ID,
+            Some(ROOM_LIST_SUBSCRIPTION_SCOPE),
             "relay-subscription-1",
         );
         let second_key = relay_subscription_task_key(
-            WAITING_ROOM_INVENTORY_SENTINEL_ID,
-            WAITING_ROOM_INVENTORY_SENTINEL_ID,
-            Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+            ROOM_LIST_SENTINEL_ID,
+            ROOM_LIST_SENTINEL_ID,
+            Some(ROOM_LIST_SUBSCRIPTION_SCOPE),
             "relay-subscription-2",
         );
         assert_ne!(first_key, second_key);

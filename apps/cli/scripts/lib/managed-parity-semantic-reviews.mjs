@@ -653,13 +653,13 @@ export const INDEPENDENT_REVIEW_GROUPS = Object.freeze([
     "rationale": "MP-08/MP-11 removal required: Ready managed machines hide their ordinary machine entry and expose only the recorded home kernel, whereas ordinary machine selection exposes every discovered kernel. Project ready enrolled machines through the common account-authorized kernel list; keep pending deployment choices separate.",
     "anchors": [
       [44,3,"managedEnvironmentRefPrefix","managed_only_branch","managedEnvironment","14ee4e5ff57ee12735278eab86962bc333d7f124ed6d6f0bad60ec50bbfee19c"],
-      [54,17,"waitingRoomLaunchMachineOptions","client_projection","waitingRoomLaunchMachineOptions","1498fcbb7078a7b44086cdce671ab7a8ab7d55c7373e629f2187564ad49375fe"],
+      [54,17,"roomListLaunchMachineOptions","client_projection","roomListLaunchMachineOptions","1498fcbb7078a7b44086cdce671ab7a8ab7d55c7373e629f2187564ad49375fe"],
       [66,51,"managedMachineIds","managed_only_branch","managedEnvironment","7a35c6e4d0daaf904affdedcc40a98ac0bb5d93acd319de4e00f43db8307bcd0"],
       [71,7,"managedMachineIds","managed_only_branch","managedEnvironment","cbbde8c69a381b136f566568a708d53d3f29ba663665453e0d2705f66e110765"],
       [79,9,null,"managed_only_branch","managedEnvironment","18d70e9ff573814867bd9de7ad070dad70d6d1a05a4171b9fd99d21ce5f3c355"],
       [86,11,null,"managed_only_branch","managedEnvironment","cbbde8c69a381b136f566568a708d53d3f29ba663665453e0d2705f66e110765"],
-      [104,17,"waitingRoomLaunchKernelOptions","client_projection","waitingRoomLaunchKernelOptions","58a418bf94d01ecf01b182af79f9ea790f1120846be54407ac5c649a48f81522"],
-      [153,17,"waitingRoomLaunchPlacement","client_projection","waitingRoomLaunchPlacement","0759ae643a4bfd5572f40686defffeca438846774e88669b0c36407df4cba4ac"],
+      [104,17,"roomListLaunchKernelOptions","client_projection","roomListLaunchKernelOptions","58a418bf94d01ecf01b182af79f9ea790f1120846be54407ac5c649a48f81522"],
+      [153,17,"roomListLaunchPlacement","client_projection","roomListLaunchPlacement","0759ae643a4bfd5572f40686defffeca438846774e88669b0c36407df4cba4ac"],
     ]
   },
   {

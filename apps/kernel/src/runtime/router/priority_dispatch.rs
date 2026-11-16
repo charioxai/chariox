@@ -36,6 +36,7 @@ use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::remote_machine_registry::execute_remote_machine_registry_request;
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
 use crate::runtime::resource_telemetry::execute_kernel_resource_telemetry_request;
+use crate::runtime::room_list_control::execute_room_list_request;
 use crate::runtime::session_collaboration_executor::execute_session_collaboration_request;
 use crate::runtime::session_read_control::execute_session_read_request;
 use crate::runtime::slice_command_executor::execute_slice_request;
@@ -50,7 +51,6 @@ use crate::runtime::terminal_output_executor::{
     execute_append_native_provider_output_request,
 };
 use crate::runtime::user_config_executor::execute_user_config_request;
-use crate::runtime::waiting_room_control::execute_waiting_room_request;
 use crate::runtime::workflow_actor::is_workflow_command;
 use crate::runtime::workspace_command_executor::execute_workspace_command_request;
 
@@ -503,9 +503,8 @@ impl CommandRouter {
                         .read_agent_trigger_http_options(request, &caller)
                 })
             }
-            request @ (LocalDaemonRequest::GetWaitingRoomInventory(_)
-            | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)
-            | LocalDaemonRequest::ListWaitingRoomSessions(_)) => boxed_handler(|| async move {
+            request @ (LocalDaemonRequest::GetRoomListSnapshot(_)
+            | LocalDaemonRequest::ListRoomListSessions(_)) => boxed_handler(|| async move {
                 let caller_user_id = command_caller_user_id(&command);
                 let directory = if crate::runtime::cloud_relay_authorization::kernel_cloud_owner(
                     &self.config_projection.snapshot(),
@@ -515,10 +514,10 @@ impl CommandRouter {
                 } else {
                     Default::default()
                 };
-                execute_waiting_room_request(
+                execute_room_list_request(
                     &self.runtime_state,
                     &self.session_projection,
-                    &self.waiting_room_session_summaries,
+                    &self.room_list_session_summaries,
                     Arc::clone(&self.relay_state),
                     self.config_projection.clone(),
                     directory,

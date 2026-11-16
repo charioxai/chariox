@@ -10,7 +10,7 @@ import type { WaitingRoomState } from "./waiting-room-types.js"
 
 test("unattached agents render as selectable waiting-room rows with load older action", () => {
   const rows = waitingRoomExternalProviderSessionRows(
-    waitingRoomState({ focus: "external-session", externalSessionIndex: 0 }),
+    startState({ focus: "external-session", externalSessionIndex: 0 }),
     {
       externalProviderSessions: [
         externalSession({
@@ -45,7 +45,7 @@ test("unattached agents render as selectable waiting-room rows with load older a
 
 test("unattached agents show a loading row while inventory is pending", () => {
   const rows = waitingRoomExternalProviderSessionRows(
-    waitingRoomState(),
+    startState(),
     {},
     {
       inventoryLoading: true,
@@ -107,7 +107,7 @@ test("unattached agents are projected newest first with normalized title fallbac
   ])
 
   const rows = waitingRoomExternalProviderSessionRows(
-    waitingRoomState({ focus: "external-session", externalSessionIndex: 1 }),
+    startState({ focus: "external-session", externalSessionIndex: 1 }),
     { externalProviderSessions: sessions },
     { inventoryLoading: false, loadingText: "loading", titleWidth: 28 },
   )
@@ -120,7 +120,7 @@ test("unattached agents are projected newest first with normalized title fallbac
 
 test("unattached agent rows focus the shared clamped selection", () => {
   const rows = waitingRoomExternalProviderSessionRows(
-    waitingRoomState({ focus: "external-session", externalSessionIndex: 99 }),
+    startState({ focus: "external-session", externalSessionIndex: 99 }),
     {
       externalProviderSessions: [
         externalSession({
@@ -145,7 +145,7 @@ test("unattached agent rows focus the shared clamped selection", () => {
   assert.equal(rows[2]?.focused, true)
 })
 
-function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
+function startState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
   return {
     focus: "new",
     sessionIndex: 0,

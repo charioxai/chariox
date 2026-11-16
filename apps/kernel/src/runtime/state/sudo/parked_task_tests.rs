@@ -930,7 +930,7 @@ async fn waiting_projection_never_marks_a_waiting_turn_unread() {
         .iter()
         .find(|a| a.id() == task.agent_id)
         .unwrap();
-    let activity = crate::runtime::waiting_room_activity::waiting_room_agent_activity_summary(
+    let activity = crate::runtime::room_list_activity::room_list_agent_activity_summary(
         &session, agent, "local",
     );
     assert!(activity.waiting);
@@ -938,9 +938,8 @@ async fn waiting_projection_never_marks_a_waiting_turn_unread() {
         !activity.unread_idle_output,
         "waiting replaces unread completion in the kernel"
     );
-    let room = crate::runtime::waiting_room_activity::waiting_room_session_activity_summary(
-        &session, "local",
-    );
+    let room =
+        crate::runtime::room_list_activity::room_list_session_activity_summary(&session, "local");
     assert_eq!(room.unread_idle_agent_count, 0);
     assert!(!session.agent_has_unread_output("local", &task.agent_id));
 }

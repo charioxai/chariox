@@ -30,7 +30,7 @@ export type DetachedCliTransitionState = {
   daemonDisconnected: false
   nextHistoryCursor: SessionHistoryCursorState
   statusLine: string
-  waitingRoomState: WaitingRoomState
+  startState: WaitingRoomState
 }
 
 export type AttachedCliTransitionState = {
@@ -87,7 +87,7 @@ export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
 
 export function deriveDetachedCliTransitionState(options: {
   cliOptions: CliOptions
-  waitingRoomState: WaitingRoomState
+  startState: WaitingRoomState
   message: string
 }): DetachedCliTransitionState {
   return {
@@ -106,7 +106,7 @@ export function deriveDetachedCliTransitionState(options: {
     daemonDisconnected: false,
     nextHistoryCursor: null,
     statusLine: options.message,
-    waitingRoomState: resetWaitingRoomState(options.waitingRoomState),
+    startState: resetWaitingRoomState(options.startState),
   }
 }
 

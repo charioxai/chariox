@@ -11,7 +11,7 @@ use tokio::sync::watch;
 
 use super::CommandRouter;
 
-/// A client opening the waiting room asks again; asking twice in a minute is one pass.
+/// A client opening the Room list asks again; asking twice in a minute is one pass.
 const MIN_DISCOVERY_INTERVAL: Duration = Duration::from_secs(60);
 
 /// `watch::Ref` is not `Send`, so the wait keeps only the fact that shutdown began.
@@ -91,7 +91,7 @@ impl CommandRouter {
         self.runtime_state
             .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
             .await;
-        self.runtime_state.record_waiting_room_change();
+        self.runtime_state.record_room_list_change();
         self.warm_provider_catalog().await;
     }
 

@@ -21,7 +21,7 @@ Exit the CLI.
 
 ### `/waiting`
 
-Leave the current workspace/session view and return to the waiting room.
+Leave the current workspace/session view and return to the Room list.
 
 ## Provider Selection
 

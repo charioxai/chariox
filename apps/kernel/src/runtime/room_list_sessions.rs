@@ -1,10 +1,9 @@
-//! MP-08 / MP-10 / MP-11: keep waiting-room transport independent of catalog size.
+//! MP-08 / MP-10 / MP-11: keep room-list transport independent of catalog size.
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
 use crate::error::DaemonError;
 use crate::local::{
-    ListWaitingRoomSessionsRequest, WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot,
-    WaitingRoomSessionPage,
+    ListRoomListSessionsRequest, RoomListSessionPage, RoomListSessionSummary, RoomListSnapshot,
 };
 
 // Leave room for the encrypted relay envelope (including its base64 expansion).
@@ -15,10 +14,10 @@ const PAGE_SESSIONS: u32 = 500;
 pub(crate) fn is_public_code(code: &str) -> bool {
     matches!(
         code,
-        "waiting_room_inventory_invalid"
-            | "waiting_room_inventory_too_large"
-            | "waiting_room_cursor_invalid"
-            | "waiting_room_session_too_large"
+        "room_list_invalid"
+            | "room_list_too_large"
+            | "room_list_cursor_invalid"
+            | "room_list_session_too_large"
     )
 }
 
@@ -34,20 +33,20 @@ fn serialized_len(value: &impl serde::Serialize) -> Result<usize, DaemonError> {
         .map(|bytes| bytes.len())
         .map_err(|error| {
             fail(
-                "waiting_room_inventory_invalid",
-                format!("Cannot encode waiting-room inventory: {error}"),
+                "room_list_invalid",
+                format!("Cannot encode room-list inventory: {error}"),
             )
         })
 }
 
 pub(crate) fn recent_snapshot(
-    mut snapshot: WaitingRoomPublicSnapshot,
-) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
+    mut snapshot: RoomListSnapshot,
+) -> Result<RoomListSnapshot, DaemonError> {
     let sessions = std::mem::take(&mut snapshot.sessions);
     snapshot.sessions_total = sessions.len();
     let reserved = serialized_len(&snapshot)?.saturating_add(4096);
     let budget = MAX_JSON_BYTES.checked_sub(reserved).ok_or_else(|| {
-        fail("waiting_room_inventory_too_large", "Waiting-room metadata exceeds the transport budget. Reduce the kernel's project or device inventory.")
+        fail("room_list_too_large", "Room list metadata exceeds the transport budget. Reduce the kernel's project or device inventory.")
     })?;
     let page = page(sessions, None, RECENT_SESSIONS, budget)?;
     snapshot.sessions = page.sessions;
@@ -56,9 +55,9 @@ pub(crate) fn recent_snapshot(
 }
 
 pub(crate) fn session_page(
-    sessions: Vec<WaitingRoomPublicSessionSummary>,
-    request: ListWaitingRoomSessionsRequest,
-) -> Result<WaitingRoomSessionPage, DaemonError> {
+    sessions: Vec<RoomListSessionSummary>,
+    request: ListRoomListSessionsRequest,
+) -> Result<RoomListSessionPage, DaemonError> {
     page(
         sessions,
         request.cursor.as_deref(),
@@ -71,11 +70,11 @@ pub(crate) fn session_page(
 }
 
 fn page(
-    mut sessions: Vec<WaitingRoomPublicSessionSummary>,
+    mut sessions: Vec<RoomListSessionSummary>,
     cursor: Option<&str>,
     limit: u32,
     budget: usize,
-) -> Result<WaitingRoomSessionPage, DaemonError> {
+) -> Result<RoomListSessionPage, DaemonError> {
     let after: Option<(u64, u64, String)> = cursor
         .map(|cursor| {
             URL_SAFE_NO_PAD
@@ -84,13 +83,13 @@ fn page(
                 .and_then(|bytes| serde_json::from_slice(&bytes).ok())
                 .ok_or_else(|| {
                     fail(
-                        "waiting_room_cursor_invalid",
+                        "room_list_cursor_invalid",
                         "The session cursor is invalid. Reopen the session list.",
                     )
                 })
         })
         .transpose()?;
-    let activity = |session: &WaitingRoomPublicSessionSummary| session.last_activity_at_ms;
+    let activity = |session: &RoomListSessionSummary| session.last_activity_at_ms;
     sessions.sort_by(|a, b| {
         activity(b)
             .cmp(&activity(a))
@@ -112,7 +111,7 @@ fn page(
         let size = serialized_len(&session)?.saturating_add(1);
         if selected.len() >= limit as usize || bytes.saturating_add(size) > budget {
             if selected.is_empty() {
-                return Err(fail("waiting_room_session_too_large", "A session summary exceeds the transport budget. Reduce that session's agents or workflows and reopen the list."));
+                return Err(fail("room_list_session_too_large", "A session summary exceeds the transport budget. Reduce that session's agents or workflows and reopen the list."));
             }
             has_more = true;
             break;
@@ -125,13 +124,13 @@ fn page(
         Some(
             URL_SAFE_NO_PAD.encode(
                 serde_json::to_vec(&(activity(last), last.created_at_ms, &last.id))
-                    .map_err(|error| fail("waiting_room_cursor_invalid", error.to_string()))?,
+                    .map_err(|error| fail("room_list_cursor_invalid", error.to_string()))?,
             ),
         )
     } else {
         None
     };
-    Ok(WaitingRoomSessionPage {
+    Ok(RoomListSessionPage {
         sessions: selected,
         total,
         next_cursor,
@@ -142,7 +141,7 @@ fn page(
 mod tests {
     use super::*;
 
-    fn session(index: usize) -> WaitingRoomPublicSessionSummary {
+    fn session(index: usize) -> RoomListSessionSummary {
         serde_json::from_value(serde_json::json!({
             "id": format!("session-{index:05}"), "project_id": "project", "workspace_id": "workspace",
             "worktree_id": "worktree", "created_at_ms": 42, "last_activity_at_ms": 42, "status": "Active", "connected_cli_count": 0,
@@ -157,7 +156,7 @@ mod tests {
         loop {
             let page = session_page(
                 sessions.clone(),
-                ListWaitingRoomSessionsRequest {
+                ListRoomListSessionsRequest {
                     inventory_version: None,
                     cursor,
                     limit: Some(500),
@@ -185,7 +184,7 @@ mod tests {
         }
         let page = session_page(
             summaries,
-            ListWaitingRoomSessionsRequest {
+            ListRoomListSessionsRequest {
                 inventory_version: None,
                 cursor: None,
                 limit: Some(500),
@@ -201,7 +200,7 @@ mod tests {
         oversized.alias = Some("a".repeat(MAX_JSON_BYTES));
         let error = session_page(
             vec![oversized],
-            ListWaitingRoomSessionsRequest {
+            ListRoomListSessionsRequest {
                 inventory_version: None,
                 cursor: None,
                 limit: None,
@@ -209,7 +208,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            matches!(error, DaemonError::MachineRequest { code, .. } if code == "waiting_room_session_too_large")
+            matches!(error, DaemonError::MachineRequest { code, .. } if code == "room_list_session_too_large")
         );
     }
 
@@ -217,7 +216,7 @@ mod tests {
     fn invalid_cursors_are_refused_with_a_recovery_instruction() {
         let error = session_page(
             vec![session(0)],
-            ListWaitingRoomSessionsRequest {
+            ListRoomListSessionsRequest {
                 inventory_version: None,
                 cursor: Some("not a cursor".into()),
                 limit: None,
@@ -226,7 +225,7 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("Reopen"));
         assert!(
-            matches!(error, DaemonError::MachineRequest { code, .. } if code == "waiting_room_cursor_invalid")
+            matches!(error, DaemonError::MachineRequest { code, .. } if code == "room_list_cursor_invalid")
         );
     }
 }

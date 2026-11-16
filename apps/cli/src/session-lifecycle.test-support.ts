@@ -15,7 +15,7 @@ const cliOptions: CliOptions = {
   worktree: "/tmp/workspace",
 }
 
-const waitingRoomState: WaitingRoomState = {
+const startState: WaitingRoomState = {
   focus: "new",
   sessionIndex: 0,
   machineIndex: 0,
@@ -63,7 +63,7 @@ const detachedState: DetachedCliTransitionState = {
   daemonDisconnected: false,
   nextHistoryCursor: null,
   statusLine: "No session attached.",
-  waitingRoomState,
+  startState,
 }
 
 const attachedState = (session: RuntimeSession): AttachedCliTransitionState => ({
@@ -90,7 +90,7 @@ export function createBaseDeps(overrides: Record<string, unknown> = {}) {
   const deps = {
     cliOptions: { ...cliOptions },
     connectedStatus: "Connected",
-    waitingRoomState: () => waitingRoomState,
+    startState: () => startState,
     attachmentState: () => currentAttachment,
     sessionState: () => ({ ...detachedState.session, id: currentAttachment?.session_id ?? "no-session" }),
     deriveDetachedCliTransitionState: () => detachedState,

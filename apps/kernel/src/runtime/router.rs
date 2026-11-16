@@ -15,10 +15,10 @@ use crate::runtime::projection::{
     RemoteRelayInventoryProjectionStore, SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
+use crate::runtime::room_list_projection::RoomListSessionSummaryProjectionStore;
 use crate::runtime::session_actor::{FocusedAgentProjection, SessionRuntime};
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::terminal_output_executor::TerminalOutputExecutor;
-use crate::runtime::waiting_room_public_projection::WaitingRoomSessionSummaryProjectionStore;
 use crate::runtime::workflow_actor::WorkflowRuntime;
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
 use crate::terminal::TerminalStreamHealthStore;
@@ -75,7 +75,7 @@ pub(crate) struct CommandRouter {
     provider_runtime_lanes: ProviderRunOperationLanes,
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
-    waiting_room_session_summaries: WaitingRoomSessionSummaryProjectionStore,
+    room_list_session_summaries: RoomListSessionSummaryProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
     history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,

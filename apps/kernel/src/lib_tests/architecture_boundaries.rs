@@ -220,7 +220,7 @@ fn allowed_direct_app_lock(relative: &Path, line: &str) -> bool {
             Some(
                 "runtime/external_provider_session_control.rs"
                     | "runtime/router/meta_runtime_command.rs"
-                    | "runtime/waiting_room_control.rs"
+                    | "runtime/room_list_control.rs"
             )
         )
 }

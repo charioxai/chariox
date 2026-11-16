@@ -92,7 +92,7 @@ three times, retaining each attempt. Do not add a shared port lock.
 MP-07/MP-10: private Cloud bundle must supply the pinned OpenShip deployment,
 fresh machine create/reimage and product enrollment commands with approved
 cost/lifetime. This lane cannot supply a verified deployment CLI while the
-bundle is absent. OWNER uses the reviewed local home kernel's waiting-room
+bundle is absent. OWNER uses the reviewed local home kernel's Room list
 managed-machine Create/Reimage/Start controls, then the actual Web/TUI flow.
 Stop here if product commands, signed target image or authorization are missing.
 Do not install via pnpm, hand-edit service units, touch staging from this lane,

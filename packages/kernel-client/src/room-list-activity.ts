@@ -1,11 +1,11 @@
 import type {
-  WaitingRoomPublicItemActivitySummary,
-  WaitingRoomSessionActivitySummary,
+  RoomListItemActivitySummary,
+  RoomListSessionActivitySummary,
 } from "./kernel-types.js"
 import { remoteExtensionAggregateNextAction } from "./home-extension-audit-policy.js"
 import { remoteWorkerProviderRunRecoveryAction } from "./provider-run-recovery.js"
 
-export type WaitingRoomActivityBadgeState =
+export type RoomListActivityBadgeState =
   | "none"
   | "queued"
   | "working"
@@ -13,7 +13,7 @@ export type WaitingRoomActivityBadgeState =
   | "mixedQueuedDone"
   | "mixedWorkingDone"
 
-export function waitingRoomLifecycleStatusLabel(
+export function roomListLifecycleStatusLabel(
   status: string | null | undefined,
   fallback = "-",
 ): string {
@@ -26,7 +26,7 @@ export function waitingRoomLifecycleStatusLabel(
   return label || fallback
 }
 
-export function waitingRoomActivityBadgeLabel(state: WaitingRoomActivityBadgeState): string | null {
+export function roomListActivityBadgeLabel(state: RoomListActivityBadgeState): string | null {
   switch (state) {
     case "mixedWorkingDone":
       return "Working+Done"
@@ -43,22 +43,22 @@ export function waitingRoomActivityBadgeLabel(state: WaitingRoomActivityBadgeSta
   }
 }
 
-export function waitingRoomSessionStatusLabel(
+export function roomListSessionStatusLabel(
   session: {
     readonly status?: string | null | undefined
     readonly activity?: Pick<
-      WaitingRoomSessionActivitySummary,
+      RoomListSessionActivitySummary,
       "active_prompt_count" | "queued_prompt_count" | "working_agent_count" | "unread_idle_agent_count" | "pending_interaction_count"
     > | null | undefined
   } | null | undefined,
   fallback = "-",
 ): string {
   if ((session?.activity?.pending_interaction_count ?? 0) > 0) return "Needs you"
-  return waitingRoomActivityBadgeLabel(waitingRoomSessionActivityBadgeState(session?.activity))
-    ?? waitingRoomLifecycleStatusLabel(session?.status, fallback)
+  return roomListActivityBadgeLabel(roomListSessionActivityBadgeState(session?.activity))
+    ?? roomListLifecycleStatusLabel(session?.status, fallback)
 }
 
-export function waitingRoomTimestampLabel(
+export function roomListTimestampLabel(
   value: number | null | undefined,
   options: {
     readonly missingLabel?: string
@@ -89,7 +89,7 @@ export function waitingRoomTimestampLabel(
   return zone ? `${label} ${zone}` : label
 }
 
-export function waitingRoomSessionRecencyMs(
+export function roomListSessionRecencyMs(
   session: {
     readonly last_prompt_sent_at_ms?: number | null | undefined
     readonly last_activity_at_ms?: number | null | undefined
@@ -100,9 +100,9 @@ export function waitingRoomSessionRecencyMs(
   return numberOrZero(session.last_activity_at_ms) || numberOrZero(session.created_at_ms)
 }
 
-export function waitingRoomSessionActivityHasWork(
+export function roomListSessionActivityHasWork(
   activity: Pick<
-    WaitingRoomSessionActivitySummary,
+    RoomListSessionActivitySummary,
     "active_prompt_count" | "queued_prompt_count" | "working_agent_count"
   > | null | undefined,
 ): boolean {
@@ -111,21 +111,21 @@ export function waitingRoomSessionActivityHasWork(
     || (activity?.queued_prompt_count ?? 0) > 0
 }
 
-export function waitingRoomSessionActivityHasUnreadIdleOutput(
-  activity: Pick<WaitingRoomSessionActivitySummary, "unread_idle_agent_count"> | null | undefined,
+export function roomListSessionActivityHasUnreadIdleOutput(
+  activity: Pick<RoomListSessionActivitySummary, "unread_idle_agent_count"> | null | undefined,
 ): boolean {
   return (activity?.unread_idle_agent_count ?? 0) > 0
 }
 
-export function waitingRoomSessionActivityBadgeState(
+export function roomListSessionActivityBadgeState(
   activity: Pick<
-    WaitingRoomSessionActivitySummary,
+    RoomListSessionActivitySummary,
     "active_prompt_count" | "queued_prompt_count" | "working_agent_count" | "unread_idle_agent_count" | "pending_interaction_count"
   > | null | undefined,
-): WaitingRoomActivityBadgeState {
-  const activeWork = waitingRoomSessionActivityHasActiveWork(activity)
+): RoomListActivityBadgeState {
+  const activeWork = roomListSessionActivityHasActiveWork(activity)
   const queued = (activity?.queued_prompt_count ?? 0) > 0
-  const done = waitingRoomSessionActivityHasUnreadIdleOutput(activity)
+  const done = roomListSessionActivityHasUnreadIdleOutput(activity)
   if (activeWork && done) {
     return "mixedWorkingDone"
   }
@@ -141,9 +141,9 @@ export function waitingRoomSessionActivityBadgeState(
   return done ? "done" : "none"
 }
 
-export function waitingRoomSessionActivityWorkLabel(
+export function roomListSessionActivityWorkLabel(
   activity: Pick<
-    WaitingRoomSessionActivitySummary,
+    RoomListSessionActivitySummary,
     "active_prompt_count" | "queued_prompt_count" | "working_agent_count"
   > | null | undefined,
   fallback = "-",
@@ -158,10 +158,10 @@ export function waitingRoomSessionActivityWorkLabel(
   ].filter(Boolean).join(", ") || fallback
 }
 
-export function waitingRoomSessionActivityNextAction(
+export function roomListSessionActivityNextAction(
   session: {
     readonly activity?: Pick<
-      WaitingRoomSessionActivitySummary,
+      RoomListSessionActivitySummary,
       "missing_worker_provider_run_count" | "remote_extension_sync_issue_count" | "remote_extension_pending_revoke_count" | "pending_interaction_count"
     > | null | undefined
   } | null | undefined,
@@ -180,9 +180,9 @@ export function waitingRoomSessionActivityNextAction(
   return null
 }
 
-export function waitingRoomSessionRemoteActivityLabel(
+export function roomListSessionRemoteActivityLabel(
   activity: Pick<
-    WaitingRoomSessionActivitySummary,
+    RoomListSessionActivitySummary,
     | "remote_agent_count"
     | "missing_worker_provider_run_count"
     | "home_proxy_agent_count"
@@ -207,9 +207,9 @@ export function waitingRoomSessionRemoteActivityLabel(
   ].filter(Boolean).join(", ") || fallback
 }
 
-export function waitingRoomItemActivityHasWork(
+export function roomListItemActivityHasWork(
   activity: Pick<
-    WaitingRoomPublicItemActivitySummary,
+    RoomListItemActivitySummary,
     "active_prompt_count" | "queued_prompt_count" | "working"
   > | null | undefined,
 ): boolean {
@@ -218,21 +218,21 @@ export function waitingRoomItemActivityHasWork(
     || (activity?.queued_prompt_count ?? 0) > 0
 }
 
-export function waitingRoomItemActivityHasUnreadIdleOutput(
-  activity: Pick<WaitingRoomPublicItemActivitySummary, "unread_idle_output"> | null | undefined,
+export function roomListItemActivityHasUnreadIdleOutput(
+  activity: Pick<RoomListItemActivitySummary, "unread_idle_output"> | null | undefined,
 ): boolean {
   return activity?.unread_idle_output === true
 }
 
-export function waitingRoomItemActivityBadgeState(
+export function roomListItemActivityBadgeState(
   activity: Pick<
-    WaitingRoomPublicItemActivitySummary,
+    RoomListItemActivitySummary,
     "active_prompt_count" | "queued_prompt_count" | "working" | "unread_idle_output"
   > | null | undefined,
-): WaitingRoomActivityBadgeState {
-  const activeWork = waitingRoomItemActivityHasActiveWork(activity)
+): RoomListActivityBadgeState {
+  const activeWork = roomListItemActivityHasActiveWork(activity)
   const queued = (activity?.queued_prompt_count ?? 0) > 0
-  const done = waitingRoomItemActivityHasUnreadIdleOutput(activity)
+  const done = roomListItemActivityHasUnreadIdleOutput(activity)
   if (activeWork && done) {
     return "mixedWorkingDone"
   }
@@ -248,9 +248,9 @@ export function waitingRoomItemActivityBadgeState(
   return done ? "done" : "none"
 }
 
-export function waitingRoomItemActivityWorkLabel(
+export function roomListItemActivityWorkLabel(
   activity: Pick<
-    WaitingRoomPublicItemActivitySummary,
+    RoomListItemActivitySummary,
     "active_prompt_count" | "queued_prompt_count" | "working"
   > | null | undefined,
   fallback = "active work",
@@ -268,9 +268,9 @@ function numberOrZero(value: number | null | undefined): number {
   return isFiniteNumber(value) ? value : 0
 }
 
-function waitingRoomSessionActivityHasActiveWork(
+function roomListSessionActivityHasActiveWork(
   activity: Pick<
-    WaitingRoomSessionActivitySummary,
+    RoomListSessionActivitySummary,
     "active_prompt_count" | "working_agent_count"
   > | null | undefined,
 ): boolean {
@@ -278,9 +278,9 @@ function waitingRoomSessionActivityHasActiveWork(
     || (activity?.active_prompt_count ?? 0) > 0
 }
 
-function waitingRoomItemActivityHasActiveWork(
+function roomListItemActivityHasActiveWork(
   activity: Pick<
-    WaitingRoomPublicItemActivitySummary,
+    RoomListItemActivitySummary,
     "active_prompt_count" | "working"
   > | null | undefined,
 ): boolean {

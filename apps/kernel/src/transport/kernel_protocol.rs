@@ -6,8 +6,8 @@ use serde_json::Value;
 use crate::config::WorkspaceLiveSyncMode;
 use crate::error::DaemonError;
 use crate::local::{
-    LocalDaemonRequest, PasskeyPrompt, RelayStatus, RemoteMachineRecord, WaitingRoomLaunchTarget,
-    WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot, WorkflowDesignOpForwarded,
+    LocalDaemonRequest, PasskeyPrompt, RelayStatus, RemoteMachineRecord, RoomListLaunchTarget,
+    RoomListSessionSummary, RoomListSnapshot, WorkflowDesignOpForwarded,
 };
 use crate::provider::{OpenCodeProviderCatalog, PublicProviderRun};
 use crate::runtime::projection::{AgentRuntimeActivity, SessionSnapshotProjection};
@@ -15,8 +15,8 @@ use crate::session::{RuntimeInteraction, RuntimeSession, WorkflowRun};
 use crate::slice::SliceRecord;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 
-pub(crate) const WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE: &str = "waiting_room_inventory";
-pub(crate) const WAITING_ROOM_INVENTORY_SENTINEL_ID: &str = "__waiting_room_inventory__";
+pub(crate) const ROOM_LIST_SUBSCRIPTION_SCOPE: &str = "room_list";
+pub(crate) const ROOM_LIST_SENTINEL_ID: &str = "__room_list__";
 pub(crate) const MAX_TERMINAL_OUTPUT_EVENT_JSON_BYTES: usize = 128 * 1024;
 
 /// Import clients reuse a paired key. Authenticate the exact encrypted request
@@ -205,7 +205,7 @@ pub(crate) enum KernelEvent {
     RemoteMachinesChanged {
         machines: Vec<RemoteMachineRecord>,
     },
-    WaitingRoomInventoryChanged {
+    RoomListChanged {
         inventory_version: String,
     },
     /// Protocol 1006: one watched resource of a `kernel_resources` subscription.
@@ -215,7 +215,7 @@ pub(crate) enum KernelEvent {
         revision: String,
         body: KernelResourceChange,
     },
-    WaitingRoomRowsChanged {
+    RoomListRowsChanged {
         #[serde(default)]
         sessions_total: usize,
         #[serde(default)]
@@ -225,10 +225,10 @@ pub(crate) enum KernelEvent {
         activity_revision: String,
         schema_version: u32,
         generated_at_ms: u64,
-        launch_target: Option<WaitingRoomLaunchTarget>,
-        projects: Vec<crate::local::WaitingRoomPublicProjectSummary>,
+        launch_target: Option<RoomListLaunchTarget>,
+        projects: Vec<crate::local::RoomListProjectSummary>,
         removed_project_ids: Vec<String>,
-        sessions: Vec<WaitingRoomPublicSessionSummary>,
+        sessions: Vec<RoomListSessionSummary>,
         removed_session_ids: Vec<String>,
     },
     ClientCatalogChanged {
@@ -299,7 +299,7 @@ impl SessionMetadataPatch {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum KernelSubscriptionScope {
     Session,
-    WaitingRoomInventory,
+    RoomList,
     KernelResources,
 }
 
@@ -334,8 +334,8 @@ pub(crate) fn requested_heartbeat_interval(
 }
 
 pub(crate) fn kernel_subscription_scope(scope: Option<&str>) -> KernelSubscriptionScope {
-    if scope == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE) {
-        KernelSubscriptionScope::WaitingRoomInventory
+    if scope == Some(ROOM_LIST_SUBSCRIPTION_SCOPE) {
+        KernelSubscriptionScope::RoomList
     } else if scope == Some(super::kernel_resource_feed::KERNEL_RESOURCES_SUBSCRIPTION_SCOPE) {
         KernelSubscriptionScope::KernelResources
     } else {
@@ -548,9 +548,9 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
     }
 }
 
-pub(crate) fn waiting_room_rows_changed_event(
-    snapshot: WaitingRoomPublicSnapshot,
-    previous_snapshot: Option<&WaitingRoomPublicSnapshot>,
+pub(crate) fn room_list_rows_changed_event(
+    snapshot: RoomListSnapshot,
+    previous_snapshot: Option<&RoomListSnapshot>,
 ) -> Option<KernelEvent> {
     if previous_snapshot.is_some_and(|previous| {
         previous.schema_version == snapshot.schema_version
@@ -622,7 +622,7 @@ pub(crate) fn waiting_room_rows_changed_event(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    Some(KernelEvent::WaitingRoomRowsChanged {
+    Some(KernelEvent::RoomListRowsChanged {
         sessions_total: snapshot.sessions_total,
         sessions_next_cursor: snapshot.sessions_next_cursor,
         inventory_version: snapshot.inventory_version,
@@ -638,9 +638,9 @@ pub(crate) fn waiting_room_rows_changed_event(
     })
 }
 
-pub(crate) fn waiting_room_inventory_changed_event(
-    snapshot: &WaitingRoomPublicSnapshot,
-    previous_snapshot: Option<&WaitingRoomPublicSnapshot>,
+pub(crate) fn room_list_changed_event(
+    snapshot: &RoomListSnapshot,
+    previous_snapshot: Option<&RoomListSnapshot>,
 ) -> Option<KernelEvent> {
     let requires_full_refresh = previous_snapshot.is_none_or(|previous| {
         previous.external_provider_sessions != snapshot.external_provider_sessions
@@ -655,22 +655,21 @@ pub(crate) fn waiting_room_inventory_changed_event(
             || previous.provider_accounts != snapshot.provider_accounts
             || previous.git_credentials != snapshot.git_credentials
     });
-    requires_full_refresh.then(|| KernelEvent::WaitingRoomInventoryChanged {
+    requires_full_refresh.then(|| KernelEvent::RoomListChanged {
         inventory_version: snapshot.inventory_version.clone(),
     })
 }
 
 #[derive(Default)]
-pub(crate) struct WaitingRoomInventoryEventProjection {
-    previous_snapshot: Option<WaitingRoomPublicSnapshot>,
+pub(crate) struct RoomListEventProjection {
+    previous_snapshot: Option<RoomListSnapshot>,
 }
 
-impl WaitingRoomInventoryEventProjection {
-    pub(crate) fn project(&mut self, snapshot: WaitingRoomPublicSnapshot) -> Vec<KernelEvent> {
-        let inventory_event =
-            waiting_room_inventory_changed_event(&snapshot, self.previous_snapshot.as_ref());
+impl RoomListEventProjection {
+    pub(crate) fn project(&mut self, snapshot: RoomListSnapshot) -> Vec<KernelEvent> {
+        let inventory_event = room_list_changed_event(&snapshot, self.previous_snapshot.as_ref());
         let rows_event =
-            waiting_room_rows_changed_event(snapshot.clone(), self.previous_snapshot.as_ref());
+            room_list_rows_changed_event(snapshot.clone(), self.previous_snapshot.as_ref());
         self.previous_snapshot = Some(snapshot);
         [rows_event, inventory_event]
             .into_iter()
@@ -981,9 +980,9 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::SessionUnavailable { .. } => "session_unavailable",
         KernelEvent::RelayStatusChanged { .. } => "relay_status_changed",
         KernelEvent::RemoteMachinesChanged { .. } => "remote_machines_changed",
-        KernelEvent::WaitingRoomInventoryChanged { .. } => "waiting_room_inventory_changed",
+        KernelEvent::RoomListChanged { .. } => "room_list_changed",
         KernelEvent::KernelResourceChanged { .. } => "kernel_resource_changed",
-        KernelEvent::WaitingRoomRowsChanged { .. } => "waiting_room_rows_changed",
+        KernelEvent::RoomListRowsChanged { .. } => "room_list_rows_changed",
         KernelEvent::ClientCatalogChanged { .. } => "client_catalog_changed",
         KernelEvent::ProviderCatalogChanged { .. } => "provider_catalog_changed",
         KernelEvent::SlicesChanged { .. } => "slices_changed",
@@ -1022,9 +1021,9 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::SessionUnavailable { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::RelayStatusChanged { .. } => None,
         KernelEvent::RemoteMachinesChanged { .. } => None,
-        KernelEvent::WaitingRoomInventoryChanged { .. } => None,
+        KernelEvent::RoomListChanged { .. } => None,
         KernelEvent::KernelResourceChanged { .. } => None,
-        KernelEvent::WaitingRoomRowsChanged { .. } => None,
+        KernelEvent::RoomListRowsChanged { .. } => None,
         KernelEvent::ClientCatalogChanged { .. } => None,
         KernelEvent::ProviderCatalogChanged { .. } => None,
         KernelEvent::SlicesChanged { .. } => None,
@@ -1093,9 +1092,9 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::SessionUnavailable { .. }
         | KernelEvent::RelayStatusChanged { .. }
         | KernelEvent::RemoteMachinesChanged { .. }
-        | KernelEvent::WaitingRoomInventoryChanged { .. }
+        | KernelEvent::RoomListChanged { .. }
         | KernelEvent::KernelResourceChanged { .. }
-        | KernelEvent::WaitingRoomRowsChanged { .. }
+        | KernelEvent::RoomListRowsChanged { .. }
         | KernelEvent::ClientCatalogChanged { .. }
         | KernelEvent::ProviderCatalogChanged { .. }
         | KernelEvent::SlicesChanged { .. }

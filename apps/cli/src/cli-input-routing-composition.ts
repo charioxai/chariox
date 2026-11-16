@@ -200,7 +200,7 @@ export type CliInputRoutingCompositionDeps = {
   commandCenterController: {
     query: AnyFn
   }
-  waitingRoomState: AnyFn
+  startState: AnyFn
   availableSessions: AnyFn
   waitingRoomProjects: AnyFn
   waitingRoomTargets: AnyFn
@@ -505,7 +505,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       const name = rawPrompt.trim()
       if (!name) { deps.flashFooter("Enter a project name", "error"); return true }
       pendingNewProjectName = false
-      deps.setWaitingRoomState({ ...deps.waitingRoomState(), projectSelectionId: "new", projectNameDraft: name })
+      deps.setWaitingRoomState({ ...deps.startState(), projectSelectionId: "new", projectNameDraft: name })
       deps.promptTextController.setText("")
       deps.promptInputRefController.blur?.()
       deps.rebuildTranscript()
@@ -666,7 +666,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     promptFocused: deps.promptInputRefController.isFocused,
     commandCenterOpen: deps.commandCenterOpen,
     commandCenterQuery: () => deps.commandCenterController.query(),
-    getWaitingRoomState: deps.waitingRoomState,
+    getWaitingRoomState: deps.startState,
     getSessions: deps.availableSessions,
     getProviderCatalog: deps.providerCatalogState,
     getRemoteState: () => ({
@@ -694,7 +694,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     },
     beginNewProject: () => {
       pendingNewProjectName = true
-      deps.promptTextController.setText(deps.waitingRoomState().projectNameDraft ?? "")
+      deps.promptTextController.setText(deps.startState().projectNameDraft ?? "")
       deps.promptInputRefController.focus()
       deps.flashFooter("Name the new project and press Enter", "info")
     },

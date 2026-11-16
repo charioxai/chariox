@@ -42,7 +42,7 @@ Internal compatibility rules:
   - `claude-p` resolves to the current stream-json adapter.
   - `claude-headless` resolves to the new interactive hidden PTY adapter.
   - Legacy `claude` should continue to load old sessions. The default mapping
-    for new launches must be explicit in the waiting room/provider catalog.
+    for new launches must be explicit in the Room list/provider catalog.
 - Workflow definitions should persist explicit provider ids after this change;
   imported legacy workflows using `claude` should be normalized at load time and
   surfaced with a migration notice only if behavior would change.
@@ -139,7 +139,7 @@ Files to inspect/update:
 - `apps/kernel/src/provider/catalog.rs`
 - `apps/kernel/src/provider/claude.rs`
 - `apps/cli/src/provider-command-catalog.ts`
-- waiting room provider model/catalog code in OSS and Cloud
+- Room list provider model/catalog code in OSS and Cloud
 - workflow provider selection code in OSS and Cloud
 
 Tasks:
@@ -155,7 +155,7 @@ Validation:
 
 - Unit test catalog contains `Claude headless` and `Claude -p`.
 - Existing serialized `claude` session still loads.
-- Waiting room and workflow provider pickers display both modes.
+- Room list and workflow provider pickers display both modes.
 
 ### 2. Launch Planning
 
@@ -499,14 +499,14 @@ Validation:
 
 OSS TUI:
 
-- Waiting room provider picker shows `Claude headless` and `Claude -p`.
+- Room list provider picker shows `Claude headless` and `Claude -p`.
 - Agent footer/provider badge shows selected mode.
 - Command center provider commands show both modes.
 - Native TUI command remains `chariox claude`.
 
 Web/Cloud:
 
-- Waiting room provider picker shows both modes.
+- Room list provider picker shows both modes.
 - Side panel spawn controls show both modes.
 - Freeform spawn controls show both modes.
 - Workflow canvas provider picker shows both modes.
@@ -515,10 +515,10 @@ Web/Cloud:
 
 Validation:
 
-- Product frontend drill starts a Claude headless agent from waiting room.
+- Product frontend drill starts a Claude headless agent from Room list.
 - Product frontend drill starts a Claude headless agent from side panel/freeform.
 - Product frontend workflow drill includes Claude headless node.
-- TUI drill starts Claude headless from waiting room/command flow.
+- TUI drill starts Claude headless from Room list/command flow.
 
 ## End-to-End Live Drill Matrix
 
@@ -762,7 +762,7 @@ node scripts/local-workflow-canvas-visual-drill.mjs
 
 Add or extend web drill coverage to validate:
 
-- waiting room spawn of Claude headless
+- Room list spawn of Claude headless
 - side panel/freeform spawn of Claude headless
 - provider badge/footer says `Claude headless`
 - prompt submission through web terminal
@@ -824,7 +824,7 @@ native Claude TUI path.
 - `Claude -p` remains functional and explicitly labeled.
 - `Claude headless` launches interactive Claude without `-p`.
 - `Claude headless` uses Claude Code login, not SDK/API credentials.
-- Prompt input works from TUI, web terminal, waiting room, workflow, remote
+- Prompt input works from TUI, web terminal, Room list, workflow, remote
   worker, and supported slice topologies.
 - Hidden prompt injection is centralized and delivered through Claude hook
   additionalContext.
@@ -844,7 +844,7 @@ native Claude TUI path.
 3. Land transcript tailer and provider output mapping.
 4. Land permissions, attachments, MCP, and workspace live sync parity.
 5. Land workflow, remote worker, and slice support.
-6. Enable `Claude headless` in local TUI waiting room.
+6. Enable `Claude headless` in local TUI Room list.
 7. Enable `Claude headless` in web/Cloud UI.
 8. Keep `Claude -p` available and document cost/behavior differences.
 9. Consider making `Claude headless` the default Claude choice only after the
