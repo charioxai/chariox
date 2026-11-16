@@ -438,6 +438,8 @@ pub enum LocalDaemonRequest {
     ExportWorkflowCodeSource(ExportWorkflowCodeSourceRequest),
     ApplyWorkflowDesignOp(ApplyWorkflowDesignOpRequest),
     AliasWorkflow(AliasWorkflowRequest),
+    SetWorkflowResponsible(SetWorkflowResponsibleRequest),
+    ClearWorkflowRunAttention(ClearWorkflowRunAttentionRequest),
     ListWorkflows(ListWorkflowsRequest),
     ResolveWorkflow(ResolveWorkflowRequest),
     CreateWorkflowPublication(CreateWorkflowPublicationRequest),

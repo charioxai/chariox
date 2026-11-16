@@ -202,6 +202,10 @@ pub struct AgentTrigger {
     last_outcome: Option<AgentTriggerOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_error: Option<String>,
+    /// Set on the trigger the kernel keeps for a workflow's responsible agent. A person never
+    /// creates, lists or edits it; setting the responsible does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    responsible_for: Option<super::workflow_responsible::ResponsibleForWorkflow>,
     #[serde(skip)]
     dispatch_in_flight: bool,
     #[serde(skip)]
@@ -241,6 +245,7 @@ impl AgentTrigger {
             last_error: None,
             dispatch_in_flight: false,
             dispatch_generation: 0,
+            responsible_for: None,
         })
     }
 
@@ -279,6 +284,7 @@ impl AgentTrigger {
             last_error: None,
             dispatch_in_flight: false,
             dispatch_generation: 0,
+            responsible_for: None,
         }
     }
 
@@ -318,6 +324,7 @@ impl AgentTrigger {
             last_error: None,
             dispatch_in_flight: false,
             dispatch_generation: 0,
+            responsible_for: None,
         }
     }
 
@@ -343,6 +350,17 @@ impl AgentTrigger {
 
     pub fn agent_id(&self) -> &str {
         &self.agent_id
+    }
+
+    pub fn responsible_for(&self) -> Option<&super::workflow_responsible::ResponsibleForWorkflow> {
+        self.responsible_for.as_ref()
+    }
+
+    pub(crate) fn set_responsible_for(
+        &mut self,
+        workflow: super::workflow_responsible::ResponsibleForWorkflow,
+    ) {
+        self.responsible_for = Some(workflow);
     }
 
     pub(crate) fn enroll_local_owner(&mut self, owner: &str) {
@@ -630,4 +648,7 @@ pub struct AgentTriggerDispatch {
     pub agent_id: String,
     pub prompt: String,
     pub busy_policy: AgentTriggerBusyPolicy,
+    /// The firing is a workflow's responsible agent's: its prompt is the kernel's own text, and
+    /// the occurrence's output is not quoted into it.
+    pub(crate) responsible: bool,
 }

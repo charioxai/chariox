@@ -60,12 +60,33 @@ pub(crate) async fn cloud_metadata_token_for_targets(
 pub(crate) async fn visible_targets(
     profile: &crate::config::PersistedCloudRelayProfile,
 ) -> Result<Option<std::collections::BTreeSet<String>>, DaemonError> {
+    Ok(visible_directory(profile)
+        .await?
+        .map(|directory| directory.online))
+}
+
+/// What the owner's Cloud directory lists: the kernels that are online, and every kernel still
+/// linked to the account, online or not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VisibleDirectory {
+    pub(crate) online: std::collections::BTreeSet<String>,
+    pub(crate) linked: std::collections::BTreeSet<String>,
+}
+
+pub(crate) async fn visible_directory(
+    profile: &crate::config::PersistedCloudRelayProfile,
+) -> Result<Option<VisibleDirectory>, DaemonError> {
     if profile.kernel_credential.is_none() {
         return Ok(None);
     }
     let answer = crate::runtime::cloud_api_client::get_cloud_kernel_directory(profile)
         .await
-        .and_then(|directory| cloud_directory_discovery_targets(&directory));
+        .and_then(|directory| {
+            Ok(VisibleDirectory {
+                online: cloud_directory_discovery_targets(&directory)?,
+                linked: cloud_directory_linked_targets(&directory),
+            })
+        });
     let key = format!(
         "{}/{}/{}",
         profile.api_url, profile.account_id, profile.realm_id
@@ -86,8 +107,30 @@ pub(crate) async fn visible_targets(
 
 /// Cloud's last answer to "which kernels are visible", by account and realm.
 static LAST_VISIBLE_TARGETS: std::sync::Mutex<
-    std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    std::collections::BTreeMap<String, VisibleDirectory>,
 > = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Every kernel the account still links, whatever its status: an offline kernel stays; only a
+/// kernel that was removed (absent) or revoked is gone for good.
+fn cloud_directory_linked_targets(
+    directory: &serde_json::Value,
+) -> std::collections::BTreeSet<String> {
+    directory
+        .get("targets")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|target| {
+            target.get("status").and_then(serde_json::Value::as_str) != Some("REVOKED")
+        })
+        .filter_map(|target| {
+            target
+                .get("daemonId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .collect()
+}
 
 fn cloud_directory_discovery_targets(
     directory: &serde_json::Value,
@@ -129,6 +172,26 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(targets, ["owner".to_string()].into());
+    }
+
+    #[test]
+    fn cloud_directory_keeps_offline_kernels_linked_and_drops_revoked_ones() {
+        let linked = cloud_directory_linked_targets(&serde_json::json!({
+            "targets": [
+                {"daemonId": "owner", "status": "ONLINE"},
+                {"daemonId": "asleep", "status": "OFFLINE"},
+                {"daemonId": "stale", "status": "STALE"},
+                {"daemonId": "unlinked", "status": "REVOKED"},
+                {"status": "ONLINE"}
+            ]
+        }));
+        assert_eq!(
+            linked,
+            ["asleep", "owner", "stale"]
+                .map(String::from)
+                .into_iter()
+                .collect()
+        );
     }
 
     // MP-08 / MP-09 / MP-10 / MP-11: Cloud answered once, then went silent (a saturated

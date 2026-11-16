@@ -1094,6 +1094,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ExportWorkflowCodeSource(_) => "workflow_code_source.export",
         LocalDaemonRequest::ApplyWorkflowDesignOp(_) => "workflow_design.apply_op",
         LocalDaemonRequest::AliasWorkflow(_) => "workflow.alias",
+        LocalDaemonRequest::SetWorkflowResponsible(_) => "workflow.set_responsible",
+        LocalDaemonRequest::ClearWorkflowRunAttention(_) => "workflow_run.clear_attention",
         LocalDaemonRequest::ListWorkflows(_) => "workflow.list",
         LocalDaemonRequest::ResolveWorkflow(_) => "workflow.resolve",
         LocalDaemonRequest::CreateWorkflowPublication(_) => "workflow_publication.create",

@@ -743,6 +743,29 @@ export function aliasWorkflowRequest(sessionId: string, workflowId: string, alia
   }
 }
 
+export function setWorkflowResponsibleRequest(
+  sessionId: string,
+  workflowRef: string,
+  responsible: { kind: "person" } | { kind: "agent"; kernel_id: string; room_id: string; agent_id: string },
+) {
+  return {
+    SetWorkflowResponsible: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      responsible,
+    },
+  }
+}
+
+export function clearWorkflowRunAttentionRequest(sessionId: string, runRef: string) {
+  return {
+    ClearWorkflowRunAttention: {
+      session_id: sessionId,
+      run_ref: runRef,
+    },
+  }
+}
+
 export function listWorkflowsRequest(sessionId: string) {
   return {
     ListWorkflows: {

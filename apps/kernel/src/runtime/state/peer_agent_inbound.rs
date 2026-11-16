@@ -122,6 +122,11 @@ impl KernelRuntimeState {
                 self.cancel_peer_agent_turn(kernel, &request_id, &target)
                     .await
             }
+            request @ (RelayPeerRequest::SetWorkflowResponsible { .. }
+            | RelayPeerRequest::ApplyWorkflowResponsible { .. }) => {
+                self.receive_workflow_responsible_request(kernel, owner, request)
+                    .await
+            }
             request @ (RelayPeerRequest::SubscribePeerAgent { .. }
             | RelayPeerRequest::UnsubscribePeerAgent { .. }) => {
                 self.receive_peer_follow(kernel, owner, request)

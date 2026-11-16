@@ -273,6 +273,8 @@ pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSe
         | LocalDaemonResponse::WorkflowCodeRun { session, .. }
         | LocalDaemonResponse::WorkflowDesignOpAccepted { session, .. }
         | LocalDaemonResponse::WorkflowAliased { session, .. }
+        | LocalDaemonResponse::WorkflowResponsibleSet { session, .. }
+        | LocalDaemonResponse::WorkflowRunAttentionCleared { session, .. }
         | LocalDaemonResponse::WorkflowEndpointCreated { session, .. }
         | LocalDaemonResponse::WorkflowEndpointAliased { session, .. }
         | LocalDaemonResponse::WorkflowEndpointBound { session, .. }

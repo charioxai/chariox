@@ -510,6 +510,8 @@ response_policies! {
         WorkflowCodePackageImported,
         WorkflowCodeSourceExported,
         WorkflowAliased,
+        WorkflowResponsibleSet,
+        WorkflowRunAttentionCleared,
         WorkflowsListed,
         WorkflowResolved,
         WorkflowPublicationCreated,

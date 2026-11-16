@@ -12,8 +12,16 @@ use super::workflow_scheduling::{
 use super::workflow_turns::WorkflowRunStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct WorkflowRun {
     id: String,
+    /// Monotonic per workflow, the first run is 1; set when the session registers the run. A run
+    /// that was never registered (history from before runs were numbered) has none.
+    #[serde(default, skip_serializing_if = "is_unnumbered")]
+    number: u32,
+    /// The need (`WorkflowRunOutcome::key`) the person cleared; attention stays closed for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attention_cleared: Option<String>,
     /// MP-08/MP-10/MP-11: owner-only historical read projection, never control authority.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     created_before_ownership_tracking: bool,
@@ -99,6 +107,8 @@ impl WorkflowRun {
             .and_then(|invocation| invocation.queue_ref.clone());
         Self {
             id: id.into(),
+            number: 0,
+            attention_cleared: None,
             created_before_ownership_tracking: false,
             created_by_agent_id: None,
             workflow_id: workflow_id.into(),
@@ -132,6 +142,22 @@ impl WorkflowRun {
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    pub fn number(&self) -> u32 {
+        self.number
+    }
+
+    pub(crate) fn set_number(&mut self, number: u32) {
+        self.number = number;
+    }
+
+    pub(super) fn attention_cleared(&self) -> Option<&str> {
+        self.attention_cleared.as_deref()
+    }
+
+    pub(super) fn set_attention_cleared(&mut self, cleared: Option<String>) {
+        self.attention_cleared = cleared;
     }
 
     pub fn workflow_id(&self) -> &str {
@@ -388,6 +414,45 @@ impl WorkflowRun {
     }
 }
 
+fn is_unnumbered(number: &u32) -> bool {
+    *number == 0
+}
+
 fn default_workflow_run_invocation_source() -> WorkflowQueuedPromptSource {
     WorkflowQueuedPromptSource::Manual
+}
+
+/// The stored run, flattened into the wire form that adds what the run derives from its own
+/// state: its outcome and whether it needs attention.
+struct StoredWorkflowRun<'a>(&'a WorkflowRun);
+
+impl Serialize for StoredWorkflowRun<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        WorkflowRun::serialize(self.0, serializer)
+    }
+}
+
+impl Serialize for WorkflowRun {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            #[serde(flatten)]
+            stored: StoredWorkflowRun<'a>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            outcome: Option<super::workflow_responsible::WorkflowRunOutcome>,
+            attention: bool,
+        }
+        Wire {
+            stored: StoredWorkflowRun(self),
+            outcome: self.outcome(),
+            attention: self.attention(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for WorkflowRun {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        WorkflowRun::deserialize(deserializer)
+    }
 }

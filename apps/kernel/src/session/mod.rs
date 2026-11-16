@@ -37,6 +37,7 @@ mod workflow_graph;
 mod workflow_instances;
 mod workflow_outputs;
 mod workflow_publication;
+mod workflow_responsible;
 mod workflow_run_records;
 mod workflow_runs;
 mod workflow_scheduling;
@@ -89,7 +90,8 @@ pub use types::{
     unix_epoch_ms, AgentPromptState, CollaborationLevel, CreateSessionRequest, HandoffChangeLine,
     HandoffChangeOp, HandoffKind, HandoffReason, HandoffTarget, MetaagentTask, MetaagentTaskStatus,
     PromptAttachment, PromptCancellation, PromptCompletion, PromptDetachEffect, PromptOrigin,
-    PromptQueueItem, PromptStatus, PromptSubmissionOutcome, QueuedMetaagentTask, RuntimeHandoff,
+    PromptQueueItem, PromptStatus, PromptSubmissionOutcome, QueuedMetaagentTask,
+    ResponsibleForWorkflow, ResponsibleNotice, ResponsibleNoticeKind, RuntimeHandoff,
     RuntimeInteraction, RuntimeInteractionBrowserRect, RuntimeInteractionBrowserRegion,
     RuntimeInteractionBrowserVerification, RuntimeInteractionBrowserVerificationOutcome,
     RuntimeInteractionBrowserVerificationResult, RuntimeInteractionChoice,
@@ -108,10 +110,11 @@ pub use types::{
     WorkflowOriginReason, WorkflowOriginSurface, WorkflowOutputPayload,
     WorkflowPromptQueueDefinition, WorkflowPublicationDefinition,
     WorkflowPublicationInvocationEnvelope, WorkflowQueuedPrompt, WorkflowQueuedPromptSource,
-    WorkflowQueuedPromptStatus, WorkflowRun, WorkflowRunOutputSubmission, WorkflowRunStatus,
-    WorkflowRuntimeToolCallEvent, WorkflowScheduleDefinition, WorkflowScheduleOverlapPolicy,
-    WorkflowScheduleTrigger, WorkflowSchemaDefinition, WorkflowTurnEnvelope,
-    WorkflowTurnOutputSubmissions, WorkflowTurnRuntimeState, WorkflowTurnSubmissionKind,
+    WorkflowQueuedPromptStatus, WorkflowResponsible, WorkflowRun, WorkflowRunOutcome,
+    WorkflowRunOutputSubmission, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,
+    WorkflowScheduleDefinition, WorkflowScheduleOverlapPolicy, WorkflowScheduleTrigger,
+    WorkflowSchemaDefinition, WorkflowTurnEnvelope, WorkflowTurnOutputSubmissions,
+    WorkflowTurnRuntimeState, WorkflowTurnSubmissionKind, WorkflowWaitingOn,
     WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
     WorkspaceLinkDefinition, WorktreeIsolationMode, DEFAULT_LOCAL_USER_ID,
     DEFAULT_SESSION_MAX_AGENTS, DEFAULT_WORKFLOW_CODE_MAX_AGENTS,
@@ -121,7 +124,7 @@ pub use types::{
     DEFAULT_WORKFLOW_CODE_MAX_SCHEMA_BYTES, DEFAULT_WORKFLOW_CODE_MAX_WATCHDOGS,
     DEFAULT_WORKFLOW_CODE_SCRIPT_MEMORY_BYTES, DEFAULT_WORKFLOW_CODE_SCRIPT_TIMEOUT_MS,
     DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT, DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS,
-    DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
+    DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS, OUTCOME_DETAIL_CHARS,
 };
 pub(crate) use types::{DurablePromptDeliveryPhase, DurablePromptPrivateState};
 pub(crate) use workflow_definition::{

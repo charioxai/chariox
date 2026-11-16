@@ -1,7 +1,7 @@
 use super::*;
 
 // MP-08 / MP-10 / MP-11: keep workflow construction off its caller's poll frame.
-type WorkflowRequestOutcome = (
+pub(super) type WorkflowRequestOutcome = (
     Result<LocalDaemonResponse, DaemonError>,
     Option<crate::session::RuntimeSession>,
 );
@@ -76,6 +76,9 @@ impl KernelRuntimeState {
             request,
             LocalDaemonRequest::RegisterWorkflowNotificationSource(_)
         );
+        let known_workflows = caller_metaagent_id
+            .as_deref()
+            .and_then(|_| self.workflow_ids_in_request_room(&request));
         let mut outcome = match request {
             request @ (LocalDaemonRequest::RegisterWorkflowNotificationSource(_)
             | LocalDaemonRequest::AttachWorkflowNotification(_)
@@ -291,6 +294,17 @@ impl KernelRuntimeState {
                 let result = owned.workflow_alias_workflow(request);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
+            }
+            LocalDaemonRequest::SetWorkflowResponsible(request) => {
+                self.execute_workflow_set_responsible_request(
+                    request,
+                    &caller_user_id,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await
+            }
+            LocalDaemonRequest::ClearWorkflowRunAttention(request) => {
+                self.execute_workflow_clear_run_attention_request(request)
             }
             LocalDaemonRequest::ListWorkflows(request) => (
                 owned.workflow_list_workflows(request, caller_metaagent_id.as_deref()),
@@ -620,6 +634,41 @@ impl KernelRuntimeState {
                     return (Err(error), outcome.1);
                 }
             }
+            // A workflow an agent created is that agent's to answer for, once the workflow is
+            // saved: its "run finished" source belongs to a saved workflow.
+            if let (Some(agent_id), Some((room_id, known))) =
+                (caller_metaagent_id.as_deref(), known_workflows)
+            {
+                if self
+                    .make_creator_responsible(&room_id, agent_id, &known)
+                    .await
+                {
+                    match self.owned.session_snapshot(&room_id) {
+                        Ok(current) => {
+                            if let Err(error) = self
+                                .append_session_durable_event(
+                                    "session.updated",
+                                    &current,
+                                    "workflow",
+                                )
+                                .await
+                            {
+                                return (Err(error), outcome.1);
+                            }
+                            if let Ok(LocalDaemonResponse::WorkflowCreated { workflow, session }) =
+                                outcome.0.as_mut()
+                            {
+                                if let Some(fresh) = current.workflow(workflow.id()) {
+                                    *workflow = fresh.clone();
+                                }
+                                *session = current.clone();
+                            }
+                            outcome.1 = Some(current);
+                        }
+                        Err(error) => return (Err(error), outcome.1),
+                    }
+                }
+            }
         }
         outcome
     }
@@ -640,6 +689,8 @@ macro_rules! workflow_response_session_of {
             | LocalDaemonResponse::WorkflowRegistryEntryRun { session, .. }
             | LocalDaemonResponse::WorkflowDesignOpAccepted { session, .. }
             | LocalDaemonResponse::WorkflowAliased { session, .. }
+            | LocalDaemonResponse::WorkflowResponsibleSet { session, .. }
+            | LocalDaemonResponse::WorkflowRunAttentionCleared { session, .. }
             | LocalDaemonResponse::WorkflowPublicationCreated { session, .. }
             | LocalDaemonResponse::WorkflowPublicationDisabled { session, .. }
             | LocalDaemonResponse::WorkflowPublicationMaterialized { session, .. }

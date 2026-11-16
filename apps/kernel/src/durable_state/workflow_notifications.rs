@@ -11,6 +11,7 @@ pub(crate) mod outside_agent;
 #[cfg(test)]
 mod outside_agent_tests;
 pub(crate) mod remote_install;
+mod run_attention;
 pub(crate) mod run_finished;
 #[cfg(test)]
 mod run_finished_tests;

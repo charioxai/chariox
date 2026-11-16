@@ -157,6 +157,7 @@ fn summarize_meta_command_response(
             "workflow": summarize_meta_workflow(workflow),
         }),
         LocalDaemonResponse::WorkflowAliased { workflow, .. }
+        | LocalDaemonResponse::WorkflowResponsibleSet { workflow, .. }
         | LocalDaemonResponse::WorkflowResolved { workflow } => serde_json::json!({
             "type": "Workflow",
             "workflow": summarize_meta_workflow(workflow),

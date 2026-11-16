@@ -127,7 +127,11 @@ pub(crate) async fn refresh_remote_inventory_projection(
     let visible_kernel_ids = if let Some(profile) =
         crate::runtime::cloud_relay_control::active_cloud_profile(&runtime_config)
     {
-        relay_discovery::authorization::visible_targets(profile).await?
+        let directory = relay_discovery::authorization::visible_directory(profile).await?;
+        if let Some(directory) = &directory {
+            projection.record_directory_read(directory.linked.clone());
+        }
+        directory.map(|directory| directory.online)
     } else {
         None
     };
