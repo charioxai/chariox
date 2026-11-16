@@ -169,6 +169,7 @@ impl KernelRuntimeState {
             None,
             None,
             Some(Some(created.path)),
+            None,
         )
         .await
         .map_err(|error| failed_worktree(&error))?;

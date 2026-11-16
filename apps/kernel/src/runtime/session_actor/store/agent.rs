@@ -100,21 +100,9 @@ impl SessionRuntimeStore {
                 permission_level_override,
                 workspace_id,
                 worktree_id,
+                max_context_tokens,
             )
             .await;
-        let updated = match (updated, max_context_tokens) {
-            (Ok(_), Some(max_context_tokens)) => {
-                self.state
-                    .set_agent_max_context_tokens(
-                        &request.session_id,
-                        &request.agent_id,
-                        &caller_user_id,
-                        max_context_tokens,
-                    )
-                    .await
-            }
-            (updated, _) => updated,
-        };
         let result = match updated {
             Ok(agent) => self
                 .state

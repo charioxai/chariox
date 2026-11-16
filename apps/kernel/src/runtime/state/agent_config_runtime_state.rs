@@ -1159,24 +1159,6 @@ impl KernelRuntimeState {
         }
     }
 
-    /// Takes effect when the agent's provider next starts: a running provider
-    /// keeps the compaction point it was started with.
-    pub(crate) async fn set_agent_max_context_tokens(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        caller_user_id: &str,
-        max_context_tokens: Option<u64>,
-    ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.authorize_current_external_command()?;
-        self.owned.set_agent_max_context_tokens(
-            session_id,
-            agent_id,
-            caller_user_id,
-            max_context_tokens,
-        )
-    }
-
     #[allow(
         clippy::too_many_arguments,
         reason = "Preserve the existing update_agent_config operation signature and explicit context arguments"
@@ -1190,6 +1172,7 @@ impl KernelRuntimeState {
         permission_level_override: Option<Option<crate::provider::AgentPermissionLevel>>,
         workspace_id: Option<Option<String>>,
         worktree_id: Option<Option<String>>,
+        max_context_tokens: Option<Option<u64>>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.authorize_current_external_command()?;
         let update = self.owned.update_agent_config(
@@ -1200,6 +1183,7 @@ impl KernelRuntimeState {
             permission_level_override,
             workspace_id,
             worktree_id,
+            max_context_tokens,
         )?;
         if update.scope_changed && update.remote_update.is_none() {
             self.claude_session_grants.forget(agent_id);

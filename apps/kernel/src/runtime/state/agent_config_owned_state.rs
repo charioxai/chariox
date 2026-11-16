@@ -1,33 +1,6 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
-    pub(super) fn set_agent_max_context_tokens(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        caller_user_id: &str,
-        max_context_tokens: Option<u64>,
-    ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        let agent = self.agent_store.get_agent(agent_id)?;
-        if agent.session_id() != session_id {
-            return Err(DaemonError::AgentNotInSession {
-                session_id: session_id.to_string(),
-                agent_id: agent_id.to_string(),
-            });
-        }
-        self.ensure_agent_owner(agent_id, caller_user_id, "update agent max context")?;
-        crate::agent::ensure_spawn_max_context(
-            agent.provider(),
-            max_context_tokens,
-            agent.remote_execution().is_some(),
-        )?;
-        let agent = self
-            .agent_store
-            .set_max_context_tokens(agent_id, max_context_tokens)?;
-        let _ = self.session_snapshot(session_id)?;
-        Ok(agent)
-    }
-
     #[allow(
         clippy::too_many_arguments,
         reason = "Preserve the existing update_agent_config operation signature and explicit context arguments"
@@ -41,6 +14,7 @@ impl KernelRuntimeOwnedState {
         permission_level_override: Option<Option<crate::provider::AgentPermissionLevel>>,
         workspace_id: Option<Option<String>>,
         worktree_id: Option<Option<String>>,
+        max_context_tokens: Option<Option<u64>>,
     ) -> Result<owned::OwnedAgentConfigUpdate, DaemonError> {
         let workspace_id = workspace_id.map(|value| {
             value.and_then(|value| {
@@ -62,6 +36,14 @@ impl KernelRuntimeOwnedState {
             });
         }
         self.ensure_agent_owner(agent_id, caller_user_id, "update agent config")?;
+        // Refused before any other setting changes or a provider run ends.
+        if let Some(max_context_tokens) = max_context_tokens {
+            crate::agent::ensure_spawn_max_context(
+                agent.provider(),
+                max_context_tokens,
+                agent.remote_execution().is_some(),
+            )?;
+        }
         let session = self.session_store.get_session(session_id)?;
         let active_turn = self
             .prompt_state_owner
@@ -155,6 +137,11 @@ impl KernelRuntimeOwnedState {
                 workspace_id,
                 worktree_id,
             )?;
+            // A running provider keeps the compaction point it started with; the next start takes this.
+            if let Some(max_context_tokens) = max_context_tokens {
+                self.agent_store
+                    .set_max_context_tokens(agent_id, max_context_tokens)?;
+            }
             let agent = self.agent_store.get_agent(agent_id)?;
             let _ = self.session_snapshot(session_id)?;
             agent
