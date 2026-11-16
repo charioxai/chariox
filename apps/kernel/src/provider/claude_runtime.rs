@@ -499,20 +499,6 @@ fn handle_claude_tool_uses(
                 .to_string(),
         );
     }
-    let tool_results = state.tool_transcript.take_unsupported_results();
-    if !tool_results.is_empty() {
-        let response = json!({
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": tool_results,
-            }
-        });
-        write_json_line(&mut state.stdin, &response)?;
-        batch.notices.push(format!(
-            "Rejected unsupported Claude stream-json tool use for `{provider_run_id}`"
-        ));
-    }
     Ok(())
 }
 
@@ -2202,7 +2188,7 @@ done
     }
 
     #[test]
-    fn rejects_unsupported_claude_tool_use_without_completing_turn() {
+    fn claude_tool_search_is_recorded_and_left_to_claude_code() {
         let (mut state, mut batch) = parser_state();
 
         handle_claude_tool_uses(
@@ -2213,21 +2199,22 @@ done
                 "message": {
                     "content": [{
                         "type": "tool_use",
-                        "id": "toolu_1",
+                        "id": "toolu_search",
                         "name": "ToolSearch",
-                        "input": { "query": "chariox workflow tools" }
+                        "input": { "query": "select:mcp__chariox__chariox_vault_generate" }
                     }]
                 }
             }),
             &mut batch,
         )
-        .expect("tool-use rejection should write a tool result");
+        .expect("tool search should be recorded");
 
-        assert!(!batch.prompt_completed);
-        assert!(batch
-            .notices
-            .iter()
-            .any(|notice| notice.contains("Rejected unsupported Claude stream-json tool use")));
+        assert!(batch.notices.is_empty());
+        assert_eq!(batch.chunks.len(), 1);
+        let payload: serde_json::Value =
+            serde_json::from_slice(&batch.chunks[0].bytes).expect("tool payload should be JSON");
+        assert_eq!(payload["tool"], "ToolSearch");
+        assert_eq!(payload["status"], "running");
     }
 
     #[test]

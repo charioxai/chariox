@@ -85,6 +85,7 @@ mod catalog_changes;
 mod permission_prompt;
 mod retired_reach;
 mod slice_tools;
+mod tool_loading;
 
 #[tokio::test]
 async fn mcp_initialize_and_tools_list_return_runtime_tools() {

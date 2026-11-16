@@ -101,6 +101,19 @@ impl KernelRuntimeState {
             .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string))
     }
 
+    /// The provider the runtime MCP token belongs to, when exactly one run holds it.
+    pub(crate) fn provider_adapter_for_auth_token(&self, auth_token: &str) -> Option<String> {
+        match self
+            .owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(auth_token)
+            .as_slice()
+        {
+            [run] => Some(run.adapter_key().to_string()),
+            _ => None,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn runtime_tool_specs_for_auth_token(
         &self,

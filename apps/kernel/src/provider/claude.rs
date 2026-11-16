@@ -1361,10 +1361,10 @@ mod tests {
             .pty_args
             .iter()
             .any(|arg| arg == "--strict-mcp-config"));
-        assert!(launch
-            .pty_args
-            .windows(2)
-            .any(|pair| pair == ["--disallowedTools", "ToolSearch"]));
+        assert!(
+            !launch.pty_args.iter().any(|arg| arg == "--disallowedTools"),
+            "Claude Code's own tool search loads the on-demand runtime tools"
+        );
     }
 
     #[test]
