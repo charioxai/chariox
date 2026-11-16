@@ -42,6 +42,24 @@ impl KernelRuntimeState {
             })
     }
 
+    /// The prompt carries the message, so it counts as read: a turn that never
+    /// opens its inbox must not hand the row back to pending.
+    pub(super) fn mark_brief_shown(
+        &self,
+        room: &str,
+        agent: &str,
+        sequence: u64,
+    ) -> Result<(), DaemonError> {
+        self.owned
+            .durable_state_store
+            .agent_lifecycle(Operation::MarkShown {
+                room: room.into(),
+                agent: agent.into(),
+                sequences: vec![sequence],
+            })?;
+        Ok(())
+    }
+
     /// A message from the parent to its sub-agent, alone in its wake, as the
     /// prompt text: the sub-agent starts on its task without reading its inbox.
     pub(super) fn parent_brief(
@@ -247,6 +265,7 @@ impl KernelRuntimeState {
                     active,
                     prompt,
                     work,
+                    carries_brief,
                 )
                 .await;
         }
@@ -295,15 +314,7 @@ impl KernelRuntimeState {
         }
         self.owned.record_woken_waits(&waiting, &attempt);
         if carries_brief {
-            // The prompt carries the message, so it counts as read: a turn that
-            // never opens its inbox must not hand the row back to pending.
-            self.owned
-                .durable_state_store
-                .agent_lifecycle(Operation::MarkShown {
-                    room: room.into(),
-                    agent: agent.into(),
-                    sequences: vec![event.sequence],
-                })?;
+            self.mark_brief_shown(room, agent, event.sequence)?;
         }
         if let Some(dispatch) = steer {
             // A turn that is settling holds its lane until it ends. The steer then

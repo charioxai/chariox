@@ -630,6 +630,82 @@ async fn urgent_message_steers_a_busy_leased_turn() {
     assert_eq!(queued, 0, "no new turn is queued for the message");
 }
 
+#[test]
+fn an_inline_parent_brief_steered_into_a_busy_leased_turn_counts_as_read() {
+    run_test(inline_parent_brief_steered_into_a_busy_leased_turn_counts_as_read);
+}
+
+/// #1364 review round 2: the parent's message is the prompt of its sub-agent, so
+/// a steer that carries it must mark the row shown, as the inbox read does.
+/// Base: the row stayed unread and went back to pending when the turn settled,
+/// so the child that had already done the work was told the same task again.
+async fn inline_parent_brief_steered_into_a_busy_leased_turn_counts_as_read() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let (room, leased, running) = start_busy_leased_turn(&mut fixture).await;
+    let parent = {
+        let app = fixture.home.app.lock().await;
+        let parent = app
+            .agents()
+            .get_session_agents(&room)
+            .into_iter()
+            .find(|agent| agent.id() != leased && agent.parent_agent_id().is_none())
+            .expect("the room's own agent")
+            .id()
+            .to_string();
+        app.agents()
+            .set_parent_agent(&leased, Some(crate::agent::AgentRef::local(&parent)))
+            .expect("the leased agent is the room agent's sub-agent");
+        parent
+    };
+    let store = store(&fixture).await;
+    let mut message = ledger::occurrence(
+        &room,
+        &leased,
+        &parent,
+        "a10-brief",
+        "message",
+        json!({"message": "Fix the parser."}),
+    );
+    message.urgent = true;
+    let Outcome::Event(event) = store.agent_lifecycle(Operation::Occur(message)).unwrap() else {
+        panic!("durable message")
+    };
+    let delivered = fixture
+        .home
+        .runtime_state
+        .deliver_agent_inbox_for_test(&room, &leased)
+        .await;
+    let after = store
+        .agent_inbox(&room, &leased, 0)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.sequence == event.sequence);
+    let unread = store
+        .agent_unread_inbox(&room, &leased, 0, event.sequence, None)
+        .unwrap();
+    fixture
+        .worker
+        .app
+        .lock()
+        .await
+        .teardown_provider_processes(Some("managed-dev-stub"), true)
+        .unwrap();
+    fixture.stop().await;
+    delivered.expect("urgent brief to a busy leased sub-agent");
+    let after = after.expect("the brief event");
+    assert_eq!(after.state, "accepted", "{after:?}");
+    assert_eq!(
+        after.target_prompt_id.as_deref(),
+        Some(running.as_str()),
+        "steered into the running turn: {after:?}"
+    );
+    assert!(
+        unread.iter().all(|row| row.sequence != event.sequence),
+        "the prompt carried the brief, so it is read: {unread:?}"
+    );
+}
+
 /// Starts a leased turn that stays running; returns its room, agent and home prompt.
 async fn start_busy_leased_turn(fixture: &mut LiveWorker) -> (String, String, String) {
     let room = fixture.rooms[0].clone();
