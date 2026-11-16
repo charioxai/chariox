@@ -350,3 +350,66 @@ async fn re_enable_drill() {
     );
     drill.finish().await;
 }
+
+// A kernel at the user-source limit with one live Room lists 1,024 sources plus the Room's own
+// owner-action source. The receiving kernel must accept that listing, on refresh and on probe, or
+// every cached source of the kernel turns unavailable.
+#[test]
+fn a_full_source_inventory_with_a_live_room_stays_available_to_the_receiver() {
+    on_a_big_stack(full_inventory_drill());
+}
+
+async fn full_inventory_drill() {
+    let mut drill = Drill::connect().await;
+    let live = drill.source.source(&drill.workflow);
+    let db = rusqlite::Connection::open(drill.source.root.join("runtime/state.db")).unwrap();
+    // An App's event source is live for as long as it is enabled.
+    for n in 0..1023 {
+        let mut app = live.clone();
+        app.kind = crate::local::NotificationSourceKind::AppEvent;
+        app.source_id = format!("app-event-{n}");
+        app.exit_node_id = format!("app-route-{n}");
+        db.execute(
+            "INSERT INTO workflow_notification_exit_sources VALUES (?1,?2,?3,?4,?5,?6,1,?7)",
+            rusqlite::params![
+                app.source_id,
+                app.owner_user_id,
+                app.kernel_id,
+                app.session_id,
+                app.workflow_id,
+                app.exit_node_id,
+                serde_json::to_string(&app).unwrap()
+            ],
+        )
+        .unwrap();
+    }
+    drill
+        .target_runtime
+        .refresh_notification_sources_from_inventory("local", true)
+        .await
+        .unwrap();
+    let cached = |drill: &Drill| {
+        drill
+            .target
+            .store
+            .notification_cached_sources("local")
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.kernel_id == drill.source_config.daemon_id)
+            .collect::<Vec<_>>()
+    };
+    let listed = cached(&drill);
+    assert_eq!(listed.len(), 1025, "1,024 sources and the Room's own");
+    assert!(listed.iter().all(|s| s.available));
+    drill.follow().await;
+
+    let t0 = crate::session::unix_epoch_ms();
+    drill.target_runtime.probe_notification_sources(t0).await;
+    drill
+        .target_runtime
+        .probe_notification_sources(t0 + 10_000)
+        .await;
+    assert!(drill.listening(), "two probes of a full inventory");
+    assert!(cached(&drill).iter().all(|s| s.available));
+    drill.finish().await;
+}

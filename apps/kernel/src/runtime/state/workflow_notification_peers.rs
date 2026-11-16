@@ -619,9 +619,9 @@ impl KernelRuntimeState {
 /// names another kernel.
 pub(super) fn accepted_source_list(
     kernel: &str,
-    sources: Vec<WorkflowNotificationSourceSummary>,
+    mut sources: Vec<WorkflowNotificationSourceSummary>,
 ) -> Option<Vec<WorkflowNotificationSourceSummary>> {
-    if sources.len() > 1024
+    if store::cap_user_sources(&mut sources, |s| s.kind)
         || sources
             .iter()
             .any(|s| s.kernel_id != kernel || s.name.len() > 512 || s.display_name.len() > 520)
