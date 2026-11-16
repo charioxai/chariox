@@ -51,9 +51,10 @@ impl AgentTaskExecution {
             CancelInitiator::Owner
         }
     }
-    /// The owner stopped this turn; the agent stays stopped until prompted again.
+    /// The owner stopped this turn, or the work a finished turn retained; the agent stays stopped
+    /// until prompted again.
     pub(crate) fn stopped_by_owner(&self) -> bool {
-        self.state == ExecutionState::Cancelled
+        matches!(self.state, ExecutionState::Cancelled | ExecutionState::Done)
             && self.reason == super::supervision::OWNER_CANCELLED_REASON
     }
 }

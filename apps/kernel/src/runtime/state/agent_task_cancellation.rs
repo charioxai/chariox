@@ -354,18 +354,17 @@ impl KernelRuntimeState {
                                 .into_iter()
                                 .find(|t| &t.task_id == id)
                             {
-                                if child_task.state != ExecutionState::Done {
-                                    if let Outcome::Task(cancelled) = self
-                                        .owned
-                                        .durable_state_store
-                                        .agent_lifecycle(Operation::CancelTask {
-                                            task: id.clone(),
-                                            owner: session.owner_user_id().into(),
-                                            revision: child_task.revision,
-                                        })?
-                                    {
-                                        pending.push(cancelled);
-                                    }
+                                // A Done child that retains work is ended too; with none, this changes nothing.
+                                if let Outcome::Task(cancelled) = self
+                                    .owned
+                                    .durable_state_store
+                                    .agent_lifecycle(Operation::CancelTask {
+                                        task: id.clone(),
+                                        owner: session.owner_user_id().into(),
+                                        revision: child_task.revision,
+                                    })?
+                                {
+                                    pending.push(cancelled);
                                 }
                             }
                         } else if self

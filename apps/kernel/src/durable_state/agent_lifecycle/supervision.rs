@@ -736,9 +736,13 @@ fn cancel_task(
     }
     match t.state {
         ExecutionState::Cancelled => {}
-        // The turn is over and stays so: Stop only ends the work it left running.
+        // The turn is over and stays so: Stop only ends the work it left running. The owner's Stop
+        // still keeps the agent stopped, as for any turn it ends.
         ExecutionState::Done => {
             if cancel_retained_work(&mut t) {
+                if !by_agent {
+                    t.reason = OWNER_CANCELLED_REASON.into();
+                }
                 t.revision += 1;
                 save(tx, &t)?;
             }
