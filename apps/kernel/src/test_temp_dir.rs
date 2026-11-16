@@ -1,7 +1,23 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Set to keep test directories for debugging; isolated tests forward it to their child.
+pub(crate) const KEEP_VARIABLE: &str = "CHARIOX_KEEP_TEST_TEMP";
+
+/// Removes a test's directory, or keeps it and says where when `KEEP_VARIABLE` is set.
+/// Returns whether it was removed.
+pub(crate) fn remove_or_keep(path: &Path) -> bool {
+    if std::env::var_os(KEEP_VARIABLE).is_none() {
+        let _ = std::fs::remove_dir_all(path);
+        return true;
+    }
+    // Written past the test harness's output capture, which hides passing tests.
+    let _ = writeln!(std::io::stderr(), "kept test directory {}", path.display());
+    false
+}
 
 /// A directory one test owns. It is removed when the guard drops, whether the
 /// test passes, fails or panics; `CHARIOX_KEEP_TEST_TEMP=1` keeps it for debugging.
@@ -48,9 +64,7 @@ impl AsRef<Path> for TestTempDir {
 
 impl Drop for TestTempDir {
     fn drop(&mut self) {
-        if std::env::var_os("CHARIOX_KEEP_TEST_TEMP").is_none() {
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
+        remove_or_keep(&self.path);
     }
 }
 
@@ -122,10 +136,9 @@ impl TestTempPath {
 #[cfg(test)]
 impl Drop for TestTempPath {
     fn drop(&mut self) {
-        if std::env::var_os("CHARIOX_KEEP_TEST_TEMP").is_some() {
+        if !remove_or_keep(&self.path) {
             return;
         }
-        let _ = std::fs::remove_dir_all(&self.path);
         if let Some(parent) = self.path.parent().filter(|_| self.remove_empty_parent) {
             let _ = std::fs::remove_dir(parent);
         }

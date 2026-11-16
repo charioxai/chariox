@@ -168,7 +168,7 @@ impl TestWorktree {
 
 impl Drop for TestWorktree {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
+        crate::test_temp_dir::remove_or_keep(&self.path);
     }
 }
 

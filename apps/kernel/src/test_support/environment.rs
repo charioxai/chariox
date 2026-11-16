@@ -46,6 +46,7 @@ pub(crate) fn isolate_environment_test(timeout: Duration) -> bool {
                     | "PATHEXT"
                     | "PYTHON"
                     | "NODE"
+                    | crate::test_temp_dir::KEEP_VARIABLE
             )
         {
             command.env(key, value);
@@ -150,7 +151,12 @@ mod tests {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    use super::super::{detached_job, detached_sleeper_running, environment_test_isolated};
+    use super::super::{
+        detached_job, detached_sleeper_running, environment_test_isolated, TestTempDir,
+    };
+
+    /// Marks the middle process of `an_isolated_test_keeps_its_directory_when_asked`.
+    const KEEP_PROBE: &str = "CHARIOX_KEEP_PROBE";
 
     /// The job sleeps this many seconds, so the owner finds it by its arguments.
     fn sleep_seconds(owner: u32) -> u32 {
@@ -184,5 +190,50 @@ mod tests {
             assert!(Instant::now() < deadline, "the detached job should start");
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// Three processes: this test; a copy asked to keep test directories, which runs the
+    /// isolated fixture; and the isolated child that creates a test directory.
+    #[test]
+    fn an_isolated_test_keeps_its_directory_when_asked() {
+        if environment_test_isolated() {
+            drop(TestTempDir::new("kept-by-isolated-child"));
+            return;
+        }
+        let name = std::thread::current().name().unwrap().to_string();
+        if std::env::var_os(KEEP_PROBE).is_some() {
+            assert!(super::isolate_environment_test(Duration::from_secs(180)));
+            return;
+        }
+        let scratch = TestTempDir::new("keep-probe");
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([name.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env(KEEP_PROBE, "1")
+            .env(crate::test_temp_dir::KEEP_VARIABLE, "1")
+            .env("TMPDIR", scratch.path())
+            .env("CHARIOX_TEST_WORKTREE_ROOT", scratch.path())
+            .output()
+            .expect("the keeping copy should start");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        let fixture = std::fs::read_dir(scratch.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("chariox-test-worktree-environment-")
+            })
+            .expect("the isolated fixture's directory should be kept");
+        let kept = std::fs::read_dir(fixture.join("tmp/chariox-tests"))
+            .expect("the isolated child's test directory should be kept")
+            .count();
+        assert_eq!(kept, 1);
+        assert!(
+            stderr.contains(&fixture.display().to_string()),
+            "stderr should name {}: {stderr}",
+            fixture.display()
+        );
     }
 }
