@@ -75,6 +75,21 @@ export function persistence(chariox, api, loaded, feedHead) {
     if (remote.version !== version) merge(remote);
   });
 
+  // The next tick asks again, so a standing failure is told once, as a notice and in the console.
+  let pollFailure = null;
+  const pollFailed = error => {
+    const message = `Could not update from the saved diagram: ${error?.message ?? error}`;
+    if (message === pollFailure) return;
+    pollFailure = message;
+    console.error(message);
+    api.setToast({ message, closable: true, duration: Infinity });
+  };
+  const pollRecovered = () => {
+    if (!pollFailure) return;
+    if (api.getAppState().toast?.message === pollFailure) api.setToast(null);
+    pollFailure = null;
+  };
+
   let since = feedHead, stopped = false;
   (async () => {
     while (!stopped) {
@@ -83,7 +98,8 @@ export function persistence(chariox, api, loaded, feedHead) {
         const { latest } = await chariox.call('view_changes', { since });
         // The feed position moves only once the saved scene is merged, so a failed load is asked for again.
         if (latest !== since) { await pull(); since = latest; }
-      } catch { /* the next tick asks again */ }
+        pollRecovered();
+      } catch (error) { pollFailed(error); }
     }
   })();
 

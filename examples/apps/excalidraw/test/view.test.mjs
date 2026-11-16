@@ -6,6 +6,7 @@ import { openApp, closeEnvironment, fakeBackend, labelled, rect, sceneOf, text, 
 
 after(closeEnvironment);
 
+const clone = value => JSON.parse(JSON.stringify(value));
 const idle = ms => new Promise(done => setTimeout(done, ms));
 
 async function withApp(options, body) {
@@ -308,6 +309,55 @@ test('a save that fails for a reason that is not a conflict is reported once and
   await waitUntil(() => backend.saves.length === 2, { what: 'saving after the reload' });
   assert.equal(backend.live().length, 2, 'the two rectangles drawn before the reload were never saved');
   await app.shot('failure-recovery');
+}));
+
+// The poll loop never stops and never hides a failure: the window shows the error in its own
+// notice, the console logs each distinct error once however many polls meet it, and the missed
+// change is merged once the backend answers again.
+const malformedScene = { scene: { type: 'excalidraw', version: 2, elements: 5, appState: {}, files: {} }, version: '99' };
+for (const [what, tool, outage] of [
+  ['the change feed cannot be read', 'view_changes', { message: 'The feed is unreachable.' }],
+  ['the saved scene cannot be loaded', 'load_scene', { message: 'The scene is unreachable.' }],
+  ['the saved scene cannot be merged', 'load_scene', { reply: malformedScene }],
+]) test(`when ${what}, the window says so once, keeps polling and recovers`, { timeout: 60_000 }, () => withApp({
+  scene: sceneOf([rect('a', 100, 100)]),
+}, async app => {
+  const { backend, logs } = app;
+  await app.canvas.waitFor();
+  const call = backend.call.bind(backend);
+  let current = null, attempts = 0;
+  backend.call = async (name, input) => {
+    if (name === tool && current) {
+      attempts++;
+      if (current.message) throw Error(current.message);
+      return clone(current.reply);
+    }
+    return call(name, input);
+  };
+  current = outage;
+  backend.agentEdit(scene => scene.elements.push(rect('c', 700, 100)));
+  await app.toast.waitFor();
+  const notice = await app.toast.innerText();
+  assert.match(notice, /Could not update from the saved diagram/);
+  if (outage.message) assert.match(notice, new RegExp(outage.message));
+  const before = attempts;
+  await idle(3500);
+  assert(attempts >= before + 2, 'polling continues while the error stands');
+  assert.equal(await app.toast.count(), 1, 'one notice');
+  const lines = () => logs.filter(line => line.includes('Could not update from the saved diagram'));
+  assert.equal(lines().length, 1, `the error is logged once, not on every poll: ${JSON.stringify(logs)}`);
+
+  // A different error is a new notice and a new log line.
+  if (outage.message) {
+    current = { message: 'The backend moved.' };
+    await waitUntil(async () => /backend moved/.test(await app.toast.innerText().catch(() => '')), { what: 'the new error in the notice' });
+    assert.equal(lines().length, 2);
+  }
+
+  // The backend answers again: the notice goes and the missed change is merged.
+  current = null;
+  await waitUntil(async () => (await app.toast.count()) === 0, { timeout: 6000, what: 'the notice to clear' });
+  await app.until(elements => elements.some(element => element.id === 'c'), { timeout: 6000, what: 'the agent element after the outage' });
 }));
 
 // Known gaps in the page (src/persistence.js); these fail today and are reported, not hidden.

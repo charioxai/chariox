@@ -181,8 +181,9 @@ export async function openApp({ dpr = 1, scene, backend = fakeBackend() } = {}) 
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
-  const errors = [], network = [];
+  const errors = [], network = [], logs = [];
   page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => { if (message.type() === 'error') logs.push(message.text()); });
   await context.route('**/*', route => {
     if (route.request().url().startsWith(origin)) return route.continue();
     network.push(route.request().url());
@@ -191,7 +192,7 @@ export async function openApp({ dpr = 1, scene, backend = fakeBackend() } = {}) 
   await context.exposeFunction('broker', (name, input) => backend.call(name, input));
   await context.addInitScript(() => { window.chariox = { call: (name, input) => window.broker(name, input) }; });
   const app = {
-    page, backend, errors, network, dpr, toast: page.locator('.Toast'),
+    page, backend, errors, network, logs, dpr, toast: page.locator('.Toast'),
     canvas: page.locator('.excalidraw__canvas.interactive'),
     async load() {
       await page.goto(origin + '/index.html');
