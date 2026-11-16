@@ -1443,6 +1443,28 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// A helper costs a spawn, a brief and a wake (orchbench t4: three ten-line edits cost 4.7x the
+    /// same work done inline), so the base tells an orchestrator when delegating pays.
+    #[test]
+    fn runtime_base_tells_agents_to_do_small_work_themselves() {
+        let root = temp_prompt_root("delegation-guidance");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry.materialize_bundled_defaults().unwrap();
+        let envelope = PromptAssemblyService::new(registry)
+            .assemble_provider_turn(
+                &test_run(false),
+                "Fix three small things",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .unwrap();
+        let guidance = "Delegate a part to a helper only when it needs about 10 or more tool calls or parallel waiting, even when told to delegate the independent parts; do small edits yourself.";
+        assert_eq!(envelope.hidden_base.matches(guidance).count(), 1);
+        assert!(RUNTIME_BASE.len() <= 8_000, "{} bytes", RUNTIME_BASE.len());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     /// The run base is the same on every turn; only the turn context changes, so a
     /// provider that keeps what it was told needs the base once.
     #[test]
