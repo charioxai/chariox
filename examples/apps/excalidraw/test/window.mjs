@@ -111,6 +111,7 @@ export function fakeBackend() {
         if (JSON.stringify(old) !== JSON.stringify(element)) {
           element.version = old.version + 1;
           element.versionNonce = (old.versionNonce + 7919) % 2_000_000_000;
+          element.updated = Date.now();
         }
       }
       // The backend gives an element without an index one after the last indexed element.
@@ -121,7 +122,7 @@ export function fakeBackend() {
       }
       const kept = new Set(next.elements.map(element => element.id));
       for (const old of before.elements) {
-        if (!kept.has(old.id)) next.elements.push({ ...old, isDeleted: true, version: old.version + 1, versionNonce: (old.versionNonce + 104729) % 2_000_000_000 });
+        if (!kept.has(old.id)) next.elements.push({ ...old, isDeleted: true, version: old.version + 1, versionNonce: (old.versionNonce + 104729) % 2_000_000_000, updated: Date.now() });
       }
       backend.write(next);
     },

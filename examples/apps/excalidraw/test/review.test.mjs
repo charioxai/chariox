@@ -142,7 +142,8 @@ test('a diagram that is too big for the broker has one dismissible notice and ca
   await page.keyboard.press('Control+a');
   await page.keyboard.press('Delete');
   await waitUntil(() => backend.saves.length === 1, { what: 'the shrunken diagram to be saved' });
-  assert.deepEqual(backend.scene.elements, []);
+  assert.deepEqual(backend.live(), []);
+  assert(JSON.stringify(backend.scene).length < 192 * 1024, 'the deleted big text does not keep the diagram over its limit');
 
   await page.evaluate(value => navigator.clipboard.writeText(value), big);
   await page.keyboard.press('Control+Shift+v');

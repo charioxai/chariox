@@ -1,4 +1,4 @@
-import { checkedScene, sceneJSON } from './scene.js';
+import { checkedScene, sceneJSON, syncedSceneJSON } from './scene.js';
 import { reconcileElements, restore, serializeAsJSON } from '@excalidraw/excalidraw';
 
 // The backend and Excalidraw serialize the same scene with different key order
@@ -50,12 +50,12 @@ export function persistence(chariox, api, loaded, feedHead) {
 
   const save = () => enqueue(async () => {
     for (let attempt = 1; ; attempt++) {
-      const text = sceneJSON(api);
-      const key = sceneKey(JSON.parse(text));
+      // The key is the live scene, so a tombstone that expires does not cause a save.
+      const key = sceneKey(JSON.parse(sceneJSON(api)));
       if (key === lastSaved) return;
       if (failure) throw failure;
       // Validation failures can recover after a person makes the diagram smaller.
-      const scene = checkedScene(text);
+      const scene = checkedScene(syncedSceneJSON(api));
       try {
         version = (await chariox.call('save_scene', { scene, version })).version;
         lastSaved = key;

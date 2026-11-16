@@ -164,6 +164,32 @@ test('an element the agent deleted leaves the window and does not come back when
   assert(!(await app.ids()).includes('b'));
 }));
 
+const tombstone = (backend, id) => backend.scene.elements.find(element => element.id === id && element.isDeleted);
+
+test('a window that saves keeps the deletion an agent made, so another window still learns of it', { timeout: 60_000 }, () => withApp({
+  scene: sceneOf([rect('a', 100, 100), rect('b', 300, 100)]),
+}, async app => {
+  const { backend } = app;
+  await app.canvas.waitFor();
+  backend.agentEdit(scene => { scene.elements = scene.elements.filter(element => element.id !== 'b'); });
+  await app.until(elements => elements.length === 1, { what: 'the deleted element to leave the canvas' });
+  await app.draw(300, 400);
+  await waitUntil(() => backend.saves.length === 1, { what: 'the window save' });
+  assert(tombstone(backend, 'b'), 'the saved scene still carries b as deleted');
+}));
+
+test('an element the owner deletes is saved as deleted, so another window removes it', { timeout: 60_000 }, () => withApp({}, async app => {
+  const { backend, page } = app;
+  await app.canvas.waitFor();
+  await idle(1500);
+  await app.draw(300, 200);
+  await waitUntil(() => backend.live().length === 1, { what: 'the drawing to be saved' });
+  const id = backend.live()[0].id;
+  await page.keyboard.press('Delete');
+  await waitUntil(() => backend.live().length === 0, { what: 'the deletion to be saved' });
+  assert(tombstone(backend, id), 'the deletion is saved as a marked element, not as an absence');
+}));
+
 test('an agent deleting a labelled box removes its label from the window too', { timeout: 60_000 }, () => withApp({
   scene: sceneOf([...labelled('client', 'Client', 100, 100), rect('other', 500, 100)]),
 }, async app => {
