@@ -16,7 +16,7 @@ async function withHost(run) {
   const root = await mkdtemp(path.join(tmpdir(), 'card-region-'));
   const host = new KernelBrowserHost(root), calls = [], document = {};
   const state = { document_id: 'doc', width: 800, height: 600, box: { left: 80, top: 90, right: 180, bottom: 140 } };
-  const node = { isConnected: true, ownerDocument: document, getBoundingClientRect: () => state.box };
+  const node = { isConnected: true, ownerDocument: document, innerText: '', getBoundingClientRect: () => state.box };
   const tab = { tab_id: 'one', target_id: 'target', document_id: 'doc', url: 'https://user:pass@example.com/login?token=private#fragment' };
   const connection = { subscribe: () => () => {}, async send(method, params) {
     calls.push(method);
@@ -28,7 +28,7 @@ async function withHost(run) {
     if (method === 'Runtime.callFunctionOn') {
       const context = { document, innerWidth: state.width, innerHeight: state.height, setTimeout, clearTimeout,
         requestAnimationFrame: callback => setTimeout(callback, 5), cancelAnimationFrame: clearTimeout };
-      const result = await runInNewContext(`(${params.functionDeclaration})`, context).call(state.replacement ?? node, params.arguments[0].value, params.arguments[1]?.objectId === 'resolver' ? () => state.replacement ?? (node.isConnected ? node : null) : undefined);
+      const result = await runInNewContext(`(${params.functionDeclaration})`, context).call(state.replacement ?? node, params.arguments[0].value, params.arguments[1]?.value ?? null, params.arguments[2]?.objectId === 'resolver' ? () => state.replacement ?? (node.isConnected ? node : null) : undefined);
       return { result: { value: JSON.parse(JSON.stringify(result)) } };
     }
     return {};
@@ -254,4 +254,40 @@ test('MP-08/MP-10/MP-11 a pending geometry poll follows the same challenge repla
   const replaced = await pending;
   assert.equal(replaced.state, 'present');
   assert.equal(replaced.region.rect.y, 174);
+}));
+
+test('AU-03 a done_text card follows a replaced element, reports unavailable when it is lost, and settles when the text shows', () => withHost(async ({ snapshot, region, state, node }) => {
+  await snapshot();
+  const command = { card_id: 'done', done_text: 'Verification accepted' };
+  const first = await region(command);
+  assert.equal(first.state, 'present');
+  assert.equal(first.region.done_text, 'Verification accepted');
+  const { rect, viewport_width, viewport_height } = first.region;
+  const pending = region({ ...command, after: { rect, viewport_width, viewport_height } });
+  await delay(30);
+  // A rejected code makes the page rerender its form under the same id: not the requested text, so not done.
+  node.isConnected = false;
+  state.replacement = { ...node, isConnected: true, getBoundingClientRect: () => ({ left: 80, top: 190, right: 180, bottom: 240 }) };
+  const replaced = await pending;
+  assert.equal(replaced.state, 'present');
+  assert.equal(replaced.region.rect.y, 174);
+  state.replacement.innerText = 'Try again. Verification Accepted';
+  assert.deepEqual(await region(command), { state: 'condition_met', reason: 'The page shows what the person was asked to reach' });
+  state.replacement.innerText = '';
+  state.replacement.isConnected = false;
+  assert.deepEqual(await region(command), { state: 'unavailable', reason: 'Browser element disappeared' }, 'a lost target before the text is never completion');
+}));
+
+test('AU-03 a done_text card without a card identity reports unavailable when its element disappears, a plain card still settles', () => withHost(async ({ snapshot, region, node }) => {
+  await snapshot();
+  node.isConnected = false;
+  assert.deepEqual(await region({ done_text: 'Verification accepted' }), { state: 'unavailable', reason: 'Browser element disappeared' });
+  assert.deepEqual(await region({}), { state: 'condition_met', reason: 'Browser element disappeared' });
+}));
+
+test('AU-03 a done_text card cannot be rebound to another done text', () => withHost(async ({ snapshot, region }) => {
+  await snapshot();
+  await region({ card_id: 'done', done_text: 'Verification accepted' });
+  await assert.rejects(region({ card_id: 'done', done_text: 'Something else' }), { code: 'user_domain_stale_reference' });
+  await assert.rejects(region({ card_id: 'done' }), { code: 'user_domain_stale_reference' });
 }));

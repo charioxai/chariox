@@ -16,7 +16,8 @@ export function forgetCardAnchor(host, id) {
   host.cardAnchors.delete(id);
 }
 
-// A framework may replace a complete challenge form in the same DOM slot.
+// A framework may replace a complete challenge form in the same DOM slot,
+// for example to show a rejected attempt.
 // Follow only its unique stable id in the original parent and document.
 function trackCardElement() {
   const original = this, parent = this.parentElement, id = this.id, tag = this.localName;
@@ -176,10 +177,11 @@ export async function resolveCardRegion(host, command, scope, signal) {
   if (anchor && (anchor.tab_id !== command.tab_id || anchor.ref !== command.ref)) throw new UserDomainRefusal('stale_reference');
   const remembered = anchor?.binding ?? host.cardReferences.get(scope)?.get(command.tab_id);
   const completion = () => ({state:'condition_met',reason:JSON.stringify({reason:'Verification accepted',card_id:command.card_id,tab_id:command.tab_id,generation:anchor.binding.generation,document_id:anchor.binding.document_id,verification_result:anchor.verification.receipt})});
+  // A card that waits for a response or for page text ends only when that happens: losing its element first is not completion.
   const gone = async reason => {
-    if (!anchor?.verification) return {state:'condition_met',reason};
-    if (anchor.verification.receipt?.result === 'accepted') return completion();
-    return {state:'unavailable',reason};
+    if (anchor?.verification?.receipt?.result === 'accepted') return completion();
+    if (anchor?.verification || command.done_text !== undefined) return {state:'unavailable',reason};
+    return {state:'condition_met',reason};
   };
   if ((!remembered || !remembered.refs.has(command.ref)) && command.document_id !== undefined) {
     const tab = await host.displayTarget({ tab_id: command.tab_id, generation: command.generation });
@@ -196,6 +198,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
   const config = command.verification ? validateCardVerification(command.verification, new URL(tab.url).origin) : null;
   if (config && (!key || !command.ref.startsWith('backend:'))) throw new Error('Browser verification requires a card identity and a Tab-document region');
   if (anchor && JSON.stringify(anchor.verification?.config ?? null) !== JSON.stringify(config)) throw new UserDomainRefusal('stale_reference');
+  if (anchor && anchor.doneText !== (command.done_text ?? null)) throw new UserDomainRefusal('stale_reference');
   const browser = host.browser, connection = await browser.ensureConnection();
   const sessionId = await browser.ensureTargetSession(connection, tab.target_id);
   const current = async () => (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree?.frame;
@@ -206,7 +209,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
       if (host.cardAnchors.size >= maxAnchors) throw new Error('Browser card limit reached; close an existing browser card and try again');
       // Pin only this card's binding. Snapshot cache eviction must not retire
       // a live element. Failed registration expires without a watcher renewal.
-      anchor = { scope, tab_id: command.tab_id, ref: command.ref, binding: { generation: remembered.generation, document_id: remembered.document_id, refs: new Set([command.ref]), children: new Set(remembered.children.has(command.ref) ? [command.ref] : []) } };
+      anchor = { scope, tab_id: command.tab_id, ref: command.ref, doneText: command.done_text ?? null, binding: { generation: remembered.generation, document_id: remembered.document_id, refs: new Set([command.ref]), children: new Set(remembered.children.has(command.ref) ? [command.ref] : []) } };
       if (config) anchor.verification = await BrowserCardVerification.create(connection, sessionId, frame, config);
       host.cardAnchors.set(key, anchor);
     }
@@ -217,7 +220,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
   let objectId;
   try {
     let box;
-    if (anchor?.verification && !anchor.elementResolver) {
+    if (anchor && (anchor.verification || anchor.doneText !== null) && !anchor.elementResolver) {
       const resolved=await connection.send('DOM.resolveNode',{backendNodeId:Number(command.ref.slice(8)),executionContextId:world.contextId},sessionId);
       objectId=resolved.object?.objectId;
       if(!objectId)return gone('Browser element disappeared');
@@ -226,7 +229,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
       anchor.elementResolver = tracked.result.objectId;
       const resolver = anchor.elementResolver;
       anchor.releaseElement = () => { void connection.send('Runtime.releaseObject',{objectId:resolver},sessionId).catch(()=>{}); };
-      await anchor.verification.bindInput(objectId,world.contextId,resolver);
+      await anchor.verification?.bindInput(objectId,world.contextId,resolver);
     }
     if (anchor?.elementResolver) {
       if (objectId) await connection.send('Runtime.releaseObject',{objectId},sessionId);
