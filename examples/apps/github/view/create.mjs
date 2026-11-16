@@ -1,7 +1,7 @@
 // "Open a pull request": GitHub's compare page. Pick the repository, the base branch and the branch to compare, read
 // what the comparison holds, give it a title and a description, and create the pull request (or a draft).
 import { act, notice } from './act.mjs';
-import { load } from './api.mjs';
+import { load, loadRepositories } from './api.mjs';
 import { composer } from './compose.mjs';
 import { h, icon, clear } from './dom.mjs';
 import { selectMenu } from './menu.mjs';
@@ -96,7 +96,7 @@ export function newPullPage(ctx, route) {
   }
 
   root.append(back, h('div.color-fg-muted', {}, 'Loading repositories…'));
-  load('list_repositories', {}).then(result => {
+  loadRepositories().then(result => {
     repos = result.repos.filter(repo => !repo.archived);
     if (!repos.length) { clear(root).append(back, blankslate('repo', 'No repositories', 'This account sees no repository to open a pull request in.')); return; }
     if (chosen.repo && !repos.some(repo => repo.fullName === chosen.repo)) chosen.repo = null;

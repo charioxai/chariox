@@ -5,6 +5,7 @@ import * as n from './normalize.mjs';
 const fail = (code, message) => { throw { code, message, retryable: false }; };
 const splitRepo = repo => { const [owner, name] = repo.split('/'); return { owner, repo: name }; };
 const DIFF_DEFAULT = 256 * 1024;
+const REVIEW_PAGES = 30;
 
 /** The GitHub search that finds what a scope of the pull request list means. */
 export function searchQuery({ scope, repos = [], org, state = 'open', draft = 'any', labels = [], author, review, query }) {
@@ -48,9 +49,15 @@ export function createPulls({ accounts, github }) {
     return { runs: runs.data.check_runs ?? [], statuses: statuses.data.statuses ?? [] };
   }
 
+  /** Every review: the decision is each reviewer's latest verdict, which may sit on a later page. */
   async function reviewsOf(account, input) {
-    const { data } = await github.get(account, `${pullPath}/reviews`, params(input), { query: { per_page: 100 } });
-    return data.map(n.review);
+    const reviews = [];
+    for (let page = 1; page <= REVIEW_PAGES; page++) {
+      const { items, hasNext } = await github.list(account, `${pullPath}/reviews`, params(input), { page, perPage: 100 });
+      reviews.push(...items.map(n.review));
+      if (!hasNext) break;
+    }
+    return reviews;
   }
 
   return {

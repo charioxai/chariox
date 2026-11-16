@@ -1,5 +1,5 @@
 // GitHub's pull request list: who it is for, the filters, Open and Closed counts and one row per pull request.
-import { call, describe, load, peek } from './api.mjs';
+import { call, describe, load, loadRepositories, peek } from './api.mjs';
 import { h, icon, clear } from './dom.mjs';
 import { selectMenu } from './menu.mjs';
 import { blankslate, checkIcon, flash, labelPill, reviewBadge, stateIcon } from './parts.mjs';
@@ -43,7 +43,7 @@ export function listPage(ctx, route) {
     items: () => [...new Set(known().map(repo => repo.fullName.split('/')[0]))].sort()
       .map(org => ({ key: org, text: org, selected: route.scope === 'org' && route.org === org, onSelect: () => go({ scope: 'org', org, repos: [] }) })),
   });
-  load('list_repositories', {}).then(() => { repoMenu.refill(); orgMenu.refill(); }, () => {});
+  loadRepositories().then(() => { repoMenu.refill(); orgMenu.refill(); }, () => {});
 
   const create = h('a.btn.btn-primary.btn-sm.ml-2', { href: '#', on: { click: event => { event.preventDefault(); ctx.go({ name: 'new', repo: route.scope === 'repo' && route.repos.length ? route.repos[0] : null }); } } }, 'New pull request');
   const toolbar = h('div.d-flex.flex-items-center.flex-wrap.mb-3', {}, tabs, h('span.flex-1'), h('span.mr-2', {}, orgMenu.element), repoMenu.element, create);

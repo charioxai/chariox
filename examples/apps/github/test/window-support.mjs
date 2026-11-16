@@ -41,8 +41,8 @@ export async function launch() {
 }
 
 /** `override(url, init)` answers a request first, as in `fakeGitHub`; `calls` lists every request the App made. */
-export async function open(browser, built, { dpr = 1, width = 1180, height = 900, override } = {}) {
-  const double = fakeGitHub({ override });
+export async function open(browser, built, { dpr = 1, width = 1180, height = 900, override, unbound } = {}) {
+  const double = fakeGitHub({ override, unbound });
   const app = createApp({ state: memoryState(), events: {}, now: () => Date.parse('2026-11-15T12:00:00Z') });
   const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: dpr, colorScheme: 'light' });
   const page = await context.newPage();

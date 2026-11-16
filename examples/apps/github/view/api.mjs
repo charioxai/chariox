@@ -35,6 +35,19 @@ export async function load(name, input = {}) {
   return value;
 }
 
+/** Every repository the account sees (up to 3,000, thirty pages of a hundred), kept as the answer of `list_repositories`. */
+export async function loadRepositories() {
+  const repos = [];
+  for (let page = 1; page <= 30; page++) {
+    const result = await call('list_repositories', { page, perPage: 100 });
+    repos.push(...result.repos);
+    if (!result.hasNext) break;
+  }
+  const all = { repos, page: 1, hasNext: false };
+  kept.set(key('list_repositories', {}), all);
+  return all;
+}
+
 export const forget = () => kept.clear();
 
 /** A failure as the window words it. */

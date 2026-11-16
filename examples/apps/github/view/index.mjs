@@ -91,7 +91,13 @@ async function follow() {
     const events = feed.changes.filter(change => change.delta?.kind === 'event').map(change => change.delta);
     const about = ctx.route.name === 'pr' ? events.some(event => event.repo === ctx.route.repo && (event.number === null || event.number === ctx.route.number)) : events.length > 0;
     since = feed.latest;
-    if (accountsChanged && ctx.accounts) { forget(); await loadAccounts(); draw(); } else if (about && !writing()) { forget(); await page?.refresh?.(); }
+    // The owner binds an account in the kernel, which writes nothing to the feed: a window waiting for one looks again.
+    const waiting = !ctx.account || ctx.account.status === 'unbound';
+    if ((accountsChanged || waiting) && ctx.accounts) {
+      forget();
+      await loadAccounts();
+      if (accountsChanged || waiting !== (!ctx.account || ctx.account.status === 'unbound')) draw();
+    } else if (about && !writing()) { forget(); await page?.refresh?.(); }
   } catch { /* the next tick tries again */ }
 }
 

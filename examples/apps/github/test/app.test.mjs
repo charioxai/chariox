@@ -124,6 +124,23 @@ test('reviews: the decision is each reviewer\'s latest verdict; comments, pendin
   assert.deepEqual([reviews.decision, reviews.reviews.length, reviews.reviews[0].state, reviews.requestedReviewers], ['none', 2, 'COMMENTED', []]);
 });
 
+test('reviews: every page is read, so a later request for changes outweighs an earlier approval', async () => {
+  const review = (id, state) => ({ id, user: { login: 'a' }, state, body: '', submitted_at: '2026-11-15T12:00:00Z', commit_id: heads[2] });
+  const pages = { 1: [review(1, 'APPROVED')], 2: [review(2, 'CHANGES_REQUESTED')] };
+  const seen = [];
+  const paged = app({ override: url => {
+    if (!url.pathname.endsWith('/pulls/2/reviews')) return undefined;
+    const page = Number(url.searchParams.get('page') ?? 1);
+    seen.push(page);
+    const link = page === 1 ? { link: `<https://api.github.com${url.pathname}?per_page=100&page=2>; rel="next"` } : {};
+    return { status: 200, headers: link, body: JSON.stringify(pages[page]) };
+  } });
+  const reviews = await paged.call('list_reviews', pull);
+  assert.deepEqual([reviews.decision, reviews.reviews.length, seen], ['changes_requested', 2, [1, 2]]);
+  const summary = await paged.call('get_pull_request_summary', pull);
+  assert.equal(summary.review, 'changes_requested');
+});
+
 test('comments: the conversation and the comments on lines of the diff', async () => {
   const { comments, lineComments, hasNext } = await app().call('list_comments', pull);
   assert.equal(comments[0].body, 'Looks good so far. Can you add a test?');

@@ -188,6 +188,32 @@ test('a comment on a line starts a review; the review is finished with a verdict
   }]]);
 });
 
+test('a review with the Comment verdict is refused when the head moved after its comments were written, even after the page reloaded', { skip }, async () => {
+  let moved = false;
+  const session = await window((url, init) => {
+    if (moved && init.method === 'GET' && url.pathname.endsWith('/pulls/2')) return json(200, { ...recorded('pull_2'), head: { ...recorded('pull_2').head, sha: heads[1] } });
+    return undefined;
+  });
+  const { page } = session;
+  await openPull(page, 2);
+  await page.click('a:has-text("Files changed")');
+  await page.waitForSelector('.diff-file');
+  await page.click('[data-file="src/hello.js"] button[aria-label="Add a comment on line 2"]', { force: true });
+  await page.fill('.diff-composer textarea', 'Rename this please.');
+  await page.click('button:text-is("Start a review")');
+  await page.waitForSelector('[data-pending]');
+  moved = true;
+  await page.click('a:has-text("Conversation")');
+  await page.waitForSelector('text=Add a comment');
+  await page.click('a:has-text("Files changed")');
+  await page.waitForSelector('[data-pending]');
+  await page.click('summary:has-text("Review changes")');
+  await page.click('button:text-is("Submit review")');
+  await page.waitForSelector('.flash-error');
+  assert.match(await page.textContent('.flash-error'), /The branch moved after it was read/);
+  assert.deepEqual(made(session), []);
+});
+
 test('a single comment on a line is sent at once; someone else\'s pull request can be approved and asked for changes', { skip }, async () => {
   const session = await window((url, init) => {
     if (init.method === 'GET' && url.pathname === '/user') return json(200, { login: 'reviewer' });
@@ -251,6 +277,36 @@ test('a pull request is opened from two branches: the comparison is shown, the t
   await page.click('button:text-is("Create draft pull request")');
   await page.waitForSelector('text=Add a comment');
   assert.deepEqual(made(session), [['POST', '/pulls', { title: 'Add hello and notes', head: 'drill/gha4-rich', base: 'main', body: 'Why.', draft: true }]]);
+});
+
+test('repositories beyond the first page are selectable for a new pull request and for the list', { skip }, async () => {
+  const repos = recorded('user_repos');
+  const second = { ...repos[0], full_name: 'charioxai/second-page-repo' };
+  const session = await window((url, init) => {
+    if (init.method !== 'GET' || url.pathname !== '/user/repos') return undefined;
+    const first = Number(url.searchParams.get('page') ?? 1) === 1;
+    return { status: 200, headers: first ? { link: `<https://api.github.com/user/repos?per_page=100&page=2>; rel="next"` } : {}, body: JSON.stringify(first ? repos : [second]) };
+  });
+  const { page } = session;
+  await page.click('summary:has-text("Repository")');
+  await page.click('.SelectMenu-item:has-text("charioxai/second-page-repo")');
+  await page.waitForSelector('summary:has-text("charioxai/second-page-repo")');
+  await page.click('a:has-text("New pull request")');
+  await page.waitForSelector('text=Open a pull request');
+  await page.waitForSelector('summary:has-text("Repository: charioxai/second-page-repo")');
+  await page.click('summary:has-text("Repository:")');
+  await page.waitForSelector('.SelectMenu-item:has-text("charioxai/chariox-github-app-drill")');
+});
+
+test('a window opened before the owner binds the first account picks the account up by itself', { skip }, async () => {
+  const unbound = ['github'];
+  const session = await open(browser, built, { unbound });
+  const { page } = session;
+  await page.waitForSelector('text=Connect a GitHub account');
+  unbound.length = 0;
+  await page.waitForSelector('[data-pull]', { timeout: 15000 });
+  assert.equal(await page.locator('text=Connect a GitHub account').count(), 0);
+  assert.deepEqual(session.errors, []);
 });
 
 test('what is being written survives the page reloading behind it', { skip }, async () => {

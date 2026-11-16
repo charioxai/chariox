@@ -141,7 +141,7 @@ const VERDICTS = [
 ];
 
 /** "Review changes": GitHub's popover that finishes a review with a verdict and the comments collected on the lines. */
-function reviewMenu(ctx, route, pull, pendingOf, { reload }) {
+function reviewMenu(ctx, route, pull, { pendingOf, headOf, forgetAll }, { reload }) {
   const where = notice();
   const box = composer(ctx, `review:${route.repo}#${route.number}`, { placeholder: 'Leave a comment', rows: 4 });
   const own = pull.author?.login && ctx.account?.login && pull.author.login.toLowerCase() === ctx.account.login.toLowerCase();
@@ -167,8 +167,8 @@ function reviewMenu(ctx, route, pull, pendingOf, { reload }) {
     const comments = pendingOf().map(({ path, line, side, body }) => ({ path, line, side, body }));
     const input = { repo: route.repo, number: route.number, ...(box.value() ? { body: box.value() } : {}), ...(comments.length ? { comments } : {}) };
     const name = { comment: 'submit_review', approve: 'approve_pull_request', request_changes: 'request_changes' }[verdict];
-    // The head the person saw is the one reviewed; GitHub would otherwise attach the review to a newer commit.
-    const done = await act(name, verdict === 'comment' ? input : { ...input, sha: pull.head.sha }, { buttons: [submit], where, after: () => { box.clear(); ctx.drafts.delete(pendingKey(route)); return reload(); } });
+    // The head the comments were written against is the one reviewed; GitHub would otherwise attach them to a newer commit.
+    const done = await act(name, { ...input, sha: headOf() }, { buttons: [submit], where, after: () => { box.clear(); forgetAll(); return reload(); } });
     if (done) details.removeAttribute('open');
   });
   const details = overlay(h('details.details-reset.details-overlay.d-inline-block.position-relative', {}, summary,
@@ -180,6 +180,7 @@ function reviewMenu(ctx, route, pull, pendingOf, { reload }) {
 }
 
 const pendingKey = route => `pending:${route.repo}#${route.number}`;
+const pendingHeadKey = route => `pending-head:${route.repo}#${route.number}`;
 
 export function filesTab(ctx, route, pull, reload) {
   let mode = 'unified';
@@ -192,7 +193,10 @@ export function filesTab(ctx, route, pull, reload) {
   const where = notice();
   // the pending comments of this review sit under their lines beside the ones already on GitHub
   const commentsOf = path => [...comments, ...pendingOf().map(comment => ({ ...comment, pending: true, user: ctx.account }))].filter(comment => comment.path === path);
-  const review = reviewMenu(ctx, route, pull, pendingOf, { reload });
+  // the head the first pending comment was written against: a page that reloads onto a newer head must not carry them over
+  const headOf = () => (pendingOf().length && ctx.drafts.get(pendingHeadKey(route))) || pull.head.sha;
+  const forgetAll = () => { ctx.drafts.delete(pendingKey(route)); ctx.drafts.delete(pendingHeadKey(route)); };
+  const review = reviewMenu(ctx, route, pull, { pendingOf, headOf, forgetAll }, { reload });
 
   function redraw(path) {
     const file = files.find(candidate => candidate.path === path);
@@ -205,6 +209,7 @@ export function filesTab(ctx, route, pull, reload) {
 
   const forget = comment => {
     ctx.drafts.set(pendingKey(route), pendingOf().filter(pending => pending !== comment && !(pending.path === comment.path && pending.line === comment.line && pending.side === comment.side && pending.body === comment.body)));
+    if (!pendingOf().length) forgetAll();
     redraw(comment.path);
   };
 
@@ -222,6 +227,7 @@ export function filesTab(ctx, route, pull, reload) {
       cancel.addEventListener('click', close);
       start.addEventListener('click', () => {
         if (!box.value()) return;
+        ctx.drafts.set(pendingHeadKey(route), headOf());
         ctx.drafts.set(pendingKey(route), [...pendingOf(), { path: file.path, line, side, body: box.value() }]);
         close();
         redraw(file.path);
