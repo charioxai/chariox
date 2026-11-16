@@ -36,7 +36,7 @@ fn async_popup_returns_protocol_954_403_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "ad28263a191bdf67afbc0582b83115338507653e76d528410cd03f04a080f4e2"
+        "d34eb2beb222e9296a881e8e2e4e30211756318bbd684cfcac86a83a39653dbb"
     );
     // An old client ignores the additive ownership field; its answer uses
     // exactly the pre-existing request shape.
@@ -189,6 +189,31 @@ fn browser_verification_protocol_992_431_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "d366aec4f219705cc0de61304bf12f7a7dc0ec559a045308493edc66f80e5b77"
+        "087bdb32ffa1c3bbd865acf111a79ef1a50beb79a36ce9acc96e99efc952a1bf"
+    );
+}
+
+// AU-03: a card's done text reaches the browser host through the request and returns on the interaction's region.
+#[test]
+fn browser_done_text_protocol_1014_453_snapshot_and_hash() {
+    let snapshot: serde_json::Value =
+        serde_json::from_str(include_str!("browser-done-text-1014.json")).unwrap();
+    assert_eq!(snapshot["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        snapshot["peer"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let args: crate::transport::runtime_tools::RequestPopupArgs =
+        serde_json::from_value(snapshot["arguments"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(args).unwrap(), snapshot["arguments"]);
+    let region: crate::session::RuntimeInteractionBrowserRegion =
+        serde_json::from_value(snapshot["region"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(region).unwrap(), snapshot["region"]);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "fd18fd6b2391192d27fe5ad6ff686db23f463fa43c263a4d83cff6f61d02dbbb"
     );
 }

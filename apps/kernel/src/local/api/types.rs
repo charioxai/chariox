@@ -539,5 +539,7 @@ pub use workspace::*;
 /// `read_output` per page (docs/PROTOCOL.md, "Pushed output stream"); 1007 adds native Files interests on the
 /// resource feed, including home-relayed worker invalidations; 1008 adds the person-confirmed App action card
 /// (`app_confirmation` on an `app-confirm-*` interaction, with the App's own preview as its protected browser
-/// `view`), and a `state_wait` that ended without a change answers only `revision` and `unchanged: true`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1008;
+/// `view`), and a `state_wait` that ended without a change answers only `revision` and `unchanged: true`; 1014 adds the
+/// optional `done_text` of a card's browser region: the text whose appearance in the watched element closes the card
+/// (AU-03, provisional number).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;

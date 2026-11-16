@@ -1,6 +1,6 @@
 {
-  "local_protocol": 1008,
-  "peer_protocol": 447,
+  "local_protocol": 1014,
+  "peer_protocol": 453,
   "abort": {
     "MoveAgentToLocal": {
       "session_id": "room",
@@ -44,7 +44,7 @@
         "interface": "chariox",
         "source_os": "linux",
         "cli_version": "codex-cli 0.159.3",
-        "account_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        "account_sha256": "fd18fd6b2391192d27fe5ad6ff686db23f463fa43c263a4d83cff6f61d02dbbb"
       }
     },
     {
@@ -164,7 +164,7 @@
         "leased_agent_id": "leased"
       },
       "requirements": {
-        "agent_configuration_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "agent_configuration_sha256": "fd18fd6b2391192d27fe5ad6ff686db23f463fa43c263a4d83cff6f61d02dbbb",
         "extensions": {},
         "skills": []
       }
@@ -218,7 +218,7 @@
         "interface": "chariox",
         "source_os": "linux",
         "cli_version": "codex-cli 0.159.3",
-        "account_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        "account_sha256": "fd18fd6b2391192d27fe5ad6ff686db23f463fa43c263a4d83cff6f61d02dbbb"
       },
       "relay_peer_protocol_version": 411
     },
