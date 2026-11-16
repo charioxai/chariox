@@ -878,69 +878,143 @@ async fn a_resume_that_cannot_dispatch_stays_armed_for_the_next_tick() {
     assert_eq!(task_of(&team, &task_id).state, ExecutionState::Working);
 }
 
-#[tokio::test]
-async fn a_resume_admitted_before_the_kernel_recorded_it_is_not_sent_again_after_a_restart() {
-    let mut team = team(config(UsageLimitResume::Automatic), 1).await;
+/// The kernel admitted the resume and went away before it wrote that the resume was sent; the
+/// restarted kernel and the time the stop is reached at come back.
+async fn restarted_after_an_unrecorded_admission(team: &mut Team) -> (KernelRuntimeState, u64) {
     team.hit_the_limit(0).await;
     let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
     tick(team.rt(), reset).await;
-    assert!(team.has_turn(0), "the continuation was admitted");
-    // The kernel went away after the admission and before it wrote that the resume was sent.
+    let admitted = team.stop(0).unwrap();
+    let UsageLimitStopState::Resuming { since_ms, .. } = admitted.state else {
+        panic!("the resume was claimed: {admitted:?}");
+    };
     let unsent = crate::agent::UsageLimitStop {
-        state: serde_json::from_value(
-            serde_json::json!({"state": "resuming", "since_ms": reset, "sent": false}),
-        )
-        .unwrap(),
-        ..team.stop(0).unwrap()
+        state: UsageLimitStopState::Resuming {
+            since_ms,
+            sent: false,
+        },
+        ..admitted
     };
     team.rt()
         .store_usage_limit_stop(&team.agent(0), Some(unsent), "")
         .await
         .unwrap();
+    (restarted(team).await, reset)
+}
 
-    let after = restarted(&mut team).await;
-    let agent_id = team.lanes[0].agent_id.clone();
-    let session = || {
-        after
-            .owned
-            .session_store
-            .get_session(&team.session_id)
-            .unwrap()
-    };
-    assert!(
-        after
-            .owned
-            .prompt_state_owner
-            .active_prompt_for_agent(&session(), &agent_id)
-            .is_some(),
-        "the admitted continuation runs again on the restarted kernel"
-    );
-    tick(&after, reset + 60_000).await;
-    // The continuation finishes, and the kernel must not send it a second time.
-    after
+fn agent_has_turn(team: &Team, runtime: &KernelRuntimeState) -> bool {
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&team.session_id)
+        .unwrap();
+    runtime
         .owned
         .prompt_state_owner
-        .complete_active_prompt_only(&session(), &agent_id);
-    tick(&after, reset + 120_000).await;
-    tick(&after, reset + 180_000).await;
+        .active_prompt_for_agent(&session, &team.lanes[0].agent_id)
+        .is_some()
+}
+
+/// The turn ends the way the kernel settles one: the prompt leaves the agent and its settlement
+/// is recorded.
+fn finish_the_turn(team: &Team, runtime: &KernelRuntimeState, settled_at_ms: u64) {
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&team.session_id)
+        .unwrap();
+    let completed = runtime
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_only(&session, &team.lanes[0].agent_id)
+        .expect("a turn ends");
+    runtime
+        .owned
+        .operational_history_store
+        .record_prompt_settlement(
+            false,
+            &team.session_id,
+            &team.lanes[0].agent_id,
+            completed.id(),
+            None,
+            settled_at_ms,
+            "completed",
+            None,
+        );
+}
+
+fn assert_no_second_resume(team: &Team, runtime: &KernelRuntimeState) {
     assert!(
-        after
-            .owned
-            .prompt_state_owner
-            .active_prompt_for_agent(&session(), &agent_id)
-            .is_none(),
+        !agent_has_turn(team, runtime),
         "no second resume after the continuation finished"
     );
     assert!(
-        after
+        runtime
             .owned
             .agent_store
-            .get_agent(&agent_id)
+            .get_agent(&team.lanes[0].agent_id)
             .unwrap()
             .usage_limit_stop()
             .is_none(),
         "the agent is back, its stop is cleared"
     );
+}
+
+#[tokio::test]
+async fn a_resume_admitted_before_the_kernel_recorded_it_is_not_sent_again_after_a_restart() {
+    let mut team = team(config(UsageLimitResume::Automatic), 1).await;
+    let (after, reset) = restarted_after_an_unrecorded_admission(&mut team).await;
+    assert!(
+        agent_has_turn(&team, &after),
+        "the admitted continuation runs again on the restarted kernel"
+    );
+    tick(&after, reset + 60_000).await;
+    // The continuation finishes, and the kernel must not send it a second time.
+    finish_the_turn(&team, &after, reset + 90_000);
+    tick(&after, reset + 120_000).await;
+    tick(&after, reset + 180_000).await;
+    assert_no_second_resume(&team, &after);
+}
+
+#[tokio::test]
+async fn a_continuation_that_finished_before_the_first_tick_after_a_restart_is_not_sent_again() {
+    let mut team = team(config(UsageLimitResume::Automatic), 1).await;
+    let (after, reset) = restarted_after_an_unrecorded_admission(&mut team).await;
+    finish_the_turn(&team, &after, reset + 30_000);
+    tick(&after, reset + 60_000).await;
+    tick(&after, reset + 120_000).await;
+    tick(&after, reset + 180_000).await;
+    assert_no_second_resume(&team, &after);
+}
+
+#[tokio::test]
+async fn a_task_continuation_that_finished_before_the_first_tick_after_a_restart_is_not_sent_again()
+{
+    let mut config = config(UsageLimitResume::Automatic);
+    config.room_agent_tools = true;
+    let mut team = team(config, 1).await;
+    let task_id = owe_work(&team, 0);
+    let (after, reset) = restarted_after_an_unrecorded_admission(&mut team).await;
+    let task = after
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(&team.session_id), None)
+        .unwrap()
+        .into_iter()
+        .find(|task| task.task_id == task_id)
+        .unwrap();
+    assert_ne!(
+        task.state,
+        ExecutionState::Blocked,
+        "the owner's resume reached the task"
+    );
+    if agent_has_turn(&team, &after) {
+        finish_the_turn(&team, &after, reset + 30_000);
+    }
+    tick(&after, reset + 60_000).await;
+    tick(&after, reset + 120_000).await;
+    tick(&after, reset + 180_000).await;
+    assert_no_second_resume(&team, &after);
 }
 
 #[tokio::test]

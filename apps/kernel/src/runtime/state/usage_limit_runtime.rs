@@ -197,22 +197,38 @@ impl KernelRuntimeState {
                         sends.push(self.spawn_resume(agent, stop));
                     }
                 }
-                UsageLimitStopState::Resuming { sent: false, .. }
-                    if !self.resume_is_being_sent(&agent) && self.agent_has_turn(&agent) =>
-                {
-                    // The kernel went away after it admitted the continuation and before it
-                    // recorded that: the turn that runs now is that continuation, not a new resume.
-                    self.mark_resume_sent(&agent).await;
-                }
-                UsageLimitStopState::Resuming { sent: false, .. }
-                    if !self.resume_is_being_sent(&agent) =>
-                {
-                    // A kernel that went away took the resume and never sent it: it is due now.
-                    let due = UsageLimitStop {
-                        state: UsageLimitStopState::Armed { at_ms: now },
-                        ..stop
-                    };
-                    self.store_usage_limit_stop(&agent, Some(due), "").await?;
+                UsageLimitStopState::Resuming {
+                    since_ms,
+                    sent: false,
+                } if !self.resume_is_being_sent(&agent) => {
+                    // A kernel that went away took the resume. When it admitted the continuation
+                    // first, that turn runs now or already ended, and sending again would repeat
+                    // finished work; otherwise the resume is due now.
+                    let admitted = self.agent_has_turn(&agent)
+                        || match self.owned.operational_history_store.prompt_settled_since(
+                            agent.session_id(),
+                            agent.id(),
+                            since_ms,
+                        ) {
+                            Ok(settled) => settled,
+                            Err(error) => {
+                                crate::logging::warn_with_fields(
+                                    "daemon.usage_limit",
+                                    "could not tell whether the resume was admitted",
+                                    serde_json::json!({"agent_id": agent.id(), "error": error.to_string()}),
+                                );
+                                continue;
+                            }
+                        };
+                    if admitted {
+                        self.mark_resume_sent(&agent).await;
+                    } else {
+                        let due = UsageLimitStop {
+                            state: UsageLimitStopState::Armed { at_ms: now },
+                            ..stop
+                        };
+                        self.store_usage_limit_stop(&agent, Some(due), "").await?;
+                    }
                 }
                 UsageLimitStopState::Resuming {
                     since_ms,

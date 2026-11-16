@@ -873,8 +873,9 @@ one agent per 20 seconds, so nothing depends on an agent that may sit on the sam
 and a restart finds the stop on the agent again. A task that was blocked by the stop goes on as the same
 task; otherwise the agent gets one kernel prompt in the same conversation. The stop follows the turn that
 failed last, so a resumed task that stops again is found again. `sent` is set once the resume turn was
-admitted: a `resuming` stop that was never sent (the kernel went away first) is armed again at once, unless a
-turn of the agent runs, which is then the admitted continuation and the stop is marked sent; a
+admitted: a `resuming` stop that was never sent (the kernel went away first) is armed again at once, unless the
+continuation was admitted: a turn of the agent runs, or the agent settled a prompt at or after the claim (the
+continuation already finished), and the stop is then marked sent, so finished work is not sent again; a
 resume the task could not take is kept armed for the next second. When the provider refuses
 again the kernel retries after 1, 5 and 15 minutes (after 15, 30, 60 and 120 minutes when no reset time
 was named) and then asks again. The person's decision is `UpdateAgentConfig.usage_limit`, given alone:
