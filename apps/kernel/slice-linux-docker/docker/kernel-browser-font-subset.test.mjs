@@ -57,3 +57,31 @@ test('MIRROR-P2-FONTS-SUBSET: the mirror sends the subset, and names it when the
   const [named] = await mirror.materializeWorld(world, due(), 0, 262144, stream([sent.resource_id.slice(0, 24)]));
   assert.deepEqual(named, { key: 'r1', resource_id: sent.resource_id, mime_type: 'font/woff2', data_base64: '', retained: true });
 });
+
+// A subset follows the document: text that arrives after the first delivery brings the glyphs it needs, under the same key.
+test('MIRROR-P2-FONTS-SUBSET: a face sent as a subset is cut again once the document shows a character it lacks', async () => {
+  let shown = 'Hello world';
+  const mirror = new Mirror2({ host: { browser: { responseBodies: { async read() { return liberation; } } } } });
+  const world = { connection: { async send() { throw Error('unrelated document resources are still loading'); } }, sessionId: 'S', frame: { id: 'F', loaderId: 'D' }, ref: 'observer' };
+  mirror.evaluate = async (_world, expression) => expression.includes('textCodePoints') ? text(shown) : expression.includes('nearImages') ? { near: [], all: [] } : ['r1'];
+  const entry = { key: 'r1', url: 'https://public.example/a.woff2', kind: 'font', state: 'new', tries: 0, sent: false };
+  const stream = { issued: 0, movedAt: 0, loadedCount: 1, knownFonts: new Set(), resources: new Map([['r1', entry]]), frameSlots: new Map() };
+  const [first] = await mirror.materializeWorld(world, [entry], 0, 1 << 22, stream);
+  assert.equal(entry.sent, true);
+  mirror.register(stream, { ops: [{ op: 'text' }] });
+  assert.equal(await mirror.refreshFonts(stream, world), false, 'the same characters keep the delivered subset');
+  shown = 'Hello world Привет мир ąęłś';
+  mirror.register(stream, { ops: [{ op: 'text' }] });
+  stream.fontsCheckedAt = 0;
+  assert.equal(await mirror.refreshFonts(stream, world), true, 'new characters bring a new subset');
+  const [second] = await mirror.materializeWorld(world, [...stream.resources.values()].filter(e => e.state === 'ok' && !e.sent), 0, 1 << 22, stream);
+  assert.equal(second.key, first.key, 'under the key the viewer already styles');
+  assert.notEqual(second.resource_id, first.resource_id);
+  const bytes = Buffer.from(second.data_base64, 'base64');
+  assert.equal(second.resource_id, id(bytes));
+  assert.equal(bytes.length < liberation.length, true);
+  assert.equal(bytes.length > Buffer.from(first.data_base64, 'base64').length, true, 'the glyphs of the new text are in it');
+  assert.equal(entry.sent, true);
+  stream.fontsCheckedAt = 0; mirror.register(stream, { ops: [{ op: 'text' }] });
+  assert.equal(await mirror.refreshFonts(stream, world), false, 'a document that shows nothing new sends nothing');
+});

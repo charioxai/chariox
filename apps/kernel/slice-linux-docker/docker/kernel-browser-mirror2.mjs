@@ -31,6 +31,8 @@ const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
 const HISTORY_BYTES = 8 * 1024 * 1024;
 // GATE-bytes: sheets from this size (normalized text) are pruned to their used rules for a first paint.
 const FIRST_PAINT_SHEET = 32 * 1024;
+// A font sent as a subset is checked against the document's characters at most this often.
+const FONT_REFRESH_MS = 1000;
 const MOVED = Symbol('document moved');
 // An idle viewer parks one credit this long: the answer to a quiet page is one heartbeat per wait.
 const MAX_WAIT_MS = 10_000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
@@ -561,6 +563,7 @@ export class Mirror2 {
       // its positive native-font requirements still fence the paint handover.
       // Legacy viewers retain first-packet fonts; other resource bytes follow resourcesRide.
       const fontsAt = timestamp();
+      if (!reset) await this.refreshFonts(stream, world);
       resources = reset ? stream.fontRequirements === true ? [] : await this.materialize(world, stream, 'font', source.loaded) : this.resourcesRide(stream, source) ? await this.materialize(world, stream, null, source.loaded) : this.fontsDue(stream) ? await this.materialize(world, stream, 'font', source.loaded) : [];
       if (reset) this.host.timing?.('mirror2_fonts', fontsAt);
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
@@ -575,7 +578,7 @@ export class Mirror2 {
         assertNotCancelled(signal);
         if (more.resync) { reset = true; source = await read(); this.register(stream, source); break; }
         this.register(stream, more); source = this.merge(source, more);
-        if (this.empty(stream, source)) resources = await this.materialize(world, stream, null, more.loaded);
+        if (this.empty(stream, source)) { await this.refreshFonts(stream, world); resources = await this.materialize(world, stream, null, more.loaded); }
       }
     } catch (error) {
       assertNotCancelled(signal);
@@ -749,6 +752,29 @@ export class Mirror2 {
   // same-document reset (lost base) does not send them again.
   register(stream, source) {
     for (const descriptor of source?.resources ?? []) if (!stream.resources.has(descriptor.key)) stream.resources.set(descriptor.key, { ...descriptor, state: 'new', tries: 0, sent: false });
+    if (source?.ops?.length) stream.fontsDirty = true;
+  }
+  // A font sent as a subset follows the document: once the page shows a character the subset lacks, the face is cut again
+  // and sent again under its key (the viewer styles the new bytes in place). Checked after DOM changes, at most once per
+  // FONT_REFRESH_MS, and only for faces whose bytes the viewer already holds whole. Returns whether a face is due again.
+  async refreshFonts(stream, main) {
+    if (!stream.fontsDirty || Date.now() - (stream.fontsCheckedAt ?? 0) < FONT_REFRESH_MS) return false;
+    const cut = [...stream.resources.values()].filter(entry => entry.whole), ready = cut.filter(entry => entry.sent);
+    stream.fontsDirty = ready.length < cut.length; stream.fontsCheckedAt = Date.now();
+    const characters = new Map(); let due = false;
+    for (const entry of ready) {
+      const world = entry.slot ? stream.frameSlots.get(entry.slot)?.child : main;
+      if (!world) continue;
+      if (!characters.has(world)) characters.set(world, this.evaluate(world, `${world.ref}.textCodePoints()`));
+      const body = await this.subsetFont(world, entry.whole, () => characters.get(world));
+      if (body === entry.shown) continue;
+      const mime_type = mirrorResourceType(body, 'font');
+      if (!mime_type) continue;
+      entry.resource = { key: entry.key, resource_id: createHash('sha256').update(body).digest('hex'), mime_type, data_base64: body.toString('base64') };
+      entry.sent = false; entry.offset = 0; entry.shown = body; due = true;
+      if (body === entry.whole) entry.whole = null;
+    }
+    return due;
   }
   tilesDue(stream) { return (stream.tileKeys !== '' || stream.tilesPending) && Date.now() - stream.tilesAt >= TILE_REFRESH_MS && !this.recentInput(stream); }
   // Bytes the page itself loaded: data URLs, the inspector's resource tree, or
@@ -823,7 +849,7 @@ export class Mirror2 {
             body ??= await this.cached(world, entry.url).catch(() => null);
           }
         }
-        if (body && entry.kind === 'font') body = await this.subsetFont(world, body);
+        if (body && entry.kind === 'font') { const whole = body; body = await this.subsetFont(world, whole); if (body !== whole) Object.assign(entry, { whole, shown: body }); }
         let mime_type = body && body.length <= RESOURCE_BYTES ? mirrorResourceType(body, entry.kind === 'sprite' ? 'image' : entry.kind) : null;
         // Protocol 501: a sprite travels as its sanitized symbols (the viewer validates them again).
         if (entry.kind === 'sprite') { const clean = mime_type === 'image/svg+xml' ? await this.evaluate(world, `${world.ref}.sprite(${JSON.stringify(body.toString('utf8'))})`).catch(() => null) : null; body = typeof clean === 'string' ? Buffer.from(clean, 'utf8') : null; if (!body) mime_type = null; }
@@ -861,10 +887,10 @@ export class Mirror2 {
   }
   // MP-10 first-visit bytes: a large face travels as the glyphs the page can show. A face the subsetter does not read
   // (WOFF 1, a collection) travels whole, and the timing event says so.
-  async subsetFont(world, body) {
+  async subsetFont(world, body, characters = async () => this.evaluate(world, `${world.ref}.textCodePoints()`)) {
     const at = timestamp();
     try {
-      const subset = await this.fontSubsets.subset(body, async () => this.evaluate(world, `${world.ref}.textCodePoints()`));
+      const subset = await this.fontSubsets.subset(body, characters);
       this.host.timing?.event?.('mirror2_font_subset', { whole_bytes: body.length, subset_bytes: subset?.length ?? 0, ms: Math.round(timestamp() - at) });
       return subset ?? body;
     } catch (error) {

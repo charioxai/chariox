@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { inflateRawSync, deflateSync, constants as zlib } from "node:zlib";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { KernelBrowserHost } from "./kernel-browser-host.mjs";
 
@@ -25,7 +26,7 @@ async function mirrored(html, run, routes = {}, initialOptions = {}) {
   const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "mirror2-"));
   const server = createServer((request, response) => {
     const port = String(server.address().port), route = routes[request.url];
-    if (route) { response.setHeader("Content-Type", route.type); for (const [name, value] of Object.entries(route.headers ?? {})) response.setHeader(name, value); const send = () => response.end(route.body.replaceAll("PORT", port)); if (route.delay_ms) setTimeout(send, route.delay_ms); else send(); return; }
+    if (route) { response.setHeader("Content-Type", route.type); for (const [name, value] of Object.entries(route.headers ?? {})) response.setHeader(name, value); const send = () => response.end(route.binary ?? route.body.replaceAll("PORT", port)); if (route.delay_ms) setTimeout(send, route.delay_ms); else send(); return; }
     response.setHeader("Content-Type", "text/html"); response.end(`<!doctype html>${html.replaceAll("PORT", port)}`);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -2632,3 +2633,29 @@ for (const viewportFirst of [false, true]) test(`MP-08/MP-10 verification ancest
     }
     assert(rejection, 'the visible site rejection travels without losing the live form');
   }, {}, viewportFirst ? { viewport_first: true } : {}));
+
+// MIRROR-P2-FONTS-SUBSET: a face over 32 KiB travels as the glyphs the document shows; text that arrives later brings the glyphs it needs.
+const liberation = readFileSync(new URL("../../../../examples/apps/excalidraw/assets/LiberationSans-Regular.woff2", import.meta.url));
+test("MIRROR-P2-FONTS-SUBSET: a subset font is sent again, under its key, when the document gains characters it lacks, and lays the new text out as the source does", () => mirrored(
+  '<style>@font-face{font-family:T;src:url(/lib.woff2) format("woff2")}p{margin:0;font:24px T,monospace;white-space:pre}</style><p id="t">Hello world</p>', async ({ next, evaluate }) => {
+    const fonts = [], collect = packet => fonts.push(...packet.resources.filter(r => r.mime_type === "font/woff2" && r.data_base64));
+    collect(await next());
+    for (let i = 0; i < 8 && !fonts.length; i++) collect(await next(500));
+    assert.equal(fonts.length, 1, "MIRROR-P2-FONTS-SUBSET: the first delivery is the subset");
+    assert(Buffer.from(fonts[0].data_base64, "base64").length < liberation.length / 3);
+    const text = "Привет мир ąęłś";
+    await evaluate(`document.querySelector('#t').textContent = ${JSON.stringify(text)}`);
+    for (let i = 0; i < 12 && fonts.length < 2; i++) collect(await next(500));
+    assert.equal(fonts.length, 2, "MIRROR-P2-FONTS-SUBSET: the characters the document gained travel with a new subset");
+    assert.equal(fonts[1].key, fonts[0].key, "under the key the viewer already styles");
+    assert.notEqual(fonts[1].resource_id, fonts[0].resource_id);
+    const width = bytes => evaluate(`(async () => {
+      const face = new FontFace('Probe', Uint8Array.from(atob(${JSON.stringify(bytes.toString("base64"))}), c => c.charCodeAt(0)).buffer); await face.load(); document.fonts.add(face);
+      const probe = document.createElement('span'); probe.style.cssText = 'font:24px Probe,monospace;white-space:pre;position:absolute;left:-9999px'; probe.textContent = ${JSON.stringify(text)}; document.body.append(probe);
+      const subset = probe.getBoundingClientRect().width; probe.style.fontFamily = 'T,monospace'; const source = probe.getBoundingClientRect().width; probe.remove();
+      return { subset, source };
+    })()`);
+    const before = await width(Buffer.from(fonts[0].data_base64, "base64")), after = await width(Buffer.from(fonts[1].data_base64, "base64"));
+    assert.notEqual(before.subset, before.source, "MIRROR-P2-FONTS-SUBSET: the first subset cannot show the new text as the source does");
+    assert.equal(after.subset, after.source, "MIRROR-P2-FONTS-SUBSET: the new subset lays the new text out as the source face does");
+  }, { "/lib.woff2": { type: "font/woff2", binary: liberation } }));
