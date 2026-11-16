@@ -636,17 +636,18 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Ok(Outcome::Wakes(vec![]));
             }
             wake.matched_at_ms = Some(now);
-            let e = event(
-                tx,
-                occurrence(
-                    &wake.room_id,
-                    &wake.agent_id,
-                    &wake.id,
-                    &format!("{}-match", wake.id),
-                    "process_output_matched",
-                    serde_json::json!({"task_id":wake.task_id,"wake_id":wake.id,"kind":"process","label":wake.label,"match_text":wake.match_text,"line":line}),
-                ),
-            )?;
+            let mut matched = occurrence(
+                &wake.room_id,
+                &wake.agent_id,
+                &wake.id,
+                &format!("{}-match", wake.id),
+                "process_output_matched",
+                serde_json::json!({"task_id":wake.task_id,"wake_id":wake.id,"kind":"process","label":wake.label,"match_text":wake.match_text,"line":line}),
+            );
+            if load(tx, &wake.task_id)?.state == ExecutionState::Done {
+                matched.payload["after_turn"] = true.into();
+            }
+            let e = event(tx, matched)?;
             record_fire(tx, &mut wake, &e, now)?;
             Ok(Outcome::Wakes(vec![wake]))
         }

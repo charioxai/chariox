@@ -651,7 +651,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 let open = t
                     .obligations
                     .iter()
-                    .any(AgentObligation::requires_resolution);
+                    .any(|o| o.requires_resolution() && !o.outlives_turn());
                 if retain_question_wait(tx, &mut t, now)? {
                     t.provider_run_id = Some(run);
                     t.revision += 1;

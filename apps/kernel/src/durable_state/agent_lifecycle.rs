@@ -987,10 +987,11 @@ fn decode_task(
     {
         return Err(error("wait state corrupt; quarantine required"));
     }
+    // Work the turn left running (`outlives_turn`) is supervised after the task ends.
     if t.state == ExecutionState::Done
         && t.obligations
             .iter()
-            .any(AgentObligation::requires_resolution)
+            .any(|o| o.requires_resolution() && !o.outlives_turn())
     {
         return Err(error(
             "done has unfinished obligations; quarantine required",
@@ -1120,6 +1121,8 @@ const SOURCE_TASKS: &str = "rowid IN (\
     WHERE ((r.source_id=?2 OR r.source_id IS NULL) AND t.room_id=?1) \
     OR (r.source_id=?2 AND json_extract(r.payload,'$.peer')=1) \
     UNION SELECT rowid FROM agent_tasks WHERE room_id=?1 AND obligated=1 AND state IS NOT 'done' \
+    UNION SELECT rowid FROM agent_tasks INDEXED BY agent_tasks_done_pending \
+     WHERE state='done' AND terminal_outcome_recorded=0 AND room_id=?1 AND obligated=1 \
     UNION SELECT rowid FROM agent_tasks WHERE state IS NULL AND +room_id=?1)";
 fn source_tasks(
     tx: &Transaction<'_>,
