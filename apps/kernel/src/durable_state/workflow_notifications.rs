@@ -387,7 +387,8 @@ impl DurableKernelStateStore {
         owner: &str,
     ) -> Result<WorkflowNotificationInventory, DaemonError> {
         let db = self.lock_connection("workflow.notifications.inventory")?;
-        let mut query = db.prepare("SELECT payload_json FROM workflow_notification_exit_sources WHERE owner_id=?1 ORDER BY source_id LIMIT 1024").map_err(sql)?;
+        // Owner-action sources sit outside the user-source limit (see Register).
+        let mut query = db.prepare("SELECT payload_json FROM workflow_notification_exit_sources WHERE owner_id=?1 AND (json_extract(payload_json,'$.kind')='owner_action' OR source_id IN (SELECT source_id FROM workflow_notification_exit_sources WHERE owner_id=?1 AND json_extract(payload_json,'$.kind')<>'owner_action' ORDER BY source_id LIMIT 1024)) ORDER BY source_id").map_err(sql)?;
         let sources = query
             .query_map([owner], |r| r.get::<_, String>(0))
             .map_err(sql)?
@@ -544,10 +545,12 @@ fn apply(
                     return Err(error("source not available"));
                 }
                 source.source_id = id;
-            } else {
+            } else if source.kind != crate::local::NotificationSourceKind::OwnerAction {
+                // The kernel registers owner-action sources itself, one per Room: they neither
+                // count toward nor hit the limit, so a full owner can still list its sources.
                 let count: i64 = tx
                     .query_row(
-                        "SELECT count(*) FROM workflow_notification_exit_sources WHERE owner_id=?1",
+                        "SELECT count(*) FROM workflow_notification_exit_sources WHERE owner_id=?1 AND json_extract(payload_json,'$.kind')<>'owner_action'",
                         [&source.owner_user_id],
                         |r| r.get(0),
                     )

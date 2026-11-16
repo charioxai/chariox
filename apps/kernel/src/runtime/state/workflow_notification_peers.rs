@@ -881,6 +881,48 @@ mod tests {
         ));
     }
 
+    // The kernel registers a Room's owner-action source while listing; an owner at the user-source
+    // limit must still get its listing, with that source added.
+    #[test]
+    fn a_listing_at_the_source_limit_still_returns_every_source() {
+        let mut f = Fixture::for_kernel("source-limit-peer");
+        let (workflow, _, _) = f.workflow("source");
+        let (_, runtime, _) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
+        let source = f.source(&workflow);
+        let db = rusqlite::Connection::open(f.root.join("runtime/state.db")).unwrap();
+        for n in 0..1023 {
+            let mut filler = source.clone();
+            filler.source_id = format!("filler-{n}");
+            filler.exit_node_id = format!("filler-exit-{n}");
+            db.execute(
+                "INSERT INTO workflow_notification_exit_sources VALUES (?1,?2,?3,?4,?5,?6,1,?7)",
+                rusqlite::params![
+                    filler.source_id,
+                    filler.owner_user_id,
+                    filler.kernel_id,
+                    filler.session_id,
+                    filler.workflow_id,
+                    filler.exit_node_id,
+                    serde_json::to_string(&filler).unwrap()
+                ],
+            )
+            .unwrap();
+        }
+        let Ok(RelayPeerResponse::WorkflowNotificationSources { sources, .. }) = runtime
+            .receive_workflow_notification_peer(
+                "home-peer",
+                "local",
+                RelayPeerRequest::ListWorkflowNotificationSources {
+                    protocol_version: VERSION,
+                },
+            )
+        else {
+            panic!("a listing at the source limit must not fail")
+        };
+        assert!(sources.iter().any(|s| s.source_id == source.source_id));
+        assert!(sources.iter().any(|s| s.name == "Agent needs your action"));
+    }
+
     fn machine_identity(subject: &str) -> chariox_relay::protocol::RelayCallerIdentity {
         chariox_relay::protocol::RelayCallerIdentity {
             realm_id: "wfnotify-fixture".into(),
