@@ -527,11 +527,13 @@ fn leased_projection_history_dedupe_is_scoped_to_backing_session() {
             "user-home",
         )
         .expect("execution lease should be created");
-    let first_worktree = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("leased-history-dedupe-a");
+    let first_worktree = _tmp.join(format!(
         "chariox-leased-history-dedupe-a-{}",
         crate::session::unix_epoch_ms()
     ));
-    let second_worktree = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("leased-history-dedupe-b");
+    let second_worktree = _tmp.join(format!(
         "chariox-leased-history-dedupe-b-{}",
         crate::session::unix_epoch_ms()
     ));

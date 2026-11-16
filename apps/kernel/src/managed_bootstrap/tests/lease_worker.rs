@@ -442,7 +442,6 @@ async fn enrolled_lease_worker_materializes_selected_project_via_public_context_
         !seed_session_id.is_empty(),
         "the public Project selection must have created a home session"
     );
-    fixture.cleanup();
 }
 
 struct TestCloudApi {

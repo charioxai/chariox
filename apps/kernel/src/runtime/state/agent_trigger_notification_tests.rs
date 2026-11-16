@@ -1930,14 +1930,11 @@ async fn r6_notification_deadline_survives_queue_recovery_and_blocks_promotion_a
                     .unwrap();
             }
             let mut restart_config = config.clone();
-            let restart_path =
-                super::super::agent_trigger_runtime_state::tests::durable_state_config(
-                    "r6-notification-expiry-restart",
-                )
-                .user_config
-                .state
-                .path
-                .unwrap();
+            let restart_path = config
+                .test_state_dir()
+                .join("r6-notification-expiry-restart.db")
+                .display()
+                .to_string();
             rusqlite::Connection::open(rig.runtime.owned.durable_state_store.path())
                 .unwrap()
                 .execute("VACUUM INTO ?1", rusqlite::params![restart_path])
@@ -2619,13 +2616,11 @@ async fn a_restart_between_admission_and_settlement_keeps_the_notification_linea
             rig.admit_workflow_notification_unsettled().await;
         }
         let mut restart_config = config.clone();
-        let restart_path = super::super::agent_trigger_runtime_state::tests::durable_state_config(
-            "n2-lineage-recovery-restart",
-        )
-        .user_config
-        .state
-        .path
-        .unwrap();
+        let restart_path = config
+            .test_state_dir()
+            .join("n2-lineage-recovery-restart.db")
+            .display()
+            .to_string();
         rusqlite::Connection::open(rig.runtime.owned.durable_state_store.path())
             .unwrap()
             .execute("VACUUM INTO ?1", rusqlite::params![restart_path])
@@ -2687,13 +2682,11 @@ async fn an_admitted_receipt_is_settled_from_its_prompt_after_a_restart() {
         let (_, _, prompt) = rig.admit_workflow_notification_unsettled().await;
         rig.end_the_admitted_notification(outcome, &prompt).await;
         let mut restart_config = config.clone();
-        let restart_path = super::super::agent_trigger_runtime_state::tests::durable_state_config(
-            "n1-admission-fence-restart",
-        )
-        .user_config
-        .state
-        .path
-        .unwrap();
+        let restart_path = config
+            .test_state_dir()
+            .join("n1-admission-fence-restart.db")
+            .display()
+            .to_string();
         rusqlite::Connection::open(rig.runtime.owned.durable_state_store.path())
             .unwrap()
             .execute("VACUUM INTO ?1", rusqlite::params![restart_path])
@@ -2825,13 +2818,11 @@ async fn a_persisted_steer_rejection_survives_recovery_without_its_provisional_l
         .mirror_prompt_owner_agent_state(&rig.session_id, &rig.agent_id, active, queued)
         .unwrap();
     let mut restart_config = config.clone();
-    let restart_path = super::super::agent_trigger_runtime_state::tests::durable_state_config(
-        "n3b-rejection-restart",
-    )
-    .user_config
-    .state
-    .path
-    .unwrap();
+    let restart_path = config
+        .test_state_dir()
+        .join("n3b-rejection-restart.db")
+        .display()
+        .to_string();
     rusqlite::Connection::open(rig.runtime.owned.durable_state_store.path())
         .unwrap()
         .execute("VACUUM INTO ?1", rusqlite::params![restart_path])

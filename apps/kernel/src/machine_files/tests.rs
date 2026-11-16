@@ -17,17 +17,13 @@ use crate::local::{
     StartFileTransferRequest, StatKernelFileRequest, WriteKernelFileRequest,
 };
 use crate::runtime::kernel_files;
+use crate::test_support::TestTempDir;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
 const SLICE: usize = crate::agent_file_copy::SLICE_BYTES as usize;
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "machine-files-{name}-{:08x}",
-        rand::random::<u32>()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir.canonicalize().unwrap()
+fn scratch(name: &str) -> TestTempDir {
+    TestTempDir::new(&format!("machine-files-{name}"))
 }
 
 fn machine() -> Machine {
@@ -254,8 +250,8 @@ fn files_never_reach_the_kernels_own_state_or_the_vault() {
     }
     for open in [
         outside.join("notes.txt"),
-        outside.clone(),
-        root.clone(),
+        outside.to_path_buf(),
+        root.to_path_buf(),
         user_home.clone(),
     ] {
         assert!(guard.check(&open).is_ok(), "{}", open.display());
@@ -1022,7 +1018,7 @@ async fn a_file_transfer_stopped_by_a_kernel_restart_is_listed_again_and_finishe
 
     // The kernel starts again.
     let jobs = Arc::new(TransferJobs::default());
-    let interrupted = jobs.attach(state.clone());
+    let interrupted = jobs.attach(state.to_path_buf());
     assert_eq!(interrupted.len(), 1);
     assert_eq!(interrupted[0].job_id, started.job_id);
     let listed = jobs.list();
@@ -1047,7 +1043,7 @@ async fn a_file_transfer_stopped_by_a_kernel_restart_is_listed_again_and_finishe
     // The next store reads the durable outcome after the old writer settles.
     recorded(&state, &started.job_id, "\"done\"").await;
     let jobs = Arc::new(TransferJobs::default());
-    assert!(jobs.attach(state).is_empty());
+    assert!(jobs.attach(state.to_path_buf()).is_empty());
     let kept = jobs.get(&started.job_id).unwrap();
     assert_eq!(kept.state, FileTransferState::Done);
     assert_eq!(kept.sha256.as_deref(), Some(sha256.as_str()));
@@ -1087,7 +1083,7 @@ async fn a_folder_transfer_stopped_by_a_kernel_restart_finishes_as_the_same_tree
     assert!(!here.join("project").exists());
 
     let jobs = Arc::new(TransferJobs::default());
-    let interrupted = jobs.attach(state);
+    let interrupted = jobs.attach(state.to_path_buf());
     assert_eq!(interrupted.len(), 1);
     jobs.resume(&interrupted[0], Link::new(machine()).source(), machine());
     let done = finished(&jobs, &started.job_id).await;
@@ -1128,7 +1124,10 @@ async fn a_move_stopped_while_it_deleted_the_source_ends_with_a_clear_outcome_an
     .unwrap();
 
     let jobs = Arc::new(TransferJobs::default());
-    assert!(jobs.attach(state).is_empty(), "nothing is repeated blindly");
+    assert!(
+        jobs.attach(state.to_path_buf()).is_empty(),
+        "nothing is repeated blindly"
+    );
     let job = jobs.get(job_id).unwrap();
     assert_eq!(job.state, FileTransferState::Failed, "{job:?}");
     let error = job.error.unwrap();
@@ -1341,7 +1340,7 @@ async fn a_move_is_on_record_as_deleting_before_its_first_source_file_goes() {
         .collect();
     plant(&here.join("project/old.txt"), 10);
     let jobs = Arc::new(TransferJobs::default());
-    assert!(jobs.attach(state.clone()).is_empty());
+    assert!(jobs.attach(state.to_path_buf()).is_empty());
     // The kernel dies as the second source file is about to be deleted; the first is gone.
     let (killer, deletes) = (jobs.clone(), Arc::new(AtomicUsize::new(0)));
     let link = Link::with_cue(machine(), Duration::ZERO, move |_, request| {
@@ -1369,7 +1368,7 @@ async fn a_move_is_on_record_as_deleting_before_its_first_source_file_goes() {
 
     // The kernel starts again: the move is not repeated, whatever the copy it published.
     let jobs = Arc::new(TransferJobs::default());
-    let interrupted = jobs.attach(state);
+    let interrupted = jobs.attach(state.to_path_buf());
     assert!(
         interrupted.is_empty(),
         "a move that began deleting is never resumed"
@@ -1465,7 +1464,7 @@ async fn a_startup_snapshot_written_late_never_overwrites_a_newer_outcome() {
     // The write of the snapshot taken at startup is held back until the job has long ended.
     super::records::FIRST_WRITE_DELAY_MS.store(600, Ordering::SeqCst);
     let jobs = Arc::new(TransferJobs::default());
-    let interrupted = jobs.attach(state.clone());
+    let interrupted = jobs.attach(state.to_path_buf());
     assert_eq!(interrupted.len(), 1);
     jobs.resume(&interrupted[0], Link::new(machine()).source(), machine());
     let done = finished(&jobs, id).await;
@@ -1485,7 +1484,7 @@ async fn a_startup_snapshot_written_late_never_overwrites_a_newer_outcome() {
 
     // The next start finds it finished and runs nothing again.
     let jobs = Arc::new(TransferJobs::default());
-    assert!(jobs.attach(state).is_empty());
+    assert!(jobs.attach(state.to_path_buf()).is_empty());
     assert_eq!(jobs.get(id).unwrap().state, FileTransferState::Done);
 }
 

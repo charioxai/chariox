@@ -248,7 +248,8 @@ async fn prompt_and_answer(
 
 #[tokio::test]
 async fn claude_print_permission_prompt_asks_the_user_and_maps_the_answer() {
-    let root = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("permission-prompt");
+    let root = _tmp.join(format!(
         "chariox-permission-prompt-{}-{}",
         std::process::id(),
         rand::random::<u64>()
@@ -387,7 +388,8 @@ async fn claude_print_permission_prompt_asks_the_user_and_maps_the_answer() {
 
 #[tokio::test]
 async fn claude_print_permission_prompt_fails_closed_and_closes_an_abandoned_prompt() {
-    let root = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("permission-prompt-closed");
+    let root = _tmp.join(format!(
         "chariox-permission-prompt-closed-{}-{}",
         std::process::id(),
         rand::random::<u64>()
@@ -552,7 +554,8 @@ async fn claude_print_permission_prompt_fails_closed_and_closes_an_abandoned_pro
 async fn claude_closing_the_connection_during_a_permission_prompt_closes_it() {
     use tokio::io::AsyncWriteExt;
 
-    let root = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("permission-prompt-disconnect");
+    let root = _tmp.join(format!(
         "chariox-permission-prompt-disconnect-{}-{}",
         std::process::id(),
         rand::random::<u64>()
@@ -658,7 +661,8 @@ async fn claude_closing_the_connection_during_a_permission_prompt_closes_it() {
 /// wait for as long as the call runs, and no longer once it returns.
 #[tokio::test]
 async fn claude_waiting_on_a_runtime_popup_is_not_a_turn_stall() {
-    let root = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("runtime-tool-wait");
+    let root = _tmp.join(format!(
         "chariox-runtime-tool-wait-{}-{}",
         std::process::id(),
         rand::random::<u64>()

@@ -1256,7 +1256,6 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
-        std::fs::remove_dir(journal).unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

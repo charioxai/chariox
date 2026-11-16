@@ -176,9 +176,7 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
 // event could not be recorded learns the steer id and that it must not send it again.
 #[test]
 fn outside_caller_learns_a_delivered_steer_whose_event_was_not_recorded() {
-    let faults =
-        std::env::temp_dir().join(format!("steer-event-fault-{:016x}", rand::random::<u64>()));
-    std::fs::create_dir(&faults).unwrap();
+    let faults = crate::test_support::TestTempDir::new("steer-event-fault");
     let _faults = crate::durable_state::agent_lifecycle::faults::TestFaultDir::set(&faults);
     let worktree = crate::test_support::TestWorktree::new("steer-event-unrecorded");
     let harness = LocalRouterTestHarness::new();
@@ -290,11 +288,11 @@ fn outside_caller_learns_a_delivered_steer_whose_event_was_not_recorded() {
 
 #[test]
 fn public_session_state_preserves_failed_settlement_termination_after_late_completion() {
-    let worktree = crate::test_support::TestWorktree::new("turn-actions-settlement");
+    let mut worktree = crate::test_support::TestWorktree::new("turn-actions-settlement");
     // The prompt launches the default (OpenCode) provider, which waits for its
     // runtime MCP endpoint to connect.
     let mut config = crate::config::DaemonConfig::for_tests();
-    crate::test_support::serve_runtime_mcp(&mut config);
+    worktree.serve_runtime_mcp(&mut config);
     let harness = LocalRouterTestHarness::with_config(config);
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(

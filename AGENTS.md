@@ -15,7 +15,7 @@ pnpm protocol:conformance
 pnpm lint:process-signals         # when spawning or signalling processes
 ```
 
-One kernel test: `RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test -p chariox-kernel --lib <filter>`. Run locally: `pnpm start:kernel`, then `pnpm start:cli`. A kernel build needs 8–12 GB of RAM; never run two at once on one machine.
+One kernel test: `RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test -p chariox-kernel --lib <filter>`. Every test removes the temp state it creates (`TestTempDir`); `scripts/check-test-temp.sh <test command>` fails when a run leaves anything in its private `TMPDIR`, and `CHARIOX_KEEP_TEST_TEMP=1` keeps test directories for debugging. Run locally: `pnpm start:kernel`, then `pnpm start:cli`. A kernel build needs 8–12 GB of RAM; never run two at once on one machine.
 
 ## Protocol changes
 

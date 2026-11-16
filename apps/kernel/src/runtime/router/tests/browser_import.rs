@@ -31,13 +31,6 @@ fn run_consent_round_trip(cleanup_failure: Option<bool>) {
         .unwrap();
 }
 
-struct Scratch(std::path::PathBuf);
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).unwrap();
-    }
-}
-
 fn ready_environment(
     state: &crate::runtime::state::KernelRuntimeState,
     session_id: &str,
@@ -68,12 +61,6 @@ fn ready_environment(
 async fn consent_round_trip(cleanup_failure: Option<bool>) {
     let config = DaemonConfig::for_tests();
     let database_path = config.user_config.state.path.clone().unwrap();
-    let _scratch = Scratch(
-        std::path::PathBuf::from(config.user_config.state.path.as_ref().unwrap())
-            .parent()
-            .unwrap()
-            .to_path_buf(),
-    );
     let mut app = DaemonApp::bootstrap(config).unwrap();
     let session = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("browser-import", "worktree"))
@@ -563,12 +550,6 @@ async fn enrolled_owner_import() {
         realm_id: "test-realm".into(),
         ..Default::default()
     });
-    let _scratch = Scratch(
-        std::path::PathBuf::from(config.user_config.state.path.as_ref().unwrap())
-            .parent()
-            .unwrap()
-            .to_path_buf(),
-    );
     let mut app = DaemonApp::bootstrap(config).unwrap();
     let session = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("browser-import", "worktree"))
