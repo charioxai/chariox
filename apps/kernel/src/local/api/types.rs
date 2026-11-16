@@ -539,5 +539,7 @@ pub use workspace::*;
 /// `read_output` per page (docs/PROTOCOL.md, "Pushed output stream"); 1007 adds native Files interests on the
 /// resource feed, including home-relayed worker invalidations; 1008 adds the person-confirmed App action card
 /// (`app_confirmation` on an `app-confirm-*` interaction, with the App's own preview as its protected browser
-/// `view`), and a `state_wait` that ended without a change answers only `revision` and `unchanged: true`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1008;
+/// `view`), and a `state_wait` that ended without a change answers only `revision` and `unchanged: true`. 1016 (provisional)
+/// lists every event a waiting agent would wake on (`liveness.waiting_events`), drops `wait.long_wait_notified` with the
+/// no-progress notice, and marks an agent's own question to the owner (`owner_action: "question"`, a reply-box decision).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1016;
