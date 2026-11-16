@@ -42,6 +42,36 @@ impl KernelRuntimeState {
             })
     }
 
+    /// A message from the parent to its sub-agent, alone in its wake, as the
+    /// prompt text: the sub-agent starts on its task without reading its inbox.
+    pub(super) fn parent_brief(
+        &self,
+        agent: &str,
+        event: &ledger::InboxEvent,
+        batch: &[ledger::InboxEvent],
+    ) -> Option<String> {
+        if event.kind != "message" || event.reply_requested || !batch.is_empty() {
+            return None;
+        }
+        let message = event.payload["message"].as_str()?;
+        let target = self.owned.agent_store.get_agent(agent).ok()?;
+        let parent = self
+            .owned
+            .agent_store
+            .get_agent(
+                target
+                    .parent_agent_id()
+                    .filter(|id| *id == event.source_id)?,
+            )
+            .ok()?;
+        let name = parent.alias().unwrap_or(parent.agent_ref());
+        Some(super::agent_inbox_wake_text::brief_text(
+            name,
+            event.sequence,
+            message,
+        ))
+    }
+
     pub(super) async fn deliver_agent_inbox(
         &self,
         room: &str,
@@ -175,7 +205,10 @@ impl KernelRuntimeState {
             .owned
             .durable_state_store
             .agent_read_cursor(&event, work.as_deref())?;
-        let text = super::agent_inbox_wake_text::wake_text(&event, &batch, after);
+        let brief = self.parent_brief(agent, &event, &batch);
+        let carries_brief = brief.is_some();
+        let text =
+            brief.unwrap_or_else(|| super::agent_inbox_wake_text::wake_text(&event, &batch, after));
         let attachments = std::iter::once(&event)
             .chain(&batch)
             .map(|row| {
@@ -261,6 +294,17 @@ impl KernelRuntimeState {
             return Ok(());
         }
         self.owned.record_woken_waits(&waiting, &attempt);
+        if carries_brief {
+            // The prompt carries the message, so it counts as read: a turn that
+            // never opens its inbox must not hand the row back to pending.
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::MarkShown {
+                    room: room.into(),
+                    agent: agent.into(),
+                    sequences: vec![event.sequence],
+                })?;
+        }
         if let Some(dispatch) = steer {
             // A turn that is settling holds its lane until it ends. The steer then
             // sent nothing: the row waits for the idle wake instead of the lane.

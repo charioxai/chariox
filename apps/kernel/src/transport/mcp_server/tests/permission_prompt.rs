@@ -50,9 +50,17 @@ fn insert_claude_run_in_mode(
         "http://127.0.0.1:1/mcp",
         token,
     ));
+    insert_run_for_request(app, run_id, &request);
+}
+
+pub(super) fn insert_run_for_request(
+    app: &mut DaemonApp,
+    run_id: &str,
+    request: &crate::provider::LaunchProviderRequest,
+) {
     let mut run = crate::provider::RuntimeProviderRun::new(
         run_id,
-        &request,
+        request,
         crate::provider::ProviderLaunchResult {
             endpoint_mode: crate::provider::AgentEndpointMode::External,
             process_label: "claude:stream-json".to_string(),

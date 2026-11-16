@@ -1,10 +1,10 @@
-use super::permission_prompt::{insert_claude_run, rpc};
+use super::permission_prompt::{insert_run_for_request, rpc};
 use super::*;
 
 const TOKEN: &str = "claude-print-tool-loading-token";
 const BUDGET: &str = include_str!("../../../../agent_context_budget.json");
 
-/// What a Claude run must have in context before its first call; every other
+/// What a Claude agent must have in context before its first call; every other
 /// runtime tool is found through Claude Code's tool search.
 const CORE_TOOLS: [&str; 9] = [
     "chariox.events.ack",
@@ -16,6 +16,14 @@ const CORE_TOOLS: [&str; 9] = [
     "chariox.permission_prompt",
     "chariox.send_agent_message",
     "chariox.vault.use_env",
+];
+
+/// An agent another agent started: its inbox and the permission prompt.
+const SUB_AGENT_CORE_TOOLS: [&str; 4] = [
+    "chariox.events.ack",
+    "chariox.events.blocked",
+    "chariox.events.inbox",
+    "chariox.permission_prompt",
 ];
 
 fn always_load(tool: &Value) -> bool {
@@ -32,7 +40,7 @@ fn model_visible_bytes(tool: &Value) -> usize {
     .len()
 }
 
-async fn claude_catalog() -> (Value, Vec<Value>) {
+async fn claude_catalog(sub_agent: bool) -> (Value, Vec<Value>) {
     let root = std::env::temp_dir().join(format!(
         "chariox-tool-loading-{}-{}",
         std::process::id(),
@@ -52,14 +60,23 @@ async fn claude_catalog() -> (Value, Vec<Value>) {
                 }),
         )
         .expect("session should be created");
-    insert_claude_run(
-        &mut app,
+    let request = crate::provider::LaunchProviderRequest::new(
         session.id(),
-        agent.id(),
-        "provider-run-tool-loading",
+        "claude",
+        "claude",
+        "default",
+        "sonnet",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::Chariox)
+    .with_execution_mode(crate::provider::AgentExecutionMode::Build)
+    .with_permission_level(crate::provider::AgentPermissionLevel::Required)
+    .with_runtime_mcp_binding(crate::provider::RuntimeMcpBinding::new(
+        "http://127.0.0.1:1/mcp",
         TOKEN,
-        crate::provider::ProviderClientInterface::Chariox,
-    );
+    ))
+    .with_sub_agent(sub_agent);
+    insert_run_for_request(&mut app, "provider-run-tool-loading", &request);
     let router = Arc::new(CommandRouter::with_interactive_capacity(
         Arc::new(Mutex::new(app)),
         8,
@@ -80,7 +97,7 @@ async fn claude_catalog() -> (Value, Vec<Value>) {
 
 #[tokio::test]
 async fn claude_run_loads_its_core_tools_upfront_and_finds_the_rest_on_demand() {
-    let (initialize, tools) = claude_catalog().await;
+    let (initialize, tools) = claude_catalog(false).await;
     let mut upfront: Vec<&str> = tools
         .iter()
         .filter(|tool| always_load(tool))
@@ -96,17 +113,71 @@ async fn claude_run_loads_its_core_tools_upfront_and_finds_the_rest_on_demand() 
     assert!(instructions.len() <= 1_000, "{} bytes", instructions.len());
 }
 
+#[tokio::test]
+async fn a_sub_agent_loads_only_its_inbox_tools_and_finds_the_rest_on_demand() {
+    let (initialize, tools) = claude_catalog(true).await;
+    let mut upfront: Vec<&str> = tools
+        .iter()
+        .filter(|tool| always_load(tool))
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    upfront.sort_unstable();
+    assert_eq!(upfront, SUB_AGENT_CORE_TOOLS);
+
+    let (_, agent_tools) = claude_catalog(false).await;
+    assert_eq!(
+        tools.len(),
+        agent_tools.len(),
+        "a sub-agent keeps every tool; they load when it asks"
+    );
+    let instructions = initialize["result"]["instructions"]
+        .as_str()
+        .expect("a sub-agent is told how to load the other tools");
+    assert!(instructions.contains("ToolSearch"), "{instructions}");
+    assert!(
+        instructions.contains("chariox.send_agent_message"),
+        "{instructions}"
+    );
+    assert!(instructions.len() <= 1_000, "{} bytes", instructions.len());
+    assert!(
+        !instructions.contains("grouped by purpose"),
+        "a worker is told about its own tools, not the whole catalog: {instructions}"
+    );
+    let vault_generate = tools
+        .iter()
+        .find(|tool| tool["name"] == "chariox.vault.generate")
+        .expect("a tool the worker note does not name is still listed for ToolSearch");
+    assert!(!always_load(vault_generate));
+}
+
 /// Budget for what a Claude agent's context pays for the runtime catalog. A
 /// change that grows it must raise the committed number with its reason.
 #[tokio::test]
 async fn claude_runtime_catalog_matches_the_committed_context_budget() {
-    let (_, tools) = claude_catalog().await;
+    let (_, tools) = claude_catalog(false).await;
+    let (worker_initialize, worker_tools) = claude_catalog(true).await;
     let core: Vec<&Value> = tools.iter().filter(|tool| always_load(tool)).collect();
+    let worker_core: Vec<&Value> = worker_tools
+        .iter()
+        .filter(|tool| always_load(tool))
+        .collect();
     let measured = serde_json::json!({
         "claude_tools_listed": tools.len(),
         "claude_tools_list_json_bytes": tools.iter().map(model_visible_bytes).sum::<usize>(),
         "claude_core_tools": core.len(),
         "claude_core_json_bytes": core.iter().map(|tool| model_visible_bytes(tool)).sum::<usize>(),
+        "claude_worker_core_tools": worker_core.len(),
+        "claude_worker_core_json_bytes": worker_core
+            .iter()
+            .map(|tool| model_visible_bytes(tool))
+            .sum::<usize>(),
+        "claude_worker_server_instructions_bytes": worker_initialize["result"]["instructions"]
+            .as_str()
+            .map(str::len),
+        "claude_worker_runtime_note_bytes": crate::prompt_assembly::bundled_prompt_template(
+            "runtime/sub-agent-base",
+        )
+        .map(str::len),
     });
     let budget: Value = serde_json::from_str(BUDGET).expect("budget file should be JSON");
     assert_eq!(

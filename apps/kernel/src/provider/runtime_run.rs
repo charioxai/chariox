@@ -471,6 +471,11 @@ impl RuntimeProviderRun {
         &self.provider_config_overrides
     }
 
+    /// Whether the agent of this run was started by another agent.
+    pub(crate) fn is_sub_agent(&self) -> bool {
+        super::launch_contract::overrides_mark_sub_agent(&self.provider_config_overrides)
+    }
+
     pub fn set_remote_extension_manifest(
         &mut self,
         manifest: crate::extension::RemoteExtensionManifest,

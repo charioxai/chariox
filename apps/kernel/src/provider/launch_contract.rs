@@ -16,6 +16,17 @@ use super::types::{
 /// Launch override Claude turns into `CLAUDE_CODE_AUTO_COMPACT_WINDOW`.
 pub(crate) const MAX_CONTEXT_TOKENS_OVERRIDE: &str = "chariox.max_context_tokens";
 
+/// Marks a Claude run whose agent was started by another agent. It starts with
+/// the context of a worker: the inbox tools and a short runtime note.
+const SUB_AGENT_OVERRIDE: &str = "chariox.sub_agent";
+
+pub(crate) fn overrides_mark_sub_agent(overrides: &BTreeMap<String, Value>) -> bool {
+    overrides
+        .get(SUB_AGENT_OVERRIDE)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 pub(super) fn default_provider_owner_user_id() -> String {
     DEFAULT_LOCAL_USER_ID.to_string()
 }
@@ -858,6 +869,22 @@ impl LaunchProviderRequest {
         }
     }
 
+    /// What the agent's own settings decide about its provider run.
+    pub(crate) fn with_agent_settings(self, agent: &crate::agent::AgentInstance) -> Self {
+        self.with_max_context_tokens(agent.max_context_tokens())
+            .with_sub_agent(agent.is_sub_agent())
+    }
+
+    /// Only Claude runs read the mark; other providers take no unknown override.
+    pub(crate) fn with_sub_agent(self, is_sub_agent: bool) -> Self {
+        if !is_sub_agent
+            || crate::provider::canonical_provider_family(&self.provider) != Some("claude")
+        {
+            return self;
+        }
+        self.with_provider_config_override(SUB_AGENT_OVERRIDE, serde_json::json!(true))
+    }
+
     pub fn with_provider_config_overrides(mut self, overrides: BTreeMap<String, Value>) -> Self {
         self.provider_config_overrides = overrides;
         self
@@ -1021,6 +1048,38 @@ mod tests {
     };
     use crate::provider::{ControlCapabilityMode, ControlOperation};
     use zeroize::Zeroizing;
+
+    #[test]
+    fn only_a_claude_run_of_an_agent_another_agent_started_is_marked_a_sub_agent() {
+        let agent = |parent: Option<&str>| {
+            let mut agent = crate::agent::AgentInstance::new(
+                "agent-2",
+                "agent-2",
+                "session-1",
+                None,
+                "claude",
+                None,
+                None,
+                None,
+                crate::agent::GridPosition::new(0, 0, 1, 1),
+            );
+            agent.set_parent_agent(parent.map(crate::agent::AgentRef::local));
+            agent
+        };
+        let marked = |provider: &str, agent: &crate::agent::AgentInstance| {
+            super::overrides_mark_sub_agent(
+                &LaunchProviderRequest::new("session-1", provider, provider, "default", "model")
+                    .with_agent_settings(agent)
+                    .provider_config_overrides,
+            )
+        };
+        assert!(marked("claude", &agent(Some("agent-1"))));
+        assert!(!marked("claude", &agent(None)));
+        assert!(
+            !marked("codex", &agent(Some("agent-1"))),
+            "other providers take no unknown override"
+        );
+    }
 
     #[test]
     fn provider_credentials_are_absent_from_wire_and_debug_shapes() {

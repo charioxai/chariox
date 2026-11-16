@@ -368,8 +368,8 @@ async fn handle_json_rpc_value(
                 .and_then(Value::as_str)
                 .filter(|version| matches!(*version, "2025-03-26" | "2025-06-18" | "2025-11-25"))
                 .unwrap_or(DEFAULT_PROTOCOL_VERSION);
-            let instructions = tool_loading::is_claude(&router, auth_token)
-                .then_some(tool_loading::CLAUDE_SERVER_INSTRUCTIONS);
+            let instructions = tool_loading::ClaudeLoading::for_run(&router, auth_token)
+                .map(tool_loading::ClaudeLoading::instructions);
             let mut result = serde_json::json!({
                         "protocolVersion": protocol_version,
                         "capabilities": {
@@ -411,7 +411,7 @@ async fn handle_json_rpc_value(
             let tools = router
                 .runtime_tool_specs_for_auth_token_async(auth_token.to_owned())
                 .await?;
-            let claude_run = tool_loading::is_claude(&router, auth_token);
+            let claude_loading = tool_loading::ClaudeLoading::for_run(&router, auth_token);
             // An invalidation during discovery cannot be acknowledged by an
             // older list. Record only successful discovery for the same run.
             if let Some((run_id, revision)) = captured {
@@ -436,7 +436,7 @@ async fn handle_json_rpc_value(
                                     "description": tool.description,
                                     "inputSchema": tool.input_schema,
                                 });
-                                if claude_run && tool_loading::loads_upfront(&tool.name) {
+                                if claude_loading.is_some_and(|loading| loading.loads_upfront(&tool.name)) {
                                     entry["_meta"] = serde_json::json!({
                                         tool_loading::ALWAYS_LOAD_META_KEY: true
                                     });

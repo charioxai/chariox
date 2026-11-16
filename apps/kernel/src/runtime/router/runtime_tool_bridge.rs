@@ -271,9 +271,11 @@ impl CommandRouter {
             .runtime_tool_specs_for_current_grants(auth_token)
     }
 
-    pub(crate) fn runtime_mcp_provider_adapter(&self, auth_token: &str) -> Option<String> {
-        self.runtime_state
-            .provider_adapter_for_auth_token(auth_token)
+    pub(crate) fn runtime_mcp_provider_run(
+        &self,
+        auth_token: &str,
+    ) -> Option<crate::provider::RuntimeProviderRun> {
+        self.runtime_state.provider_run_for_auth_token(auth_token)
     }
 
     pub(crate) fn runtime_catalog_signature(
