@@ -2,7 +2,7 @@
 // backend's version check, and what an agent does in the backend shows up in the open window.
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { openApp, closeEnvironment, labelled, rect, sceneOf, waitUntil } from './window.mjs';
+import { openApp, closeEnvironment, fakeBackend, labelled, rect, sceneOf, text, waitUntil } from './window.mjs';
 
 after(closeEnvironment);
 
@@ -189,6 +189,49 @@ test('an element the owner deletes is saved as deleted, so another window remove
   await waitUntil(() => backend.live().length === 0, { what: 'the deletion to be saved' });
   assert(tombstone(backend, id), 'the deletion is saved as a marked element, not as an absence');
 }));
+
+// Excalidraw restores every saved element, deleted ones too, and reads the points of a linear
+// one before anything else: a compact deletion record must still look like a valid element.
+const stroke = (id, type, x, y) => ({
+  ...rect(id, x, y, 120, 60), type, points: [[0, 0], [60, 20], [120, 60]], lastCommittedPoint: null,
+  ...(type === 'freedraw' ? { pressures: [], simulatePressure: true } : { startBinding: null, endBinding: null, startArrowhead: null, endArrowhead: type === 'arrow' ? 'arrow' : null }),
+});
+
+const shapes = {
+  arrow: () => stroke('s', 'arrow', 200, 200),
+  line: () => stroke('s', 'line', 200, 200),
+  freedraw: () => stroke('s', 'freedraw', 200, 200),
+  text: () => text('s', 'Note', 200, 200),
+  frame: () => ({ ...rect('s', 200, 200, 300, 200), type: 'frame', name: null }),
+};
+for (const [type, shape] of Object.entries(shapes)) {
+  test(`a deleted ${type} is saved as a record that reopens and that another window merges`, { timeout: 90_000 }, async () => {
+    const backend = fakeBackend();
+    const scene = sceneOf([shape(), rect('keep', 600, 400)]);
+    const first = await openApp({ scene, backend });
+    const second = await openApp({ backend });
+    try {
+      await first.load(); await second.load();
+      assert.deepEqual(await second.ids(), ['keep', 's']);
+      // Excalidraw handles keys only while it has focus: a click on empty canvas gives it focus.
+      await first.page.mouse.click(1000, 700);
+      await first.page.keyboard.press('Control+a');
+      await first.page.keyboard.press('Delete');
+      await waitUntil(() => backend.live().length === 0, { what: 'the deletion to be saved' });
+      const record = tombstone(backend, 's');
+      assert(record, 'the deletion is saved as a marked element');
+      if (type in { arrow: 1, line: 1, freedraw: 1 }) assert(record.points.length >= 2, 'a deleted linear element keeps the points Excalidraw reads');
+      assert(JSON.stringify(record).length < 600, 'the record stays compact');
+
+      await second.until(elements => elements.length === 0, { what: 'the second window to merge the deletion' });
+      await first.page.reload();
+      await first.page.waitForSelector('.excalidraw__canvas.interactive');
+      await idle(1500);
+      assert.deepEqual(await first.ids(), [], 'the reopened diagram shows no deleted element');
+      first.assertClean(); second.assertClean();
+    } finally { await first.close(); await second.close(); }
+  });
+}
 
 test('an agent deleting a labelled box removes its label from the window too', { timeout: 60_000 }, () => withApp({
   scene: sceneOf([...labelled('client', 'Client', 100, 100), rect('other', 500, 100)]),

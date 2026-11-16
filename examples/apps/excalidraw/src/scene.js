@@ -12,7 +12,23 @@ const TOMBSTONE_MS = 60 * 60 * 1000;
 // a few hundred bytes however big the element was.
 const TOMBSTONE_FIELDS = ['id', 'type', 'x', 'y', 'width', 'height', 'angle', 'index', 'seed', 'groupIds', 'frameId',
   'version', 'versionNonce', 'updated', 'isDeleted'];
-const tombstone = element => Object.fromEntries(TOMBSTONE_FIELDS.filter(field => field in element).map(field => [field, element[field]]));
+// Excalidraw restores deleted elements too, and reads some fields of each type before anything else:
+// an element with fewer than two points is dropped as invisible (its deletion would be lost), and a
+// text without a string or a line height throws. A record keeps the least that restores unchanged.
+const typeFields = element => {
+  switch (element.type) {
+    case 'arrow': case 'line': case 'freedraw':
+      return { points: [[0, 0], [element.width ?? 0, element.height ?? 0]] };
+    case 'text':
+      return { text: '', fontSize: element.fontSize, fontFamily: element.fontFamily, lineHeight: element.lineHeight };
+    default:
+      return {};
+  }
+};
+const tombstone = element => ({
+  ...Object.fromEntries(TOMBSTONE_FIELDS.filter(field => field in element).map(field => [field, element[field]])),
+  ...typeFields(element),
+});
 
 /**
  * The scene to save: the live elements and the deletions of the last hour as compact records,
