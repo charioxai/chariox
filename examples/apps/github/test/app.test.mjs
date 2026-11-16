@@ -227,6 +227,20 @@ test('the repository decides the account, then the default, then the first known
   assert.deepEqual([left.default, left.accounts.map(a => a.label)], ['github', ['github']]);
 });
 
+test('view_account answers the account a call runs as, the one accounts.resolve picks', async () => {
+  const one = app({}, memoryState());
+  await one.call('add_account', { account: 'work' });
+  assert.deepEqual(await one.call('view_account', { repo: REPO }), { account: 'github' });
+  await one.call('set_repo_account', { repo: REPO, account: 'work' });
+  assert.deepEqual(await one.call('view_account', { repo: REPO }), { account: 'work' });
+  assert.deepEqual(await one.call('view_account', { repo: REPO.toUpperCase() }), { account: 'work' });
+  assert.deepEqual(await one.call('view_account', { repo: 'o/other' }), { account: 'github' });
+  assert.deepEqual(await one.call('view_account', { repo: REPO, account: 'github' }), { account: 'github' });
+  await one.call('set_repo_account', { repo: REPO });
+  await one.call('set_default_account', { account: 'work' });
+  assert.deepEqual(await one.call('view_account', { repo: REPO }), { account: 'work' });
+});
+
 test('an account is added only once GitHub accepts it, and one that fails does not hide the others', async () => {
   const state = memoryState();
   const { call } = app({ unbound: ['nope'], override: (url, init) => init.connectionId === 'account:old' && url.pathname === '/user' ? { status: 401, headers: {}, body: '{"message":"Bad credentials"}' } : undefined }, state);

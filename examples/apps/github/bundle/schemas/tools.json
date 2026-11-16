@@ -1760,6 +1760,22 @@
       }
     },
     {
+      "name": "view_account",
+      "description": "The account a call of this window runs as: the one it names, the repository's, the default, else the first known",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
       "name": "view_changes",
       "description": "The changes this backend's view recorded after `since`",
       "inputSchema": {

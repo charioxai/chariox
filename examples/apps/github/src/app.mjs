@@ -11,6 +11,7 @@ export function createApp({ state, events, now }) {
   const view = createView({
     state, actions: uiActionsDocument().uiActions,
     snapshot: async () => ({ accounts: await accounts.settings() }),
+    account: input => accounts.resolve(input),
   });
   const accounts = createAccounts({ state, view });
   const eventsApp = createEventsApp({

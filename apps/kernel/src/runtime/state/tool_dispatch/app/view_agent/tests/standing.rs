@@ -5,6 +5,7 @@ use super::*;
 use crate::durable_state::app_accounts::{AccountBinding, AccountCommand};
 use crate::durable_state::app_standing::{StandingCommand, StandingPermission};
 use crate::local::{AppRequestErrorCode, GrantAppStandingRequest, LocalDaemonRequest};
+use crate::runtime::state::tool_dispatch::app::view_agent::backend;
 use chariox_app_package::v2::StandingClass;
 use chariox_app_package::RouteSafety;
 
@@ -167,7 +168,7 @@ async fn a_standing_permission_covers_only_the_account_it_was_given_for() {
     );
     assert!(
         asks_as(&rig, &context, "approve", json!({"repo": "o/a"})).await,
-        "with two accounts bound, a call that names none may run as either"
+        "with two accounts bound and nothing to say which one runs it, the card asks"
     );
     let [used] = store(&rig)
         .app_standing("alice", APP)
@@ -175,6 +176,68 @@ async fn a_standing_permission_covers_only_the_account_it_was_given_for() {
         .try_into()
         .unwrap();
     assert_eq!(used.uses, 1, "only the covered call is charged to it");
+}
+
+/// The App's own answer to which account a call that names none runs as, in a backend-served view.
+fn backend_context(rig: &Rig, declared: Vec<UiActionDeclaration>) -> ViewContext {
+    let mut context = rig.context(declared);
+    context.host = ViewHost::Backend { changes: false };
+    context
+}
+
+#[tokio::test]
+async fn a_call_that_names_no_account_is_covered_when_the_app_resolves_it_to_the_permitted_one() {
+    let mut rig = rig();
+    rig.grant().await;
+    let context = backend_context(
+        &rig,
+        vec![gated(
+            "approve",
+            UiActionEffect::Approval,
+            StandingClass::Review,
+        )],
+    );
+    bind(&rig, "work");
+    bind(&rig, "home");
+    stand(&rig, "standing-1", "o/a", StandingClass::Review, None);
+
+    // The repository is mapped to "work" in the App: the call runs as work, which the owner permitted.
+    backend::test_backend::serve(&rig.session, "view_account", json!({"account": "work"}));
+    assert!(
+        !asks_as(&rig, &context, "approve", json!({"repo": "O/A"})).await,
+        "the App resolves the call to the account the permission names"
+    );
+    assert_eq!(
+        backend::test_backend::asked(&rig.session, "view_account"),
+        [json!({"repo": "o/a"})],
+        "the App is asked about the repository the signed declaration names"
+    );
+
+    // Mapped to the other account, the permission for "work" does not cover it.
+    backend::test_backend::serve(&rig.session, "view_account", json!({"account": "home"}));
+    assert!(
+        asks_as(&rig, &context, "approve", json!({"repo": "o/a"})).await,
+        "resolved to another account, the card asks"
+    );
+
+    // A call that names its account is not resolved again.
+    backend::test_backend::serve(&rig.session, "view_account", json!({"account": "home"}));
+    assert!(
+        !asks_as(
+            &rig,
+            &context,
+            "approve",
+            json!({"repo": "o/a", "account": "work"})
+        )
+        .await
+    );
+    assert!(backend::test_backend::asked(&rig.session, "view_account").is_empty());
+    let [used] = store(&rig)
+        .app_standing("alice", APP)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(used.uses, 2, "only the covered calls are charged to it");
 }
 
 #[tokio::test]

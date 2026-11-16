@@ -351,6 +351,7 @@ impl KernelRuntimeState {
             declared_actions::find_declared(&context.declared, name).map_err(action_error)?;
         declared_actions::check_input(action, &input).map_err(action_error)?;
         self.check_view_claimed(agent, context)?;
+        let input = self.pin_standing_account(context, action, input).await;
         let standing = self.standing_covers(context, action, &input).await?;
         if action.effect == UiActionEffect::Approval && !standing {
             self.approve_view_action(run_id, agent, context, action, &input)
@@ -370,6 +371,50 @@ impl KernelRuntimeState {
                 .await?;
         }
         self.run_in_view(context, name, input).await
+    }
+
+    /// A call that names no account runs as the one its App picks (the repository's, the default,
+    /// else the first known). A backend-served App says which, and the input then names it, so the
+    /// permission is judged for, and the call runs as, the same account. An App that cannot say
+    /// leaves the input as it was: the account it names, else the only one bound, decides.
+    async fn pin_standing_account(
+        &self,
+        context: &ViewContext,
+        action: &UiActionDeclaration,
+        mut input: Value,
+    ) -> Value {
+        let (Some(declared), ViewHost::Backend { .. }) = (&action.standing, &context.host) else {
+            return input;
+        };
+        let Some(StandingUse {
+            repo,
+            account: None,
+            ..
+        }) = action.standing_use(&input)
+        else {
+            return input;
+        };
+        // Not `view_call`: the run itself checks the release, and a label that is not a bound
+        // account covers nothing, so only the secret scrub applies here.
+        let answer = self
+            .backend_view_call(
+                context,
+                ViewAgentCallKind::Invoke,
+                Some((backend::ACCOUNT_TOOL, json!({ "repo": repo }))),
+                None,
+            )
+            .await;
+        let answer = self.scrub_answer(context, answer);
+        match answer {
+            Ok(answer) => match answer["account"].as_str().filter(|label| !label.is_empty()) {
+                Some(label) => input[&declared.account] = json!(label),
+                None => tracing::debug!("the App answered no account for a standing call"),
+            },
+            Err(error) => {
+                tracing::debug!(message = %error.message, "the App could not say which account runs a standing call")
+            }
+        }
+        input
     }
 
     /// Whether the owner's standing permission for this repository, account and action class

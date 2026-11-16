@@ -267,6 +267,7 @@
     "preview_close_pull_request",
     "preview_delete_branch",
     "preview_merge_pull_request",
+    "view_account",
     "view_actions",
     "view_changes",
     "view_state"

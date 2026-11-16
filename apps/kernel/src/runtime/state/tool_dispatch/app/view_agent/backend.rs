@@ -12,6 +12,9 @@ const ACTIONS_TOOL: &str = "view_actions";
 const STATE_TOOL: &str = "view_state";
 /// The backend answers with the changes recorded after `since`, when it keeps a feed.
 const CHANGES_TOOL: &str = "view_changes";
+/// The backend answers which account a call that names none would run as: `{account}`, for the
+/// repository `{repo}` it is about.
+pub(super) const ACCOUNT_TOOL: &str = "view_account";
 /// What one answer of the feed may hold: a reader gets at most this many changes in at most this
 /// many bytes, whatever the backend returns.
 const FEED_MAX_CHANGES: usize = 128;
@@ -101,6 +104,10 @@ impl KernelRuntimeState {
             (ViewAgentCallKind::Registrations, _) => run(ACTIONS_TOOL.to_owned(), json!({})).await,
             (ViewAgentCallKind::State, _) => run(STATE_TOOL.to_owned(), json!({})).await,
             (ViewAgentCallKind::Invoke, Some((action, input))) => {
+                #[cfg(test)]
+                if let Some(answer) = test_backend::answer(&context.session, action, &input) {
+                    return Ok(answer);
+                }
                 run(action.to_owned(), input).await
             }
             (ViewAgentCallKind::Invoke, None) => Err(failure(
@@ -141,6 +148,42 @@ impl KernelRuntimeState {
                 .await
             }
         }
+    }
+}
+
+/// What a rig's backend answers to a tool call: the rig runs no App backend.
+#[cfg(test)]
+pub(super) mod test_backend {
+    use serde_json::Value;
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+
+    type Calls = HashMap<(String, String), (Value, Vec<Value>)>;
+    static CALLS: LazyLock<Mutex<Calls>> = LazyLock::new(Default::default);
+
+    /// The session's backend answers `tool` with `answer` from now on.
+    pub(crate) fn serve(session: &str, tool: &str, answer: Value) {
+        CALLS
+            .lock()
+            .unwrap()
+            .insert((session.into(), tool.into()), (answer, Vec::new()));
+    }
+
+    /// The inputs the session's backend was asked `tool` with.
+    pub(crate) fn asked(session: &str, tool: &str) -> Vec<Value> {
+        CALLS
+            .lock()
+            .unwrap()
+            .get(&(session.into(), tool.into()))
+            .map(|(_, inputs)| inputs.clone())
+            .unwrap_or_default()
+    }
+
+    pub(super) fn answer(session: &str, tool: &str, input: &Value) -> Option<Value> {
+        let mut calls = CALLS.lock().unwrap();
+        let (answer, inputs) = calls.get_mut(&(session.into(), tool.into()))?;
+        inputs.push(input.clone());
+        Some(answer.clone())
     }
 }
 

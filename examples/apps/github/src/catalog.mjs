@@ -147,6 +147,7 @@ export const routes = [
 const viewTools = [
   { name: 'view_actions', description: 'The actions this backend registers for its view', input: object() },
   { name: 'view_state', description: 'The state of this backend\'s view', input: object() },
+  { name: 'view_account', description: 'The account a call of this window runs as: the one it names, the repository\'s, the default, else the first known', input: object({ account: { type: 'string' }, repo: { type: 'string' } }) },
   { name: 'view_changes', description: 'The changes this backend\'s view recorded after `since`', input: object({ since: integer(0) }) },
 ];
 

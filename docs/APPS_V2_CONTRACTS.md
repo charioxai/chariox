@@ -252,9 +252,13 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   `--days n` or `--never`). When an agent invokes an `approval` or
   `person_confirmed` action whose signed `standing` names that class and whose
   input names that repository, no card is raised and the use is counted. It
-  covers only the named repository, account and class (the account the call
-  names, else the only one bound; with several bound and none named the card
-  asks), and exists only while the account
+  covers only the named repository, account and class. A backend-served App
+  that leaves the account to itself answers the reserved tool `view_account`
+  `{repo}` with `{account}`, the one the call runs as (the repository's, the
+  default, else the first known); the kernel pins that account into the input,
+  so the permission is judged for, and the call runs as, the same account. Without
+  an answer, the account the call names or the only one bound counts; with
+  several bound and none known the card asks. A permission exists only while the account
   binding it was made under (the same Vault entry) and the installation's active
   release do. Force pushes, deleting a default branch, grants and bindings are not
   classes; refusing the default or a protected branch stays the App's own rule.

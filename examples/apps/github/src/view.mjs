@@ -10,7 +10,7 @@ export const CHANGE_BYTES = 8 * 1024;
 
 const fail = (code, message) => { throw { code, message, retryable: false }; };
 
-export function createView({ state, actions, snapshot }) {
+export function createView({ state, actions, snapshot, account }) {
   async function transactWithChange(tx, delta) {
     const latest = await state.get(LATEST);
     const seq = (latest ? Number(latest.value) : 0) + 1;
@@ -42,6 +42,7 @@ export function createView({ state, actions, snapshot }) {
     tools: {
       view_actions: async () => actions,
       view_state: async () => snapshot(),
+      view_account: async input => ({ account: await account(input ?? {}) }),
       view_changes: input => changes(input),
     },
   };

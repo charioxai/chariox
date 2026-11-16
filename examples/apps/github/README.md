@@ -60,7 +60,7 @@ the annotations and the steps of the job.
 
 ## The window
 
-The window is a backend-served view: `view_actions`, `view_state` and `view_changes` (a revisioned change feed written with
+The window is a backend-served view: `view_actions`, `view_state`, `view_account` (the account a call that names none runs as, which the kernel pins before it judges a standing permission) and `view_changes` (a revisioned change feed written with
 the change itself) are served by the backend. The page is one self-contained script and stylesheet
 (`view/`, built by `scripts/build-package.mjs`) that calls the tools through `window.chariox.call`. The page has no
 network, so pictures of people are drawn as a disc with an initial, and links do not navigate.
