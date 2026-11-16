@@ -1641,6 +1641,24 @@ mod receipt_tests {
                 None,
             )
             .expect("leased agent should be created");
+        let (home_prompt_id, provider_run_id) =
+            submit_home_prompt(app, &lease, &leased_agent, suffix);
+        (
+            leased_agent.id,
+            leased_agent.backing_session_id,
+            leased_agent.backing_agent_id,
+            home_prompt_id,
+            provider_run_id,
+        )
+    }
+
+    /// One more home prompt on a leased agent: returns its id and the worker run it started on.
+    fn submit_home_prompt(
+        app: &mut crate::app::DaemonApp,
+        lease: &crate::execution_lease::ExecutionLease,
+        leased_agent: &LeasedAgent,
+        suffix: &str,
+    ) -> (String, String) {
         let home_prompt_id = format!("home-prompt-{suffix}");
         let context = RemoteGitTurnContext {
             home_session_id: lease.home_session_id.clone(),
@@ -1679,13 +1697,7 @@ mod receipt_tests {
                 Some(&provider_run_id),
             )
             .unwrap();
-        (
-            leased_agent.id,
-            leased_agent.backing_session_id,
-            leased_agent.backing_agent_id,
-            home_prompt_id,
-            provider_run_id,
-        )
+        (home_prompt_id, provider_run_id)
     }
 
     #[test]
@@ -1953,6 +1965,77 @@ mod receipt_tests {
         );
     }
 
+    fn start_background_command(
+        app: &mut crate::app::DaemonApp,
+        session: &str,
+        agent: &str,
+        run: &str,
+    ) {
+        let recipients = app.attachments.list_session_attachment_ids(session);
+        app.fan_out_output_for_agent(
+            session,
+            run,
+            Some(agent),
+            crate::terminal::TerminalOutputKind::ProviderTool,
+            Some("bg".into()),
+            recipients,
+            br#"{"id":"bg","tool":"Bash","status":"running","started_at_ms":1,"background":true,"finished_at_ms":null}"#,
+        );
+    }
+
+    fn complete_and_project(
+        app: &mut crate::app::DaemonApp,
+        leased: &str,
+        prompt: &str,
+        run: &str,
+    ) {
+        RemoteLeaseRuntime::new(app)
+            .complete_leased_prompt(leased, prompt, run)
+            .unwrap();
+        RemoteLeaseRuntime::new(app)
+            .drain_leased_runtime_projection_with_recovery(leased, run, false, true)
+            .unwrap()
+            .expect("completed prompt should project");
+    }
+
+    #[test]
+    fn a_late_stop_for_a_finished_prompt_leaves_the_run_its_successor_works_on() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (leased, session, agent, prompt_a, run) =
+            submit_cancellable_prompt(&mut app, "stop-fence-a");
+        complete_and_project(&mut app, &leased, &prompt_a, &run);
+        let leased_agent = app.leased_agents.get(&leased).cloned().unwrap();
+        let lease = app
+            .execution_leases
+            .get(&leased_agent.lease_id)
+            .cloned()
+            .unwrap();
+        // The provider run is reused: prompt B ends its turn with background work still running.
+        let (prompt_b, run_b) = submit_home_prompt(&mut app, &lease, &leased_agent, "stop-fence-b");
+        assert_eq!(run_b, run, "the next prompt works on the same provider run");
+        complete_and_project(&mut app, &leased, &prompt_b, &run);
+        start_background_command(&mut app, &session, &agent, &run);
+        let live = |app: &crate::app::DaemonApp| {
+            app.providers
+                .get_run_for_agent(&session, &agent)
+                .is_some_and(|run| run.state() != crate::provider::ProviderRunState::Ended)
+        };
+
+        // A's stop arrives late: A is finished, and B's work is not A's.
+        assert!(matches!(
+            RemoteLeaseRuntime::new(&mut app).cancel_leased_prompt(&leased, &prompt_a, &run),
+            Err(DaemonError::NoActivePrompt { .. })
+        ));
+        assert!(live(&app), "a stop for A leaves B's run and work alone");
+
+        RemoteLeaseRuntime::new(&mut app)
+            .cancel_leased_prompt(&leased, &prompt_b, &run)
+            .expect("B's own stop ends B's work");
+        assert!(!live(&app));
+    }
+
     #[test]
     fn a_stop_for_a_run_working_after_its_turn_ended_stops_that_run() {
         let mut config = crate::config::DaemonConfig::for_tests();
@@ -1980,16 +2063,7 @@ mod receipt_tests {
         assert!(live(&app));
 
         // The provider's background command is still running.
-        let recipients = app.attachments.list_session_attachment_ids(&session);
-        app.fan_out_output_for_agent(
-            &session,
-            &run,
-            Some(&agent),
-            crate::terminal::TerminalOutputKind::ProviderTool,
-            Some("bg".into()),
-            recipients,
-            br#"{"id":"bg","tool":"Bash","status":"running","started_at_ms":1,"background":true,"finished_at_ms":null}"#,
-        );
+        start_background_command(&mut app, &session, &agent, &run);
         assert!(matches!(
             RemoteLeaseRuntime::new(&mut app).cancel_leased_prompt(
                 &leased,

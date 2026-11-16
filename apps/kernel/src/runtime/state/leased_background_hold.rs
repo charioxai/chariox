@@ -3,7 +3,7 @@
 //! the worker for output any more: the home keeps draining the held run until the provider's
 //! own follow-up turn ends on the worker, or the worker's run is gone, and settles the task then.
 use super::*;
-use crate::durable_state::agent_lifecycle::ExecutionState;
+use crate::durable_state::agent_lifecycle::{AgentTaskExecution, ExecutionState};
 
 impl KernelRuntimeState {
     /// The worker run to keep draining for `agent`'s held task, while no prompt of it is active.
@@ -23,6 +23,27 @@ impl KernelRuntimeState {
             &projected,
         )?;
         Some((binding, worker_run))
+    }
+
+    /// The held run keeps working on the worker after the home lets go of its task, whether the
+    /// worker was lost or the person pressed Stop: the home owes the worker a stop for that run,
+    /// stored before the task ends because nothing else names the run afterwards.
+    pub(super) fn owe_held_run_a_stop(&self, task: &AgentTaskExecution) -> Result<(), DaemonError> {
+        if !self.owned.is_held_for_background_calls(&task.task_id) {
+            return Ok(());
+        }
+        let Some((binding, worker_run)) =
+            self.held_projection_drain_target(&task.room_id, &task.agent_id)
+        else {
+            return Ok(());
+        };
+        self.open_worker_stop_obligation(
+            &task.room_id,
+            &task.agent_id,
+            &binding,
+            &task.prompt_id,
+            &worker_run,
+        )
     }
 
     /// What a drained projection of a held run means for the task: the provider's follow-up turn

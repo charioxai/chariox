@@ -9,8 +9,8 @@ use crate::session::{PromptCancellation, PromptQueueItem, PromptStatus};
 use super::RemoteLeaseRuntime;
 
 impl RemoteLeaseRuntime<'_> {
-    /// Stops the exact run when the agent has no active home prompt and the run is still doing
-    /// work; `None` leaves every other cancellation to the prompt-bound path.
+    /// Stops the exact run of the exact home prompt when the agent has no active home prompt and
+    /// the run is still doing work; `None` leaves every other cancellation to the prompt-bound path.
     pub(super) fn stop_run_working_without_a_prompt(
         &mut self,
         leased_agent: &LeasedAgent,
@@ -29,6 +29,26 @@ impl RemoteLeaseRuntime<'_> {
         if run.id() != worker_provider_run_id || run.state() == ProviderRunState::Ended {
             return Ok(None);
         }
+        // The run is reused by later prompts: the stop belongs to the prompt whose turn the run
+        // outlived, and a stop for an earlier one finds its turn long settled.
+        let Some(completion) = leased_agent
+            .replayable_completion
+            .as_ref()
+            .filter(|completion| completion.provider_run_id == worker_provider_run_id)
+        else {
+            return Ok(None);
+        };
+        if completion.home_prompt_id.as_deref() != Some(home_prompt_id) {
+            // A prompt this worker accepted and that is not the one the run outlived has
+            // finished; a stop naming a prompt the worker never saw stays an error.
+            return if self.leased_prompt_receipt_recorded(&leased_agent.id, home_prompt_id) {
+                Err(DaemonError::NoActivePrompt {
+                    session_id: leased_agent.backing_session_id.clone(),
+                })
+            } else {
+                Ok(None)
+            };
+        }
         let background_command_runs = crate::app::background_calls(
             self.app
                 .operational_history_store()
@@ -37,10 +57,7 @@ impl RemoteLeaseRuntime<'_> {
                     worker_provider_run_id,
                 )?,
         ) == crate::app::BackgroundCalls::Running;
-        let follow_up_turn_runs = leased_agent
-            .replayable_completion
-            .as_ref()
-            .is_some_and(|completion| run.last_output_at_ms() > completion.completed_at_ms);
+        let follow_up_turn_runs = run.last_output_at_ms() > completion.completed_at_ms;
         if !background_command_runs && !follow_up_turn_runs {
             return Ok(None);
         }

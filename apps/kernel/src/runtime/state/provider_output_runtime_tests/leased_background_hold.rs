@@ -327,6 +327,39 @@ async fn a_worker_lost_while_the_call_runs_keeps_its_run_owed_a_stop() {
     assert_eq!(owed[0].home_prompt_id, leased.team.child_prompt.id());
 }
 
+/// Stop on a child whose turn ended with the provider's call still running: the home has no
+/// prompt to cancel, so the worker is owed a stop for the held run.
+#[tokio::test]
+async fn stop_of_a_held_remote_child_owes_its_worker_a_stop() {
+    let leased = child_with_a_call_running("leased-hold-user-stop").await;
+    let runtime = &leased.team.runtime;
+    let request = crate::local::CancelActivePromptRequest {
+        session_id: leased.team.room.clone(),
+        attachment_id: runtime
+            .owned
+            .attachment_store
+            .list_session_attachment_ids(&leased.team.room)
+            .remove(0),
+        target_agent_id: Some(leased.team.child.clone()),
+        expected_prompt_id: None,
+    };
+    runtime
+        .cancel_parked_agent_task(&request, &leased.team.child)
+        .await
+        .unwrap()
+        .expect("Stop ends the held task");
+    assert!(!working(&leased));
+    let owed = runtime
+        .owned
+        .durable_state_store
+        .unstopped_worker_runs()
+        .unwrap();
+    assert_eq!(owed.len(), 1, "{owed:?}");
+    assert_eq!(owed[0].worker_provider_run_id, leased.worker_run);
+    assert_eq!(owed[0].binding.execution_lease_id, "lease-1");
+    assert_eq!(owed[0].home_prompt_id, leased.team.child_prompt.id());
+}
+
 #[tokio::test]
 async fn a_worker_that_lost_the_agent_ends_the_task_instead_of_waiting_for_it() {
     let leased = child_with_a_call_running("leased-hold-agent-lost").await;
