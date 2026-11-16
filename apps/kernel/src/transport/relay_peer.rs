@@ -1798,6 +1798,18 @@ pub struct RelayProjectedCompletion {
     pub failure: Option<crate::provider::TurnOutcome>,
 }
 
+/// A worker's completion record for a turn the provider started itself, such as its notification
+/// about an ended background call. A drain scopes every completion to the prompt its leased agent
+/// last answered, so the record is told by its id alone; it never completes a home prompt.
+pub const LEASED_NOTIFICATION_COMPLETION_PREFIX: &str = "notification-complete:";
+
+impl RelayProjectedCompletion {
+    pub fn is_notification_end(&self) -> bool {
+        self.message_id
+            .starts_with(LEASED_NOTIFICATION_COMPLETION_PREFIX)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayProjectedPrompt {
     pub prompt_id: String,
@@ -1888,6 +1900,25 @@ mod tests {
             serde_json::from_value::<RelayPeerRequest>(snapshot)
                 .expect("request should deserialize"),
             request
+        );
+    }
+
+    #[test]
+    fn a_notification_end_is_told_by_its_id_whatever_prompt_the_drain_scopes_it_to() {
+        let completion =
+            |message_id: &str, home_prompt_id: Option<&str>| RelayProjectedCompletion {
+                message_id: message_id.into(),
+                completed_at_ms: 1,
+                home_prompt_id: home_prompt_id.map(str::to_owned),
+                provider_termination: None,
+                failure: None,
+            };
+        let id = format!("{LEASED_NOTIFICATION_COMPLETION_PREFIX}run-1:2");
+        assert!(completion(&id, None).is_notification_end());
+        assert!(completion(&id, Some("home-prompt-1")).is_notification_end());
+        assert!(
+            !completion("prompt-complete:home-prompt-1", Some("home-prompt-1"))
+                .is_notification_end()
         );
     }
 

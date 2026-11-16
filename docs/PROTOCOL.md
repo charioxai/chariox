@@ -6888,6 +6888,17 @@ or the origin of the enrolled Cloud; with neither the request fails with `secret
 `vault_locked`, `secret_request_exists`, `secret_request_invalid`, `secret_request_denied`, `secret_request_unknown`.
 Focused checks: `cargo test -p chariox-kernel --lib vault_secret`.
 
+### A leased child held for its provider's background call
+
+A child on a worker whose turn ends while its provider call still runs in the background is not
+finished: the home keeps its task Working (the same hold a local child gets) and keeps draining
+the worker's run with no prompt active. The worker reports the end of the provider's own
+follow-up turn as a completion record whose `message_id` starts with `notification-complete:`
+and that names no home prompt; the home then settles the task, and the parent hears one
+`child_finished` with that turn's answer. The home ends the held task failed, with the reason,
+when the worker reports the run ended, no longer knows the agent or lease, or stays offline
+past the lost-worker grace. No serialized shape changes.
+
 ### Acknowledged leased projection drain — local 934 / relay peer 383
 
 A worker keeps a drained leased projection until the home kernel acknowledges it, so a lost

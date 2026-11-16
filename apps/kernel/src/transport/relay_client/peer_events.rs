@@ -147,6 +147,7 @@ pub(super) async fn handle_daemon_peer_event(
                 },
                 expected_binding: None,
                 expected_prompt_id: None,
+                held_provider_run_id: None,
             },
             event,
         )

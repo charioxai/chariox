@@ -158,6 +158,19 @@ impl KernelRuntimeState {
         binding: &crate::agent::RemoteAgentBinding,
         offline_ms: u64,
     ) -> Result<(), DaemonError> {
+        if self.owned.is_held_for_background_calls(&task.task_id) {
+            let host = self.owned.leased_host_name(binding);
+            return self
+                .end_held_leased_tasks(
+                    &task.room_id,
+                    &task.agent_id,
+                    &format!(
+                        "The {host} hosting this agent's background command has been offline for {} s",
+                        offline_ms / 1000
+                    ),
+                )
+                .await;
+        }
         let Some(run) = binding.active_worker_provider_run_id.as_deref() else {
             return Ok(());
         };
