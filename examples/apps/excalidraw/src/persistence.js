@@ -104,9 +104,11 @@ export function persistence(chariox, api, loaded, feedHead) {
       if (failure) throw failure;
       let request = { name: filename(name) };
       if (!name) {
-        const { grants } = await chariox.call('pick_file', {});
-        if (!grants.length) return { cancelled: true };
-        request = { grantId: grants[0] };
+        // One call waits a bounded time for the person's choice; the request stays open, so ask again until it is answered.
+        let picked = await chariox.call('pick_file', {});
+        while (picked.pending && !stopped) picked = await chariox.call('pick_file', { pickId: picked.pickId });
+        if (stopped || !picked.grants?.length) return { cancelled: true };
+        request = { grantId: picked.grants[0] };
       }
       const result = await chariox.call('read_file', request);
       const scene = checkedScene(JSON.stringify(result.scene));

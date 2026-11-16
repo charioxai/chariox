@@ -162,12 +162,35 @@ pub async fn read(input: &Value) -> Result<Value, AppError> {
     Ok(result)
 }
 
-/// `pick_file`: ask the person for a diagram; the grants are what they chose.
-pub async fn pick() -> Result<Value, AppError> {
-    let grants = host::pick_file(host::Pick {
-        multiple: false,
-        accept: vec![".excalidraw".into(), ".json".into()],
-    })
-    .await?;
-    Ok(json!({"grants": grants}))
+/// How long one call waits for the person's choice. The kernel ends a call after 30 seconds and
+/// keeps the request open for ten minutes, so a slower choice comes back as the request still
+/// open and its caller asks again with the same `pickId`.
+const WAIT_MS: u32 = 20_000;
+
+/// `pick_file`: ask the person for a diagram; the grants are what they chose, or `{pending, pickId}`
+/// while they have not chosen yet.
+pub async fn pick(resume: Option<&str>) -> Result<Value, AppError> {
+    let asked = match resume {
+        Some(id) => host::Picked::Pending(id.to_owned()),
+        None => {
+            host::request_file(host::Pick {
+                multiple: false,
+                accept: vec![".excalidraw".into(), ".json".into()],
+            })
+            .await?
+        }
+    };
+    let chosen = match asked {
+        host::Picked::Pending(id) => host::await_file(id, WAIT_MS).await?,
+        answered => answered,
+    };
+    match chosen {
+        host::Picked::Granted(grants) => Ok(json!({"grants": grants})),
+        host::Picked::Pending(id) => Ok(json!({"pending": true, "pickId": id})),
+        host::Picked::Declined => Err(error("CANCELLED", "file selection cancelled")),
+        host::Picked::Expired => Err(error(
+            "FILE_PICK_EXPIRED",
+            "file selection expired; pick again",
+        )),
+    }
 }

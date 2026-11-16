@@ -110,10 +110,15 @@
     },
     {
       "name": "pick_file",
-      "description": "Request a user-selected diagram through the broker.",
+      "description": "Request a user-selected diagram through the broker. Waits up to 20 seconds for the owner's choice in their prompt and returns {grants}; while the owner has not chosen it returns {pending: true, pickId}: call again with that pickId to keep waiting (the request stays open for ten minutes).",
       "inputSchema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "pickId": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
         "required": [],
         "additionalProperties": false
       }

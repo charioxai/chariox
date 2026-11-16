@@ -93,11 +93,15 @@ pub async fn save_file(input: &Value) -> Result<Value, AppError> {
 }
 
 /// `open_file`: replace the saved diagram with a private file, or with the one the person picks.
+/// While the person has not chosen it returns `{pending, pickId}`, and the caller asks again with that `pickId`.
 pub async fn open_file(input: &Value) -> Result<Value, AppError> {
     let source = match input["name"].as_str() {
         Some(name) => file_io::read(&json!({"name": with_extension(name)})).await?,
         None => {
-            let picked = file_io::pick().await?;
+            let picked = file_io::pick(input["pickId"].as_str()).await?;
+            if picked["pending"] == true {
+                return Ok(picked);
+            }
             let Some(grant) = picked["grants"][0].as_str() else {
                 return Ok(json!({"cancelled": true}));
             };
