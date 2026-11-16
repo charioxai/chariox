@@ -7,29 +7,25 @@ export const sceneJSON = api => serializeAsJSON(api.getSceneElements(), api.getA
 // A deletion stays in the saved scene as long as in the backend, so a window that has not seen it
 // yet learns of it when it merges; the backend forgets it after the same hour.
 const TOMBSTONE_MS = 60 * 60 * 1000;
-const byteLength = value => new TextEncoder().encode(JSON.stringify(value)).length;
+// What a window needs to remove an element it still shows: which element, which version, and where
+// it sorts. The rest of the element (text, points, embedded data) is not kept, so a deletion is
+// a few hundred bytes however big the element was.
+const TOMBSTONE_FIELDS = ['id', 'type', 'x', 'y', 'width', 'height', 'angle', 'index', 'seed', 'groupIds', 'frameId',
+  'version', 'versionNonce', 'updated', 'isDeleted'];
+const tombstone = element => Object.fromEntries(TOMBSTONE_FIELDS.filter(field => field in element).map(field => [field, element[field]]));
 
 /**
- * The scene to save: the live elements and the recent deletions, which a copy or an export leave
- * out. A deletion that does not fit the scene's size limit is not kept, so deleting a big
- * element never keeps the diagram from being saved.
+ * The scene to save: the live elements and the deletions of the last hour as compact records,
+ * which a copy or an export leave out. A fresh deletion is never dropped to fit the size limit:
+ * when the scene is still too big, saving it fails with that limit.
  */
 export function syncedSceneJSON(api, now = Date.now()) {
   const scene = JSON.parse(sceneJSON(api));
   const live = new Map(scene.elements.map(element => [element.id, element]));
-  const recent = api.getSceneElementsIncludingDeleted()
-    .filter(element => !live.has(element.id) && element.isDeleted && now - (element.updated ?? now) < TOMBSTONE_MS)
-    .sort((a, b) => (b.updated ?? now) - (a.updated ?? now));
-  let size = byteLength(scene);
-  const kept = new Set();
-  for (const element of recent) {
-    const next = size + byteLength(element) + 1;
-    if (next > MAX_BYTES) continue;
-    size = next;
-    kept.add(element.id);
-  }
-  scene.elements = api.getSceneElementsIncludingDeleted().flatMap(element =>
-    live.has(element.id) ? [live.get(element.id)] : kept.has(element.id) ? [element] : []);
+  scene.elements = api.getSceneElementsIncludingDeleted().flatMap(element => {
+    if (live.has(element.id)) return [live.get(element.id)];
+    return element.isDeleted && now - (element.updated ?? now) < TOMBSTONE_MS ? [tombstone(element)] : [];
+  });
   return JSON.stringify(scene);
 }
 

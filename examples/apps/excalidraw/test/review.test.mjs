@@ -153,6 +153,25 @@ test('a diagram that is too big for the broker has one dismissible notice and ca
   await app.shot('oversized-recovery');
 }));
 
+test('a deletion is saved even when the scene and the deleted element together are over the limit', { timeout: 60_000 }, () => withApp({
+  scene: sceneOf([
+    rect('keep', 100, 500, 120, 80, { customData: { notes: 'k'.repeat(150 * 1024) } }),
+    rect('victim', 500, 300, 120, 80, { backgroundColor: '#ffc9c9', customData: { notes: 'v'.repeat(60 * 1024) } }),
+  ]),
+}, async app => {
+  const { backend, page } = app;
+  await app.canvas.waitFor();
+  await page.mouse.click(560, 340);
+  await page.keyboard.press('Delete');
+  await waitUntil(() => backend.saves.length === 1, { what: 'the deletion to be saved' });
+  assert.deepEqual(backend.live().map(element => element.id), ['keep']);
+  const victim = backend.scene.elements.find(element => element.id === 'victim');
+  assert(victim?.isDeleted, 'the fresh deletion is saved, so another window removes the element too');
+  assert(!('customData' in victim), 'the deletion is a compact record, not the whole element');
+  assert(JSON.stringify(backend.scene).length < 192 * 1024);
+  assert.equal(app.toast ? await app.toast.count() : 0, 0, 'no notice: the diagram still fits');
+}));
+
 test('Open and Save a copy report an automatic save that failed, every time', { timeout: 60_000 }, () => withApp({
   scene: sceneOf([rect('existing', 100, 500)]),
 }, async app => {
