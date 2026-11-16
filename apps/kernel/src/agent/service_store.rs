@@ -532,6 +532,15 @@ impl AgentServiceStore {
         self.write().set_agent_usage_limit_stop(agent_id, stop)
     }
 
+    pub fn mark_usage_limit_resume_sent(
+        &self,
+        agent_id: &str,
+        since_ms: u64,
+    ) -> Result<Option<AgentInstance>, DaemonError> {
+        self.write()
+            .mark_usage_limit_resume_sent(agent_id, since_ms)
+    }
+
     pub fn set_agent_self_settings(
         &self,
         agent_id: &str,

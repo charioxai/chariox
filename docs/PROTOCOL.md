@@ -862,14 +862,19 @@ change after the command's own tool call ends.
 
 When a turn ends with the usage-limit outcome, the kernel records `AgentInstance.usage_limit_stop`
 `{prompt_id, provider, account_profile, account_label, stopped_at_ms, resumes_at_ms?, refused?,
-state}` with `state` one of `asking`, `armed {at_ms}`, `resuming {since_ms}` or `declined`. The reset
+state}` with `state` one of `asking`, `armed {at_ms}`, `resuming {since_ms, sent}` or `declined`. The reset
 time is read from the provider's own words ("resets 4pm (UTC)", "resets Oct 28, 9pm (UTC)"); with
 none the kernel backs off. The user setting `agents.usage_limit_resume` is `ask` (default; the stop is
-`asking` and the person decides on a card in the agent's pane) or `automatic` (the stop is `armed` at
+`asking` and the kernel raises one decision, `usage-limit-<agent>-<stopped_at>-<refused>`, shown in the
+agent's pane (in the room agent's pane for a sub-agent) with `resume_when_back`, `not_now` and
+`continue_on:<profile>` choices, answered like any kernel decision and withdrawn when the stop moves on) or `automatic` (the stop is `armed` at
 the reset time). The kernel alone resumes: its one-second scheduler fires an armed stop at its time,
 one agent per 20 seconds, so nothing depends on an agent that may sit on the same exhausted account,
 and a restart finds the stop on the agent again. A task that was blocked by the stop goes on as the same
-task; otherwise the agent gets one kernel prompt in the same conversation. When the provider refuses
+task; otherwise the agent gets one kernel prompt in the same conversation. The stop follows the turn that
+failed last, so a resumed task that stops again is found again. `sent` is set once the resume turn was
+admitted: a `resuming` stop that was never sent (the kernel went away first) is armed again at once, and a
+resume the task could not take is kept armed for the next second. When the provider refuses
 again the kernel retries after 1, 5 and 15 minutes (after 15, 30, 60 and 120 minutes when no reset time
 was named) and then asks again. The person's decision is `UpdateAgentConfig.usage_limit`, given alone:
 `{"action":"resume_when_back"}`, `{"action":"not_now"}`, `{"action":"cancel"}` (takes an armed resume

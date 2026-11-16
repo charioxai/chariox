@@ -11,7 +11,7 @@ use crate::session::{RuntimeSession, SessionService, SessionStatus};
 use super::{
     calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance,
     AgentSelfSettings, AgentState, AgentStore, AgentSubstituteProfile, CreateAgentRequest,
-    FailedRequest, GridPosition, RemoteAgentBinding, UsageLimitStop,
+    FailedRequest, GridPosition, RemoteAgentBinding, UsageLimitStop, UsageLimitStopState,
 };
 
 #[derive(Debug, Clone)]
@@ -1058,6 +1058,41 @@ impl AgentService {
             })?;
         agent.set_usage_limit_stop(stop);
         Ok(agent.clone())
+    }
+
+    /// Notes that the resume claimed at `since_ms` was admitted; an agent whose stop moved on since
+    /// (it stopped again, or a person decided) is left as it is and `None` comes back.
+    pub fn mark_usage_limit_resume_sent(
+        &mut self,
+        agent_id: &str,
+        since_ms: u64,
+    ) -> Result<Option<AgentInstance>, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        let Some(stop) = agent.usage_limit_stop().cloned() else {
+            return Ok(None);
+        };
+        let UsageLimitStopState::Resuming {
+            since_ms: claimed, ..
+        } = stop.state
+        else {
+            return Ok(None);
+        };
+        if claimed != since_ms {
+            return Ok(None);
+        }
+        agent.set_usage_limit_stop(Some(UsageLimitStop {
+            state: UsageLimitStopState::Resuming {
+                since_ms,
+                sent: true,
+            },
+            ..stop
+        }));
+        Ok(Some(agent.clone()))
     }
 
     pub fn set_agent_self_settings(

@@ -32,7 +32,7 @@ fn next_resume_at(now_ms: u64, named_reset_ms: Option<u64>, refused: u32) -> Opt
     }
 }
 
-fn clock(at_ms: u64) -> String {
+pub(super) fn clock(at_ms: u64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(at_ms as i64)
         .map(|time| time.format("%H:%M UTC").to_string())
         .unwrap_or_default()
@@ -93,8 +93,8 @@ impl KernelRuntimeState {
             UsageLimitStopState::Asking
         };
         let stop = UsageLimitStop {
-            prompt_id: resumed_before
-                .map_or_else(|| prompt_id.to_string(), |stop| stop.prompt_id.clone()),
+            // The turn that failed now: a resumed task goes on under a new prompt each time.
+            prompt_id: prompt_id.to_string(),
             provider: run.provider().to_string(),
             account_profile: run.account_profile().to_string(),
             account_label: owned.account_label(&agent, run.account_profile()),
@@ -143,7 +143,7 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn store_usage_limit_stop(
+    pub(super) async fn store_usage_limit_stop(
         &self,
         agent: &crate::agent::AgentInstance,
         stop: Option<UsageLimitStop>,
@@ -167,7 +167,7 @@ impl KernelRuntimeState {
         self.append_agent_durable_event("agent.updated", &updated, None)
             .await?;
         let _ = owned.session_snapshot(agent.session_id());
-        Ok(())
+        self.sync_usage_limit_interaction(&updated).await
     }
 
     /// The one-second scheduler: resumes every agent whose armed time has come, one per stagger.
@@ -182,15 +182,29 @@ impl KernelRuntimeState {
             let Some(stop) = agent.usage_limit_stop().cloned() else {
                 continue;
             };
+            // A decision a restart left without its reply channel is raised again.
+            self.sync_usage_limit_interaction(&agent).await?;
             match stop.state {
                 UsageLimitStopState::Armed { at_ms } if at_ms <= now => {
                     if self.claim_resume(&agent, &stop, now, true).await? {
                         sends.push(self.spawn_resume(agent, stop));
                     }
                 }
-                UsageLimitStopState::Resuming { since_ms }
-                    if now.saturating_sub(since_ms) > RESUME_SETTLE_MS
-                        && !self.agent_has_turn(&agent) =>
+                UsageLimitStopState::Resuming { sent: false, .. }
+                    if !self.resume_is_being_sent(&agent) && !self.agent_has_turn(&agent) =>
+                {
+                    // A kernel that went away took the resume and never sent it: it is due now.
+                    let due = UsageLimitStop {
+                        state: UsageLimitStopState::Armed { at_ms: now },
+                        ..stop
+                    };
+                    self.store_usage_limit_stop(&agent, Some(due), "").await?;
+                }
+                UsageLimitStopState::Resuming {
+                    since_ms,
+                    sent: true,
+                } if now.saturating_sub(since_ms) > RESUME_SETTLE_MS
+                    && !self.agent_has_turn(&agent) =>
                 {
                     // The turn it started ended without the limit: the agent is back.
                     self.store_usage_limit_stop(&agent, None, "").await?;
@@ -199,6 +213,14 @@ impl KernelRuntimeState {
             }
         }
         Ok(sends)
+    }
+
+    fn resume_is_being_sent(&self, agent: &crate::agent::AgentInstance) -> bool {
+        self.owned
+            .usage_limit_sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(agent.id())
     }
 
     fn agent_has_turn(&self, agent: &crate::agent::AgentInstance) -> bool {
@@ -246,12 +268,30 @@ impl KernelRuntimeState {
             serde_json::json!({"agent_id": agent.id(), "now_ms": now}),
         );
         let resuming = UsageLimitStop {
-            state: UsageLimitStopState::Resuming { since_ms: now },
+            state: UsageLimitStopState::Resuming {
+                since_ms: now,
+                sent: false,
+            },
             ..stop.clone()
         };
-        self.store_usage_limit_stop(agent, Some(resuming), "")
-            .await?;
+        self.owned
+            .usage_limit_sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(agent.id().to_string());
+        if let Err(error) = self.store_usage_limit_stop(agent, Some(resuming), "").await {
+            self.end_resume_send(agent);
+            return Err(error);
+        }
         Ok(true)
+    }
+
+    fn end_resume_send(&self, agent: &crate::agent::AgentInstance) {
+        self.owned
+            .usage_limit_sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(agent.id());
     }
 
     fn spawn_resume(
@@ -266,8 +306,10 @@ impl KernelRuntimeState {
     /// Sends the continuation. When it cannot be sent the stop is armed again for the next tick,
     /// and the pane says why once.
     async fn finish_resume(&self, agent: &crate::agent::AgentInstance, stop: &UsageLimitStop) {
-        match self.send_resume(agent, stop).await {
+        let sent = self.send_resume(agent, stop).await;
+        match sent {
             Ok(()) => {
+                self.mark_resume_sent(agent).await;
                 self.owned
                     .usage_limit_resume_failures
                     .lock()
@@ -292,6 +334,38 @@ impl KernelRuntimeState {
                 }
                 self.note_resume_failure(agent, &error);
             }
+        }
+        self.end_resume_send(agent);
+    }
+
+    /// Records that the claimed resume was admitted, so a restart finds it sent.
+    async fn mark_resume_sent(&self, agent: &crate::agent::AgentInstance) {
+        let owned = &self.owned;
+        let Ok(current) = owned.agent_store.get_agent(agent.id()) else {
+            return;
+        };
+        let Some(UsageLimitStopState::Resuming { since_ms, .. }) =
+            current.usage_limit_stop().map(|stop| stop.state.clone())
+        else {
+            return;
+        };
+        let marked = match owned
+            .agent_store
+            .mark_usage_limit_resume_sent(agent.id(), since_ms)
+        {
+            Ok(Some(updated)) => {
+                self.append_agent_durable_event("agent.updated", &updated, None)
+                    .await
+            }
+            Ok(None) => return,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = marked {
+            crate::logging::warn_with_fields(
+                "daemon.usage_limit",
+                "could not record a sent resume",
+                serde_json::json!({"agent_id": agent.id(), "error": error.to_string()}),
+            );
         }
     }
 
@@ -331,9 +405,9 @@ impl KernelRuntimeState {
             &stop.prompt_id,
         )?;
         if let Some(task) = task.filter(|task| task.state == ExecutionState::Blocked) {
-            self.resolve_agent_task_owner_action(&task, OwnerTaskAction::Resume)
+            return self
+                .try_resolve_agent_task_owner_action(&task, OwnerTaskAction::Resume)
                 .await;
-            return Ok(());
         }
         let attachment = self.ensure_agent_message_attachment(agent.session_id(), agent)?;
         let prompt = crate::session::PromptQueueItem::new(

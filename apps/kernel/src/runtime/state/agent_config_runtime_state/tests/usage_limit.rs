@@ -199,6 +199,42 @@ impl Team {
             .is_some()
     }
 
+    /// The cards the room shows for one agent, by id.
+    fn cards(&self, lane: usize) -> Vec<String> {
+        self.rt()
+            .owned
+            .session_store
+            .get_session(&self.session_id)
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .filter(|card| card.related_agent_id() == Some(self.lanes[lane].agent_id.as_str()))
+            .map(|card| card.id().to_string())
+            .collect()
+    }
+
+    /// The person's answer to a card, through the entry every client uses.
+    async fn answer(&self, card: &str, choice: &str) {
+        self.rt()
+            .resolve_terminal_runtime_interaction(&self.session_id, card, choice, None, Some(OWNER))
+            .await
+            .expect("the card takes the answer");
+    }
+
+    /// Waits for the kernel's own task that applies an answer.
+    async fn until(&self, lane: usize, reached: impl Fn(&crate::agent::UsageLimitStop) -> bool) {
+        for _ in 0..200 {
+            if self.stop(lane).is_some_and(|stop| reached(&stop)) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!(
+            "the stop did not reach the expected state: {:?}",
+            self.stop(lane)
+        );
+    }
+
     fn task_state(&self, lane: usize) -> Option<ExecutionState> {
         self.rt()
             .owned
@@ -551,4 +587,281 @@ async fn asking_waits_for_the_person_and_an_agent_cannot_take_the_decision() {
     assert_eq!(team.stop(0).unwrap().state, UsageLimitStopState::Declined);
     tick(team.rt(), reset + 3_600_000).await;
     assert!(!team.has_turn(0), "a cancelled resume never fires");
+}
+
+/// A worker's prompt carries an obligation, so its stopped task is the one the stop must bring back.
+fn owe_work(team: &Team, lane: usize) -> String {
+    let agent = team.agent(lane);
+    let session = team
+        .rt()
+        .owned
+        .session_store
+        .get_session(&team.session_id)
+        .unwrap();
+    team.rt()
+        .owned
+        .admit_agent_task(&crate::app::KernelPreparedPromptSubmission {
+            session_id: team.session_id.clone(),
+            prompt: team
+                .rt()
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent.id())
+                .unwrap(),
+            force_queue: false,
+            refresh_projection: false,
+        })
+        .unwrap();
+    team.rt()
+        .owned
+        .durable_state_store
+        .agent_lifecycle(
+            crate::durable_state::agent_lifecycle::Operation::RegisterObligation {
+                owner: agent.owner_user_id().into(),
+                room: team.session_id.clone(),
+                agent: agent.id().into(),
+                prompt: team.lanes[lane].prompt_id.clone(),
+                run: None,
+                id: "owed".into(),
+                kind: "message".into(),
+                resource: None,
+                now: crate::session::unix_epoch_ms(),
+            },
+        )
+        .unwrap();
+    team.rt()
+        .owned
+        .durable_state_store
+        .agent_turn_task(&team.session_id, agent.id(), &team.lanes[lane].prompt_id)
+        .unwrap()
+        .unwrap()
+        .task_id
+}
+
+fn task_of(
+    team: &Team,
+    task_id: &str,
+) -> crate::durable_state::agent_lifecycle::AgentTaskExecution {
+    team.rt()
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(&team.session_id), None)
+        .unwrap()
+        .into_iter()
+        .find(|task| task.task_id == task_id)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn asking_raises_one_card_that_the_person_answers_and_the_blocked_task_card_stays_hidden() {
+    let mut config = config(UsageLimitResume::Ask);
+    config.room_agent_tools = true;
+    let team = team(config, 1).await;
+    let task_id = owe_work(&team, 0);
+
+    team.hit_the_limit(0).await;
+
+    assert_eq!(task_of(&team, &task_id).state, ExecutionState::Blocked);
+    let cards = team.cards(0);
+    assert_eq!(
+        cards.len(),
+        1,
+        "one decision, not the blocked task's card too: {cards:?}"
+    );
+    assert!(cards[0].starts_with("usage-limit-"), "{cards:?}");
+
+    // The person's answer goes through the card, and the room's card is gone with it.
+    team.answer(&cards[0], "resume_when_back").await;
+    team.until(0, |stop| {
+        matches!(stop.state, UsageLimitStopState::Armed { .. })
+    })
+    .await;
+    assert!(
+        team.cards(0).is_empty(),
+        "an answered decision leaves no card"
+    );
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    tick(team.rt(), reset).await;
+    assert_eq!(task_of(&team, &task_id).state, ExecutionState::Working);
+}
+
+#[tokio::test]
+async fn a_decision_card_that_lost_its_reply_channel_is_raised_again() {
+    let team = team(config(UsageLimitResume::Ask), 1).await;
+    team.hit_the_limit(0).await;
+    let first = team.cards(0);
+    assert_eq!(first.len(), 1);
+    // A restart leaves the card in the room with nobody to answer it.
+    let lost = team
+        .rt()
+        .owned
+        .pending_interactions
+        .write()
+        .get(&first[0])
+        .and_then(|pending| pending.responder.lock().unwrap().take());
+    assert!(lost.is_some());
+
+    tick(team.rt(), crate::session::unix_epoch_ms()).await;
+    let cards = team.cards(0);
+    assert_eq!(cards, first, "the same decision is raised again");
+    team.answer(&cards[0], "not_now").await;
+    team.until(0, |stop| stop.state == UsageLimitStopState::Declined)
+        .await;
+    assert!(team.cards(0).is_empty());
+}
+
+#[tokio::test]
+async fn a_task_that_hits_the_limit_again_after_its_resume_is_brought_back_as_the_same_task() {
+    let mut config = config(UsageLimitResume::Automatic);
+    config.room_agent_tools = true;
+    let team = team(config, 1).await;
+    let task_id = owe_work(&team, 0);
+    let stagger = super::super::usage_limit_runtime::RESUME_STAGGER_MS;
+
+    team.hit_the_limit(0).await;
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    tick(team.rt(), reset).await;
+    assert_eq!(task_of(&team, &task_id).state, ExecutionState::Working);
+
+    // The task's continuation is a new turn; the provider refuses it too.
+    let session = team
+        .rt()
+        .owned
+        .session_store
+        .get_session(&team.session_id)
+        .unwrap();
+    let continuation = team
+        .rt()
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &team.lanes[0].agent_id)
+        .expect("the task's continuation runs")
+        .id()
+        .to_string();
+    assert_ne!(continuation, team.lanes[0].prompt_id);
+    let live = team
+        .rt()
+        .owned
+        .provider_store
+        .get_run_for_agent(&team.session_id, &team.lanes[0].agent_id)
+        .expect("the continuation runs");
+    team.rt()
+        .fail_owned_provider_prompt(&team.session_id, live.id(), WEEKLY, true)
+        .await
+        .unwrap();
+    let stop = team.stop(0).unwrap();
+    assert_eq!(
+        stop.prompt_id, continuation,
+        "the stop follows the turn that failed"
+    );
+    assert_eq!(task_of(&team, &task_id).state, ExecutionState::Blocked);
+    let UsageLimitStopState::Armed { at_ms } = stop.state else {
+        panic!("armed again after the refusal");
+    };
+
+    tick(team.rt(), at_ms.max(reset + stagger)).await;
+    assert_eq!(
+        task_of(&team, &task_id).state,
+        ExecutionState::Working,
+        "the same task works again, not a new prompt beside a blocked one"
+    );
+}
+
+#[tokio::test]
+async fn a_resume_taken_and_never_sent_is_sent_after_a_restart() {
+    let mut team = team(config(UsageLimitResume::Automatic), 1).await;
+    team.hit_the_limit(0).await;
+    let stop = team.stop(0).unwrap();
+    let claimed_at = stop.resumes_at_ms.unwrap();
+    // The kernel wrote the claim and went away before it admitted any turn.
+    let taken = crate::agent::UsageLimitStop {
+        state: serde_json::from_value(
+            serde_json::json!({"state": "resuming", "since_ms": claimed_at}),
+        )
+        .unwrap(),
+        ..stop
+    };
+    team.rt()
+        .store_usage_limit_stop(&team.agent(0), Some(taken), "")
+        .await
+        .unwrap();
+
+    let after = restarted(&mut team).await;
+    let session = after
+        .owned
+        .session_store
+        .get_session(&team.session_id)
+        .unwrap();
+    assert!(
+        after
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &team.lanes[0].agent_id)
+            .is_none(),
+        "no turn was admitted before the restart"
+    );
+    let later = claimed_at + 60_000;
+    tick(&after, later).await;
+    tick(&after, later + 1_000).await;
+    let session = after
+        .owned
+        .session_store
+        .get_session(&team.session_id)
+        .unwrap();
+    assert!(
+        after
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &team.lanes[0].agent_id)
+            .is_some(),
+        "the resume the dead kernel took is sent, not cleared as done"
+    );
+}
+
+#[tokio::test]
+async fn a_resume_that_cannot_dispatch_stays_armed_for_the_next_tick() {
+    let mut config = config(UsageLimitResume::Automatic);
+    config.room_agent_tools = true;
+    let team = team(config, 2).await;
+    let task_id = owe_work(&team, 0);
+    let stagger = super::super::usage_limit_runtime::RESUME_STAGGER_MS;
+    team.hit_the_limit(0).await;
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    // The agent ended up archived: its task cannot be resumed until it is back.
+    team.rt()
+        .owned
+        .agent_store
+        .archive_agent(
+            &team.lanes[0].agent_id,
+            true,
+            &mut team.rt().owned.session_store.write(),
+        )
+        .unwrap();
+
+    tick(team.rt(), reset).await;
+    assert_eq!(
+        task_of(&team, &task_id).state,
+        ExecutionState::Blocked,
+        "nothing was dispatched"
+    );
+    assert!(
+        matches!(
+            team.stop(0).unwrap().state,
+            UsageLimitStopState::Armed { .. }
+        ),
+        "the failed resume is armed again, not consumed: {:?}",
+        team.stop(0)
+    );
+
+    team.rt()
+        .owned
+        .agent_store
+        .archive_agent(
+            &team.lanes[0].agent_id,
+            false,
+            &mut team.rt().owned.session_store.write(),
+        )
+        .unwrap();
+    tick(team.rt(), reset + 2 * stagger).await;
+    assert_eq!(task_of(&team, &task_id).state, ExecutionState::Working);
 }

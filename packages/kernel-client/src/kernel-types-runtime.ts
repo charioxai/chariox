@@ -618,7 +618,7 @@ export type UsageLimitStop = {
   state:
     | { state: "asking" }
     | { state: "armed"; at_ms: number }
-    | { state: "resuming"; since_ms: number }
+    | { state: "resuming"; since_ms: number; sent?: boolean }
     | { state: "declined" }
 }
 

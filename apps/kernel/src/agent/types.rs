@@ -141,8 +141,13 @@ pub enum UsageLimitStopState {
     Asking,
     /// The kernel goes on with the turn at `at_ms`.
     Armed { at_ms: u64 },
-    /// The kernel sent the resume at `since_ms`; the turn goes on.
-    Resuming { since_ms: u64 },
+    /// The kernel took the resume at `since_ms`; `sent` is set once the turn was admitted, so a
+    /// kernel that went away before that finds the claim again and sends it.
+    Resuming {
+        since_ms: u64,
+        #[serde(default)]
+        sent: bool,
+    },
     /// The person left it stopped.
     Declined,
 }

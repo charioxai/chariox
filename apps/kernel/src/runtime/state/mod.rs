@@ -426,6 +426,8 @@ struct KernelRuntimeOwnedState {
     pending_settings_notices: agent_settings_change::PendingSettingsNotices,
     /// When the kernel last sent a usage-limit resume, to stagger the next one.
     usage_limit_resumes: Arc<std::sync::Mutex<u64>>,
+    /// The agents whose claimed resume this kernel is still sending.
+    usage_limit_sends: Arc<std::sync::Mutex<BTreeSet<String>>>,
     /// The agents whose last resume failed, so the pane says why once.
     usage_limit_resume_failures: Arc<std::sync::Mutex<BTreeSet<String>>>,
     pending_mcp_continuations: PendingMcpContinuationStore,
@@ -571,6 +573,7 @@ mod browser_controller_action_execution_runtime_state;
 mod browser_controller_compatibility_runtime_state;
 mod owner_action_notifications;
 mod run_finished_notifications;
+mod usage_limit_interactions;
 mod usage_limit_runtime;
 mod wake_driver;
 mod workflow_notification_source_probe;
@@ -1314,6 +1317,7 @@ impl KernelRuntimeState {
                 pending_agent_context_handoffs,
                 pending_settings_notices: Default::default(),
                 usage_limit_resumes: Default::default(),
+                usage_limit_sends: Default::default(),
                 usage_limit_resume_failures: Default::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
                 background_holds: Default::default(),

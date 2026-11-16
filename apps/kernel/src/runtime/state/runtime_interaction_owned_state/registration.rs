@@ -142,12 +142,14 @@ impl KernelRuntimeOwnedState {
                                         .kernel_operation_id()
                                         .is_some_and(|id| id.starts_with("access-")))
                         }
-                        // An App install waits for its owner for as long as it takes; so does a blocked task's decision.
+                        // An App install waits for its owner for as long as it takes; so does a blocked task's
+                        // decision and a usage limit's.
                         None => interaction.app_install().is_some()
-                            || super::super::agent_task_owner_interactions::is_blocked_task_decision(
+                            || (super::super::agent_task_owner_interactions::is_blocked_task_decision(
                                 interaction.id(),
-                            )
-                                && interaction.kernel_operation_id() == Some(interaction.id()),
+                            ) || super::super::usage_limit_interactions::is_usage_limit_decision(
+                                interaction.id(),
+                            )) && interaction.kernel_operation_id() == Some(interaction.id()),
                     }
                 {
                     return Err(interaction_error("Invalid kernel operation decision"));
