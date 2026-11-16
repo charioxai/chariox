@@ -13,9 +13,8 @@ From a fresh checkout on Linux with Node 22 and Python 3 (no installed npm packa
 node scripts/e2e-stack/context-switch/self-test.mjs
 ```
 
-The self-test checks the local import/worker closure, executes the actual shaped
-proxy worker, and tests nine-fact scoring plus watermarks. Deleting
-`shaped-proxy-worker.mjs` must fail. Loopback byte fixtures are packaging regressions.
+The self-test checks the local import closure and runs the supplementary tests,
+including nine-fact scoring plus watermarks.
 
 Live inputs are explicit and stay outside every repository:
 
@@ -53,7 +52,6 @@ Explicit window/model-change cells may use Sonnet. OpenCode uses
 opencode-go/deepseek-v4.1-flash with documented refusal fallbacks; the driver rejects
 more than three turns in an OpenCode session. Never use OpenCode in a soak.
 Remote TUI shaping uses owned namespaces and external `ns-tools/` slirp4netns.
-The viewer network helper uses the opaque CONNECT worker; it never terminates TLS or prints headers.
 Turn oracles wait for five seconds of idle, unchanged assistant text and score
 the same fresh completion snapshot retained as evidence. An end marker alone
 can arrive before the final client history patch.
@@ -106,15 +104,12 @@ settle owned resources before exiting. Run the supplementary process and oracle
 regressions with an external disk-backed TMPDIR:
 
 ```sh
-node --test scripts/e2e-stack/context-switch/termination.test.mjs scripts/e2e-stack/context-switch/control-validation.test.mjs
+node --test scripts/e2e-stack/context-switch/termination.test.mjs
 ```
 
 The source-outage oracle requires the source run/model's timeout record and
 approximately 300 seconds of kernel elapsed time. Account transitions require
 fresh native IDs on both legs; profile labels and recall alone cannot pass.
-The cancellation cell checks a fresh snapshot after its eight-second observation
-window and again after recovery, scoped to the cancelled agent. A late answer in
-either interval fails the cell; a missing agent pane cannot establish absence.
 The receiving profile in `account-read-live.mjs` uses product linking/refresh; a fresh 401 is recorded as
 a coordinator account action, while primary-thread continuity is checked.
 
