@@ -24,7 +24,7 @@ fn close_outlived(
                 && o.completion_task_id.is_none())
         {
             o.status = "satisfied".into();
-            told_elsewhere &= o.kind == "delegate";
+            told_elsewhere &= o.kind == "delegate" || o.dispatch_state == "cancel_requested";
             closed = true;
         }
     }
@@ -734,12 +734,32 @@ fn cancel_task(
             "stale or foreign owner cancellation; reload the task in its owning room and retry",
         ));
     }
-    if !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
-        cancel_intent(tx, &mut t, by_agent)?;
-        t.revision += 1;
-        save(tx, &t)?;
+    match t.state {
+        ExecutionState::Cancelled => {}
+        // The turn is over and stays so: Stop only ends the work it left running.
+        ExecutionState::Done => {
+            if cancel_retained_work(&mut t) {
+                t.revision += 1;
+                save(tx, &t)?;
+            }
+        }
+        _ => {
+            cancel_intent(tx, &mut t, by_agent)?;
+            t.revision += 1;
+            save(tx, &t)?;
+        }
     }
     Ok(Outcome::Task(t))
+}
+/// Asks for the end of the work a Done task retains; its end closes the obligation without
+/// waking the agent, whom Stop told to stand down.
+fn cancel_retained_work(task: &mut AgentTaskExecution) -> bool {
+    let mut any = false;
+    for obligation in task.obligations.iter_mut().filter(|o| o.outlives_turn()) {
+        obligation.dispatch_state = "cancel_requested".into();
+        any = true;
+    }
+    any
 }
 /// `by_agent`: an agent, not the owner, cancels the task; it keeps the agent reachable.
 pub(super) fn cancel_intent(

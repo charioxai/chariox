@@ -524,7 +524,12 @@ impl KernelRuntimeState {
                     first_error.get_or_insert(error);
                 }
             }
-            if !physical_pending && !self.owned.agent_task_resources_unsettled(&task)? {
+            // A Done task ended its turn long ago: its completion is published by the sweep once the
+            // work Stop just ended has settled, not announced here as a cancellation.
+            if task.state != ExecutionState::Done
+                && !physical_pending
+                && !self.owned.agent_task_resources_unsettled(&task)?
+            {
                 self.owned
                     .durable_state_store
                     .agent_lifecycle(Operation::SourceOutcome {

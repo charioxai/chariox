@@ -30,6 +30,8 @@ mod child_end_receipt_tests;
 pub(crate) mod created_peers;
 mod delivery_waits;
 #[cfg(test)]
+mod done_parent_binding_tests;
+#[cfg(test)]
 mod fault_tests;
 pub(crate) mod faults;
 mod goal_evidence;
