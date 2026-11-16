@@ -873,13 +873,16 @@ one agent per 20 seconds, so nothing depends on an agent that may sit on the sam
 and a restart finds the stop on the agent again. A task that was blocked by the stop goes on as the same
 task; otherwise the agent gets one kernel prompt in the same conversation. The stop follows the turn that
 failed last, so a resumed task that stops again is found again. `sent` is set once the resume turn was
-admitted: a `resuming` stop that was never sent (the kernel went away first) is armed again at once, and a
+admitted: a `resuming` stop that was never sent (the kernel went away first) is armed again at once, unless a
+turn of the agent runs, which is then the admitted continuation and the stop is marked sent; a
 resume the task could not take is kept armed for the next second. When the provider refuses
 again the kernel retries after 1, 5 and 15 minutes (after 15, 30, 60 and 120 minutes when no reset time
 was named) and then asks again. The person's decision is `UpdateAgentConfig.usage_limit`, given alone:
 `{"action":"resume_when_back"}`, `{"action":"not_now"}`, `{"action":"cancel"}` (takes an armed resume
 back) or `{"action":"continue_on","account_profile":"..."}` (moves the turn to another account and goes
-on now). `child_finished` carries `resumes_at_ms` while a resume is armed. The room commands `agent
+on now). A sub-agent is in no room agent list, so its stop travels as `usage_limit_stop` on its `AgentTreeNode` of
+`ListDescendants` (omitted when none; withheld from a viewer who may not read the node's parameters).
+`child_finished` carries `resumes_at_ms` while a resume is armed. The room commands `agent
 resume <agent>` and `agent resume cancel <agent>` let an agent above take an armed resume back at any
 time and arm one only when the person chose automatic resume; nothing depends on them. The kernel
 reads no usage meters for this and paces nothing: it only reacts to a limit stop.
