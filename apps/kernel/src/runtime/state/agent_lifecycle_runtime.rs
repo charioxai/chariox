@@ -1379,6 +1379,11 @@ impl KernelRuntimeState {
                 );
             }
             if task.state != ExecutionState::Working {
+                // Stop's own cleanup may not have read the held run yet: the stop the worker
+                // is owed is stored before the record that names the run goes.
+                if task.state == ExecutionState::Cancelled {
+                    self.owe_held_run_a_stop(&task)?;
+                }
                 self.owned.background_holds.release(&task.task_id);
             } else if self.owned.is_held_for_background_calls(&task.task_id) {
                 if self.owned.held_task_due(&task, now)? {

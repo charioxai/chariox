@@ -360,6 +360,57 @@ async fn stop_of_a_held_remote_child_owes_its_worker_a_stop() {
     assert_eq!(owed[0].home_prompt_id, leased.team.child_prompt.id());
 }
 
+/// Stop ends the task first and releases its resources after; a lifecycle sweep that runs in
+/// between must not drop the held run before the worker is owed its stop.
+#[tokio::test]
+async fn a_sweep_between_stop_and_its_cleanup_keeps_the_held_run_owed_a_stop() {
+    let leased = child_with_a_call_running("leased-hold-stop-sweep").await;
+    let runtime = &leased.team.runtime;
+    let task = runtime
+        .owned
+        .durable_state_store
+        .agent_task(&leased.team.task.task_id)
+        .unwrap()
+        .unwrap();
+    let attachment = runtime
+        .owned
+        .attachment_store
+        .list_session_attachment_ids(&leased.team.room)
+        .remove(0);
+    let owner: String = runtime
+        .owned
+        .session_store
+        .get_session(&leased.team.room)
+        .unwrap()
+        .owner_user_id()
+        .into();
+    let cancel = runtime.owned.cancel_initiator(&attachment).cancel_task(
+        task.task_id.clone(),
+        owner,
+        task.revision,
+    );
+    let crate::durable_state::agent_lifecycle::Outcome::Task(cancelled) = runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(cancel)
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    runtime.sweep_agent_lifecycle_for_test().await.unwrap();
+    runtime
+        .cancel_agent_task_resources(&cancelled)
+        .await
+        .unwrap();
+    let owed = runtime
+        .owned
+        .durable_state_store
+        .unstopped_worker_runs()
+        .unwrap();
+    assert_eq!(owed.len(), 1, "{owed:?}");
+    assert_eq!(owed[0].worker_provider_run_id, leased.worker_run);
+}
+
 #[tokio::test]
 async fn a_worker_that_lost_the_agent_ends_the_task_instead_of_waiting_for_it() {
     let leased = child_with_a_call_running("leased-hold-agent-lost").await;
