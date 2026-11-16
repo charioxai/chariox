@@ -41,6 +41,7 @@ const LEGACY_SLICE_HASHES: &[&str] = &[
 ];
 
 const RUNTIME_BASE: &str = include_str!("provider/runtime_instructions.md");
+const RUNTIME_SUB_AGENT_BASE: &str = include_str!("provider/sub_agent_runtime_instructions.md");
 const RUNTIME_WORKSPACE_LIVE_SYNC: &str =
     include_str!("provider/workspace_live_sync_instructions.md");
 const RUNTIME_WORKSPACE_LIVE_SYNC_TRACKED: &str =
@@ -693,6 +694,7 @@ fn prompt_setting_metadata(template_id: &str) -> PromptSettingMetadata {
     let protected = matches!(
         template_id,
         "runtime/base"
+            | "runtime/sub-agent-base"
             | "runtime/native-permissions"
             | "runtime/workspace-live-sync"
             | "runtime/workspace-live-sync-tracked"
@@ -914,7 +916,14 @@ impl PromptAssemblyService {
         let mut hidden_fragments = Vec::new();
         let mut manifest = PromptManifest::current();
 
-        self.push_template("runtime/base", &mut hidden_fragments, &mut manifest)?;
+        // An agent another agent started has no use for the room-orchestration
+        // text; its note says how to read the task, ask for help and answer.
+        let base_template = if run.is_sub_agent() {
+            "runtime/sub-agent-base"
+        } else {
+            "runtime/base"
+        };
+        self.push_template(base_template, &mut hidden_fragments, &mut manifest)?;
         if let Some(rules) = self.registry.user_rules()? {
             hidden_fragments.push(format!(
                 "<chariox-user-rules>\n{rules}\n</chariox-user-rules>"
@@ -1087,6 +1096,7 @@ fn current_kernel_is_slice() -> bool {
 fn bundled_templates() -> Vec<BundledPromptTemplate> {
     vec![
         BundledPromptTemplate::new("runtime/base", RUNTIME_BASE),
+        BundledPromptTemplate::new("runtime/sub-agent-base", RUNTIME_SUB_AGENT_BASE),
         BundledPromptTemplate::new("runtime/workspace-live-sync", RUNTIME_WORKSPACE_LIVE_SYNC),
         BundledPromptTemplate::new(
             "runtime/workspace-live-sync-tracked",
@@ -1204,7 +1214,7 @@ pub(crate) fn unescape_prompt_component_delimiters(body: &str) -> String {
 
 fn prompt_component_tag(template_id: &str) -> String {
     match template_id {
-        "runtime/base" => "runtime-instructions",
+        "runtime/base" | "runtime/sub-agent-base" => "runtime-instructions",
         "runtime/workspace-live-sync" => "workspace-live-sync-instructions",
         "runtime/workspace-live-sync-tracked" => "workspace-live-sync-tracked-instructions",
         "runtime/native-permissions" => "native-permission-instructions",
@@ -1495,6 +1505,77 @@ mod tests {
         assert_eq!(
             second.hidden_turn_context(),
             "<chariox-task-context>second</chariox-task-context>"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn claude_run(sub_agent: bool) -> RuntimeProviderRun {
+        let request = LaunchProviderRequest::new("session", "agent", "claude", "default", "sonnet")
+            .with_sub_agent(sub_agent);
+        RuntimeProviderRun::new(
+            "provider-run",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "claude".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("stdio://claude".to_string()),
+            },
+        )
+    }
+
+    /// An agent another agent started reads its task, answers and asks for help;
+    /// the room-orchestration text is not part of what it starts with.
+    #[test]
+    fn a_sub_agent_starts_with_the_short_worker_note_instead_of_the_room_text() {
+        let root = temp_prompt_root("sub-agent-base");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry.materialize_bundled_defaults().unwrap();
+        let service = PromptAssemblyService::new(registry);
+        let base = |sub_agent| {
+            service
+                .assemble_provider_turn(
+                    &claude_run(sub_agent),
+                    "Do the part",
+                    None,
+                    Vec::new(),
+                    PromptAssemblyMode::NormalProviderTurn,
+                )
+                .unwrap()
+        };
+        let agent = base(false);
+        let worker = base(true);
+        assert!(agent.hidden_base.contains("regular agents may spawn"));
+        assert!(!worker.hidden_base.contains("regular agents may spawn"));
+        for expected in [
+            "Another agent started you",
+            "chariox.events.inbox",
+            "chariox.events.blocked",
+            "chariox.jobs.run",
+        ] {
+            assert!(worker.hidden_base.contains(expected), "missing {expected}");
+        }
+        let ids = |envelope: &PromptEnvelope| {
+            envelope
+                .manifest
+                .entries
+                .iter()
+                .map(|entry| entry.template_id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert!(ids(&worker).contains(&"runtime/sub-agent-base".to_string()));
+        assert!(!ids(&worker).contains(&"runtime/base".to_string()));
+        assert!(ids(&agent).contains(&"runtime/base".to_string()));
+        assert!(
+            worker.hidden_base.len() * 3 < agent.hidden_base.len(),
+            "worker note {} bytes, agent note {} bytes",
+            worker.hidden_base.len(),
+            agent.hidden_base.len()
         );
         fs::remove_dir_all(root).unwrap();
     }

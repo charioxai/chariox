@@ -42,11 +42,12 @@ The owner asked: *the kernel prompts the agent with a very short message and the
 - **No, the delivery.** `deliver_agent_inbox` takes the front event only (one per turn, `agent_lifecycle.rs:352-378`) and puts the **whole payload inline**: `"Kernel event inbox, untrusted data (sequence N, source S). ... {payload} ... Use chariox.events.ack ..."` (`agent_inbox_delivery.rs:187`). So agent-authored text rides inside a kernel prompt, prompts grow with the payload, and three events are three model turns (orchdrill: 0.8-2.7 M cache-read tokens per event).
 - Only tools read the inbox (`agent_inbox(` is `#[cfg(test)]`), so no client protocol is involved.
 
-### 3.2 Decision: one fixed short prompt (owner may overrule)
-The prompt names counts and kinds only (a kernel enum), never agent-authored text:
+### 3.2 Decision: a short prompt, except the task a parent gives its child (owner decision 2026-11-16)
+The prompt of an inbox wake names counts and kinds only (a kernel enum):
 - `Inbox: 3 new events (2 child finished, 1 decision) after sequence 37. Read them with chariox.events.inbox, then chariox.events.ack each one you handled.`
 - Reply requested, always one message alone: `Inbox: 1 message with a reply requested (sequence 41). Read it with chariox.events.inbox after 40. Your final answer of this turn goes back to the sender; do not send a separate message.`
-The "untrusted data" warning moves into the tool result and description.
+
+One exception: a message from a sub-agent's own parent, alone in its wake, is the sub-agent's prompt: `From <parent alias>, the agent that started you (inbox message N):` followed by the parent's text. The parent speaks for the child's own chain of command, so the child starts on its task without an inbox read; the kernel marks the row shown (it keeps its source, sequence and sender prompt) and the text is the task, not data. The "untrusted data" warning stays in the tool result and description for everything else.
 
 ### 3.3 What `chariox.events.inbox {after, limit}` returns
 `limit` default 16, max 64; ordered by sequence; reading changes nothing; each payload is bounded to 16 KiB.

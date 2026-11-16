@@ -208,6 +208,18 @@ mod tests {
     }
 
     #[test]
+    fn a_sub_agent_keeps_every_tool_claude_gives_an_agent() {
+        let launch = |sub_agent| {
+            claude_launch_args(
+                &LaunchProviderRequest::new("session", "agent", "claude", "default", "sonnet")
+                    .with_sub_agent(sub_agent),
+            )
+            .expect("Claude args should build")
+        };
+        assert_eq!(launch(true), launch(false));
+    }
+
+    #[test]
     fn plan_launch_keeps_the_native_permission_surface_for_both_permission_levels() {
         for permission in [AgentPermissionLevel::Required, AgentPermissionLevel::Yolo] {
             let plan = args(AgentExecutionMode::Plan, permission, true);

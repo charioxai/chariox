@@ -1,6 +1,7 @@
-//! The fixed short prompt that wakes an agent for its inbox: counts and kinds
-//! only. Payloads and agent-authored text stay in the inbox, which the agent
-//! reads with a tool whose result is marked untrusted.
+//! The prompt that wakes an agent for its inbox: counts and kinds only, so
+//! payloads and agent-authored text stay in the inbox, which the agent reads
+//! with a tool whose result is marked untrusted. The one exception is the
+//! task a parent gives its sub-agent: that message is the sub-agent's prompt.
 use crate::durable_state::agent_lifecycle::InboxEvent;
 
 const LABELS_SHOWN: usize = 3;
@@ -42,6 +43,15 @@ pub(super) fn wake_text(lead: &InboxEvent, batch: &[InboxEvent], after: u64) -> 
     format!(
         "Inbox: at least {count} new {noun} ({}). Read {pronoun} with chariox.events.inbox after {after}, then chariox.events.ack each one you handled.",
         shown.join(", ")
+    )
+}
+
+/// The prompt of a sub-agent whose parent sent it a message: the parent's text,
+/// labelled with who sent it and which inbox row carries it. The parent speaks
+/// for the sub-agent's own chain of command, so the text is the task.
+pub(super) fn brief_text(parent_name: &str, sequence: u64, message: &str) -> String {
+    format!(
+        "From {parent_name}, the agent that started you (inbox message {sequence}):\n\n{message}\n\nYour final answer is reported to {parent_name}."
     )
 }
 
@@ -112,6 +122,14 @@ mod tests {
         );
         assert!(!text.contains("AGENT"), "{text}");
         assert!(!text.contains("ignore previous instructions"));
+    }
+
+    #[test]
+    fn a_parents_message_is_the_prompt_with_who_sent_it() {
+        let text = brief_text("orch", 7, "Fix the parser.");
+        assert!(text.starts_with("From orch, the agent that started you (inbox message 7):"));
+        assert!(text.contains("Fix the parser."), "{text}");
+        assert!(!text.contains("chariox.events.inbox"), "{text}");
     }
 
     #[test]

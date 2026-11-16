@@ -316,7 +316,7 @@ impl KernelRuntimeOwnedState {
             }
         }
         if let Some(agent) = agent.as_ref() {
-            request = request.with_max_context_tokens(agent.max_context_tokens());
+            request = request.with_agent_settings(agent);
         }
         if request.working_directory.is_none() {
             let agent_worktree = agent
