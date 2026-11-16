@@ -2362,6 +2362,79 @@ async fn owner_browser_decision_restores_access_and_rejects_stale_answers() {
     }
 }
 
+/// needsui: an agent's own question reaches the owner as a question with a reply box, not as a generic
+/// "Agent needs your action" with Resume; the reply resumes the task.
+#[tokio::test]
+async fn an_agents_question_is_a_reply_card_and_the_reply_resumes_the_task() {
+    let f = fixture("agent-question-reply-card", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = f
+        .app
+        .lock()
+        .await
+        .providers
+        .get_run(&f.run)
+        .unwrap()
+        .runtime_mcp_auth_token()
+        .unwrap()
+        .to_owned();
+    call(
+        &f,
+        &token,
+        "chariox.events.blocked",
+        &task,
+        serde_json::json!({"reason": "Which pull request number should I review?"}),
+    )
+    .await
+    .unwrap();
+    let blocked = f.task(&task.task_id);
+    f.runtime
+        .ensure_task_owner_interaction(blocked.clone())
+        .await
+        .unwrap();
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    let card = session
+        .active_interactions()
+        .iter()
+        .find(|card| card.id().starts_with("task-blocked-"))
+        .cloned()
+        .expect("the question is a card");
+    assert_eq!(card.title(), Some("Question"));
+    assert!(card
+        .message()
+        .ends_with("Which pull request number should I review?"));
+    assert!(!card.message().contains("chariox."), "{}", card.message());
+    assert_eq!(card.kind(), crate::session::RuntimeInteractionKind::Choice);
+    assert_eq!(card.custom_choice().map(|reply| reply.id()), Some("reply"));
+    assert_eq!(
+        card.choices()
+            .iter()
+            .map(|choice| (choice.id(), choice.label()))
+            .collect::<Vec<_>>(),
+        vec![("cancel", "Dismiss")],
+        "a question offers a reply or Dismiss, never Resume"
+    );
+    f.runtime
+        .owned
+        .resolve_attributed_terminal_runtime_interaction(
+            &f.room,
+            card.id(),
+            "reply",
+            Some("#1358"),
+            Some("local"),
+            true,
+            Some(crate::local::KernelConnectionClass::Terminal),
+            None,
+        )
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_ne!(
+        f.task(&task.task_id).state,
+        ExecutionState::Blocked,
+        "the owner's reply continues the task"
+    );
+}
+
 #[tokio::test]
 async fn owner_browser_reload_after_a_wake_offers_approval_in_place() {
     let f = fixture("browser-owner-after-wake", true).await;

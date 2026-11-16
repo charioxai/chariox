@@ -284,14 +284,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         None
                     };
                     if let Some(w) = t.wait.as_mut() {
-                        if !w.long_wait_notified
-                            && now.saturating_sub(t.last_progress_at_ms) >= LONG_WAIT_MS
-                        {
-                            w.long_wait_notified = true;
-                            t.revision += 1;
-                            changed.push(t.clone());
-                        }
-                        let w = t.wait.as_mut().unwrap();
                         let clock_rollback = now < w.last_checked_at_ms;
                         w.last_checked_at_ms = w.last_checked_at_ms.max(now);
                         let dead = w

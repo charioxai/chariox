@@ -15,6 +15,8 @@ pub enum ExecutionState {
 #[serde(rename_all = "snake_case")]
 pub enum TaskOwnerAction {
     BrowserAccess,
+    /// The agent itself asked the owner something and waits for the answer.
+    Question,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,7 +123,6 @@ pub struct AgentWait {
     pub deadline_ms: Option<u64>,
     pub started_at_ms: u64,
     pub inbox_cursor: u64,
-    pub long_wait_notified: bool,
     #[serde(default)]
     pub last_checked_at_ms: u64,
 }
@@ -392,6 +393,12 @@ pub(crate) enum Operation {
         reason: String,
     },
     BlockForBrowserAccess {
+        task: String,
+        prompt: String,
+        reason: String,
+    },
+    /// An agent's own question to the owner: the card carries a reply box, not Resume.
+    BlockForQuestion {
         task: String,
         prompt: String,
         reason: String,

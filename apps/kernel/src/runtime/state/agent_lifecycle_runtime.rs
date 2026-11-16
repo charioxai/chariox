@@ -966,9 +966,27 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
-    /// Every transition is a notice so attached clients refresh the projection.
+    /// A task that needs its owner or stopped is said in a notice; any other change only refreshes the projection,
+    /// so a client redraws the task's state without a status line about it.
     fn record_task_transition_notices(&self, tasks: impl IntoIterator<Item = AgentTaskExecution>) {
         for task in tasks {
+            let notice = match task.state {
+                ExecutionState::Blocked => format!(
+                    "{}: Needs your help. {}",
+                    self.agent_notice_name(&task.agent_id),
+                    task.reason
+                ),
+                ExecutionState::Cancelled => format!(
+                    "{}: Stopped. Its provider turn ended without an answer.",
+                    self.agent_notice_name(&task.agent_id)
+                ),
+                _ => {
+                    self.owned
+                        .terminal_stream
+                        .notify_terminal_projection_change(&task.room_id);
+                    continue;
+                }
+            };
             self.owned.record_notice_for_agent(
                 &task.room_id,
                 None,
@@ -976,23 +994,7 @@ impl KernelRuntimeState {
                 self.owned
                     .attachment_store
                     .list_session_attachment_ids(&task.room_id),
-                if task.state == ExecutionState::Blocked {
-                    format!(
-                        "{}: Needs your help. {}",
-                        self.agent_notice_name(&task.agent_id),
-                        task.reason
-                    )
-                } else if task.state == ExecutionState::Cancelled {
-                    format!(
-                        "{}: Stopped. Its provider turn ended without an answer.",
-                        self.agent_notice_name(&task.agent_id)
-                    )
-                } else {
-                    format!(
-                        "{}: Waiting for 15 minutes without progress.",
-                        self.agent_notice_name(&task.agent_id)
-                    )
-                },
+                notice,
             );
         }
     }

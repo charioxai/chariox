@@ -127,13 +127,22 @@ impl KernelRuntimeOwnedState {
         }) {
             return Err(interaction_error("Invalid terminal credential prompt"));
         }
+        // An agent's question to the owner is a blocked task's decision with a reply box; every other kernel decision is a permission.
+        let is_question =
+            super::super::agent_task_owner_interactions::is_blocked_task_decision(interaction.id())
+                && interaction.kind() == crate::session::RuntimeInteractionKind::Choice;
         match (interaction.agent_id(), kernel_operation_owner) {
             (Some(_), None) => {}
             (None, Some(owner)) if interaction.kernel_operation_id().is_some() => {
                 if !self.is_room_member(&session, owner)
-                    || interaction.kind() != crate::session::RuntimeInteractionKind::Permission
+                    || interaction.kind()
+                        != if is_question {
+                            crate::session::RuntimeInteractionKind::Choice
+                        } else {
+                            crate::session::RuntimeInteractionKind::Permission
+                        }
                     || interaction.default_on_timeout().is_some()
-                    || interaction.custom_choice().is_some()
+                    || interaction.custom_choice().is_some() != is_question
                     || !match interaction.timeout_sec() {
                         Some(seconds) => {
                             seconds >= 1

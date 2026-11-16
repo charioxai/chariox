@@ -6,6 +6,7 @@ pub(super) const INVALID_TURN_END_REASON: &str =
 
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     let browser_access = matches!(&op, Operation::BlockForBrowserAccess { .. });
+    let question = matches!(&op, Operation::BlockForQuestion { .. });
     match op {
         Operation::Outside(mutation) => super::outside::apply(tx, mutation),
         Operation::SetDeadline {
@@ -496,7 +497,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 deadline_ms: Some(deadline),
                 started_at_ms: now,
                 inbox_cursor: cursor,
-                long_wait_notified: false,
                 last_checked_at_ms: now,
             });
             t.reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
@@ -511,6 +511,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             reason,
         }
         | Operation::BlockForBrowserAccess {
+            task,
+            prompt,
+            reason,
+        }
+        | Operation::BlockForQuestion {
             task,
             prompt,
             reason,
@@ -530,6 +535,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
             let owner_action = if browser_access {
                 Some(TaskOwnerAction::BrowserAccess)
+            } else if question {
+                Some(TaskOwnerAction::Question)
             } else if t.state == ExecutionState::Blocked {
                 t.owner_action.clone()
             } else {
@@ -976,7 +983,6 @@ fn retain_question_wait(
             deadline_ms: Some(deadline_ms),
             started_at_ms: now,
             inbox_cursor: 0,
-            long_wait_notified: false,
             last_checked_at_ms: now,
         });
         t.state = ExecutionState::Waiting;

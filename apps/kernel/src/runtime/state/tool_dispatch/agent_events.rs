@@ -298,7 +298,7 @@ impl KernelRuntimeState {
                 let prompt = prompt.id().into();
                 let reason = args["reason"].as_str().unwrap_or_default().into();
                 let operation = match args.get("owner_action") {
-                    None => Operation::Block {
+                    None => Operation::BlockForQuestion {
                         task,
                         prompt,
                         reason,

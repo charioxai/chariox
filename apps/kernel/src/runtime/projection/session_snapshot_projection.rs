@@ -216,6 +216,7 @@ impl SessionSnapshotProjection {
             &mut agent_activity,
             &processes,
             &super::YieldedSources::of_room(&app.durable_state_store(), session_id),
+            &super::SourceLabels::of_session(&session),
         );
         Ok(Self {
             jobs: Vec::new(),

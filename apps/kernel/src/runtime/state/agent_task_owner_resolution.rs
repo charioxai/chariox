@@ -2,11 +2,13 @@
 use super::*;
 use crate::durable_state::agent_lifecycle::{AgentTaskExecution, Operation, Outcome};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) enum OwnerTaskAction {
     Cancel,
     Resume,
     AllowBrowser,
+    /// The owner's answer to an agent's question.
+    Reply(String),
 }
 
 impl KernelRuntimeState {
@@ -119,6 +121,13 @@ impl KernelRuntimeState {
         action: OwnerTaskAction,
     ) {
         let resume = action != OwnerTaskAction::Cancel;
+        // An answer is only meant for a question the agent asked; a stale one is dropped like any stale decision.
+        if matches!(action, OwnerTaskAction::Reply(_))
+            && task.owner_action
+                != Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::Question)
+        {
+            return;
+        }
         let browser_grant = if action == OwnerTaskAction::AllowBrowser {
             match self.owned.agent_store.get_agent(&task.agent_id) {
                 Ok(agent) if agent.session_id() == task.room_id && agent.owner_user_id() == task.owner_user_id
@@ -212,7 +221,12 @@ impl KernelRuntimeState {
                 async {
                     let agent = self.owned.agent_store.get_agent(&next.agent_id)?;
                     let attachment = self.ensure_agent_message_attachment(&next.room_id, &agent)?;
-                    let mut context = if task.owner_action.is_some() {
+                    let mut context = if let OwnerTaskAction::Reply(reply) = &action {
+                        format!(
+                            "The owner answered your question ({}): {reply}\nContinue the original task with this answer.",
+                            crate::terminal::public_task_failure_reason(&task.reason)
+                        )
+                    } else if task.owner_action == Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::BrowserAccess) {
                         "The owner has allowed this task to continue. Browser access, if requested, has been restored. Check the current page and continue the original task. If a previous verification card ended, take a fresh snapshot and raise a new card. Write card instructions for the person, and keep tool names and internal task bookkeeping out of your visible replies.".into()
                     } else {
                         self.owned.task_resume_text(&next, &task.reason)?
