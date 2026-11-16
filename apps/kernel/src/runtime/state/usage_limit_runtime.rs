@@ -182,8 +182,15 @@ impl KernelRuntimeState {
             let Some(stop) = agent.usage_limit_stop().cloned() else {
                 continue;
             };
-            // A decision a restart left without its reply channel is raised again.
-            self.sync_usage_limit_interaction(&agent).await?;
+            // A decision a restart left without its reply channel is raised again. A board that
+            // cannot take it (eight decisions pending) must not hold back another agent's resume.
+            if let Err(error) = self.sync_usage_limit_interaction(&agent).await {
+                crate::logging::warn_with_fields(
+                    "daemon.usage_limit",
+                    "could not raise the usage limit decision",
+                    serde_json::json!({"agent_id": agent.id(), "error": error.to_string()}),
+                );
+            }
             match stop.state {
                 UsageLimitStopState::Armed { at_ms } if at_ms <= now => {
                     if self.claim_resume(&agent, &stop, now, true).await? {
@@ -191,7 +198,14 @@ impl KernelRuntimeState {
                     }
                 }
                 UsageLimitStopState::Resuming { sent: false, .. }
-                    if !self.resume_is_being_sent(&agent) && !self.agent_has_turn(&agent) =>
+                    if !self.resume_is_being_sent(&agent) && self.agent_has_turn(&agent) =>
+                {
+                    // The kernel went away after it admitted the continuation and before it
+                    // recorded that: the turn that runs now is that continuation, not a new resume.
+                    self.mark_resume_sent(&agent).await;
+                }
+                UsageLimitStopState::Resuming { sent: false, .. }
+                    if !self.resume_is_being_sent(&agent) =>
                 {
                     // A kernel that went away took the resume and never sent it: it is due now.
                     let due = UsageLimitStop {

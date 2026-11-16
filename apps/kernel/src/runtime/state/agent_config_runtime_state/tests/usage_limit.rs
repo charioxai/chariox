@@ -269,7 +269,19 @@ async fn a_turn_that_ends_on_the_limit_asks_by_default_and_names_when_usage_is_b
 /// The kernel stops and starts again over the same durable state.
 async fn restarted(team: &mut Team) -> KernelRuntimeState {
     drop(team.runtime.take());
-    let app = DaemonApp::bootstrap(team.config.clone()).expect("the kernel starts again");
+    // The old kernel's own tasks (a dispatched turn) end before it lets go of the durable state.
+    let mut starts = 0;
+    let app = loop {
+        match DaemonApp::bootstrap(team.config.clone()) {
+            Ok(app) => break app,
+            Err(error) if starts < 200 => {
+                starts += 1;
+                tracing::debug!(%error, "the old kernel still holds the durable state");
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            Err(error) => panic!("the kernel starts again: {error:?}"),
+        }
+    };
     owned_runtime_state(&Arc::new(Mutex::new(app))).await
 }
 
@@ -864,4 +876,102 @@ async fn a_resume_that_cannot_dispatch_stays_armed_for_the_next_tick() {
         .unwrap();
     tick(team.rt(), reset + 2 * stagger).await;
     assert_eq!(task_of(&team, &task_id).state, ExecutionState::Working);
+}
+
+#[tokio::test]
+async fn a_resume_admitted_before_the_kernel_recorded_it_is_not_sent_again_after_a_restart() {
+    let mut team = team(config(UsageLimitResume::Automatic), 1).await;
+    team.hit_the_limit(0).await;
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    tick(team.rt(), reset).await;
+    assert!(team.has_turn(0), "the continuation was admitted");
+    // The kernel went away after the admission and before it wrote that the resume was sent.
+    let unsent = crate::agent::UsageLimitStop {
+        state: serde_json::from_value(
+            serde_json::json!({"state": "resuming", "since_ms": reset, "sent": false}),
+        )
+        .unwrap(),
+        ..team.stop(0).unwrap()
+    };
+    team.rt()
+        .store_usage_limit_stop(&team.agent(0), Some(unsent), "")
+        .await
+        .unwrap();
+
+    let after = restarted(&mut team).await;
+    let agent_id = team.lanes[0].agent_id.clone();
+    let session = || {
+        after
+            .owned
+            .session_store
+            .get_session(&team.session_id)
+            .unwrap()
+    };
+    assert!(
+        after
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session(), &agent_id)
+            .is_some(),
+        "the admitted continuation runs again on the restarted kernel"
+    );
+    tick(&after, reset + 60_000).await;
+    // The continuation finishes, and the kernel must not send it a second time.
+    after
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_only(&session(), &agent_id);
+    tick(&after, reset + 120_000).await;
+    tick(&after, reset + 180_000).await;
+    assert!(
+        after
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session(), &agent_id)
+            .is_none(),
+        "no second resume after the continuation finished"
+    );
+    assert!(
+        after
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .unwrap()
+            .usage_limit_stop()
+            .is_none(),
+        "the agent is back, its stop is cleared"
+    );
+}
+
+#[tokio::test]
+async fn a_decision_board_that_is_full_does_not_hold_back_another_agents_resume() {
+    let mut config = config(UsageLimitResume::Ask);
+    config.room_agent_tools = true;
+    // The owner's board takes eight decisions; the ninth agent's card cannot be raised.
+    let team = team(config, 10).await;
+    let mut by_id: Vec<usize> = (0..10).collect();
+    by_id.sort_by(|a, b| team.lanes[*a].agent_id.cmp(&team.lanes[*b].agent_id));
+    for lane in &by_id {
+        team.hit_the_limit(*lane).await;
+    }
+    let (uncarded, last) = (by_id[8], by_id[9]);
+    assert!(team.cards(uncarded).is_empty(), "the board is full");
+    // The person chose to resume the last agent, whom the scheduler reaches after the stuck one.
+    team.rt()
+        .resolve_usage_limit_stop(
+            &team.session_id,
+            &team.lanes[last].agent_id,
+            OWNER,
+            None,
+            crate::local::UsageLimitStopAction::ResumeWhenBack,
+        )
+        .await
+        .unwrap();
+    let reset = team.stop(last).unwrap().resumes_at_ms.unwrap();
+
+    tick(team.rt(), reset).await;
+    assert!(
+        team.has_turn(last),
+        "the agent that was told to resume goes on"
+    );
 }
