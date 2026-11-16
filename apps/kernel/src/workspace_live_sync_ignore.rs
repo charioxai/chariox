@@ -208,6 +208,21 @@ pub(crate) fn workspace_live_sync_ignore_pattern_matches(pattern: &str, path: &s
         .any(|part| workspace_live_sync_wildcard_match(pattern, part))
 }
 
+/// Whether `pattern` can match a path below `directory`, so a walk that skips ignored folders
+/// still has to enter it. A name without a slash matches in any folder.
+pub(crate) fn workspace_live_sync_pattern_may_match_below(pattern: &str, directory: &str) -> bool {
+    let pattern = pattern.trim_end_matches('/');
+    if pattern.is_empty() {
+        return false;
+    }
+    if !pattern.contains('/') {
+        return true;
+    }
+    let literal_head = pattern.split('*').next().unwrap_or(pattern);
+    let below = format!("{directory}/");
+    below.starts_with(literal_head) || literal_head.starts_with(&below)
+}
+
 fn workspace_live_sync_wildcard_match(pattern: &str, value: &str) -> bool {
     if pattern == value {
         return true;
@@ -227,6 +242,25 @@ fn workspace_live_sync_wildcard_match(pattern: &str, value: &str) -> bool {
         .map(|(index, _)| index)
         .chain(std::iter::once(remainder.len()))
         .any(|index| workspace_live_sync_wildcard_match(tail, &remainder[index..]))
+}
+
+#[cfg(test)]
+mod pattern_below_tests {
+    use super::workspace_live_sync_pattern_may_match_below as below;
+
+    #[test]
+    fn a_pattern_reaches_the_folders_that_can_hold_its_matches() {
+        assert!(below("target/**", "target"));
+        assert!(below("target/**", "target/release"));
+        assert!(below("target/*/app", "target/release"));
+        assert!(below("target/release/app", "target"));
+        assert!(below("target/rel*", "target/release"));
+        assert!(below("target/release/", "target/release"));
+        assert!(below("*.bin", "target/release"));
+        assert!(!below("target/release/*", "target/debug"));
+        assert!(!below("target/release/app", "dist"));
+        assert!(!below("", "target"));
+    }
 }
 
 #[cfg(test)]

@@ -174,6 +174,39 @@ async fn offload_job_return_applies_a_mode_only_change_and_checks_it_for_conflic
     );
 }
 
+#[tokio::test]
+async fn offload_job_return_brings_back_files_below_nested_ignored_folders_of_a_recursive_output() {
+    let source = crate::test_support::TestWorktree::new("offload-nested-source");
+    let home = crate::test_support::TestWorktree::new("offload-nested-home");
+    let finished = finish_on_worker(
+        source.path(),
+        worker_kernel(home.path()),
+        "mkdir -p target/release/deps; printf app > target/release/app; printf lib > target/release/deps/lib.rlib",
+        &["target/**"],
+    )
+    .await;
+    let (mut files, conflicts) = finished
+        .remote
+        .return_files(
+            &finished.root,
+            &finished.record,
+            &finished.base,
+            &finished.upload,
+        )
+        .await
+        .unwrap();
+    files.sort();
+    assert_eq!(
+        files,
+        ["target/release/app", "target/release/deps/lib.rlib"]
+    );
+    assert!(conflicts.is_empty());
+    assert_eq!(
+        std::fs::read(source.path().join("target/release/app")).unwrap(),
+        b"app"
+    );
+}
+
 fn mode(path: &Path) -> u32 {
     std::fs::metadata(path).unwrap().permissions().mode() & 0o777
 }

@@ -108,11 +108,11 @@ pub(crate) fn snapshot(root: &Path, outputs: &[String]) -> Result<Manifest, Daem
             }
             if metadata.is_dir() {
                 // Traverse an ignored build directory only when a declared output lies beneath it.
-                if !ignored
-                    || outputs
-                        .iter()
-                        .any(|pattern| pattern.starts_with(&format!("{path}/")))
-                {
+                if !ignored || outputs.iter().any(|pattern| {
+                    crate::workspace_live_sync_ignore::workspace_live_sync_pattern_may_match_below(
+                        pattern, &path,
+                    )
+                }) {
                     pending.push(path);
                 }
             } else if metadata.is_file() && (!ignored || output) {
@@ -274,6 +274,17 @@ mod tests {
         let artifacts = snapshot(root, &["target/release/*".into()]).unwrap();
         assert!(artifacts.contains_key("target/release/build-output"));
         assert!(!artifacts.contains_key(".env"));
+    }
+    #[test]
+    fn offload_job_snapshot_enters_nested_ignored_folders_below_a_recursive_output_pattern() {
+        let tree = crate::test_support::TestWorktree::new("job-snapshot-recursive");
+        let root = tree.path();
+        std::fs::create_dir_all(root.join("target/release/deps")).unwrap();
+        std::fs::write(root.join("target/release/app"), b"binary").unwrap();
+        std::fs::write(root.join("target/release/deps/lib.rlib"), b"lib").unwrap();
+        let artifacts = snapshot(root, &["target/**".into()]).unwrap();
+        assert!(artifacts.contains_key("target/release/app"));
+        assert!(artifacts.contains_key("target/release/deps/lib.rlib"));
     }
     #[test]
     fn offload_job_return_preserves_local_edit_and_records_remote_conflict() {

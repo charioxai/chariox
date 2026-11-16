@@ -374,7 +374,7 @@ impl Remote {
                                 .request
                                 .outputs
                                 .iter()
-                                .any(|pattern| pattern.starts_with(&format!("{relative}/")))
+                                .any(|pattern| crate::workspace_live_sync_ignore::workspace_live_sync_pattern_may_match_below(pattern, &relative))
                         {
                             pending.push(relative);
                         }
