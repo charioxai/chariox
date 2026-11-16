@@ -152,7 +152,7 @@ impl KernelRuntimeState {
 
     /// The worker is gone and with it the provider run it hosted. The turn ends
     /// failed, never replayed, so the helper's task is resolved and its waiters wake.
-    async fn end_turn_on_lost_worker(
+    pub(super) async fn end_turn_on_lost_worker(
         &self,
         task: &AgentTaskExecution,
         binding: &crate::agent::RemoteAgentBinding,
@@ -160,6 +160,18 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         if self.owned.is_held_for_background_calls(&task.task_id) {
             let host = self.owned.leased_host_name(binding);
+            // The held run keeps working on the worker after the home lets go of it.
+            if let Some((_, worker_run)) =
+                self.held_projection_drain_target(&task.room_id, &task.agent_id)
+            {
+                self.open_worker_stop_obligation(
+                    &task.room_id,
+                    &task.agent_id,
+                    binding,
+                    &task.prompt_id,
+                    &worker_run,
+                )?;
+            }
             return self
                 .end_held_leased_tasks(
                     &task.room_id,

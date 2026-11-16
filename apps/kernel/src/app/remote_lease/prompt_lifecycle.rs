@@ -1444,6 +1444,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
+        if let Some(cancellation) = self.stop_run_working_without_a_prompt(
+            &leased_agent,
+            expected_home_prompt_id,
+            expected_worker_provider_run_id,
+        )? {
+            return Ok(cancellation);
+        }
         // Completion projection retires the active binding before the home can
         // receive it. A cancellation crossing that projection still names the
         // completed turn; acknowledge only its exact projected completion and
@@ -1944,6 +1951,67 @@ mod receipt_tests {
                 .as_deref(),
             Some("successor-home")
         );
+    }
+
+    #[test]
+    fn a_stop_for_a_run_working_after_its_turn_ended_stops_that_run() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (leased, session, agent, home_prompt, run) =
+            submit_cancellable_prompt(&mut app, "stop-held-run");
+        RemoteLeaseRuntime::new(&mut app)
+            .complete_leased_prompt(&leased, &home_prompt, &run)
+            .unwrap();
+        RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection_with_recovery(&leased, &run, false, true)
+            .unwrap()
+            .expect("completed prompt should project");
+        let live = |app: &crate::app::DaemonApp| {
+            app.providers
+                .get_run_for_agent(&session, &agent)
+                .is_some_and(|run| run.state() != crate::provider::ProviderRunState::Ended)
+        };
+        // An idle run is not working: the stop only learns its turn settled.
+        assert!(matches!(
+            RemoteLeaseRuntime::new(&mut app).cancel_leased_prompt(&leased, &home_prompt, &run),
+            Err(DaemonError::NoActivePrompt { .. })
+        ));
+        assert!(live(&app));
+
+        // The provider's background command is still running.
+        let recipients = app.attachments.list_session_attachment_ids(&session);
+        app.fan_out_output_for_agent(
+            &session,
+            &run,
+            Some(&agent),
+            crate::terminal::TerminalOutputKind::ProviderTool,
+            Some("bg".into()),
+            recipients,
+            br#"{"id":"bg","tool":"Bash","status":"running","started_at_ms":1,"background":true,"finished_at_ms":null}"#,
+        );
+        assert!(matches!(
+            RemoteLeaseRuntime::new(&mut app).cancel_leased_prompt(
+                &leased,
+                &home_prompt,
+                "other-run"
+            ),
+            Err(DaemonError::LocalTransport { .. })
+        ));
+        assert!(live(&app), "another run's stop leaves the run alone");
+        let cancellation = RemoteLeaseRuntime::new(&mut app)
+            .cancel_leased_prompt(&leased, &home_prompt, &run)
+            .expect("the run working with no prompt is stopped");
+        assert_eq!(cancellation.prompt.id(), home_prompt);
+        assert!(
+            !live(&app),
+            "the provider run no longer works in the workspace"
+        );
+        // A repeated stop finds the run gone and reports the turn settled.
+        assert!(matches!(
+            RemoteLeaseRuntime::new(&mut app).cancel_leased_prompt(&leased, &home_prompt, &run),
+            Err(DaemonError::NoActivePrompt { .. })
+        ));
     }
 
     #[test]

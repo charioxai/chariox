@@ -290,6 +290,44 @@ async fn a_worker_run_that_ends_while_the_call_runs_ends_the_task_with_the_reaso
 }
 
 #[tokio::test]
+async fn a_worker_lost_while_the_call_runs_keeps_its_run_owed_a_stop() {
+    let leased = child_with_a_call_running("leased-hold-worker-lost").await;
+    let runtime = &leased.team.runtime;
+    let task = runtime
+        .owned
+        .durable_state_store
+        .agent_task(&leased.team.task.task_id)
+        .unwrap()
+        .unwrap();
+    let binding = runtime
+        .owned
+        .agent_store
+        .get_agent(&leased.team.child)
+        .unwrap()
+        .remote_execution()
+        .cloned()
+        .unwrap();
+    runtime
+        .end_turn_on_lost_worker(&task, &binding, 30_000)
+        .await
+        .unwrap();
+    assert!(!working(&leased));
+    let events = child_finished(&leased.team);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].payload["success"], false);
+    // The task is over, but the worker's run is not known to be stopped.
+    let owed = runtime
+        .owned
+        .durable_state_store
+        .unstopped_worker_runs()
+        .unwrap();
+    assert_eq!(owed.len(), 1, "{owed:?}");
+    assert_eq!(owed[0].worker_provider_run_id, leased.worker_run);
+    assert_eq!(owed[0].binding.execution_lease_id, "lease-1");
+    assert_eq!(owed[0].home_prompt_id, leased.team.child_prompt.id());
+}
+
+#[tokio::test]
 async fn a_worker_that_lost_the_agent_ends_the_task_instead_of_waiting_for_it() {
     let leased = child_with_a_call_running("leased-hold-agent-lost").await;
     leased
