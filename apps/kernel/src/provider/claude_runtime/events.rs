@@ -39,6 +39,10 @@ fn apply_system_message(
     {
         record_claude_session_id(state, batch, session_id);
     }
+    if value.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
+        // The summary replaces the history that held the run base.
+        state.delivered_hidden_base = None;
+    }
     if batch.resolved_model.is_none() {
         if let Some(model) =
             string_field(value, "model").and_then(|model| format_claude_model(&model))

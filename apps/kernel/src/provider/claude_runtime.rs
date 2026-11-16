@@ -132,6 +132,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             env_remove,
             working_directory,
             context_file,
+            delivered_hidden_base: None,
             settings_file,
             usage_file,
             last_usage_file_contents: None,
@@ -240,7 +241,7 @@ pub(crate) fn submit_claude_prompt(
     if claude_runtime_selection_changed(run, state) || claude_runtime_child_exited(state) {
         restart_claude_runtime(run, state, "claude_restart_for_selection_change")?;
     }
-    write_claude_hidden_context(run.id(), state, &envelope.hidden_system_context)?;
+    write_claude_hidden_context(run.id(), state, envelope)?;
     let turn_id = format!("turn-{}", state.next_turn_number);
     state.next_turn_number += 1;
     let private_prompt = envelope.private_assessment_prompt();
@@ -602,6 +603,8 @@ fn restart_claude_runtime(
         .take();
     release_detached_jobs(run, state, identity);
     stop_child(&mut state.child);
+    // A new process may start a new conversation: it needs the run base again.
+    state.delivered_hidden_base = None;
     let base_args = claude_args_with_execution_config(
         &claude_args_without_resume(&state.args),
         run.execution_mode(),
@@ -711,25 +714,33 @@ pub(crate) fn new_claude_session_id() -> String {
     )
 }
 
+/// Writes what the prompt hook adds to this turn: the whole note when the
+/// conversation does not hold the run base yet, otherwise only what the turn adds.
 fn write_claude_hidden_context(
     provider_run_id: &str,
-    state: &ClaudeRuntimeState,
-    hidden_system_context: &str,
+    state: &mut ClaudeRuntimeState,
+    envelope: &PromptEnvelope,
 ) -> Result<(), DaemonError> {
     let Some(path) = &state.context_file else {
         return Ok(());
     };
-    let hidden_system_context = crate::provider::fit_claude_native_hidden_context(
-        provider_run_id,
-        hidden_system_context.trim().to_string(),
-    )?;
-    std::fs::write(path, hidden_system_context.trim()).map_err(|error| {
-        DaemonError::ProviderProtocol {
-            provider_run_id: provider_run_id.to_string(),
-            operation: "claude_hidden_context_write",
-            message: error.to_string(),
-        }
-    })
+    let base_delivered = !envelope.hidden_base.is_empty()
+        && state.delivered_hidden_base.as_deref() == Some(envelope.hidden_base.as_str());
+    let context = if base_delivered {
+        envelope.hidden_turn_context()
+    } else {
+        envelope.hidden_system_context.trim()
+    };
+    let context =
+        crate::provider::fit_claude_native_hidden_context(provider_run_id, context.to_string())?;
+    std::fs::write(path, context.trim()).map_err(|error| DaemonError::ProviderProtocol {
+        provider_run_id: provider_run_id.to_string(),
+        operation: "claude_hidden_context_write",
+        message: error.to_string(),
+    })?;
+    state.delivered_hidden_base =
+        (!envelope.hidden_base.is_empty()).then(|| envelope.hidden_base.clone());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -759,8 +770,8 @@ mod tests {
     use super::{
         apply_claude_stderr, claude_args_without_resume, events::apply_claude_message,
         handle_claude_tool_uses, initialize_claude_runtime, input::claude_user_content,
-        new_claude_session_id, restart_claude_runtime, submit_claude_prompt, ClaudeRuntimeState,
-        ProviderPromptSignalBatch,
+        new_claude_session_id, restart_claude_runtime, submit_claude_prompt,
+        write_claude_hidden_context, ClaudeRuntimeState, PromptEnvelope, ProviderPromptSignalBatch,
     };
 
     fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {
@@ -784,6 +795,7 @@ mod tests {
                 env_remove: Vec::new(),
                 working_directory: None,
                 context_file: None,
+                delivered_hidden_base: None,
                 settings_file: None,
                 usage_file: None,
                 last_usage_file_contents: None,
@@ -2185,6 +2197,76 @@ done
         assert_eq!(usage.meters.len(), 1);
         assert_eq!(usage.meters[0].meter_id, "rate_limit/seven_day");
         assert_eq!(usage.meters[0].resets_at_ms, Some(1_800_014_400_000));
+    }
+
+    fn envelope_with(base: &str, turn: &str) -> PromptEnvelope {
+        let mut envelope = PromptEnvelope::new(
+            "work",
+            format!("{base}\n\n{turn}"),
+            Vec::new(),
+            crate::prompt_assembly::PromptManifest::default(),
+        );
+        envelope.hidden_base = base.to_string();
+        envelope
+    }
+
+    /// The prompt hook adds the file to Claude's history on every prompt, so the
+    /// run base goes in once and again only when the conversation lost it.
+    #[test]
+    fn claude_hidden_context_sends_the_run_base_once_per_conversation() {
+        let (mut state, mut batch) = parser_state();
+        let file = std::env::temp_dir().join(format!(
+            "chariox-hidden-context-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        state.context_file = Some(file.clone());
+        let written = || std::fs::read_to_string(&file).unwrap();
+
+        write_claude_hidden_context(
+            "run-1",
+            &mut state,
+            &envelope_with("BASE RULES", "turn one"),
+        )
+        .unwrap();
+        assert_eq!(written(), "BASE RULES\n\nturn one");
+
+        write_claude_hidden_context(
+            "run-1",
+            &mut state,
+            &envelope_with("BASE RULES", "turn two"),
+        )
+        .unwrap();
+        assert_eq!(written(), "turn two");
+
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({"type": "system", "subtype": "compact_boundary"}),
+            &mut batch,
+        );
+        write_claude_hidden_context(
+            "run-1",
+            &mut state,
+            &envelope_with("BASE RULES", "turn three"),
+        )
+        .unwrap();
+        assert_eq!(written(), "BASE RULES\n\nturn three");
+
+        write_claude_hidden_context(
+            "run-1",
+            &mut state,
+            &envelope_with("NEW RULES", "turn four"),
+        )
+        .unwrap();
+        assert_eq!(written(), "NEW RULES\n\nturn four");
+
+        let mut plain = envelope_with("", "no base");
+        plain.hidden_system_context = "no base".to_string();
+        write_claude_hidden_context("run-1", &mut state, &plain).unwrap();
+        write_claude_hidden_context("run-1", &mut state, &plain).unwrap();
+        assert_eq!(written(), "no base");
+        let _ = std::fs::remove_file(file);
     }
 
     #[test]
