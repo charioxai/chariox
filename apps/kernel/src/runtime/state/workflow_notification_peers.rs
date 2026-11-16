@@ -141,6 +141,23 @@ impl KernelRuntimeState {
         .await
     }
 
+    /// The owner's own agent picks from the owner's sources of every kernel, as the owner's list
+    /// shows them. The cache follows the Cloud inventory, which does not change when a kernel
+    /// makes a source, so ask the peers of the current inventory now. A kernel without peers
+    /// (a slice) or a room of another owner than the signed-in profile has nothing to refresh.
+    pub(super) async fn refresh_peer_notification_sources(
+        &self,
+        owner: &str,
+    ) -> Result<(), DaemonError> {
+        if self.ensure_notification_home_role().is_err()
+            || self.ensure_notification_profile_owner(owner).is_err()
+        {
+            return Ok(());
+        }
+        self.refresh_notification_sources_from_inventory(owner, true)
+            .await
+    }
+
     pub(super) async fn refresh_notification_sources(
         &self,
         owner: &str,
@@ -364,6 +381,14 @@ impl KernelRuntimeState {
         request: RelayPeerRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
         self.ensure_notification_home_role()?;
+        if matches!(
+            request,
+            RelayPeerRequest::ListWorkflowNotificationSources {
+                protocol_version: VERSION
+            }
+        ) {
+            self.owned.ensure_owner_action_notification_sources(owner)?;
+        }
         self.owned
             .durable_state_store
             .with_workflow_runtime_transition_lock(|| {
@@ -594,9 +619,9 @@ impl KernelRuntimeState {
 /// names another kernel.
 pub(super) fn accepted_source_list(
     kernel: &str,
-    sources: Vec<WorkflowNotificationSourceSummary>,
+    mut sources: Vec<WorkflowNotificationSourceSummary>,
 ) -> Option<Vec<WorkflowNotificationSourceSummary>> {
-    if sources.len() > 1024
+    if store::cap_user_sources(&mut sources, |s| s.kind)
         || sources
             .iter()
             .any(|s| s.kernel_id != kernel || s.name.len() > 512 || s.display_name.len() > 520)
@@ -616,6 +641,7 @@ pub(super) fn accepted_source_list(
 
 #[cfg(test)]
 mod tests {
+    mod agent_subscribe;
     mod availability;
     mod enrolled_owner;
     mod generation;
@@ -855,6 +881,48 @@ mod tests {
         ));
     }
 
+    // The kernel registers a Room's owner-action source while listing; an owner at the user-source
+    // limit must still get its listing, with that source added.
+    #[test]
+    fn a_listing_at_the_source_limit_still_returns_every_source() {
+        let mut f = Fixture::for_kernel("source-limit-peer");
+        let (workflow, _, _) = f.workflow("source");
+        let (_, runtime, _) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
+        let source = f.source(&workflow);
+        let db = rusqlite::Connection::open(f.root.join("runtime/state.db")).unwrap();
+        for n in 0..1023 {
+            let mut filler = source.clone();
+            filler.source_id = format!("filler-{n}");
+            filler.exit_node_id = format!("filler-exit-{n}");
+            db.execute(
+                "INSERT INTO workflow_notification_exit_sources VALUES (?1,?2,?3,?4,?5,?6,1,?7)",
+                rusqlite::params![
+                    filler.source_id,
+                    filler.owner_user_id,
+                    filler.kernel_id,
+                    filler.session_id,
+                    filler.workflow_id,
+                    filler.exit_node_id,
+                    serde_json::to_string(&filler).unwrap()
+                ],
+            )
+            .unwrap();
+        }
+        let Ok(RelayPeerResponse::WorkflowNotificationSources { sources, .. }) = runtime
+            .receive_workflow_notification_peer(
+                "home-peer",
+                "local",
+                RelayPeerRequest::ListWorkflowNotificationSources {
+                    protocol_version: VERSION,
+                },
+            )
+        else {
+            panic!("a listing at the source limit must not fail")
+        };
+        assert!(sources.iter().any(|s| s.source_id == source.source_id));
+        assert!(sources.iter().any(|s| s.name == "Agent needs your action"));
+    }
+
     fn machine_identity(subject: &str) -> chariox_relay::protocol::RelayCallerIdentity {
         chariox_relay::protocol::RelayCallerIdentity {
             realm_id: "wfnotify-fixture".into(),
@@ -1083,8 +1151,11 @@ mod tests {
         let RelayPeerResponse::WorkflowNotificationSources { sources, .. } = response else {
             panic!("wrong source list")
         };
-        assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0].source_id, source_record.source_id);
+        // The room's "Agent needs your action" source is listed with its workflow exit.
+        assert_eq!(sources.len(), 2);
+        assert!(sources
+            .iter()
+            .any(|s| s.source_id == source_record.source_id));
         target
             .store
             .notify(NotificationOperation::Cache {
@@ -1320,8 +1391,9 @@ mod tests {
                 .store
                 .notification_cached_sources("local")
                 .unwrap()
-                .is_empty(),
-            "MP-08 / MP-10: empty list must clear the persistent source cache"
+                .iter()
+                .all(|s| s.source_id != source_record.source_id),
+            "MP-08 / MP-10: a disabled source must leave the persistent source cache"
         );
         let LocalDaemonResponse::WorkflowNotifications { subscriptions, .. } = target_runtime
             .execute_workflow_notification_request(

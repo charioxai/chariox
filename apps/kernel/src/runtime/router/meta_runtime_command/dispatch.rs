@@ -919,7 +919,7 @@ impl CommandRouter {
 
     /// `trigger notification <source> [prompt]`, `trigger add schedule …` and `trigger remove <id>`:
     /// an agent acts on its own triggers only, so the request never carries an agent argument.
-    fn meta_trigger_request(
+    async fn meta_trigger_request(
         &self,
         session: &crate::session::RuntimeSession,
         actor: &crate::agent::AgentInstance,
@@ -935,12 +935,15 @@ impl CommandRouter {
         }
         match args.first().map(String::as_str) {
             Some("notification") => {
-                let (source, prompt) = self.runtime_state.choose_notification_source(
-                    session.owner_user_id(),
-                    actor.owner_user_id(),
-                    session.id(),
-                    &args[1..],
-                )?;
+                let (source, prompt) = self
+                    .runtime_state
+                    .choose_notification_source(
+                        session.owner_user_id(),
+                        actor.owner_user_id(),
+                        session.id(),
+                        &args[1..],
+                    )
+                    .await?;
                 Ok(LocalDaemonRequest::CreateAgentTrigger(
                     crate::local::CreateAgentTriggerRequest {
                         session_id: session.id().to_string(),
@@ -1023,7 +1026,10 @@ impl CommandRouter {
                     .environment_source(from)
                     .map(|(kernel_id, _)| kernel_id)
             }),
-            "trigger" => self.meta_trigger_request(session, metaagent, &tokens[1..]),
+            "trigger" => {
+                self.meta_trigger_request(session, metaagent, &tokens[1..])
+                    .await
+            }
             "mcp" => {
                 let agents = self.runtime_state.session_agents(session.id());
                 meta_extension_request(

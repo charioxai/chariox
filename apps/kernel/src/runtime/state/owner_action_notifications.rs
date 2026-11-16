@@ -25,6 +25,28 @@ impl KernelRuntimeOwnedState {
     }
 }
 
+impl KernelRuntimeOwnedState {
+    /// Every live Room of `owner` on this kernel has its "Agent needs your action" source, so an
+    /// agent of the owner on another kernel can follow it before the Room's first alert.
+    pub(super) fn ensure_owner_action_notification_sources(
+        &self,
+        owner: &str,
+    ) -> Result<(), DaemonError> {
+        let rooms = self.session_store.read().list_sessions();
+        let (known, _, _) = self.durable_state_store.notification_inventory(owner)?;
+        for room in rooms.iter().filter(|room| {
+            room.owner_user_id() == owner
+                && room.status() != crate::session::SessionStatus::Ended
+                && !known
+                    .iter()
+                    .any(|s| s.source_id == owner_action_source(room).source_id)
+        }) {
+            self.ensure_owner_action_notification_source(room)?;
+        }
+        Ok(())
+    }
+}
+
 /// The source of a Room's blocked-task alerts for its current owner.
 pub(super) fn owner_action_source(
     session: &crate::session::RuntimeSession,

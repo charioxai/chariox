@@ -63,6 +63,27 @@ pub(crate) fn encode_notification_envelope(
 const MAX_OCCURRENCES: i64 = 4096;
 const MAX_SUBSCRIPTIONS: usize = 32;
 pub(crate) const MAX_PENDING: i64 = 1024;
+/// Sources an owner may have apart from the kernel's own owner-action sources, one per Room.
+pub(crate) const MAX_USER_SOURCES: usize = 1024;
+
+/// The one source-limit rule, applied where a kernel lists its sources and where another kernel
+/// accepts the list: every owner-action source stays, and the first `MAX_USER_SOURCES` others.
+/// True when any other source had to be dropped.
+pub(crate) fn cap_user_sources<T>(
+    sources: &mut Vec<T>,
+    kind: impl Fn(&T) -> crate::local::NotificationSourceKind,
+) -> bool {
+    let mut user = 0;
+    let before = sources.len();
+    sources.retain(|source| {
+        if kind(source) == crate::local::NotificationSourceKind::OwnerAction {
+            return true;
+        }
+        user += 1;
+        user <= MAX_USER_SOURCES
+    });
+    sources.len() < before
+}
 pub(crate) use super::app_event_delivery::PreparedNotification;
 pub(super) use completion::capture_in;
 
@@ -387,12 +408,13 @@ impl DurableKernelStateStore {
         owner: &str,
     ) -> Result<WorkflowNotificationInventory, DaemonError> {
         let db = self.lock_connection("workflow.notifications.inventory")?;
-        let mut query = db.prepare("SELECT payload_json FROM workflow_notification_exit_sources WHERE owner_id=?1 ORDER BY source_id LIMIT 1024").map_err(sql)?;
-        let sources = query
+        let mut query = db.prepare("SELECT payload_json FROM workflow_notification_exit_sources WHERE owner_id=?1 ORDER BY source_id").map_err(sql)?;
+        let mut sources = query
             .query_map([owner], |r| r.get::<_, String>(0))
             .map_err(sql)?
             .map(|r| decode(&r.map_err(sql)?))
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<WorkflowNotificationSource>, _>>()?;
+        cap_user_sources(&mut sources, |s| s.kind);
         let mut query = db.prepare("SELECT notification_json FROM app_automations WHERE owner_id=?1 AND source_kind='workflow_completion' AND status='active' ORDER BY automation_id LIMIT 1024").map_err(sql)?;
         let subscriptions = query
             .query_map([owner], |r| r.get::<_, String>(0))
@@ -544,15 +566,17 @@ fn apply(
                     return Err(error("source not available"));
                 }
                 source.source_id = id;
-            } else {
+            } else if source.kind != crate::local::NotificationSourceKind::OwnerAction {
+                // The kernel registers owner-action sources itself, one per Room: they neither
+                // count toward nor hit the limit, so a full owner can still list its sources.
                 let count: i64 = tx
                     .query_row(
-                        "SELECT count(*) FROM workflow_notification_exit_sources WHERE owner_id=?1",
+                        "SELECT count(*) FROM workflow_notification_exit_sources WHERE owner_id=?1 AND json_extract(payload_json,'$.kind')<>'owner_action'",
                         [&source.owner_user_id],
                         |r| r.get(0),
                     )
                     .map_err(sql)?;
-                if count >= 1024 {
+                if count >= MAX_USER_SOURCES as i64 {
                     return Err(error("workflow notification source limit"));
                 }
             }

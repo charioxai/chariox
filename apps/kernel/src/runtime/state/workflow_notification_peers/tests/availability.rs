@@ -4,7 +4,7 @@ use super::reconnect::{both_connected, connect};
 use super::*;
 use crate::session::{AgentTriggerNotificationSource, AgentTriggerSource};
 
-fn on_a_big_stack<F: std::future::Future<Output = ()> + Send + 'static>(drill: F) {
+pub(super) fn on_a_big_stack<F: std::future::Future<Output = ()> + Send + 'static>(drill: F) {
     std::thread::Builder::new()
         .stack_size(32 * 1024 * 1024)
         .spawn(move || {
@@ -23,11 +23,11 @@ fn on_a_big_stack<F: std::future::Future<Output = ()> + Send + 'static>(drill: F
 
 /// A source kernel and a target kernel behind a real relay; the target follows one source of the
 /// source kernel with an agent notification trigger saved the way the product saves it.
-struct Drill {
-    source: Fixture,
-    target: Fixture,
-    source_runtime: KernelRuntimeState,
-    target_runtime: KernelRuntimeState,
+pub(super) struct Drill {
+    pub(super) source: Fixture,
+    pub(super) target: Fixture,
+    pub(super) source_runtime: KernelRuntimeState,
+    pub(super) target_runtime: KernelRuntimeState,
     source_connection: Option<(watch::Sender<bool>, tokio::task::JoinHandle<()>)>,
     target_connection: (watch::Sender<bool>, tokio::task::JoinHandle<()>),
     source_router: Arc<CommandRouter>,
@@ -37,12 +37,20 @@ struct Drill {
     url: String,
     server_tx: oneshot::Sender<()>,
     server_task: tokio::task::JoinHandle<()>,
-    workflow: String,
+    pub(super) workflow: String,
     trigger_id: String,
 }
 
 impl Drill {
     async fn start() -> Self {
+        let mut drill = Self::connect().await;
+        drill.refresh_cache().await;
+        drill.follow().await;
+        drill
+    }
+
+    /// Both kernels connected through the relay, nothing cached and nobody following.
+    pub(super) async fn connect() -> Self {
         let secret = format!("fixture-{:032x}", rand::random::<u128>());
         let server = Arc::new(RelayServer::with_auth_verifier(
             RelayConfig {
@@ -85,7 +93,7 @@ impl Drill {
         seed_presence(&target_runtime, &tc, &sc.daemon_id).await;
         seed_presence(&source_runtime, &sc, &tc.daemon_id).await;
         source.source(&workflow);
-        let mut drill = Self {
+        Self {
             source,
             target,
             source_runtime,
@@ -101,10 +109,7 @@ impl Drill {
             server_task,
             workflow,
             trigger_id: String::new(),
-        };
-        drill.refresh_cache().await;
-        drill.follow().await;
-        drill
+        }
     }
 
     /// The inventory refresh: the target caches what the source kernel lists.
@@ -230,7 +235,7 @@ impl Drill {
         .await;
     }
 
-    async fn finish(mut self) {
+    pub(super) async fn finish(mut self) {
         if let Some((stop, connector)) = self.source_connection.take() {
             stop.send(true).unwrap();
             let _ = connector.await;
@@ -343,5 +348,68 @@ async fn re_enable_drill() {
         drill.listening(),
         "the source kernel is still probed, so the enabled source brings the trigger back"
     );
+    drill.finish().await;
+}
+
+// A kernel at the user-source limit with one live Room lists 1,024 sources plus the Room's own
+// owner-action source. The receiving kernel must accept that listing, on refresh and on probe, or
+// every cached source of the kernel turns unavailable.
+#[test]
+fn a_full_source_inventory_with_a_live_room_stays_available_to_the_receiver() {
+    on_a_big_stack(full_inventory_drill());
+}
+
+async fn full_inventory_drill() {
+    let mut drill = Drill::connect().await;
+    let live = drill.source.source(&drill.workflow);
+    let db = rusqlite::Connection::open(drill.source.root.join("runtime/state.db")).unwrap();
+    // An App's event source is live for as long as it is enabled.
+    for n in 0..1023 {
+        let mut app = live.clone();
+        app.kind = crate::local::NotificationSourceKind::AppEvent;
+        app.source_id = format!("app-event-{n}");
+        app.exit_node_id = format!("app-route-{n}");
+        db.execute(
+            "INSERT INTO workflow_notification_exit_sources VALUES (?1,?2,?3,?4,?5,?6,1,?7)",
+            rusqlite::params![
+                app.source_id,
+                app.owner_user_id,
+                app.kernel_id,
+                app.session_id,
+                app.workflow_id,
+                app.exit_node_id,
+                serde_json::to_string(&app).unwrap()
+            ],
+        )
+        .unwrap();
+    }
+    drill
+        .target_runtime
+        .refresh_notification_sources_from_inventory("local", true)
+        .await
+        .unwrap();
+    let cached = |drill: &Drill| {
+        drill
+            .target
+            .store
+            .notification_cached_sources("local")
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.kernel_id == drill.source_config.daemon_id)
+            .collect::<Vec<_>>()
+    };
+    let listed = cached(&drill);
+    assert_eq!(listed.len(), 1025, "1,024 sources and the Room's own");
+    assert!(listed.iter().all(|s| s.available));
+    drill.follow().await;
+
+    let t0 = crate::session::unix_epoch_ms();
+    drill.target_runtime.probe_notification_sources(t0).await;
+    drill
+        .target_runtime
+        .probe_notification_sources(t0 + 10_000)
+        .await;
+    assert!(drill.listening(), "two probes of a full inventory");
+    assert!(cached(&drill).iter().all(|s| s.available));
     drill.finish().await;
 }
