@@ -19,6 +19,7 @@ import {
   mergeUiPreferences,
   relayCloudProfile,
 } from "./preferences.js"
+import { listRoomListSessionsPage } from "./room-list-sessions-page.js"
 import { loadLocalKernelPresences } from "./local-kernel-presence.js"
 import { createWaitingRoomKernelConnectionController } from "./waiting-room-kernel-client.js"
 import {
@@ -296,10 +297,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
 
   const waitingRoomInventoryRefreshController = createWaitingRoomInventoryRefreshController({
     isKernelConnected: deps.kernelConnected,
-    getSessionPage: async (cursor, inventoryVersion) => {
-      const response = await deps.client.currentClient().send({ ListWaitingRoomSessions: { cursor, limit: 500, inventory_version: inventoryVersion } }) as { WaitingRoomSessionsListed: { page: { sessions: import("./cli-types.js").RoomListSessionSummary[]; next_cursor: string | null } } }
-      return response.WaitingRoomSessionsListed.page
-    },
+    getSessionPage: (cursor, inventoryVersion) => listRoomListSessionsPage(deps.client.currentClient(), cursor, inventoryVersion),
     getInventoryStatus: deps.waitingRoomInventoryStatus,
     setInventoryStatus: deps.setWaitingRoomInventoryStatus,
     getWaitingRoomState: deps.startState,
