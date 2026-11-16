@@ -83,13 +83,6 @@ impl KernelRuntimeState {
         let run =
             run.ok_or_else(|| ledger::error("jobs require the home agent's active build run"))?;
         let run = self.watched_process_run(run.id())?;
-        if run.permission_level() != crate::provider::AgentPermissionLevel::Yolo
-            && !self.sudo_task_authorizes_run(&run).await
-        {
-            return Err(ledger::error(
-                "jobs require an unrestricted build agent with unattended command permission",
-            ));
-        }
         let mut arguments = args.clone();
         let object = arguments
             .as_object_mut()
