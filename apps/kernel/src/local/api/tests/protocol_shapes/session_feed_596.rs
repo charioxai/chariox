@@ -67,9 +67,9 @@ fn fixture_events() -> serde_json::Value {
     };
     let subscribe = KernelIncomingFrame::Subscribe {
         request_id: "request-1".into(),
-        session_id: "__waiting_room_inventory__".into(),
-        attachment_id: "__waiting_room_inventory__".into(),
-        subscription_scope: Some("waiting_room_inventory".into()),
+        session_id: "__room_list__".into(),
+        attachment_id: "__room_list__".into(),
+        subscription_scope: Some("room_list".into()),
         resume_from_event_id: None,
         heartbeat_interval_ms: Some(1_000),
         kernel: None,
@@ -92,7 +92,7 @@ fn session_feed_596_shapes_are_pinned() {
     let bytes = include_bytes!("session-feed-596.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "8c8b6793143f8fe597e8132e3855b4e601fab5d1bbc5897194ad75c0ed2d986d"
+        "58260b5d1989065ef8fbd159b693ba869f4e6e61259b47f315b6e7e548f325cf"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture, fixture_events());

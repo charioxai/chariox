@@ -1,7 +1,7 @@
 import type { SessionProcessState } from "./kernel-events.js"
 import type { TurnOutcome } from "./kernel-types-runtime.js"
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 1009
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 1059
 
 export type * from "./kernel-types-apps.js"
 

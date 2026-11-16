@@ -6,7 +6,7 @@ fn mp02_mp08_owner13_workspace_git_protocol_542() {
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
-    let target = crate::local::WaitingRoomLaunchTarget {
+    let target = crate::local::RoomListLaunchTarget {
         repository_state: Some("not-repository".into()),
         git_available: true,
         workspace_id: "/ordinary".into(),

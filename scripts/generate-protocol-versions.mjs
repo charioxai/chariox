@@ -15,6 +15,7 @@ const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/files-watch-1008.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/agent-browser-owner-action-993.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/agent-max-context-1009.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/room-list-1059.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-dev-push-933.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-dev-register-933.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-view-inspection-933.json",

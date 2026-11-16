@@ -68,6 +68,7 @@ mod room_controller;
 mod room_environment;
 mod room_environment_placement;
 mod room_exec;
+mod room_list;
 mod room_setup;
 mod room_terminal;
 mod session_feed_596;
@@ -126,9 +127,9 @@ fn history_page_entry(
 
 mod owner_handoff;
 mod relay_transport;
+mod room_list_workspace;
 mod room_workflows;
 mod screenshot;
-mod waiting_room_workspace;
 
 mod leased_agent_file_copy;
 mod machine_files;

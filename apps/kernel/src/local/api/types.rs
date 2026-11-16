@@ -52,6 +52,7 @@ mod request;
 mod resource_telemetry;
 mod response;
 mod room_environment;
+mod room_list;
 mod room_terminal;
 mod runtime_identity;
 mod screenshot;
@@ -62,7 +63,6 @@ mod terminal_interaction;
 mod usage_snapshot;
 mod user_domain_access;
 mod vault_secret;
-mod waiting_room;
 mod workflow;
 mod workflow_notification;
 mod workspace;
@@ -109,6 +109,7 @@ pub use request::*;
 pub use resource_telemetry::*;
 pub use response::*;
 pub use room_environment::*;
+pub use room_list::*;
 pub use room_terminal::*;
 pub use runtime_identity::*;
 pub use screenshot::*;
@@ -119,7 +120,6 @@ pub use terminal_interaction::*;
 pub use usage_snapshot::*;
 pub use user_domain_access::*;
 pub use vault_secret::*;
-pub use waiting_room::*;
 pub use workflow::*;
 pub use workflow_notification::*;
 pub use workspace::*;
@@ -241,7 +241,7 @@ pub use workspace::*;
 /// Version 371 adds native process identity to authenticated product status and
 /// the value-free Project environment layer and inputs (MP-08).
 /// Version 372 adds session-bound post-launch Project Environment adjustment (MP-08).
-/// Version 373 adds worker Environment queries and waiting-room pending review visibility (MP-08).
+/// Version 373 adds worker Environment queries and room-list pending review visibility (MP-08).
 /// Version 374 binds Computer credential approval to a native display target (MP-08).
 /// Version 375 normalizes primitive MCP script results to object structured content (MP-08/MP-10).
 /// Version 376 adds receiving-kernel provider login interaction projection and
@@ -540,4 +540,4 @@ pub use workspace::*;
 /// resource feed, including home-relayed worker invalidations; 1008 adds the person-confirmed App action card
 /// (`app_confirmation` on an `app-confirm-*` interaction, with the App's own preview as its protected browser
 /// `view`), and a `state_wait` that ended without a change answers only `revision` and `unchanged: true`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1009;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1059;
