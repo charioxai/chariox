@@ -591,12 +591,15 @@ async fn the_enrolled_owner_resolves_its_sources_of_any_room() {
         &source,
     );
     assert!(resolved.is_ok(), "{:?}", resolved.err());
-    let chosen = rig.runtime.choose_notification_source(
-        "local",
-        enrolled,
-        "another-room",
-        std::slice::from_ref(&source),
-    );
+    let chosen = rig
+        .runtime
+        .choose_notification_source(
+            "local",
+            enrolled,
+            "another-room",
+            std::slice::from_ref(&source),
+        )
+        .await;
     assert!(chosen.is_ok(), "{:?}", chosen.err());
     assert!(rig
         .runtime
@@ -610,6 +613,7 @@ async fn the_enrolled_owner_resolves_its_sources_of_any_room() {
             "another-room",
             std::slice::from_ref(&source)
         )
+        .await
         .is_err());
 }
 
