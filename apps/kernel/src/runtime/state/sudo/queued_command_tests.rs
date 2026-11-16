@@ -7,6 +7,7 @@ use crate::runtime::session_actor::{FocusedAgentProjection, SessionRuntime};
 
 fn spawn(session_id: &str, alias: &str, kernel_ref: Option<&str>) -> LocalDaemonRequest {
     LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        max_context_tokens: None,
         no_subscribe: false,
         session_id: session_id.into(),
         alias: Some(alias.into()),

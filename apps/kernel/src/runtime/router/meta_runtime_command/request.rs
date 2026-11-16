@@ -47,6 +47,7 @@ pub(super) fn meta_agent_request(
                 ));
             }
             Ok(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                max_context_tokens: spawn.max_context_tokens,
                 no_subscribe: false,
                 account_profile: spawn.account_profile,
                 session_id: session.id().to_string(),

@@ -66,6 +66,7 @@ pub(super) struct MetaAgentSpawnArgs {
     pub(super) provider: Option<String>,
     pub(super) model: Option<String>,
     pub(super) effort: Option<String>,
+    pub(super) max_context_tokens: Option<u64>,
     pub(super) worktree_id: Option<String>,
     pub(super) kernel_ref: Option<String>,
     pub(super) slice_ref: Option<String>,
@@ -109,6 +110,7 @@ pub(super) fn parse_meta_agent_spawn_args(
     let mut provider = None;
     let mut explicit_model = None;
     let mut effort = None;
+    let mut max_context_tokens = None;
     let mut directory = None;
     let mut git_worktree = None;
     let mut branch = None;
@@ -169,6 +171,17 @@ pub(super) fn parse_meta_agent_spawn_args(
                     ));
                 }
                 effort = Some(value.clone());
+                index += 2;
+            }
+            "--max-context" => {
+                let usage = "usage: agent spawn --max-context <tokens, such as 200k>";
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.starts_with("--"))
+                    .ok_or_else(|| meta_command_error(usage))?;
+                max_context_tokens = Some(
+                    crate::agent::parse_max_context_tokens(value).map_err(meta_command_error)?,
+                );
                 index += 2;
             }
             "--dir" | "--directory" => {
@@ -404,6 +417,7 @@ pub(super) fn parse_meta_agent_spawn_args(
                 slice_ref.is_some() || slice_create.is_some() || slice_display_mode.is_some(),
             ),
             ("--deadline", deadline.is_some()),
+            ("--max-context", max_context_tokens.is_some()),
             ("--command-id", command_id.is_some() && kernel_ref.is_none()),
         ];
         if let Some((option, _)) = unsupported.iter().find(|(_, given)| *given) {
@@ -432,6 +446,7 @@ pub(super) fn parse_meta_agent_spawn_args(
         provider,
         model: explicit_model.or_else(|| positional.get(1).cloned()),
         effort,
+        max_context_tokens,
         worktree_id,
         kernel_ref,
         slice_ref,

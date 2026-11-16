@@ -41,6 +41,8 @@ fn local_request_api_rejects_config_updates_for_native_tui_provider_agents() {
     let config_error = harness
         .dispatch(LocalDaemonRequest::UpdateAgentConfig(
             UpdateAgentConfigRequest {
+                max_context_tokens: None,
+                clear_max_context_tokens: false,
                 session_id: session.id().to_string(),
                 agent_id: agent.id().to_string(),
                 execution_mode: Some(AgentExecutionMode::Plan),
@@ -188,6 +190,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
 
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
@@ -377,6 +380,7 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
         .expect("prompt should start");
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),

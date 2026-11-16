@@ -74,6 +74,7 @@ fn structured_output_pump_applies_finished_jobs_from_other_runs() {
     };
     let worker_agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),

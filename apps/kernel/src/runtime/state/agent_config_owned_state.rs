@@ -1,6 +1,33 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn set_agent_max_context_tokens(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+        max_context_tokens: Option<u64>,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
+        self.ensure_agent_owner(agent_id, caller_user_id, "update agent max context")?;
+        crate::agent::ensure_spawn_max_context(
+            agent.provider(),
+            max_context_tokens,
+            agent.remote_execution().is_some(),
+        )?;
+        let agent = self
+            .agent_store
+            .set_max_context_tokens(agent_id, max_context_tokens)?;
+        let _ = self.session_snapshot(session_id)?;
+        Ok(agent)
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "Preserve the existing update_agent_config operation signature and explicit context arguments"

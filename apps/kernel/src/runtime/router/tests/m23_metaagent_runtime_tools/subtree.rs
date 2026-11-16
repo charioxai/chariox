@@ -588,6 +588,7 @@ async fn spawn_answer_worktree() {
 /// The local-protocol answer of `SpawnAgent` as a client reads it.
 async fn local_spawn_answer(world: &World, key: Option<&str>) -> serde_json::Value {
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        max_context_tokens: None,
         no_subscribe: true,
         session_id: world.room.clone(),
         alias: None,

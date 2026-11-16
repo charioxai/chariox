@@ -467,6 +467,15 @@ impl AgentServiceStore {
         )
     }
 
+    pub fn set_max_context_tokens(
+        &self,
+        agent_id: &str,
+        max_context_tokens: Option<u64>,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write()
+            .set_max_context_tokens(agent_id, max_context_tokens)
+    }
+
     pub fn update_agent_profile(
         &self,
         agent_id: &str,

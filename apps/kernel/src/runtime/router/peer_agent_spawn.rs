@@ -109,6 +109,7 @@ impl CommandRouter {
         // The owner as this room knows it: `local` in a room made before enrollment.
         let creator = self.runtime_state.room_member_user_id(&room, owner);
         let spawn = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            max_context_tokens: None,
             no_subscribe: true,
             session_id: room,
             alias,

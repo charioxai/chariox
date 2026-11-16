@@ -31,6 +31,7 @@ async fn local_spawn_agent_uses_owned_runtime_state_without_app_lock() {
     );
 
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,
         session_id: session_id.clone(),
@@ -132,6 +133,7 @@ async fn local_spawn_agents_batch_uses_owned_runtime_state_without_app_lock() {
         session_id: session_id.clone(),
         agents: vec![
             crate::local::SpawnAgentsRequestItem {
+                max_context_tokens: None,
                 account_profile: None,
                 alias: Some("owned-agent-1".to_string()),
                 provider: Some("dev-stub".to_string()),
@@ -146,6 +148,7 @@ async fn local_spawn_agents_batch_uses_owned_runtime_state_without_app_lock() {
                 metaagent: false,
             },
             crate::local::SpawnAgentsRequestItem {
+                max_context_tokens: None,
                 account_profile: None,
                 alias: Some("owned-agent-2".to_string()),
                 provider: Some("dev-stub".to_string()),
@@ -253,6 +256,7 @@ async fn local_spawn_agents_batch_normalizes_local_kernel_ref_to_bulk_owned_path
         session_id: session_id.clone(),
         agents: vec![
             crate::local::SpawnAgentsRequestItem {
+                max_context_tokens: None,
                 account_profile: None,
                 alias: Some("local-kernel-ref-1".to_string()),
                 provider: Some("dev-stub".to_string()),
@@ -267,6 +271,7 @@ async fn local_spawn_agents_batch_normalizes_local_kernel_ref_to_bulk_owned_path
                 metaagent: false,
             },
             crate::local::SpawnAgentsRequestItem {
+                max_context_tokens: None,
                 account_profile: None,
                 alias: Some("local-kernel-ref-2".to_string()),
                 provider: Some("dev-stub".to_string()),
@@ -355,6 +360,7 @@ async fn local_spawn_agents_batch_emits_one_compact_metaagent_lifecycle_event() 
         session_id: session_id.clone(),
         agents: (0..3)
             .map(|index| crate::local::SpawnAgentsRequestItem {
+                max_context_tokens: None,
                 account_profile: None,
                 alias: Some(format!("compact-batch-{index}")),
                 provider: Some("dev-stub".to_string()),
@@ -441,6 +447,7 @@ async fn local_spawn_agents_batch_restores_from_compact_durable_event() {
             session_id: session_id.clone(),
             agents: vec![
                 crate::local::SpawnAgentsRequestItem {
+                    max_context_tokens: None,
                     account_profile: None,
                     alias: Some("restored-bulk-1".to_string()),
                     provider: Some("dev-stub".to_string()),
@@ -455,6 +462,7 @@ async fn local_spawn_agents_batch_restores_from_compact_durable_event() {
                     metaagent: false,
                 },
                 crate::local::SpawnAgentsRequestItem {
+                    max_context_tokens: None,
                     account_profile: None,
                     alias: Some("restored-bulk-2".to_string()),
                     provider: Some("dev-stub".to_string()),

@@ -561,6 +561,17 @@ fn claude_process_env(request: &LaunchProviderRequest) -> BTreeMap<String, Strin
     let mut env = BTreeMap::from([(CLAUDE_DISABLE_AUTOUPDATER_ENV.to_string(), "1".to_string())]);
     env.extend(request.provider_account_env.clone());
     apply_claude_root_yolo_environment(&mut env, request.permission_level.unwrap_or_default());
+    if let Some(tokens) = request
+        .provider_config_overrides
+        .get(super::launch_contract::MAX_CONTEXT_TOKENS_OVERRIDE)
+        .and_then(serde_json::Value::as_u64)
+    {
+        // Claude Code reads a plain token count; the variable beats its settings.
+        env.insert(
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW".to_string(),
+            tokens.to_string(),
+        );
+    }
     env
 }
 
@@ -839,6 +850,41 @@ mod tests {
         assert!(models.contains_key("claude-opus-4-8"));
         assert!(models.contains_key("claude-haiku-4-5"));
         assert!(!models.contains_key("not-a-claude-model"));
+    }
+
+    #[test]
+    fn an_agents_max_context_becomes_claudes_compact_window() {
+        let request = |tokens| {
+            LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet")
+                .with_max_context_tokens(tokens)
+        };
+        assert_eq!(
+            super::claude_process_env(&request(Some(200_000)))
+                .get("CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+                .map(String::as_str),
+            Some("200000")
+        );
+        assert!(
+            !super::claude_process_env(&request(None))
+                .contains_key("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
+            "without a max context the provider's own default applies"
+        );
+    }
+
+    #[test]
+    fn an_agents_max_context_becomes_codexs_auto_compact_limit() {
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "gpt-5.4")
+                .with_max_context_tokens(Some(150_000));
+        assert_eq!(
+            request.provider_config_overrides["model_auto_compact_token_limit"],
+            serde_json::json!(150_000)
+        );
+        let none = LaunchProviderRequest::new("session-1", "codex", "codex", "default", "gpt-5.4")
+            .with_max_context_tokens(None);
+        assert!(!none
+            .provider_config_overrides
+            .contains_key("model_auto_compact_token_limit"));
     }
 
     #[test]

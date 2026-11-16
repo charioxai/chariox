@@ -166,6 +166,8 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
     );
 
     let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
+        max_context_tokens: None,
+        clear_max_context_tokens: false,
         session_id: "session-1".to_string(),
         agent_id: "agent-1".to_string(),
         execution_mode: Some(AgentExecutionMode::Build),
