@@ -1499,6 +1499,15 @@ mod tests {
 
     // MP-08 / MP-10 / MP-11 (review 914 P3): room-mode sends report durable
     // inbox admission and request no reply unless asked.
+    // The person reads status lines in the pane: a tool step such as taking a snapshot is not news to them.
+    #[test]
+    fn runtime_instructions_keep_snapshots_out_of_visible_status_lines() {
+        assert!(RUNTIME_BASE.contains("never contain the word “snapshot”"));
+        assert!(RUNTIME_BASE
+            .contains("never “the snapshot shows an empty field” or “taking a fresh snapshot”"));
+        assert!(!RUNTIME_BASE.contains("take a fresh snapshot, and show a replacement card"));
+    }
+
     #[test]
     fn mp11_review_runtime_instructions_describe_durable_room_messages() {
         for expected in [
