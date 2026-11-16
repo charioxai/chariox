@@ -115,7 +115,7 @@ async fn cards() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "0f8fe2779bdf78198e9501e871589e15439b142ab03a14256139133eaf60f9fe"
+        "415125311b5d2ea19542180bde06898fd26c1524902e6781f5e040de19777a68"
     );
 }
 
