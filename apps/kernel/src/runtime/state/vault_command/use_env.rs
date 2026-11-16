@@ -30,7 +30,7 @@ struct UseArgs {
 pub(crate) fn use_env_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_USE_ENV.into(),
-        description: "Run one command (argv, no shell) in your workspace with Vault values injected by the kernel for the declared service origin: env maps environment variable names to credential_ids, stdin sends one credential's value to the command's standard input. You never see the values; in this command's returned stdout and stderr they appear as [vault:<credential_id>]. Works with credentials whose allowed uses include env, such as those from chariox.vault.capture_command. Returns exit_code, stdout and stderr.".into(),
+        description: "Run one command (argv, no shell) in your workspace with Vault values injected for the declared service origin: env maps variable names to credential_ids, stdin sends one credential's value to standard input. You never see the values; they appear as [vault:<credential_id>] in the returned exit_code, stdout and stderr. Works with credentials whose allowed uses include env, such as those from chariox.vault.capture_command.".into(),
         input_schema: serde_json::json!({"type":"object","required":["argv","origin"],"properties":{
             "origin":{"type":"string","description":"Exact service origin this command uses, such as https://api.example.com"},
             "argv":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64},

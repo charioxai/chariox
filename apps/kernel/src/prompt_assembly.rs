@@ -1580,6 +1580,32 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// The runtime note every agent's first call pays for. A change that grows
+    /// it must raise the committed number with its reason.
+    #[test]
+    fn hidden_runtime_note_matches_the_committed_context_budget() {
+        let root = temp_prompt_root("note-budget");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry.materialize_bundled_defaults().unwrap();
+        let envelope = PromptAssemblyService::new(registry)
+            .assemble_provider_turn(
+                &test_run(false),
+                "Please help",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .unwrap();
+        let budget: serde_json::Value =
+            serde_json::from_str(include_str!("../agent_context_budget.json")).unwrap();
+        assert_eq!(
+            budget["hidden_runtime_note_bytes"],
+            envelope.hidden_base.len(),
+            "set apps/kernel/agent_context_budget.json to the measured value"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
     // MP-08: an agent knows the pane draws pictures, so a chart is written to a file and referenced, not drawn as text.
     #[test]
     fn mp08_runtime_instructions_say_the_pane_renders_images() {

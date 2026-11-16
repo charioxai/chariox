@@ -96,7 +96,7 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_EXTENSION_TOOL.to_string(),
-            description: "Request access to a Chariox-managed MCP, skill, script, or connector for the current agent. Script requests require an environment. Connector requests may include an allow safety level and credential handle.".to_string(),
+            description: "Request access to a Chariox-managed MCP, skill, script, or connector for the current agent. Script requests require an environment. Connector requests may include an allow safety level and credential handle. A skill request returns the full SKILL.md body by default, to follow in the current turn; a newly requested MCP makes Chariox reload the provider conversation after the current turn and send an automatic continuation prompt once it is available.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["kind", "name"],

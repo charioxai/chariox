@@ -412,6 +412,11 @@ async fn handle_json_rpc_value(
                 .runtime_tool_specs_for_auth_token_async(auth_token.to_owned())
                 .await?;
             let claude_loading = tool_loading::ClaudeLoading::for_run(&router, auth_token);
+            let tools = if claude_loading.is_some() {
+                tool_loading::without_alias_twins(tools)
+            } else {
+                tools
+            };
             // An invalidation during discovery cannot be acknowledged by an
             // older list. Record only successful discovery for the same run.
             if let Some((run_id, revision)) = captured {
