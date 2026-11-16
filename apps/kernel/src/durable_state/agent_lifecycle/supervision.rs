@@ -742,6 +742,7 @@ fn cancel_task(
             if cancel_retained_work(&mut t) {
                 if !by_agent {
                     t.reason = OWNER_CANCELLED_REASON.into();
+                    keep_agent_stopped(tx, &t)?;
                 }
                 t.revision += 1;
                 save(tx, &t)?;
@@ -754,6 +755,34 @@ fn cancel_task(
         }
     }
     Ok(Outcome::Task(t))
+}
+/// Message delivery reads the stop from the agent's newest task, so an owner's Stop of an older
+/// task that retains work marks the newest finished one too; the owner's next prompt starts a
+/// newer task and ends the stop.
+fn keep_agent_stopped(
+    tx: &Transaction<'_>,
+    stopped: &AgentTaskExecution,
+) -> Result<(), DaemonError> {
+    let Some(mut newest) = super::tasks_where(
+        tx,
+        "room_id=?1 AND agent_id=?2",
+        params![stopped.room_id, stopped.agent_id],
+    )?
+    .pop() else {
+        return Ok(());
+    };
+    if newest.task_id != stopped.task_id
+        && matches!(
+            newest.state,
+            ExecutionState::Done | ExecutionState::Cancelled
+        )
+        && newest.reason != OWNER_CANCELLED_REASON
+    {
+        newest.reason = OWNER_CANCELLED_REASON.into();
+        newest.revision += 1;
+        save(tx, &newest)?;
+    }
+    Ok(())
 }
 /// Asks for the end of the work a Done task retains; its end closes the obligation without
 /// waking the agent, whom Stop told to stand down.

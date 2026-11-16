@@ -329,6 +329,9 @@ async fn owner_stop_of_work_a_done_turn_retains_keeps_messages_pending_until_the
         .unwrap();
     let done = settle("retaining-turn");
     assert_eq!(done.state, ExecutionState::Done);
+    // A later turn ends while the process runs: the newest task is not the one retaining work.
+    begin("intervening-turn");
+    assert_eq!(settle("intervening-turn").state, ExecutionState::Done);
     let Outcome::Task(stopped) = store
         .agent_lifecycle(Operation::CancelTask {
             task: done.task_id.clone(),

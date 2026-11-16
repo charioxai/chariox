@@ -1339,12 +1339,14 @@ impl KernelRuntimeState {
                                 .find(|t| &t.task_id == id),
                             None => None,
                         };
-                        // Provider failure is not settlement of resources still
-                        // owned by the exact cancelled child task.
+                        // Neither a provider failure nor a finished turn settles resources
+                        // still owned by the exact child task: Stop must still reach them.
                         match child_task {
                             Some(ref child)
-                                if child.state == ExecutionState::Cancelled
-                                    && self.owned.agent_task_resources_unsettled(child)? =>
+                                if matches!(
+                                    child.state,
+                                    ExecutionState::Done | ExecutionState::Cancelled
+                                ) && self.owned.agent_task_resources_unsettled(child)? =>
                             {
                                 None
                             }

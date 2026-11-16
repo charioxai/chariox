@@ -280,6 +280,18 @@ async fn stop_after_the_turns_ended_kills_the_process_a_done_delegate_retains() 
         "running"
     );
 
+    // A lifecycle sweep before Stop must not take the Done child for finished work.
+    f.state.sweep_agent_lifecycle().await.unwrap();
+    let parent_after_sweep = store.agent_task(&parent_done.task_id).unwrap().unwrap();
+    assert!(
+        parent_after_sweep
+            .obligations
+            .iter()
+            .any(|o| o.kind == "delegate" && o.status == "open"),
+        "the parent's delegate stays open while the child's process runs: {:?}",
+        parent_after_sweep.obligations
+    );
+
     let request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
         session_id: f.request.session_id.clone(),
         attachment_id: f.request.attachment_id.clone(),
