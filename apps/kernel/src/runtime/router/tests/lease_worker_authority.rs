@@ -47,6 +47,7 @@ fn denied_requests() -> Vec<LocalDaemonRequest> {
             capability_level: crate::attachment::ClientCapabilityLevel::MessageTransport,
         }),
         LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+            max_context_tokens: None,
             no_subscribe: false,
             session_id: "session-1".to_string(),
             alias: None,

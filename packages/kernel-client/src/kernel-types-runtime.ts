@@ -554,6 +554,7 @@ export type AgentInstance = {
   account_profile?: string | null
   execution_mode_override?: "build" | "plan" | null
   permission_level_override?: "required" | "yolo" | null
+  max_context_tokens?: number | null
   workspace_id?: string | null
   worktree_id: string | null
   remote_execution?: {

@@ -1172,6 +1172,7 @@ impl KernelRuntimeState {
         permission_level_override: Option<Option<crate::provider::AgentPermissionLevel>>,
         workspace_id: Option<Option<String>>,
         worktree_id: Option<Option<String>>,
+        max_context_tokens: Option<Option<u64>>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.authorize_current_external_command()?;
         let update = self.owned.update_agent_config(
@@ -1182,6 +1183,7 @@ impl KernelRuntimeState {
             permission_level_override,
             workspace_id,
             worktree_id,
+            max_context_tokens,
         )?;
         if update.scope_changed && update.remote_update.is_none() {
             self.claude_session_grants.forget(agent_id);

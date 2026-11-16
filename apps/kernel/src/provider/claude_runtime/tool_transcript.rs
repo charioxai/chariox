@@ -151,7 +151,6 @@ pub(super) struct ClaudeToolTranscript {
     pending_bytes: usize,
     truncated: bool,
     truncation_reported: bool,
-    unsupported_results: Vec<Value>,
     /// Launched background commands by tool call id: the call's last snapshot
     /// and the task id Claude names it by. They outlive the turn that started them.
     background: BTreeMap<String, BackgroundCall>,
@@ -310,7 +309,6 @@ impl ClaudeToolTranscript {
 
     /// The snapshots `value` changes; `now_ms` is when the kernel saw it.
     fn observe_at(&mut self, value: &Value, now_ms: u64) -> Vec<Value> {
-        self.unsupported_results.clear();
         let kind = value.get("type").and_then(Value::as_str);
         self.note_nested_task_start(value);
         if let Some(end) = super::task_notification::finished_background_task(value) {
@@ -352,7 +350,11 @@ impl ClaudeToolTranscript {
                     // text here, rather than sending the old inline plan input.
                     if !failed && pending.name == "ExitPlanMode" {
                         if let Some(input) = payload["input"].as_object_mut() {
-                            if !input.get("plan").and_then(Value::as_str).is_some_and(|plan| !plan.trim().is_empty()) {
+                            if !input
+                                .get("plan")
+                                .and_then(Value::as_str)
+                                .is_some_and(|plan| !plan.trim().is_empty())
+                            {
                                 if let Some(plan) = approved_plan(&output) {
                                     input.insert("plan".to_string(), json!(plan));
                                 }
@@ -362,7 +364,9 @@ impl ClaudeToolTranscript {
                     // A plan card consumes input.plan. Keeping the native result's
                     // copy as well can exceed the terminal record's combined limit.
                     let has_plan = pending.name == "ExitPlanMode"
-                        && payload["input"]["plan"].as_str().is_some_and(|plan| !plan.trim().is_empty());
+                        && payload["input"]["plan"]
+                            .as_str()
+                            .is_some_and(|plan| !plan.trim().is_empty());
                     if failed || !has_plan {
                         payload[if failed { "error" } else { "output" }] = json!(output);
                     }
@@ -390,14 +394,19 @@ impl ClaudeToolTranscript {
                             self.background.insert(
                                 id.to_string(),
                                 BackgroundCall {
-                                    task_id: launched_task_id(value.get("tool_use_result"), &output),
+                                    task_id: launched_task_id(
+                                        value.get("tool_use_result"),
+                                        &output,
+                                    ),
                                     snapshot: payload.clone(),
                                 },
                             );
                         }
                     }
                     if !failed {
-                        if let Some(task_id) = ended_task_of_result(&pending.name, &pending.input(), &output) {
+                        if let Some(task_id) =
+                            ended_task_of_result(&pending.name, &pending.input(), &output)
+                        {
                             ended_background.push(task_id);
                         }
                     }
@@ -414,13 +423,6 @@ impl ClaudeToolTranscript {
                     self.truncated = true;
                     return None;
                 }
-                if is_unsupported_claude_stream_json_tool(name) {
-                    self.unsupported_results.push(json!({
-                        "type": "tool_result", "tool_use_id": id, "is_error": true,
-                        "content": "Chariox does not execute Claude stream-json tool `ToolSearch` in this runtime path. If this is a Chariox workflow turn, do not search for workflow tools; emit the required fenced JSON fallback directly.",
-                    }));
-                    return None;
-                }
                 if self.pending.contains_key(id) {
                     return None;
                 }
@@ -433,14 +435,14 @@ impl ClaudeToolTranscript {
                 // A helper this agent started in the background has its own background
                 // commands reported back here, so they are held for like this agent's own. A
                 // foreground helper's commands end with that helper and are reported to it only.
-                let reported_here = parent.is_none_or(|parent| self.background.contains_key(parent));
+                let reported_here =
+                    parent.is_none_or(|parent| self.background.contains_key(parent));
                 let pending = PendingTool {
                     name: name.to_string(),
                     top_level,
                     input: bounded_input(block.get("input").unwrap_or(&Value::Null)),
                     started_at_ms: now_ms,
-                    background: reported_here
-                        && launches_background_task(name, block.get("input")),
+                    background: reported_here && launches_background_task(name, block.get("input")),
                 };
                 if pending.bytes(id) > PENDING_BYTES.saturating_sub(self.pending_bytes) {
                     self.truncated = true;
@@ -517,11 +519,6 @@ impl ClaudeToolTranscript {
         self.pending_bytes = 0;
         self.truncated = false;
         self.truncation_reported = false;
-        self.unsupported_results.clear();
-    }
-
-    pub(super) fn take_unsupported_results(&mut self) -> Vec<Value> {
-        std::mem::take(&mut self.unsupported_results)
     }
 
     pub(super) fn take_truncation_notice(&mut self) -> bool {
@@ -541,10 +538,6 @@ fn approved_plan(output: &str) -> Option<&str> {
     .into_iter()
     .find_map(|marker| output.split_once(marker).map(|(_, plan)| plan.trim()))
     .filter(|plan| !plan.is_empty())
-}
-
-fn is_unsupported_claude_stream_json_tool(name: &str) -> bool {
-    name == "ToolSearch"
 }
 
 #[cfg(test)]
@@ -1079,26 +1072,6 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_rejections_share_message_and_identity_budgets() {
-        let mut transcript = ClaudeToolTranscript::default();
-        let mut blocks =
-            vec![invocation(&"x".repeat(1_000_000), "ToolSearch")["message"]["content"][0].clone()];
-        blocks.extend((0..1000).map(|index| {
-            invocation(&format!("id-{index}"), "ToolSearch")["message"]["content"][0].clone()
-        }));
-        assert!(transcript
-            .observe(&json!({"type":"assistant","message":{"content":blocks}}))
-            .is_empty());
-        let rejected = transcript.take_unsupported_results();
-        assert_eq!(rejected.len(), 63);
-        assert!(serde_json::to_vec(&rejected).unwrap().len() < 32 * 1024);
-        assert_eq!(rejected[0]["tool_use_id"], "id-0");
-        assert_eq!(rejected[0]["is_error"], true);
-        assert!(transcript.take_truncation_notice());
-        assert!(transcript.take_unsupported_results().is_empty());
-    }
-
-    #[test]
     fn oversized_result_text_is_bounded_without_joining_all_blocks() {
         for content in [
             json!("é".repeat(100_000)),
@@ -1335,12 +1308,6 @@ mod tests {
         transcript.clear();
         assert!(transcript
             .observe(&result("old", json!("late result")))
-            .is_empty());
-        assert!(transcript
-            .observe(&invocation("unsupported", "ToolSearch"))
-            .is_empty());
-        assert!(transcript
-            .observe(&result("unsupported", json!("late")))
             .is_empty());
     }
 

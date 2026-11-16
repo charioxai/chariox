@@ -81,6 +81,7 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
     );
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,
         session_id: "session-1".to_string(),
@@ -119,6 +120,7 @@ fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
     );
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,
         session_id: "session-1".to_string(),
@@ -163,6 +165,7 @@ fn local_daemon_protocol_batch_spawn_shape_is_versioned() {
         no_subscribe: false,
         session_id: "session-1".to_string(),
         agents: vec![SpawnAgentsRequestItem {
+            max_context_tokens: None,
             account_profile: None,
             alias: Some("worker-1".to_string()),
             provider: Some("codex".to_string()),

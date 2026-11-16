@@ -142,6 +142,10 @@ impl KernelRuntimeOwnedState {
             "update agent profile",
         )?;
         let target_provider = provider.as_deref().unwrap_or(agent.provider()).to_string();
+        // A kept max context must hold for the provider the agent moves to.
+        if let Some(tokens) = agent.max_context_tokens() {
+            crate::agent::ensure_max_context_supported(&target_provider, tokens)?;
+        }
         let family_changed = crate::provider::canonical_provider_family(&target_provider)
             .unwrap_or(&target_provider)
             != crate::provider::canonical_provider_family(agent.provider())

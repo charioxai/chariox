@@ -73,9 +73,6 @@ fn claude_launch_args_from_parts(
             CLAUDE_MCP_CONFIG_PLACEHOLDER.to_string(),
         ]);
         args.push("--strict-mcp-config".to_string());
-        if has_runtime_mcp_binding {
-            args.extend(["--disallowedTools".to_string(), "ToolSearch".to_string()]);
-        }
     }
 
     append_claude_execution_config_args(
@@ -313,7 +310,7 @@ mod tests {
         assert!(!yolo.iter().any(|arg| arg == "--permission-prompt-tool"
             || arg == CLAUDE_PERMISSION_PROMPT_TOOL
             || arg == "--allowedTools"));
-        assert!(has_pair(&yolo, "--disallowedTools", "ToolSearch"));
+        assert!(!yolo.iter().any(|arg| arg == "--disallowedTools"));
 
         let required_again = claude_args_with_execution_config(
             &yolo,

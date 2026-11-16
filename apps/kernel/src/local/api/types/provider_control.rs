@@ -49,6 +49,10 @@ pub struct UpdateAgentConfigRequest {
     #[serde(default)]
     pub clear_permission_level: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context_tokens: Option<u64>,
+    #[serde(default)]
+    pub clear_max_context_tokens: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
     #[serde(default)]
     pub clear_workspace_id: bool,

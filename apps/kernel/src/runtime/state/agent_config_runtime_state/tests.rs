@@ -90,6 +90,7 @@ async fn agent_config_required_permission_survives_restart_and_inherit() {
             Some(Some(crate::provider::AgentPermissionLevel::Required)),
             None,
             None,
+            None,
         )
         .await
         .expect("mode and approval configuration should update");
@@ -117,6 +118,7 @@ async fn agent_config_required_permission_survives_restart_and_inherit() {
             crate::session::DEFAULT_LOCAL_USER_ID,
             Some(None),
             Some(None),
+            None,
             None,
             None,
         )
@@ -151,6 +153,7 @@ async fn agent_config_update_ignores_legacy_processing_without_active_prompt() {
             None,
             None,
             Some(Some("workspace-next".to_string())),
+            None,
             None,
         )
         .await
@@ -290,6 +293,7 @@ async fn agent_config_update_still_blocks_active_prompt_owner() {
             None,
             Some(Some("workspace-next".to_string())),
             None,
+            None,
         )
         .await
         .expect_err("active prompt ownership should block config update");
@@ -313,6 +317,7 @@ async fn the_person_can_lower_or_raise_a_running_agent() {
             crate::session::DEFAULT_LOCAL_USER_ID,
             mode,
             level,
+            None,
             None,
             None,
         )
@@ -474,6 +479,7 @@ async fn assert_remote_agent_profile_response(
                     crate::session::DEFAULT_LOCAL_USER_ID,
                     Some(Some(crate::provider::AgentExecutionMode::Plan)),
                     Some(Some(crate::provider::AgentPermissionLevel::Required)),
+                    None,
                     None,
                     None,
                 )

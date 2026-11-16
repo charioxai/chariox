@@ -185,6 +185,7 @@ export async function executeAgentCommand(
             model: effectiveModel,
             worktreeId: worktree ?? null,
             effort,
+            maxContextTokens: controlParse.maxContextTokens ?? null,
             kernelRef: sliceRef ? null : remoteKernelRef ?? null,
             sliceRef: sliceRef ?? null,
           })),
@@ -228,6 +229,8 @@ export async function executeAgentCommand(
         sliceRef ? undefined : remoteKernelRef,
         worktreePlacement,
         sliceRef,
+        undefined,
+        controlParse.maxContextTokens,
       ))
       const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned").agent
       const promptSummary = controlParse.prompt
@@ -402,11 +405,37 @@ export async function executeAgentCommand(
       const effectiveLevel = payload.agent.permission_level_override ?? sessionLevel
       return { ok: true, message: `${formatAgentRef(payload.agent)} permissions = ${effectiveLevel}${rawValue === "inherit" ? " (session)" : " (agent)"}`, data: payload }
     }
+    case "max-context": {
+      const firstArgIsValue = args[0] === "clear" || parseMaxContextTokens(args[0]).ok
+      const resolved = await resolveShellAgent(context, deps, firstArgIsValue ? context.agentId : args[0])
+      if (!resolved.ok) {
+        return { ok: false, message: args[0] ? resolved.message : "usage: agent max-context [agent-ref] <tokens, such as 200k|clear>" }
+      }
+      const rawValue = args.length > 1 ? args[1] : firstArgIsValue ? args[0] : undefined
+      if (!rawValue) {
+        const response = await deps.client.send(getSessionStateRequest(sessionId))
+        const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
+        const agent = session.agents.find((entry) => entry.id === resolved.agent.id) ?? resolved.agent
+        return { ok: true, message: `${formatAgentRef(agent)} max context = ${agent.max_context_tokens ?? "provider default"}`, data: { session, agent } }
+      }
+      const parsedValue = rawValue === "clear" ? null : parseMaxContextTokens(rawValue)
+      if (parsedValue && !parsedValue.ok) {
+        return { ok: false, message: parsedValue.message }
+      }
+      const response = await deps.client.send(updateAgentConfigRequest({
+        sessionId,
+        agentId: resolved.agent.id,
+        maxContextTokens: parsedValue?.tokens ?? null,
+        clearMaxContextTokens: parsedValue === null,
+      }))
+      const payload = expectVariant<{ agent: AgentInstance; session: RuntimeSession }>(response, "AgentConfigUpdated")
+      return { ok: true, message: `${formatAgentRef(payload.agent)} max context = ${payload.agent.max_context_tokens ?? "provider default"}; it applies when the agent's provider next starts`, data: payload }
+    }
     case "substitute":
     case "subs":
       return executeAgentSubstituteCommand(args, context, deps, sessionId)
     default:
-      return { ok: false, message: "usage: agent list|inspect|spawn|focus|cycle|alias|provider|model|variant|mode|permissions|substitute" }
+      return { ok: false, message: "usage: agent list|inspect|spawn|focus|cycle|alias|provider|model|variant|mode|permissions|max-context|substitute" }
   }
 }
 
@@ -614,6 +643,7 @@ type AgentSpawnControlOptions = {
   readonly provider: string | undefined
   readonly model: string | undefined
   readonly effort: string | undefined
+  readonly maxContextTokens: number | undefined
   readonly prompt: string | undefined
   readonly concurrency: number
   readonly confirmLarge: boolean
@@ -628,6 +658,7 @@ function parseAgentSpawnControlOptions(
   let provider: string | undefined
   let model: string | undefined
   let effort: string | undefined
+  let maxContextTokens: number | undefined
   let prompt: string | undefined
   let concurrency = 10
   let confirmLarge = false
@@ -650,6 +681,11 @@ function parseAgentSpawnControlOptions(
       index += 1
     } else if ((arg === "--effort" || arg === "--variant") && next) {
       effort = next
+      index += 1
+    } else if (arg === "--max-context") {
+      const parsed = parseMaxContextTokens(next)
+      if (!parsed.ok) return parsed
+      maxContextTokens = parsed.tokens
       index += 1
     } else if (arg === "--prompt" && next) {
       prompt = next
@@ -677,7 +713,16 @@ function parseAgentSpawnControlOptions(
   if (concurrency > count) {
     concurrency = count
   }
-  return { ok: true, args: stripped, count, provider, model, effort, prompt, concurrency, confirmLarge }
+  return { ok: true, args: stripped, count, provider, model, effort, maxContextTokens, prompt, concurrency, confirmLarge }
+}
+
+function parseMaxContextTokens(value: string | undefined): { ok: true; tokens: number } | { ok: false; message: string } {
+  const match = /^(\d+)([km]?)$/i.exec((value ?? "").trim())
+  const tokens = match ? Number(match[1]) * ({ "": 1, k: 1_000, m: 1_000_000 } as Record<string, number>)[match[2]!.toLowerCase()]! : 0
+  if (!Number.isSafeInteger(tokens) || tokens < 1) {
+    return { ok: false, message: `\`${value ?? ""}\` is not a token count; write 200000, 200k or 1m` }
+  }
+  return { ok: true, tokens }
 }
 
 function parseSpawnCount(value: string | undefined): { ok: true; count: number } | { ok: false; message: string } {

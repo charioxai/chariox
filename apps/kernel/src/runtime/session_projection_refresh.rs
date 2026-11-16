@@ -557,6 +557,7 @@ mod tests {
 
     fn spawn_request() -> SpawnAgentRequest {
         SpawnAgentRequest {
+            max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
             session_id: "session-1".to_string(),

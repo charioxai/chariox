@@ -320,6 +320,8 @@ async fn folders_by_config() {
     let configure = |workspace: Option<&std::path::Path>, worktree: Option<&std::path::Path>| {
         let request =
             LocalDaemonRequest::UpdateAgentConfig(crate::local::UpdateAgentConfigRequest {
+                max_context_tokens: None,
+                clear_max_context_tokens: false,
                 session_id: world.room.clone(),
                 agent_id: world.ids["s"].clone(),
                 execution_mode: None,

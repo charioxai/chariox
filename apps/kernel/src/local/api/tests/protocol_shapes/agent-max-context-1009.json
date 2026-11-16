@@ -1,0 +1,40 @@
+{
+  "local": 1009,
+  "relayPeer": 447,
+  "requests": [
+    {
+      "SpawnAgent": {
+        "session_id": "room",
+        "alias": "lane",
+        "model": null,
+        "effort": null,
+        "max_context_tokens": 200000,
+        "worktree_id": null,
+        "kernel_ref": null
+      }
+    },
+    {
+      "UpdateAgentConfig": {
+        "session_id": "room",
+        "agent_id": "agent",
+        "max_context_tokens": 300000,
+        "clear_max_context_tokens": false,
+        "clear_execution_mode": false,
+        "clear_permission_level": false,
+        "clear_workspace_id": false,
+        "clear_worktree_id": false
+      }
+    },
+    {
+      "UpdateAgentConfig": {
+        "session_id": "room",
+        "agent_id": "agent",
+        "clear_max_context_tokens": true,
+        "clear_execution_mode": false,
+        "clear_permission_level": false,
+        "clear_workspace_id": false,
+        "clear_worktree_id": false
+      }
+    }
+  ]
+}

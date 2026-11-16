@@ -1,5 +1,6 @@
 pub(crate) mod authority_limit;
 mod failed_requests;
+mod max_context;
 mod service;
 mod service_store;
 mod store;
@@ -8,6 +9,9 @@ mod types;
 
 pub use failed_requests::FailedRequest;
 pub(crate) use failed_requests::{failed_request_notice, failed_request_reason};
+pub use max_context::{
+    ensure_max_context_supported, ensure_spawn_max_context, parse_max_context_tokens,
+};
 pub(crate) use service::new_agent_focus_target;
 pub use service::AgentService;
 pub use service_store::AgentServiceStore;

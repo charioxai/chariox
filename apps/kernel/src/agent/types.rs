@@ -245,6 +245,9 @@ pub struct AgentInstance {
     provider: String,
     model: Option<String>,
     effort: Option<String>,
+    /// Where the provider compacts the conversation; none leaves the provider's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_context_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     account_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -320,6 +323,7 @@ impl AgentInstance {
             provider: provider.into(),
             model,
             effort,
+            max_context_tokens: None,
             account_profile: None,
             execution_mode_override: None,
             permission_level_override: None,
@@ -426,6 +430,10 @@ impl AgentInstance {
 
     pub fn effort(&self) -> Option<&str> {
         self.effort.as_deref()
+    }
+
+    pub fn max_context_tokens(&self) -> Option<u64> {
+        self.max_context_tokens
     }
 
     pub fn account_profile(&self) -> Option<&str> {
@@ -597,6 +605,7 @@ impl AgentInstance {
         self.provider = "redacted".to_string();
         self.model = None;
         self.effort = None;
+        self.max_context_tokens = None;
         self.account_profile = None;
         self.execution_mode_override = None;
         self.permission_level_override = None;
@@ -693,6 +702,10 @@ impl AgentInstance {
 
     pub fn set_effort(&mut self, effort: Option<String>) {
         self.effort = effort;
+    }
+
+    pub fn set_max_context_tokens(&mut self, max_context_tokens: Option<u64>) {
+        self.max_context_tokens = max_context_tokens;
     }
 
     pub fn set_account_profile(&mut self, account_profile: Option<String>) {
@@ -996,6 +1009,8 @@ pub struct CreateAgentRequest {
     pub model: Option<String>,
     pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_profile: Option<String>,
     pub execution_mode_override: Option<AgentExecutionMode>,
     pub permission_level_override: Option<AgentPermissionLevel>,
@@ -1016,6 +1031,7 @@ impl CreateAgentRequest {
             provider: provider.into(),
             model: None,
             effort: None,
+            max_context_tokens: None,
             account_profile: None,
             execution_mode_override: None,
             permission_level_override: None,
@@ -1057,6 +1073,11 @@ impl CreateAgentRequest {
 
     pub fn with_effort(mut self, effort: impl Into<String>) -> Self {
         self.effort = Some(effort.into());
+        self
+    }
+
+    pub fn with_max_context_tokens(mut self, max_context_tokens: Option<u64>) -> Self {
+        self.max_context_tokens = max_context_tokens;
         self
     }
 

@@ -460,6 +460,7 @@ async fn lowering_the_holders_authority_hands_the_decision_to_the_user_at_once()
             Some(Some(AgentPermissionLevel::Required)),
             None,
             None,
+            None,
         )
         .await
         .unwrap();

@@ -86,6 +86,7 @@ async fn f4_legacy_agents_inner() {
 
         if owner {
             let spawn = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+                max_context_tokens: None,
                 session_id: id.clone(),
                 alias: Some("spawned-by-owner".into()),
                 provider: Some("dev-stub".into()),
@@ -131,6 +132,8 @@ async fn f4_legacy_agents_inner() {
                 (
                     "update config",
                     LocalDaemonRequest::UpdateAgentConfig(crate::local::UpdateAgentConfigRequest {
+                        max_context_tokens: None,
+                        clear_max_context_tokens: false,
                         session_id: id.clone(),
                         agent_id: agent_id.clone(),
                         execution_mode: None,

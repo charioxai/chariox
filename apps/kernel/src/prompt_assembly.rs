@@ -105,6 +105,11 @@ const UTILITY_SEMANTIC_RECALL_SEARCH: &str =
 pub(crate) struct PromptEnvelope {
     pub(crate) visible_user_prompt: String,
     pub(crate) hidden_system_context: String,
+    /// The leading part of `hidden_system_context` that is the same for every
+    /// turn of a run (runtime rules, user rules, execution and delegation
+    /// templates). A provider that keeps what it was told can be sent it once.
+    #[serde(default)]
+    pub(crate) hidden_base: String,
     pub(crate) attachments: Vec<PromptAttachment>,
     pub(crate) manifest: PromptManifest,
     pub(crate) steering: bool,
@@ -124,6 +129,7 @@ impl PromptEnvelope {
         Self {
             visible_user_prompt: visible_user_prompt.into(),
             hidden_system_context: hidden_system_context.into(),
+            hidden_base: String::new(),
             attachments,
             manifest,
             steering: false,
@@ -135,6 +141,15 @@ impl PromptEnvelope {
     pub(crate) fn with_steering(mut self, steering: bool) -> Self {
         self.steering = steering;
         self
+    }
+
+    /// What this turn adds to the run's base: the whole context when the base
+    /// is empty or was not assembled as its prefix.
+    pub(crate) fn hidden_turn_context(&self) -> &str {
+        self.hidden_system_context
+            .strip_prefix(self.hidden_base.as_str())
+            .unwrap_or(&self.hidden_system_context)
+            .trim()
     }
 }
 
@@ -928,6 +943,7 @@ impl PromptAssemblyService {
                 &mut manifest,
             )?;
         }
+        let hidden_base = hidden_fragments.join("\n\n");
         let (additional_hidden_context, additional_manifest_entries) = additional_hidden_context
             .map(extract_prompt_manifest_entries)
             .unwrap_or_default();
@@ -964,12 +980,14 @@ impl PromptAssemblyService {
             // Mode is currently recorded by the caller-specific manifest entries added later.
         }
 
-        Ok(PromptEnvelope::new(
+        let mut envelope = PromptEnvelope::new(
             visible_user_prompt,
             hidden_fragments.join("\n\n"),
             attachments,
             manifest,
-        ))
+        );
+        envelope.hidden_base = hidden_base;
+        Ok(envelope)
     }
 
     pub(crate) fn assemble_hidden_context_only(
@@ -1421,6 +1439,40 @@ mod tests {
                 .hidden_system_context
                 .contains("Do not substitute a provider CLI started from Bash"),
             "MP-08/MP-10/MP-11: a requested Room helper must remain a kernel-owned agent"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The run base is the same on every turn; only the turn context changes, so a
+    /// provider that keeps what it was told needs the base once.
+    #[test]
+    fn provider_turns_share_one_run_base_and_differ_in_turn_context() {
+        let root = temp_prompt_root("run-base");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry.materialize_bundled_defaults().unwrap();
+        let service = PromptAssemblyService::new(registry);
+        let turn = |context: &str| {
+            service
+                .assemble_provider_turn(
+                    &test_run(false),
+                    "Please help",
+                    Some(context),
+                    Vec::new(),
+                    PromptAssemblyMode::NormalProviderTurn,
+                )
+                .unwrap()
+        };
+        let first = turn("<chariox-task-context>first</chariox-task-context>");
+        let second = turn("<chariox-task-context>second</chariox-task-context>");
+        assert!(!first.hidden_base.is_empty());
+        assert_eq!(first.hidden_base, second.hidden_base);
+        assert!(first
+            .hidden_system_context
+            .starts_with(first.hidden_base.as_str()));
+        assert!(first.hidden_base.contains("regular agents may spawn"));
+        assert_eq!(
+            second.hidden_turn_context(),
+            "<chariox-task-context>second</chariox-task-context>"
         );
         fs::remove_dir_all(root).unwrap();
     }

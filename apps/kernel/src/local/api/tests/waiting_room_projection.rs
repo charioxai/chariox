@@ -281,6 +281,8 @@ fn waiting_room_agent_workspace_update_drill_updates_public_projection_inner() {
     harness
         .dispatch(LocalDaemonRequest::UpdateAgentConfig(
             UpdateAgentConfigRequest {
+                max_context_tokens: None,
+                clear_max_context_tokens: false,
                 session_id: session.id().to_string(),
                 agent_id: agent.id().to_string(),
                 execution_mode: None,
@@ -355,6 +357,7 @@ fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
         };
         let second_agent = match harness
             .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                max_context_tokens: None,
                 no_subscribe: false,
                 account_profile: None,
                 session_id: session.id().to_string(),
@@ -510,6 +513,7 @@ fn waiting_room_public_snapshot_includes_public_session_activity_counts() {
             };
             let idle_agent = match harness
                 .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                    max_context_tokens: None,
                     no_subscribe: false,
                     account_profile: None,
                     session_id: session.id().to_string(),

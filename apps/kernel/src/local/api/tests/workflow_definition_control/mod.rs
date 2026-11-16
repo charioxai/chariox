@@ -103,6 +103,7 @@ fn create_publication_test_graph_in_workspace(
     };
     let agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
@@ -126,6 +127,8 @@ fn create_publication_test_graph_in_workspace(
     let agent = match harness
         .dispatch(LocalDaemonRequest::UpdateAgentConfig(
             UpdateAgentConfigRequest {
+                max_context_tokens: None,
+                clear_max_context_tokens: false,
                 session_id: session.id().to_string(),
                 agent_id: agent.id().to_string(),
                 execution_mode: None,

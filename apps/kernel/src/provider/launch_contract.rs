@@ -13,6 +13,9 @@ use super::types::{
     ProviderClientInterface,
 };
 
+/// Launch override Claude turns into `CLAUDE_CODE_AUTO_COMPACT_WINDOW`.
+pub(crate) const MAX_CONTEXT_TOKENS_OVERRIDE: &str = "chariox.max_context_tokens";
+
 pub(super) fn default_provider_owner_user_id() -> String {
     DEFAULT_LOCAL_USER_ID.to_string()
 }
@@ -833,6 +836,26 @@ impl LaunchProviderRequest {
     pub fn with_provider_config_override(mut self, key: impl Into<String>, value: Value) -> Self {
         self.provider_config_overrides.insert(key.into(), value);
         self
+    }
+
+    /// Where the provider compacts the conversation, for the providers that take
+    /// it; nothing is set when the agent has none.
+    pub fn with_max_context_tokens(self, max_context_tokens: Option<u64>) -> Self {
+        let Some(tokens) = max_context_tokens else {
+            return self;
+        };
+        match crate::provider::canonical_provider_family(&self.provider) {
+            Some("claude") => self.with_provider_config_override(
+                MAX_CONTEXT_TOKENS_OVERRIDE,
+                serde_json::json!(tokens),
+            ),
+            // Codex reads its own config key from the thread configuration.
+            Some("codex") => self.with_provider_config_override(
+                "model_auto_compact_token_limit",
+                serde_json::json!(tokens),
+            ),
+            _ => self,
+        }
     }
 
     pub fn with_provider_config_overrides(mut self, overrides: BTreeMap<String, Value>) -> Self {
