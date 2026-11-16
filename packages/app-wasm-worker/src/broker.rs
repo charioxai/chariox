@@ -303,21 +303,27 @@ impl<T: Send> host::HostWithStore<T> for HasSelf<Host> {
             )
             .await?,
         )?;
+        let mut open = OpenPick::new(accessor, &state)?;
         loop {
             match state {
-                host::Picked::Granted(grants) => return Ok(grants),
+                host::Picked::Granted(grants) => {
+                    open.answered();
+                    return Ok(grants);
+                }
                 host::Picked::Pending(operation_id) => {
                     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
                     state = picked(&status(accessor, &operation_id).await?)?;
                 }
                 host::Picked::Declined => {
-                    return Err(app_error(error("CANCELLED", "file selection cancelled")))
+                    open.answered();
+                    return Err(app_error(error("CANCELLED", "file selection cancelled")));
                 }
                 host::Picked::Expired => {
+                    open.answered();
                     return Err(app_error(error(
                         "FILE_PICK_EXPIRED",
                         "file selection expired; pick again",
-                    )))
+                    )));
                 }
             }
         }
@@ -341,12 +347,52 @@ impl<T: Send> host::HostWithStore<T> for HasSelf<Host> {
         wait_ms: u32,
     ) -> Result<host::Picked, types::AppError> {
         let until = tokio::time::Instant::now() + std::time::Duration::from_millis(wait_ms.into());
+        let mut open = OpenPick::new(accessor, &host::Picked::Pending(operation_id.clone()))?;
         loop {
             let state = picked(&status(accessor, &operation_id).await?)?;
             if !matches!(state, host::Picked::Pending(_)) || tokio::time::Instant::now() >= until {
+                // The caller has the request's id back, or the answer: either way it is no longer waiting on it here.
+                open.answered();
                 return Ok(state);
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+}
+/// A request for files a call is waiting on. When the call goes away while it waits (its window
+/// closed, its deadline passed), nobody holds the request's id to ask again, so the request ends
+/// and the kernel closes the person's prompt instead of keeping it for ten minutes.
+struct OpenPick {
+    ipc: crate::ipc::Ipc,
+    operation_id: String,
+    waiting: bool,
+}
+impl OpenPick {
+    fn new<T: Send>(
+        accessor: &Accessor<T, HasSelf<Host>>,
+        state: &host::Picked,
+    ) -> Result<Self, types::AppError> {
+        let operation_id = match state {
+            host::Picked::Pending(id) => id.clone(),
+            _ => String::new(),
+        };
+        Ok(Self {
+            ipc: context(accessor)?.0,
+            waiting: !operation_id.is_empty(),
+            operation_id,
+        })
+    }
+    fn answered(&mut self) {
+        self.waiting = false;
+    }
+}
+impl Drop for OpenPick {
+    fn drop(&mut self) {
+        if self.waiting {
+            self.ipc.cleanup(
+                "host.pick_file_cancel",
+                json!({"operationId": self.operation_id}),
+            );
         }
     }
 }

@@ -322,6 +322,12 @@ for, if it still declares the capability (otherwise `CAPABILITY_REQUIRED`).
 data, like `files.atomic_replace`, and spends it. It replies `{bytesWritten,
 name}`, where `name` is the file name the owner chose. The SDK's
 `host.pickFile` polls the status and resolves with `{grantIds}`.
+`host.pick_file_cancel {operationId}` ends an unanswered request of this
+installation at once and closes the owner's prompt; an answered one is left as it
+is. The worker sends it when the call that was waiting for the choice (`pickFile`,
+or `awaitFile` before it returned) goes away, a closed window or a passed
+deadline, because nobody holds the request's id to ask again. A call that
+returns the id to its caller leaves the request open.
 The owner can revoke the App's unanswered requests and unimported grants at
 any time (kernel protocol 394, `/app file revoke`): they then read `expired`,
 and importing them fails `NOT_FOUND`. Files already imported stay.

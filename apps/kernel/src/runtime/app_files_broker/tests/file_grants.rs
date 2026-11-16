@@ -330,3 +330,56 @@ fn an_import_with_a_lost_publication_reply_never_releases_its_one_use_grant() {
     assert_eq!(fixture.observed.pending_file_replacements().unwrap(), 0);
     assert_eq!(fixture.admission.available_permits(), 8);
 }
+
+#[test]
+fn a_request_whose_waiting_call_went_away_ends_unless_the_owner_already_answered() {
+    let fixture = Fixture::new(Mode::Ready);
+    fixture.runtime.block_on(async {
+        let mut peer = TestPeer::start_with(broker(&fixture, true));
+        let mut open = Vec::new();
+        for id in ["abandoned", "answered"] {
+            peer.send(id, "host.pick_file", serde_json::json!({})).await;
+            open.push(
+                peer.response().await.1.unwrap()["operationId"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            );
+        }
+        let store = fixture.store.clone();
+        let answered = open[1].clone();
+        tokio::task::spawn_blocking(move || {
+            store.app_file_grant(FileGrantCommand::Grant {
+                owner: "alice".into(),
+                operation_id: answered,
+                files: vec![GrantedFile {
+                    name: "notes.md".into(),
+                    contents: b"# Notes".to_vec(),
+                }],
+                now_ms: crate::session::unix_epoch_ms(),
+            })
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        for operation in &open {
+            peer.send(
+                "cancel",
+                "host.pick_file_cancel",
+                serde_json::json!({"operationId": operation}),
+            )
+            .await;
+            peer.response().await.1.unwrap();
+        }
+        for (operation, state) in open.iter().zip(["expired", "granted"]) {
+            peer.send(
+                "status",
+                "host.pick_file_status",
+                serde_json::json!({"operationId": operation}),
+            )
+            .await;
+            assert_eq!(peer.response().await.1.unwrap()["state"], state);
+        }
+        peer.close().await;
+    });
+}

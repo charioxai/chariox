@@ -107,6 +107,7 @@ impl AppFileGrantBroker {
             match request.method.as_str() {
                 "host.pick_file" => service.pick(request.params),
                 "host.pick_file_status" => service.status(request.params),
+                "host.pick_file_cancel" => service.cancel(request.params),
                 "files.import" => service.import(request.params, budget),
                 "files.export" => service.export(request.params),
                 _ => Err(error("METHOD_UNAVAILABLE", false)),
@@ -163,6 +164,27 @@ impl AppFileGrantBroker {
             .map_err(|code| error(code, true))?
             .ok_or_else(|| error("NOT_FOUND", false))?;
         Ok(reply(&pick))
+    }
+
+    /// The call that waited for the owner's choice went away before the App had the request's id to ask
+    /// again with: no one can use the answer, so the request ends and its prompt closes. An answered
+    /// request stays as it is.
+    fn cancel(&self, params: Value) -> Result<Value, RemoteError> {
+        let request: Status =
+            serde_json::from_value(params).map_err(|_| error("INVALID_ARGUMENT", false))?;
+        let pending =
+            self.status(json!({"operationId": request.operation_id}))?["state"] == "pending";
+        if pending {
+            self.store
+                .revoke_app_file_grants(FileGrantCommand::Revoke {
+                    owner: self.owner.clone(),
+                    installation: self.installation().to_owned(),
+                    operation_id: Some(request.operation_id),
+                    now_ms: crate::session::unix_epoch_ms(),
+                })
+                .map_err(|code| error(code, code == "STORAGE_UNAVAILABLE"))?;
+        }
+        Ok(json!({}))
     }
 
     fn publish_import(

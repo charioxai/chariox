@@ -316,6 +316,16 @@ impl DurableKernelStateStore {
             .filter(|pick| pick.owner == owner && pick.installation == installation))
     }
 
+    /// Whether the request is still waiting for the owner's answer.
+    pub(crate) fn app_file_pick_pending(&self, operation_id: &str) -> Result<bool, &'static str> {
+        let connection = self
+            .lock_connection("durable_state.app_file_pick_pending")
+            .map_err(|_| "STORAGE_UNAVAILABLE")?;
+        Ok(load(&connection, operation_id)
+            .map_err(|_| "STORAGE_UNAVAILABLE")?
+            .is_some_and(|pick| pick.state == PickState::Pending))
+    }
+
     /// The oldest pending pick of each installation, oldest first.
     pub(crate) fn pending_app_file_picks(
         &self,
