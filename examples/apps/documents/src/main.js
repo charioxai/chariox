@@ -3,7 +3,7 @@
 import { follower } from "./feed.js"
 import { markdownToHtml, sanitizeHtmlInto } from "./preview.js"
 import { skeleton } from "./skeleton.js"
-import { readUploads } from "./upload.js"
+import { batches, readUploads } from "./upload.js"
 
 document.getElementById("app").innerHTML = skeleton
 const $ = (id) => document.getElementById(id)
@@ -164,10 +164,14 @@ $("import-docs").addEventListener("click", () => chooser.click())
 chooser.addEventListener("change", async () => {
   const { files, skipped } = await readUploads(chooser.files)
   chooser.value = ""
-  const unread = [...skipped]
-  if (files.length) {
-    const answer = await call("import_documents", { files })
-    unread.push(...answer.skipped)
+  const split = batches(files)
+  const unread = [...skipped, ...split.skipped]
+  for (const batch of split.batches) {
+    try {
+      unread.push(...(await call("import_documents", { files: batch })).skipped)
+    } catch {
+      unread.push(...batch)
+    }
   }
   if (unread.length) say(`Not imported: ${unread.map((file) => file.name ?? "a file").join(", ")}.`, true)
 })

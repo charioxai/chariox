@@ -37,6 +37,19 @@ test('a failed read of the feed lists nothing and is tried again', async () => {
   assert.equal(listed, 1);
 });
 
+test('a list that failed after the feed moved is asked for again on the next poll', async () => {
+  let failList = true;
+  let listed = 0;
+  const { poll } = follower(async () => ({ latest: 3, dropped: false, changes: [] }),
+    async () => { listed += 1; if (failList) throw new Error('offline'); });
+  await assert.rejects(poll());
+  failList = false;
+  await poll();
+  assert.equal(listed, 2, 'the list that failed is retried although the feed head did not move');
+  await poll();
+  assert.equal(listed, 2, 'a quiet feed lists nothing once the list succeeded');
+});
+
 test('Markdown preview escapes document text and emits only its own tags', () => {
   const html = markdownToHtml('# Title <script>x</script>\n- **bold** `a<b>`\n\n```\n<img src=x onerror=1>\n```');
   assert.doesNotMatch(html, /<script|<img/);
@@ -81,4 +94,17 @@ test('chosen files are read as UTF-8 text; a file that is too big or not text is
   const many = await readUploads(Array.from({ length: 10 }, (_, n) => new File(['x'], `${n}.md`)));
   assert.equal(many.files.length, 8);
   assert.deepEqual(many.skipped.map((file) => file.name), ['8.md', '9.md']);
+});
+
+test('files that fit one by one are imported in requests that each fit the App call', async () => {
+  const { batches, MAX_CALL_BYTES } = await import('../src/upload.js');
+  const size = (batch) => new TextEncoder().encode(JSON.stringify({ files: batch })).length;
+  const files = [1, 2, 3].map((n) => ({ name: `${n}.md`, content: 'x'.repeat(200 * 1024) }));
+  const split = batches(files);
+  assert.deepEqual(split.batches.map((batch) => batch.map((file) => file.name)), [['1.md', '2.md'], ['3.md']]);
+  for (const batch of split.batches) assert.ok(size(batch) <= MAX_CALL_BYTES);
+  assert.deepEqual(split.skipped, []);
+  const escaped = batches([{ name: 'q.md', content: '"'.repeat(300 * 1024) }]);
+  assert.deepEqual(escaped.batches, [], 'escaping makes a document too big for one call');
+  assert.deepEqual(escaped.skipped, [{ name: 'q.md', reason: 'q.md is too big to import here' }]);
 });

@@ -9,8 +9,9 @@ export function follower(call, moved) {
     const feed = await call("view_changes", { since: latest ?? NOTHING })
     const first = latest === null
     if (!first && feed.latest === latest && !feed.dropped) return
-    latest = feed.latest
     await moved()
+    // The cursor moves only once the list was refreshed, so a failed list is asked for again.
+    latest = feed.latest
   }
   return { poll }
 }
