@@ -755,6 +755,7 @@ impl CommandRouter {
         let same_provider = spawns_same_provider(spawn.provider.as_deref(), metaagent);
         let follow = target_room.is_some() && !spawn.no_follow;
         let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            max_context_tokens: spawn.max_context_tokens,
             no_subscribe: spawn.no_follow,
             session_id: target_room
                 .clone()

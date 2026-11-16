@@ -446,6 +446,8 @@ fn publication_export_captures_exact_grants_and_rejects_missing_definitions() {
     harness
         .dispatch(LocalDaemonRequest::UpdateAgentConfig(
             UpdateAgentConfigRequest {
+                max_context_tokens: None,
+                clear_max_context_tokens: false,
                 session_id: graph.session_id.clone(),
                 agent_id: unrelated_agent.id().to_string(),
                 execution_mode: None,
@@ -712,6 +714,7 @@ fn local_request_api_exports_agent_app_publication_package() {
     };
     let agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),

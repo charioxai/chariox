@@ -14,6 +14,7 @@ update("fixtures/protocol-versions.json", JSON.stringify({ local: localProtocolV
 const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/files-watch-1008.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/agent-browser-owner-action-993.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/agent-max-context-1009.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-dev-push-933.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-dev-register-933.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-view-inspection-933.json",
@@ -41,13 +42,17 @@ const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/session-processes-954.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/web-bot-auth-946.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/workflow-gate-1002.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/room-terminal-stream-1006.json",
   "fixtures/aggregate-agent-model-protocol.json",
   "fixtures/app-confirmation-protocol.json",
   "fixtures/async-questions-protocol.json",
+  "fixtures/created-resource-register-protocol.json",
   "fixtures/historical-workflow-protocol.json",
   "fixtures/landing8-protocol.json",
   "fixtures/owner-vault-protocol.json",
-  "fixtures/totp-protocol.json"
+  "fixtures/peer-browser-snapshot-protocol.json",
+  "fixtures/totp-protocol.json",
+  "fixtures/workspace-artifact-paging-protocol.json"
 ]
 const localKeys = new Set(["local", "local_protocol", "protocol_version"])
 for (const path of currentSnapshots) {

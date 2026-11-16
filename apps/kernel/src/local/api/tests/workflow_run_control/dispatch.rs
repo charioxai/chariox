@@ -16,6 +16,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
 
     let first_agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
@@ -39,6 +40,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
 
     let second_agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
@@ -659,6 +661,7 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
     };
     let workflow_agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
             session_id: workflow_session.id().to_string(),

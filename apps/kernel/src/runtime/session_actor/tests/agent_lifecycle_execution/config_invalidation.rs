@@ -41,6 +41,8 @@ async fn update_agent_config_invalidates_only_that_agents_idle_provider_run() {
     );
 
     let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
+        max_context_tokens: None,
+        clear_max_context_tokens: false,
         session_id: session_id.clone(),
         agent_id: first_agent_id.clone(),
         execution_mode: Some(AgentExecutionMode::Plan),
@@ -132,6 +134,8 @@ async fn update_agent_config_keeps_turn_scoped_provider_run_alive() {
     );
 
     let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
+        max_context_tokens: None,
+        clear_max_context_tokens: false,
         session_id: session_id.clone(),
         agent_id: agent_id.clone(),
         execution_mode: Some(AgentExecutionMode::Plan),

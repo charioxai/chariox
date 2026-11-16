@@ -21,6 +21,7 @@ export function spawnAgentRequest(
   worktreePlacement?: Record<string, unknown>,
   sliceRef?: string,
   accountProfile?: string | null,
+  maxContextTokens?: number | null,
 ) {
   return {
     SpawnAgent: {
@@ -30,6 +31,7 @@ export function spawnAgentRequest(
       alias: alias ?? null,
       model: model ?? null,
       effort: effort ?? null,
+      ...(maxContextTokens ? { max_context_tokens: maxContextTokens } : {}),
       execution_mode: executionMode ?? null,
       permission_level: permissionLevel ?? null,
       worktree_id: worktreeId ?? null,
@@ -47,6 +49,7 @@ export type SpawnAgentBatchItem = {
   model?: string | null
   worktreeId?: string | null
   effort?: string | null
+  maxContextTokens?: number | null
   executionMode?: "build" | "plan" | null
   permissionLevel?: "required" | "yolo" | null
   kernelRef?: string | null
@@ -64,6 +67,7 @@ export function spawnAgentsRequest(sessionId: string, agents: SpawnAgentBatchIte
         alias: agent.alias ?? null,
         model: agent.model ?? null,
         effort: agent.effort ?? null,
+        ...(agent.maxContextTokens ? { max_context_tokens: agent.maxContextTokens } : {}),
         execution_mode: agent.executionMode ?? null,
         permission_level: agent.permissionLevel ?? null,
         worktree_id: agent.worktreeId ?? null,
@@ -102,6 +106,8 @@ export function updateAgentConfigRequest(options: {
   clearExecutionMode?: boolean
   permissionLevel?: "required" | "yolo" | null
   clearPermissionLevel?: boolean
+  maxContextTokens?: number | null
+  clearMaxContextTokens?: boolean
   workspaceId?: string | null
   clearWorkspaceId?: boolean
   worktreeId?: string | null
@@ -115,6 +121,8 @@ export function updateAgentConfigRequest(options: {
       clear_execution_mode: options.clearExecutionMode ?? false,
       permission_level: options.permissionLevel ?? null,
       clear_permission_level: options.clearPermissionLevel ?? false,
+      max_context_tokens: options.maxContextTokens ?? null,
+      clear_max_context_tokens: options.clearMaxContextTokens ?? false,
       workspace_id: options.workspaceId ?? null,
       clear_workspace_id: options.clearWorkspaceId ?? false,
       worktree_id: options.worktreeId ?? null,

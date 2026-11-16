@@ -1,5 +1,5 @@
 {
-  "local_protocol": 1008,
+  "local_protocol": 1009,
   "peer_protocol": 447,
   "subscription_scope": "room_terminal",
   "attachment_id": ["term-1a2b", "term-1a2b@agent-w"],

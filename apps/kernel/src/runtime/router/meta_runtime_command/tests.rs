@@ -54,6 +54,38 @@ fn meta_agent_spawn_parser_supports_existing_slice_placement() {
 }
 
 #[test]
+fn meta_agent_spawn_parser_reads_a_max_context_as_people_write_it() {
+    let args = |value: &str| {
+        vec![
+            "lane".to_string(),
+            "--max-context".to_string(),
+            value.to_string(),
+        ]
+    };
+
+    let parsed = parse_meta_agent_spawn_args(&args("200k"), &test_session())
+        .expect("a token count with a suffix should parse");
+    assert_eq!(parsed.max_context_tokens, Some(200_000));
+    let without = parse_meta_agent_spawn_args(&["lane".to_string()], &test_session()).unwrap();
+    assert_eq!(without.max_context_tokens, None);
+    let refused = parse_meta_agent_spawn_args(&args("lots"), &test_session())
+        .expect_err("text that is not a count is refused");
+    assert!(
+        refused.to_string().contains("not a token count"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn meta_agent_spawn_parser_refuses_a_max_context_for_a_peer_in_another_room() {
+    let args = ["lane", "--max-context", "200k", "--room", "other-room"].map(String::from);
+
+    let refused = parse_meta_agent_spawn_args(&args, &test_session())
+        .expect_err("a peer room spawn cannot carry the setting yet");
+    assert!(refused.to_string().contains("--max-context"), "{refused}");
+}
+
+#[test]
 fn meta_slice_parser_routes_save_and_stop_lifecycle_requests() {
     let save = meta_slice_request(&[
         "save-state".to_string(),

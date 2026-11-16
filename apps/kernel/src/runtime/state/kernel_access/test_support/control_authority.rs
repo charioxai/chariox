@@ -134,6 +134,8 @@ async fn revoked_control(operation: Operation, discovery: bool) {
         }
         Operation::Config => {
             LocalDaemonRequest::UpdateAgentConfig(crate::local::UpdateAgentConfigRequest {
+                max_context_tokens: None,
+                clear_max_context_tokens: false,
                 session_id: session.id().into(),
                 agent_id: agent.id().into(),
                 execution_mode: Some(crate::provider::AgentExecutionMode::Plan),

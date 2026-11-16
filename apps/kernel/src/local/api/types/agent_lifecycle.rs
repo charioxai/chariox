@@ -19,6 +19,9 @@ pub struct SpawnAgentRequest {
     pub account_profile: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// Where the provider compacts the conversation; omitted keeps the provider's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_mode: Option<crate::provider::AgentExecutionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -51,6 +54,9 @@ pub struct SpawnAgentsRequestItem {
     pub account_profile: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// Where the provider compacts the conversation; omitted keeps the provider's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_mode: Option<crate::provider::AgentExecutionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -69,6 +75,7 @@ pub struct SpawnAgentsRequestItem {
 impl SpawnAgentsRequestItem {
     pub fn into_spawn_agent_request(self, session_id: String) -> SpawnAgentRequest {
         SpawnAgentRequest {
+            max_context_tokens: self.max_context_tokens,
             no_subscribe: false,
             session_id,
             alias: self.alias,

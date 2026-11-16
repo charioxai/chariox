@@ -1625,6 +1625,7 @@ async fn an_allow_for_session_grant_ends_when_the_agent_config_changes_and_chang
                     permission_level,
                     None,
                     None,
+                    None,
                 )
                 .await
                 .expect("the config should update");
@@ -1718,6 +1719,7 @@ async fn an_allow_for_session_grant_ends_when_the_working_directory_changes_back
                 None,
                 None,
                 Some(worktree),
+                None,
             )
             .await
             .expect("working directory should update");

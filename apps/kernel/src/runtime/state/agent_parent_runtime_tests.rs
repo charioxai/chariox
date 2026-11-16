@@ -254,6 +254,7 @@ impl LeasedTree {
                         Some(Some(level)),
                         None,
                         None,
+                        None,
                     )
                     .await
                     .map(drop)

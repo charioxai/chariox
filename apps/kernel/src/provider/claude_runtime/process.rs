@@ -214,20 +214,6 @@ fn reap(pid: u32, options: libc::c_int) -> std::io::Result<Option<ExitStatus>> {
     }
 }
 
-#[cfg(test)]
-impl ClaudeChild {
-    pub(super) fn kill(&mut self) -> std::io::Result<()> {
-        match self {
-            Self::Started(child) => child.kill(),
-            Self::Adopted { .. } => Ok(()),
-        }
-    }
-
-    pub(super) fn wait(&mut self) {
-        self.kill_and_wait();
-    }
-}
-
 /// Claude Code's stdout and stderr, read line by line into one channel.
 pub(super) struct ClaudeOutput {
     pub(super) receiver: Receiver<ClaudeRuntimeMessage>,

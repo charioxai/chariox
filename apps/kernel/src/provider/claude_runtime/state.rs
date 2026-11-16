@@ -29,6 +29,9 @@ pub struct ClaudeRuntimeState {
     pub(super) env_remove: Vec<String>,
     pub(super) working_directory: Option<PathBuf>,
     pub(super) context_file: Option<PathBuf>,
+    /// The run base the conversation already holds. Claude keeps hook context in
+    /// its history, so it is sent again only after a restart or a compaction.
+    pub(super) delivered_hidden_base: Option<String>,
     pub(super) settings_file: Option<PathBuf>,
     pub(super) usage_file: Option<PathBuf>,
     pub(super) last_usage_file_contents: Option<String>,

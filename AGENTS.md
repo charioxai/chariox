@@ -28,17 +28,17 @@ When a serialized shape a client depends on changes:
 
 ## Development stage
 
-Chariox is in development: backward compatibility with older kernels, clients and stored data is not a goal. When it simplifies the code, discontinue old kernels (re-provision or re-pair them) instead of carrying compatibility shims, legacy read paths, version-gated fallbacks or a long managed-upgrade predecessor list. Keep only what the kernels running today need: the managed-upgrade predecessor list holds the current release and the one before it, and nobody has to prove that an older protocol number never shipped before dropping it. Do not report the missing upgrade or rollback path from an older release as a finding. Delete the old path you replace in the same change. This holds until the owner says Chariox has users to protect.
+Backward compatibility with older kernels, clients and stored data is not a goal. No shims, legacy read paths or version-gated fallbacks: re-provision or re-pair old kernels instead, and delete the old path you replace in the same change. The managed-upgrade predecessor list holds the current release and the one before it; nobody has to prove that an older protocol number never shipped, and a missing upgrade or rollback path from an older release is not a finding. This holds until the owner says Chariox has users to protect. Full wording: `docs/AGENT_RULE_DETAILS.md`.
 
 ## Runtime rules
 
 1. The kernel is the authority for sessions, agents, provider runs, workspaces, history and state. Put behaviour in the kernel and the shared protocol, not in one client.
-2. Providers run only through their official tools: their CLIs, local servers and documented hooks. No provider SDKs or third-party agent services. Provider tools own credential formats and refresh; Chariox keeps credentials only in the kernel Vault or the provider profile and moves them only through account transfer (chariox `docs/PROVIDER_ACCOUNTS.md`).
+2. Providers run only through their official tools: their CLIs, local servers and documented hooks. No provider SDKs or third-party agent services. Provider tools own credential formats and refresh; Chariox keeps credentials only in the kernel Vault or the provider profile and moves them only through account transfer (`docs/PROVIDER_ACCOUNTS.md`).
 3. The relay only carries encrypted traffic. It never reads prompts, outputs or data, and never decides session state.
 4. Cloud signs users in, issues relay tokens and picks relay targets with fresh heartbeats. It never carries runtime traffic and never changes kernel behaviour.
 5. Provider permission prompts resolve through one kernel-owned interaction shown to every client in the session.
 6. Hosted connections use `wss://` behind Caddy. Hosted settings that break these rules must fail loudly.
-7. OSS boundary (OF-18+, `scripts/oss-boundary-guard.mjs`, part of `pnpm lint`): the change adds no compute-provider or Cloud-only business logic to OSS (provider names, APIs, images, sizes, regions, prices, rental or auto-stop policy, Cloud account UI, hard-coded vendor hosts). Any new control-plane API path or Cloud-shaped request is in `scripts/control-plane-paths.allow.json` or `scripts/control-plane-requests.allow.json` with a justification and a generic seam, and the leak list `scripts/oss-boundary-leaks.allow.json` and the whole-file list `scripts/oss-boundary-files.allow.json` only shrink (the guard compares both lists with their merge-base version, `CHARIOX_BOUNDARY_BASE` overrides the base, and in CI it fails when no base is available): delete an entry in the change that removes its code. Reviewers reject a change that adds a leak-list entry instead of moving the logic to Cloud. `scripts/oss-boundary-guard.test.mjs` plants a Cloud-only request variant, provider words and an unlisted path in a throwaway commit, requires the guard to fail on each, and requires it to pass once the commit is gone.
+7. OSS boundary (`scripts/oss-boundary-guard.mjs`, part of `pnpm lint`): add no compute-provider or Cloud-only business logic to OSS (provider names, APIs, images, sizes, regions, prices, rental or auto-stop policy, Cloud account UI, hard-coded vendor hosts). A new control-plane API path or Cloud-shaped request goes in `scripts/control-plane-paths.allow.json` or `scripts/control-plane-requests.allow.json` with a justification and a generic seam. The leak list `scripts/oss-boundary-leaks.allow.json` and the whole-file list `scripts/oss-boundary-files.allow.json` only shrink: delete an entry in the change that removes its code; a change that adds one is rejected, move the logic to Cloud. The guard compares both lists with the merge-base version (`CHARIOX_BOUNDARY_BASE` overrides; CI fails without a base). Full wording and the guard's self-test: `docs/AGENT_RULE_DETAILS.md`.
 
 ## Writing clean code
 
@@ -66,11 +66,7 @@ A change is done when it works on the real path a user takes: real kernel, relay
 
 ## Secrets and agents
 
-UX comes first. Agents are benign and act for the user. Chariox gives them tools to finish secret workflows, such as Vault fill by handle and the secret-capture helper, and does not gatekeep them.
-
-- Guard one thing: the product must not hand a Vault value to the model on its own. Keep the Vault-filled field masked in what the model sees (frames, accessibility and DOM text), and never echo Vault values in tool results, history, logs or traces.
-- Don't guard secrets that are visible on screens, terminals or pages, anything an agent does with a value itself (copy, paste, move, re-display), or what a person types.
-- A guard that blocks or slows an agent or the user's view without protecting what the model sees is a bug.
+Agents are benign and act for the user; UX comes first. Chariox gives them tools to finish secret workflows (Vault fill by handle, the secret-capture helper) and does not gatekeep them. Guard one thing: the product must not hand a Vault value to the model on its own. Keep the Vault-filled field masked in what the model sees (frames, accessibility and DOM text) and never echo Vault values in tool results, history, logs or traces. Don't guard secrets visible on screens, terminals or pages, what an agent does with a value itself (copy, paste, move, re-display), or what a person types. A guard that blocks or slows an agent or the user's view without protecting what the model sees is a bug. Full wording: `docs/AGENT_RULE_DETAILS.md`.
 
 ## Commits and pull requests
 

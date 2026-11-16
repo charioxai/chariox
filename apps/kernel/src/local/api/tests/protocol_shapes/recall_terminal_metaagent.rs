@@ -166,6 +166,8 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
     );
 
     let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
+        max_context_tokens: None,
+        clear_max_context_tokens: false,
         session_id: "session-1".to_string(),
         agent_id: "agent-1".to_string(),
         execution_mode: Some(AgentExecutionMode::Build),
@@ -190,7 +192,7 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "826ea52fcd9a136d573384f51126a8b59e5829b8fd6160d6601e5d5759d5f6a2"
+        "9d5d9e880c384a07021d421663988bb7fa16f678ea62fed727792d6fd2587d44"
     );
 }
 

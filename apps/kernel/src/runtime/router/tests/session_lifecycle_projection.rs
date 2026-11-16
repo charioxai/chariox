@@ -94,6 +94,7 @@ async fn agent_lifecycle_refresh_uses_published_projection_without_app_lock() {
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
 
     let spawn_request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,
         session_id: session_id.clone(),
@@ -587,6 +588,7 @@ async fn spawn_agent_rejects_slice_from_another_worktree() {
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,
         session_id,

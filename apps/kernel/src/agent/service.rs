@@ -157,6 +157,7 @@ impl AgentService {
             agent.set_account_profile(request.account_profile);
             agent.set_execution_mode_override(request.execution_mode_override);
             agent.set_permission_level_override(request.permission_level_override);
+            agent.set_max_context_tokens(request.max_context_tokens);
             created_agents.push(agent);
         }
 
@@ -282,6 +283,7 @@ impl AgentService {
         agent.set_account_profile(request.account_profile);
         agent.set_execution_mode_override(request.execution_mode_override);
         agent.set_permission_level_override(request.permission_level_override);
+        agent.set_max_context_tokens(request.max_context_tokens);
         let agent_id = agent.id().to_string();
         let session_id = agent.session_id().to_string();
 
@@ -880,6 +882,21 @@ impl AgentService {
         if let Some(worktree_id) = worktree_id {
             agent.set_worktree_id(worktree_id);
         }
+        Ok(agent.clone())
+    }
+
+    pub fn set_max_context_tokens(
+        &mut self,
+        agent_id: &str,
+        max_context_tokens: Option<u64>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_max_context_tokens(max_context_tokens);
         Ok(agent.clone())
     }
 

@@ -85,7 +85,12 @@ impl SessionRuntimeStore {
         } else {
             request.worktree_id.map(Some)
         };
-        let result = match self
+        let max_context_tokens = if request.clear_max_context_tokens {
+            Some(None)
+        } else {
+            request.max_context_tokens.map(Some)
+        };
+        let updated = self
             .state
             .update_agent_config(
                 &request.session_id,
@@ -95,9 +100,10 @@ impl SessionRuntimeStore {
                 permission_level_override,
                 workspace_id,
                 worktree_id,
+                max_context_tokens,
             )
-            .await
-        {
+            .await;
+        let result = match updated {
             Ok(agent) => self
                 .state
                 .session_snapshot(&session_id)
@@ -317,6 +323,13 @@ impl SessionRuntimeStore {
             .provider
             .clone()
             .unwrap_or_else(|| defaults.provider.clone());
+        if let Err(error) = crate::agent::ensure_spawn_max_context(
+            &spawn_provider,
+            request.max_context_tokens,
+            request.kernel_ref.is_some() || slice_admission.slice_ids.iter().any(Option::is_some),
+        ) {
+            return self.with_session_projection_action_result(Err(error)).await;
+        }
         let owner_user_id = self
             .state
             .room_member_user_id(&request.session_id, &caller_user_id);
@@ -386,6 +399,7 @@ impl SessionRuntimeStore {
         } else {
             create_request
         };
+        let create_request = create_request.with_max_context_tokens(request.max_context_tokens);
         let requested_worktree_for_scope = request.worktree_id.clone();
         let create_request = if let Some(worktree_id) = request.worktree_id {
             create_request.with_worktree(worktree_id)
@@ -675,7 +689,15 @@ impl SessionRuntimeStore {
             } else {
                 (model, effort)
             };
+            if let Err(error) = crate::agent::ensure_spawn_max_context(
+                &item_provider,
+                item.max_context_tokens,
+                item.kernel_ref.is_some() || slice_kernel_ref.is_some(),
+            ) {
+                return self.with_session_projection_action_result(Err(error)).await;
+            }
             let mut create_request = CreateAgentRequest::new(&request.session_id, item_provider)
+                .with_max_context_tokens(item.max_context_tokens)
                 .with_owner_user_id(member_user_id.clone());
             if let Some(metaagent_id) = caller_metaagent_id.as_deref() {
                 create_request = create_request.with_parent_agent_id(metaagent_id);

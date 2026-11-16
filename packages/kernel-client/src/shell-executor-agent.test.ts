@@ -973,3 +973,51 @@ test("executeShellCommand focuses an agent named by alias or ref through the ker
   assert.match(unknown.message ?? "", /unknown agent nobody/)
   assert.equal(fake.requests.filter((request) => "FocusAgent" in request).length, 3)
 })
+
+test("executeShellCommand spawns an agent with a max context", async () => {
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", provider: "claude", model: "sonnet" })
+  const fake = fakeClient((request) => {
+    assert.equal((request as { SpawnAgent: { max_context_tokens?: number } }).SpawnAgent.max_context_tokens, 200_000)
+    return { AgentSpawned: { agent: makeAgent({ id: "agent-1", agent_ref: "agent-1", alias: "lane" }) } }
+  })
+
+  const result = await executeShellCommand(parseShellCommand("agent spawn lane --max-context 200k"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.equal(fake.requests.length, 1)
+})
+
+test("executeShellCommand refuses a max context that is not a token count", async () => {
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const fake = fakeClient(() => {
+    throw new Error("kernel should not be called for an invalid max context")
+  })
+
+  const result = await executeShellCommand(parseShellCommand("agent spawn lane --max-context lots"), context, { client: fake.client })
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /not a token count/)
+  assert.equal(fake.requests.length, 0)
+})
+
+test("executeShellCommand sets and clears an agent's max context", async () => {
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", agentId: "agent-1" })
+  const updates: unknown[] = []
+  const fake = fakeClient((request) => {
+    if ("ListAgents" in request) return { AgentsListed: { agents: [makeAgent({ id: "agent-1", agent_ref: "agent-1" })] } }
+    updates.push((request as { UpdateAgentConfig: unknown }).UpdateAgentConfig)
+    return { AgentConfigUpdated: { agent: makeAgent({ id: "agent-1", agent_ref: "agent-1", max_context_tokens: updates.length === 1 ? 300_000 : null }), session: makeSession({}) } }
+  })
+
+  const set = await executeShellCommand(parseShellCommand("agent max-context 300k"), context, { client: fake.client })
+  const cleared = await executeShellCommand(parseShellCommand("agent max-context agent-1 clear"), context, { client: fake.client })
+
+  assert.equal(set.ok, true)
+  assert.match(set.message ?? "", /max context = 300000/)
+  assert.equal(cleared.ok, true)
+  assert.match(cleared.message ?? "", /provider default/)
+  assert.deepEqual(
+    updates.map((update) => [(update as Record<string, unknown>).max_context_tokens, (update as Record<string, unknown>).clear_max_context_tokens]),
+    [[300_000, false], [null, true]],
+  )
+})

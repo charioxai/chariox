@@ -424,6 +424,7 @@ fn a_peer_spawn_retried_after_its_answer_was_lost_to_a_restart_finds_its_agent()
         let before = rooms.peer_room_agents().await;
         // The first attempt created the agent; the kernel stopped before it kept the answer.
         let spawn = crate::local::LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+            max_context_tokens: None,
             no_subscribe: true,
             session_id: rooms.peer_room.clone(),
             alias: None,

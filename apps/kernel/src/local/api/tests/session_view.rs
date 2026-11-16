@@ -139,6 +139,7 @@ fn mp08_mp10_initial_session_view_selects_the_preferred_six_agent_group() {
     for index in 1..8 {
         harness
             .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                max_context_tokens: None,
                 no_subscribe: false,
                 session_id: session.id().into(),
                 account_profile: None,
@@ -205,6 +206,7 @@ fn mp08_mp10_mp11_initial_view_is_a_bounded_latest_turn_not_a_blob_download() {
     for index in 1..6 {
         harness
             .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                max_context_tokens: None,
                 no_subscribe: false,
                 session_id: session.id().into(),
                 account_profile: None,
