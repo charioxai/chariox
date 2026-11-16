@@ -114,6 +114,36 @@ impl ActiveWorkers {
     pub(super) fn due_signal(&self) -> Arc<tokio::sync::Notify> {
         self.3.clone()
     }
+    /// The old owner's Apps now belong to `new`: their idle-stopped catalogs
+    /// follow, and listing omissions are noted again by the next listing.
+    /// Running workers are stopped by the lifecycle, not re-keyed here.
+    pub(super) fn enroll_owner(&self, old: &str, new: &str) {
+        if let Ok(mut dormant) = self.1.lock() {
+            let moved: Vec<_> = dormant
+                .keys()
+                .filter(|(owner, _)| owner == old)
+                .cloned()
+                .collect();
+            for key in moved {
+                if let Some(entry) = dormant.remove(&key) {
+                    dormant.entry((new.to_owned(), key.1)).or_insert(entry);
+                }
+            }
+        }
+        if let Ok(mut unlisted) = self.2.lock() {
+            let forgotten: Vec<_> = unlisted
+                .by_app
+                .keys()
+                .filter(|(owner, _)| owner == old)
+                .cloned()
+                .collect();
+            for key in forgotten {
+                if let Some(agents) = unlisted.by_app.remove(&key) {
+                    unlisted.len -= agents.len();
+                }
+            }
+        }
+    }
     fn is_dormant(&self, owner: &str, installation: &str) -> bool {
         self.1
             .lock()
@@ -277,6 +307,12 @@ impl Drop for DormantReservation {
 }
 
 impl AppControlService {
+    /// Cloud enrollment handed the App records of `old` to `new`.
+    pub(crate) fn enroll_owner(&self, old: &str, new: &str) {
+        self.workers.enroll_owner(old, new);
+        self.lifecycle.release_owner(old);
+    }
+
     /// The blocking lifecycle owner publishes only after the exact process's
     /// readiness and durable activation proof. It must retain AppWorkerOwner and
     /// serialize replacement for this installation through its complete drain.

@@ -37,6 +37,7 @@ pub(crate) mod app_inbox;
 pub(crate) mod app_installation_operations;
 pub(crate) mod app_installation_staging;
 pub(crate) mod app_logs;
+pub(crate) mod app_owner_enrollment;
 pub(crate) mod app_publisher_operations;
 pub(crate) mod app_publishers;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -229,6 +230,7 @@ enum DurableWriterRequest {
     AppWake(Box<app_wakes::AppWakeRequest>),
     AppInbox(Box<app_inbox::AppInboxRequest>),
     AppLog(Box<app_logs::AppLogRequest>),
+    AppOwnerEnrollment(Box<app_owner_enrollment::AppOwnerEnrollmentRequest>),
     AppValidation(Box<app_validations::ValidationRequest>),
     AppFileGrant(Box<app_file_grants::FileGrantRequest>),
     AppFileExport(Box<app_file_exports::FileExportRequest>),
@@ -1720,6 +1722,10 @@ fn run_durable_writer_with(
             }
             DurableWriterRequest::AppLog(request) => {
                 app_logs::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::AppOwnerEnrollment(request) => {
+                app_owner_enrollment::execute(&mut connection, *request);
                 continue;
             }
             DurableWriterRequest::AppValidation(request) => {

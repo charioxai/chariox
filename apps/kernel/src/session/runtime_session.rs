@@ -511,6 +511,9 @@ impl RuntimeSession {
         for workflow in &mut self.workflows {
             workflow.enroll_local_owner(owner);
         }
+        for publication in &mut self.workflow_publication_state.workflow_publications {
+            publication.enroll_local_owner(owner);
+        }
     }
 
     pub fn members(&self) -> &[SessionMember] {
