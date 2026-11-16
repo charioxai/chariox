@@ -946,46 +946,68 @@ fn actions_with_standing(
 #[test]
 fn a_standing_declaration_names_a_closed_class_and_the_required_text_property_with_the_repository()
 {
-    let repo = json!({"repo": {"type": "string"}});
+    let repo = json!({"repo": {"type": "string"}, "account": {"type": "string"}});
     let declared = actions_with_standing(
         "person_confirmed",
-        json!({"class": "merge", "repo": "repo"}),
+        json!({"class": "merge", "repo": "repo", "account": "account"}),
         repo.clone(),
     )
     .unwrap();
     assert_eq!(
-        declared[0].standing_repo(&json!({"repo": "Owner/Name"})),
-        Some((StandingClass::Merge, "owner/name".into()))
+        declared[0].standing_use(&json!({"repo": "Owner/Name"})),
+        Some(StandingUse {
+            class: StandingClass::Merge,
+            repo: "owner/name".into(),
+            account: None
+        })
     );
-    assert_eq!(declared[0].standing_repo(&json!({"other": 1})), None);
+    assert_eq!(
+        declared[0]
+            .standing_use(&json!({"repo": "o/r", "account": "home"}))
+            .unwrap()
+            .account
+            .as_deref(),
+        Some("home"),
+        "the account the call names"
+    );
+    assert_eq!(declared[0].standing_use(&json!({"other": 1})), None);
     // Only what asks can carry it, and only a class that exists.
     assert!(actions_with_standing(
         "write",
-        json!({"class": "merge", "repo": "repo"}),
+        json!({"class": "merge", "repo": "repo", "account": "account"}),
         repo.clone()
     )
     .is_err());
     assert!(actions_with_standing(
         "person_confirmed",
-        json!({"class": "force_push", "repo": "repo"}),
+        json!({"class": "force_push", "repo": "repo", "account": "account"}),
         repo.clone()
     )
     .is_err());
     assert!(actions_with_standing(
         "person_confirmed",
-        json!({"class": "merge", "repo": "missing"}),
+        json!({"class": "merge", "repo": "missing", "account": "account"}),
         repo.clone()
     )
     .is_err());
     assert!(actions_with_standing(
         "person_confirmed",
-        json!({"class": "merge", "repo": "repo"}),
+        json!({"class": "merge", "repo": "repo", "account": "account"}),
         json!({"repo": {"type": "integer"}})
     )
     .is_err());
+    assert!(
+        actions_with_standing(
+            "person_confirmed",
+            json!({"class": "merge", "repo": "repo", "account": "other"}),
+            repo.clone()
+        )
+        .is_err(),
+        "the account property must be a text property of the input"
+    );
     assert!(actions_with_standing(
         "person_confirmed",
-        json!({"class": "merge", "repo": "repo", "branch": "x"}),
+        json!({"class": "merge", "repo": "repo", "account": "account", "branch": "x"}),
         repo
     )
     .is_err());
@@ -1002,6 +1024,7 @@ fn a_standing_declaration_cannot_be_added_in_the_runtime_registration() {
     registered.standing = Some(StandingDeclaration {
         class: StandingClass::Merge,
         repo: "repo".into(),
+        account: "account".into(),
     });
     assert!(matches!(
         check_registration(&[signed], &registered),

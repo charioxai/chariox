@@ -405,6 +405,93 @@ async fn a_backend_served_view_that_cannot_show_its_rows_never_raises_a_card() {
         .all(|i| !i.id().starts_with("app-confirm-")));
 }
 
+/// A live `/sudo` task for the rig agent's current turn, as the owner's `/sudo` prompt opens it.
+fn sudo_task(rig: &Rig) {
+    let session = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session)
+        .unwrap();
+    let prompt = rig
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, rig.agent.id())
+        .expect("the agent is mid-turn");
+    let turn = crate::local::KernelSudoTurn {
+        entry_id: "sudo:view-agent".into(),
+        session_id: rig.session.clone(),
+        agent_id: rig.agent.id().into(),
+        owner_user_id: "alice".into(),
+        terminal_id: "sudo-terminal".into(),
+        requester: None,
+        prompt_id: Some(prompt.id().into()),
+        provider_run_id: Some(rig.run.id().into()),
+        task_id: None,
+        duration_minutes: 60,
+        expires_at_ms: None,
+        revision: 1,
+        warning_sent: false,
+        deadline: Some(std::time::Instant::now() + std::time::Duration::from_secs(3600)),
+        placement: None,
+    };
+    assert!(rig.runtime.owned.prompt_state_owner.bind_sudo_turn(
+        &session,
+        rig.agent.id(),
+        prompt.id(),
+        &turn.entry_id
+    ));
+    rig.runtime
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .insert(turn.entry_id.clone(), turn);
+}
+
+/// What `invoke_declared` ends with for a person-confirmed action in a backend-served view,
+/// and whether the person was asked on the way.
+async fn confirmed_call_ends_with(rig: &Rig, context: &ViewContext) -> (String, bool) {
+    let input = json!({"text": "1"});
+    let invoke = rig
+        .runtime
+        .invoke_declared(rig.run.id(), &rig.agent, context, "pay", input);
+    let (outcome, asked) = tokio::join!(invoke, async {
+        let asked = tokio::time::timeout(
+            std::time::Duration::from_millis(600),
+            pending_confirmation(rig),
+        )
+        .await
+        .is_ok();
+        if asked {
+            let card = pending_confirmation(rig).await;
+            rig.runtime
+                .resolve_runtime_interaction(&rig.session, card.id(), "cancel", None)
+                .await
+                .unwrap();
+        }
+        asked
+    });
+    (outcome.unwrap_err().code, asked)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sudo_task_that_authorizes_the_work_needs_no_confirmation_card() {
+    let mut rig = rig();
+    rig.grant().await;
+    let mut declared = declared();
+    declared.push(action("pay", UiActionEffect::PersonConfirmed));
+    let mut context = rig.context(declared);
+    context.host = ViewHost::Backend { changes: false };
+    let (without, _) = confirmed_call_ends_with(&rig, &context).await;
+    sudo_task(&rig);
+    let (with, asked) = confirmed_call_ends_with(&rig, &context).await;
+    assert!(!asked, "the task already authorizes the action: no card");
+    // It reaches the backend, which this rig does not run; without the task it stops earlier.
+    assert_ne!(with, without, "the call went past the confirmation step");
+}
+
 #[test]
 fn a_backend_preview_is_bounded_plain_rows_and_nothing_else() {
     let ok = json!({"rows": [{"label": "Repository", "value": "o/r"}]});

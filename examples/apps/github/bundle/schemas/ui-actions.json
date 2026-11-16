@@ -1197,7 +1197,8 @@
       "approvalReason": "Approves the pull request in the name of the GitHub account",
       "standing": {
         "class": "review",
-        "repo": "repo"
+        "repo": "repo",
+        "account": "account"
       },
       "inputSchema": {
         "type": "object",
@@ -1286,7 +1287,8 @@
       "approvalReason": "Asks for changes on the pull request in the name of the GitHub account",
       "standing": {
         "class": "review",
-        "repo": "repo"
+        "repo": "repo",
+        "account": "account"
       },
       "inputSchema": {
         "type": "object",
@@ -1625,7 +1627,8 @@
       "confirmationView": "preview_merge_pull_request",
       "standing": {
         "class": "merge",
-        "repo": "repo"
+        "repo": "repo",
+        "account": "account"
       },
       "inputSchema": {
         "type": "object",
@@ -1682,7 +1685,8 @@
       "confirmationView": "preview_close_pull_request",
       "standing": {
         "class": "close",
-        "repo": "repo"
+        "repo": "repo",
+        "account": "account"
       },
       "inputSchema": {
         "type": "object",
@@ -1717,7 +1721,8 @@
       "confirmationView": "preview_delete_branch",
       "standing": {
         "class": "delete_branch",
-        "repo": "repo"
+        "repo": "repo",
+        "account": "account"
       },
       "inputSchema": {
         "type": "object",

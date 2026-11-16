@@ -41,6 +41,8 @@ pub(crate) enum StandingCommand {
         installation: String,
         repo: String,
         class: StandingClass,
+        /// The account the call names; `None` when it leaves the choice to the App.
+        account: Option<String>,
         now_ms: u64,
     },
 }
@@ -265,21 +267,27 @@ fn apply(
             installation,
             repo,
             class,
+            account,
             now_ms,
         } => {
-            // Valid only while its account is still bound and the installation still active.
+            // Valid only for the account that runs the call (the one it names, else the only one
+            // bound, since no other can run it), while that account is still bound and the
+            // installation still active.
             let covering: Option<String> = transaction
                 .query_row(
                     "SELECT s.standing_id FROM app_standing_permissions s
                      WHERE s.owner_id=?1 AND s.installation_id=?2 AND s.repo=?3 AND s.class=?4
                        AND (s.expires_at_ms IS NULL OR s.expires_at_ms > ?5)
+                       AND CASE WHEN ?6 IS NOT NULL THEN s.account=?6
+                                ELSE (SELECT COUNT(*) FROM app_account_bindings o
+                                      WHERE o.owner_id=s.owner_id AND o.installation_id=s.installation_id)=1 END
                        AND EXISTS (SELECT 1 FROM app_account_bindings b
                                    WHERE b.owner_id=s.owner_id AND b.installation_id=s.installation_id
                                      AND b.account=s.account)
                        AND EXISTS (SELECT 1 FROM app_installations i
                                    WHERE i.installation_id=s.installation_id AND i.active_json IS NOT NULL)
                      ORDER BY s.created_at_ms DESC LIMIT 1",
-                    params![owner, installation, repo, class.word(), now_ms as i64],
+                    params![owner, installation, repo, class.word(), now_ms as i64, account],
                     |row| row.get(0),
                 )
                 .optional()
@@ -369,6 +377,7 @@ mod tests {
 
     fn covers(
         store: &DurableKernelStateStore,
+        account: Option<&str>,
         repo: &str,
         class: StandingClass,
         now_ms: u64,
@@ -379,6 +388,7 @@ mod tests {
                 installation: "github".into(),
                 repo: repo.into(),
                 class,
+                account: account.map(str::to_owned),
                 now_ms,
             })
             .unwrap()
@@ -403,21 +413,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            covers(&store, "o/a", StandingClass::Merge, 50).as_deref(),
+            covers(&store, Some("work"), "o/a", StandingClass::Merge, 50).as_deref(),
             Some("s1")
         );
         assert_eq!(
-            covers(&store, "o/b", StandingClass::Merge, 50),
+            covers(&store, Some("work"), "o/b", StandingClass::Merge, 50),
             None,
             "another repository still asks"
         );
         assert_eq!(
-            covers(&store, "o/a", StandingClass::Close, 50),
+            covers(&store, Some("work"), "o/a", StandingClass::Close, 50),
             None,
             "another class still asks"
         );
         assert_eq!(
-            covers(&store, "o/a", StandingClass::Merge, 100),
+            covers(&store, Some("work"), "o/a", StandingClass::Merge, 100),
             None,
             "expired at its time"
         );
@@ -440,9 +450,55 @@ mod tests {
             .unwrap();
         assert_eq!((renewed.id.as_str(), renewed.uses), ("s2", 0));
         assert_eq!(
-            covers(&store, "o/a", StandingClass::Merge, u64::MAX / 2).as_deref(),
+            covers(
+                &store,
+                Some("work"),
+                "o/a",
+                StandingClass::Merge,
+                u64::MAX / 2
+            )
+            .as_deref(),
             Some("s2")
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_standing_permission_covers_only_the_account_that_runs_the_call() {
+        let (store, root) = store();
+        bind(&store, "work", "entry-1");
+        grant(
+            &store,
+            permission("s1", "work", "o/a", StandingClass::Merge, None),
+        )
+        .unwrap();
+        assert_eq!(
+            covers(&store, Some("work"), "o/a", StandingClass::Merge, 1).as_deref(),
+            Some("s1"),
+            "the call names the account the permission is for"
+        );
+        assert_eq!(
+            covers(&store, None, "o/a", StandingClass::Merge, 2).as_deref(),
+            Some("s1"),
+            "with one account bound, no other can run the call"
+        );
+        bind(&store, "home", "entry-2");
+        assert_eq!(
+            covers(&store, Some("home"), "o/a", StandingClass::Merge, 3),
+            None,
+            "another account in the same repository still asks"
+        );
+        assert_eq!(
+            covers(&store, None, "o/a", StandingClass::Merge, 4),
+            None,
+            "with two accounts bound, a call that names none may run as either"
+        );
+        let [listed] = store
+            .app_standing("alice", "github")
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(listed.uses, 2, "only the covered calls are counted");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -463,9 +519,12 @@ mod tests {
         .unwrap();
         // The same account on the same Vault entry keeps them; a different entry does not.
         bind(&store, "work", "entry-1");
-        assert!(covers(&store, "o/a", StandingClass::Merge, 1).is_some());
+        assert!(covers(&store, Some("work"), "o/a", StandingClass::Merge, 1).is_some());
         bind(&store, "work", "entry-9");
-        assert_eq!(covers(&store, "o/a", StandingClass::Merge, 1), None);
+        assert_eq!(
+            covers(&store, Some("work"), "o/a", StandingClass::Merge, 1),
+            None
+        );
         // Revoking the binding removes the other account's.
         store
             .app_account_command(AccountCommand::Revoke {
@@ -474,7 +533,10 @@ mod tests {
                 account: "home".into(),
             })
             .unwrap();
-        assert_eq!(covers(&store, "o/b", StandingClass::Review, 1), None);
+        assert_eq!(
+            covers(&store, Some("home"), "o/b", StandingClass::Review, 1),
+            None
+        );
         assert!(store.app_standing("alice", "github").unwrap().is_empty());
         // An installation without an active release covers nothing, and its rows go.
         grant(
@@ -486,7 +548,10 @@ mod tests {
         connection
             .execute_batch("UPDATE app_installations SET active_json=NULL")
             .unwrap();
-        assert_eq!(covers(&store, "o/a", StandingClass::Close, 1), None);
+        assert_eq!(
+            covers(&store, Some("work"), "o/a", StandingClass::Close, 1),
+            None
+        );
         forget_inactive(&connection, "alice", "github").unwrap();
         assert_eq!(store.app_standing_count("alice", "github").unwrap(), 0);
         let _ = std::fs::remove_dir_all(root);
@@ -532,7 +597,10 @@ mod tests {
         };
         revoke("s0").unwrap();
         assert_eq!(revoke("s0"), Err("NOT_FOUND"));
-        assert_eq!(covers(&store, "o/r0", StandingClass::Merge, 1), None);
+        assert_eq!(
+            covers(&store, Some("work"), "o/r0", StandingClass::Merge, 1),
+            None
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

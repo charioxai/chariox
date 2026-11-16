@@ -2,9 +2,10 @@
 //! signed component in an App Tab or, when its backend serves the view and no Tab exists,
 //! as plain rows its backend answers; the kernel frames that preview with the verified App
 //! and publisher and asks the person on one card. Only the person's Confirm lets the action
-//! run: no grant, session approval or `/sudo` stands in for it, and no agent may answer the card.
-//! A standing permission the owner gave for this repository and action class replaces the
-//! card, never an agent's or the App's word.
+//! run: no grant or session approval stands in for it, and no agent may answer the card.
+//! A standing permission the owner gave for this repository, account and action class, or a
+//! live `/sudo` task of the calling agent, replaces the card (the caller never raises it);
+//! never an agent's or the App's word.
 
 use super::*;
 use crate::local::{AppConfirmationFrame, AppConfirmationPreviewRow};

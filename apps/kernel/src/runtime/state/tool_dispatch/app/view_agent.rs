@@ -20,7 +20,9 @@ use crate::session::{
     RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
     RuntimeInteractionKind, RuntimeInteractionLevel,
 };
-use chariox_app_package::v2::{self as declared_actions, UiActionDeclaration, UiActionEffect};
+use chariox_app_package::v2::{
+    self as declared_actions, StandingUse, UiActionDeclaration, UiActionEffect,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -139,7 +141,7 @@ pub(super) fn specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: INVOKE.into(),
-            description: "Run one declared action in an open App view, as you, through the same function the App's buttons use. Read and write actions run at once; an approval action asks the user first (unless /sudo or an existing approval covers it); a person_confirmed action runs only after the person confirms this exact input on a card, and nothing else can answer it. Read the changed state with chariox.app_view_state.".into(),
+            description: "Run one declared action in an open App view, as you, through the same function the App's buttons use. Read and write actions run at once; an approval action asks the user first (unless /sudo or an existing approval covers it); a person_confirmed action runs only after the person confirms this exact input on a card (unless /sudo or a standing permission covers it), and nothing else can answer it. Read the changed state with chariox.app_view_state.".into(),
             input_schema: json!({"type": "object", "properties": {"view": view, "action": {"type": "string"}, "input": input}, "required": ["view", "action"], "additionalProperties": false}),
         },
         RuntimeToolSpec {
@@ -356,15 +358,22 @@ impl KernelRuntimeState {
         }
         let _turn = self.view_turn(context).await?;
         // The preview shares the page with the action, so the turn is held from the card to the run.
-        if action.effect == UiActionEffect::PersonConfirmed && !standing {
+        // A sudo task the owner started for this work is the person's consent to it; the action
+        // itself still checks the pull request's state and head.
+        if action.effect == UiActionEffect::PersonConfirmed
+            && !standing
+            && !self
+                .sudo_task_authorizes_agent(agent.session_id(), agent.id())
+                .await
+        {
             self.confirm_view_action(run_id, agent, context, action, &input)
                 .await?;
         }
         self.run_in_view(context, name, input).await
     }
 
-    /// Whether the owner's standing permission for this repository and action class covers the
-    /// call, so its card is not raised. Only what the signed declaration names can be covered,
+    /// Whether the owner's standing permission for this repository, account and action class
+    /// covers the call, so its card is not raised. Only what the signed declaration names can be covered,
     /// read from the validated input; the use is counted for the owner to see.
     async fn standing_covers(
         &self,
@@ -372,7 +381,12 @@ impl KernelRuntimeState {
         action: &UiActionDeclaration,
         input: &Value,
     ) -> Result<bool, ViewError> {
-        let Some((class, repo)) = action.standing_repo(input) else {
+        let Some(StandingUse {
+            class,
+            repo,
+            account,
+        }) = action.standing_use(input)
+        else {
             return Ok(false);
         };
         let store = self.owned.durable_state_store.clone();
@@ -386,6 +400,7 @@ impl KernelRuntimeState {
                 installation,
                 repo,
                 class,
+                account,
                 now_ms: crate::session::unix_epoch_ms(),
             })
         })

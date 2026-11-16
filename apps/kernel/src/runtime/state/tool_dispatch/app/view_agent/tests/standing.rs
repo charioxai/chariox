@@ -12,14 +12,14 @@ fn gated(name: &str, effect: UiActionEffect, class: StandingClass) -> UiActionDe
     serde_json::from_value(json!({
         "name": name, "description": format!("{name} a pull request"),
         "inputSchema": {"type": "object", "additionalProperties": false,
-            "properties": {"repo": {"type": "string"}}, "required": ["repo"]},
+            "properties": {"repo": {"type": "string"}, "account": {"type": "string"}}, "required": ["repo"]},
         "effect": match effect {
             UiActionEffect::Approval => "approval",
             _ => "person_confirmed",
         },
         "approvalReason": (effect == UiActionEffect::Approval).then_some("Changes a pull request"),
         "confirmationView": (effect == UiActionEffect::PersonConfirmed).then_some("preview"),
-        "standing": {"class": class.word(), "repo": "repo"},
+        "standing": {"class": class.word(), "repo": "repo", "account": "account"},
     }))
     .unwrap()
 }
@@ -65,7 +65,10 @@ fn stand(rig: &Rig, id: &str, repo: &str, class: StandingClass, expires_at_ms: O
 
 /// The action asks for its card (and is denied), or goes on to the page without one.
 async fn asks(rig: &Rig, context: &ViewContext, action: &str, repo: &str) -> bool {
-    let input = json!({"repo": repo});
+    asks_as(rig, context, action, json!({"repo": repo})).await
+}
+
+async fn asks_as(rig: &Rig, context: &ViewContext, action: &str, input: Value) -> bool {
     let invoke = rig
         .runtime
         .invoke_declared(rig.run.id(), &rig.agent, context, action, input);
@@ -128,6 +131,50 @@ async fn a_standing_permission_skips_the_card_for_its_repository_and_class_only(
         used.uses, 1,
         "the skipped card is counted for the owner to see"
     );
+}
+
+#[tokio::test]
+async fn a_standing_permission_covers_only_the_account_it_was_given_for() {
+    let mut rig = rig();
+    rig.grant().await;
+    let context = rig.context(vec![gated(
+        "approve",
+        UiActionEffect::Approval,
+        StandingClass::Review,
+    )]);
+    bind(&rig, "work");
+    bind(&rig, "home");
+    stand(&rig, "standing-1", "o/a", StandingClass::Review, None);
+    assert!(
+        !asks_as(
+            &rig,
+            &context,
+            "approve",
+            json!({"repo": "o/a", "account": "work"})
+        )
+        .await,
+        "the account the owner named"
+    );
+    assert!(
+        asks_as(
+            &rig,
+            &context,
+            "approve",
+            json!({"repo": "o/a", "account": "home"})
+        )
+        .await,
+        "another account in the same repository still asks"
+    );
+    assert!(
+        asks_as(&rig, &context, "approve", json!({"repo": "o/a"})).await,
+        "with two accounts bound, a call that names none may run as either"
+    );
+    let [used] = store(&rig)
+        .app_standing("alice", APP)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(used.uses, 1, "only the covered call is charged to it");
 }
 
 #[tokio::test]

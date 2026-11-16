@@ -51,10 +51,11 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   name of the view the App registers with `chariox.view.confirmation(name,
   render)`; also `data-chariox-confirmation-view` on an annotated form; for an App
   whose backend serves its view, the name of the backend tool that answers with
-  the preview rows). An optional `standing` `{class, repo}` on an `approval` or
+  the preview rows). An optional `standing` `{class, repo, account}` on an `approval` or
   `person_confirmed` action lets the owner decide once, per repository, that this
   class (`merge | close | delete_branch | review`, a closed set) needs no card;
-  `repo` names the required text input property that holds `owner/name`. Backend `actions` keep their
+  `repo` names the required text input property that holds `owner/name`, `account` the optional text
+  input property that names the account the call runs as. Backend `actions` keep their
   protected effect routes unchanged; an effect class grants no capability.
 - Signature slots: `signatures/publisher.sig` plus up to 8
   `signatures/reviews/<reviewer-key-id>.json` (`chariox.package-review.v1`, at
@@ -224,8 +225,11 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   host, not the App or the agent, finds that one element and projects its pixels
   as the card's protected region. The card's frame (`app_confirmation`: App,
   publisher, action) is written by the kernel from the verified release, never
-  by the App. The card is the person's alone: no agent holder or owner agent, no
-  `/sudo`, no session approval and no earlier answer stands in for it; the
+  by the App. The card is the person's alone: no agent holder or owner agent and no
+  session approval or earlier answer stands in for it. A live `/sudo` task of the
+  calling agent is the owner's consent to the work, so the kernel raises no card
+  for it, as for a standing permission, and the action still checks the state it
+  acts on. When a card is raised, the
   turn, grant, release and generation are checked again after Confirm. Cancel,
   timeout, disconnect or a stale view run nothing and say so. The preview is
   removed on every path. Input an agent drove through the browser into a
@@ -248,7 +252,9 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   `--days n` or `--never`). When an agent invokes an `approval` or
   `person_confirmed` action whose signed `standing` names that class and whose
   input names that repository, no card is raised and the use is counted. It
-  covers only the named repository and class, and exists only while the account
+  covers only the named repository, account and class (the account the call
+  names, else the only one bound; with several bound and none named the card
+  asks), and exists only while the account
   binding it was made under (the same Vault entry) and the installation's active
   release do. Force pushes, deleting a default branch, grants and bindings are not
   classes; refusing the default or a protected branch stays the App's own rule.

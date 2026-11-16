@@ -78,22 +78,39 @@ impl StandingClass {
     }
 }
 
-/// Which standing permission covers an action: its class, and the input property that names
-/// the repository (`owner/name`). The kernel reads the repository from the validated input,
-/// never from anything the App says afterwards.
+/// Which standing permission covers an action: its class, the input property that names the
+/// repository (`owner/name`) and the one that may name the account the call runs as. The kernel
+/// reads both from the validated input, never from anything the App says afterwards.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StandingDeclaration {
     pub class: StandingClass,
     pub repo: String,
+    pub account: String,
+}
+
+/// What a stand-grantable call is about: its class and repository, and the account it names
+/// (`None` when the call leaves the account to the App's own choice).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StandingUse {
+    pub class: StandingClass,
+    pub repo: String,
+    pub account: Option<String>,
 }
 
 impl UiActionDeclaration {
-    /// The repository this call is about, when the action is stand-grantable.
-    pub fn standing_repo(&self, input: &Value) -> Option<(StandingClass, String)> {
+    /// The class, repository and account this call is about, when the action is stand-grantable.
+    pub fn standing_use(&self, input: &Value) -> Option<StandingUse> {
         let standing = self.standing.as_ref()?;
         let repo = input.get(&standing.repo)?.as_str()?;
-        Some((standing.class, repo.to_ascii_lowercase()))
+        Some(StandingUse {
+            class: standing.class,
+            repo: repo.to_ascii_lowercase(),
+            account: input
+                .get(&standing.account)
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        })
     }
 }
 
@@ -152,13 +169,16 @@ pub(crate) fn read_ui_actions(bytes: &[u8], limits: &Limits) -> Result<Vec<UiAct
                 && action.input_schema["required"]
                     .as_array()
                     .is_some_and(|required| required.iter().any(|name| *name == standing.repo));
+            let names_a_text_account =
+                action.input_schema["properties"][&standing.account]["type"] == "string";
             if !matches!(
                 action.effect,
                 UiActionEffect::Approval | UiActionEffect::PersonConfirmed
             ) || !names_a_text_property
+                || !names_a_text_account
             {
                 return invalid(
-                    "standing is for approval or person-confirmed actions whose required text input property names the repository",
+                    "standing is for approval or person-confirmed actions whose required text input property names the repository and whose text input property names the account",
                 );
             }
         }

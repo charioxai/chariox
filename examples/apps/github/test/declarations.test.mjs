@@ -78,10 +78,13 @@ test('every tool has a handler, and the gating of each action is declared: a car
   for (const action of actions.filter(a => a.effect === 'approval')) assert.ok(action.approvalReason, `${action.name} says why it asks`);
   const standing = Object.fromEntries(actions.filter(a => a.standing).map(a => [a.name, a.standing]));
   assert.deepEqual(standing, {
-    approve_pull_request: { class: 'review', repo: 'repo' }, request_changes: { class: 'review', repo: 'repo' },
-    merge_pull_request: { class: 'merge', repo: 'repo' }, close_pull_request: { class: 'close', repo: 'repo' }, delete_branch: { class: 'delete_branch', repo: 'repo' },
+    approve_pull_request: { class: 'review', repo: 'repo', account: 'account' }, request_changes: { class: 'review', repo: 'repo', account: 'account' },
+    merge_pull_request: { class: 'merge', repo: 'repo', account: 'account' }, close_pull_request: { class: 'close', repo: 'repo', account: 'account' }, delete_branch: { class: 'delete_branch', repo: 'repo', account: 'account' },
   });
-  for (const action of actions.filter(a => a.standing)) assert.ok(action.inputSchema.required.includes(action.standing.repo), `${action.name} requires the repository input`);
+  for (const action of actions.filter(a => a.standing)) {
+    assert.ok(action.inputSchema.required.includes(action.standing.repo), `${action.name} requires the repository input`);
+    assert.equal(action.inputSchema.properties[action.standing.account].type, 'string', `${action.name} takes the account it runs as`);
+  }
   assert.ok(!('force_push' in byName), 'a force push is not an action');
   const merge = byName.merge_pull_request.inputSchema;
   assert.ok(merge.required.includes('sha') && merge.required.includes('method'), 'a merge names the method and the head it was shown');

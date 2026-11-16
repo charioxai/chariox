@@ -3318,7 +3318,7 @@ Workflow trigger and deployment direction:
   {installation_id, standing_id}` and `ListAppStanding {installation_id}` answer `AppStanding {installation_id,
   standing: [{standing_id, account, repo, class, created_at_ms, expires_at_ms?, uses, last_used_ms?}]}`; only the
   owner can, the account must be bound and the installation must declare an action of that class
-  (`standing: {class, repo}` in `schemas/ui-actions.json`). `AppInstallationSummary.standing_permissions` counts
+  (`standing: {class, repo, account}` in `schemas/ui-actions.json`). `AppInstallationSummary.standing_permissions` counts
   them (absent when none). `app_confirmation.preview` (`[{label, value}]`, 1 to 12 rows of plain text) carries the
   rows a backend-served App answered when no App Tab shows the preview; the card then has no `view`. A direct tool
   call of an action that needs approval or confirmation is refused with `USE_APP_VIEW_INVOKE`.
