@@ -195,7 +195,7 @@ impl PreparedWorker {
             root_path.file_name().ok_or(WorkerError::Preparation)?,
         )
         .map_err(|_| WorkerError::Preparation)?;
-        let data_name = storage::installation(binding.owner_id(), &installation);
+        let data_name = storage::installation(&installation);
         let installation_root = match root.create_child(OsStr::new(&data_name)) {
             Ok(data) => data,
             Err(crate::private_fs::FsError::Io(error))

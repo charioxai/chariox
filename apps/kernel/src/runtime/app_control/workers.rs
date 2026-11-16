@@ -114,20 +114,42 @@ impl ActiveWorkers {
     pub(super) fn due_signal(&self) -> Arc<tokio::sync::Notify> {
         self.3.clone()
     }
-    /// The old owner's Apps now belong to `new`: their idle-stopped catalogs
-    /// follow, and listing omissions are noted again by the next listing.
+    /// The old owner's Apps now belong to `new`: their idle-stopped entries
+    /// follow with their suspension and configuration, and listing omissions
+    /// are noted again by the next listing. A catalog captured the old owner's
+    /// trust binding, so `rebuild` compiles it again under the new owner; an
+    /// entry it cannot rebuild is dropped and discovery seeds it afresh.
     /// Running workers are stopped by the lifecycle, not re-keyed here.
-    pub(super) fn enroll_owner(&self, old: &str, new: &str) {
+    pub(super) fn enroll_owner(
+        &self,
+        old: &str,
+        new: &str,
+        rebuild: impl Fn(&str) -> Option<Arc<EventCatalog>>,
+    ) {
+        let moved: Vec<_> = match self.1.lock() {
+            Ok(mut dormant) => {
+                let keys: Vec<_> = dormant
+                    .keys()
+                    .filter(|(owner, _)| owner == old)
+                    .cloned()
+                    .collect();
+                keys.into_iter()
+                    .filter_map(|key| dormant.remove(&key).map(|entry| (key.1, entry)))
+                    .collect()
+            }
+            Err(_) => Vec::new(),
+        };
+        // The store is read with no registry lock held.
+        let rebuilt: Vec<_> = moved
+            .into_iter()
+            .filter_map(|(installation, mut entry)| {
+                entry.catalog = rebuild(&installation)?;
+                Some(((new.to_owned(), installation), entry))
+            })
+            .collect();
         if let Ok(mut dormant) = self.1.lock() {
-            let moved: Vec<_> = dormant
-                .keys()
-                .filter(|(owner, _)| owner == old)
-                .cloned()
-                .collect();
-            for key in moved {
-                if let Some(entry) = dormant.remove(&key) {
-                    dormant.entry((new.to_owned(), key.1)).or_insert(entry);
-                }
+            for (key, entry) in rebuilt {
+                dormant.entry(key).or_insert(entry);
             }
         }
         if let Ok(mut unlisted) = self.2.lock() {
@@ -309,7 +331,9 @@ impl Drop for DormantReservation {
 impl AppControlService {
     /// Cloud enrollment handed the App records of `old` to `new`.
     pub(crate) fn enroll_owner(&self, old: &str, new: &str) {
-        self.workers.enroll_owner(old, new);
+        self.workers.enroll_owner(old, new, |installation| {
+            self.store.active_app_event_catalog(new, installation).ok()
+        });
         self.lifecycle.release_owner(old);
     }
 
