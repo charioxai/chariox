@@ -53,11 +53,14 @@ impl KernelRuntimeState {
         // Claude's Bash sandbox applies even to print-mode bypass runs. Native
         // TUIs can change their permission mode after launch. Neither seam
         // supplies a current sandbox grant for a kernel-owned executable, so
-        // require kernel process consent there, including initial Yolo.
+        // lower modes require kernel process consent there.
         if run.provider() != "claude" && run.client_interface().is_chariox() {
             return Ok(());
         }
-        if !(grantable && self.watched_process_grants.is_allowed(&wake.agent_id)) {
+        // Full access is the person's consent: an agent they chose to run that way never asks.
+        let full_access = run.permission_level() == crate::provider::AgentPermissionLevel::Yolo
+            && run.client_interface().is_chariox();
+        if !(full_access || grantable && self.watched_process_grants.is_allowed(&wake.agent_id)) {
             self.ask_process_consent(run, wake, cwd, grantable).await?;
         }
         self.authorize_room_provider_epoch(Some(&wake.agent_id), Some(run.id()))?;
@@ -113,7 +116,7 @@ impl KernelRuntimeState {
             RuntimeInteractionKind::Permission, RuntimeInteractionLevel::Warning,
             Some("Run watched command outside the provider sandbox?".into()),
             format!("Command: {}\nDirectory: {}\nThe kernel runs this command with its own process policy. Provider-native permission and Bash sandbox settings do not apply. {scope}", serde_json::to_string(&wake.command).map_err(|e| ledger::error(e.to_string()))?, super::super::agent_process_output::sanitize(cwd.to_string_lossy().as_bytes())),
-            choices, None, Some(300), Some("deny".into()),
+            choices, None, None, None,
         ).with_native_origin(self.owned.capture_native_interaction_origin(run.session_id(), &wake.agent_id, run.id()));
         let answer =
             crate::runtime::native_interaction_bridge::request_provider_native_interaction(

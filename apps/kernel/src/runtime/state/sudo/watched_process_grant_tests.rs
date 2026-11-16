@@ -1,12 +1,15 @@
 //! A person answers the first watched-command card "Allow for this agent": the agent's later watched
-//! commands run without a card until a parent revokes the grant.
+//! commands run without a card until a parent revokes the grant. Full access is the consent: an
+//! agent running that way never gets the card, except in a native TUI whose mode the person can
+//! change.
 use super::tests::{fixture_with_run_profile, running, Fixture};
 use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+use crate::local::KernelSudoTurn;
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
 use crate::session::RuntimeInteraction;
 use std::time::Duration;
 
-async fn watched_command_card(f: &Fixture, session_id: &str) -> RuntimeInteraction {
+async fn watched_command_card(f: &Fixture, session_id: &str) -> Option<RuntimeInteraction> {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let Some(card) = f
@@ -25,7 +28,7 @@ async fn watched_command_card(f: &Fixture, session_id: &str) -> RuntimeInteracti
         }
     })
     .await
-    .expect("a watched command without a grant must ask")
+    .ok()
 }
 
 /// The runtime token of a new agent of the room that is the fixture agent's parent.
@@ -61,10 +64,22 @@ async fn parent_of_fixture_agent(f: &Fixture, session_id: &str, agent_id: &str) 
         .to_owned()
 }
 
-#[tokio::test]
-async fn allow_for_this_agent_ends_the_cards_until_a_parent_revokes_it() {
-    let f = fixture_with_run_profile(None, true, "claude", "claude");
-    let turn = running(&f);
+/// The fixture agent's running task at Full access. A native TUI can change its mode after
+/// launch, so even there the kernel asks.
+async fn begin_task(
+    f: &Fixture,
+    turn: &KernelSudoTurn,
+    native_tui: bool,
+) -> crate::durable_state::agent_lifecycle::AgentTaskExecution {
+    if native_tui {
+        let mut snapshot = serde_json::to_value(&f.run).unwrap();
+        snapshot["client_interface"] = serde_json::json!("native_tui");
+        f.app
+            .lock()
+            .await
+            .providers_mut()
+            .insert_run_for_test(serde_json::from_value(snapshot).unwrap());
+    }
     f.state.owned.sudo_turns.lock().unwrap().clear();
     f.state
         .owned
@@ -91,6 +106,42 @@ async fn allow_for_this_agent_ends_the_cards_until_a_parent_revokes_it() {
     else {
         panic!("task missing")
     };
+    task
+}
+
+#[tokio::test]
+async fn a_full_access_agent_runs_its_watched_command_without_a_card() {
+    let f = fixture_with_run_profile(None, true, "claude", "claude");
+    let turn = running(&f);
+    let task = begin_task(&f, &turn, false).await;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        f.router.dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox.events.process",
+            serde_json::json!({"task_id":task.task_id, "origin_prompt_id":turn.prompt_id,
+                "label":"full access", "argv":["/bin/true"]}),
+        ),
+    )
+    .await
+    .expect("a Full-access agent's watched command must not wait for a card")
+    .expect("the watched command runs");
+    assert!(f
+        .state
+        .owned
+        .session_snapshot(&turn.session_id)
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .all(|interaction| !interaction.id().starts_with("watched-process-")));
+    f.state.owned.agent_wakes.processes.shutdown();
+}
+
+#[tokio::test]
+async fn allow_for_this_agent_ends_the_cards_until_a_parent_revokes_it() {
+    let f = fixture_with_run_profile(None, true, "claude", "claude");
+    let turn = running(&f);
+    let task = begin_task(&f, &turn, true).await;
     let parent_token = parent_of_fixture_agent(&f, &turn.session_id, &turn.agent_id).await;
     let watch = |label: &'static str| {
         f.router.dispatch_authenticated_runtime_tool_call(
@@ -116,15 +167,25 @@ async fn allow_for_this_agent_ends_the_cards_until_a_parent_revokes_it() {
     };
 
     // The first watched command asks, and the card offers the standing grant.
-    let (first, ()) = tokio::join!(watch("first"), async {
-        let card = watched_command_card(&f, &turn.session_id).await;
+    let (first, card) = tokio::join!(watch("first"), async {
+        let card = watched_command_card(&f, &turn.session_id).await?;
         let choices: Vec<_> = card.choices().iter().map(|c| c.id().to_owned()).collect();
         assert_eq!(choices, ["allow_once", "allow_agent", "deny"]);
+        assert_eq!(
+            (card.timeout_sec(), card.default_on_timeout()),
+            (None, None),
+            "the card waits for the person; it never answers deny by itself"
+        );
         f.state
             .resolve_runtime_interaction(&turn.session_id, card.id(), "allow_agent", None)
             .await
             .unwrap();
+        Some(())
     });
+    assert!(
+        card.is_some(),
+        "a native TUI's watched command must ask; the call returned {first:?}"
+    );
     first.expect("the granted watched command runs");
 
     // The second one runs without a card.
@@ -164,7 +225,9 @@ async fn allow_for_this_agent_ends_the_cards_until_a_parent_revokes_it() {
 
     // The next watched command asks again.
     let (third, ()) = tokio::join!(watch("third"), async {
-        let card = watched_command_card(&f, &turn.session_id).await;
+        let card = watched_command_card(&f, &turn.session_id)
+            .await
+            .expect("a revoked native TUI's watched command asks again");
         f.state
             .resolve_runtime_interaction(&turn.session_id, card.id(), "deny", None)
             .await
