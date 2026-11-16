@@ -818,7 +818,7 @@ impl KernelRuntimeState {
             return Vec::new();
         };
         let loader = RuntimeToolSpec { name: LOADER.into(),
-            description: "MD-3: load the user's kernel browser tools. Use only when the user asked you to use their browser in this turn, or after they focused you. The grant covers tabs you open (not their existing tabs) for lifetime_hours (default 8, max 24) and is retained until expiry, idle lapse or revocation. If effective=after_provider_reload, end this turn; Chariox refreshes the tools and automatically continues the request.".into(),
+            description: "MD-3: when the user asks about a browser window opened outside a Room, the user-domain browser tools are available to the focused local agent through this tool; load them on demand, access follows user focus. Use only when the user asked you to use their browser in this turn, or after they focused you. The grant covers tabs you open (not their existing tabs) for lifetime_hours (default 8, max 24) and is retained until expiry, idle lapse or revocation. If effective=after_provider_reload, end this turn; Chariox refreshes the tools and automatically continues the request.".into(),
             input_schema: serde_json::json!({"type":"object","properties":{"lifetime_hours":{"type":"integer","minimum":1,"maximum":24}},"additionalProperties":false}), };
         let Some(agent) = self.kernel_browser_agent(run) else {
             // MP-08/MP-11: an owner-requested turn may acquire access without focus.

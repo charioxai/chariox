@@ -6,16 +6,10 @@ const BUDGET: &str = include_str!("../../../../agent_context_budget.json");
 
 /// What a Claude agent must have in context before its first call; every other
 /// runtime tool is found through Claude Code's tool search.
-const CORE_TOOLS: [&str; 9] = [
+const CORE_TOOLS: [&str; 3] = [
     "chariox.events.ack",
-    "chariox.events.blocked",
     "chariox.events.inbox",
-    "chariox.events.process",
-    "chariox.events.timer",
-    "chariox.events.yield",
     "chariox.permission_prompt",
-    "chariox.send_agent_message",
-    "chariox.vault.use_env",
 ];
 
 /// An agent another agent started: its inbox and the permission prompt.
@@ -106,6 +100,17 @@ async fn claude_run_loads_its_core_tools_upfront_and_finds_the_rest_on_demand() 
     upfront.sort_unstable();
     assert_eq!(upfront, CORE_TOOLS);
 
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    for name in &names {
+        assert!(
+            name.starts_with("chariox.") || !names.contains(&format!("chariox.{name}").as_str()),
+            "{name} is listed next to its canonical twin"
+        );
+    }
+
     let instructions = initialize["result"]["instructions"]
         .as_str()
         .expect("the server must say that more tools exist and how to load them");
@@ -154,7 +159,7 @@ async fn a_sub_agent_loads_only_its_inbox_tools_and_finds_the_rest_on_demand() {
 /// change that grows it must raise the committed number with its reason.
 #[tokio::test]
 async fn claude_runtime_catalog_matches_the_committed_context_budget() {
-    let (_, tools) = claude_catalog(false).await;
+    let (initialize, tools) = claude_catalog(false).await;
     let (worker_initialize, worker_tools) = claude_catalog(true).await;
     let core: Vec<&Value> = tools.iter().filter(|tool| always_load(tool)).collect();
     let worker_core: Vec<&Value> = worker_tools
@@ -178,8 +183,18 @@ async fn claude_runtime_catalog_matches_the_committed_context_budget() {
             "runtime/sub-agent-base",
         )
         .map(str::len),
+        "claude_server_instructions_bytes": initialize["result"]["instructions"].as_str().map_or(0, str::len),
     });
     let budget: Value = serde_json::from_str(BUDGET).expect("budget file should be JSON");
+    // The hidden runtime note is measured next to the prompt templates.
+    let budget: serde_json::Map<String, Value> = budget
+        .as_object()
+        .expect("budget file should be an object")
+        .iter()
+        .filter(|(key, _)| key.starts_with("claude_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let budget = Value::Object(budget);
     assert_eq!(
         measured, budget,
         "set apps/kernel/agent_context_budget.json to the measured values; before cutting text to fit, drill the tools it describes"
