@@ -40,6 +40,14 @@ impl KernelRuntimeOwnedState {
             .and_then(|fingerprint| fingerprint.strip_prefix("task:"))
             .and_then(|value| value.rsplit_once(':'))
             .map(|(task, _)| task.to_string());
+        // An answer or wake that arrives while the task's own turn still runs queues behind that turn.
+        // Admitting it now would move the task off the running turn, whose end then finds no task to
+        // settle; the dispatch that promotes the continuation admits it (`bind_agent_task_run`).
+        if let Some(task) = &continuation_task {
+            if self.task_turn_is_running(&prepared.session_id, task, prompt)? {
+                return Ok(false);
+            }
+        }
         let operation = if let Some(task) = continuation_task {
             Operation::BeginContinuation {
                 task,
@@ -111,6 +119,25 @@ impl KernelRuntimeOwnedState {
             self.bind_agent_workflow_task(&task, prompt)?;
         }
         Ok(())
+    }
+    /// Whether `task` still has its own turn running while it holds `continuation` as its next prompt.
+    fn task_turn_is_running(
+        &self,
+        room: &str,
+        task: &str,
+        continuation: &str,
+    ) -> Result<bool, DaemonError> {
+        let Some(task) = self.durable_state_store.agent_task(task)? else {
+            return Ok(false);
+        };
+        if task.pending_prompt_id.as_deref() != Some(continuation) {
+            return Ok(false);
+        }
+        let session = self.session_store.get_session(room)?;
+        Ok(self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &task.agent_id)
+            .is_some_and(|active| active.id() == task.prompt_id))
     }
     /// Binds the provider run that carries a dispatched prompt to its task. A prompt that waited in
     /// the queue is admitted without a run, so every dispatch path (including queue promotion)

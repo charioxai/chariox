@@ -4,6 +4,50 @@ use super::*;
 pub(super) const INVALID_TURN_END_REASON: &str =
     "Repeated invalid turn end; owner must resume or cancel";
 
+fn registration_by_id(tx: &Transaction<'_>, id: &str) -> Result<Option<Registration>, DaemonError> {
+    tx.query_row(
+        "SELECT payload FROM agent_registrations WHERE id=?1",
+        params![id],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(sql)?
+    .map(|payload| decode(&payload))
+    .transpose()
+}
+
+/// A registration the task no longer follows. A wait that held it must wake, rather than sleep on a dead registration.
+fn end_registration(
+    tx: &Transaction<'_>,
+    holder: &AgentTaskExecution,
+    mut reg: Registration,
+) -> Result<(), DaemonError> {
+    reg.live = false;
+    tx.execute(
+        "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+        params![reg.id, encode(&reg)?],
+    )
+    .map_err(sql)?;
+    if holder
+        .wait
+        .as_ref()
+        .is_some_and(|w| w.registration_ids.contains(&reg.id))
+    {
+        event(
+            tx,
+            occurrence(
+                &holder.room_id,
+                &holder.agent_id,
+                &reg.source_id,
+                &format!("unsubscribe-{}-{}", reg.id, holder.revision),
+                "source_lost",
+                serde_json::json!({"task_id":holder.task_id,"registration_id":reg.id}),
+            ),
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     let browser_access = matches!(&op, Operation::BlockForBrowserAccess { .. });
     let question = matches!(&op, Operation::BlockForQuestion { .. });
@@ -388,7 +432,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let t = load(tx, &task)?;
             current(&t, &prompt)?;
             // A follow outlives the turn that made it, so the agent ends it from a later turn.
-            let mut reg = match registrations(tx, &task)?
+            let reg = match registrations(tx, &task)?
                 .into_iter()
                 .find(|r| r.id == registration)
             {
@@ -403,31 +447,28 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             } else {
                 load(tx, &reg.task_id)?
             };
-            reg.live = false;
-            tx.execute(
-                "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
-                params![reg.id, encode(&reg)?],
-            )
-            .map_err(sql)?;
-            // An invalidated wait must wake, rather than sleep on a dead registration.
-            if holder
-                .wait
-                .as_ref()
-                .is_some_and(|w| w.registration_ids.contains(&reg.id))
-            {
-                event(
-                    tx,
-                    occurrence(
-                        &holder.room_id,
-                        &holder.agent_id,
-                        &reg.source_id,
-                        &format!("unsubscribe-{}-{}", reg.id, holder.revision),
-                        "source_lost",
-                        serde_json::json!({"task_id":holder.task_id,"registration_id":reg.id}),
-                    ),
-                )?;
-            }
+            end_registration(tx, &holder, reg)?;
             Ok(Outcome::Saved)
+        }
+        Operation::EndOwnerFollow {
+            registration,
+            room,
+            owner,
+        } => {
+            let reg = registration_by_id(tx, &registration)?
+                .ok_or_else(|| error("follow unavailable; reload its current state"))?;
+            let holder = load(tx, &reg.task_id)?;
+            if holder.room_id != room || holder.owner_user_id != owner || owner.is_empty() {
+                return Err(error("stale or foreign owner follow cancellation"));
+            }
+            // A completion source covers an open obligation: only a follow of a peer is the owner's to end.
+            if !reg.peer || reg.obligation_id.is_some() {
+                return Err(error("only a follow of another agent can be ended alone"));
+            }
+            if reg.live {
+                end_registration(tx, &holder, reg)?;
+            }
+            Ok(Outcome::Task(holder))
         }
         Operation::Yield {
             task,
@@ -745,7 +786,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::ProcessMatched { .. }
         | Operation::ProcessExited { .. }
         | Operation::CancelWake { .. }
-        | Operation::CancelOwnerTimer { .. }
+        | Operation::CancelOwnerWake { .. }
         | Operation::CancelOwnerWait { .. }
         | Operation::WakeAlerted { .. }
         | Operation::RetireWakes { .. }) => super::wakes::apply(tx, op),

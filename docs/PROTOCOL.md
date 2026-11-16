@@ -7058,12 +7058,14 @@ that task's retained resources and returns `AgentTaskUpdated`. Stale revisions
 and foreign room or attachment ownership are refused. A completed task cannot
 be cancelled.
 
-`CancelAgentWake { session_id, attachment_id, wake_id }` independently cancels a
-retained timer and returns `AgentTaskUpdated` for its owning task. It preserves
-the task and uses the normal source cancellation receipt to inform the agent.
-Other wake sources stop with their owning task. The shared shell exposes these
-controls as `stop task <task-id> <revision>` and `stop timer <wake-id>`; bare
-`stop` keeps its active-turn or focused-task behavior.
+`CancelAgentWake { session_id, attachment_id, wake_id }` independently ends one
+event a waiting task holds and returns `AgentTaskUpdated` for its owning task:
+a wake (a timer, a watched process, any driver source) or the follow of another
+agent, named by the id `liveness.waiting_events[].cancel_wake_id` carries. It
+preserves the task and uses the normal source cancellation receipt to inform the
+agent; a watched process settles on its physical exit. The shared shell exposes
+these controls as `stop task <task-id> <revision>` and `stop timer <wake-id>`;
+bare `stop` keeps its active-turn or focused-task behavior.
 
 An unconditional, targetless `CancelActivePrompt` still stops an active turn;
 when no turn is active it resolves the focused agent's parked task. A request
@@ -7718,9 +7720,10 @@ each other live registration (a sub-agent's end, a workflow run, another task)
 is one entry; `label` is the kernel's plain words ("sub-agent sub-agent-1",
 "timer check the build"). `liveness.waiting_on` keeps naming only the oldest.
 The owner ends the whole wait with `CancelAgentWait{task_id, started_at_ms}`,
-taken from any entry; `cancel_wake_id` is present only for a timer, the one
-event with an owner cancel of its own (`CancelAgentWake`). Every other source
-ends with the whole wait.
+taken from any entry; `cancel_wake_id` is present for a wake and for the follow
+of another agent, the events with an owner cancel of their own
+(`CancelAgentWake`). A sub-agent's end and a workflow run end on their own or
+with the whole wait.
 
 The kernel no longer judges a wait by how long it made no progress:
 `agent_tasks[].wait.long_wait_notified` is gone and no
