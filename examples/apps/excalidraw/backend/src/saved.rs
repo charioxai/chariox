@@ -44,14 +44,18 @@ pub async fn save(scene: &Value, expected: Option<u64>, change: Value) -> Result
         change,
     )
     .await;
-    let current = state::get(KEY.into()).await?.map(|record| record.version);
     match write {
-        Ok(_) => current.ok_or_else(|| error("INVALID_STATE", "the saved diagram is missing")),
-        Err(_) if current != expected => Err(error(
-            "SCENE_CONFLICT",
-            "the diagram was changed by another window or an agent; load it again and retry",
-        )),
-        Err(failure) => Err(failure),
+        Ok(committed) => Ok(committed.revision),
+        Err(failure) => {
+            let current = state::get(KEY.into()).await?.map(|record| record.version);
+            if current == expected {
+                return Err(failure);
+            }
+            Err(error(
+                "SCENE_CONFLICT",
+                "the diagram was changed by another window or an agent; load it again and retry",
+            ))
+        }
     }
 }
 
