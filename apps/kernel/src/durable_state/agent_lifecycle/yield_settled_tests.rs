@@ -178,35 +178,34 @@ fn a_yield_that_names_only_ended_sources_says_there_is_nothing_to_wait_on() {
 }
 
 #[test]
-fn a_running_source_left_out_of_the_yield_is_still_refused() {
+fn a_running_source_left_out_of_the_yield_is_not_refused() {
     let f = Fixture::new();
     f.begin("p");
     f.register();
     f.subscribe();
     running_delegate(&f);
-    let refusal = yield_on(&f, &["reg"]).unwrap_err().to_string();
-    assert!(
-        refusal.contains("cover every unresolved obligation"),
-        "{refusal}"
+    yield_on(&f, &["reg"]).expect("an agent may always end its turn");
+    assert_eq!(f.task().wait.unwrap().registration_ids, ["reg"]);
+    end_the_turn_waiting(&f);
+    let left_open: Vec<_> = f
+        .task()
+        .obligations
+        .into_iter()
+        .filter(|o| o.id == "running")
+        .collect();
+    assert_eq!(
+        left_open[0].status, "open",
+        "the delegate stays visible and open"
     );
 }
 
 #[test]
-fn kwait_yield_refusal_names_uncovered_wake_and_the_calls_to_settle_it() {
+fn a_yield_naming_an_unknown_registration_says_so() {
     let f = Fixture::new();
     f.begin("p");
-    f.register();
-    f.subscribe();
     running_delegate(&f);
-    let refusal = yield_on(&f, &["reg"]).unwrap_err().to_string();
-    for expected in [
-        "running",
-        "worker",
-        "running-reg",
-        "chariox.events.yield",
-        "registration_ids",
-        "chariox.events.subscribe",
-    ] {
-        assert!(refusal.contains(expected), "missing {expected}: {refusal}");
-    }
+    let refusal = yield_on(&f, &["no-such-registration"])
+        .unwrap_err()
+        .to_string();
+    assert!(refusal.contains("unknown registration_ids"), "{refusal}");
 }

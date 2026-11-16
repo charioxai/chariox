@@ -99,8 +99,8 @@ impl AgentObligation {
         }
     }
 
-    /// Work still running: a wait has to name a live source for it. Once an obligation has an
-    /// outcome (reply arrived, cancelled, child deleted) that outcome reaches the agent by itself.
+    /// Work still running. Once an obligation has an outcome (reply arrived, cancelled, child
+    /// deleted) that outcome reaches the agent by itself.
     pub(crate) fn needs_live_source(&self) -> bool {
         self.status == "open"
     }

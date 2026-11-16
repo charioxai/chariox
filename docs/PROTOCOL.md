@@ -1003,8 +1003,11 @@ resolved card.
 Ordinary provider runs receive `chariox.events.subscribe`, `subscriptions`,
 `unsubscribe`, `inbox`, `ack`, `yield` and `blocked`. Each requires current
 `task_id` and `origin_prompt_id`; room/run/turn fences precede resource lookup
-or mutation. A valid yield names admitted completion registrations, covers all
-unresolved obligations. `deadline_ms` is optional for ordinary and goal tasks:
+or mutation. A valid yield names admitted completion registrations; open work it
+does not name is never refused: it stays open and the result lists it as
+`open_work_not_waited_on`. `cancel` takes wake ids to cancel in the same call, and a
+turn that ends without a wait drops the timers it armed (waiting on a timer
+keeps it). `deadline_ms` is optional for ordinary and goal tasks:
 without it the kernel sets `wait.deadline_ms` to 30 minutes after the yield.
 A source may wake the task earlier; reaching the deadline closes the transcript
 wait row as timed out and wakes the retained task with `deadline_reached`.
