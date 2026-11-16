@@ -283,6 +283,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-page-perm
      apps/kernel/slice-linux-docker/docker/kernel-browser-screenshot-region.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-save.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-workspace-file.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-payment.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-wait.mjs /opt/chariox-slice/
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs /opt/chariox-slice/browser-controller-files.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-artifacts.mjs /opt/chariox-slice/browser-controller-artifacts.mjs
