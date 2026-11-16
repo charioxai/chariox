@@ -179,10 +179,27 @@ impl Team {
     }
 
     async fn hit_the_limit(&self, lane: usize) {
+        self.hit_the_limit_saying(lane, WEEKLY).await;
+    }
+
+    async fn hit_the_limit_saying(&self, lane: usize, message: &str) {
         self.rt()
-            .fail_owned_provider_prompt(&self.session_id, &self.lanes[lane].run_id, WEEKLY, true)
+            .fail_owned_provider_prompt(&self.session_id, &self.lanes[lane].run_id, message, true)
             .await
             .expect("the limit settles the turn");
+    }
+
+    /// The failed turn's own line in the transcript, not the stop notice or a dropped queued request.
+    fn failed_turn_lines(&self, lane: usize) -> Vec<String> {
+        self.rt()
+            .owned
+            .operational_history_store
+            .load_session_history_entries(&self.session_id, Some(&self.lanes[lane].agent_id))
+            .unwrap()
+            .into_iter()
+            .filter(|entry| entry.text.starts_with("You've hit your"))
+            .map(|entry| entry.text)
+            .collect()
     }
 
     fn has_turn(&self, lane: usize) -> bool {
@@ -264,6 +281,57 @@ async fn a_turn_that_ends_on_the_limit_asks_by_default_and_names_when_usage_is_b
         "the provider's own words name the time"
     );
     assert!(!team.has_turn(0));
+}
+
+#[tokio::test]
+async fn an_armed_stop_says_when_the_kernel_resumes_instead_of_asking_to_send_again() {
+    let team = team(config(UsageLimitResume::Automatic), 1).await;
+
+    team.hit_the_limit(0).await;
+
+    let lines = team.failed_turn_lines(0);
+    assert_eq!(lines.len(), 1, "one failed-turn line: {lines:?}");
+    assert!(
+        lines[0].ends_with("Resumes automatically at 16:00 UTC."),
+        "{}",
+        lines[0]
+    );
+    assert!(!lines[0].contains("send the request again"), "{}", lines[0]);
+}
+
+#[tokio::test]
+async fn an_armed_stop_without_a_named_reset_says_it_resumes_when_usage_is_back() {
+    let team = team(config(UsageLimitResume::Automatic), 1).await;
+
+    team.hit_the_limit_saying(
+        0,
+        "Claude StopFailure [rate_limit]: You've hit your usage limit",
+    )
+    .await;
+
+    assert!(matches!(
+        team.stop(0).unwrap().state,
+        UsageLimitStopState::Armed { .. }
+    ));
+    let lines = team.failed_turn_lines(0);
+    assert_eq!(lines.len(), 1, "one failed-turn line: {lines:?}");
+    assert!(
+        lines[0].ends_with("Resumes automatically when usage is back."),
+        "{}",
+        lines[0]
+    );
+}
+
+#[tokio::test]
+async fn asking_keeps_the_line_that_asks_to_send_the_request_again() {
+    let team = team(config(UsageLimitResume::Ask), 1).await;
+
+    team.hit_the_limit(0).await;
+
+    let lines = team.failed_turn_lines(0);
+    assert_eq!(lines.len(), 1, "one failed-turn line: {lines:?}");
+    assert!(lines[0].contains("send the request again"), "{}", lines[0]);
+    assert!(!lines[0].contains("Resumes automatically"), "{}", lines[0]);
 }
 
 /// The kernel stops and starts again over the same durable state.

@@ -45,38 +45,53 @@ fn refused(message: impl Into<String>) -> DaemonError {
     }
 }
 
+/// How a turn that ended on the usage limit goes on.
+pub(super) struct UsageLimitPlan {
+    named_reset: Option<u64>,
+    refusals: u32,
+    stopped_at_ms: u64,
+    state: UsageLimitStopState,
+}
+
+impl UsageLimitPlan {
+    /// The failed turn's line while the kernel resumes it by itself: the time the provider named,
+    /// or `None` when it named none. `None` outside that case, where the person still decides.
+    pub(super) fn resume_line(&self, failure: &crate::provider::TurnOutcome) -> Option<String> {
+        let UsageLimitStopState::Armed { at_ms } = self.state else {
+            return None;
+        };
+        Some(failure.notice_resuming(self.named_reset.map(|_| clock(at_ms)).as_deref()))
+    }
+}
+
 impl KernelRuntimeState {
-    /// The turn of `agent_id` ended on the provider's usage limit: records the stop on the agent
-    /// and, when the person lets the kernel resume, arms it. Called while the stopped turn settles,
-    /// so a parent that is told about it can read when it goes on.
-    pub(super) async fn record_usage_limit_stop(
+    /// What the kernel does with a turn that ended on the usage limit: when it resumes it, or that
+    /// it asks. `None` for a turn that did not end on the limit, or an agent whose worker owns the
+    /// stop. The failed turn's line and the stop on the agent both read it.
+    pub(super) fn plan_usage_limit_stop(
         &self,
-        agent_id: &str,
-        prompt_id: &str,
+        agent: &crate::agent::AgentInstance,
         failure: &crate::provider::TurnOutcome,
-        run: &crate::provider::RuntimeProviderRun,
-    ) -> Result<(), DaemonError> {
-        let owned = &self.owned;
-        if failure.kind != crate::provider::TurnOutcomeKind::UsageLimit {
-            return Ok(());
+        now: u64,
+    ) -> Option<UsageLimitPlan> {
+        if failure.kind != crate::provider::TurnOutcomeKind::UsageLimit
+            || agent.remote_execution().is_some()
+            || agent.archived()
+        {
+            return None;
         }
-        let agent = owned.agent_store.get_agent(agent_id)?;
-        if agent.remote_execution().is_some() || agent.archived() {
-            return Ok(());
-        }
-        let now = crate::session::unix_epoch_ms();
-        let previous = agent.usage_limit_stop().cloned();
+        let previous = agent.usage_limit_stop();
         // A stop while a resume runs is that resume refused.
-        let resumed_before = previous
-            .as_ref()
-            .filter(|stop| matches!(stop.state, UsageLimitStopState::Resuming { .. }));
+        let resumed_before =
+            previous.filter(|stop| matches!(stop.state, UsageLimitStopState::Resuming { .. }));
         let refusals = resumed_before.map_or(0, |stop| stop.refused + 1);
         let named_reset = match resumed_before {
             Some(stop) => stop.resumes_at_ms,
             None => crate::provider::usage_limit_reset_at_ms(&failure.reason, now)
                 .filter(|at| *at > now),
         };
-        let automatic = owned
+        let automatic = self
+            .owned
             .config_projection
             .snapshot()
             .user_config
@@ -92,13 +107,54 @@ impl KernelRuntimeState {
         } else {
             UsageLimitStopState::Asking
         };
+        Some(UsageLimitPlan {
+            named_reset,
+            refusals,
+            stopped_at_ms: resumed_before.map_or(now, |stop| stop.stopped_at_ms),
+            state,
+        })
+    }
+
+    /// The failed turn's line when the kernel resumes the usage-limit stop by itself.
+    pub(super) fn usage_limit_resume_notice(
+        &self,
+        agent_id: &str,
+        failure: &crate::provider::TurnOutcome,
+    ) -> Option<String> {
+        let agent = self.owned.agent_store.get_agent(agent_id).ok()?;
+        self.plan_usage_limit_stop(&agent, failure, crate::session::unix_epoch_ms())?
+            .resume_line(failure)
+    }
+
+    /// The turn of `agent_id` ended on the provider's usage limit: records the stop on the agent
+    /// and, when the person lets the kernel resume, arms it. Called while the stopped turn settles,
+    /// so a parent that is told about it can read when it goes on.
+    pub(super) async fn record_usage_limit_stop(
+        &self,
+        agent_id: &str,
+        prompt_id: &str,
+        failure: &crate::provider::TurnOutcome,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        let owned = &self.owned;
+        let agent = owned.agent_store.get_agent(agent_id)?;
+        let now = crate::session::unix_epoch_ms();
+        let Some(plan) = self.plan_usage_limit_stop(&agent, failure, now) else {
+            return Ok(());
+        };
+        let UsageLimitPlan {
+            named_reset,
+            refusals,
+            stopped_at_ms,
+            state,
+        } = plan;
         let stop = UsageLimitStop {
             // The turn that failed now: a resumed task goes on under a new prompt each time.
             prompt_id: prompt_id.to_string(),
             provider: run.provider().to_string(),
             account_profile: run.account_profile().to_string(),
             account_label: owned.account_label(&agent, run.account_profile()),
-            stopped_at_ms: resumed_before.map_or(now, |stop| stop.stopped_at_ms),
+            stopped_at_ms,
             resumes_at_ms: named_reset,
             refused: refusals,
             state,
