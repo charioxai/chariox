@@ -170,10 +170,10 @@ chooser.addEventListener("change", async () => {
     try {
       unread.push(...(await call("import_documents", { files: batch })).skipped)
     } catch {
-      unread.push(...batch)
+      unread.push(...batch.map((file) => ({ name: file.name, reason: `${file.name} could not be imported` })))
     }
   }
-  if (unread.length) say(`Not imported: ${unread.map((file) => file.name ?? "a file").join(", ")}.`, true)
+  if (unread.length) say(`Not imported: ${unread.map((file) => file.reason).join("; ")}.`, true)
 })
 
 $("export").addEventListener("click", async () => {

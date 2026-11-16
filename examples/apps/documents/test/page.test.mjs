@@ -106,5 +106,19 @@ test('files that fit one by one are imported in requests that each fit the App c
   assert.deepEqual(split.skipped, []);
   const escaped = batches([{ name: 'q.md', content: '"'.repeat(300 * 1024) }]);
   assert.deepEqual(escaped.batches, [], 'escaping makes a document too big for one call');
-  assert.deepEqual(escaped.skipped, [{ name: 'q.md', reason: 'q.md is too big to import here' }]);
+  assert.deepEqual(escaped.skipped, [{ name: 'q.md', reason: 'q.md is too big to import here: with its name and escaped characters it is over 512 KB' }]);
+});
+
+test('a file is imported whenever its whole request fits the 512 KiB the App accepts', async () => {
+  const { batches } = await import('../src/upload.js');
+  const LIMIT = 512 * 1024;
+  const size = (file) => new TextEncoder().encode(JSON.stringify({ files: [file] })).length;
+  const file = (extra) => ({ name: 'big.md', content: 'x'.repeat(LIMIT - size({ name: 'big.md', content: '' }) + extra) });
+  const fits = batches([file(0)]);
+  assert.deepEqual(fits.batches.map((batch) => batch.length), [1], 'a 500 KB-class document is not skipped');
+  assert.deepEqual(fits.skipped, []);
+  assert.equal(size(fits.batches[0][0]), LIMIT);
+  const over = batches([file(1)]);
+  assert.deepEqual(over.batches, []);
+  assert.equal(over.skipped.length, 1);
 });

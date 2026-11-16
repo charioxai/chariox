@@ -2,8 +2,9 @@
 // Limits are the App's (and the kernel file prompt's): eight files of at most 512 KiB each.
 export const MAX_FILES = 8
 export const MAX_BYTES = 512 * 1024
-// The App refuses a call whose serialized input is over 512 KiB; stay under it for the envelope.
-export const MAX_CALL_BYTES = 480 * 1024
+// The runtime refuses a call whose serialized input is over 512 KiB, so a request holds exactly that
+// many bytes of { files }, names and escapes included.
+export const MAX_CALL_BYTES = 512 * 1024
 
 /** { files: [{ name, content }], skipped: [{ name, reason }] }; a file that is too big or not UTF-8 text is skipped with its reason. */
 export async function readUploads(chosen) {
@@ -26,14 +27,14 @@ export async function readUploads(chosen) {
 
 const callBytes = (files) => new TextEncoder().encode(JSON.stringify({ files })).length
 
-/** { batches: [[file]], skipped } : the files in the fewest requests that each fit one App call; a file that cannot fit alone is skipped. */
+/** { batches: [[file]], skipped } : the files in the fewest requests that each fit one App call; a file whose own request cannot fit is skipped with the reason. */
 export function batches(files) {
   const result = []
   const skipped = []
   let open = []
   for (const file of files) {
     if (callBytes([file]) > MAX_CALL_BYTES) {
-      skipped.push({ name: file.name, reason: `${file.name} is too big to import here` })
+      skipped.push({ name: file.name, reason: `${file.name} is too big to import here: with its name and escaped characters it is over 512 KB` })
       continue
     }
     if (open.length && callBytes([...open, file]) > MAX_CALL_BYTES) {
