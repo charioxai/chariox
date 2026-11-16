@@ -383,3 +383,68 @@ fn a_request_whose_waiting_call_went_away_ends_unless_the_owner_already_answered
         peer.close().await;
     });
 }
+
+#[test]
+fn a_cancel_racing_the_owners_answer_never_discards_the_chosen_file() {
+    const ROUNDS: u64 = 300;
+    let fixture = Fixture::new(Mode::Ready);
+    fixture.runtime.block_on(async {
+        let mut peer = TestPeer::start_with(broker(&fixture, true));
+        for round in 0..ROUNDS {
+            peer.send("pick", "host.pick_file", serde_json::json!({}))
+                .await;
+            let operation = peer.response().await.1.unwrap()["operationId"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let store = fixture.store.clone();
+            let answered = operation.clone();
+            let answer = tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_micros(round % 40 * 20)).await;
+                tokio::task::spawn_blocking(move || {
+                    store.app_file_grant(FileGrantCommand::Grant {
+                        owner: "alice".into(),
+                        operation_id: answered,
+                        files: vec![GrantedFile {
+                            name: "notes.md".into(),
+                            contents: b"# Notes".to_vec(),
+                        }],
+                        now_ms: crate::session::unix_epoch_ms(),
+                    })
+                })
+                .await
+                .unwrap()
+            });
+            peer.send(
+                "cancel",
+                "host.pick_file_cancel",
+                serde_json::json!({"operationId": operation}),
+            )
+            .await;
+            peer.response().await.1.unwrap();
+            let answered_in_time = answer.await.unwrap().is_ok();
+            peer.send(
+                "status",
+                "host.pick_file_status",
+                serde_json::json!({"operationId": operation}),
+            )
+            .await;
+            let state = peer.response().await.1.unwrap()["state"].clone();
+            assert_eq!(
+                state,
+                if answered_in_time {
+                    "granted"
+                } else {
+                    "expired"
+                },
+                "round {round}: the owner's answer was {} but the request is {state}",
+                if answered_in_time {
+                    "accepted"
+                } else {
+                    "refused"
+                },
+            );
+        }
+        peer.close().await;
+    });
+}

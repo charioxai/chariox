@@ -172,18 +172,14 @@ impl AppFileGrantBroker {
     fn cancel(&self, params: Value) -> Result<Value, RemoteError> {
         let request: Status =
             serde_json::from_value(params).map_err(|_| error("INVALID_ARGUMENT", false))?;
-        let pending =
-            self.status(json!({"operationId": request.operation_id}))?["state"] == "pending";
-        if pending {
-            self.store
-                .revoke_app_file_grants(FileGrantCommand::Revoke {
-                    owner: self.owner.clone(),
-                    installation: self.installation().to_owned(),
-                    operation_id: Some(request.operation_id),
-                    now_ms: crate::session::unix_epoch_ms(),
-                })
-                .map_err(|code| error(code, code == "STORAGE_UNAVAILABLE"))?;
-        }
+        self.store
+            .app_file_grant(FileGrantCommand::Cancel {
+                owner: self.owner.clone(),
+                installation: self.installation().to_owned(),
+                operation_id: request.operation_id,
+                now_ms: crate::session::unix_epoch_ms(),
+            })
+            .map_err(|code| error(code, code == "STORAGE_UNAVAILABLE"))?;
         Ok(json!({}))
     }
 
