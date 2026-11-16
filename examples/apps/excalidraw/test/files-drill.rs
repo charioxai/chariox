@@ -4,7 +4,10 @@ use std::{
     fs,
     path::PathBuf,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     task::{Context, Poll},
 };
 use wasmtime::component::{
@@ -199,13 +202,22 @@ impl Drop for Scratch {
     }
 }
 
+/// A directory only this test uses: tests of one process run in parallel, so
+/// the process id alone does not keep two scratch roots apart.
+fn scratch(label: &str) -> wasmtime::Result<Scratch> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let root = Scratch(std::env::temp_dir().join(format!(
+        "excalidraw-{label}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )));
+    fs::create_dir(&root.0)?;
+    Ok(root)
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn offered_copies_leave_no_private_files_and_named_writes_persist() -> wasmtime::Result<()> {
-    let root = Scratch(
-        PathBuf::from(std::env::var("TMPDIR")?)
-            .join(format!("excalidraw-files-{}", std::process::id())),
-    );
-    fs::create_dir(&root.0)?;
+    let root = scratch("files")?;
     let (mut store, app) = runtime(&root.0).await?;
     let scene = r#"{"type":"excalidraw","version":2,"elements":[],"appState":{},"files":{}}"#;
     for (name, offer) in [
@@ -328,15 +340,6 @@ async fn invoke(
         })
         .await??;
     Ok(serde_json::from_str(&result.unwrap()).unwrap())
-}
-
-fn scratch(label: &str) -> wasmtime::Result<Scratch> {
-    let root = Scratch(
-        PathBuf::from(std::env::var("TMPDIR")?)
-            .join(format!("excalidraw-{label}-{}", std::process::id())),
-    );
-    fs::create_dir(&root.0)?;
-    Ok(root)
 }
 
 #[tokio::test(flavor = "current_thread")]
