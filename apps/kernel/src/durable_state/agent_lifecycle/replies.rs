@@ -238,6 +238,18 @@ pub(super) fn recipient_removed(
 ) -> Result<(), DaemonError> {
     recipient_unavailable(tx, event, now, DelegateGoneReason::Deleted)
 }
+/// The recipient's start failed before any provider I/O, so the request is answered as such.
+pub(super) fn recipient_start_failed(
+    tx: &Transaction<'_>,
+    event: &InboxEvent,
+) -> Result<(), DaemonError> {
+    recipient_unavailable(
+        tx,
+        event,
+        crate::session::unix_epoch_ms(),
+        DelegateGoneReason::FailedStart,
+    )
+}
 fn recipient_unavailable(
     tx: &Transaction<'_>,
     event: &InboxEvent,

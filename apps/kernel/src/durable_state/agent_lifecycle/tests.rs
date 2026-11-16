@@ -1913,13 +1913,15 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
     assert_eq!(changed[0].state, ExecutionState::Blocked);
     assert_eq!(changed[0].task_id, format!("delivery-{}", e.sequence));
     assert_eq!(
-        f.store
-            .agent_delivery_front("room", "child")
-            .unwrap()
-            .unwrap()
-            .state,
-        "blocked"
+        f.store.agent_inbox("room", "child", 0).unwrap()[0].state,
+        "failed",
+        "a refusal before any provider I/O ends as failed and fences nothing"
     );
+    assert!(f
+        .store
+        .agent_delivery_front("room", "child")
+        .unwrap()
+        .is_none());
     let Outcome::Swept(changed) = f.apply(Operation::Sweep {
         now: 10 + DELIVERY_TIMEOUT_MS + SWEEP_MS,
         vault_wait_recipients: Vec::new(),
@@ -2290,12 +2292,8 @@ fn a02_r5_idle_refusal_clock_starts_at_receipt() {
         held_work: Vec::new(),
     });
     assert_eq!(
-        f.store
-            .agent_delivery_front("room", "child")
-            .unwrap()
-            .unwrap()
-            .state,
-        "blocked"
+        f.store.agent_inbox("room", "child", 0).unwrap()[0].state,
+        "failed"
     );
 }
 
@@ -2377,12 +2375,8 @@ fn damaged_refusal_clock_is_quarantined(clock: rusqlite::types::Value) {
         "owner must see the damaged clock"
     );
     assert_eq!(
-        f.store
-            .agent_delivery_front("healthy-room", "child")
-            .unwrap()
-            .unwrap()
-            .state,
-        "blocked"
+        f.store.agent_inbox("healthy-room", "child", 0).unwrap()[0].state,
+        "failed"
     );
     let retained: String = db
         .query_row(
@@ -2459,7 +2453,9 @@ fn a02_r6_delivery_clocks_tolerate_sweep_receipt_race() {
                 busy_recipients: Vec::new(),
                 held_work: Vec::new(),
             });
-            let expected = if ahead > DELIVERY_TIMEOUT_MS {
+            let expected = if ahead > DELIVERY_TIMEOUT_MS && receipt == "rejected" {
+                "failed"
+            } else if ahead > DELIVERY_TIMEOUT_MS {
                 "blocked"
             } else if receipt == "rejected" {
                 "pending"
@@ -2467,11 +2463,7 @@ fn a02_r6_delivery_clocks_tolerate_sweep_receipt_race() {
                 receipt
             };
             assert_eq!(
-                f.store
-                    .agent_delivery_front("room", "child")
-                    .unwrap()
-                    .unwrap()
-                    .state,
+                f.store.agent_inbox("room", "child", 0).unwrap()[0].state,
                 expected,
                 "receipt={receipt}, ahead={ahead}"
             );
@@ -2490,13 +2482,14 @@ fn a02_r6_delivery_clocks_tolerate_sweep_receipt_race() {
                     busy_recipients: Vec::new(),
                     held_work: Vec::new(),
                 });
+                // A refusal before any provider I/O ends as failed; an unconfirmed attempt blocks.
                 assert_eq!(
-                    f.store
-                        .agent_delivery_front("room", "child")
-                        .unwrap()
-                        .unwrap()
-                        .state,
-                    "blocked"
+                    f.store.agent_inbox("room", "child", 0).unwrap()[0].state,
+                    if receipt == "rejected" {
+                        "failed"
+                    } else {
+                        "blocked"
+                    }
                 );
             }
         }

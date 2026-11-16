@@ -1694,6 +1694,8 @@ mod agent_tree_runtime;
 mod background_hold;
 mod child_finished_event;
 
+#[cfg(test)]
+mod agent_delivery_recovery_tests;
 mod agent_gone_announcement;
 #[cfg(test)]
 mod agent_inbox_brief_tests;

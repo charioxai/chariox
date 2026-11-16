@@ -205,7 +205,11 @@ impl KernelRuntimeState {
                 }
             }
             if resume
-                && next.state == crate::durable_state::agent_lifecycle::ExecutionState::Waiting
+                && matches!(
+                    next.state,
+                    crate::durable_state::agent_lifecycle::ExecutionState::Waiting
+                        | crate::durable_state::agent_lifecycle::ExecutionState::Done
+                )
             {
                 Box::pin(self.deliver_agent_inbox(&next.room_id, &next.agent_id)).await
             } else if resume {

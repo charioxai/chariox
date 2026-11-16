@@ -11,6 +11,7 @@ mod deadline_tests;
 mod deadlines;
 mod delegation;
 mod delivery;
+mod delivery_failure;
 mod leased_processes;
 #[cfg(test)]
 mod live_wait_tests;
