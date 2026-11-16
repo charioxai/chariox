@@ -22,6 +22,23 @@ pub(super) struct ResolvedSource {
     pub(in crate::runtime::state) display_name: String,
 }
 
+fn source_has_name(source: &crate::local::WorkflowNotificationSourceSummary, name: &str) -> bool {
+    source.source_id == name
+        || source.display_name == name
+        || format!("{}/{}", source.kernel_id, source.display_name) == name
+}
+
+/// Whether some leading run of `words` names a source.
+fn names_a_source(
+    sources: &[crate::local::WorkflowNotificationSourceSummary],
+    words: &[String],
+) -> bool {
+    (1..=words.len()).any(|used| {
+        let name = words[..used].join(" ");
+        sources.iter().any(|s| source_has_name(s, &name))
+    })
+}
+
 impl KernelRuntimeState {
     pub(super) async fn create_notification_agent_trigger(
         &self,
@@ -57,13 +74,25 @@ impl KernelRuntimeState {
             .owner_user_id()
             .to_owned();
         let resolved = match source {
-            AgentTriggerNotificationSource::Workflow { source_id } => self
-                .resolve_workflow_notification_source(
+            AgentTriggerNotificationSource::Workflow { source_id } => {
+                let resolved = self.resolve_workflow_notification_source(
                     &owner,
                     caller,
                     &request.session_id,
                     source_id,
-                )?,
+                );
+                if resolved.is_ok() || self.notification_guest(&owner, caller) {
+                    resolved?
+                } else {
+                    self.refresh_peer_notification_sources(&owner).await?;
+                    self.resolve_workflow_notification_source(
+                        &owner,
+                        caller,
+                        &request.session_id,
+                        source_id,
+                    )?
+                }
+            }
             AgentTriggerNotificationSource::App {
                 installation_id,
                 event_name,
@@ -183,11 +212,52 @@ impl KernelRuntimeState {
         Ok(LocalDaemonResponse::AgentTriggerCreated { trigger, session })
     }
 
+    /// A collaborator's agent and a Room provider of another user see this room's sources only.
+    /// The owner's own agent sees the owner's sources of every kernel, as the owner's list does.
+    pub(super) fn notification_guest(&self, owner: &str, caller: &str) -> bool {
+        !self.owned.acts_for_owner_in(owner, caller, owner)
+    }
+
+    /// The workflow sources `choose_notification_source` names: this kernel's, and for the
+    /// owner's agent the other kernels' from the cache.
+    fn pickable_workflow_sources(
+        &self,
+        owner: &str,
+        guest: bool,
+        session_id: &str,
+    ) -> Result<Vec<crate::local::WorkflowNotificationSourceSummary>, DaemonError> {
+        let home = self.owned.config_projection.snapshot().daemon_id;
+        let (local, _, _) = self
+            .owned
+            .durable_state_store
+            .notification_inventory(owner)?;
+        let mut sources = {
+            let sessions = self.owned.session_store.read();
+            summaries(
+                &sessions,
+                &local
+                    .into_iter()
+                    .filter(|s| s.enabled && source_available(&sessions, s))
+                    .filter(|s| !guest || (s.session_id == session_id && s.kernel_id == home))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        if !guest {
+            sources.extend(
+                self.owned
+                    .durable_state_store
+                    .notification_cached_sources(owner)?,
+            );
+        }
+        Ok(sources)
+    }
+
     /// `<source> [prompt]` as the shell and the room command write it: a workflow source is named
     /// by its display name, `<kernel>/<name>` or its id (the name may hold spaces, so the longest
     /// run of leading words that names exactly one source wins), an App event is
-    /// `app:<installation>/<event>`.
-    pub(crate) fn choose_notification_source(
+    /// `app:<installation>/<event>`. The owner's agent that names no source of the cache asks the
+    /// peer kernels once before giving up.
+    pub(crate) async fn choose_notification_source(
         &self,
         owner: &str,
         caller: &str,
@@ -214,38 +284,15 @@ impl KernelRuntimeState {
                 prompt_after(1),
             ));
         }
-        let home = self.owned.config_projection.snapshot().daemon_id;
-        let guest = !self.owned.acts_for_owner_in(owner, caller, owner)
-            || self.room_provider_origin.is_some();
-        let (local, _, _) = self
-            .owned
-            .durable_state_store
-            .notification_inventory(owner)?;
-        let mut sources = {
-            let sessions = self.owned.session_store.read();
-            summaries(
-                &sessions,
-                &local
-                    .into_iter()
-                    .filter(|s| s.enabled && source_available(&sessions, s))
-                    .filter(|s| !guest || (s.session_id == session_id && s.kernel_id == home))
-                    .collect::<Vec<_>>(),
-            )
-        };
-        if !guest {
-            sources.extend(
-                self.owned
-                    .durable_state_store
-                    .notification_cached_sources(owner)?,
-            );
+        let guest = self.notification_guest(owner, caller);
+        let mut sources = self.pickable_workflow_sources(owner, guest, session_id)?;
+        if !guest && !names_a_source(&sources, words) {
+            self.refresh_peer_notification_sources(owner).await?;
+            sources = self.pickable_workflow_sources(owner, guest, session_id)?;
         }
         for used in (1..=words.len()).rev() {
             let name = words[..used].join(" ");
-            let mut named = sources.iter().filter(|s| {
-                s.source_id == name
-                    || s.display_name == name
-                    || format!("{}/{}", s.kernel_id, s.display_name) == name
-            });
+            let mut named = sources.iter().filter(|s| source_has_name(s, &name));
             let Some(source) = named.next() else {
                 continue;
             };
@@ -282,8 +329,7 @@ impl KernelRuntimeState {
         source_id: &str,
     ) -> Result<ResolvedSource, DaemonError> {
         let home = self.owned.config_projection.snapshot().daemon_id;
-        let guest = !self.owned.acts_for_owner_in(owner, caller, owner)
-            || self.room_provider_origin.is_some();
+        let guest = self.notification_guest(owner, caller);
         let (sources, _, _) = self
             .owned
             .durable_state_store

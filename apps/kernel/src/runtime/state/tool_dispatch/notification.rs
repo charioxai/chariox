@@ -59,10 +59,21 @@ impl KernelRuntimeState {
                     .into_iter()
                     .filter(|s| s.session_id == session.id() && s.enabled)
                     .collect::<Vec<_>>();
-                let workflows = super::super::workflow_notification_router::summaries(
+                let mut workflows = super::super::workflow_notification_router::summaries(
                     &self.owned.session_store.read(),
                     &sources,
                 );
+                // The owner's agent sees the owner's sources of the other kernels, as the owner's
+                // list does; a collaborator's agent sees this Room's only.
+                if !self.notification_guest(session.owner_user_id(), agent.owner_user_id()) {
+                    self.refresh_peer_notification_sources(session.owner_user_id())
+                        .await?;
+                    workflows.extend(
+                        self.owned
+                            .durable_state_store
+                            .notification_cached_sources(session.owner_user_id())?,
+                    );
+                }
                 let mut apps = Vec::new();
                 for installation in self.room_notification_apps(session.id()) {
                     let catalog = self

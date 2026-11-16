@@ -4,7 +4,7 @@ use super::reconnect::{both_connected, connect};
 use super::*;
 use crate::session::{AgentTriggerNotificationSource, AgentTriggerSource};
 
-fn on_a_big_stack<F: std::future::Future<Output = ()> + Send + 'static>(drill: F) {
+pub(super) fn on_a_big_stack<F: std::future::Future<Output = ()> + Send + 'static>(drill: F) {
     std::thread::Builder::new()
         .stack_size(32 * 1024 * 1024)
         .spawn(move || {
@@ -23,11 +23,11 @@ fn on_a_big_stack<F: std::future::Future<Output = ()> + Send + 'static>(drill: F
 
 /// A source kernel and a target kernel behind a real relay; the target follows one source of the
 /// source kernel with an agent notification trigger saved the way the product saves it.
-struct Drill {
-    source: Fixture,
-    target: Fixture,
-    source_runtime: KernelRuntimeState,
-    target_runtime: KernelRuntimeState,
+pub(super) struct Drill {
+    pub(super) source: Fixture,
+    pub(super) target: Fixture,
+    pub(super) source_runtime: KernelRuntimeState,
+    pub(super) target_runtime: KernelRuntimeState,
     source_connection: Option<(watch::Sender<bool>, tokio::task::JoinHandle<()>)>,
     target_connection: (watch::Sender<bool>, tokio::task::JoinHandle<()>),
     source_router: Arc<CommandRouter>,
@@ -37,12 +37,20 @@ struct Drill {
     url: String,
     server_tx: oneshot::Sender<()>,
     server_task: tokio::task::JoinHandle<()>,
-    workflow: String,
+    pub(super) workflow: String,
     trigger_id: String,
 }
 
 impl Drill {
     async fn start() -> Self {
+        let mut drill = Self::connect().await;
+        drill.refresh_cache().await;
+        drill.follow().await;
+        drill
+    }
+
+    /// Both kernels connected through the relay, nothing cached and nobody following.
+    pub(super) async fn connect() -> Self {
         let secret = format!("fixture-{:032x}", rand::random::<u128>());
         let server = Arc::new(RelayServer::with_auth_verifier(
             RelayConfig {
@@ -85,7 +93,7 @@ impl Drill {
         seed_presence(&target_runtime, &tc, &sc.daemon_id).await;
         seed_presence(&source_runtime, &sc, &tc.daemon_id).await;
         source.source(&workflow);
-        let mut drill = Self {
+        Self {
             source,
             target,
             source_runtime,
@@ -101,10 +109,7 @@ impl Drill {
             server_task,
             workflow,
             trigger_id: String::new(),
-        };
-        drill.refresh_cache().await;
-        drill.follow().await;
-        drill
+        }
     }
 
     /// The inventory refresh: the target caches what the source kernel lists.
@@ -230,7 +235,7 @@ impl Drill {
         .await;
     }
 
-    async fn finish(mut self) {
+    pub(super) async fn finish(mut self) {
         if let Some((stop, connector)) = self.source_connection.take() {
             stop.send(true).unwrap();
             let _ = connector.await;
