@@ -576,20 +576,17 @@ async fn the_card_states_the_exact_input_in_stable_pretty_json() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_secret_in_the_input_stays_masked_on_the_card() {
+async fn the_card_preserves_agent_supplied_input_under_secret_shaped_keys_and_values() {
     let secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
     let input = json!({"note": "pay the invoice", "password": "hunter2", "header": format!("Bearer {secret}")});
-    let (shown, message) = card_input_for(input).await;
+    let (shown, message) = card_input_for(input.clone()).await;
+    assert_eq!(serde_json::from_str::<Value>(&shown).unwrap(), input);
     for text in [&shown, &message] {
         assert!(
-            !text.contains("hunter2") && !text.contains(secret),
+            text.contains("hunter2") && text.contains(secret) && !text.contains("[redacted"),
             "{text}"
         );
     }
-    assert!(
-        shown.contains("pay the invoice") && shown.contains("[redacted"),
-        "{shown}"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

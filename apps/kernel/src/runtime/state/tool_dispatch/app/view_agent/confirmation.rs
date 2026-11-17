@@ -67,13 +67,11 @@ impl Drop for PreviewCleanup {
 }
 
 /// The input the kernel will run, as the card states it for every client: sorted keys,
-/// pretty-printed, secret-shaped values and secret-named fields masked as everywhere the
-/// kernel shows text it did not write, and cut at a character boundary with the byte count
-/// of what is left out.
+/// pretty-printed and unmasked: the calling agent supplied it, Confirm runs it as is, and the
+/// person can only approve what they can read. Cut at a character boundary with the byte
+/// count of what is left out.
 pub(super) fn shown_input(input: &Value) -> String {
-    let mut masked = input.clone();
-    crate::secret_redaction::redact_json_secrets(&mut masked);
-    let text = serde_json::to_string_pretty(&masked).unwrap_or_default();
+    let text = serde_json::to_string_pretty(input).unwrap_or_default();
     if text.len() <= INPUT_MAX_BYTES {
         return text;
     }
