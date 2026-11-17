@@ -54,6 +54,7 @@ export async function open(browser, built, { dpr = 1, width = 1180, height = 900
     tools.push({ name, input });
     try {
       check(name, input);
+      if (imports.routing) imports.routing.callers = [{ kind: 'human', id: 'owner' }];
       return JSON.stringify({ ok: true, value: await app.tools[name](input, { fetch: double.fetch }) });
     } catch (error) {
       const cause = error?.payload ?? error;

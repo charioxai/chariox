@@ -18,6 +18,7 @@ use crate::local::{
     DisableAppAutomationRequest, EventGeneratorResource, InstallEventConnectionRequest,
     ListEventConnectionResourcesRequest, LocalDaemonRequest, LocalDaemonResponse,
 };
+use crate::runtime::app_approved_operations::ApprovedOperations;
 use crate::runtime::event_catalog_control::AegsManagementHttpClient;
 use crate::session::AgentTriggerNotificationSource;
 use chariox_app_package::EventRouting;
@@ -107,25 +108,41 @@ pub(crate) enum Acting {
     /// One agent, alone or beside a person's call. A person's call that
     /// overlaps an agent's must not lend it the person's authority.
     Agent(String),
+    /// One agent whose every call in progress a person approved: the person's
+    /// authority over targets, for those calls alone.
+    Approved(String),
+    /// No person or agent: an event or a wake the App handles by itself. It
+    /// may end a target, to clean up; it never starts one.
+    Background,
 }
 
 impl Acting {
-    pub(crate) fn of(callers: &[Value]) -> Result<Self, RoutingError> {
-        let mut agents = std::collections::BTreeSet::new();
-        let mut person = false;
+    pub(crate) fn of(
+        callers: &[Value],
+        approved: &ApprovedOperations,
+    ) -> Result<Self, RoutingError> {
+        // Per agent, whether each of its calls in progress was approved.
+        let mut agents = std::collections::BTreeMap::new();
+        let (mut person, mut background) = (false, false);
         for actor in callers {
             let id = actor["id"].as_str().filter(|id| !id.is_empty());
             match (actor["kind"].as_str(), id) {
                 (Some("agent"), Some(id)) => {
-                    agents.insert(id.to_owned());
+                    let covered = actor["operation_id"]
+                        .as_str()
+                        .is_some_and(|operation| approved.covers(operation));
+                    *agents.entry(id.to_owned()).or_insert(true) &= covered;
                 }
                 (Some("human"), Some(_)) => person = true,
+                (Some("background"), Some(_)) => background = true,
                 _ => {}
             }
         }
-        match (agents.len(), person) {
-            (0, true) => Ok(Self::Person),
-            (1, _) => Ok(Self::Agent(agents.into_iter().next().unwrap_or_default())),
+        match (agents.pop_first(), agents.is_empty(), person, background) {
+            (None, _, true, _) => Ok(Self::Person),
+            (None, _, false, true) => Ok(Self::Background),
+            (Some((id, true)), true, _, _) => Ok(Self::Approved(id)),
+            (Some((id, false)), true, _, _) => Ok(Self::Agent(id)),
             _ => Err(RoutingError::NotAllowed),
         }
     }
@@ -617,7 +634,8 @@ impl KernelRuntimeState {
     }
 
     /// Delivers one outgoing event to an agent. An agent binds only itself; a
-    /// person may name any agent of their Rooms.
+    /// person, or an agent whose call a person approved, may name any agent of
+    /// their Rooms.
     pub(crate) async fn app_routing_bind_agent(
         &self,
         scope: &RoutingScope,
@@ -626,10 +644,10 @@ impl KernelRuntimeState {
         agent_id: Option<String>,
     ) -> Result<TargetView, RoutingError> {
         let agent_id = match (acting, agent_id) {
-            (Acting::Agent(own), None) => own.clone(),
+            (Acting::Agent(own) | Acting::Approved(own), None) => own.clone(),
             (Acting::Agent(own), Some(named)) if *own == named => named,
-            (Acting::Agent(_), Some(_)) => return Err(RoutingError::NotAllowed),
-            (Acting::Person, Some(named)) => named,
+            (Acting::Agent(_) | Acting::Background, _) => return Err(RoutingError::NotAllowed),
+            (Acting::Person | Acting::Approved(_), Some(named)) => named,
             (Acting::Person, None) => return Err(RoutingError::InvalidArgument),
         };
         self.routing_require_outgoing(scope, &event).await?;
@@ -709,8 +727,8 @@ impl KernelRuntimeState {
         })
     }
 
-    /// Delivers one outgoing event to a workflow. Only a person's window may
-    /// choose a workflow: an agent never sends the App's events there.
+    /// Delivers one outgoing event to a workflow. Only a person, or an agent
+    /// whose call a person approved, may choose a workflow.
     pub(crate) async fn app_routing_bind_workflow(
         &self,
         scope: &RoutingScope,
@@ -720,7 +738,7 @@ impl KernelRuntimeState {
         publication_ref: String,
         queue_ref: Option<String>,
     ) -> Result<TargetView, RoutingError> {
-        if *acting != Acting::Person {
+        if !matches!(acting, Acting::Person | Acting::Approved(_)) {
             return Err(RoutingError::NotAllowed);
         }
         self.routing_require_outgoing(scope, &event).await?;
@@ -759,7 +777,8 @@ impl KernelRuntimeState {
         }
     }
 
-    /// Ends one target. An agent ends only its own; a person any.
+    /// Ends one target. An agent ends only its own; a person, an approved
+    /// agent call or the App's own cleanup any.
     pub(crate) async fn app_routing_unbind_target(
         &self,
         scope: &RoutingScope,

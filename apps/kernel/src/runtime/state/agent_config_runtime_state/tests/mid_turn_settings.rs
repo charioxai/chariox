@@ -1,13 +1,16 @@
 //! Settings changed while a turn runs: the provider's process takes them at the next finished
 //! step and the same turn goes on in a new one.
 
-use super::automatic_substitutes::{failing_turn_on, FailingTurn};
+use super::automatic_substitutes::{failing_task_turn_on, failing_turn_on, FailingTurn};
 use crate::provider::ProviderRunState;
 
 const NEXT_MODEL: &str = "next-model";
 
 async fn running_turn() -> FailingTurn {
-    let turn = failing_turn_on("dev-stub").await;
+    running(failing_turn_on("dev-stub").await).await
+}
+
+async fn running(turn: FailingTurn) -> FailingTurn {
     turn.run_in_worktree().await;
     // The provider has the request and is working on it.
     turn.runtime
@@ -326,4 +329,40 @@ async fn the_output_of_a_finished_tool_call_is_the_step_boundary() {
     assert_ne!(run.id(), turn.failed_run_id);
     assert_eq!(run.model(), NEXT_MODEL);
     assert_eq!(turn.active_prompt().unwrap().id(), turn.prompt_id);
+}
+
+#[tokio::test]
+async fn a_continuation_the_new_process_refuses_fails_the_turn_on_that_process() {
+    let turn = running(failing_task_turn_on("dev-stub").await).await;
+    let owned = &turn.runtime.owned;
+    owned
+        .bind_agent_task_run(
+            &turn.session_id,
+            &turn.agent_id,
+            &turn.prompt_id,
+            &turn.failed_run_id,
+        )
+        .expect("the turn is an admitted agent task");
+    let task = owned
+        .durable_state_store
+        .agent_turn_or_continuation_task(&turn.session_id, &turn.agent_id, &turn.prompt_id)
+        .unwrap()
+        .expect("the turn has its task");
+    // The owner blocks the task while the step ends: the new process cannot dispatch it.
+    owned
+        .durable_state_store
+        .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Block {
+            task: task.task_id,
+            prompt: turn.prompt_id.clone(),
+            reason: "owner blocked it".into(),
+        })
+        .unwrap();
+    change_model(&turn, NEXT_MODEL).await;
+
+    turn.runtime
+        .swap_turn_process_at_step_boundary(&turn.session_id, &turn.failed_run_id)
+        .await
+        .expect_err("the continuation is refused");
+
+    turn.assert_turn_failed();
 }

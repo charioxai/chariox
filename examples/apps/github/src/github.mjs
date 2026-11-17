@@ -16,6 +16,8 @@ const API_VERSION = '2022-11-28';
  * allowed: a promise one invocation resolves for another leaves the other's host call tied to a task that has ended.
  */
 const BUSY_RETRIES = 30;
+/** GitHub lists a pull request's files up to 3000 and a commit's checks without a fixed end; reading stops here. */
+const MAX_PAGES = 30;
 const pause = ms => new Promise(resume => setTimeout(resume, ms));
 
 const fail = (code, message, extra) => { throw { code, message, retryable: false, ...extra }; };
@@ -192,5 +194,16 @@ export function createGitHub({ state, fetch, now = () => Date.now() }) {
     return { items: result.data, page, hasNext: Boolean(result.link.next), stale: result.stale };
   }
 
-  return { get, list, send, rate };
+  /** Every page of a list, at 100 a page. `items` reads the entries of one answer. */
+  async function listAll(account, template, params, { items = data => data, ...options } = {}) {
+    const all = [];
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const result = await list(account, template, params, { ...options, page, perPage: 100 });
+      all.push(...items(result.items));
+      if (!result.hasNext) return all;
+    }
+    fail('GITHUB_ERROR', `${template} has more than ${MAX_PAGES * 100} entries; narrow the request.`);
+  }
+
+  return { get, list, listAll, send, rate };
 }

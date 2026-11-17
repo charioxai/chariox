@@ -3,6 +3,7 @@
 //! restart finds it again on the agent. No agent has to be awake, or on another account, for it.
 
 use super::agent_task_owner_resolution::OwnerTaskAction;
+use super::workflow_run_help::is_run_step;
 use super::*;
 use crate::agent::{UsageLimitStop, UsageLimitStopState};
 use crate::config::UsageLimitResume;
@@ -66,17 +67,21 @@ impl UsageLimitPlan {
 
 impl KernelRuntimeState {
     /// What the kernel does with a turn that ended on the usage limit: when it resumes it, or that
-    /// it asks. `None` for a turn that did not end on the limit, or an agent whose worker owns the
-    /// stop. The failed turn's line and the stop on the agent both read it.
+    /// it asks. `None` for a turn that did not end on the limit, a step of a workflow run (the run
+    /// owns the step, so no stop continues it outside the run, whether or not a task was kept for
+    /// it), or an agent whose worker owns the stop. The failed turn's line and the stop on the agent
+    /// both read it.
     pub(super) fn plan_usage_limit_stop(
         &self,
         agent: &crate::agent::AgentInstance,
+        prompt: &crate::session::PromptQueueItem,
         failure: &crate::provider::TurnOutcome,
         now: u64,
     ) -> Option<UsageLimitPlan> {
         if failure.kind != crate::provider::TurnOutcomeKind::UsageLimit
             || agent.remote_execution().is_some()
             || agent.archived()
+            || is_run_step(prompt)
         {
             return None;
         }
@@ -119,10 +124,11 @@ impl KernelRuntimeState {
     pub(super) fn usage_limit_resume_notice(
         &self,
         agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
         failure: &crate::provider::TurnOutcome,
     ) -> Option<String> {
         let agent = self.owned.agent_store.get_agent(agent_id).ok()?;
-        self.plan_usage_limit_stop(&agent, failure, crate::session::unix_epoch_ms())?
+        self.plan_usage_limit_stop(&agent, prompt, failure, crate::session::unix_epoch_ms())?
             .resume_line(failure)
     }
 
@@ -132,14 +138,14 @@ impl KernelRuntimeState {
     pub(super) async fn record_usage_limit_stop(
         &self,
         agent_id: &str,
-        prompt_id: &str,
+        prompt: &crate::session::PromptQueueItem,
         failure: &crate::provider::TurnOutcome,
         run: &crate::provider::RuntimeProviderRun,
     ) -> Result<(), DaemonError> {
         let owned = &self.owned;
         let agent = owned.agent_store.get_agent(agent_id)?;
         let now = crate::session::unix_epoch_ms();
-        let Some(plan) = self.plan_usage_limit_stop(&agent, failure, now) else {
+        let Some(plan) = self.plan_usage_limit_stop(&agent, prompt, failure, now) else {
             return Ok(());
         };
         let UsageLimitPlan {
@@ -150,7 +156,7 @@ impl KernelRuntimeState {
         } = plan;
         let stop = UsageLimitStop {
             // The turn that failed now: a resumed task goes on under a new prompt each time.
-            prompt_id: prompt_id.to_string(),
+            prompt_id: prompt.id().to_string(),
             provider: run.provider().to_string(),
             account_profile: run.account_profile().to_string(),
             account_label: owned.account_label(&agent, run.account_profile()),
@@ -187,12 +193,12 @@ impl KernelRuntimeState {
     pub(super) async fn note_usage_limit_stop(
         &self,
         agent_id: &str,
-        prompt_id: &str,
+        prompt: &crate::session::PromptQueueItem,
         failure: &crate::provider::TurnOutcome,
         run: &crate::provider::RuntimeProviderRun,
     ) {
         if let Err(error) = self
-            .record_usage_limit_stop(agent_id, prompt_id, failure, run)
+            .record_usage_limit_stop(agent_id, prompt, failure, run)
             .await
         {
             tracing::warn!(agent_id, %error, "could not record a usage limit stop");
@@ -247,8 +253,7 @@ impl KernelRuntimeState {
                     serde_json::json!({"agent_id": agent.id(), "error": error.to_string()}),
                 );
             }
-            if self.stopped_task_was_cancelled(&agent, &stop)? {
-                self.store_usage_limit_stop(&agent, None, "").await?;
+            if self.drop_stop_of_cancelled_task(&agent, &stop).await? {
                 continue;
             }
             match stop.state {
@@ -309,6 +314,20 @@ impl KernelRuntimeState {
             .is_some_and(|task| task.cancelled_on_purpose()))
     }
 
+    /// Ends the stop when its task was cancelled on purpose, so nothing resumes it. Returns whether
+    /// it did.
+    async fn drop_stop_of_cancelled_task(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        stop: &UsageLimitStop,
+    ) -> Result<bool, DaemonError> {
+        if !self.stopped_task_was_cancelled(agent, stop)? {
+            return Ok(false);
+        }
+        self.store_usage_limit_stop(agent, None, "").await?;
+        Ok(true)
+    }
+
     fn resume_is_being_sent(&self, agent: &crate::agent::AgentInstance) -> bool {
         self.owned
             .usage_limit_sends
@@ -345,8 +364,7 @@ impl KernelRuntimeState {
         if self.agent_has_turn(agent) {
             return Ok(false);
         }
-        if self.stopped_task_was_cancelled(agent, stop)? {
-            self.store_usage_limit_stop(agent, None, "").await?;
+        if self.drop_stop_of_cancelled_task(agent, stop).await? {
             return Ok(false);
         }
         {
@@ -490,13 +508,18 @@ impl KernelRuntimeState {
     }
 
     /// The same task goes on when it has one that is waiting on the stop; otherwise the agent gets a
-    /// kernel prompt in the same conversation.
+    /// kernel prompt in the same conversation. A cancel by the owner or an agent can land after the
+    /// resume was claimed, so it is checked again here and once more right before the prompt is
+    /// admitted; the claim stays held until this returns.
     async fn send_resume(
         &self,
         agent: &crate::agent::AgentInstance,
         stop: &UsageLimitStop,
     ) -> Result<(), DaemonError> {
         let owned = &self.owned;
+        if self.drop_stop_of_cancelled_task(agent, stop).await? {
+            return Ok(());
+        }
         let task = owned.durable_state_store.agent_turn_task(
             agent.session_id(),
             agent.id(),
@@ -515,6 +538,9 @@ impl KernelRuntimeState {
             "[Chariox usage resume] The provider usage limit has reset. Continue the work you were doing when it stopped. Do not repeat completed work.",
             crate::session::PromptStatus::Queued,
         );
+        if self.drop_stop_of_cancelled_task(agent, stop).await? {
+            return Ok(());
+        }
         let mut submission = self
             .submit_prepared_prompt_with_queue_policy(
                 crate::app::KernelPreparedPromptSubmission {

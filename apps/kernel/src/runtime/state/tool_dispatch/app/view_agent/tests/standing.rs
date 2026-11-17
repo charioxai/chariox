@@ -240,6 +240,41 @@ async fn a_call_that_names_no_account_is_covered_when_the_app_resolves_it_to_the
     assert_eq!(used.uses, 2, "only the covered calls are charged to it");
 }
 
+/// What the App's tool does with routing depends on whether a person decided the call: the card,
+/// the standing permission and the confirmation each are that decision, a plain write is not.
+#[test]
+fn only_an_action_a_person_decided_is_an_approved_call() {
+    assert!(person_decided(&UiActionEffect::Approval));
+    assert!(person_decided(&UiActionEffect::PersonConfirmed));
+    assert!(!person_decided(&UiActionEffect::Write));
+    assert!(!person_decided(&UiActionEffect::Read));
+}
+
+/// The backend is told, call by call, which calls a person approved.
+#[tokio::test]
+async fn the_backend_runs_an_action_as_approved_only_when_its_context_says_a_person_decided() {
+    let mut rig = rig();
+    rig.grant().await;
+    let mut context = backend_context(&rig, Vec::new());
+    backend::test_backend::serve(&rig.session, "approve", json!({"done": true}));
+    for approved in [true, false] {
+        context.approved = approved;
+        rig.runtime
+            .backend_view_call(
+                &context,
+                ViewAgentCallKind::Invoke,
+                Some(("approve", json!({"repo": "o/a"}))),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        backend::test_backend::approvals(&rig.session, "approve"),
+        [true, false]
+    );
+}
+
 #[tokio::test]
 async fn revoking_the_binding_or_expiry_brings_the_card_back_at_once() {
     let mut rig = rig();

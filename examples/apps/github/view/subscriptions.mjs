@@ -88,7 +88,8 @@ export function subscriptionsPage(ctx) {
     clear(list);
     if (!data) return;
     const connection = sources?.connection;
-    if (connection && !connection.generatorId) {
+    // The kernel names the generator even when no connection was granted; the connection itself says whether one is.
+    if (connection && !connection.connectionId) {
       list.append(flash('warn', icon('alert', { size: 16, className: 'mr-2' }), 'Live GitHub events are not connected, so nothing is delivered yet. ', h('a', { href: '#', 'data-connect': '', on: { click: async event => { event.preventDefault(); try { const { url } = await call('connect_github_events', {}); event.target.textContent = url; event.target.title = 'Open this address to approve on GitHub'; } catch (error) { where.show(error); } } } }, 'Connect GitHub events')));
     }
     list.append(h('div.Box.mb-4', {},

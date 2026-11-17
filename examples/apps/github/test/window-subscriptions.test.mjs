@@ -156,7 +156,8 @@ test('a one-shot for a pull request is created with its end time', { skip }, asy
 
 test('without a connection to GitHub events the tab says nothing is delivered and offers to connect', { skip }, async () => {
   const routing = kernelRouting();
-  routing.connectionStatus = async () => ({ status: 'not_connected' });
+  // The kernel's answer names the generator even when no connection was granted.
+  routing.connectionStatus = async () => ({ generatorId: 'dev.chariox.github', connectionId: null, status: 'not_granted', maxRoutes: 200, routes: 0 });
   const session = await window({ routing });
   const { page } = session;
   await page.waitForSelector('[data-connect]');

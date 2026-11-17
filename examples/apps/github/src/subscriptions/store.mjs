@@ -3,6 +3,7 @@
 export const LIMITS = { subscriptions: 100, deliveries: 200, bytes: 256 * 1024 };
 const SUBSCRIPTIONS = 'subscriptions';
 const DELIVERIES = 'deliveries';
+const RELEASES = 'releases';
 const fail = (code, message) => { throw { code, message, retryable: false }; };
 
 export function createStore({ state, commit }) {
@@ -34,6 +35,9 @@ export function createStore({ state, commit }) {
   return {
     subscriptions: async () => (await read(SUBSCRIPTIONS, [])).value,
     updateSubscriptions: mutate => update(SUBSCRIPTIONS, [], mutate, { kind: 'subscriptions' }),
+    /** Automations of removed subscriptions that the kernel has not yet let go of. */
+    releases: async () => (await read(RELEASES, [])).value,
+    updateReleases: mutate => update(RELEASES, [], mutate, { kind: 'releases' }),
     deliveries: async () => (await read(DELIVERIES, [])).value,
     /** Newest last; the oldest records leave when the ring is full. */
     addDeliveries: records => records.length === 0 ? null : update(DELIVERIES, [], ring => {
