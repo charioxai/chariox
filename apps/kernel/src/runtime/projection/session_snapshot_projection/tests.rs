@@ -1041,7 +1041,15 @@ fn a_private_member_does_not_hear_of_the_tree_of_another_users_agent() {
     use crate::agent::{AgentInstance, GridPosition};
     use crate::session::{CollaborationLevel, RuntimeSession};
     let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let mut room = RuntimeSession::new("room", None, "workspace", "tree", "machine", "home");
+    let mut room = RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "tree",
+        "machine",
+        "home",
+    );
     room.add_member("owner", None, CollaborationLevel::Full);
     room.add_member("viewer", None, CollaborationLevel::Transparent);
     room.add_member("full", None, CollaborationLevel::Full);

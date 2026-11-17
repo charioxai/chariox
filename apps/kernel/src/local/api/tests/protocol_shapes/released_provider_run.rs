@@ -92,6 +92,7 @@ fn mp11_released416_turn_undo_and_agent_fork_shape_is_versioned() {
     run_value["last_activity_at_ms"] = serde_json::json!(1_000);
     let mut session_value = serde_json::to_value(crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "workspace-1",
         "worktree-1",
@@ -139,7 +140,7 @@ fn mp11_released416_turn_undo_and_agent_fork_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "d2b82ed473d960af8e53fbd35b4ecb2ed9ebafc67d0d3fecf4e02932d1a85569"
+        "c4a27a91d26f3bbdb5f21f82f0fabf027db8d9273fcb1522c1377b47c028ba14"
     );
 }
 

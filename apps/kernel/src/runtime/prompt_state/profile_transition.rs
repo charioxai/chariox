@@ -154,8 +154,15 @@ mod tests {
     #[tokio::test]
     async fn local_profile_release_with_gated_promotion_preserves_backlog_order() {
         let owner = PromptStateOwner::default();
-        let session =
-            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        let session = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
         let claim = owner
             .claim_idle_agent_profile_transition(&session, "agent-1")
             .unwrap();
@@ -247,8 +254,15 @@ mod tests {
     #[test]
     fn profile_completion_reserves_oldest_prompt_before_new_admission() {
         let owner = PromptStateOwner::default();
-        let session =
-            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        let session = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
         let claim = owner
             .claim_idle_agent_profile_transition(&session, "agent-1")
             .unwrap();
@@ -329,8 +343,15 @@ mod tests {
     #[test]
     fn empty_profile_completion_reopens_admission() {
         let owner = PromptStateOwner::default();
-        let session =
-            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        let session = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
         let claim = owner
             .claim_idle_agent_profile_transition(&session, "agent-1")
             .unwrap();
@@ -359,8 +380,15 @@ mod tests {
     #[test]
     fn profile_completion_cannot_release_another_agents_reservation() {
         let owner = PromptStateOwner::default();
-        let session =
-            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        let session = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
         let first = owner
             .claim_idle_agent_profile_transition(&session, "agent-1")
             .unwrap();
@@ -380,8 +408,15 @@ mod tests {
     #[test]
     fn profile_reservation_blocks_only_its_agent_and_preserves_queued_work() {
         let owner = PromptStateOwner::default();
-        let session =
-            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        let session = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
         let claim = owner
             .claim_idle_agent_profile_transition(&session, "agent-1")
             .unwrap();

@@ -52,6 +52,7 @@ mod tests {
     fn app_binding_parser_preserves_meta_self_access_and_rejects_foreign_targets() {
         let session = crate::session::RuntimeSession::new(
             "session",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "/repo",

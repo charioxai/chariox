@@ -8,6 +8,7 @@ use crate::provider::ExternalProviderImportMetadata;
 
 use super::agent_triggers::{AgentTrigger, AgentTriggers, TriggerDelivery, TriggerDeliveryState};
 use super::metaagent_task::{MetaagentTask, MetaagentTaskStatus};
+use super::project_id::ProjectId;
 #[cfg(test)]
 use super::prompt_queue::PromptSubmissionOutcome;
 use super::prompt_queue::{AgentPromptState, DurablePromptPrivateState, PromptQueueItem};
@@ -88,8 +89,7 @@ pub(crate) struct DurableWorkflowHotState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSession {
     id: String,
-    #[serde(default)]
-    project_id: String,
+    project_id: ProjectId,
     alias: Option<String>,
     #[serde(default, skip_serializing_if = "crate::session::is_false")]
     pinned: bool,
@@ -268,6 +268,7 @@ impl RuntimeSession {
 
     pub fn new(
         id: impl Into<String>,
+        project_id: ProjectId,
         alias: Option<String>,
         workspace_id: impl Into<String>,
         worktree_id: impl Into<String>,
@@ -280,7 +281,7 @@ impl RuntimeSession {
 
         Self {
             id: id.clone(),
-            project_id: String::new(),
+            project_id,
             alias,
             workspace_id: workspace_id.into(),
             worktree_id: worktree_id.clone(),
@@ -343,26 +344,28 @@ impl RuntimeSession {
     }
 
     pub fn project_id(&self) -> &str {
+        self.project_id.as_str()
+    }
+
+    pub fn project(&self) -> &ProjectId {
         &self.project_id
     }
 
-    pub(crate) fn assign_project_id(&mut self, project_id: impl Into<String>) -> bool {
-        if !self.project_id.is_empty() {
-            return false;
-        }
-        self.project_id = project_id.into();
-        true
+    /// A hidden backing Room adopts the Project its lease imported; a visible Room never changes Project this way.
+    pub(crate) fn join_leased_project(&mut self, project_id: ProjectId) {
+        debug_assert!(self.hidden);
+        self.project_id = project_id;
     }
 
     pub(crate) fn migrate_default_project_scope(
         &mut self,
         workspace_id: impl Into<String>,
-        project_id: impl Into<String>,
+        project_id: ProjectId,
         alias: Option<String>,
     ) {
         debug_assert!(!self.hidden);
         self.workspace_id = workspace_id.into();
-        self.project_id = project_id.into();
+        self.project_id = project_id;
         self.alias = alias;
     }
 
@@ -1512,12 +1515,12 @@ mod tests;
 impl RuntimeSession {
     pub(crate) fn for_execution_project(
         &self,
-        project_id: &str,
+        project_id: ProjectId,
         workspace: &str,
         worktree: &str,
     ) -> Self {
         let mut execution = self.clone();
-        execution.project_id = project_id.to_string();
+        execution.project_id = project_id;
         execution.workspace_id = workspace.to_string();
         execution.worktree_id = worktree.to_string();
         execution
@@ -1532,6 +1535,7 @@ mod session_activity_tests {
     fn session_activity_is_persisted_and_metadata_cannot_change_it() {
         let mut session = RuntimeSession::new(
             "session",
+            ProjectId::test(),
             None,
             "workspace",
             "worktree",

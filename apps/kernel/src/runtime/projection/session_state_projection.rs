@@ -689,7 +689,15 @@ mod tests {
     use crate::{DaemonApp, DaemonConfig};
 
     fn session(id: &str) -> RuntimeSession {
-        RuntimeSession::new(id, None, "workspace", "worktree", "machine", "daemon")
+        RuntimeSession::new(
+            id,
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "daemon",
+        )
     }
 
     fn agent(session_id: &str, agent_id: &str) -> crate::agent::AgentInstance {

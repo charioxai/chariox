@@ -212,6 +212,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         result: apply_result.clone(),
         session: crate::session::RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -250,6 +251,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         },
         session: crate::session::RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -571,6 +573,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         result: apply_result.clone(),
         session: crate::session::RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -608,6 +611,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         },
         session: crate::session::RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -637,6 +641,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         workflow: bound_workflow,
         session: crate::session::RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -689,6 +694,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         result: crate::workflow_code::WorkflowCodeApplyReport::for_workflow("workflow-1"),
         session: crate::session::RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -734,6 +740,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         workflow: crate::session::WorkflowDefinition::new("workflow-1", Some("toy".to_string())),
         session: crate::session::RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",

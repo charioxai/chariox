@@ -242,8 +242,15 @@ mod tests {
     }
 
     fn session(agents: Vec<AgentInstance>) -> RuntimeSession {
-        let mut session =
-            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "daemon");
+        let mut session = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "daemon",
+        );
         session.set_agents(agents);
         session
     }

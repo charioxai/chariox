@@ -17,7 +17,15 @@ fn agent(id: &str, parent: Option<&str>) -> crate::agent::AgentInstance {
 }
 
 fn session() -> crate::session::RuntimeSession {
-    crate::session::RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel")
+    crate::session::RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "kernel",
+    )
 }
 
 #[test]

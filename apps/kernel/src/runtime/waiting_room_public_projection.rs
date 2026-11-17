@@ -1527,6 +1527,7 @@ mod tests {
     fn stopped_slice_agents_project_error_consistently_in_waiting_room() {
         let mut session = RuntimeSession::new(
             "session-slice",
+            crate::session::ProjectId::test(),
             Some("slice session".to_string()),
             "workspace",
             "worktree",
@@ -1592,6 +1593,7 @@ mod tests {
         ] {
             let mut session = RuntimeSession::new(
                 "session-slice",
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",
@@ -1643,13 +1645,13 @@ mod tests {
     fn archived_project_retains_ended_rows_while_ordinary_ended_rows_stay_hidden() {
         let mut session = RuntimeSession::new(
             "session-project",
+            crate::session::ProjectId::new("project-1").unwrap(),
             Some("project-session".to_string()),
             "workspace",
             "worktree",
             "machine",
             "daemon",
         );
-        assert!(session.assign_project_id("project-1"));
         session.touch();
         let initial_activity_at_ms = Some(session.last_activity_at_ms());
         let mut project = RuntimeProject::new(
@@ -1661,13 +1663,13 @@ mod tests {
         );
         let mut ordinary_ended_session = RuntimeSession::new(
             "ordinary-ended-session",
+            crate::session::ProjectId::new("project-2").unwrap(),
             Some("ordinary-ended".to_string()),
             "workspace",
             "ordinary-worktree",
             "machine",
             "daemon",
         );
-        assert!(ordinary_ended_session.assign_project_id("project-2"));
         assert!(ordinary_ended_session.transition_to(SessionStatus::Ended));
         let ordinary_active_project = RuntimeProject::new(
             "project-2",
@@ -1795,8 +1797,15 @@ mod tests {
 
     #[test]
     fn archive_agent_disappears_from_waiting_room_rows_and_activity() {
-        let mut session =
-            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        let mut session = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
         let make = |id| {
             crate::agent::AgentInstance::new(
                 id,
@@ -1835,6 +1844,7 @@ mod tests {
     fn waiting_room_session_summaries_project_workspace_metadata() {
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             Some("alias".to_string()),
             "workspace",
             "worktree",
@@ -1867,6 +1877,7 @@ mod tests {
     fn waiting_room_session_summaries_project_metaagent_event_counts() {
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -1965,6 +1976,7 @@ mod tests {
     fn waiting_room_session_summaries_project_workflow_prompt() {
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -1991,6 +2003,7 @@ mod tests {
         fn session_with_workflow_status(status: WorkflowRunStatus) -> RuntimeSession {
             let mut session = RuntimeSession::new(
                 "session-1",
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",
@@ -2076,6 +2089,7 @@ mod tests {
     fn session_summary_projection_builds_once_per_logical_revision() {
         let sessions = vec![Arc::new(RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -2142,6 +2156,7 @@ mod tests {
     fn session_summary_projection_tracks_external_observed_work() {
         let mut session = RuntimeSession::new(
             "session-external",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -2201,6 +2216,7 @@ mod tests {
     fn session_summary_cache_keys_external_work_at_same_session_revision() {
         let mut session = RuntimeSession::new(
             "session-external-cache",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -2253,6 +2269,7 @@ mod tests {
     fn public_snapshot_projection_is_shared_across_subscribers_for_one_revision() {
         let sessions = vec![Arc::new(RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -2340,6 +2357,7 @@ mod tests {
         let changed_sessions = vec![Arc::new({
             let mut session = RuntimeSession::new(
                 "session-1",
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",
@@ -2379,6 +2397,7 @@ mod tests {
         let snapshot = build_waiting_room_public_snapshot(
             vec![RuntimeSession::new(
                 "session-1",
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",
@@ -2457,6 +2476,7 @@ mod tests {
         let metaagent_events = MetaagentEventStore::default();
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

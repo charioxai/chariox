@@ -703,6 +703,7 @@ mod lock_order_tests {
             .session_store
             .restore_session(RuntimeSession::new(
                 "session-1",
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",

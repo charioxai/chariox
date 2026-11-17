@@ -649,8 +649,15 @@ fn claude_run(profile_id: &str) -> crate::provider::RuntimeProviderRun {
 
 fn room_with_prompt_work(active: bool, queued: bool) -> crate::session::RuntimeSession {
     use crate::session::{PromptQueueItem, PromptStatus};
-    let mut room =
-        crate::session::RuntimeSession::new("room", None, "workspace", "tree", "machine", "home");
+    let mut room = crate::session::RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "tree",
+        "machine",
+        "home",
+    );
     room.mirror_agent_prompt_state(
         "agent",
         active.then(|| {
