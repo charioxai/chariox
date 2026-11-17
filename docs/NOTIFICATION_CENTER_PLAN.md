@@ -32,7 +32,7 @@ source ──fires──▶ occurrence ──route (subscription)──▶ subsc
 | Word | Meaning | In the kernel today |
 | --- | --- | --- |
 | Source | Something that fires occurrences. It has an owner, a home kernel and a stable id. | `NotificationSourceKind`: `workflow_exit`, `workflow_run`, `owner_action`, `app_event` |
-| Occurrence | One firing: `{source_id, display_name, occurrence_id, output, ancestry, deadline_ms}` | The notification envelope, 64 KiB at most, kept 7 days (`NOTIFICATION_RETENTION_MS`) |
+| Occurrence | One firing: `{source_id, display_name, occurrence_id, output, ancestry, deadline_ms}`; `output` is the message, the artifacts and, new, the structured `data` (section 6.2) | The notification envelope, 64 KiB at most, kept 7 days (`NOTIFICATION_RETENTION_MS`). Its `output` (`WorkflowOutputPayload`) holds `message` and `artifacts` only. |
 | Route | A subscription row: one source, one subscriber. | `app_automations` rows, receipts in `app_outbox` |
 | Subscriber | An agent, a workflow entry point or the person. | Agent (agent trigger), workflow entry point, outside agent |
 | Card | Something shown to the person. | `RuntimeInteraction`, scoped to one session |
@@ -47,11 +47,12 @@ The kernel gives events no meaning. A source emits opaque events; the script tha
 | --- | --- | --- |
 | Sources | Workflow exits and runs, owner actions, App events (`ListNotificationSources`) | Kind `watcher`: a supervised script on a kernel |
 | Subscribers | Agent, workflow entry point, outside agent | The person |
+| Occurrence data | None. An App event is published as its `payload["text"]` alone (`app_event.rs`); the rest of the payload stays with the App | `data`: the event's structured payload travels in the occurrence, so a filter has fields to read (section 6.2) |
 | Subscription fields | Source and target only: "a subscription has no options" | `filter`, `once`, `paused`; the trigger prompt becomes required for agent-created subscriptions and is shown as "Why it exists" |
 | Coalescing | None: every occurrence is delivered | On the source, not the subscription: every event, latest per key, debounce; one rate limit |
 | Delivery | Once per subscription, cross-kernel, loop drop, 7 days | Unchanged |
 | Cards | `RuntimeInteraction` per session, answered with `RespondToInteraction`, shown to every client of the session | A kernel-wide list of the cards addressed to the owner; for-your-information cards; read, snooze, mute |
-| Counts | `pending_interaction_count` per session in the waiting-room summary, for the Room's dot | The sidebar badge, counted from the Inbox |
+| Counts | `pending_interaction_count` per session in the per-Room summary, for the Room's dot | The sidebar badge, counted from the Inbox |
 | Agent tools | `chariox.notification.{sources,subscribe,unsubscribe}`, `chariox.request_popup` | `chariox.notify_person`; `filter` and `once` on subscribe; `chariox.watcher.*` |
 | Lists | `ListWorkflowNotifications {session_id}` per Room | One kernel-wide list with last fired, count, health and flags |
 | Trace | `ReadAgentTriggerTranscript`, delivery receipts | One trace per subscription: occurrence, result, the turn or run it started |
@@ -90,7 +91,7 @@ Such cards are kept for 7 days, the existing retention constant, and at most 1,0
 
 ### 4.2 A view over the owner's kernels
 
-Each kernel keeps the cards of its own Rooms and answers two things to its owner's clients: the current list with a revision (`GetPersonInbox`), and its changes (`PersonInboxChanged`) on the kernel-level connection the Web terminal already keeps for the waiting room. The client holds one list per connected kernel and shows them merged. No kernel knows another kernel's cards, and Cloud knows none: it only tells the client which kernels the person owns, as it does today.
+Each kernel keeps the cards of its own Rooms and answers two things to its owner's clients: the current list with a revision (`GetPersonInbox`), and its changes (`PersonInboxChanged`) on the kernel-level connection the Web terminal already keeps for the Room list. The client holds one list per connected kernel and shows them merged. No kernel knows another kernel's cards, and Cloud knows none: it only tells the client which kernels the person owns, as it does today.
 
 The sidebar badge is the number of needs-you cards that are not snoozed, counted by the client from those lists. *(P1: the number means "things waiting for me", never "unread".)*
 
@@ -175,6 +176,9 @@ Each kernel answers `ListNotificationSubscriptions` for the subscriptions whose 
 The protocol says today that a subscription has no options. This plan adds exactly one that changes delivery, the filter, because without it "only PR #976" wakes an agent, and costs a turn, for every review request in the repository.
 
 - A filter is a short list of conditions that must all hold on the occurrence's `output`: a field path, one of `=`, `!=`, `starts with`, `contains`, `<`, `>`, and a value. No expressions, no scripts.
+- **What a filter reads.** A path starts at `output`: `message` is the occurrence's text, and `data.<path>` is a field of its structured data, with object keys and array positions separated by dots (`data.pull_request.number`, `data.labels.0.name`). A value is a number, text or true/false; `<` and `>` compare numbers, `starts with` and `contains` compare text, `=` and `!=` compare the same type. A condition on a path the occurrence does not have, or on a value of another type, does not hold, `!=` included: a filter selects only what it can read.
+- **Where `data` comes from.** Today an occurrence carries no structured data: `WorkflowOutputPayload` holds `message` and `artifacts`, and the App-event adapter publishes `payload["text"]` and drops every other field, so the GitHub payload that holds the PR number never reaches a subscription. `WorkflowOutputPayload` gains an optional `data` (any JSON). (1) The App-event adapter publishes the event's whole payload as `data`, and `text` stays the `message`. (2) A watcher's `payload` (section 7.3) is its `data`. (3) A workflow exit carries no `data` in this plan; its filter reads `message`. (4) `data` is part of the occurrence the kernel already stores in `app_outbox` and the occurrence tables, and of the envelope `DeliverWorkflowNotification` carries across kernels, so the peer channel needs no second message. (5) `data` counts toward the 64 KiB output limit; an occurrence over it is dropped with the existing output-limit diagnostic and shown in the trace as "Too large". (6) The subscribed agent receives `data` quoted with the message, as untrusted input (section 11).
+- **Where it is applied.** The subscriber's kernel evaluates the filter when it accepts the occurrence, before anything is queued. The source's kernel is answered `Accepted` as today; the receipt records "Filtered out", and a filtered occurrence does not use up a `once` subscription. A text-only occurrence is filtered on `message` alone.
 - Agents write filters. The person reads them as a sentence ("Only PR #976", "Tags that start with v") and never edits one by hand; "Change" is a sentence to an agent. *(P1, P2.)*
 - A filtered occurrence is recorded in the trace as "Filtered out: not PR #976" and delivered to nobody.
 
@@ -206,6 +210,8 @@ For an agent, the delivery receipt records the turn the queued prompt started (`
 | Loop stopped | A delivery was answered `LoopDropped` | Open the trace; Remove |
 | Noisy | The source or origin hit the rate limit | Fix (an agent adjusts the watcher), Pause |
 | Source stopped | The watcher failed or its machine is stopped | Fix, or Start the machine |
+
+A workflow subscribed to its own exit never exists: the kernel refuses that attachment when it is created (`workflow notification cycle`), so there is no row and no flag. Loop stopped is raised only by a longer cycle (A to B to A), which the occurrence's ancestry stops at delivery.
 
 A flag also raises one for-your-information card to whoever is responsible for the subscription: its creator, or the workflow's responsible.
 
@@ -258,7 +264,7 @@ out   {"reading": "€1,649.00 · In stock"}
 ```
 
 - `reading` is what the source currently sees, in words. It is shown in the table and the preview.
-- `event` becomes an occurrence: `text` is its one line, `payload` its `output`.
+- `event` becomes an occurrence: `text` is its message, `payload` its `data`.
 - `cursor` is the script's memory (last seen id, last value, a hash). The kernel keeps it, 64 KiB at most. The script keeps no state of its own, which is what makes the watcher portable.
 - The kernel commits a run's events and its cursor in one transaction, so a crash or a restart neither repeats nor loses an event. A `poll` run commits when it exits with 0; a `stream` commits at each `cursor` line.
 - Credentials reach the script as environment values filled from the Vault by handle, the way `chariox.vault.use_env` fills them. They are never written to the package, the cursor, a reading or a log.
@@ -307,15 +313,24 @@ The agent never rents or places on a paid machine by itself. Renting is the pers
 
 Watchers are portable: the package, the cursor and Vault handles are all there is. "Move to <machine>" lists the person's connected machines the watcher's `sees` allows. A folder watcher is not offered another machine. A machine the person adds later, such as their own server after installing Chariox, appears in that menu like any other.
 
+A move is one durable record with a `move_id`, kept by both kernels until it ends. Running a source is owned by one kernel at a time; the owner is the kernel that holds the source's highest `source_generation`. That is a new field of the source record: the existing notification generation (`source_fence.rs`) orders a subscription's attach and detach requests and says nothing about which kernel executes a source. The commit point is step 4, one transaction on the new kernel.
+
 Move, between the two kernels over the encrypted peer channel:
 
-1. The old kernel pauses the watcher and fixes its cursor.
-2. It sends the package, the cursor and the undelivered occurrences. Vault entries the watcher uses travel through the Vault's own transfer, as when an agent moves (`docs/MOVE_AGENT_TO_KERNEL.md`).
-3. The new kernel installs it and runs one check without delivering.
-4. The new kernel registers the source under the same source id with a higher generation. Subscriptions on any kernel follow, as they follow a workflow source today.
-5. The old kernel removes its copy.
+1. The old kernel records the move, pauses the watcher and fixes its cursor. It keeps its copy paused until the move ends.
+2. It sends the `move_id`, the package, the cursor and the undelivered occurrences. Vault entries the watcher uses travel through the Vault's own transfer, as when an agent moves (`docs/MOVE_AGENT_TO_KERNEL.md`). Occurrences are identified by source id and occurrence id, which the kernel already ignores when it sees them twice, so a resend delivers nothing twice.
+3. The new kernel records the move as prepared, installs the package and runs one check without delivering and without scheduling anything.
+4. **Commit.** In one transaction the new kernel marks the move committed, registers the source under the same source id with `source_generation` raised by one and starts its schedule. Subscriptions on any kernel follow, as they follow a workflow source today.
+5. The old kernel, told that the move committed, removes its copy.
 
-A failure at any step leaves the watcher running where it was, with a card that says so. Nothing fires twice and nothing is missed, because the cursor moved with it.
+What happens on a failure depends on which side of step 4 it falls:
+
+- **Before the commit** (a failure in steps 1 to 3, or the new kernel answering that it refuses): the move is rolled back. The old kernel resumes from its own cursor, the new kernel drops what it installed, and a card says the move did not happen. Nothing fired on the new kernel, so nothing fires twice.
+- **After the commit** nothing is rolled back; the move only goes forward. The new kernel owns the source. The old kernel never resumes its copy once it has learned the commit, and removing the copy (step 5) is retried until it succeeds, by `move_id`. A card says the move finished.
+- **When the outcome is not known** (the reply to step 4 is lost, or the kernels cannot reach each other after step 3), the old kernel does not guess. It stays paused, resumes nothing, and asks the new kernel for the status of the `move_id`, repeatedly and with backoff, until it is answered `committed` or `aborted`. The answer is idempotent. Asking for an abort is the only way to resume the old copy: the new kernel, in one transaction, either answers `committed` or records `aborted` and refuses any later commit of that `move_id`. So exactly one of the two runs the watcher, whichever way the failure falls. While the new kernel cannot be reached the watcher is paused, not duplicated, and a card says so with one action, "Keep it here", which asks for the abort and applies when the new kernel answers. A source with history catches up from its cursor when it resumes; one without history (the dry run's second case) can miss what changed in that time, which the card says.
+- **A restart of either kernel** at any of these points reads its record of the move and continues from it: the old kernel with the status question, the new kernel with the commit or the abort it already made.
+
+Because the cursor moved with the watcher and only one kernel owns the source at any time, nothing fires twice, and nothing fires from an old cursor after the commit.
 
 ### 7.9 Catalog
 
@@ -371,7 +386,7 @@ Design level: names follow the existing requests, and the exact shapes are set i
 
 ### 8.2 Peer protocol
 
-Unchanged in kind: `SubscribeWorkflowNotifications` and `DeliverWorkflowNotification` carry watcher occurrences as they carry workflow ones. New: watcher sources in the peer source list (#1367 already lets the owner's agents follow the owner's sources on other kernels), and the move in section 7.8. `RELAY_PEER_PROTOCOL_VERSION` is raised with it.
+Unchanged in kind: `SubscribeWorkflowNotifications` and `DeliverWorkflowNotification` carry watcher occurrences as they carry workflow ones. New: watcher sources in the peer source list (#1367 already lets the owner's agents follow the owner's sources on other kernels), and the move in section 7.8: the move record (`move_id`), the commit, the idempotent status and abort question, and `source_generation` in the peer source list, where the highest generation names the kernel that runs the source. `RELAY_PEER_PROTOCOL_VERSION` is raised with it. The occurrence's new `data` (section 6.2) is a field of the envelope `DeliverWorkflowNotification` already carries, and changes a serialized shape clients and peers read: the implementing change raises `LOCAL_DAEMON_PROTOCOL_VERSION` and `RELAY_PEER_PROTOCOL_VERSION`, updates the snapshot and adds the drill, as AGENTS.md requires.
 
 ### 8.3 Agent tools
 
@@ -386,7 +401,7 @@ Unchanged in kind: `SubscribeWorkflowNotifications` and `DeliverWorkflowNotifica
 
 ### 8.4 Storage
 
-Watcher packages, cursors and health live in the kernel's state beside the existing automations. Subscriptions stay in `app_automations` with the new columns; receipts stay in `app_outbox` with the result and `turn_ref`. For-your-information cards and the read, snooze and mute state are a new table in the same store. The limits stay: 1,024 sources and 1,024 subscriptions per owner, 32 subscribers per source, 64 KiB per payload.
+Watcher packages, cursors and health live in the kernel's state beside the existing automations. Subscriptions stay in `app_automations` with the new columns; receipts stay in `app_outbox` with the result and `turn_ref`; an occurrence's `data` is stored with its output. For-your-information cards and the read, snooze and mute state are a new table in the same store. The limits stay: 1,024 sources and 1,024 subscriptions per owner, 32 subscribers per source, 64 KiB per payload.
 
 ## 9. Client views
 
@@ -423,18 +438,18 @@ Acceptance runs on the real path: real kernels on two machines, the relay, the W
 | NC-03 | Cross-machine answer: a card from the second machine is answered while the person works in a Room on the first | The agent on the second machine continues; no client reload |
 | NC-04 | Live page card from the center: a sign-in code page | The person types the code in the center; the agent continues; the Vault-filled field is masked in every frame the model sees |
 | NC-05 | Notify when done: "send me a notification when you are done", then a long task with a context compaction in between | One card when the work ends, with a link; the pane shows "notified you: …"; ordinary turn ends raise no card |
-| NC-06 | Notify on PR review: "let me know when you receive the notification to review PR #976", then a kernel restart and a compaction, then real review requests on another PR and on #976 | The subscription shows its reason and "Only PR #976"; the other PR is filtered out without a wake; #976 wakes the agent, which notifies; the trace shows event, turn, "notified you"; the subscription then removes itself |
+| NC-06 | Notify on PR review: "let me know when you receive the notification to review PR #976", then a kernel restart and a compaction, then real review requests on another PR and on #976, the subscribed agent's kernel being a different kernel from the GitHub source's | The subscription shows its reason and "Only PR #976"; the occurrence reaches the subscriber's kernel with the PR's number in its `data`; the other PR is filtered out without a wake, and does not use up `once`; a text-only occurrence is filtered out by the same condition; #976 wakes the agent, which notifies; the trace shows event, turn, "notified you"; the subscription then removes itself |
 | NC-07 | Read, snooze, mute on two clients | State follows to the second client; a snoozed card returns on time; a muted source's cards arrive read; a needs-you card cannot be muted |
 | NC-08 | Machines: one machine's connection is cut, then a managed machine is stopped | Cards show under Reconnecting with actions disabled and leave after 10 minutes; no offline machine is listed anywhere; the stopped machine shows Stopped with Start |
 | NC-09 | Subscriptions table with agent, workflow, person and workflow-responsible subscribers on two machines | Every subscription is listed once with the right Room, machine, creator, last fired and count; Pause stops delivery and the trace says Paused; Resume delivers the next event |
 | NC-10 | Test | The result names who would be woken; nothing is queued, no turn starts, no counter moves |
 | NC-11 | Orphan: a source is removed while subscribed | The row says "Source is gone"; Change subscriber and Remove work; no stale row remains |
-| NC-12 | Loop and noise: a workflow subscribed to its own exit; a log that prints 200 matching lines in a minute | "Loop stopped" after the first drop; the log source slows itself, one card with Fix, the subscriber is woken at the limit and not 200 times |
+| NC-12 | Loop and noise: a workflow subscribed to its own exit; then workflow A subscribed to B's exit and B to A's; a log that prints 200 matching lines in a minute | The self-subscription is refused when created with "workflow notification cycle", and no row or flag exists. For A to B to A, A's exit starts B, and B's exit, delivered to A, is answered `LoopDropped`: the B-to-A row shows "Loop stopped" after that first drop and the trace says "Loop stopped"; the log source slows itself, one card with Fix, the subscriber is woken at the limit and not 200 times |
 | NC-13 | Web page watcher with dry run: from the sentence to Turn on, on a test page we control | No JSON, cron or script is shown; the preview shows the reading, says the page keeps no history and shows the test on a changed copy; changing the real page produces one card and one wake of the subscribed agent |
 | NC-14 | Feed watcher | The dry run lists exactly the feed's matching items of the last 24 hours; after Turn on each new item fires once, across a kernel restart |
 | NC-15 | Folder watcher | A new file fires once; files added while the kernel was down fire once after restart; nothing fires twice |
 | NC-16 | Placement: only machines that sleep, then with an always-on machine | The suggestion shows the real price; Keep costs nothing; Rent goes through the rent confirmation; an agent creating a watcher by tool cannot place it on a paid machine without that click; with an always-on machine present nothing is asked |
-| NC-17 | Move a watcher to another kernel while an agent on a third is subscribed | Same source and subscription rows; events before and after the move arrive once each; the credential arrives through the Vault transfer; a move interrupted half way leaves it running on the old machine |
+| NC-17 | Move a watcher to another kernel while an agent on a third is subscribed | Same source and subscription rows; events before and after the move arrive once each; the credential arrives through the Vault transfer; a move that fails before the commit leaves it running on the old machine, once; the move's activation reply is lost, then both kernels are restarted before step 5: the new machine owns the source, the old copy does not run and is removed after the restart, and the next change in the source fires exactly once; the same with the activation reply delivered but the old kernel down during step 5; and with the new machine unreachable after step 3: the watcher is paused, "Keep it here" resumes the old copy only once the new machine has answered `aborted`, and a `committed` answer completes the move instead |
 | NC-18 | Failure is an event: the test page's layout changes | Health changes, one card "can't read the page any more" with Fix; the agent repairs it and shows a dry run; no error text reaches the person |
 | NC-19 | Changed meaningfully | A cosmetic change (a timestamp) causes no model call and no event; a real change causes one model call and one event; with the model unreachable the event arrives marked "not judged" |
 | NC-20 | Privacy, inspected during NC-03 and NC-13 | Cloud's database and logs contain no title, body, reading or count; the relay carried only encrypted frames |
@@ -449,10 +464,10 @@ Estimates are days of one lane, including review rounds and validation on the re
 | --- | --- | --- | --- |
 | M1 Inbox | Kernel-wide list of pending interactions for the owner, its change event, the center's Inbox tab, answer from the center, grouping, open in Room, badge, Reconnecting and Stopped | 4 | NC-01 to NC-04, NC-08 |
 | M2 Agents notify | `chariox.notify_person`, for-your-information cards, the pane line, read, snooze, mute, the person as subscriber | 3 | NC-05, NC-07 |
-| M3 Subscriptions | Kernel-wide list with counters, health and flags; filter and once; required prompt; pause, change subscriber, remove; test; trace with `turn_ref`; the Subscriptions tab; the Room list replaced by it | 5 | NC-06, NC-09 to NC-12, NC-22 |
+| M3 Subscriptions | Kernel-wide list with counters, health and flags; the occurrence's structured `data` through the App-event adapter, the stored occurrence and the peer envelope (with the protocol bumps); filter and once; required prompt; pause, change subscriber, remove; test; trace with `turn_ref`; the Subscriptions tab; the Room list replaced by it | 6 | NC-06, NC-09 to NC-12, NC-22 |
 | M4 Watcher runtime | Package, supervision, cursor, the three modes, coalescing and rate limit, health as events, dry run, `chariox.watcher.*` | 6 | NC-14, NC-15, NC-21 |
 | M5 Sources and creation | The Sources tab, the creation screen with the utility agent, the preview, placement, name and subscribers, Fix and Change | 5 | NC-13, NC-16, NC-18 |
-| M6 Move and judge | Move between kernels, "changed meaningfully", the push mode | 4 | NC-17, NC-19, NC-20 |
+| M6 Move and judge | Move between kernels with the move record, `source_generation` and the commit and status exchange, "changed meaningfully", the push mode | 5 | NC-17, NC-19, NC-20 |
 | Later | Phone ping, publishing a source | not estimated | |
 
 Each milestone ships a usable part: after M1 the person already answers everything from one place.
