@@ -189,6 +189,25 @@ impl Team {
             .expect("the limit settles the turn");
     }
 
+    /// The limit as the provider's structured output carries it: the turn's error frame, not a
+    /// failure the kernel settles by itself.
+    async fn hit_the_limit_in_provider_output(&self, lane: usize) {
+        self.rt()
+            .apply_owned_structured_output_batch(
+                &self.session_id,
+                &self.lanes[lane].run_id,
+                Vec::new(),
+                crate::provider::ProviderPromptSignalBatch {
+                    terminal_failure: Some(WEEKLY.to_string()),
+                    explicit_provider_error: true,
+                    prompt_completed: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("the limit frame settles the turn");
+    }
+
     /// The failed turn's own line in the transcript, not the stop notice or a dropped queued request.
     fn failed_turn_lines(&self, lane: usize) -> Vec<String> {
         self.rt()
@@ -297,6 +316,37 @@ async fn an_armed_stop_says_when_the_kernel_resumes_instead_of_asking_to_send_ag
         lines[0]
     );
     assert!(!lines[0].contains("send the request again"), "{}", lines[0]);
+}
+
+#[tokio::test]
+async fn an_armed_stop_from_the_providers_error_frame_says_when_the_kernel_resumes() {
+    let team = team(config(UsageLimitResume::Automatic), 1).await;
+
+    team.hit_the_limit_in_provider_output(0).await;
+
+    assert!(matches!(
+        team.stop(0).unwrap().state,
+        UsageLimitStopState::Armed { .. }
+    ));
+    let lines = team.failed_turn_lines(0);
+    assert_eq!(lines.len(), 1, "one failed-turn line: {lines:?}");
+    assert!(
+        lines[0].ends_with("Resumes automatically at 16:00 UTC."),
+        "{}",
+        lines[0]
+    );
+    assert!(!lines[0].contains("send the request again"), "{}", lines[0]);
+}
+
+#[tokio::test]
+async fn asking_keeps_the_line_that_asks_to_send_again_in_the_providers_error_frame() {
+    let team = team(config(UsageLimitResume::Ask), 1).await;
+
+    team.hit_the_limit_in_provider_output(0).await;
+
+    let lines = team.failed_turn_lines(0);
+    assert_eq!(lines.len(), 1, "one failed-turn line: {lines:?}");
+    assert!(lines[0].contains("send the request again"), "{}", lines[0]);
 }
 
 #[tokio::test]
