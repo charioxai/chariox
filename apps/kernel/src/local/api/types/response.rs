@@ -317,7 +317,7 @@ pub enum LocalDaemonResponse {
     },
     WorkspaceDirectoriesSearched { directories: Vec<String>, #[serde(default)] workspace_git: Vec<WorkspaceDirectoryGitSummary>, },
     WorkspaceDirectoryCreated { directory: String, },
-    WorkspaceWorktreesListed { workspace_id: String, worktrees: Vec<WorkspaceWorktreeRecord>, },
+    WorkspaceWorktreesListed { workspace_id: String, worktrees: Vec<WorkspaceWorktreeRecord>, workspace_empty: bool, },
     WorkspaceWorktreeCreated { workspace_id: String, worktree: WorkspaceWorktreeRecord, },
     WorkspaceWorktreeDeleted { workspace_id: String, worktree_id: String, path: String, },
     WorkspacePullRequestCreated { pull_request: WorkspacePullRequestRecord, },
