@@ -12,18 +12,23 @@ use crate::managed_context::outbound_service::{
 };
 use crate::managed_context::owner_authority::TICKET_ENDPOINT;
 use crate::managed_context::owner_managed::*;
-use crate::managed_context::{development::*, kernel::*, package::*};
+use crate::managed_context::{
+    development::{retention_faults, *},
+    kernel::*,
+    package::*,
+};
 use crate::runtime::terminal_pairings::public_key_thumbprint;
 use chariox_relay::auth::RelaySubjectKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const OWNER: &str = "owner-user";
 const PROJECT_FOLDERS: [&str; 2] = ["project", "project-two"];
 
 struct Fixture {
+    root: PathBuf,
     source: DaemonConfig,
     target: DaemonConfig,
     identity: RelayCallerIdentity,
@@ -102,6 +107,95 @@ fn recover_storage(state_db: &Path) {
         .expect("failure injector")
         .execute_batch("DROP TRIGGER fail_second_create; DROP TRIGGER fail_delete;")
         .expect("recover storage");
+}
+
+/// A restart-free stand-in for the kernel failing while it writes or lifts a
+/// retention record; the flags are reset when the test ends, whatever its result.
+struct RetentionFaults;
+
+impl RetentionFaults {
+    fn set(write: bool, release: bool) -> Self {
+        retention_faults::FAIL_WRITE.store(write, Ordering::SeqCst);
+        retention_faults::FAIL_RELEASE.store(release, Ordering::SeqCst);
+        retention_faults::REJECT_COMPLETION.store(false, Ordering::SeqCst);
+        Self
+    }
+
+    fn rejecting_completion() -> Self {
+        let faults = Self::set(false, false);
+        retention_faults::REJECT_COMPLETION.store(true, Ordering::SeqCst);
+        faults
+    }
+
+    fn clear(&self) {
+        retention_faults::FAIL_WRITE.store(false, Ordering::SeqCst);
+        retention_faults::FAIL_RELEASE.store(false, Ordering::SeqCst);
+        retention_faults::REJECT_COMPLETION.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Drop for RetentionFaults {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+fn fail_every_registration(state_db: &Path) {
+    rusqlite::Connection::open(state_db)
+        .expect("failure injector")
+        .execute_batch(
+            "CREATE TRIGGER fail_every_create BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'project.created'
+             BEGIN SELECT RAISE(FAIL, 'injected project create failure'); END;",
+        )
+        .expect("install failure");
+}
+
+fn fail_every_removal(state_db: &Path) {
+    rusqlite::Connection::open(state_db)
+        .expect("failure injector")
+        .execute_batch(
+            "CREATE TRIGGER fail_every_delete BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'project.deleted'
+             BEGIN SELECT RAISE(FAIL, 'injected project delete failure'); END;",
+        )
+        .expect("install failure");
+}
+
+fn recover_removal(state_db: &Path) {
+    rusqlite::Connection::open(state_db)
+        .expect("failure injector")
+        .execute_batch("DROP TRIGGER fail_every_delete;")
+        .expect("recover storage");
+}
+
+fn recover_registration(state_db: &Path) {
+    rusqlite::Connection::open(state_db)
+        .expect("failure injector")
+        .execute_batch("DROP TRIGGER fail_every_create;")
+        .expect("recover storage");
+}
+
+/// Retention records of the copy's publications still on disk.
+fn retention_records(root: &Path) -> Vec<PathBuf> {
+    fn walk(directory: &Path, found: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_name() == ".chariox-retained-by-project" {
+                found.push(path);
+            } else if entry.file_type().is_ok_and(|kind| kind.is_dir())
+                && entry.file_name() != ".git"
+            {
+                walk(&path, found);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(&root.join("target-home"), &mut found);
+    found
 }
 
 async fn fixture() -> Fixture {
@@ -302,6 +396,7 @@ async fn fixture() -> Fixture {
         capability: random_managed_context_capability(),
     };
     Fixture {
+        root,
         source,
         target,
         identity,
@@ -491,5 +586,156 @@ fn an_archived_retained_project_keeps_its_files_when_the_retry_cannot_register()
             std::fs::read(first.join("README.md")).unwrap(),
             b"project content\n"
         );
+    });
+}
+
+#[test]
+fn a_retention_that_cannot_be_written_publishes_no_project() {
+    crate::test_support::isolated_env_test!();
+    run_on_kernel_thread(|| async {
+        let _lock = crate::env_lock::lock();
+        let fixture = fixture().await;
+        let (router, _store) = target_router(fixture.target.clone()).await;
+        let faults = RetentionFaults::set(true, false);
+        import_attempt(&router, &fixture)
+            .await
+            .expect_err("the copy fails before any Project is published");
+        let router = restart(router, &fixture).await;
+        assert!(
+            registered_projects(&router).await.is_empty(),
+            "a Project was published without its retention"
+        );
+
+        faults.clear();
+        import_attempt(&router, &fixture)
+            .await
+            .expect("the retry completes once retention can be written");
+        let projects = registered_projects(&router).await;
+        assert_eq!(projects.len(), 2);
+        assert_no_orphaned_records(&projects);
+    });
+}
+
+#[test]
+fn work_in_a_published_project_survives_a_retention_that_failed_after_registration() {
+    crate::test_support::isolated_env_test!();
+    run_on_kernel_thread(|| async {
+        let _lock = crate::env_lock::lock();
+        let fixture = fixture().await;
+        let (router, _store) = target_router(fixture.target.clone()).await;
+        fail_second_registration_and_every_rollback(&fixture.state_db);
+        let faults = RetentionFaults::set(true, false);
+        import_attempt(&router, &fixture)
+            .await
+            .expect_err("the copy fails");
+        let router = restart(router, &fixture).await;
+
+        // Whatever the first attempt published, the person works in it before retrying.
+        let mut work = Vec::new();
+        for project in registered_projects(&router).await {
+            let repository = PathBuf::from(&project.workspace_ids()[0]);
+            commit_work(&repository);
+            work.push((
+                repository.clone(),
+                git_text(&repository, &["rev-parse", "HEAD"]),
+            ));
+        }
+        faults.clear();
+        let _ = import_attempt(&router, &fixture).await;
+        let router = restart(router, &fixture).await;
+        assert_no_orphaned_records(&registered_projects(&router).await);
+        for (repository, head) in &work {
+            assert_eq!(&git_text(repository, &["rev-parse", "HEAD"]), head);
+        }
+
+        recover_storage(&fixture.state_db);
+        import_attempt(&router, &fixture)
+            .await
+            .expect("the retry completes once storage works");
+        let projects = registered_projects(&router).await;
+        assert_eq!(projects.len(), 2);
+        assert_no_orphaned_records(&projects);
+        for (repository, head) in &work {
+            assert_eq!(&git_text(repository, &["rev-parse", "HEAD"]), head);
+            assert!(repository.join("work.txt").is_file());
+        }
+    });
+}
+
+#[test]
+fn a_copy_whose_retention_cannot_be_lifted_keeps_its_files_for_the_retry() {
+    crate::test_support::isolated_env_test!();
+    run_on_kernel_thread(|| async {
+        let _lock = crate::env_lock::lock();
+        let fixture = fixture().await;
+        let (router, _store) = target_router(fixture.target.clone()).await;
+        fail_every_registration(&fixture.state_db);
+        let faults = RetentionFaults::set(false, true);
+        let error = import_attempt(&router, &fixture).await.unwrap_err();
+        assert_retryable(&error);
+        let router = restart(router, &fixture).await;
+        assert!(registered_projects(&router).await.is_empty());
+        assert_eq!(
+            retention_records(&fixture.root).len(),
+            2,
+            "the copied files went while their retention could not be lifted"
+        );
+
+        faults.clear();
+        recover_registration(&fixture.state_db);
+        import_attempt(&router, &fixture)
+            .await
+            .expect("the retry registers both Projects");
+        let projects = registered_projects(&router).await;
+        assert_eq!(projects.len(), 2);
+        assert_no_orphaned_records(&projects);
+    });
+}
+
+#[test]
+fn a_rejected_completion_takes_back_the_copy_it_registered() {
+    crate::test_support::isolated_env_test!();
+    run_on_kernel_thread(|| async {
+        let _lock = crate::env_lock::lock();
+        let fixture = fixture().await;
+        let (router, _store) = target_router(fixture.target.clone()).await;
+        let _faults = RetentionFaults::rejecting_completion();
+        import_attempt(&router, &fixture)
+            .await
+            .expect_err("Cloud rejects the completion");
+        let router = restart(router, &fixture).await;
+        assert!(registered_projects(&router).await.is_empty());
+        assert!(
+            retention_records(&fixture.root).is_empty(),
+            "a rejected copy left its retention behind"
+        );
+    });
+}
+
+#[test]
+fn a_rejected_completion_keeps_the_files_of_a_project_it_cannot_take_back() {
+    crate::test_support::isolated_env_test!();
+    run_on_kernel_thread(|| async {
+        let _lock = crate::env_lock::lock();
+        let fixture = fixture().await;
+        let (router, _store) = target_router(fixture.target.clone()).await;
+        fail_every_removal(&fixture.state_db);
+        let faults = RetentionFaults::rejecting_completion();
+        import_attempt(&router, &fixture)
+            .await
+            .expect_err("Cloud rejects the completion");
+        let router = restart(router, &fixture).await;
+        let projects = registered_projects(&router).await;
+        assert_eq!(projects.len(), 2, "the Projects are still registered");
+        assert_no_orphaned_records(&projects);
+
+        faults.clear();
+        recover_removal(&fixture.state_db);
+        import_attempt(&router, &fixture)
+            .await
+            .expect("the retry completes");
+        let projects = registered_projects(&router).await;
+        assert_eq!(projects.len(), 2);
+        assert_no_orphaned_records(&projects);
     });
 }

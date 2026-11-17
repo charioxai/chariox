@@ -460,23 +460,38 @@ fn register_managed_context_projects(
     mut publish: impl FnMut(crate::session::RuntimeProject),
     mut retract: impl FnMut(&crate::session::RuntimeProject) -> Result<(), DaemonError>,
 ) -> Result<(), ManagedContextRegistrationFailure> {
+    // A Project already registered keeps its files whatever goes wrong before this call writes anything.
+    let registered_before = projects
+        .iter()
+        .enumerate()
+        .filter(|(_, project)| durable.iter().any(|existing| existing.id() == project.id()))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let rejected = |error: DaemonError| {
+        if registered_before.is_empty() {
+            ManagedContextRegistrationFailure::RolledBack(error)
+        } else {
+            ManagedContextRegistrationFailure::ProjectsRetained(Box::new(RetainedProjects {
+                error,
+                projects: registered_before.clone(),
+            }))
+        }
+    };
     let mut seen = std::collections::BTreeSet::new();
     let mut fresh = Vec::new();
     let mut registered_earlier = Vec::new();
     for (index, project) in projects.into_iter().enumerate() {
         if !seen.insert(project.id().to_string()) {
-            return Err(ManagedContextRegistrationFailure::RolledBack(
-                managed_context_project_error(format!(
-                    "managed context names Project `{}` twice",
-                    project.id()
-                )),
-            ));
+            return Err(rejected(managed_context_project_error(format!(
+                "managed context names Project `{}` twice",
+                project.id()
+            ))));
         }
         let existing = durable
             .iter()
             .find(|existing| existing.id() == project.id());
         if install_managed_context_project(existing, project.clone(), |_| Ok(()), |_| {})
-            .map_err(ManagedContextRegistrationFailure::RolledBack)?
+            .map_err(rejected)?
         {
             fresh.push((index, project));
         } else {

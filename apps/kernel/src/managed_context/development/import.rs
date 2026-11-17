@@ -137,13 +137,64 @@ pub(crate) fn recover_development_context_publication(
     Ok(Some(receipt))
 }
 
-/// Records that a registered Project points at this publication: no cleanup removes it and recovery accepts the
-/// commits made in it since. The record lives with the files, so it holds across restarts for as long as they do.
+/// Test faults at the steps of retaining a copy: a restart-free stand-in for the kernel failing there.
+#[cfg(test)]
+pub(crate) mod retention_faults {
+    use std::sync::atomic::AtomicBool;
+    pub(crate) static FAIL_WRITE: AtomicBool = AtomicBool::new(false);
+    pub(crate) static FAIL_RELEASE: AtomicBool = AtomicBool::new(false);
+    /// Cloud rejects the completion for good, after every Project of the copy is registered.
+    pub(crate) static REJECT_COMPLETION: AtomicBool = AtomicBool::new(false);
+}
+
+/// Records, before any Project is registered, that a Project may point at this publication: no cleanup removes it
+/// and recovery accepts the commits made in it since. The record lives with the files, so it holds across restarts
+/// for as long as they do, and a Project can never be published without it.
 pub(crate) fn retain_development_context_publication(
     destination_root: &Path,
     publication_id: &str,
 ) -> Result<(), DaemonError> {
     validate_publication_id(publication_id)?;
+    #[cfg(test)]
+    if retention_faults::FAIL_WRITE.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(context_error("injected retention write failure"));
+    }
+    let canonical_destination = retained_publication_destination(destination_root, publication_id)?;
+    if publication_is_retained(&canonical_destination)? {
+        return Ok(());
+    }
+    write_private_file(
+        &canonical_destination.join(RETAINED_PUBLICATION_FILE),
+        publication_id.as_bytes(),
+    )?;
+    sync_directory(&canonical_destination)
+}
+
+/// Lifts the record once no Project points at this publication, so that a rollback removes the files again.
+pub(crate) fn release_development_context_publication(
+    destination_root: &Path,
+    publication_id: &str,
+) -> Result<(), DaemonError> {
+    validate_publication_id(publication_id)?;
+    #[cfg(test)]
+    if retention_faults::FAIL_RELEASE.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(context_error("injected retention release failure"));
+    }
+    let canonical_destination = retained_publication_destination(destination_root, publication_id)?;
+    match fs::remove_file(canonical_destination.join(RETAINED_PUBLICATION_FILE)) {
+        Ok(()) => sync_directory(&canonical_destination),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(context_io_error(
+            "release retained development context publication",
+            error,
+        )),
+    }
+}
+
+fn retained_publication_destination(
+    destination_root: &Path,
+    publication_id: &str,
+) -> Result<PathBuf, DaemonError> {
     let canonical_destination = fs::canonicalize(destination_root).map_err(|error| {
         context_io_error("resolve retained development context publication", error)
     })?;
@@ -154,14 +205,7 @@ pub(crate) fn retain_development_context_publication(
             "refusing to retain a different development context publication",
         ));
     }
-    if publication_is_retained(&canonical_destination)? {
-        return Ok(());
-    }
-    write_private_file(
-        &canonical_destination.join(RETAINED_PUBLICATION_FILE),
-        publication_id.as_bytes(),
-    )?;
-    sync_directory(&canonical_destination)
+    Ok(canonical_destination)
 }
 
 fn publication_is_retained(canonical_destination: &Path) -> Result<bool, DaemonError> {

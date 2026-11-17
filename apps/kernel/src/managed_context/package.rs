@@ -1479,26 +1479,55 @@ pub(crate) fn rollback_managed_context_package_application(
     Ok(())
 }
 
-/// Keeps the files of the Projects (by position in the selection) that stay registered after a failed import: no
-/// rollback or retirement of the transfer removes them, and a retry recovers them as they have evolved.
-pub(crate) fn retain_registered_managed_context_projects(
+/// Records, before any Project is registered, that the copied files may be pointed at by a Project: no rollback or
+/// retirement of the transfer removes them from then on, and a retry recovers them as they have evolved.
+pub(crate) fn retain_managed_context_projects(
     receipt: &ManagedContextPackageImportReceipt,
-    projects: &[usize],
 ) -> Result<(), DaemonError> {
-    let ManagedContextImportedDevelopment::FromSource { projects: imported } = &receipt.development
-    else {
+    for_each_imported_project(receipt, None, |destination_root, publication_id| {
+        super::development::retain_development_context_publication(destination_root, publication_id)
+    })
+}
+
+/// Lifts the record of every Project (by position in the selection) that is not in `registered`, once no Project
+/// points at its files: the rollback that follows removes them. Every one is tried even when another cannot be lifted.
+pub(crate) fn release_unregistered_managed_context_projects(
+    receipt: &ManagedContextPackageImportReceipt,
+    registered: &[usize],
+) -> Result<(), DaemonError> {
+    for_each_imported_project(
+        receipt,
+        Some(registered),
+        |destination_root, publication_id| {
+            super::development::release_development_context_publication(
+                destination_root,
+                publication_id,
+            )
+        },
+    )
+}
+
+fn for_each_imported_project(
+    receipt: &ManagedContextPackageImportReceipt,
+    except: Option<&[usize]>,
+    mut apply: impl FnMut(&Path, &str) -> Result<(), DaemonError>,
+) -> Result<(), DaemonError> {
+    let ManagedContextImportedDevelopment::FromSource { projects } = &receipt.development else {
         return Ok(());
     };
-    for index in projects {
-        let project = imported.get(*index).ok_or_else(|| {
-            package_error("a retained managed context Project is not part of the import")
-        })?;
-        super::development::retain_development_context_publication(
+    let mut first_failure = None;
+    for (index, project) in projects.iter().enumerate() {
+        if except.is_some_and(|except| except.contains(&index)) {
+            continue;
+        }
+        if let Err(error) = apply(
             &project.receipt.destination_root,
             &project.receipt.publication_id,
-        )?;
+        ) {
+            first_failure.get_or_insert(error);
+        }
     }
-    Ok(())
+    first_failure.map_or(Ok(()), Err)
 }
 
 pub(crate) fn rollback_persisted_managed_context_publication(

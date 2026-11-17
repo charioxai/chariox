@@ -10,12 +10,12 @@ use crate::managed_context::cloud_completion::{
 };
 use crate::managed_context::event_connections::ManagedContextEventConnectionImportTarget;
 use crate::managed_context::package::{
-    apply_managed_context_package, retain_registered_managed_context_projects,
-    rollback_managed_context_package_application, rollback_persisted_managed_context_publication,
-    ManagedContextGitCredentialImportTarget, ManagedContextImportedKernelContext,
-    ManagedContextPackageApplicationRequest, ManagedContextPackageBinding,
-    ManagedContextPackageImportReceipt, ManagedContextPackageImportRequest,
-    ManagedContextProviderAccountImportTarget,
+    apply_managed_context_package, release_unregistered_managed_context_projects,
+    retain_managed_context_projects, rollback_managed_context_package_application,
+    rollback_persisted_managed_context_publication, ManagedContextGitCredentialImportTarget,
+    ManagedContextImportedKernelContext, ManagedContextPackageApplicationRequest,
+    ManagedContextPackageBinding, ManagedContextPackageImportReceipt,
+    ManagedContextPackageImportRequest, ManagedContextProviderAccountImportTarget,
 };
 use crate::managed_context::transfer::{
     ArmManagedContextTransfer, ManagedContextImportClaim, ManagedContextTransferCaller,
@@ -604,14 +604,32 @@ impl CommandRouter {
                 return Err(error);
             }
         };
-        let launch_target = store
-            .launch_target_for_import_receipt(&transfer_id, &receipt)
-            .map_err(ManagedContextRegistrationFailure::RolledBack)
-            .and_then(|target| {
-                self.runtime_state
-                    .ensure_managed_context_project(&target, &caller.owner_user_id)?;
-                Ok(target)
-            });
+        // The retention record goes down before any Project is registered, so a Project
+        // can never be published without it. When it cannot be written, nothing is
+        // registered and nothing is removed: the retry applies the package again.
+        let retention_receipt = receipt.clone();
+        let retention = self
+            .import_io(move || retain_managed_context_projects(&retention_receipt))
+            .await;
+        let launch_target = match retention
+            .map_err(|error| {
+                managed_context_unavailable(format!("retain copied Projects' files: {error}"))
+            })
+            .and_then(|()| store.launch_target_for_import_receipt(&transfer_id, &receipt))
+        {
+            Ok(target) => target,
+            Err(error) => {
+                let release_store = store.clone();
+                let release_transfer_id = transfer_id.clone();
+                self.transfer_io(move || release_store.release_import(&release_transfer_id))
+                    .await?;
+                return Err(error);
+            }
+        };
+        let launch_target = self
+            .runtime_state
+            .ensure_managed_context_project(&launch_target, &caller.owner_user_id)
+            .map(|()| launch_target);
         let launch_target = match launch_target {
             Ok(target) => target,
             Err(ManagedContextRegistrationFailure::ProjectsRetained(retained)) => {
@@ -622,20 +640,22 @@ impl CommandRouter {
                 // A registered Project still points at the copied files: they stay,
                 // whatever later removes the rest of this transfer. A retry applies
                 // the package again, recovers the publication with the work done in
-                // it and finds those Projects already registered.
-                let retain_receipt = receipt.clone();
-                let retained = self
+                // it and finds those Projects already registered. The Projects that
+                // are not registered lose their record; a failure to lift it only
+                // keeps their files for the retry.
+                let release_receipt = receipt.clone();
+                let released = self
                     .import_io(move || {
-                        retain_registered_managed_context_projects(&retain_receipt, &projects)
+                        release_unregistered_managed_context_projects(&release_receipt, &projects)
                     })
                     .await;
                 let release_store = store.clone();
                 let release_transfer_id = transfer_id.clone();
                 self.transfer_io(move || release_store.release_import(&release_transfer_id))
                     .await?;
-                if let Err(retain_error) = retained {
+                if let Err(release_error) = released {
                     return Err(managed_context_unavailable(format!(
-                        "{retained_error}; keep registered Projects' files: {retain_error}"
+                        "{retained_error}; release unregistered Projects' files: {release_error}"
                     )));
                 }
                 return Err(retained_error);
@@ -647,6 +667,9 @@ impl CommandRouter {
                 let rollback_event_connection_target = event_connection_target.clone();
                 if let Err(rollback_error) = self
                     .import_io(move || {
+                        // No Project points at the files any more: lift the record so the
+                        // rollback removes them. While it stays, they are kept.
+                        release_unregistered_managed_context_projects(&rollback_receipt, &[])?;
                         rollback_managed_context_package_application(
                             &rollback_receipt,
                             &rollback_private_key,
@@ -693,6 +716,19 @@ impl CommandRouter {
             )
             .await
         };
+        #[cfg(test)]
+        let completion = if crate::managed_context::development::retention_faults::REJECT_COMPLETION
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            Err(DaemonError::ManagedContext {
+                code: "managed_context_rejected",
+                operation: "managed context completion",
+                message: "injected completion rejection".into(),
+                retryable: false,
+            })
+        } else {
+            completion
+        };
         if let Err(completion_error) = completion {
             let (_, retryable) = managed_context_failure_policy(&completion_error);
             let failure_store = store.clone();
@@ -702,12 +738,26 @@ impl CommandRouter {
                     .transfer_io(move || failure_store.release_import(&failure_transfer_id))
                     .await;
             } else {
+                // The Project record goes first: its files are never removed while it
+                // stays registered, and a Project that cannot be taken back keeps them.
+                if let Err(project_rollback_error) = self
+                    .runtime_state
+                    .remove_managed_context_project(&launch_target, &caller.owner_user_id)
+                {
+                    let _ =
+                        run_blocking(move || failure_store.release_import(&failure_transfer_id))
+                            .await;
+                    return Err(managed_context_unavailable(format!(
+                        "roll back rejected managed context Project: {project_rollback_error}"
+                    )));
+                }
                 let rollback_receipt = receipt.clone();
                 let rollback_provider_account_target = provider_account_target.clone();
                 let rollback_git_credential_target = git_credential_target.clone();
                 let rollback_event_connection_target = event_connection_target.clone();
                 if let Err(rollback_error) = self
                     .import_io(move || {
+                        release_unregistered_managed_context_projects(&rollback_receipt, &[])?;
                         rollback_managed_context_package_application(
                             &rollback_receipt,
                             &rollback_private_key,
@@ -723,17 +773,6 @@ impl CommandRouter {
                         .await;
                     return Err(managed_context_unavailable(format!(
                         "roll back rejected managed context import: {rollback_error}"
-                    )));
-                }
-                if let Err(project_rollback_error) = self
-                    .runtime_state
-                    .remove_managed_context_project(&launch_target, &caller.owner_user_id)
-                {
-                    let _ =
-                        run_blocking(move || failure_store.release_import(&failure_transfer_id))
-                            .await;
-                    return Err(managed_context_unavailable(format!(
-                        "roll back rejected managed context Project: {project_rollback_error}"
                     )));
                 }
 

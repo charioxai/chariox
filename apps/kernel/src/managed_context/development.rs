@@ -245,6 +245,8 @@ use git::{
     verify_git_bundle_isolated, RepositoryMaterializationEstimate,
 };
 pub use import::import_development_context;
+#[cfg(test)]
+pub(crate) use import::retention_faults;
 pub(crate) use import::{
     cleanup_development_context_publication, cleanup_development_context_publication_staging,
     cleanup_development_context_publications, cleanup_development_context_staging_units,
@@ -255,7 +257,8 @@ pub(crate) use import::{
     recover_pruned_development_context_publication,
     recover_pruned_development_context_publication_for_cleanup,
     recover_pruned_mutable_development_context_publication, register_transfer_workspaces_parent,
-    retain_development_context_publication, MAX_PUBLICATION_RECEIPT_BYTES,
+    release_development_context_publication, retain_development_context_publication,
+    MAX_PUBLICATION_RECEIPT_BYTES,
 };
 use import_archive::{extract_and_verify_archive, validate_git_oid};
 use import_materialize::{materialize_prepared_repository, prepare_repository};
