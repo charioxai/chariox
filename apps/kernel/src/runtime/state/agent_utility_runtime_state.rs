@@ -70,6 +70,35 @@ impl KernelRuntimeState {
         self.owned.provider_store.native_interaction_bridge()
     }
 
+    /// A setup turn on a Claude run with no structured I/O (headless, native terminal), with the
+    /// run's own account credentials.
+    pub(crate) async fn run_room_commands_on_native_claude(
+        &self,
+        provider_run: crate::provider::RuntimeProviderRun,
+        visible_user_prompt: String,
+        hidden_system_context: String,
+        timeout: tokio::time::Duration,
+    ) -> Result<String, DaemonError> {
+        const OPERATION: &str = "run room commands on native Claude";
+        let credentials = self
+            .resolve_provider_account_credentials_for_run_with_vault(&provider_run, OPERATION)
+            .await?;
+        tokio::task::spawn_blocking(move || {
+            crate::provider::run_room_commands_on_fresh_claude(
+                &provider_run,
+                &credentials,
+                &visible_user_prompt,
+                &hidden_system_context,
+                timeout,
+            )
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: OPERATION,
+            message: format!("provider utility prompt task failed: {error}"),
+        })?
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run_structured_provider_utility_prompt(
         &self,
@@ -287,5 +316,83 @@ mod tests {
             "the remaining deadline must reach the Claude utility runner: {result:?}"
         );
         assert!(started.elapsed() < std::time::Duration::from_millis(900));
+    }
+
+    #[tokio::test]
+    async fn headless_claude_runs_a_setup_turn_on_a_fresh_print_child() {
+        use crate::provider::{
+            AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult,
+            ProviderUtilityExecutionPolicy, RuntimeProviderRun,
+        };
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-headless-setup",
+                "worktree-headless-setup",
+            ))
+            .unwrap();
+        let runtime = owned_runtime_state(&Arc::new(Mutex::new(app))).await;
+        let request = LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude-headless",
+            "default",
+            "claude-headless/sonnet",
+        );
+        let root = std::env::temp_dir().join(format!("headless-setup-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let claude = root.join("claude");
+        // Answers only when started as `claude -p` with the git and gh allowance.
+        std::fs::write(
+            &claude,
+            r#"#!/usr/bin/python3
+import sys, json
+args = " ".join(sys.argv[1:])
+if "-p " not in args or "Bash(git:*) Bash(gh:*)" not in args or "native-hooks.json" in args:
+    sys.stderr.write("unexpected arguments: " + args + "\n")
+    sys.exit(9)
+for line in sys.stdin:
+    print(json.dumps({"type": "assistant", "message": {"id": "m", "content": [{"type": "text", "text": "PUBLISHED https://github.com/me/x"}]}}), flush=True)
+    print(json.dumps({"type": "result", "subtype": "success", "user_message_uuids": [json.loads(line)["uuid"]]}), flush=True)
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let mut run = RuntimeProviderRun::new(
+            "headless-setup",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "claude:headless".into(),
+                pty_target: None,
+                pty_program: Some(claude.display().to_string()),
+                // The headless terminal's own arguments: the setup turn must not reuse them.
+                pty_args: vec!["--settings".into(), "native-hooks.json".into()],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        assert_eq!(agent.session_id(), session.id());
+        let result = crate::runtime::agent_utility_executor::run_provider_utility_prompt(
+            &runtime,
+            run,
+            crate::runtime::agent_utility_executor::AgentUtilityPromptParts {
+                visible_user_prompt: "Publish".into(),
+                hidden_system_context: "You are setting up a Room.".into(),
+            },
+            "test headless setup turn",
+            ProviderUtilityExecutionPolicy::RoomCommands,
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            result.expect("a headless Claude setup turn answers"),
+            "PUBLISHED https://github.com/me/x"
+        );
     }
 }
