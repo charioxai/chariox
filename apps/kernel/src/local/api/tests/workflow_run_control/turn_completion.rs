@@ -478,10 +478,8 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
         LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
         _ => panic!("unexpected local response"),
     };
-    let schema_path = std::env::temp_dir().join(format!(
-        "chariox-mailbox-schema-{}.json",
-        crate::session::unix_epoch_ms()
-    ));
+    let schema_dir = crate::test_support::TestTempDir::new("mailbox-schema");
+    let schema_path = schema_dir.join("schema.json");
     fs::write(
             &schema_path,
             "{\n  \"type\": \"object\",\n  \"required\": [\"ok\"],\n  \"properties\": {\"ok\": {\"type\": \"boolean\"}}\n}\n",

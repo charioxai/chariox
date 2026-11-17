@@ -89,7 +89,8 @@ fn expired_worker_execution_lease_reconciliation_cleans_up_once_and_reopens_capa
             "user-home",
         )
         .expect("execution lease should create");
-    let worktree = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("expired-worker-lease");
+    let worktree = _tmp.join(format!(
         "chariox-expired-worker-lease-{}-{}",
         std::process::id(),
         rand::random::<u64>()
@@ -200,7 +201,8 @@ fn leased_agents_require_existing_lease_and_can_be_destroyed() {
     RemoteLeaseRuntime::new(&mut app)
         .bind_execution_lease_caller(&lease.id, caller.clone())
         .expect("execution lease caller should bind");
-    let worktree = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("leased-agent-worktree");
+    let worktree = _tmp.join(format!(
         "chariox-leased-agent-worktree-{}",
         crate::session::unix_epoch_ms()
     ));
@@ -292,7 +294,8 @@ fn leased_agent_cleanup_is_retryable_and_retains_authority_and_capacity() {
             caller.clone(),
         )
         .expect("bound execution lease should create atomically");
-    let worktree = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("leased-agent-draining");
+    let worktree = _tmp.join(format!(
         "chariox-leased-agent-draining-{}-{}",
         std::process::id(),
         rand::random::<u64>()
@@ -373,7 +376,8 @@ fn partial_provider_cleanup_retries_ended_runs_before_releasing_capacity() {
                 caller.clone(),
             )
             .expect("lease creates");
-        let worktree = std::env::temp_dir().join(format!(
+        let _tmp = crate::test_support::TestTempDir::new("provider-cleanup-retry");
+        let worktree = _tmp.join(format!(
             "chariox-provider-cleanup-retry-{}-{}",
             std::process::id(),
             rand::random::<u64>()
@@ -546,7 +550,8 @@ fn leased_agents_project_workspace_live_sync_mode_to_backing_session() {
             "user-home",
         )
         .expect("execution lease should be created");
-    let worktree = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("leased-agent-wls-mode");
+    let worktree = _tmp.join(format!(
         "chariox-leased-agent-wls-mode-{}",
         crate::session::unix_epoch_ms()
     ));
@@ -616,7 +621,8 @@ fn destroying_one_shared_session_leased_agent_preserves_other_leases() {
             "user-home",
         )
         .expect("execution lease should be created");
-    let worktree = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("shared-leased-agent-worktree");
+    let worktree = _tmp.join(format!(
         "chariox-shared-leased-agent-worktree-{}",
         crate::session::unix_epoch_ms()
     ));
@@ -678,7 +684,8 @@ fn leased_agents_reject_missing_working_directory() {
             "user-home",
         )
         .expect("execution lease should be created");
-    let missing = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("missing-leased-agent-worktree");
+    let missing = _tmp.join(format!(
         "chariox-missing-leased-agent-worktree-{}",
         crate::session::unix_epoch_ms()
     ));
@@ -702,11 +709,13 @@ fn leased_agents_reject_missing_working_directory() {
 #[test]
 fn leased_agents_materialize_remote_git_worktree_before_creation() {
     crate::test_support::isolated_env_test!();
-    let root = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("remote-git-worktree-base");
+    let root = _tmp.join(format!(
         "chariox-remote-git-worktree-base-{}",
         crate::session::unix_epoch_ms()
     ));
-    let target = std::env::temp_dir().join(format!(
+    let _tmp = crate::test_support::TestTempDir::new("remote-git-worktree-target");
+    let target = _tmp.join(format!(
         "chariox-remote-git-worktree-target-{}",
         crate::session::unix_epoch_ms()
     ));
@@ -807,7 +816,8 @@ async fn destroying_a_leased_agent_or_its_lease_stops_its_room_terminals() {
                 caller.clone(),
             )
             .expect("bound execution lease should create");
-        let worktree = std::env::temp_dir().join(format!(
+        let _tmp = crate::test_support::TestTempDir::new("leased-terminal");
+        let worktree = _tmp.join(format!(
             "chariox-leased-terminal-{}-{}",
             std::process::id(),
             rand::random::<u64>()

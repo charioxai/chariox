@@ -1288,9 +1288,9 @@ pub(super) mod tests {
     ) -> crate::config::DaemonConfig {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.user_config.state.path = Some(
-            std::env::temp_dir()
-                .join("chariox-tests")
-                .join(format!("{tag}-{}.db", crate::session::unix_epoch_ms()))
+            config
+                .test_state_dir()
+                .join(format!("{tag}.db"))
                 .display()
                 .to_string(),
         );
@@ -2374,11 +2374,11 @@ pub(super) mod tests {
             // Copy the committed SQLite state (including its checkpoint) to
             // simulate a restart without the original fixture's live lease.
             let mut restart_config = config.clone();
-            let restart_path = durable_state_config("resend-snapshot-copy")
-                .user_config
-                .state
-                .path
-                .unwrap();
+            let restart_path = config
+                .test_state_dir()
+                .join("resend-snapshot-copy.db")
+                .display()
+                .to_string();
             rusqlite::Connection::open(runtime.owned.durable_state_store.path())
                 .unwrap()
                 .execute("VACUUM INTO ?1", rusqlite::params![restart_path])

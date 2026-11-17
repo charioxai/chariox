@@ -85,6 +85,7 @@ pub use error::DaemonError;
 mod lib_tests;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub(crate) mod test_temp_dir;
 
 #[cfg(all(feature = "native-display", target_os = "linux"))]
 pub mod display_native;

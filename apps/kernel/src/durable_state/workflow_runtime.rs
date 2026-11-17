@@ -1163,21 +1163,19 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
-    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+    use std::time::Instant;
 
-    fn temp_store(label: &str) -> (DurableKernelStateStore, std::path::PathBuf) {
-        let path = std::env::temp_dir().join(format!(
-            "chariox-{label}-{}-{}.db",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock should follow epoch")
-                .as_nanos()
-        ));
-        (
-            DurableKernelStateStore::open(path.clone()).expect("store should open"),
-            path,
-        )
+    fn temp_store(
+        label: &str,
+    ) -> (
+        crate::test_support::TestTempDir,
+        DurableKernelStateStore,
+        std::path::PathBuf,
+    ) {
+        let dir = crate::test_support::TestTempDir::new(label);
+        let path = dir.join("state.db");
+        let store = DurableKernelStateStore::open(path.clone()).expect("store should open");
+        (dir, store, path)
     }
 
     fn session_with_runs() -> RuntimeSession {
@@ -1235,7 +1233,7 @@ mod tests {
 
     #[test]
     fn retired_event_binding_rows_are_ignored_on_load() {
-        let (store, path) = temp_store("workflow-runtime-retired-binding");
+        let (_dir, store, path) = temp_store("workflow-runtime-retired-binding");
         store
             .persist_workflow_runtime_transition(&session_with_runs(), "test")
             .expect("workflow transition should persist");
@@ -1270,7 +1268,7 @@ mod tests {
 
     #[test]
     fn workflow_runtime_transition_separates_hot_state_from_run_history_and_receipts() {
-        let (store, path) = temp_store("workflow-runtime-separation");
+        let (_dir, store, path) = temp_store("workflow-runtime-separation");
         let session = session_with_runs();
 
         store
@@ -1355,12 +1353,11 @@ mod tests {
         );
 
         drop(store);
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn workflow_runtime_transition_lock_serializes_snapshot_capture_and_commit() {
-        let (store, path) = temp_store("workflow-runtime-transition-order");
+        let (_dir, store, _) = temp_store("workflow-runtime-transition-order");
         let session = Arc::new(Mutex::new(session_with_runs()));
         let delayed_store = store.clone();
         let delayed_session = Arc::clone(&session);
@@ -1424,12 +1421,11 @@ mod tests {
         );
 
         drop(store);
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn normalized_active_runs_replace_stale_legacy_nonterminal_runs() {
-        let (store, path) = temp_store("workflow-runtime-active-replacement");
+        let (_dir, store, _) = temp_store("workflow-runtime-active-replacement");
         let mut stale_session = session_with_runs();
         let mut settled_session = stale_session.clone();
         settled_session
@@ -1458,12 +1454,11 @@ mod tests {
         );
 
         drop(store);
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn workflow_runtime_transition_deletes_removed_runtime_instances() {
-        let (store, path) = temp_store("workflow-runtime-instance-deletion");
+        let (_dir, store, _) = temp_store("workflow-runtime-instance-deletion");
         let mut session = session_with_runs();
         store
             .persist_workflow_runtime_transition(&session, "instance_created")
@@ -1492,12 +1487,11 @@ mod tests {
             .is_empty());
 
         drop(store);
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn legacy_workflow_runtime_migration_is_idempotent_and_paginated() {
-        let (store, path) = temp_store("workflow-runtime-migration");
+        let (_dir, store, _) = temp_store("workflow-runtime-migration");
         let session = session_with_runs();
 
         store
@@ -1556,12 +1550,11 @@ mod tests {
         drop(connection);
 
         drop(store);
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn legacy_history_migration_resumes_idempotently_and_marks_verified() {
-        let (store, path) = temp_store("workflow-history-migration-resume");
+        let (_dir, store, path) = temp_store("workflow-history-migration-resume");
         let session = session_with_runs();
         let archived = session
             .workflow_run("run-completed")
@@ -1622,12 +1615,11 @@ mod tests {
         assert_eq!(status, "verified");
         drop(connection);
         drop(resumed);
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn session_delete_atomically_removes_normalized_workflow_state() {
-        let (store, path) = temp_store("workflow-runtime-session-delete");
+        let (_dir, store, _) = temp_store("workflow-runtime-session-delete");
         let session = session_with_runs();
 
         let workflow_sequence = store
@@ -1654,14 +1646,13 @@ mod tests {
         assert_eq!(deleted[0].sequence, delete_sequence);
 
         drop(store);
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn large_completed_history_keeps_hot_restore_and_transition_tail_bounded() {
         const COMPLETED_RUNS: usize = 10_000;
         const HOT_TRANSITIONS: usize = 50;
-        let (store, path) = temp_store("workflow-runtime-large-history");
+        let (_dir, store, path) = temp_store("workflow-runtime-large-history");
         let mut hot_session = RuntimeSession::new(
             "session-scale",
             None,
@@ -1816,6 +1807,5 @@ mod tests {
         );
 
         drop(store);
-        let _ = std::fs::remove_file(path);
     }
 }

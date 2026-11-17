@@ -1315,10 +1315,11 @@ mod tests {
     };
 
     pub(super) fn caller(user_id: &'static str) -> RoomListCaller<'static> {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        // The leaked projection only reads settings; its state directory goes now.
+        config.test_state_root = None;
         let config = Box::leak(Box::new(
-            crate::runtime::projection::DaemonConfigProjectionStore::new(
-                crate::config::DaemonConfig::for_tests(),
-            ),
+            crate::runtime::projection::DaemonConfigProjectionStore::new(config),
         ));
         RoomListCaller::new(user_id, config)
     }

@@ -635,10 +635,8 @@ mod tests {
         super::write(request, &StateGuard::default())
     }
 
-    fn scratch() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("kernel-files-{:08x}", rand::random::<u32>()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn scratch() -> crate::test_support::TestTempDir {
+        crate::test_support::TestTempDir::new("kernel-files")
     }
 
     fn chunk(

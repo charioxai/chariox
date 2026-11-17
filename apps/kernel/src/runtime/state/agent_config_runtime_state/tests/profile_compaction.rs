@@ -32,11 +32,11 @@ async fn compact_fixture_with_lease(
     RuntimeProviderRun,
     Option<crate::execution_lease::LeasedAgent>,
 ) {
-    let root = crate::test_support::TestWorktree::new("profile-compact");
+    let mut root = crate::test_support::TestWorktree::new("profile-compact");
     let mut config = crate::config::DaemonConfig::for_tests();
     config.accept_remote_leases = leased;
     if !leased {
-        crate::test_support::serve_runtime_mcp(&mut config);
+        root.serve_runtime_mcp(&mut config);
     }
     let (app, runtime, mut session, mut agent) = agent_config_runtime_in_worktree(
         config,

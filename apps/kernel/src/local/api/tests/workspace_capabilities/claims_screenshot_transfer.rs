@@ -9,8 +9,8 @@ fn local_request_api_rejects_conflicting_workspace_write_claims() {
 }
 
 fn local_request_api_rejects_conflicting_workspace_write_claims_inner() {
-    let worktree_root = std::env::temp_dir().join("chariox-workspace-claim-local-api-test");
-    let _ = std::fs::remove_dir_all(&worktree_root);
+    let _tmp = crate::test_support::TestTempDir::new("workspace-claim-local-api-test");
+    let worktree_root = _tmp.join("chariox-workspace-claim-local-api-test");
     std::fs::create_dir_all(worktree_root.join("src")).expect("worktree should exist");
     std::fs::write(worktree_root.join("src/lib.rs"), "before").expect("file should exist");
 
@@ -160,8 +160,8 @@ fn local_request_api_stores_transferred_file_under_session_artifacts() {
 }
 
 fn local_request_api_stores_transferred_file_under_session_artifacts_inner() {
-    let worktree_root = std::env::temp_dir().join("chariox-transfer-local-api-test");
-    let _ = std::fs::remove_dir_all(&worktree_root);
+    let _tmp = crate::test_support::TestTempDir::new("transfer-local-api-test");
+    let worktree_root = _tmp.join("chariox-transfer-local-api-test");
     std::fs::create_dir_all(&worktree_root).expect("worktree should exist");
     let source = worktree_root.join("artifact.txt");
     std::fs::write(&source, "artifact").expect("file should exist");
@@ -179,6 +179,12 @@ fn local_request_api_stores_transferred_file_under_session_artifacts_inner() {
         LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
+    // The session's artifacts go to a fixed place under the system temp dir.
+    let _artifacts = crate::test_support::TestTempPath::in_shared_directory(
+        std::env::temp_dir()
+            .join("chariox-session-artifacts")
+            .join(session.id()),
+    );
     let attachment = match harness
         .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
