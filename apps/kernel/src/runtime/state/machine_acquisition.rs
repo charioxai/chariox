@@ -1,6 +1,6 @@
 //! One owner decision before an agent can start charged work.
 use super::*;
-use crate::local::{ControlPlaneRequest, MachineAllocationCapability, MachineOption};
+use crate::local::{ControlPlaneRequest, MachineAllocationCapability};
 use crate::runtime::command::KernelCommand;
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle};
 use sha2::Digest;

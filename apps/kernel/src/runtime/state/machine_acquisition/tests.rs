@@ -286,17 +286,6 @@ fn option(class_id: &str, region: &str, available: bool) -> MachineOption {
     }
 }
 
-fn listed(offers: Vec<MachineOption>) -> MachineAllocationCapability {
-    MachineAllocationCapability {
-        revision: "v1".into(),
-        actions: vec!["acquire".into()],
-        offer: None,
-        offers,
-        job_offers: vec![],
-        job_default_class_id: None,
-    }
-}
-
 #[test]
 fn the_machine_tools_list_options_and_acquire_takes_the_chosen_class() {
     let specs = super::machine_tool_specs();
