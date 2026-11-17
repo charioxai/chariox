@@ -14,6 +14,7 @@ const tools=process.env.MIRROR_LAB_NODE_MODULES;
 assert(tools&&path.isAbsolute(tools),'MP-10: public Playwright/esbuild tool directory required');
 const {chromium}=createRequire(path.join(tools,'x.js'))('playwright-core');
 let scratch,browser,viewerServer,viewerUrl;
+const fontBytes=await readFile(process.env.MIRROR_LAB_FONT??'/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf');
 before(async()=>{
   scratch=await mkdtemp(path.join(tmpdir(),'mirror2-roundtrip-'));
   const outfile=path.join(scratch,'renderer.js');
@@ -28,9 +29,10 @@ async function roundtrip(html,child,run){
   const root=await mkdtemp(path.join(scratch,'source-'));
   const childSource=html.includes('CHILDPORT')?createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end(child);}):null;
   if(childSource)await new Promise(r=>childSource.listen(0,'127.0.0.1',r));
-  const source=createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end((req.url.startsWith('/child')?child:html).replaceAll('CHILDPORT',String(childSource?.address().port)).replaceAll('PORT',String(source.address().port)));});
+  const source=createServer((req,res)=>{if(req.url.startsWith('/font-')){res.setHeader('Content-Type','font/ttf');res.end(fontBytes);return;}res.setHeader('Content-Type','text/html');res.end((req.url.startsWith('/child')?child:html).replaceAll('CHILDPORT',String(childSource?.address().port)).replaceAll('PORT',String(source.address().port)));});
   await new Promise(r=>source.listen(0,'127.0.0.1',r));
-  const host=new KernelBrowserHost(root);let context,page,sequence=0;
+  const apps=await mkdtemp(path.join(scratch,'apps-'));// a managed-policy browser requires a WASM App storage root outside its temporary directory
+  const host=new KernelBrowserHost(root,{appStorageRoot:apps});let context,page,sequence=0;
   try{
     const opened=await host.request({op:'open',url:`http://127.0.0.1:${source.address().port}/source`});
     const evaluate=async expression=>{const tab=host.tabs.get(opened.tab_id);const {connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id);const reply=await connection.send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true},sessionId);assert(!reply.exceptionDetails,'MP-10: source fixture evaluation');return reply.result.value;};
@@ -168,4 +170,22 @@ test('MP-10/MP-11 M2: descriptive scheme literals cannot poison a continuation',
     await apply(await next());let done=false;
     for(let n=0;n<200&&!done;n++){await apply(await next());done=await page.evaluate(()=>window.r.frame.contentDocument.getElementById('scheme')?.textContent==='javascript: stays visible text');}
     assert(done);assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('scheme').getAttribute('title')),null);
+  }));
+
+// A web font served as the failing sites serve it: one family in unicode-range subsets, each its own file, of which the page's
+// text needs only the Latin one. Chromium leaves the other faces `unloaded`; the mirror must not turn them into `error`.
+test('MP-10: web font subsets the page text does not use stay unloaded in the mirror, as in the source',()=>roundtrip(
+  `<!doctype html><style>
+@font-face{font-family:Subset;font-display:swap;src:url(/font-cyrillic.ttf) format("truetype");unicode-range:U+0400-045F,U+0490-0491}
+@font-face{font-family:Subset;font-display:swap;src:url(/font-greek.ttf) format("truetype");unicode-range:U+0370-03FF}
+@font-face{font-family:Subset;font-display:swap;src:url(/font-latin.ttf) format("truetype");unicode-range:U+0000-00FF}
+body{font:16px Subset,serif}</style><p id="text">Hello subsets</p>`,'',async({page,next,apply,evaluate})=>{
+    const statuses=expression=>`JSON.stringify([...${expression}.fonts].map(f=>[f.unicodeRange,f.status]))`;
+    for(let i=0;i<30&&JSON.parse(await evaluate(statuses('document'))).filter(([,status])=>status==='loaded').length!==1;i++)await page.waitForTimeout(100);
+    const native=JSON.parse(await evaluate(statuses('document')));
+    assert.deepEqual(native.map(([,status])=>status).sort(),['loaded','unloaded','unloaded'],'MP-10: the source loads only the face its text needs');
+    const mirror=()=>page.evaluate(()=>[...window.r.frame.contentDocument.fonts].map(f=>[f.unicodeRange,f.status]));
+    for(let i=0;i<12;i++){await apply(await next(i===0));await page.waitForTimeout(100);}
+    const byRange=list=>Object.fromEntries(list.map(([range,status])=>[range.replace(/\s+/g,'').toUpperCase(),status]));
+    assert.deepEqual(byRange(await mirror()),byRange(native),'MP-10: the mirror loads the same faces as the source and fails none');
   }));
