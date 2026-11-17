@@ -312,12 +312,10 @@ test("waiting room activation sends the selected multi-repository Project to a n
   })
   await harness.controller.activate()
   assert.deepEqual(harness.createdSlices[0]?.developmentSetup, {
-    kind: "source_project",
-    projectId: "project-1",
-    repositories: [
+    kind: "source_projects", projects: [{ projectId: "project-1", repositories: [
       { role: "primary", workspaceId: "/workspace", worktreeId: "/worktree" },
       { role: "supporting", workspaceId: "/supporting", worktreeId: null },
-    ],
+    ] }],
   })
 })
 
@@ -438,11 +436,9 @@ test("waiting room activation sends an exact repository subset to a new slice", 
 
   await harness.controller.activate()
   assert.deepEqual(harness.createdSlices[0]?.developmentSetup, {
-    kind: "source_project",
-    projectId: "project-1",
-    repositories: [
+    kind: "source_projects", projects: [{ projectId: "project-1", repositories: [
       { role: "primary", workspaceId: "/workspace", worktreeId: "/worktree" },
-    ],
+    ] }],
   })
 })
 
