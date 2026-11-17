@@ -126,6 +126,15 @@ struct TwoProjectPackage {
 }
 
 fn export_two_projects(label: &str, second_archive_project_id: &str) -> TwoProjectPackage {
+    export_two_projects_named(label, second_archive_project_id, None)
+}
+
+/// `repository_name` gives both Projects a repository of that name, as two Projects of one machine often have.
+fn export_two_projects_named(
+    label: &str,
+    second_archive_project_id: &str,
+    repository_name: Option<&str>,
+) -> TwoProjectPackage {
     use crate::managed_context::development::{
         export_development_context, DevelopmentContextExportRequest, DevelopmentRepositorySelection,
     };
@@ -140,7 +149,10 @@ fn export_two_projects(label: &str, second_archive_project_id: &str) -> TwoProje
         ("alpha", "project-alpha"),
         ("beta", second_archive_project_id),
     ] {
-        let repository = root.join(format!("source-{name}"));
+        let repository = match repository_name {
+            Some(repository_name) => root.join(format!("source-{name}")).join(repository_name),
+            None => root.join(format!("source-{name}")),
+        };
         fs::create_dir_all(&repository).expect("create source repository");
         git(&repository, &["init", "-b", "main"]);
         git(
@@ -218,12 +230,19 @@ fn export_two_projects(label: &str, second_archive_project_id: &str) -> TwoProje
 fn apply_two_projects(
     fixture: &TwoProjectPackage,
 ) -> Result<ManagedContextPackageImportReceipt, DaemonError> {
+    apply_two_projects_at(fixture, fixture.root.join("managed/project"))
+}
+
+fn apply_two_projects_at(
+    fixture: &TwoProjectPackage,
+    development_destination_root: PathBuf,
+) -> Result<ManagedContextPackageImportReceipt, DaemonError> {
     apply_managed_context_package(ManagedContextPackageApplicationRequest {
         transfer_id: "ctx_two_projects".to_string(),
         package_path: fixture.package.package_path.clone(),
         expected_package_sha256: fixture.package.package_sha256.clone(),
         expected_binding: fixture.binding.clone(),
-        development_destination_root: fixture.root.join("managed/project"),
+        development_destination_root,
         target_private_key: "unused-for-explicit-empty".to_string(),
         context_import_target: None,
         provider_account_target: None,
@@ -263,6 +282,98 @@ fn a_package_of_two_projects_lands_each_in_its_own_sibling_root() {
             format!("{name}\n")
         );
     }
+    fs::remove_dir_all(fixture.root).expect("remove two-Project fixture");
+}
+
+/// A managed kernel keeps every repository under its repository root, so each Project of one copy needs its own
+/// directory there: two repositories named `app` must not meet at `<repository root>/app`.
+#[test]
+fn two_projects_with_the_same_repository_name_land_apart_on_a_managed_kernel() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    let fixture = export_two_projects_named("two-projects-same-name", "project-beta", Some("app"));
+    let control_state = fixture.root.join("control-state");
+    let control_parent = control_state.join("managed-context-workspaces");
+    let repository_root = fixture.root.join("repositories");
+    fs::create_dir_all(&control_parent).expect("create the control parent");
+    fs::create_dir_all(&repository_root).expect("create the managed repository root");
+    let _environment = ManagedRepositoryEnvironment::set(&control_state, &repository_root);
+
+    let receipt = apply_two_projects_at(&fixture, control_parent.join("project"))
+        .expect("two Projects with the same repository name copy to a managed kernel");
+    let ManagedContextImportedDevelopment::FromSource { projects } = receipt.development else {
+        panic!("selected development context became Empty")
+    };
+    let placed: Vec<_> = projects
+        .iter()
+        .map(|project| project.receipt.repositories[0].destination_path.clone())
+        .collect();
+    assert_eq!(
+        placed,
+        [
+            repository_root.join("app"),
+            repository_root.join("project-1").join("app")
+        ]
+    );
+    for (path, name) in placed.iter().zip(["alpha", "beta"]) {
+        assert_eq!(
+            fs::read_to_string(path.join("tracked.txt")).expect("read imported file"),
+            format!("{name}\n"),
+            "{} holds the Project it was copied from",
+            path.display()
+        );
+    }
+
+    crate::managed_context::development::cleanup_development_context_publications(
+        &control_parent.join("project"),
+        "ctx_two_projects",
+        2,
+    )
+    .expect("remove both Projects");
+    assert_eq!(
+        fs::read_dir(&repository_root).unwrap().count(),
+        0,
+        "no repository and no Project directory stays behind"
+    );
+    fs::remove_dir_all(fixture.root).expect("remove two-Project fixture");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_second_cleanup_pass_removes_the_project_the_first_could_not() {
+    let fixture = export_two_projects("two-projects-second-pass", "project-beta");
+    apply_two_projects(&fixture).expect("apply two Projects");
+    let parent = fixture.root.join("managed");
+    let first = parent.join("project");
+    let second = parent.join("project-1");
+    // The later Project cannot be removed while something other than its directory stands in its place.
+    let moved = parent.join("project-1.moved");
+    fs::rename(&second, &moved).expect("move the second Project aside");
+    std::os::unix::fs::symlink(&moved, &second).expect("stand a link in its place");
+
+    let error =
+        crate::managed_context::development::cleanup_present_development_context_publications(
+            &first,
+            "ctx_two_projects",
+        )
+        .expect_err("the second Project cannot be removed behind a link");
+    assert!(
+        error.to_string().contains("could not be removed"),
+        "{error}"
+    );
+    assert!(!first.exists(), "the first Project is removed all the same");
+
+    fs::remove_file(&second).expect("take the link away");
+    fs::rename(&moved, &second).expect("put the second Project back");
+    crate::managed_context::development::cleanup_present_development_context_publications(
+        &first,
+        "ctx_two_projects",
+    )
+    .expect("the next pass removes what the first left");
+    assert!(
+        !second.exists(),
+        "the second Project must not stay behind once the first is gone"
+    );
     fs::remove_dir_all(fixture.root).expect("remove two-Project fixture");
 }
 
@@ -2239,4 +2350,47 @@ fn event_connection_rollback_leaves_a_record_the_owner_already_held() {
 
     assert!(shared.holds_connection());
     shared.fixture.cleanup();
+}
+
+/// A managed kernel: control state in its own directory and repositories under the selected repository root.
+struct ManagedRepositoryEnvironment(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+impl ManagedRepositoryEnvironment {
+    fn set(control_state: &Path, repository_root: &Path) -> Self {
+        let values: [(&'static str, Option<&std::ffi::OsStr>); 3] = [
+            (
+                "CHARIOX_PUBLICATION_CONTROL_STATE_DIR",
+                Some(control_state.as_os_str()),
+            ),
+            (
+                crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+                Some(repository_root.as_os_str()),
+            ),
+            ("CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT", None),
+        ];
+        Self(
+            values
+                .into_iter()
+                .map(|(name, value)| {
+                    let previous = std::env::var_os(name);
+                    match value {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                    (name, previous)
+                })
+                .collect(),
+        )
+    }
+}
+
+impl Drop for ManagedRepositoryEnvironment {
+    fn drop(&mut self) {
+        for (name, previous) in self.0.drain(..) {
+            match previous {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
 }

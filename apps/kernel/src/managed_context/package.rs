@@ -1102,6 +1102,7 @@ pub(crate) fn apply_managed_context_package(
                             development_request,
                             publication_id.clone(),
                             import_authority.as_ref(),
+                            index,
                         ),
                     }) {
                         Ok(receipt) => receipt,

@@ -401,6 +401,7 @@ impl AgentMoveStore {
                         request,
                         publication,
                         Some(&authority),
+                        0,
                     )?
                 }
             };
