@@ -290,6 +290,7 @@ pub enum LocalDaemonRequest {
     QueryFreshRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     ListRoomListSessions(ListRoomListSessionsRequest),
     GetRoomListSnapshot(GetRoomListSnapshotRequest),
+    GetPersonInbox(GetPersonInboxRequest),
     ListExternalProviderSessions(ListExternalProviderSessionsRequest),
     RefreshExternalProviderSessions(RefreshExternalProviderSessionsRequest),
     ImportExternalProviderSession(ImportExternalProviderSessionRequest),

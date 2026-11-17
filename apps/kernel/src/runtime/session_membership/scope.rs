@@ -899,6 +899,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListRemoteMachines(_)
         | LocalDaemonRequest::ListRemoteMachineKernels(_)
         | LocalDaemonRequest::GetRoomListSnapshot(_)
+        | LocalDaemonRequest::GetPersonInbox(_)
         | LocalDaemonRequest::ListRoomListSessions(_)
         | LocalDaemonRequest::ListExternalProviderSessions(_)
         | LocalDaemonRequest::RefreshExternalProviderSessions(_)

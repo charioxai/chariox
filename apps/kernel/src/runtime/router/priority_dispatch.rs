@@ -503,6 +503,14 @@ impl CommandRouter {
                         .read_agent_trigger_http_options(request, &caller)
                 })
             }
+            LocalDaemonRequest::GetPersonInbox(_) => boxed_handler(|| async move {
+                Ok(
+                    crate::runtime::person_inbox::execute_person_inbox_request(
+                        &self.runtime_state,
+                        &command_caller_user_id(&command),
+                    ),
+                )
+            }),
             request @ (LocalDaemonRequest::GetRoomListSnapshot(_)
             | LocalDaemonRequest::ListRoomListSessions(_)) => boxed_handler(|| async move {
                 let caller_user_id = command_caller_user_id(&command);

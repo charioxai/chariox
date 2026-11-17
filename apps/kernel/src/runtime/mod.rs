@@ -144,6 +144,7 @@ pub(crate) mod remote_machine_registry;
 pub(crate) mod remote_relay_inventory;
 pub(crate) mod resource_telemetry;
 pub(crate) mod response_redaction;
+pub(crate) mod person_inbox;
 pub(crate) mod room_list_activity;
 pub(crate) mod room_list_control;
 mod room_list_launch_directory;

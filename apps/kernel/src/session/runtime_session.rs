@@ -1091,16 +1091,25 @@ impl RuntimeSession {
     /// Names each agent's card by its asker as the session's agents name it now, so a client
     /// shows who asks without a lookup.
     pub(crate) fn name_interaction_askers(&mut self) {
-        let agents = &self.agents;
-        for interaction in &mut self.active_interactions {
-            let name = interaction.agent_id().and_then(|asker| {
-                agents
-                    .iter()
-                    .find(|agent| agent.id() == asker)
-                    .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned())
-            });
-            interaction.set_asker_name(name);
-        }
+        self.active_interactions = self.named_active_interactions();
+    }
+
+    /// The active interactions, each named by its asker as the session's agents name it now.
+    pub(crate) fn named_active_interactions(&self) -> Vec<RuntimeInteraction> {
+        self.active_interactions
+            .iter()
+            .map(|interaction| {
+                let name = interaction.agent_id().and_then(|asker| {
+                    self.agents
+                        .iter()
+                        .find(|agent| agent.id() == asker)
+                        .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned())
+                });
+                let mut interaction = interaction.clone();
+                interaction.set_asker_name(name);
+                interaction
+            })
+            .collect()
     }
 
     /// Moves where the user sees an active interaction; the interaction itself stays one object.

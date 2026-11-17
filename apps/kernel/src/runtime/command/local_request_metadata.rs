@@ -951,6 +951,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         }
         LocalDaemonRequest::ListRoomListSessions(_) => "room_list.sessions.list",
         LocalDaemonRequest::GetRoomListSnapshot(_) => "room_list.public_snapshot.get",
+        LocalDaemonRequest::GetPersonInbox(_) => "person_inbox.get",
         LocalDaemonRequest::ListExternalProviderSessions(_) => "external_provider_session.list",
         LocalDaemonRequest::RefreshExternalProviderSessions(_) => {
             "external_provider_session.refresh"
