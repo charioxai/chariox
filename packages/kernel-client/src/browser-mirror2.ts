@@ -1,4 +1,4 @@
-import { mirror2AbsentFont, mirror2PendingFontSource, Mirror2FontStyle, mirror2RenderedFontReady, mirror2DocumentFontsReady } from './browser-mirror2-fonts.js'
+import { mirror2AbsentFont, Mirror2FontStyle, mirror2RenderedFontReady, mirror2DocumentFontsReady } from './browser-mirror2-fonts.js'
 import { Mirror2SheetCache } from './browser-mirror2-sheets.js'
 import { rememberMirror2Range, restoreMirror2Range } from './browser-mirror2-selection.js'
 // MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 517). The page's own
@@ -391,12 +391,9 @@ export class BrowserMirror2Renderer {
     })
   }
   // ---- resources
-  private substitute(raw: string): string { return raw.replace(styledResourcePattern, (_match, key: string, suffix: string, offset: number) => {
-    const resource = this.resources.get(key)
-    if (resource) return `url("${resource}")${suffix ?? ''}`
-    const pending = mirror2PendingFontSource(raw, offset, this.empty)
-    return pending ?? `url("${this.empty}")${suffix ?? ''}`
-  }) }
+  // A face whose bytes have not arrived points at the empty Blob: Chromium fetches a face only for text in its unicode-range,
+  // so the faces the native page never loaded stay `unloaded` as there, and only a face the text needs fails until its bytes arrive.
+  private substitute(raw: string): string { return raw.replace(styledResourcePattern, (_match, key: string, suffix: string) => `url("${this.resources.get(key) ?? this.empty}")${suffix ?? ''}`) }
   private keysOf(raw: string): string[] { return [...raw.matchAll(resourcePattern)].map(m => m[1]!) }
   private async addResource(resource: Mirror2Resource): Promise<void> {
     const bytes = bytesOf(resource.data_base64)
