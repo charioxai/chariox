@@ -247,6 +247,10 @@ impl KernelRuntimeState {
                     serde_json::json!({"agent_id": agent.id(), "error": error.to_string()}),
                 );
             }
+            if self.stopped_task_was_cancelled(&agent, &stop)? {
+                self.store_usage_limit_stop(&agent, None, "").await?;
+                continue;
+            }
             match stop.state {
                 UsageLimitStopState::Armed { at_ms } if at_ms <= now => {
                     if self.claim_resume(&agent, &stop, now, true).await? {
@@ -290,6 +294,21 @@ impl KernelRuntimeState {
         Ok(sends)
     }
 
+    /// The owner cancelled the task the stop belongs to (or its workflow ended it): the work is not
+    /// theirs to go on with, so no resume starts it again. A stop whose task never existed still
+    /// resumes as a prompt.
+    fn stopped_task_was_cancelled(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        stop: &UsageLimitStop,
+    ) -> Result<bool, DaemonError> {
+        Ok(self
+            .owned
+            .durable_state_store
+            .agent_turn_task(agent.session_id(), agent.id(), &stop.prompt_id)?
+            .is_some_and(|task| task.state == ExecutionState::Cancelled))
+    }
+
     fn resume_is_being_sent(&self, agent: &crate::agent::AgentInstance) -> bool {
         self.owned
             .usage_limit_sends
@@ -324,6 +343,10 @@ impl KernelRuntimeState {
     ) -> Result<bool, DaemonError> {
         // A person's own prompt is running: usage is back for it, or it ends the stop itself.
         if self.agent_has_turn(agent) {
+            return Ok(false);
+        }
+        if self.stopped_task_was_cancelled(agent, stop)? {
+            self.store_usage_limit_stop(agent, None, "").await?;
             return Ok(false);
         }
         {

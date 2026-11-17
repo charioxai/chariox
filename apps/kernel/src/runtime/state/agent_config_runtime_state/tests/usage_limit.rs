@@ -1189,3 +1189,47 @@ async fn a_decision_board_that_is_full_does_not_hold_back_another_agents_resume(
         "the agent that was told to resume goes on"
     );
 }
+
+#[tokio::test]
+async fn an_owner_cancel_of_the_stopped_task_ends_the_armed_resume_and_starts_no_prompt() {
+    let mut config = config(UsageLimitResume::Automatic);
+    config.room_agent_tools = true;
+    let team = team(config, 1).await;
+    let task_id = owe_work(&team, 0);
+    team.hit_the_limit(0).await;
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    assert!(matches!(
+        team.stop(0).unwrap().state,
+        UsageLimitStopState::Armed { .. }
+    ));
+
+    let attachment_id = team
+        .rt()
+        .owned
+        .attachment_store
+        .list_session_attachment_ids(&team.session_id)
+        .remove(0);
+    let request = crate::local::CancelAgentTaskRequest {
+        session_id: team.session_id.clone(),
+        attachment_id,
+        task_id: task_id.clone(),
+        revision: task_of(&team, &task_id).revision,
+    };
+    let mut command = crate::runtime::command::KernelCommand::from_local_request(
+        "usage-limit-owner-cancel",
+        None,
+        None,
+        &crate::local::LocalDaemonRequest::CancelAgentTask(request.clone()),
+    );
+    command.caller.user_id = Some(OWNER.into());
+    command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+    team.rt()
+        .cancel_owner_agent_task(&command, request)
+        .await
+        .unwrap();
+    assert_eq!(task_of(&team, &task_id).state, ExecutionState::Cancelled);
+
+    tick(team.rt(), reset).await;
+    assert!(!team.has_turn(0), "cancelled work is not started again");
+    assert_eq!(team.stop(0), None, "the cancel ends the stop");
+}
