@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
+use super::daemon_config_lock::DaemonConfigLock;
 use super::paths::{default_config_dir, default_state_dir};
 use super::private_file::write_private_file;
 use crate::error::DaemonError;
@@ -142,19 +142,15 @@ pub(super) fn load_persisted_daemon_config() -> PersistedDaemonConfig {
     load_persisted_relay_config().unwrap_or_default()
 }
 
-/// Every change to the daemon config is one load, change and save under this lock, so two
-/// writers (a client revocation, a machine Remove, the presence refresh) never overwrite each other.
-static DAEMON_CONFIG_WRITE: Mutex<()> = Mutex::new(());
-
-/// Applies `update` to the freshly loaded config and saves it. An unchanged config is not written
-/// again, except to create the file the first time.
+/// Applies `update` to the freshly loaded config and saves it, as one load, change and save under
+/// the config file lock, so writers in this kernel and in sibling kernels sharing `CHARIOX_HOME`
+/// (a client revocation, a machine Remove, the presence refresh) never overwrite each other. An
+/// unchanged config is not written again, except to create the file the first time.
 pub(super) fn update_persisted_daemon_config<T>(
     operation: &'static str,
     update: impl FnOnce(&mut PersistedDaemonConfig) -> Result<T, DaemonError>,
 ) -> Result<T, DaemonError> {
-    let _writing = DAEMON_CONFIG_WRITE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _writing = DaemonConfigLock::acquire(&default_daemon_config_path(), operation)?;
     let mut persisted = load_persisted_daemon_config();
     let before = persisted.clone();
     let result = update(&mut persisted)?;
