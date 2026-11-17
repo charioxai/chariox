@@ -133,3 +133,30 @@ test('a slash after a closing parenthesis that is not a condition stays a divisi
   assert.match(result.text, /a\.ts:3: has an empty catch block/)
   r.dispose()
 })
+
+const bad = 'try { run() } catch {}'
+const fn = `(() => { ${bad} })()`
+const redInterpolation = (name, body, line) => test(name, () => {
+  const r = makeRepo({ 'apps/web/a.ts': 'export const x = 1\n' })
+  r.write('apps/web/a.ts', body)
+  const result = r.run(check.name)
+  assert.equal(result.status, 1)
+  assert.match(result.text, new RegExp(`a\\.ts:${line}: has an empty catch block`))
+  assert.equal(result.text.match(/has an empty catch block/g).length, 1)
+  r.dispose()
+})
+
+redInterpolation('an interpolation inside a double-quoted string of a String.raw program is host code', `export const script = String.raw\`const value = "\${${fn}}";\`\n`, 1)
+redInterpolation('an interpolation inside a single-quoted string of a String.raw program is host code', `export const script = String.raw\`const value = '\${${fn}}';\`\n`, 1)
+redInterpolation('an interpolation inside a line comment of a String.raw program is host code', `export const script = String.raw\`\n// \${${fn}}\nrun()\n\`\n`, 2)
+redInterpolation('an interpolation inside a block comment of a String.raw program is host code', `export const script = String.raw\`\n/* note\n \${${fn}} */\n\`\n`, 3)
+redInterpolation('an interpolation inside a regex of a String.raw program is host code', `export const script = String.raw\`const pattern = /a\${${fn}}b/;\`\n`, 1)
+redInterpolation('an interpolation nested in a template inside an interpolation is host code', `export const script = String.raw\`const value = "\${\`\${${fn}}\`}";\`\n`, 1)
+redInterpolation('a backtick inside an embedded string ends the host template, so the code after it is scanned', `export const script = String.raw\`const value = "\`\nexport function f() {\n  ${bad}\n}\n\`\n`, 3)
+
+test('an escaped interpolation or backtick inside a String.raw program is data, not host code', () => {
+  const r = makeRepo({ 'apps/web/a.ts': 'export const x = 1\n' })
+  r.write('apps/web/a.ts', 'export const script = String.raw`const a = "\\${ try { run() } catch {} }"; // \\${ try { run() } catch {} }\nconst b = "\\`"; /* \\` */\n`\n')
+  assert.equal(r.run(check.name).status, 0)
+  r.dispose()
+})
