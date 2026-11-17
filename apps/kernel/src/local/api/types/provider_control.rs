@@ -252,6 +252,14 @@ impl std::fmt::Debug for SendProviderLoginInputRequest {
     }
 }
 
+/// Types the value of one Vault entry into the running API-key login. The
+/// value never leaves the kernel: neither the request nor its answer carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendProviderLoginVaultEntryRequest {
+    pub login_id: String,
+    pub credential_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CancelProviderLoginRequest {
     pub login_id: String,

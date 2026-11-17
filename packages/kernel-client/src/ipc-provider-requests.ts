@@ -96,6 +96,11 @@ export function sendProviderLoginInputRequest(loginId: string, dataBase64: strin
   return { SendProviderLoginInput: { login_id: loginId, data_base64: dataBase64 } }
 }
 
+/** The kernel types the value of this Vault entry into the running API-key login; the value never crosses the wire. */
+export function sendProviderLoginVaultEntryRequest(loginId: string, credentialId: string) {
+  return { SendProviderLoginVaultEntry: { login_id: loginId, credential_id: credentialId } }
+}
+
 export function cancelProviderLoginRequest(loginId: string) {
   return { CancelProviderLogin: { login_id: loginId } }
 }

@@ -393,6 +393,7 @@ response_policies! {
         PairedClientRevoked,
         ProviderAuthStatus,
         ProviderLoginInputSent,
+        ProviderLoginVaultEntrySent,
         ProviderLoggedOut,
         ProviderUsageSnapshot,
         AgentUsageSnapshot,

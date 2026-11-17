@@ -825,6 +825,58 @@ impl RuntimeSecretService {
         self.resolve_secret(credential).map(Zeroizing::new)
     }
 
+    /// The checks before a Vault entry's value is typed into a provider's own
+    /// login: a secret bound to exactly this site, for browser or HTTP use. Nothing
+    /// else is a source, so no other Vault use widens.
+    pub(crate) fn validate_provider_login_secret(
+        &self,
+        credential_id: &str,
+        origin: &str,
+    ) -> Result<&UserCredentialConfig, DaemonError> {
+        let credential = self.credential(credential_id)?;
+        let binding = credential
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.use_binding.as_ref())
+            .ok_or_else(|| {
+                secret_error(
+                    "credential_policy",
+                    format!(
+                        "this Vault entry has no declared use; create it for the site {origin}"
+                    ),
+                )
+            })?;
+        let bound = crate::config::VaultUseTarget::Site {
+            origin: origin.to_string(),
+        };
+        if binding.target != bound || binding.value_kind != crate::config::VaultValueKind::Secret {
+            return Err(secret_error(
+                "credential_policy",
+                format!("this sign-in takes a Vault entry bound to the site {origin}; pick or create that one"),
+            ));
+        }
+        // A person's entry allows Browser use; one `copy_for_use` made for the site allows Http.
+        // Either was declared for this exact site, so either may sign in to it.
+        self.ensure_use_allowed(credential, UserCredentialUse::Browser)
+            .or_else(|_| self.ensure_use_allowed(credential, UserCredentialUse::Http))
+            .map_err(|_| {
+                secret_error(
+                    "credential_policy",
+                    format!("this Vault entry may not be used to sign in to {origin}"),
+                )
+            })?;
+        Ok(credential)
+    }
+
+    pub(crate) fn provider_login_secret_input(
+        &self,
+        credential_id: &str,
+        origin: &str,
+    ) -> Result<Zeroizing<String>, DaemonError> {
+        let credential = self.validate_provider_login_secret(credential_id, origin)?;
+        self.resolve_secret(credential).map(Zeroizing::new)
+    }
+
     pub(crate) fn credential_vault_key(
         &self,
         credential_id: &str,

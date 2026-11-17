@@ -931,6 +931,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::StartProviderLogin(_)
         | LocalDaemonRequest::GetProviderLoginStatus(_)
         | LocalDaemonRequest::SendProviderLoginInput(_)
+        | LocalDaemonRequest::SendProviderLoginVaultEntry(_)
         | LocalDaemonRequest::CancelProviderLogin(_)
         | LocalDaemonRequest::LogoutProvider(_)
         | LocalDaemonRequest::ListProviderProcesses(_)

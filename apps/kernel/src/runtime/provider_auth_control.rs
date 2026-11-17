@@ -89,6 +89,15 @@ pub(crate) async fn execute_provider_auth_request(
                 execute_send_provider_login_input_request(runtime_state, &owner_user_id, request)
                     .await
             }
+            LocalDaemonRequest::SendProviderLoginVaultEntry(request) => {
+                super::provider_login_vault_entry::execute_send_provider_login_vault_entry_request(
+                    runtime_state,
+                    command,
+                    &owner_user_id,
+                    request,
+                )
+                .await
+            }
             LocalDaemonRequest::CancelProviderLogin(request) => {
                 execute_cancel_provider_login_request(runtime_state, &owner_user_id, request).await
             }
@@ -284,6 +293,12 @@ async fn start_terminal_provider_auth(
         backend: crate::runtime::state::ProviderLoginProcessBackend::Terminal,
         operation,
         setup_token: setup_login.clone(),
+        vault_origin: if operation == crate::runtime::state::ProviderAuthProcessOperation::Login {
+            crate::account_profile::provider_enrollment_vault_origin(provider, method.as_deref())
+        } else {
+            None
+        },
+        typed_secret: None,
         serial: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         code_submitted: false,
         message: None,
@@ -949,6 +964,8 @@ pub(super) async fn execute_start_provider_login_with_overwrite(
                     backend: crate::runtime::state::ProviderLoginProcessBackend::CodexAppServer,
                     operation: crate::runtime::state::ProviderAuthProcessOperation::Login,
                     setup_token: None,
+                    vault_origin: None,
+                    typed_secret: None,
                     serial: std::sync::Arc::new(tokio::sync::Mutex::new(())),
                     code_submitted: false,
                     message: None,
@@ -1059,7 +1076,7 @@ pub(crate) async fn execute_logout_provider_request(
 }
 
 /// Serialize draining, writes, cancellation, and retry for every login backend.
-async fn serialized_login_record(
+pub(super) async fn serialized_login_record(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
     login_id: &str,

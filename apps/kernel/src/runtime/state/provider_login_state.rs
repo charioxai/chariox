@@ -242,6 +242,12 @@ pub(in crate::runtime) struct ProviderLoginProcessRecord {
     pub backend: ProviderLoginProcessBackend,
     pub operation: ProviderAuthProcessOperation,
     pub setup_token: Option<ClaudeSetupTokenLogin>,
+    /// The origin a Vault entry must be bound to for this login to take its
+    /// value; `None` when the login takes no API key.
+    pub vault_origin: Option<&'static str>,
+    /// The Vault value typed into this login. It is kept only to cut it out of
+    /// the screen and to refuse a second entry; it ends with the login.
+    pub typed_secret: Option<Zeroizing<String>>,
     pub serial: Arc<tokio::sync::Mutex<()>>,
     pub code_submitted: bool,
     pub message: Option<String>,
@@ -265,12 +271,36 @@ impl ProviderLoginProcessRecord {
             let overflow = self.output.len() - MAX_PROVIDER_LOGIN_OUTPUT_BYTES;
             self.output.drain(..overflow);
         }
+        self.mask_typed_secret();
+    }
+
+    /// A login that echoes what it was typed would show a Vault value on the
+    /// screen a model reads; every occurrence is overwritten in place.
+    fn mask_typed_secret(&mut self) {
+        let Some(secret) = self
+            .typed_secret
+            .as_ref()
+            .filter(|secret| !secret.is_empty())
+        else {
+            return;
+        };
+        let needle = secret.as_bytes();
+        let mut at = 0;
+        while let Some(found) = self.output[at..]
+            .windows(needle.len())
+            .position(|window| window == needle)
+        {
+            let start = at + found;
+            self.output[start..start + needle.len()].fill(b'*');
+            at = start + needle.len();
+        }
     }
 
     fn set_state(&mut self, state: ProviderLoginProcessState, now_ms: u64) {
         self.state = state;
         self.updated_at_ms = now_ms;
         if state != ProviderLoginProcessState::Running {
+            self.typed_secret = None;
             if let Some(login) = self.setup_token.as_mut() {
                 if login.vault_prompt.take().is_some() {
                     self.message = None;
@@ -462,6 +492,24 @@ impl ProviderLoginProcessStore {
         let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let record = owned_record_mut(&mut records, owner, login_id)?;
         record.code_submitted = authorization_code;
+        record.message = None;
+        record.updated_at_ms = now_ms;
+        Ok(())
+    }
+
+    /// Notes that a Vault value was typed into the login and cuts it out of
+    /// the screen so far.
+    pub fn vault_value_typed(
+        &self,
+        owner: &str,
+        login_id: &str,
+        value: Zeroizing<String>,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let record = owned_record_mut(&mut records, owner, login_id)?;
+        record.typed_secret = Some(value);
+        record.mask_typed_secret();
         record.message = None;
         record.updated_at_ms = now_ms;
         Ok(())
@@ -817,6 +865,8 @@ mod tests {
             backend: ProviderLoginProcessBackend::Terminal,
             operation: ProviderAuthProcessOperation::Login,
             setup_token: None,
+            vault_origin: None,
+            typed_secret: None,
             serial: Arc::new(tokio::sync::Mutex::new(())),
             code_submitted: false,
             message: None,
