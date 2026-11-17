@@ -192,3 +192,28 @@ fn browser_verification_protocol_992_431_snapshot_and_hash() {
         "fadc478858228941c285dcfb2d35172255df7e1a768189b90470ff59f72a0dc9"
     );
 }
+
+// AU-03: a card's done text reaches the browser host through the request and returns on the interaction's region.
+#[test]
+fn browser_done_text_protocol_1014_453_snapshot_and_hash() {
+    let snapshot: serde_json::Value =
+        serde_json::from_str(include_str!("browser-done-text-1014.json")).unwrap();
+    assert_eq!(snapshot["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        snapshot["peer"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let args: crate::transport::runtime_tools::RequestPopupArgs =
+        serde_json::from_value(snapshot["arguments"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(args).unwrap(), snapshot["arguments"]);
+    let region: crate::session::RuntimeInteractionBrowserRegion =
+        serde_json::from_value(snapshot["region"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(region).unwrap(), snapshot["region"]);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "fd18fd6b2391192d27fe5ad6ff686db23f463fa43c263a4d83cff6f61d02dbbb"
+    );
+}

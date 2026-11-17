@@ -6764,6 +6764,13 @@ instead of evicting a live anchor. Losing only registry state resolves unavailab
 than claiming an element disappeared. Geometry updates replace the view in place, preserving
 card order even when questions share a request timestamp.
 
+Local 1014 / relay peer 453 add the optional `done_text` (1 to 200 characters) to the request's
+`browser_region` and to the projected region. The card resolves `condition_met` when that text
+shows in the watched element. The host follows a same-document replacement of the element by its
+unique id, as it does for a verification card. If the element is lost before the text shows
+(removed, replaced without that id, document changed), the card resolves `status: "unavailable"`,
+never `condition_met`. `browser-done-text-1014.json` pins the shape.
+
 Focused regression checks: `cargo test -p chariox-kernel --lib async_popup_browser_region`
 and `node --test apps/kernel/slice-linux-docker/docker/kernel-browser-card-region.test.mjs`.
 

@@ -545,5 +545,6 @@ pub use workspace::*;
 /// share one `heartbeat` per interval, a subscription whose kernel task ended alone says so (`subscription_ended`),
 /// and a Browser reply carries a mirror packet's deflated body, whole resources and a screenshot's picture as raw
 /// bytes (`CXT1`) instead of base64 text;
-/// a directory entry lists what a link points to (`target_kind` on a `KernelDirectoryEntry`).
+/// a directory entry lists what a link points to (`target_kind` on a `KernelDirectoryEntry`);
+/// a card's browser region carries an optional `done_text`: the text whose appearance in the watched element closes the card.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1010;

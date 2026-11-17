@@ -170,6 +170,8 @@ pub struct RequestPopupBrowserRegionArgs {
     pub reference: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<crate::session::RuntimeInteractionBrowserVerification>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -581,6 +583,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                         "properties": {"browser_region": {
                             "type": "object", "required": ["tab_id", "ref"], "additionalProperties": false,
                             "properties": {"tab_id": {"type": "string", "minLength": 1}, "ref": {"type": "string", "minLength": 1},
+                                "done_text": {"type":"string","minLength":1,"maxLength":200,"description":"Short text that is not on the element yet and appears in it once the person's step is done (for example the name of the field that reveals the token). The card then closes by itself and you continue. Use it whenever the page does not make the element disappear when the step is done and no verification applies."},
                                 "verification": {"type":"object", "required":["challenge_id","url","accepted_json_pointer"], "additionalProperties":false,
                                     "properties":{"challenge_id":{"type":"string","minLength":1,"maxLength":128},"url":{"type":"string"},"accepted_json_pointer":{"type":"string","minLength":2,"maxLength":128}},
                                     "description":"For an actual site verification: one unique challenge id, exact same-origin POST URL without query/credentials, and JSON pointer to a boolean true on acceptance. Use wait:false and only Cancel, with no until or custom reply. The card remains on rejection, records only delivery/HTTP status/classification, and closes only on a positive response from this document. Show the card before requesting a fresh code; the person types inside its live region while you wait. Never infer acceptance from disappearance."}}

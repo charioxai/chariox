@@ -47,14 +47,14 @@
             "signature": {
               "algorithm": "ed25519",
               "key_id": "test",
-              "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "digest": "sha256:fd18fd6b2391192d27fe5ad6ff686db23f463fa43c263a4d83cff6f61d02dbbb",
               "value": "signature"
             }
           },
           "trust": {
             "publisherId": "com.example",
             "keyId": "test",
-            "contentDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "contentDigest": "sha256:fd18fd6b2391192d27fe5ad6ff686db23f463fa43c263a4d83cff6f61d02dbbb",
             "publicKey": "key"
           }
         }
