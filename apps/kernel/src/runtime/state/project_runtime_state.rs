@@ -436,12 +436,14 @@ impl ManagedContextRegistrationFailure {
     }
 }
 
-/// A copy registers every Project or none: a later failure must not leave the
-/// earlier Projects registered while the package rollback deletes their files.
+/// A copy registers every Project or none: a later failure must not leave an
+/// earlier Project registered while the package rollback deletes its files.
 /// The whole selection is checked first; only a failed write rolls back, and
 /// only the records this call installed. Every one of them is taken back even
-/// when another cannot be, and the Projects that stay are named so the copied
-/// files stay with them; a retry finds them already registered.
+/// when another cannot be. The copied files go only when no Project of the
+/// selection stays registered: that counts the Projects an earlier attempt
+/// left behind (matched from durable state) as well as the ones that cannot
+/// be taken back now, and names them. A retry finds them already registered.
 fn register_managed_context_projects(
     projects: Vec<crate::session::RuntimeProject>,
     durable: &[crate::session::RuntimeProject],
@@ -451,6 +453,7 @@ fn register_managed_context_projects(
 ) -> Result<(), ManagedContextRegistrationFailure> {
     let mut seen = std::collections::BTreeSet::new();
     let mut fresh = Vec::new();
+    let mut registered_earlier = Vec::new();
     for project in projects {
         if !seen.insert(project.id().to_string()) {
             return Err(ManagedContextRegistrationFailure::RolledBack(
@@ -467,20 +470,22 @@ fn register_managed_context_projects(
             .map_err(ManagedContextRegistrationFailure::RolledBack)?
         {
             fresh.push(project);
+        } else {
+            registered_earlier.push(format!(
+                "`{}` (registered by an earlier attempt)",
+                project.id()
+            ));
         }
     }
     let mut installed: Vec<crate::session::RuntimeProject> = Vec::new();
     for project in fresh {
         if let Err(error) = persist(&project) {
-            let retained: Vec<String> = installed
-                .iter()
-                .rev()
-                .filter_map(|done| {
-                    retract(done)
-                        .err()
-                        .map(|rollback| format!("`{}` ({rollback})", done.id()))
-                })
-                .collect();
+            let mut retained = registered_earlier;
+            retained.extend(installed.iter().rev().filter_map(|done| {
+                retract(done)
+                    .err()
+                    .map(|rollback| format!("`{}` ({rollback})", done.id()))
+            }));
             if retained.is_empty() {
                 return Err(ManagedContextRegistrationFailure::RolledBack(error));
             }
@@ -690,12 +695,18 @@ mod tests {
             panic!("project-2 is still registered, so the copied files must stay")
         };
         let message = error.to_string();
-        assert!(message.contains("injected durable write failure"), "{message}");
+        assert!(
+            message.contains("injected durable write failure"),
+            "{message}"
+        );
         assert!(message.contains("project-2"), "{message}");
         assert!(!message.contains("project-1"), "{message}");
         assert!(matches!(
             error,
-            DaemonError::ManagedContext { retryable: true, .. }
+            DaemonError::ManagedContext {
+                retryable: true,
+                ..
+            }
         ));
     }
 
@@ -716,6 +727,71 @@ mod tests {
         )
         .expect("the retry finishes the registration");
         assert_eq!(persisted, ["project-2"]);
+    }
+
+    #[test]
+    fn a_failed_retry_keeps_the_projects_an_earlier_attempt_left_registered() {
+        let projects = projects_named(&["project-1", "project-2"]);
+        // First attempt: project-1 registers, project-2's write fails and
+        // project-1 cannot be taken back.
+        let mut durable = Vec::new();
+        let first = register_managed_context_projects(
+            projects.clone(),
+            &[],
+            |project| {
+                if project.id() == "project-2" {
+                    return Err(managed_context_project_error(
+                        "injected durable write failure",
+                    ));
+                }
+                durable.push(project.clone());
+                Ok(())
+            },
+            |_| {},
+            |_| Err(managed_context_project_error("injected delete failure")),
+        )
+        .expect_err("project-2 fails and project-1 cannot be taken back");
+        assert!(matches!(
+            first,
+            ManagedContextRegistrationFailure::ProjectsRetained(_)
+        ));
+
+        // After a restart only the durable record is left. The retry finds
+        // project-1 registered and installs nothing itself before project-2
+        // fails again: project-1 still points at the copied files.
+        let mut retracted = Vec::new();
+        let retry = register_managed_context_projects(
+            projects,
+            &durable,
+            |_| {
+                Err(managed_context_project_error(
+                    "injected durable write failure",
+                ))
+            },
+            |_| {},
+            |project| {
+                retracted.push(project.id().to_string());
+                Ok(())
+            },
+        )
+        .expect_err("project-2 fails again");
+        assert!(
+            retracted.is_empty(),
+            "project-1 is not this call's to retract"
+        );
+        let ManagedContextRegistrationFailure::ProjectsRetained(error) = retry else {
+            panic!("project-1 is still registered, so the copied files must stay")
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("injected durable write failure"),
+            "{message}"
+        );
+        assert!(
+            message.contains("`project-1` (registered by an earlier attempt)"),
+            "{message}"
+        );
+        assert!(!message.contains("`project-2`"), "{message}");
     }
 
     #[test]
