@@ -51,9 +51,10 @@ impl AgentTaskExecution {
             CancelInitiator::Owner
         }
     }
-    /// The owner stopped this turn; the agent stays stopped until prompted again.
+    /// The owner stopped this turn, or the work a finished turn retained; the agent stays stopped
+    /// until prompted again.
     pub(crate) fn stopped_by_owner(&self) -> bool {
-        self.state == ExecutionState::Cancelled
+        matches!(self.state, ExecutionState::Cancelled | ExecutionState::Done)
             && self.reason == super::supervision::OWNER_CANCELLED_REASON
     }
 }
@@ -103,6 +104,16 @@ impl AgentObligation {
     /// deleted) that outcome reaches the agent by itself.
     pub(crate) fn needs_live_source(&self) -> bool {
         self.status == "open"
+    }
+
+    /// Work the turn that started it may leave running: a watched process, a job, a terminal watch
+    /// or a delegate stays supervised after the turn ends and wakes the agent when it ends.
+    pub(crate) fn outlives_turn(&self) -> bool {
+        self.status == "open"
+            && matches!(
+                self.kind.as_str(),
+                "process" | "job" | "terminal" | "delegate"
+            )
     }
 
     pub(crate) fn tracks_workflow_run(&self) -> bool {

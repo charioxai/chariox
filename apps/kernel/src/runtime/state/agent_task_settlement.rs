@@ -13,6 +13,8 @@ impl KernelRuntimeOwnedState {
         let wakes = self
             .durable_state_store
             .agent_wakes(Some(&task.room_id), Some(&task.agent_id))?;
+        // An outcome the kernel expired because the task was blocked is still owed its
+        // acknowledgement: the resumed task names it, so it never has to guess the sequence.
         let mut inbox = Vec::new();
         if task
             .obligations
@@ -25,7 +27,7 @@ impl KernelRuntimeOwnedState {
                 0,
                 None,
                 |event| {
-                    if !matches!(event.state.as_str(), "handled" | "expired" | "failed")
+                    if !matches!(event.state.as_str(), "handled" | "failed")
                         && task.obligations.iter().any(|o| {
                             o.requires_resolution()
                                 && o.completion_source()
@@ -60,7 +62,7 @@ impl KernelRuntimeOwnedState {
                         obligation
                             .completion_source()
                             .is_some_and(|source| event.reports_source(source))
-                            && !matches!(event.state.as_str(), "handled" | "expired" | "failed")
+                            && !matches!(event.state.as_str(), "handled" | "failed")
                     })
                     .map(|event| {
                         format!(

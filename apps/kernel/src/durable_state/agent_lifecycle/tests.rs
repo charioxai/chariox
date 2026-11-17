@@ -65,6 +65,13 @@ impl Fixture {
             .remove(0)
     }
     pub(super) fn register(&self) {
+        self.register_kind("delegate");
+    }
+    /// An obligation a turn may not end on: a reply the agent still owes or awaits.
+    pub(super) fn register_owed(&self) {
+        self.register_kind("message");
+    }
+    fn register_kind(&self, kind: &str) {
         self.apply(Operation::RegisterObligation {
             owner: "owner".into(),
             room: "room".into(),
@@ -72,7 +79,7 @@ impl Fixture {
             prompt: "p".into(),
             run: Some("run".into()),
             id: "obligation".into(),
-            kind: "delegate".into(),
+            kind: kind.into(),
             resource: Some("child".into()),
             now: 1,
         });
@@ -220,7 +227,7 @@ fn a02_queue_dispatch_revalidates_blocked_cancelled_and_done_tasks() {
 fn a02_done_with_obligation_corrects_once_across_restart() {
     let f = Fixture::new();
     f.begin("p");
-    f.register();
+    f.register_owed();
     let Outcome::Settled { task, correction } = f.settle("p", true) else {
         panic!()
     };
@@ -242,10 +249,10 @@ fn a02_done_with_obligation_corrects_once_across_restart() {
     );
 }
 #[test]
-fn a02_turn_end_block_clears_when_its_delegate_finishes() {
+fn a02_turn_end_block_clears_when_its_source_finishes() {
     let f = Fixture::new();
     f.begin("p");
-    f.register();
+    f.register_owed();
     let Outcome::Settled { task, .. } = f.settle("p", true) else {
         panic!()
     };
@@ -911,7 +918,7 @@ fn a02_clock_rollback_wakes_after_a_persisted_sweep() {
 fn a02_superseded_native_settlement_cannot_replace_a_corrected_task() {
     let f = Fixture::new();
     f.begin("p");
-    f.register();
+    f.register_owed();
     let Outcome::Settled { task, .. } = f.settle("p", true) else {
         panic!()
     };

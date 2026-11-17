@@ -1,5 +1,56 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: source outcomes, sweeps and owner disposition.
 use super::*;
+/// A turn that ended with a watched process, job, terminal watch or delegate still open left it
+/// supervised (see `AgentObligation::outlives_turn`); its end closes that work. The agent hears of
+/// a process as an event of its own, marked `after_turn`: the task that started it is done. A
+/// delegate's end reaches its parent as `child_finished`.
+fn close_outlived(
+    tx: &Transaction<'_>,
+    t: &mut AgentTaskExecution,
+    held: Vec<Registration>,
+    source: &str,
+    occurrence: &str,
+    success: bool,
+    public_answer: &Option<serde_json::Value>,
+) -> Result<(), DaemonError> {
+    let mut told_elsewhere = true;
+    let mut closed = false;
+    for o in &mut t.obligations {
+        if o.completion_source() == Some(source)
+            && o.outlives_turn()
+            && !(success
+                && o.kind == "delegate"
+                && o.dispatch_state == "accepted"
+                && o.completion_task_id.is_none())
+        {
+            o.status = "satisfied".into();
+            told_elsewhere &= o.kind == "delegate" || o.dispatch_state == "cancel_requested";
+            closed = true;
+        }
+    }
+    if !closed {
+        return Ok(());
+    }
+    for mut reg in held {
+        if reg.source_id == source && reg.live {
+            reg.live = false;
+            tx.execute(
+                "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+                params![reg.id, encode(&reg)?],
+            )
+            .map_err(sql)?;
+        }
+    }
+    if !told_elsewhere {
+        let mut told =
+            super::transitions::source_end(t, source, occurrence, success, public_answer, false);
+        told.payload["after_turn"] = true.into();
+        event(tx, told)?;
+    }
+    t.revision += 1;
+    save(tx, t)
+}
+
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     match op {
         Operation::Progress {
@@ -128,13 +179,17 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .transpose()?;
             for mut t in source_tasks(tx, &room, &source)? {
                 let held = registrations(tx, &t.task_id);
-                // A finished task is done with its sources, unless it still follows this peer.
+                // A finished task is done with its sources, unless it still follows this peer or
+                // ended while this source was running.
                 if t.state == ExecutionState::Done
                     && !held.as_ref().is_ok_and(|held| {
                         held.iter()
                             .any(|reg| reg.peer && reg.live && reg.source_id == source)
                     })
                 {
+                    if let Ok(held) = held {
+                        close_outlived(tx, &mut t, held, &source, &id, success, &public_answer)?;
+                    }
                     continue;
                 }
                 let registrations = match held {
@@ -708,12 +763,65 @@ fn cancel_task(
             "stale or foreign owner cancellation; reload the task in its owning room and retry",
         ));
     }
-    if !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
-        cancel_intent(tx, &mut t, by_agent)?;
-        t.revision += 1;
-        save(tx, &t)?;
+    match t.state {
+        ExecutionState::Cancelled => {}
+        // The turn is over and stays so: Stop only ends the work it left running. The owner's Stop
+        // still keeps the agent stopped, as for any turn it ends.
+        ExecutionState::Done => {
+            if cancel_retained_work(&mut t) {
+                if !by_agent {
+                    t.reason = OWNER_CANCELLED_REASON.into();
+                    keep_agent_stopped(tx, &t)?;
+                }
+                t.revision += 1;
+                save(tx, &t)?;
+            }
+        }
+        _ => {
+            cancel_intent(tx, &mut t, by_agent)?;
+            t.revision += 1;
+            save(tx, &t)?;
+        }
     }
     Ok(Outcome::Task(t))
+}
+/// Message delivery reads the stop from the agent's newest task, so an owner's Stop of an older
+/// task that retains work marks the newest finished one too; the owner's next prompt starts a
+/// newer task and ends the stop.
+fn keep_agent_stopped(
+    tx: &Transaction<'_>,
+    stopped: &AgentTaskExecution,
+) -> Result<(), DaemonError> {
+    let Some(mut newest) = super::tasks_where(
+        tx,
+        "room_id=?1 AND agent_id=?2",
+        params![stopped.room_id, stopped.agent_id],
+    )?
+    .pop() else {
+        return Ok(());
+    };
+    if newest.task_id != stopped.task_id
+        && matches!(
+            newest.state,
+            ExecutionState::Done | ExecutionState::Cancelled
+        )
+        && newest.reason != OWNER_CANCELLED_REASON
+    {
+        newest.reason = OWNER_CANCELLED_REASON.into();
+        newest.revision += 1;
+        save(tx, &newest)?;
+    }
+    Ok(())
+}
+/// Asks for the end of the work a Done task retains; its end closes the obligation without
+/// waking the agent, whom Stop told to stand down.
+fn cancel_retained_work(task: &mut AgentTaskExecution) -> bool {
+    let mut any = false;
+    for obligation in task.obligations.iter_mut().filter(|o| o.outlives_turn()) {
+        obligation.dispatch_state = "cancel_requested".into();
+        any = true;
+    }
+    any
 }
 /// `by_agent`: an agent, not the owner, cancels the task; it keeps the agent reachable.
 pub(super) fn cancel_intent(

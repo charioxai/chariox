@@ -558,6 +558,16 @@ fn confirm_start(
     save_wake(tx, wake)
 }
 
+/// A cancelled task cancels its wakes; so does a Stop of a Done task for the work it retained.
+fn stop_cancels_wake(task: &AgentTaskExecution, wake: &str) -> bool {
+    task.state == ExecutionState::Cancelled
+        || (task.state == ExecutionState::Done
+            && task
+                .obligations
+                .iter()
+                .any(|o| o.id == wake && o.dispatch_state == "cancel_requested"))
+}
+
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     match op {
         Operation::CreateWake {
@@ -636,17 +646,18 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Ok(Outcome::Wakes(vec![]));
             }
             wake.matched_at_ms = Some(now);
-            let e = event(
-                tx,
-                occurrence(
-                    &wake.room_id,
-                    &wake.agent_id,
-                    &wake.id,
-                    &format!("{}-match", wake.id),
-                    "process_output_matched",
-                    serde_json::json!({"task_id":wake.task_id,"wake_id":wake.id,"kind":"process","label":wake.label,"match_text":wake.match_text,"line":line}),
-                ),
-            )?;
+            let mut matched = occurrence(
+                &wake.room_id,
+                &wake.agent_id,
+                &wake.id,
+                &format!("{}-match", wake.id),
+                "process_output_matched",
+                serde_json::json!({"task_id":wake.task_id,"wake_id":wake.id,"kind":"process","label":wake.label,"match_text":wake.match_text,"line":line}),
+            );
+            if load(tx, &wake.task_id)?.state == ExecutionState::Done {
+                matched.payload["after_turn"] = true.into();
+            }
+            let e = event(tx, matched)?;
             record_fire(tx, &mut wake, &e, now)?;
             Ok(Outcome::Wakes(vec![wake]))
         }
@@ -842,7 +853,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         "wake cancellation requires the owning agent and room",
                     ));
                 }
-            } else if caller.task_id != wake.task_id || t.state != ExecutionState::Cancelled {
+            } else if caller.task_id != wake.task_id || !stop_cancels_wake(&t, &id) {
                 return Err(error(
                     "only the owning turn or task cancellation cancels a wake",
                 ));
@@ -897,7 +908,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                 }
                 None => {
-                    if t.state != ExecutionState::Cancelled {
+                    if !stop_cancels_wake(&t, &id) {
                         return Err(error(
                             "only the owning turn or task cancellation cancels a wake",
                         ));

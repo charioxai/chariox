@@ -4511,8 +4511,10 @@ action, done, or owner-cancelled. Cancellation is never successful completion.
 Obligation/registration, wait intent, event admission and delivery intent commit
 through the shared SQLite writer. Native provider settlement commits the wait;
 a result racing it remains in the inbox. Done requires public output and no
-unresolved obligation. One persisted correction is permitted; another invalid
-end blocks on one kernel-owned interaction. Provider failures also block.
+unresolved obligation, except open watched processes, jobs, terminal watches and
+delegates: the turn ends done and their end wakes the agent as an `after_turn`
+event. For any other unresolved obligation one persisted correction is permitted;
+another invalid end blocks on one kernel-owned interaction. Provider failures also block.
 The kernel sweeps every 30 seconds; 15 minutes without progress notifies
 attached/reconnecting clients; uncertain submission escalates after 2 minutes
 without replay.
