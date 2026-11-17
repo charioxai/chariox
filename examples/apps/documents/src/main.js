@@ -42,9 +42,11 @@ function settle() {
   dirty = false
 }
 
+const unsavedDraft = () => current && dirty ? { id: current.id, base_revision: current.revision, ...fields() } : null
+
 function edited() {
   dirty = true
-  keeper.keep(() => current && dirty ? { id: current.id, base_revision: current.revision, ...fields() } : null)
+  keeper.keep(unsavedDraft)
 }
 
 function renderList() {
@@ -156,6 +158,10 @@ async function save() {
       settle()
       $("title").value = saved.title
       $("folder").value = saved.folder
+    } else {
+      // The draft the App holds was written on the revision this save replaced; the edits typed
+      // meanwhile start from the acknowledged one, or every later save would refuse the person's own.
+      keeper.keep(unsavedDraft)
     }
     say(`Saved revision ${saved.revision}.`)
     await refreshList()

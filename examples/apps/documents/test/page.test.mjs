@@ -157,13 +157,16 @@ function fakeBackend() {
     read_draft: () => ({ draft: store.draft && store.docs.has(store.draft.id) ? store.draft : null }),
     discard_draft: () => { store.draft = null; return { discarded: true }; },
   };
+  const backend = { store, calls, holdSaves: null };
   const call = async (tool, input) => {
     calls.push(tool);
     if (!tools[tool]) throw Error(`no tool ${tool}`);
+    if (tool === 'update_document') await backend.holdSaves;
     return structuredClone(tools[tool](input));
   };
+  backend.call = call;
   store.docs.set('d1', { id: 'd1', title: 'Notes', folder: '', kind: 'markdown', revision: 1, versions: [1], content: 'saved text' });
-  return { store, call, calls };
+  return backend;
 }
 
 let loads = 0;
@@ -248,4 +251,27 @@ test('a view that is going away hands over its latest keystrokes at once', async
   type(first, { content: 'typed just before the replacement' });
   first.pagehide();
   await until(() => backend.store.draft?.content === 'typed just before the replacement', 'the draft is handed over');
+});
+
+test('an edit typed while a save is in flight is kept on the revision that save acknowledged', async () => {
+  const backend = fakeBackend();
+  let release;
+  backend.holdSaves = new Promise((resolve) => { release = resolve; });
+  const first = await loadView(backend);
+  await openNotes(first);
+  type(first, { content: 'sent edit' });
+  first.$('save').click();
+  await until(() => backend.calls.includes('update_document'), 'the save is in flight');
+  type(first, { content: 'later edit' });
+  await until(() => backend.store.draft?.content === 'later edit', 'the later edit is kept on revision 1');
+  assert.equal(backend.store.draft.base_revision, 1);
+
+  release();
+  await until(() => backend.store.docs.get('d1').revision === 2, 'the save lands as revision 2');
+  await until(() => backend.store.draft?.base_revision === 2, 'the kept edit moves to the acknowledged revision');
+
+  const second = await loadView(backend);
+  await until(() => second.$('content').value === 'later edit', 'the later edit comes back');
+  second.$('save').click();
+  await until(() => backend.store.docs.get('d1').content === 'later edit', 'the person\'s own revision does not refuse the save');
 });
