@@ -97,3 +97,36 @@ test('the last one-shot of a target releases it from the background, and a relea
   await h.wake('reconcile');
   assert.equal(h.routing.targets.size, 0, 'the daily reconcile finishes the release');
 });
+
+test('a pending release keeps its daily retry although no subscription is left, until it works', async () => {
+  const h = harness();
+  const { subscription } = await h.call('create_subscription', { events: ['ci.finished'], once: { pr } }, AGENT);
+  h.routing.failUnbind = 2;
+  await h.call('delete_subscription', { id: subscription.id }, AGENT);
+  assert.equal(h.routing.targets.size, 1, 'the release failed on removal');
+  h.clock.now += 24 * HOUR;
+  h.wakes.delete('reconcile');
+  await h.fire({ id: 'reconcile' });
+  assert.equal(h.routing.targets.size, 1, 'and failed again at the first daily retry');
+  assert.equal(h.wakes.get('reconcile')?.dueAtMs, BigInt(h.clock.now + 24 * HOUR), 'the next retry is armed');
+  h.clock.now += 24 * HOUR;
+  h.wakes.delete('reconcile');
+  await h.fire({ id: 'reconcile' });
+  assert.equal(h.routing.targets.size, 0, 'the next retry releases it');
+  assert.equal(h.wakes.has('reconcile'), false, 'nothing is left to retry');
+});
+
+test('a no-checks firing captured before an update does nothing after the update moved or dropped it', async () => {
+  const h = harness({ override: checksOverride([]) });
+  const { subscription } = await h.call('create_subscription', { events: ['ci.finished'], once: { pr } }, AGENT);
+  const old = { id: `none:${subscription.id}`, ...h.wakes.get(`none:${subscription.id}`) };
+  await h.call('update_subscription', { id: subscription.id, once: { pr: { repo: REPO, number: 3 } } }, AGENT);
+  await h.fire(old);
+  assert.equal(h.emitted.length, 0, 'the old pull request\'s firing does not speak for the new one');
+  assert.equal((await h.call('list_subscriptions')).subscriptions.length, 1, 'and does not spend the one-shot');
+  const moved = { id: old.id, ...h.wakes.get(old.id) };
+  await h.call('update_subscription', { id: subscription.id, events: ['pull_request.comment'] }, AGENT);
+  await h.fire(moved);
+  assert.equal(h.emitted.length, 0, 'a firing for an event the subscription no longer asks for does nothing');
+  assert.equal((await h.call('list_subscriptions')).subscriptions.length, 1);
+});
