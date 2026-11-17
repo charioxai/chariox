@@ -20,16 +20,22 @@ export default {
     const snapshotChanged = [...changes.keys()].some(file => SNAPSHOT.test(file))
     const findings = []
     for (const { constant, snapshot, shapes } of [LOCAL, RELAY_PEER]) {
-      const shape = []
+      // +1 for each shape in a changed file now, -1 for each at the base, netted across all changed files of the protocol:
+      // a shape that moved or was reordered, even into another module, nets to nothing.
+      const count = new Map()
       for (const [file, rows] of changes) {
         if (!shapes.test(file)) continue
-        // +1 for each shape in the file now, -1 for each at the base: a moved or reordered shape nets to nothing.
-        const count = new Map()
         for (const [text, sign] of [[ctx.read(file), 1], [ctx.readAtBase(file), -1]]) {
-          for (const s of text === null ? [] : wireShapes(text, file)) count.set(s.key, { balance: (count.get(s.key)?.balance ?? 0) + sign, s: count.get(s.key)?.s ?? s })
+          for (const s of text === null ? [] : wireShapes(text, file)) {
+            const entry = count.get(s.key) ?? { balance: 0, where: null }
+            entry.balance += sign
+            // A removed shape is placed on its line in the diff; an added one on its line in the file.
+            entry.where ??= { file, line: sign > 0 ? s.line : (rows.find(r => r.text.trim() === s.text)?.line ?? rows[0].line), text: s.text }
+            count.set(s.key, entry)
+          }
         }
-        for (const { balance, s } of count.values()) if (balance !== 0) shape.push({ file, line: balance > 0 ? s.line : (rows.find(r => r.text.trim() === s.text)?.line ?? rows[0].line), text: s.text })
       }
+      const shape = [...count.values()].filter(c => c.balance !== 0).map(c => c.where)
       if (!shape.length) continue
       const first = shape[0]
       const { now, before } = versions(ctx, constant, shapes)

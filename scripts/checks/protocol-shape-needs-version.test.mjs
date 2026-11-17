@@ -119,3 +119,16 @@ test('a version that is not higher than at the base is not a bump', () => {
   assert.match(lowered.run(check.name).text, /LOCAL_DAEMON_PROTOCOL_VERSION is 9 now, 10 at the base\).*without raising/)
   lowered.dispose()
 })
+
+test('a serialized type moved between protocol modules passes, a field changed in the move is red', () => {
+  const other = 'apps/kernel/src/local/api/types/agent_lifecycle.rs'
+  const r = makeRepo({ ...base(), [other]: '// lifecycle\n' })
+  r.write(TYPES, '// the agent type moved out\n')
+  r.write(other, struct(['id']))
+  assert.equal(r.run(check.name).status, 0)
+  r.write(other, struct(['id', 'done_text']))
+  const result = r.run(check.name)
+  assert.equal(result.status, 1)
+  assert.match(result.text, /agent_lifecycle\.rs:4: changes a serialized shape \(1 field/)
+  r.dispose()
+})
