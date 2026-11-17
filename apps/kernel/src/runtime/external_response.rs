@@ -368,6 +368,7 @@ response_policies! {
         FreshRemoteMachineKernelsObserved,
         RoomListSessionsListed,
         RoomListSnapshot,
+        PersonInbox,
         ExternalProviderSessionsListed,
         ExternalProviderSessionsRefreshed,
         ExternalProviderSessionImported,

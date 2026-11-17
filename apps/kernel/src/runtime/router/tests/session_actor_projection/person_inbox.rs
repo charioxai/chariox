@@ -3,6 +3,25 @@ use crate::local::{GetPersonInboxRequest, PersonInboxCard};
 use crate::session::{RuntimeSession, DEFAULT_LOCAL_USER_ID};
 use crate::transport::kernel_protocol::KernelEvent;
 
+/// The card ids of the next Inbox snapshot the watch pushes, within 2 s (well under the 10 s unsignalled interval).
+async fn next_cards(events: &mut tokio::sync::mpsc::UnboundedReceiver<KernelEvent>) -> Vec<String> {
+    loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+            .await
+            .expect("an Inbox change within 2 s, not the 10 s unsignalled interval")
+            .unwrap();
+        if let KernelEvent::KernelResourceChanged { body, .. } = event {
+            let body = serde_json::to_value(body).unwrap();
+            return body["snapshot"]["data"]["cards"]
+                .as_array()
+                .expect("an Inbox snapshot")
+                .iter()
+                .map(|card| card["card_id"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+        }
+    }
+}
+
 fn room(owner: &str) -> RuntimeSession {
     let mut session = RuntimeSession::new(
         format!("inbox-room-{:016x}", rand::random::<u64>()),
@@ -144,34 +163,14 @@ async fn a_watched_inbox_gets_a_raised_card_and_its_answer_within_two_seconds() 
         .await
         .unwrap();
     assert!(refused.is_empty(), "{refused:?}");
-    let mut next_cards = || {
-        let events = &mut events;
-        async move {
-            loop {
-                let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
-                    .await
-                    .expect("an Inbox change within 2 s, not the 10 s unsignalled interval")
-                    .unwrap();
-                if let KernelEvent::KernelResourceChanged { body, .. } = event {
-                    let body = serde_json::to_value(body).unwrap();
-                    return body["snapshot"]["data"]["cards"]
-                        .as_array()
-                        .expect("an Inbox snapshot")
-                        .iter()
-                        .map(|card| card["card_id"].as_str().unwrap().to_owned())
-                        .collect::<Vec<_>>();
-                }
-            }
-        }
-    };
-    assert!(next_cards().await.is_empty());
+    assert!(next_cards(&mut events).await.is_empty());
 
     let _pending = router
         .runtime_state
         .create_kernel_operation_interaction(&session_id, DEFAULT_LOCAL_USER_ID, decision("raised"))
         .await
         .unwrap();
-    assert_eq!(next_cards().await, ["raised"]);
+    assert_eq!(next_cards(&mut events).await, ["raised"]);
 
     router
         .runtime_state
@@ -184,7 +183,7 @@ async fn a_watched_inbox_gets_a_raised_card_and_its_answer_within_two_seconds() 
         )
         .await
         .unwrap();
-    assert!(next_cards().await.is_empty());
+    assert!(next_cards(&mut events).await.is_empty());
 
     let session = router
         .runtime_state
@@ -206,7 +205,7 @@ async fn a_watched_inbox_gets_a_raised_card_and_its_answer_within_two_seconds() 
     )
     .unwrap();
     assert_eq!(
-        next_cards().await,
+        next_cards(&mut events).await,
         [card_id],
         "a notice wakes the watched Inbox at once"
     );

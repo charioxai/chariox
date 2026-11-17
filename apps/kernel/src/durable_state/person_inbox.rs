@@ -100,7 +100,7 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
                     notice.body,
                     notice.link,
                     priority_text(notice.priority),
-                    notice.created_at_ms,
+                    notice.created_at_ms as i64,
                     notice.read
                 ],
             )?;
@@ -119,7 +119,7 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
                         "INSERT INTO person_inbox_snoozes (owner_user_id, card_id, until_ms)
                         VALUES (?1, ?2, ?3)
                         ON CONFLICT(owner_user_id, card_id) DO UPDATE SET until_ms = excluded.until_ms",
-                        params![state.owner_user_id, card_id, until],
+                        params![state.owner_user_id, card_id, until as i64],
                     )?,
                     InboxCardChange::Snooze { until_ms: None } => tx.execute(
                         "DELETE FROM person_inbox_snoozes WHERE owner_user_id = ?1 AND card_id = ?2",
@@ -156,11 +156,11 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
 fn prune(tx: &Transaction<'_>, owner_user_id: &str, now_ms: u64) -> rusqlite::Result<()> {
     tx.execute(
         "DELETE FROM person_inbox_notices WHERE owner_user_id = ?1 AND created_at_ms < ?2",
-        params![owner_user_id, now_ms.saturating_sub(RETENTION_MS)],
+        params![owner_user_id, now_ms.saturating_sub(RETENTION_MS) as i64],
     )?;
     tx.execute(
         "DELETE FROM person_inbox_snoozes WHERE owner_user_id = ?1 AND until_ms <= ?2",
-        params![owner_user_id, now_ms],
+        params![owner_user_id, now_ms as i64],
     )?;
     tx.execute(
         "DELETE FROM person_inbox_notices WHERE card_id IN (
@@ -245,7 +245,7 @@ impl DurableKernelStateStore {
             )?;
             let notices = notices
                 .query_map(
-                    params![owner_user_id, now_ms.saturating_sub(RETENTION_MS)],
+                    params![owner_user_id, now_ms.saturating_sub(RETENTION_MS) as i64],
                     |row| {
                         Ok(StoredNotice {
                             card_id: row.get(0)?,
@@ -260,7 +260,7 @@ impl DurableKernelStateStore {
                             } else {
                                 PersonInboxPriority::Normal
                             },
-                            created_at_ms: row.get(7)?,
+                            created_at_ms: row.get::<_, i64>(7)? as u64,
                             read: row.get(8)?,
                         })
                     },
@@ -271,8 +271,8 @@ impl DurableKernelStateStore {
                 WHERE owner_user_id = ?1 AND until_ms > ?2",
             )?;
             let snoozes = snoozes
-                .query_map(params![owner_user_id, now_ms], |row| {
-                    Ok((row.get(0)?, row.get(1)?))
+                .query_map(params![owner_user_id, now_ms as i64], |row| {
+                    Ok((row.get(0)?, row.get::<_, i64>(1)? as u64))
                 })?
                 .collect::<rusqlite::Result<BTreeMap<_, _>>>()?;
             let mut mutes = connection.prepare(
