@@ -1397,14 +1397,6 @@ impl KernelRuntimeState {
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent_id)
             .is_some();
-        if active_turn && original.remote_execution().is_some() {
-            return Err(DaemonError::LocalTransport {
-                operation: "update agent profile",
-                message: format!(
-                    "leased agent `{agent_id}` has an active turn; update the profile after it finishes"
-                ),
-            });
-        }
         let before = self.owned.agent_settings_view(&original)?;
         let profile_transition = if active_turn {
             None

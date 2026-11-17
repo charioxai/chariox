@@ -1211,6 +1211,14 @@ impl KernelRuntimeState {
         agent_id: &str,
         prompt: &crate::session::PromptQueueItem,
     ) -> Result<String, DaemonError> {
+        if prompt.workflow_run_id().is_none() {
+            if let Some(provider_run_id) = self
+                .relaunch_leased_turn_provider(session_id, agent_id)
+                .await?
+            {
+                return Ok(provider_run_id);
+            }
+        }
         let session_id = session_id.to_string();
         let agent_id = agent_id.to_string();
         let prompt = prompt.clone();
@@ -1235,6 +1243,69 @@ impl KernelRuntimeState {
             }
         })
         .await
+    }
+
+    /// A leased agent's turn goes on in a new process the way the home launched the first: the
+    /// worker never starts it from its own login, and the home's credential is the one the ended
+    /// process was launched with. `None` for an agent that is not a leased agent's backing agent.
+    async fn relaunch_leased_turn_provider(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let backing_session_id = session_id.to_string();
+        let backing_agent_id = agent_id.to_string();
+        let Some(request) = self
+            .with_app_side_effect(move |app| {
+                crate::app::RemoteLeaseRuntime::new(app)
+                    .prepare_leased_turn_relaunch(&backing_session_id, &backing_agent_id)
+            })
+            .await?
+        else {
+            return Ok(None);
+        };
+        let credential = self.owned.leased_launch_credentials.for_profile(
+            agent_id,
+            &request.provider,
+            &request.account_profile,
+        );
+        let run = self
+            .launch_provider_for_remote_lease_detached(request, credential)
+            .await?;
+        self.wait_until_provider_run_is_running(run.id()).await?;
+        Ok(Some(run.id().to_string()))
+    }
+
+    /// The continuation prompt goes to a process that is up, not to one that is still starting.
+    async fn wait_until_provider_run_is_running(
+        &self,
+        provider_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        let deadline = tokio::time::Instant::now()
+            + super::provider_mcp_continuation_runtime::PROVIDER_RELAUNCH_WAIT;
+        loop {
+            match self.owned.provider_store.get_run(provider_run_id) {
+                Ok(run) if run.state() == crate::provider::ProviderRunState::Running => {
+                    return Ok(())
+                }
+                Ok(run) if run.state() != crate::provider::ProviderRunState::Ended => {}
+                _ => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "relaunch leased provider",
+                        message: format!(
+                            "provider run `{provider_run_id}` ended before it was ready; change the settings and send the request again"
+                        ),
+                    })
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(DaemonError::LocalTransport {
+                    operation: "relaunch leased provider",
+                    message: format!("timed out waiting for provider run `{provider_run_id}`"),
+                });
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
     }
 
     async fn redispatch_local_prompt(

@@ -600,7 +600,7 @@ async fn leased_worker_compacts_before_retiring_the_source_and_reserves_admissio
 }
 
 #[tokio::test]
-async fn leased_worker_validates_before_compaction_and_confirms_busy_unchanged_profiles() {
+async fn leased_worker_validates_before_compaction_and_takes_a_busy_profile_change() {
     let (root, app, runtime, session, agent, run, lease) = compact_fixture_with_lease(true).await;
     let lease = lease.unwrap();
     assert!(runtime
@@ -614,23 +614,26 @@ async fn leased_worker_validates_before_compaction_and_confirms_busy_unchanged_p
         .await
         .is_err());
     sync_active_prompt(&app, &session, &agent).await;
-    assert!(runtime
+    // A running turn takes the change without compacting or ending its process: the worker's
+    // step-boundary swap carries the turn over.
+    let changed = runtime
         .update_relay_leased_agent_profile(
             &lease.id,
             "claude".into(),
             "default".into(),
             Some("haiku".into()),
-            None
+            None,
         )
         .await
-        .is_err());
+        .unwrap();
+    assert_eq!(changed.model.as_deref(), Some("haiku"));
     let unchanged = runtime
         .update_relay_leased_agent_profile(
             &lease.id,
-            lease.provider.clone(),
-            lease.account_profile.clone(),
-            lease.model.clone(),
-            lease.effort.clone(),
+            "claude".into(),
+            "default".into(),
+            Some("haiku".into()),
+            None,
         )
         .await
         .unwrap();
@@ -1239,6 +1242,7 @@ async fn assert_failed_source_compaction_starts_fresh(leased: bool) {
                     model: Some("haiku".into()),
                     effort: None,
                 },
+                false,
             )
             .await
             .unwrap();

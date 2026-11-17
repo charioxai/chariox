@@ -345,19 +345,6 @@ impl KernelRuntimeOwnedState {
                 agent_id: agent_id.to_string(),
             });
         }
-        let session = self.session_store.get_session(session_id)?;
-        if self
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, agent_id)
-            .is_some()
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "commit remote agent config",
-                message: format!(
-                    "agent `{agent_id}` has an active turn; update the config after it finishes"
-                ),
-            });
-        }
         self.agent_store.update_agent_config(
             agent_id,
             execution_mode_override,

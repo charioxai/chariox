@@ -248,7 +248,12 @@ impl KernelRuntimeState {
         if changes.is_empty() {
             return Ok(SettingsApplies::Now);
         }
-        let applies = if active_turn {
+        // A leased agent's process runs on the worker, which settles the same change against its
+        // own backing agent and tells the agent at its step boundary; the home only records it.
+        let worker_applies = active_turn && agent.remote_execution().is_some();
+        let applies = if worker_applies {
+            SettingsApplies::AtStepBoundary
+        } else if active_turn {
             self.mark_running_process_stale(agent, &changes)
         } else {
             SettingsApplies::Now
@@ -260,6 +265,9 @@ impl KernelRuntimeState {
             context.reason.as_deref(),
             applies,
         );
+        if worker_applies {
+            return Ok(applies);
+        }
         match applies {
             SettingsApplies::Now => owned.announce_settings_change(
                 agent.session_id(),
@@ -318,9 +326,24 @@ impl KernelRuntimeState {
                 .unwrap_or(provider)
                 .to_string()
         };
-        if owned
-            .provider_store
-            .adapter_resumes_conversation_in_new_process(run.adapter_key())
+        // The worker relaunches a leased Claude process with the credential the home launched it
+        // with; the new profile's account has none there until the next prompt brings it.
+        let relaunchable = !owned
+            .provider_run_projection
+            .is_leased_provider_run(run.id())
+            || canonical(agent.provider()) != "claude"
+            || owned
+                .leased_launch_credentials
+                .for_profile(
+                    agent.id(),
+                    agent.provider(),
+                    agent.provider_account_profile(),
+                )
+                .is_some();
+        if relaunchable
+            && owned
+                .provider_store
+                .adapter_resumes_conversation_in_new_process(run.adapter_key())
             && canonical(run.provider()) == canonical(agent.provider())
         {
             SettingsApplies::AtStepBoundary

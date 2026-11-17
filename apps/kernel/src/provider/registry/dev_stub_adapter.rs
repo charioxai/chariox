@@ -207,6 +207,10 @@ impl AgentEndpointAdapter for ManagedDevStubAdapter {
         true
     }
 
+    fn resumes_conversation_in_new_process(&self) -> bool {
+        true
+    }
+
     fn connect(
         &self,
         request: &LaunchProviderRequest,
