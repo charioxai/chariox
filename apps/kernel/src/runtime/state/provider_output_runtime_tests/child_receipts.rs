@@ -1,10 +1,10 @@
 //! A finishing child tells its parent once: the `child_finished` event is also the receipt of the
-//! delegation, so acknowledging it settles the obligation and no second event is delivered.
+//! delegation, so its wake settles the obligation and no second event is delivered.
 use super::child_finished::family;
 use crate::durable_state::agent_lifecycle::Operation;
 
 #[tokio::test]
-async fn each_finished_child_is_one_inbox_item_and_its_ack_settles_the_delegation() {
+async fn each_finished_child_is_one_inbox_item_and_its_wake_settles_the_delegation() {
     let team = family("child-receipts", 3, Some(false), true).await;
     let store = &team.runtime.owned.durable_state_store;
     // Spawning a child opened one delegation per child on the parent's task.
@@ -37,32 +37,22 @@ async fn each_finished_child_is_one_inbox_item_and_its_ack_settles_the_delegatio
             .unwrap();
     }
 
-    let read = team
-        .runtime
-        .read_agent_inbox(&team.room, &team.parent, &serde_json::json!({}))
-        .unwrap();
-    let kinds: Vec<&str> = read["events"]
-        .as_array()
+    // The wake carried each child's report, so the three events are already settled.
+    let finished: Vec<_> = store
+        .agent_inbox(&team.room, &team.parent, 0)
         .unwrap()
-        .iter()
-        .map(|event| event["kind"].as_str().unwrap())
+        .into_iter()
+        .filter(|event| event.kind == "child_finished")
         .collect();
     assert_eq!(
-        kinds, ["child_finished"; 3],
-        "one item per child, no separate receipt: {read}"
+        finished.len(),
+        3,
+        "one item per child, no separate receipt: {finished:?}"
     );
-
-    for event in read["events"].as_array().unwrap() {
-        team.runtime
-            .ack_agent_inbox(
-                &team.room,
-                &team.parent,
-                &serde_json::json!({"sequence": event["sequence"], "handled": true}),
-                crate::session::unix_epoch_ms(),
-            )
-            .await
-            .unwrap();
-    }
+    assert!(
+        finished.iter().all(|event| event.state == "handled"),
+        "the wake settled every child_finished: {finished:?}"
+    );
     let parent_task = store.agent_task(&parent_task.task_id).unwrap().unwrap();
     let open: Vec<_> = parent_task
         .obligations
@@ -71,7 +61,7 @@ async fn each_finished_child_is_one_inbox_item_and_its_ack_settles_the_delegatio
         .collect();
     assert!(
         open.is_empty(),
-        "the acks settle every delegation: {open:?}"
+        "the wake settles every delegation: {open:?}"
     );
     assert!(
         parent_task.owner_action.is_none()

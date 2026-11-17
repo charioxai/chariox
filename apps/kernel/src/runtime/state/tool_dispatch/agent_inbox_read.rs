@@ -27,6 +27,16 @@ pub(in crate::runtime::state) fn bounded_payload(
     (serde_json::Value::String(text[..end].to_owned()), true)
 }
 
+/// The sender of an inbox event: what the tree says it is and the name the reader sees.
+pub(in crate::runtime::state) struct EventSender {
+    agent: Option<crate::agent::AgentInstance>,
+    remote: Option<crate::transport::relay_peer::PeerAgentStamp>,
+    kind: &'static str,
+    alias: Option<String>,
+    pub(in crate::runtime::state) name: String,
+    pub(in crate::runtime::state) relation: SenderRelation,
+}
+
 impl KernelRuntimeState {
     pub(crate) fn read_agent_inbox(
         &self,
@@ -103,13 +113,14 @@ impl KernelRuntimeState {
                 })
     }
 
-    fn inbox_event_view(
+    /// Who sent `event`, as far as the agent tree and the peer stamps tell.
+    pub(in crate::runtime::state) fn event_sender(
         &self,
         room: &str,
         reader: &crate::agent::AgentInstance,
         agents: &[crate::agent::AgentInstance],
         event: &InboxEvent,
-    ) -> (SenderRelation, serde_json::Value) {
+    ) -> EventSender {
         let agent = self.owned.agent_store.get_agent(&event.source_id).ok();
         let session = self.owned.session_store.get_session(room).ok();
         let is_run = session.is_some_and(|session| {
@@ -127,7 +138,7 @@ impl KernelRuntimeState {
                 _ => None,
             })
             .flatten();
-        let source_kind = if agent.is_some() || remote.is_some() {
+        let kind = if agent.is_some() || remote.is_some() {
             "agent"
         } else if is_run {
             "workflow_run"
@@ -141,14 +152,40 @@ impl KernelRuntimeState {
             .as_ref()
             .map(|stamp| format!("{}/{}", stamp.kernel_id, stamp.agent_id));
         let name = alias
-            .as_deref()
-            .or(remote_name.as_deref())
-            .unwrap_or(&event.source_id);
+            .clone()
+            .or(remote_name)
+            .unwrap_or_else(|| event.source_id.clone());
         let relation = if remote.is_some() {
             SenderRelation::Peer
         } else {
             SenderRelation::of(reader, agent.as_ref(), agents)
         };
+        EventSender {
+            agent,
+            remote,
+            kind,
+            alias,
+            name,
+            relation,
+        }
+    }
+
+    fn inbox_event_view(
+        &self,
+        room: &str,
+        reader: &crate::agent::AgentInstance,
+        agents: &[crate::agent::AgentInstance],
+        event: &InboxEvent,
+    ) -> (SenderRelation, serde_json::Value) {
+        let EventSender {
+            agent,
+            remote,
+            kind: source_kind,
+            alias,
+            name,
+            relation,
+        } = self.event_sender(room, reader, agents, event);
+        let name = name.as_str();
         let what = super::super::agent_inbox_wake_text::kind_label(&event.kind);
         let mut summary = format!("{what} from {name}");
         summary.truncate(summary.floor_char_boundary(SUMMARY_LIMIT));

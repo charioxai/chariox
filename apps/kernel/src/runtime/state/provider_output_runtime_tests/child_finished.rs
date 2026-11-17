@@ -363,6 +363,48 @@ async fn a_finish_steers_a_running_parent() {
     );
 }
 
+/// The wake carries the child's report, and the kernel closes the event the parent no longer has to
+/// read: the parent finishes on the wake alone, with no inbox read or acknowledgement.
+#[tokio::test]
+async fn a_finish_wake_carries_the_childs_report_and_closes_its_event() {
+    let team = team("child-finished-inline", false, true).await;
+    team.runtime
+        .finish_agent_task_settlement(
+            Some((team.task.clone(), team.correction)),
+            &team.child_prompt,
+        )
+        .await
+        .unwrap();
+    let event = &child_finished(&team)[0];
+    let prompt_id = event.prompt_id.clone().expect("the wake prompt");
+    let entries = team
+        .runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(&team.room, Some(&team.parent))
+        .unwrap();
+    let wake = entries
+        .iter()
+        .find(|entry| {
+            entry.merge_key.as_deref()
+                == Some(crate::history::steering_prompt_merge_key(&prompt_id).as_str())
+        })
+        .unwrap_or_else(|| panic!("no steered wake row: {entries:?}"));
+    for expected in [
+        "a sub-agent of yours: a report",
+        "\"success\":true",
+        &team.task.task_id,
+    ] {
+        assert!(
+            wake.text.contains(expected),
+            "missing {expected}: {}",
+            wake.text
+        );
+    }
+    assert!(!wake.text.contains("chariox.events.inbox"), "{}", wake.text);
+    assert_eq!(event.state, "handled", "{event:?}");
+}
+
 /// The steered wake reaches the provider as a user message of the running turn.
 /// The kernel must own it in history: otherwise the transcript observer imports
 /// that message as an external turn and stores the turn's answer a second time.
@@ -392,10 +434,7 @@ async fn a_steering_finish_is_recorded_as_a_kernel_owned_prompt() {
                     == Some(crate::history::steering_prompt_merge_key(&prompt_id).as_str())
         })
         .unwrap_or_else(|| panic!("the steered wake has no kernel-owned prompt row: {entries:?}"));
-    assert!(
-        steer.text.starts_with("Inbox: at least 1 new event"),
-        "{steer:?}"
-    );
+    assert!(steer.text.starts_with("Inbox: 1 new event"), "{steer:?}");
     assert_ne!(
         steer.prompt_origin,
         Some(crate::session::PromptOrigin::External),

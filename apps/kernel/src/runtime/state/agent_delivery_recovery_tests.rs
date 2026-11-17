@@ -201,7 +201,7 @@ async fn a_due_wake_starts_a_turn_after_an_earlier_start_failed() {
         .deliver_agent_inbox(&f.room, &f.child)
         .await
         .unwrap();
-    assert_eq!(f.state_of(wake.sequence), "accepted");
+    assert_eq!(f.state_of(wake.sequence), "handled");
     assert!(f.child_is_running());
 }
 

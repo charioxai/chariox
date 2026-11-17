@@ -1678,6 +1678,7 @@ mod agent_goal_migration;
 mod agent_goal_native_approval;
 mod agent_goal_runtime;
 mod agent_inbox_delivery;
+mod agent_inbox_inline;
 mod agent_inbox_leased_steer;
 mod agent_inbox_sender;
 mod agent_inbox_wake_text;
