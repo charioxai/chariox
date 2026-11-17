@@ -7256,6 +7256,20 @@ Acquire, the kernel verifies that revision and writes every offer fact in the
 existing Accept/Cancel interaction. Cancel acquires nothing; Accept remains
 subject to the same Cloud admission and revision checks.
 
+### Machine options — local 1012 (provisional, cut at the Landing 11 union)
+
+`ControlPlane` capabilities may carry `machine_allocation.offers`: every machine the
+connected service offers the owner, each `{class_id, region, vcpu, ram_gb, disk_gb,
+rate_per_minute: {amount_micros, currency}, available, note?}`. The service decides the
+list, the rate in the account's currency, the stock and the optional display `note`; the kernel
+only passes them on and never adds, ranks or rates an option. `Acquire` takes an optional
+`class_id` and `region`: absent, the service's default offer is acquired as before; present,
+exactly that option is acquired, or the call fails with a plain reason (not offered, region needed,
+not available right now) and nothing is acquired in its place. The capability revision covers the
+list, so a change of stock or rate needs a fresh decision. Agents use the same list through
+`chariox.machines.options` and `chariox.machines.acquire {class_id, region}`; the owner's approval
+card names the chosen option. The shape is pinned by the `machine-options-1012` protocol test.
+
 Protocol 993 (peer 432) adds optional task `owner_action: "browser_access"` and a kernel decision `related_agent_id`. Browser approval stays attached to the blocked task revision and grants access only after an owner answer. Task owner decisions have no automatic expiry; ordinary interaction deadlines are unchanged. Clients place these decisions with the referenced agent and remove them when the authoritative task leaves Blocked.
 
 Local 994 / peer 433 also identifies kernel notification sources with

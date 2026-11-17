@@ -39,3 +39,39 @@ fn machine_acquisition_offer_fixture_is_the_service_contract() {
         serde_json::from_value(fixture.clone()).unwrap();
     assert_eq!(serde_json::to_value(offer).unwrap(), fixture);
 }
+
+/// Local 1012: the capability lists every machine option and Acquire names the chosen one.
+#[test]
+fn machine_options_1012_shapes_and_hash() {
+    let snapshot = serde_json::json!({
+        "requests": [
+            {"ControlPlane": {"action": "acquire", "capability_revision": "revision", "request_id": "one"}},
+            {"ControlPlane": {"action": "acquire", "capability_revision": "revision", "request_id": "two", "class_id": "small", "region": "auto"}}
+        ],
+        "responses": [{"ControlPlane": {"result": {"kind": "capabilities", "machine_allocation": {
+            "revision": "revision", "actions": ["acquire"], "offer": null,
+            "offers": [
+                {"class_id": "small", "region": "auto", "vcpu": 2, "ram_gb": 4.0, "disk_gb": 51,
+                 "rate_per_minute": {"amount_micros": 284, "currency": "EUR"}, "available": true, "note": "shown by the service"},
+                {"class_id": "large", "region": "auto", "vcpu": 8, "ram_gb": 16.0, "disk_gb": 111,
+                 "rate_per_minute": {"amount_micros": 1100, "currency": "EUR"}, "available": false}
+            ]
+        }}}}]
+    });
+    for shape in snapshot["requests"].as_array().unwrap() {
+        let request: LocalDaemonRequest = serde_json::from_value(shape.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), *shape);
+    }
+    for shape in snapshot["responses"].as_array().unwrap() {
+        let response: LocalDaemonResponse = serde_json::from_value(shape.clone()).unwrap();
+        assert_eq!(serde_json::to_value(response).unwrap(), *shape);
+    }
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&snapshot).unwrap())),
+        "d999f9d6271b3bb85cd3daa20c866b240873d5ceaa471e5a5c75779cfc183f27"
+    );
+    assert!(serde_json::from_value::<LocalDaemonRequest>(
+        serde_json::json!({"ControlPlane":{"action":"acquire","capability_revision":"r","request_id":"i","price":1}})
+    )
+    .is_err());
+}
