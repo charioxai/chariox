@@ -145,6 +145,15 @@ fn should_refresh_remote_inventory(dynamic_relay: bool, managed_slice_worker: bo
     dynamic_relay && !managed_slice_worker
 }
 
+/// Whether this connector owns the kernel's remote inventory. A slice-private connector shares the
+/// primary's projection and must not replace it.
+fn owns_remote_inventory(router: &CommandRouter, static_relay: &Option<StaticRelayConfig>) -> bool {
+    should_refresh_remote_inventory(
+        static_relay.is_none(),
+        router.managed_slice_relay_identity().is_some(),
+    )
+}
+
 fn cloud_presence_refresh_interval(daemon_id: &str) -> Duration {
     CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL
         + Duration::from_millis(stable_jitter_ms(
@@ -656,7 +665,9 @@ async fn run_daemon_relay_connector_inner(
         // Every pass starts disconnected: before a first connect, after a failed one, and while
         // waiting for a token or a relay configuration. The list shows what the kernel remembers
         // and ages it, whatever stalls the connect.
-        retain_remembered_remote_machines(&router);
+        if owns_remote_inventory(&router, &static_relay) {
+            retain_remembered_remote_machines(&router);
+        }
 
         if static_relay.is_none() {
             let config = router.relay_config_snapshot();
@@ -1016,10 +1027,7 @@ async fn run_daemon_relay_connector_inner(
                 // A rename of the computer reaches Cloud and the relay at the next heartbeat tick,
                 // not at the next 30 s presence refresh.
                 let mut published_machine_name = router.machine_name();
-                let refresh_remote_inventory = should_refresh_remote_inventory(
-                    static_relay.is_none(),
-                    router.managed_slice_relay_identity().is_some(),
-                );
+                let refresh_remote_inventory = owns_remote_inventory(&router, &static_relay);
                 let mut inventory_refresh_task = refresh_remote_inventory
                     .then(|| spawn_remote_inventory_projection_refresh(Arc::clone(&router)));
                 let mut heartbeat_interval = tokio::time::interval(heartbeat);
@@ -1386,7 +1394,9 @@ async fn run_daemon_relay_connector_inner(
                 };
                 // The connection ended: the live list gives way to the remembered one at once,
                 // not after the reconnect delay.
-                retain_remembered_remote_machines(&router);
+                if owns_remote_inventory(&router, &static_relay) {
+                    retain_remembered_remote_machines(&router);
+                }
                 drop_backoff.after_connection(connected_at.elapsed());
                 let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt)
                     .max(drop_backoff.delay(&daemon_id));
