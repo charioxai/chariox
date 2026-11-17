@@ -1543,7 +1543,7 @@ fn skills_v2_late_ack_cannot_cross_revocation_but_a_fresh_selection_can() {
         .unwrap();
     assert_eq!(
         f.storage.active_loads("s", Some("project-a"), 3).unwrap(),
-        [fresh.clone()]
+        std::slice::from_ref(&fresh)
     );
     assert!(f
         .storage

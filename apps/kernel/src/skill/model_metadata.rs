@@ -157,7 +157,15 @@ mod tests {
     fn skill_model_metadata_counts_json_escaping_and_shortens_at_word_boundaries() {
         let mut entry = row(0);
         entry.skill.short_description = Some("é \"quoted\" \\ path examples ".repeat(20));
-        let result = page(3, &[entry.clone()], None, None, Some(32_768), 1.0).unwrap();
+        let result = page(
+            3,
+            std::slice::from_ref(&entry),
+            None,
+            None,
+            Some(32_768),
+            1.0,
+        )
+        .unwrap();
         assert!(result.to_string().len() <= 327);
         let short = result["skills"][0]["description"].as_str().unwrap();
         assert!(!short.is_empty());
