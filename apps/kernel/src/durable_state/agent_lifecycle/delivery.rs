@@ -163,26 +163,35 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
                 return Err(error("task continuation must settle before inbox delivery"));
             }
             replies::bind(tx, &e, target.as_deref(), &prompt)?;
-            admit(tx, &mut e, &prompt, target.as_deref(), run.as_deref(), now)?;
+            let mut woken = admit(tx, &mut e, &prompt, target.as_deref(), run.as_deref(), now)?;
             // One wake covers every row it may deliver; the rows share this
             // prompt and settle together through its receipt. A reply
-            // request is answered by its own turn, so it is never batched.
+            // request is answered by its own turn, so it is never batched,
+            // and a prompt resumes one task, so a row that wakes a second
+            // task starts the next wake.
             if !e.reply_requested {
                 for mut member in recipient_events_between(tx, &room, &agent, e.sequence, through)?
                 {
                     if member.reply_requested {
                         break;
                     }
-                    if batch_member(&member, target.is_some(), work.as_deref()) {
-                        admit(
-                            tx,
-                            &mut member,
-                            &prompt,
-                            target.as_deref(),
-                            run.as_deref(),
-                            now,
-                        )?;
+                    if !batch_member(&member, target.is_some(), work.as_deref()) {
+                        continue;
                     }
+                    if woken.is_some()
+                        && woken_task(&live_tasks(tx, &room, &agent)?, &member).is_some()
+                    {
+                        break;
+                    }
+                    let member_woken = admit(
+                        tx,
+                        &mut member,
+                        &prompt,
+                        target.as_deref(),
+                        run.as_deref(),
+                        now,
+                    )?;
+                    woken = woken.or(member_woken);
                 }
             }
             Ok(Outcome::Event(e))
@@ -559,8 +568,29 @@ fn siblings(
         .collect()
 }
 
+/// The Waiting task whose wait `e` wakes: the one it names by `task_id`, or
+/// the first of its `task_ids`.
+pub(crate) fn woken_task<'a>(
+    tasks: &'a [AgentTaskExecution],
+    e: &InboxEvent,
+) -> Option<&'a AgentTaskExecution> {
+    if e.kind == "message" {
+        return None;
+    }
+    tasks.iter().find(|t| {
+        t.room_id == e.room_id
+            && t.agent_id == e.agent_id
+            && t.state == ExecutionState::Waiting
+            && (e.payload.get("task_id").and_then(serde_json::Value::as_str)
+                == Some(t.task_id.as_str())
+                || e.payload["task_ids"].as_array().is_some_and(|ids| {
+                    ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
+                }))
+    })
+}
+
 /// Admits one pending row to the attempt: it takes the prompt, and the task
-/// whose wait it wakes keeps that wait until provider I/O.
+/// whose wait it wakes keeps that wait until provider I/O. Returns that task.
 fn admit(
     tx: &Transaction<'_>,
     e: &mut InboxEvent,
@@ -568,7 +598,7 @@ fn admit(
     target: Option<&str>,
     run: Option<&str>,
     now: u64,
-) -> Result<(), DaemonError> {
+) -> Result<Option<String>, DaemonError> {
     let (room, agent) = (e.room_id.clone(), e.agent_id.clone());
     e.state = "submitting".into();
     e.prompt_id = Some(prompt.into());
@@ -579,28 +609,18 @@ fn admit(
     save_event(tx, e)?;
     super::wakes::record_delivery(tx, e)?;
     // A wake retains the original task and its progress clock.
-    for mut t in live_tasks(tx, &room, &agent)? {
-        if t.room_id == room
-            && t.agent_id == agent
-            && t.state == ExecutionState::Waiting
-            && e.kind != "message"
-            && (e.payload.get("task_id").and_then(serde_json::Value::as_str)
-                == Some(t.task_id.as_str())
-                || e.payload["task_ids"].as_array().is_some_and(|ids| {
-                    ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
-                }))
-        {
-            super::goals::clock(&mut t, now);
-            if let Some(g) = &mut t.goal {
-                g.continuation_sequence += 1;
-                g.next_check_in_ms = None;
-            }
-            t.pending_prompt_id = Some(prompt.into());
-            t.state = ExecutionState::Working;
-            t.revision += 1;
-            save(tx, &t)?;
-            break;
-        }
+    let tasks = live_tasks(tx, &room, &agent)?;
+    let Some(mut t) = woken_task(&tasks, e).cloned() else {
+        return Ok(None);
+    };
+    super::goals::clock(&mut t, now);
+    if let Some(g) = &mut t.goal {
+        g.continuation_sequence += 1;
+        g.next_check_in_ms = None;
     }
-    Ok(())
+    t.pending_prompt_id = Some(prompt.into());
+    t.state = ExecutionState::Working;
+    t.revision += 1;
+    save(tx, &t)?;
+    Ok(Some(t.task_id))
 }

@@ -605,10 +605,12 @@ pub(crate) enum Operation {
         run: String,
         node: String,
     },
-    /// Private owner-turn admission; never cancels resources or delivery receipts.
+    /// A later turn of the agent (`later_prompt`) supersedes its interrupted task; never
+    /// cancels open work, resources or delivery receipts.
     RetireRestartFailure {
         task: String,
         revision: u64,
+        later_prompt: String,
         now: u64,
     },
     OwnerResponse {
