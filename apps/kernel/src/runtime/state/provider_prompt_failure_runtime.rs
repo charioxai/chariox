@@ -148,7 +148,7 @@ impl KernelRuntimeState {
             return Ok(true);
         }
         let safe_message = failure.notice();
-        let resume_notice = self.usage_limit_resume_notice(&agent_id, &failure);
+        let resume_notice = self.usage_limit_resume_notice(&agent_id, &guarded_prompt_id, &failure);
         let failed_attempt = FailedProviderAttempt {
             provider_run: &provider_run,
             agent_id: &agent_id,

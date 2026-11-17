@@ -37,6 +37,11 @@ fn config(resume: UsageLimitResume) -> crate::config::DaemonConfig {
 
 /// `count` Claude agents of one room, each with a turn running on its own provider run.
 async fn team(config: crate::config::DaemonConfig, count: usize) -> Team {
+    team_of(config, count, false).await
+}
+
+/// The first lane's turn is a step of a workflow run when `workflow_step`.
+async fn team_of(config: crate::config::DaemonConfig, count: usize, workflow_step: bool) -> Team {
     let worktree = crate::test_support::test_workspace_root().join(format!(
         "chariox-usage-limit-{:016x}",
         rand::random::<u64>()
@@ -64,6 +69,7 @@ async fn team(config: crate::config::DaemonConfig, count: usize) -> Team {
     let runtime = owned_runtime_state(&app).await;
     let mut lanes = Vec::new();
     for (index, agent_id) in agent_ids.iter().enumerate() {
+        let workflow_step = workflow_step && index == 0;
         runtime
             .owned
             .agent_store
@@ -112,13 +118,36 @@ async fn team(config: crate::config::DaemonConfig, count: usize) -> Team {
                         crate::attachment::ClientCapabilityLevel::FullTerminal,
                     ),
                 )?;
-                let prompt = crate::session::PromptQueueItem::new(
+                let mut prompt = crate::session::PromptQueueItem::new(
                     "stopped-prompt",
                     attachment.id(),
                     &agent_for_prompt,
                     "review this change",
                     crate::session::PromptStatus::Queued,
                 );
+                if workflow_step {
+                    let mut sessions = app.sessions_mut();
+                    let definition = sessions.create_workflow(run_for_app.session_id(), None)?;
+                    let node = sessions.add_workflow_node(
+                        run_for_app.session_id(),
+                        definition.id(),
+                        &agent_for_prompt,
+                    )?;
+                    let endpoint = sessions.create_workflow_endpoint(
+                        run_for_app.session_id(),
+                        definition.id(),
+                        node.id(),
+                        None,
+                    )?;
+                    let workflow_run = sessions.invoke_workflow_endpoint(
+                        run_for_app.session_id(),
+                        definition.id(),
+                        endpoint.id(),
+                        Some("review this change".to_string()),
+                    )?;
+                    prompt = prompt
+                        .with_workflow_context(workflow_run.id(), workflow_run.node_runs()[0].id());
+                }
                 app.prompt_owner_submit_prepared_prompt(run_for_app.session_id(), prompt, false)
             })
             .await
@@ -1263,4 +1292,36 @@ async fn a_plain_task_the_limit_cancelled_still_resumes_when_usage_is_back() {
 
     tick(team.rt(), reset).await;
     assert!(team.has_turn(0), "the failure is not a decision to stop");
+}
+
+#[tokio::test]
+async fn a_workflow_step_the_limit_failed_is_not_continued_outside_its_run() {
+    let mut config = config(UsageLimitResume::Automatic);
+    config.room_agent_tools = true;
+    let team = team_of(config, 1, true).await;
+    admit_plain_task(&team, 0);
+
+    team.hit_the_limit(0).await;
+
+    let session = team
+        .rt()
+        .owned
+        .session_store
+        .get_session(&team.session_id)
+        .unwrap();
+    assert!(
+        session
+            .workflow_runs()
+            .iter()
+            .all(|run| run.status() == crate::session::WorkflowRunStatus::Failed),
+        "the limit fails the step's run"
+    );
+    let reset = crate::provider::usage_limit_reset_at_ms(WEEKLY, crate::session::unix_epoch_ms())
+        .expect("the provider names the reset");
+    tick(team.rt(), reset).await;
+    assert!(
+        !team.has_turn(0),
+        "a step has no continuation outside its run"
+    );
+    assert_eq!(team.stop(0), None, "the stop ends instead of staying armed");
 }
