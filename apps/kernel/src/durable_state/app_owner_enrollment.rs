@@ -9,6 +9,7 @@ use std::sync::mpsc;
 /// Every table that keys App records by `owner_id`. A new App table with an
 /// owner column is classified here or in the enrollment test.
 pub(crate) const APP_OWNER_TABLES: &[&str] = &[
+    "app_account_bindings",
     "app_automations",
     "app_connection_grants",
     "app_deployment_consents",
@@ -31,6 +32,7 @@ pub(crate) const APP_OWNER_TABLES: &[&str] = &[
     "app_publisher_operations",
     "app_release_versions",
     "app_restore_receipts",
+    "app_standing_permissions",
     "app_validations",
     "app_wakes",
     "app_worker_lifecycle",

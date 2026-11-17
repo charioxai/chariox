@@ -350,14 +350,19 @@ async fn owner_stop_of_work_a_done_turn_retains_keeps_messages_pending_until_the
     };
     assert_eq!(stopped.state, ExecutionState::Done);
     let Outcome::Event(event) = store
-        .agent_lifecycle(Operation::Occur(occurrence(
-            session.id(),
-            agent.id(),
-            "peer",
-            "message-after-stop",
-            "message",
-            serde_json::json!({"message":"Rerun the build"}),
-        )))
+        .agent_lifecycle(Operation::Occur({
+            // Urgent, so only the owner's Stop keeps it from starting the idle agent.
+            let mut message = occurrence(
+                session.id(),
+                agent.id(),
+                "peer",
+                "message-after-stop",
+                "message",
+                serde_json::json!({"message":"Rerun the build"}),
+            );
+            message.urgent = true;
+            message
+        }))
         .unwrap()
     else {
         panic!()

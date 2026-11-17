@@ -687,7 +687,11 @@ fn provider_completion_without_structured_output_fails_without_automatic_retry()
         .sessions()
         .get_session(session.id())
         .expect("session should resolve");
-    assert!(session_state.workflow_run(workflow_run.id()).is_none());
+    // A failed run needs someone, so it stays in the Room until the person opens it.
+    assert!(session_state
+        .workflow_run(workflow_run.id())
+        .expect("a failed run that needs someone stays in the Room")
+        .attention());
     let resolved_run = app
         .durable_state_store()
         .resolve_workflow_run(session.host_daemon_id(), session.id(), workflow_run.id())
