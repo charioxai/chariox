@@ -42,6 +42,11 @@ function context(root, env) {
     // The commit the change branches from, or null with the reason; a diff check cannot judge a change without it.
     base: baseline.base ?? null,
     baseReason: baseline.reason ?? null,
+    // The file's text at the merge base, or null when the file did not exist there or there is no base.
+    readAtBase(path) {
+      if (!baseline.base) return null
+      try { return gitOut(root, 'show', `${baseline.base}:${path}`) } catch { return null }
+    },
     // Added and removed lines per file against the base, working tree included: Map file -> [{sign, line, text}].
     diff() {
       if (!baseline.base) return new Map()
