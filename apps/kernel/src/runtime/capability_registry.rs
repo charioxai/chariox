@@ -3,16 +3,14 @@ use std::path::PathBuf;
 use crate::error::DaemonError;
 use crate::local::{
     GetConnectorAdapterRequest, GetConnectorRequest, GetCredentialRequest, GetEnvironmentRequest,
-    GetMcpServerRequest, GetScriptRequest, GetSkillRequest, ImportMcpServersRequest,
-    ImportProviderCapabilitiesRequest, ImportSkillsRequest, InstallMcpServerRequest,
-    InstallSkillRequest, ListConnectorAdaptersRequest, ListConnectorsRequest,
-    ListCredentialsRequest, ListEnvironmentsRequest, ListMcpServersRequest, ListScriptsRequest,
-    ListSkillsRequest, LocalDaemonRequest, LocalDaemonResponse, RegisterConnectorAdapterRequest,
+    GetMcpServerRequest, GetScriptRequest, ImportMcpServersRequest,
+    ImportProviderCapabilitiesRequest, InstallMcpServerRequest, ListConnectorAdaptersRequest,
+    ListConnectorsRequest, ListCredentialsRequest, ListEnvironmentsRequest, ListMcpServersRequest,
+    ListScriptsRequest, LocalDaemonRequest, LocalDaemonResponse, RegisterConnectorAdapterRequest,
     RegisterConnectorRequest, RegisterEnvironmentRequest, RegisterScriptRequest,
     RemoveConnectorAdapterRequest, RemoveConnectorRequest, RemoveEnvironmentRequest,
-    RemoveScriptRequest, TestConnectorRequest, UninstallMcpServerRequest, UninstallSkillRequest,
-    UpdateMcpServerRequest, UpdateSkillRequest, UpsertConnectorRequest, UpsertSkillRequest,
-    ValidateScriptRequest,
+    RemoveScriptRequest, TestConnectorRequest, UninstallMcpServerRequest, UpdateMcpServerRequest,
+    UpsertConnectorRequest, ValidateScriptRequest,
 };
 
 pub(crate) async fn execute_capability_registry_request(
@@ -97,13 +95,12 @@ pub(crate) async fn execute_capability_registry_request(
         LocalDaemonRequest::TestConnector(request) => {
             execute_test_connector_request(request, credential_vault)
         }
-        LocalDaemonRequest::UpsertSkill(request) => execute_upsert_skill_request(request),
-        LocalDaemonRequest::InstallSkill(request) => execute_install_skill_request(request),
-        LocalDaemonRequest::UpdateSkill(request) => execute_update_skill_request(request),
-        LocalDaemonRequest::UninstallSkill(request) => execute_uninstall_skill_request(request),
-        LocalDaemonRequest::ImportSkills(request) => execute_import_skills_request(request),
-        LocalDaemonRequest::GetSkill(request) => execute_get_skill_request(request),
-        LocalDaemonRequest::ListSkills(request) => execute_list_skills_request(request),
+
+        LocalDaemonRequest::SkillsV2(_) => Err(DaemonError::LocalTransport {
+            operation: "skills.v2",
+            message: "Skills v2 requests are served by the kernel skills service, not the capability registry"
+                .into(),
+        }),
         _ => Err(DaemonError::LocalTransport {
             operation: "capability registry request",
             message: "unsupported capability registry request".to_string(),
@@ -447,142 +444,12 @@ pub(crate) fn execute_list_scripts_request(
     })
 }
 
-pub(crate) fn execute_install_skill_request(
-    request: InstallSkillRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let workspace = registry_workspace_root(request.workspace_id.as_deref())?;
-    let source_path = if request.source_path.is_absolute() {
-        request.source_path
-    } else {
-        workspace.join(request.source_path)
-    };
-    let registry = crate::skill::CharioxSkillRegistry::new(skill_registry_roots(
-        request.workspace_id.as_deref(),
-    )?);
-    let (skill, path) = registry.install_from_path(&source_path)?;
-    Ok(LocalDaemonResponse::SkillInstalled { skill, path })
-}
-
-pub(crate) fn execute_upsert_skill_request(
-    request: UpsertSkillRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::skill::CharioxSkillRegistry::new(skill_registry_roots(
-        request.workspace_id.as_deref(),
-    )?);
-    let (skill, path) = match request.source {
-        crate::local::SkillInstallSource::Content { skill_md } => {
-            registry.upsert_from_content(&skill_md)?
-        }
-        crate::local::SkillInstallSource::Url { url } => registry.upsert_from_url(&url)?,
-    };
-    Ok(LocalDaemonResponse::SkillUpserted { skill, path })
-}
-
-pub(crate) fn execute_update_skill_request(
-    request: UpdateSkillRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let workspace = registry_workspace_root(request.workspace_id.as_deref())?;
-    let source_path = if request.source_path.is_absolute() {
-        request.source_path
-    } else {
-        workspace.join(request.source_path)
-    };
-    let registry = crate::skill::CharioxSkillRegistry::new(skill_registry_roots(
-        request.workspace_id.as_deref(),
-    )?);
-    let (skill, path) = registry.update_from_path(&source_path)?;
-    Ok(LocalDaemonResponse::SkillUpdated { skill, path })
-}
-
-pub(crate) fn execute_uninstall_skill_request(
-    request: UninstallSkillRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::skill::CharioxSkillRegistry::new(skill_registry_roots(
-        request.workspace_id.as_deref(),
-    )?);
-    let (skill, path) = registry.uninstall(&request.name)?;
-    Ok(LocalDaemonResponse::SkillUninstalled { skill, path })
-}
-
-pub(crate) fn execute_import_skills_request(
-    request: ImportSkillsRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let workspace = registry_workspace_root(request.workspace_id.as_deref())?;
-    let registry = crate::skill::CharioxSkillRegistry::new(skill_registry_roots(
-        request.workspace_id.as_deref(),
-    )?);
-    let Some(provider) = crate::provider::canonical_provider_family(&request.provider) else {
-        return Err(DaemonError::InvalidConfig {
-            field: "provider",
-            message: "only Codex, OpenCode, and Claude skill import are supported",
-        });
-    };
-    let outcome = match provider {
-        "codex" => {
-            crate::skill::import_codex_skills(&registry, &workspace, request.name.as_deref())?
-        }
-        "opencode" => {
-            crate::skill::import_opencode_skills(&registry, &workspace, request.name.as_deref())?
-        }
-        "claude" => {
-            crate::skill::import_claude_skills(&registry, &workspace, request.name.as_deref())?
-        }
-        _ => {
-            return Err(DaemonError::InvalidConfig {
-                field: "provider",
-                message: "only Codex, OpenCode, and Claude skill import are supported",
-            });
-        }
-    };
-    Ok(LocalDaemonResponse::SkillsImported { outcome })
-}
-
-pub(crate) fn execute_get_skill_request(
-    request: GetSkillRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::skill::CharioxSkillRegistry::new(skill_registry_roots(
-        request.workspace_id.as_deref(),
-    )?);
-    let Some(skill) = registry.get(&request.name)? else {
-        return Err(DaemonError::LocalTransport {
-            operation: "skill.get",
-            message: format!("skill `{}` was not found", request.name),
-        });
-    };
-    Ok(LocalDaemonResponse::Skill { skill })
-}
-
-pub(crate) fn execute_list_skills_request(
-    request: ListSkillsRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::skill::CharioxSkillRegistry::new(skill_registry_roots(
-        request.workspace_id.as_deref(),
-    )?);
-    Ok(LocalDaemonResponse::SkillsListed {
-        skills: registry.list()?,
-    })
-}
-
 pub(crate) fn ensure_mcp_exists(workspace_id: Option<&str>, name: &str) -> Result<(), DaemonError> {
     let registry = crate::mcp::CharioxMcpRegistry::new(mcp_registry_roots(workspace_id)?);
     if registry.get(name)?.is_none() {
         return Err(DaemonError::LocalTransport {
             operation: "agent.extension.grant",
             message: format!("MCP `{name}` is not installed"),
-        });
-    }
-    Ok(())
-}
-
-pub(crate) fn ensure_skill_exists(
-    workspace_id: Option<&str>,
-    name: &str,
-) -> Result<(), DaemonError> {
-    let registry = crate::skill::CharioxSkillRegistry::new(skill_registry_roots(workspace_id)?);
-    if registry.get(name)?.is_none() {
-        return Err(DaemonError::LocalTransport {
-            operation: "agent.extension.grant",
-            message: format!("skill `{name}` is not installed"),
         });
     }
     Ok(())
@@ -729,25 +596,6 @@ fn script_validation_context(
     Ok((script_registry, env, source_path))
 }
 
-pub(super) fn skill_registry_roots(
-    workspace_id: Option<&str>,
-) -> Result<Vec<PathBuf>, DaemonError> {
-    let workspace = registry_workspace_root(workspace_id)?;
-    let mut roots = Vec::new();
-    #[cfg(not(test))]
-    let _ = workspace;
-    #[cfg(test)]
-    if workspace_id.is_some_and(|value| !value.trim().is_empty()) {
-        roots.push(crate::skill::CharioxSkillRegistry::project_root(&workspace));
-    }
-    roots.extend(user_only_root(
-        crate::skill::CharioxSkillRegistry::user_root(),
-        "skill registry root",
-        "HOME must be set to resolve ~/.chariox/skills",
-    )?);
-    Ok(roots)
-}
-
 pub(super) fn registry_workspace_root(workspace_id: Option<&str>) -> Result<PathBuf, DaemonError> {
     match workspace_id {
         Some(value) if !value.trim().is_empty() => Ok(PathBuf::from(value)),
@@ -777,7 +625,6 @@ mod tests {
         let workspace_id = workspace.to_string_lossy();
 
         let mcp_roots = mcp_registry_roots(Some(workspace_id.as_ref())).unwrap();
-        let skill_roots = skill_registry_roots(Some(workspace_id.as_ref())).unwrap();
 
         assert_eq!(
             mcp_roots.first(),
@@ -786,16 +633,6 @@ mod tests {
         assert_eq!(
             mcp_roots.get(1),
             crate::mcp::CharioxMcpRegistry::user_root().as_ref()
-        );
-        assert_eq!(
-            skill_roots.first(),
-            Some(&crate::skill::CharioxSkillRegistry::project_root(
-                &workspace
-            ))
-        );
-        assert_eq!(
-            skill_roots.get(1),
-            crate::skill::CharioxSkillRegistry::user_root().as_ref()
         );
     }
 

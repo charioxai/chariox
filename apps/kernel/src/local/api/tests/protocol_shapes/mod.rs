@@ -128,6 +128,7 @@ mod owner_handoff;
 mod relay_transport;
 mod room_workflows;
 mod screenshot;
+mod skills_v2;
 mod waiting_room_workspace;
 
 mod leased_agent_file_copy;

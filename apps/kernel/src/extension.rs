@@ -12,7 +12,6 @@ fn is_false(value: &bool) -> bool {
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionKind {
     Mcp,
-    Skill,
     Script,
     Connector,
     App,
@@ -22,7 +21,6 @@ impl ExtensionKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Mcp => "mcp",
-            Self::Skill => "skill",
             Self::Script => "script",
             Self::Connector => "connector",
             Self::App => "app",

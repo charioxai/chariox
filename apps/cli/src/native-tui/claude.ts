@@ -67,7 +67,6 @@ type NativeClaudeOptions = {
   detachedScreen: boolean
   detachedScreenIndices: number[]
   grantMcps: string[]
-  grantSkills: string[]
 }
 
 export async function runClaudeNativeTui(args: string[]): Promise<void> {
@@ -94,7 +93,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
   await runClaudeRemoteRendered(options, client, workspace, worktree)
 }
 
-function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
+export function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
   const options: NativeClaudeOptions = {
     clientId: `chariox-claude-native-${process.pid}`,
     model: "claude-sonnet-4-6",
@@ -104,7 +103,6 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
     detachedScreen: false,
     detachedScreenIndices: [],
     grantMcps: [],
-    grantSkills: [],
   }
   let relayTokenSource = false
   const positional: string[] = []
@@ -198,8 +196,7 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
         options.grantMcps.push(next())
         break
       case "--grant-skill":
-        options.grantSkills.push(next())
-        break
+        throw new Error("--grant-skill is retired: install skills in Skills and select instructions with $name")
       case "--help":
       case "-h":
         printNativeClaudeUsage()
@@ -238,9 +235,8 @@ function printNativeClaudeUsage() {
     "  --effort <effort>                Claude effort argument (default low)",
     "  --mode <build|plan>              Chariox agent mode (default build)",
     "  --permissions <required|yolo>    Claude permission mode mapping (default required)",
-    "  --remote-rendered                Run Claude Code in the target kernel PTY and render it here",
+    "  --remote-rendered                Use the kernel-owned provider PTY (the default)",
     "  --grant-mcp <name>               Grant an installed Chariox MCP to the native agent before provider launch",
-    "  --grant-skill <name>             Grant an installed Chariox skill to the native agent before provider launch",
     "",
   ].join("\n"))
 }
@@ -294,7 +290,7 @@ async function runClaudeRemoteRendered(
     const agent = created?.agent
       ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
       : await spawnNativeAgent(client, session.id, "claude", options.agentAlias, options.model, worktree, options.effort, options.mode, options.permissions, options.machineRef, options.sliceRef)
-    await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
+    await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps)
     const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, options.model, options.effort)
     const run = await waitForClaudeProviderRunReady(client, launched.id)
     const readiness = createClaudeRemoteRenderedReadiness()
@@ -317,7 +313,6 @@ async function runClaudeRemoteRendered(
       sliceLookupError: options.sliceRef ? sliceInventory.error : null,
       run,
       grantedMcps: options.grantMcps,
-      grantedSkills: options.grantSkills,
       providerLines: ["  tui:            target-kernel-pty"],
     })
     process.stderr.write(banner)

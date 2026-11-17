@@ -15,6 +15,7 @@ pub(super) async fn resolve_session_lane_key(
         | LocalDaemonRequest::ListProjects(_)
         | LocalDaemonRequest::SuggestSessionAlias(_)
         | LocalDaemonRequest::SetProjectPinned(_)
+        | LocalDaemonRequest::CreateProject(_)
         | LocalDaemonRequest::RenameProject(_)
         | LocalDaemonRequest::UpdateProjectWorkspaces(_)
         | LocalDaemonRequest::ArchiveProject(_)

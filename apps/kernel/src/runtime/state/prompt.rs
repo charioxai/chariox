@@ -584,14 +584,9 @@ impl KernelRuntimeOwnedState {
                 started_next.prompt(),
                 false,
             )?;
-            let granted_skill_context =
-                self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
-            let mut hidden_system_context = join_hidden_context(
-                &self.hidden_context_with_failed_requests(
-                    agent_id,
-                    started_next.hidden_system_context(),
-                ),
-                &granted_skill_context,
+            let mut hidden_system_context = self.hidden_context_with_failed_requests(
+                agent_id,
+                started_next.hidden_system_context(),
             );
             if self.config_projection.snapshot().room_agent_tools
                 && !self
@@ -779,12 +774,3 @@ impl KernelRuntimeOwnedState {
 #[cfg(test)]
 #[path = "prompt_workspace_claim_conflict_tests.rs"]
 mod prompt_workspace_claim_conflict_tests;
-
-fn join_hidden_context(first: &str, second: &str) -> String {
-    match (first.trim(), second.trim()) {
-        ("", "") => String::new(),
-        (first, "") => first.to_string(),
-        ("", second) => second.to_string(),
-        (first, second) => format!("{first}\n\n{second}"),
-    }
-}

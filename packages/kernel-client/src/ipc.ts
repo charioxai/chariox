@@ -756,7 +756,7 @@ export class LocalIpcClient {
       const pending = this.pendingRequests.register<TResponse>(
         requestId,
         lane,
-        waitsForAuthorization ? 0 : replayAfterWrite ? this.requestAttemptTimeoutMs(lane, retryUntilMs) : IPC_TIMEOUT_MS,
+        waitsForAuthorization ? 0 : replayAfterWrite ? this.requestAttemptTimeoutMs(lane, retryUntilMs, request) : IPC_TIMEOUT_MS,
         IPC_TIMEOUT_MS,
       )
 
@@ -835,8 +835,10 @@ export class LocalIpcClient {
       && (error.code === "connection_closed" || error.code === "write_failed" || error.code === "request_timeout" || error.code === "target_not_connected")
   }
 
-  private requestAttemptTimeoutMs(lane: KernelSocketLane, retryUntilMs: number): number {
-    if (lane !== "control") {
+  private requestAttemptTimeoutMs(lane: KernelSocketLane, retryUntilMs: number, request: unknown): number {
+    // Skills requests fetch repositories and cannot be replayed on their admitted socket, so a quiet
+    // moment is not a stall: the kernel answers or fails them, and a lost link is caught by the heartbeat.
+    if (lane !== "control" || isSkillsV2Request(request)) {
       return IPC_TIMEOUT_MS
     }
     const remainingRetryMs = retryUntilMs - Date.now()
@@ -1860,6 +1862,10 @@ export class LocalIpcClient {
     // kernel runs again (a worker control) is not left waiting for 600 s.
     this.rejectPending("kernel websocket dropped", lane)
   }
+}
+
+function isSkillsV2Request(request: unknown): boolean {
+  return request !== null && typeof request === "object" && "SkillsV2" in request
 }
 
 function runsAgainOnReplay(request: unknown): boolean {

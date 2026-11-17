@@ -507,7 +507,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned regular agents",
         routed: false,
-        description: "Workflow-node extension commands are not routed directly. Grant MCPs or skills to the owned regular agent with `mcp grant` or `skill grant`; the workflow node inherits the agent capability.",
+        description: "Workflow-node extension commands are not routed directly. Grant MCPs to the owned regular agent with `mcp grant`; the workflow node inherits the agent capability. Skills are instructions selected through the home catalog.",
     },
     MetaCommandDoc {
         name: "workflow pane",

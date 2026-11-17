@@ -66,6 +66,8 @@ pub struct ClaudeRuntimeState {
     pub(super) exit_reported: bool,
     // Set when this program adopted a turn from the previous one (hot reload).
     pub(super) adopted_turn: Option<AdoptedTurn>,
+    /// How much of the prompt hook's event file the kernel has already read.
+    pub(super) hook_events_offset: u64,
 }
 
 impl std::fmt::Debug for ClaudeRuntimeState {

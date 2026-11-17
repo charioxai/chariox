@@ -1238,7 +1238,6 @@ pub(super) async fn handle_daemon_peer_request(
             structured_endpoint,
             provider_session_id,
             required_mcps,
-            required_skills,
             remote_extension_manifest,
             provider_launch_credential,
         } => {
@@ -1253,7 +1252,6 @@ pub(super) async fn handle_daemon_peer_request(
                     structured_endpoint,
                     provider_session_id,
                     required_mcps,
-                    required_skills,
                     remote_extension_manifest,
                     provider_launch_credential,
                 )
@@ -1352,9 +1350,9 @@ pub(super) async fn handle_daemon_peer_request(
             workflow_context,
             git_context,
             required_mcps,
-            required_skills,
             remote_extension_manifest,
             provider_launch_credential,
+            native_skill_selections,
         } => {
             let submitted = router
                 .relay_submit_leased_prompt(
@@ -1367,9 +1365,9 @@ pub(super) async fn handle_daemon_peer_request(
                     workflow_context,
                     git_context,
                     required_mcps,
-                    required_skills,
                     remote_extension_manifest,
                     provider_launch_credential,
+                    native_skill_selections,
                 )
                 .await;
             match submitted {
@@ -1474,7 +1472,6 @@ pub(super) async fn handle_daemon_peer_request(
             prompt,
             hidden_system_context,
             attachments,
-            required_skills,
         } => {
             let steered = router
                 .relay_steer_leased_prompt(
@@ -1484,7 +1481,6 @@ pub(super) async fn handle_daemon_peer_request(
                     &prompt,
                     &hidden_system_context,
                     attachments,
-                    required_skills,
                 )
                 .await;
             match steered {
@@ -1755,10 +1751,9 @@ pub(super) async fn handle_daemon_peer_request(
                 .dispatch_forwarded_capability_runtime_tool_call(context, tool_name, arguments)
                 .await;
             match handled {
-                Ok((result, skill_package, remote_extension_manifest)) => {
+                Ok((result, remote_extension_manifest)) => {
                     RelayPeerResponse::CapabilityRuntimeToolHandled {
                         result,
-                        skill_package,
                         remote_extension_manifest,
                     }
                 }
@@ -2003,12 +1998,62 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
-        RelayPeerRequest::EnsureRemoteSkillPackages { context, packages } => {
+        RelayPeerRequest::EnsureRemoteSkillPackages {
+            execution_lease_id,
+            context,
+            packages,
+            manifest,
+            skill_names,
+        } => {
             let ensured = router
-                .relay_ensure_remote_skill_packages(context, packages)
+                .relay_ensure_remote_skill_packages(
+                    context.clone(),
+                    execution_lease_id.clone(),
+                    manifest.clone(),
+                    packages,
+                    skill_names,
+                )
                 .await;
             match ensured {
-                Ok(materialized) => RelayPeerResponse::RemoteSkillPackagesEnsured { materialized },
+                Ok(materialized) => RelayPeerResponse::RemoteSkillPackagesEnsured {
+                    execution_lease_id,
+                    context,
+                    manifest,
+                    materialized,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                        display_event: None,
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::ReadLeasedSkillNativeInventory {
+            context,
+            catalog_revision,
+            refresh,
+            details_for,
+        } => {
+            if context.home_kernel_id != stable_peer_daemon_id(from_daemon_id) {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "unauthorized",
+                        "Skills inventory sender mismatch",
+                        false,
+                    )),
+                    display_event: None,
+                };
+            }
+            match router
+                .relay_read_skill_native_inventory(context, catalog_revision, refresh, details_for)
+                .await
+            {
+                Ok((inventory, details)) => {
+                    RelayPeerResponse::LeasedSkillNativeInventory { inventory, details }
+                }
                 Err(error) => {
                     return RelayRequestOutcome {
                         display_event: None,
@@ -2594,7 +2639,8 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         | RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id, ..
         } => Some(LeaseResource::LeasedAgent(leased_agent_id)),
-        RelayPeerRequest::EnsureRemoteSkillPackages { context, .. } => {
+        RelayPeerRequest::EnsureRemoteSkillPackages { context, .. }
+        | RelayPeerRequest::ReadLeasedSkillNativeInventory { context, .. } => {
             Some(LeaseResource::LeasedAgent(&context.leased_agent_id))
         }
         RelayPeerRequest::CheckRemoteMcpAvailability { context, .. } => {
@@ -3418,7 +3464,6 @@ mod tests {
                 None,
                 Some(git_context),
                 Vec::new(),
-                None,
                 crate::extension::RemoteExtensionManifest::default(),
             )
             .expect("worker should accept the prompt");
@@ -3547,7 +3592,6 @@ mod tests {
                 prompt: "late original steer must not reach provider input\n".to_string(),
                 hidden_system_context: String::new(),
                 attachments: Vec::new(),
-                required_skills: None,
             },
         )
         .await;

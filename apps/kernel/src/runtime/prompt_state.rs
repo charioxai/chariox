@@ -7,6 +7,7 @@ use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome, Run
 mod archive;
 mod profile_transition;
 mod queue_promotion;
+mod skill_authority;
 pub(crate) use profile_transition::AgentProfileTransitionClaim;
 
 pub(crate) const PROMPT_QUEUE_LIMIT: usize = 128;

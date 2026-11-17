@@ -50,7 +50,7 @@ mod remote_capability_sync;
 mod remote_extension_control_plane;
 pub(in crate::runtime::state) use remote_extension_control_plane::OWNER_DECISION_FORWARD_TIMEOUT;
 mod script;
-mod skill_package_response;
+mod skills;
 mod slice;
 mod terminal;
 pub(super) use slice::{
@@ -63,6 +63,7 @@ pub(super) use slice::{
 mod worker_home_credential_client;
 mod worker_home_extension_client;
 mod worker_home_relay_client;
+pub(super) use worker_home_relay_client::send_worker_home_request;
 mod worker_home_room_browser_client;
 mod workflow_authenticated;
 mod workflow_forwarding;
@@ -234,6 +235,9 @@ impl KernelRuntimeState {
             specs.push(super::file_copy_tool::file_copy_spec());
             specs.extend(super::machine_files_tools::files_tool_specs());
             specs.extend(super::machine_acquisition::machine_tool_specs());
+        }
+        if provider_runs.len() == 1 && self.skills_v2_runtime_available() {
+            specs.extend(crate::transport::runtime_tools::skill_runtime_tool_specs());
         }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             let room_tools = self.room_agent_tools_enabled();
@@ -503,6 +507,9 @@ impl KernelRuntimeState {
                         crate::transport::runtime_tools::canonical_extension_tool_name(tool_name)
                     })
                     .or_else(|| {
+                        crate::transport::runtime_tools::canonical_skill_tool_name(tool_name)
+                    })
+                    .or_else(|| {
                         crate::transport::runtime_tools::canonical_recall_tool_name(tool_name)
                     })
                     .or_else(|| {
@@ -683,11 +690,13 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL
                     | crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL
                     | crate::transport::runtime_tools::REGISTER_MCP_TOOL
-                    | crate::transport::runtime_tools::REGISTER_SKILL_PATH_TOOL
                     | crate::transport::runtime_tools::REGISTER_ENVIRONMENT_TOOL
                     | crate::transport::runtime_tools::REGISTER_SCRIPT_PATH_TOOL
                     | crate::transport::runtime_tools::REGISTER_CONNECTOR_PATH_TOOL
                     | crate::transport::runtime_tools::REGISTER_CONNECTOR_ADAPTER_PATH_TOOL
+                    | crate::transport::runtime_tools::LIST_SKILLS_TOOL
+                    | crate::transport::runtime_tools::LOAD_SKILL_TOOL
+                    | crate::transport::runtime_tools::MANAGE_SKILLS_TOOL
             ) {
                 if let Some(result) =
                     Box::pin(self.try_dispatch_remote_capability_runtime_tool_call(
@@ -1041,6 +1050,9 @@ fn is_metaagent_direct_runtime_tool_allowed(tool_name: &str, slice_available: bo
             | crate::transport::runtime_tools::READ_ARTIFACT_TOOL
             | crate::transport::runtime_tools::SEARCH_RECALL_TOOL
             | crate::transport::runtime_tools::QUERY_RECALL_TOOL
+            | crate::transport::runtime_tools::LIST_SKILLS_TOOL
+            | crate::transport::runtime_tools::LOAD_SKILL_TOOL
+            | crate::transport::runtime_tools::MANAGE_SKILLS_TOOL
     ) || (slice_available
         && crate::transport::runtime_tools::canonical_slice_tool_name(tool_name).is_some())
 }

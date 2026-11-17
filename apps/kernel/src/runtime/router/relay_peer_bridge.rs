@@ -524,7 +524,6 @@ impl CommandRouter {
         structured_endpoint: Option<String>,
         provider_session_id: Option<String>,
         required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
         provider_launch_credential: Option<
             crate::transport::relay_peer::RemoteProviderLaunchCredential,
@@ -541,7 +540,6 @@ impl CommandRouter {
             structured_endpoint,
             provider_session_id,
             required_mcps,
-            required_skills,
             remote_extension_manifest,
             provider_launch_credential,
         )
@@ -605,11 +603,11 @@ impl CommandRouter {
         workflow_context: Option<crate::execution_lease::RemoteWorkflowTurnContext>,
         git_context: Option<crate::transport::relay_peer::RemoteGitTurnContext>,
         required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
         provider_launch_credential: Option<
             crate::transport::relay_peer::RemoteProviderLaunchCredential,
         >,
+        native_skill_selections: crate::transport::relay_peer::LeasedNativeSkills,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         relay_peer_runtime::submit_relay_leased_prompt(
             &self.runtime_state,
@@ -622,9 +620,9 @@ impl CommandRouter {
             workflow_context,
             git_context,
             required_mcps,
-            required_skills,
             remote_extension_manifest,
             provider_launch_credential,
+            native_skill_selections,
         )
         .await
     }
@@ -670,7 +668,6 @@ impl CommandRouter {
         prompt: &str,
         hidden_system_context: &str,
         attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
     ) -> Result<(String, bool), DaemonError> {
         relay_peer_runtime::steer_relay_leased_prompt(
             &self.runtime_state,
@@ -680,20 +677,43 @@ impl CommandRouter {
             prompt,
             hidden_system_context,
             attachments,
-            required_skills,
         )
         .await
+    }
+
+    pub(crate) async fn relay_read_skill_native_inventory(
+        &self,
+        context: crate::transport::relay_peer::RemoteSkillSyncContext,
+        catalog_revision: u64,
+        refresh: bool,
+        details_for: Option<crate::skill::v2::SkillSelection>,
+    ) -> Result<
+        (
+            Option<crate::transport::relay_peer::LeasedSkillNativeInventory>,
+            Option<crate::skill::v2::NativeSkillDetails>,
+        ),
+        DaemonError,
+    > {
+        self.runtime_state
+            .read_leased_skill_native_inventory(context, catalog_revision, refresh, details_for)
+            .await
     }
 
     pub(crate) async fn relay_ensure_remote_skill_packages(
         &self,
         context: crate::transport::relay_peer::RemoteSkillSyncContext,
+        execution_lease_id: String,
+        manifest: crate::skill::v2::SkillTransferManifest,
         packages: Vec<crate::skill::CharioxSkillPackage>,
+        skill_names: Option<crate::skill::leased_names::LeasedSkillNames>,
     ) -> Result<Vec<crate::transport::relay_peer::RemoteSkillMaterialization>, DaemonError> {
         relay_peer_runtime::ensure_relay_remote_skill_packages(
             &self.runtime_state,
             context,
+            execution_lease_id,
+            manifest,
             packages,
+            skill_names,
         )
         .await
     }

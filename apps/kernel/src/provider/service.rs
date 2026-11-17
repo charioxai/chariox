@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 mod outcomes;
+mod prompt_envelope;
 mod run_lifecycle;
 mod runtime_io;
 mod store;

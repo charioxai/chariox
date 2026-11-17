@@ -14,6 +14,7 @@ export type KernelEvent =
   | { event: "session_processes_changed"; session_id: string; processes: SessionProcess[] }
   | { event: "client_catalog_changed"; revision: number }
   | { event: "kernel_browser_frame"; subscription_id: string; frame: Record<string, unknown> }
+  | { event: "skills_changed"; session_id: string; change: import("./kernel-types-skills-v2.js").SkillCatalogEvent }
   | {
     event: "terminal_output"
     records: Array<Record<string, unknown>>

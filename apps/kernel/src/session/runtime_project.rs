@@ -43,7 +43,7 @@ pub struct RuntimeProject {
     /// projects supported more than one Workspace. The first workspace in
     /// `workspace_ids` is mirrored here, but it is not the session primary.
     workspace_id: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     workspace_ids: Vec<String>,
     name: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -71,7 +71,11 @@ impl RuntimeProject {
         Self {
             id: id.into(),
             owner_user_id: owner_user_id.into(),
-            workspace_ids: vec![workspace_id.clone()],
+            workspace_ids: if workspace_id.is_empty() {
+                vec![]
+            } else {
+                vec![workspace_id.clone()]
+            },
             workspace_id,
             name: name.into(),
             pinned: false,
@@ -106,7 +110,7 @@ impl RuntimeProject {
     }
 
     pub fn workspace_ids(&self) -> &[String] {
-        if self.workspace_ids.is_empty() {
+        if self.workspace_ids.is_empty() && !self.workspace_id.is_empty() {
             std::slice::from_ref(&self.workspace_id)
         } else {
             &self.workspace_ids
@@ -164,14 +168,16 @@ impl RuntimeProject {
     }
 
     pub(crate) fn replace_workspace_ids(&mut self, workspace_ids: Vec<String>) {
-        self.workspace_id = workspace_ids[0].clone();
+        self.workspace_id = workspace_ids.first().cloned().unwrap_or_default();
         self.workspace_ids = workspace_ids;
         self.updated_at_ms = unix_epoch_ms();
     }
 
     pub(crate) fn normalize_workspace_ids(&mut self) {
         if self.workspace_ids.is_empty() {
-            self.workspace_ids.push(self.workspace_id.clone());
+            if !self.workspace_id.is_empty() {
+                self.workspace_ids.push(self.workspace_id.clone());
+            }
         } else {
             self.workspace_id = self.workspace_ids[0].clone();
         }

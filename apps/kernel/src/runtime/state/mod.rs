@@ -221,6 +221,10 @@ type UnlinkedKernels = (u64, BTreeSet<String>);
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
     external_command_authority: Option<ExternalCommandAuthority>,
+    skills_catalog_caller: Option<(
+        crate::runtime::command::KernelCommandSource,
+        crate::runtime::command::KernelCaller,
+    )>,
     room_provider_origin: Option<(String, String)>,
     room_request_origin: Option<(String, LocalDaemonRequest)>,
     /// MP-08 / MP-11: the transport admitted this command from a terminal
@@ -412,6 +416,8 @@ struct KernelRuntimeOwnedState {
     pty_output_signal: crate::pty::PtyOutputSignal,
     terminal_stream: crate::terminal::TerminalStreamStore,
     runtime_projection_changes: Arc<RuntimeChangeSignal>,
+    skill_inventories: Arc<skills_native_inventory::SkillInventories>,
+    settled_worker_runs: Arc<skills_settled_worker_runs::SettledWorkerRuns>,
     workflow_design_events: WorkflowDesignEventStore,
     workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     workspace_live_sync_coordinator: Arc<Mutex<crate::io::ArtifactEditCoordinator>>,
@@ -602,7 +608,6 @@ mod session_activity_owned_state;
 use external_command_authority::ExternalCommandAuthority;
 mod prompt_git_observer_runtime;
 mod prompt_queue_owned_state;
-mod prompt_skill_context_state;
 mod prompt_transcript_owned_state;
 mod provider;
 mod provider_account_admission;
@@ -720,6 +725,14 @@ mod leased_computer_runtime_tests;
 #[cfg(test)]
 mod leased_worker_route_tests;
 mod notes_runtime;
+mod skills_catalog_runtime;
+pub(crate) use skills_catalog_runtime::control_capabilities;
+mod skills_dispatch;
+mod skills_native_inventory;
+mod skills_remote;
+mod skills_settled_worker_runs;
+mod skills_subscription;
+mod skills_turn_authority;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
 mod terminal_subscription_runtime;
@@ -1128,6 +1141,7 @@ impl KernelRuntimeState {
         let environment_operation_changes = crate::project_environment::OperationChanges::new();
         let mut runtime = Self {
             external_command_authority: None,
+            skills_catalog_caller: None,
             room_provider_origin: None,
             room_request_origin: None,
             terminal_caller: false,
@@ -1289,6 +1303,8 @@ impl KernelRuntimeState {
                 pty_output_signal,
                 terminal_stream,
                 runtime_projection_changes: Arc::new(RuntimeChangeSignal::default()),
+                skill_inventories: Arc::default(),
+                settled_worker_runs: Arc::default(),
                 workflow_design_events,
                 workspace_coordinator,
                 workspace_live_sync_coordinator: Arc::new(Mutex::new(
@@ -1360,6 +1376,10 @@ impl KernelRuntimeState {
         runtime.register_terminal_wake_driver();
         runtime.register_job_wake_driver();
         runtime.register_interaction_wake_driver();
+        runtime
+            .owned
+            .provider_store
+            .set_skill_prompt_bridge(skills_dispatch::bridge(&runtime));
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
         // Access grants are process-bound and never survive a kernel restart.
