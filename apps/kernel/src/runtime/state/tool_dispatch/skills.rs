@@ -181,8 +181,12 @@ impl KernelRuntimeState {
         receipt: &crate::skill::v2::SkillReviewReceipt,
         affected: &[crate::skill::v2::SkillRecord],
     ) -> Result<bool, DaemonError> {
-        if !crate::session::effective_agent_extension_registration_authority(session, Some(agent))
-            .requires_approval()
+        if !crate::session::effective_agent_extension_registration_authority(
+            session,
+            Some(agent),
+            &self.owned.agent_store.get_session_agents(session.id()),
+        )
+        .requires_approval()
         {
             return Ok(true);
         }

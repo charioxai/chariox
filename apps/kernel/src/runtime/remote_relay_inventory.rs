@@ -214,7 +214,7 @@ mod tests {
         let state = Arc::new(RwLock::new(state));
         let projection = DaemonConfigProjectionStore::new(config);
 
-        let pending = projected_relay_status(state.clone(), projection.clone()).await;
+        let pending = projected_relay_status(state.clone(), projection.clone(), Vec::new()).await;
         assert_eq!(pending.relay_url.as_deref(), Some(selected_url));
         assert!(pending.configured);
         assert!(
@@ -226,7 +226,11 @@ mod tests {
             .write()
             .await
             .test_set_connected_sender(outgoing, selected_url);
-        assert!(projected_relay_status(state, projection).await.connected);
+        assert!(
+            projected_relay_status(state, projection, Vec::new())
+                .await
+                .connected
+        );
     }
 
     #[tokio::test]

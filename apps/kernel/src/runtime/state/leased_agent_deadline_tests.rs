@@ -201,9 +201,9 @@ async fn a_leased_prompt_that_arrives_after_the_deadline_starts_nothing() {
             None,
             Some(context),
             Vec::new(),
-            Some(Vec::new()),
             crate::extension::RemoteExtensionManifest::default(),
             None,
+            Default::default(),
         )
         .await;
     assert!(

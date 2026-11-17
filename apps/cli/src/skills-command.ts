@@ -135,7 +135,7 @@ export function createSkillsCommand(deps: SkillsCommandDeps): (args: readonly st
 
   const requireProject = (): SkillScope => {
     const projectId = deps.context().projectId
-    if (!projectId) throw new SkillsCommandError("this session has no Project: choose or create one in the Waiting Room to manage Project skills")
+    if (!projectId) throw new SkillsCommandError("this session has no Project: choose or create one in the Projects list to manage Project skills")
     return { kind: "project", project_id: projectId }
   }
 
@@ -197,7 +197,7 @@ export function createSkillsCommand(deps: SkillsCommandDeps): (args: readonly st
     const lines = [`Skills · catalog revision ${result.revision} · metadata budget ${result.metadata_budget_percent}% · changes apply next turn`]
     for (const scope of scopes) {
       if (scope === "project" && !deps.context().projectId) {
-        lines.push("Project: this session has no Project (choose or create one in the Waiting Room)")
+        lines.push("Project: this session has no Project (choose or create one in the Projects list)")
         continue
       }
       lines.push(scope === "chariox" ? "Chariox:" : "Project:")

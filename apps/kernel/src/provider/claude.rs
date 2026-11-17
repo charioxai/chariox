@@ -39,7 +39,7 @@ pub(crate) use native_tui::{
 };
 use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
 pub(crate) use usage_probe::{
-    read_claude_rate_limits, probe_claude_skill_version, verify_claude_account_credential,
+    probe_claude_skill_version, read_claude_rate_limits, verify_claude_account_credential,
     ClaudeCredentialCheckError,
 };
 

@@ -668,6 +668,7 @@ async fn idle_local_subscription_receives_skills_changed_after_catalog_mutation(
             attachment_id: attachment.id().into(),
             subscription_scope: KernelSubscriptionScope::Session,
             connection_class: crate::local::KernelConnectionClass::Terminal,
+            heartbeat_interval: std::time::Duration::from_secs(5),
         },
     ));
     let result = tokio::time::timeout(Duration::from_secs(10), async {

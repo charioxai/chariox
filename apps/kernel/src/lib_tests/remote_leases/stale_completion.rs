@@ -22,7 +22,6 @@ fn submit_home_prompt(app: &mut DaemonApp, leased_agent_id: &str, home_prompt_id
             None,
             Some(context),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("leased prompt should be accepted");

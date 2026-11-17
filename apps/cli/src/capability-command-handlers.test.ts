@@ -194,7 +194,7 @@ test("a vault passphrase change reports its own outcome", async () => {
   assert.deepEqual(harness.footers, ["info:vault passphrase changed"])
 })
 
-for (const kind of ["app", "mcp", "skill", "script"]) {
+for (const kind of ["app", "mcp", "script"]) {
   test(`extension ${kind} footer uses the agent alias`, async () => {
     const harness = capabilityHarness(agent({ agent_ref: "a1b2c3d4", alias: "agent-2" }))
     await handleExtensionSlashCommand(harness.deps,

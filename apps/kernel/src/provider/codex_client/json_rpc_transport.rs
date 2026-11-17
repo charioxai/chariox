@@ -38,9 +38,6 @@ impl CodexClient {
             })
     }
     fn connect_initialized_with_info(&self) -> Result<(CodexSocket, Value), DaemonError> {
-        let (mut socket, _) =
-            connect_with_config(self.endpoint.as_str(), Some(codex_websocket_config()), 3)
-                .map_err(|error| self.protocol_error("codex_connect", error.to_string()))?;
         let mut socket = connect_codex_socket(self.endpoint.as_str())
             .map_err(|error| self.protocol_error("codex_connect", error))?;
         set_socket_timeouts(

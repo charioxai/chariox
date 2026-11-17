@@ -408,7 +408,6 @@ async fn delayed_leased_steer_ack_keeps_the_original_receipt_deadline_while_the_
             None,
             Some(context),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .unwrap();
@@ -483,7 +482,6 @@ async fn delayed_leased_steer_ack_keeps_the_original_receipt_deadline_while_the_
             "PCD11_STEER_WRITTEN_ONCE",
             "",
             Vec::new(),
-            None,
         )
         .await
         .unwrap();
@@ -560,7 +558,6 @@ async fn delayed_leased_steer_ack_keeps_the_original_receipt_deadline_while_the_
             "PCD11_STEER_WRITTEN_ONCE",
             "",
             Vec::new(),
-            None,
         )
         .await
         .unwrap();

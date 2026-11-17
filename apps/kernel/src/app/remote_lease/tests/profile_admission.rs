@@ -842,9 +842,9 @@ async fn fresh_leased_prompt_receives_home_resume_state() {
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             None,
+            Default::default(),
         )
         .await
         .unwrap();

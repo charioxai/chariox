@@ -128,11 +128,11 @@ impl CommandRouter {
             .await;
     }
 
-    pub(crate) fn waiting_room_change_sequence(&self) -> u64 {
+    pub(crate) fn runtime_projection_change_sequence(&self) -> u64 {
         self.runtime_state.waiting_room_change_sequence()
     }
 
-    pub(crate) async fn wait_for_waiting_room_change_after(&self, sequence: u64) {
+    pub(crate) async fn wait_for_runtime_projection_change_after(&self, sequence: u64) {
         self.runtime_state
             .wait_for_waiting_room_change_after(sequence)
             .await;

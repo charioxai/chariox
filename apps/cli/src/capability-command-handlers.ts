@@ -39,6 +39,7 @@ export type CapabilityCommandHandlerDeps = {
   grantAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
   revokeAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
   revokeAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
+  projectEnvironmentCommand?: (args: readonly string[]) => Promise<string>
   listEnvironments?: () => Promise<CharioxEnvironmentConfig[]>
   getEnvironment?: (name: string) => Promise<CharioxEnvironmentConfig>
   registerEnvironment?: (config: CharioxEnvironmentConfig) => Promise<CharioxEnvironmentConfig>

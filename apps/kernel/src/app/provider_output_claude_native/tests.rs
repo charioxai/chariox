@@ -4890,6 +4890,7 @@ mod skill_hook_fakes {
         fn accepted(&self, _: &str, _: &str, _: &str) -> Result<(), DaemonError> {
             Ok(())
         }
+        fn note_turn_work(&self, _: &str, _: Option<&str>) {}
     }
     /// Counts the turns the provider accepted, which is when a pending
     /// conversation handoff is consumed.
@@ -4932,6 +4933,7 @@ mod skill_hook_fakes {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
+        fn note_turn_work(&self, _: &str, _: Option<&str>) {}
     }
 }
 

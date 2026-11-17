@@ -9,14 +9,16 @@ use super::{
     v2::{RepositorySkill, RepositorySkillSkip},
     CharioxSkillPackage,
 };
-use crate::error::DaemonError;
+use crate::{
+    error::DaemonError,
+    runtime::bounded_process::capture::{capture, CaptureError},
+};
 use std::{
     collections::BTreeMap,
     fs,
-    io::Read,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    time::{Duration, Instant},
+    process::Command,
+    time::Duration,
 };
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
@@ -93,7 +95,8 @@ fn validated_url(url: &str) -> Result<String, DaemonError> {
 }
 
 fn run_git(directory: &Path, args: &[&str]) -> Result<String, DaemonError> {
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(["-c", "core.hooksPath=/dev/null", "-c", "credential.helper="])
         .args(args)
         .current_dir(directory)
@@ -105,47 +108,22 @@ fn run_git(directory: &Path, args: &[&str]) -> Result<String, DaemonError> {
         .env("GIT_ALLOW_PROTOCOL", "file:http:https")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                failure("git is required to import a repository; install git and retry")
-            } else {
-                failure("cannot start git to import the repository")
-            }
-        })?;
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < FETCH_TIMEOUT => {
-                std::thread::sleep(Duration::from_millis(25))
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(failure(
-                    "fetching the repository took longer than 2 minutes; try a smaller repository",
-                ));
-            }
-            Err(_) => {
-                return Err(failure(
-                    "cannot wait for git while importing the repository",
-                ))
-            }
+        .env_remove("GIT_INDEX_FILE");
+    let output = capture(command, FETCH_TIMEOUT).map_err(|error| match error {
+        CaptureError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            failure("git is required to import a repository; install git and retry")
         }
-    };
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.by_ref().take(64 * 1024).read_to_string(&mut stdout);
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.by_ref().take(64 * 1024).read_to_string(&mut stderr);
-    }
+        CaptureError::Io(_) => failure("cannot start git to import the repository"),
+        CaptureError::TimedOut => {
+            failure("fetching the repository took longer than 2 minutes; try a smaller repository")
+        }
+        CaptureError::OutputLimit => {
+            failure("git wrote too much output while importing the repository")
+        }
+    })?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let status = output.status;
     if status.success() {
         return Ok(stdout);
     }

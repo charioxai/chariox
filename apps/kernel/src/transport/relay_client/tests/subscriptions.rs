@@ -226,6 +226,7 @@ async fn idle_relay_subscription_receives_skills_changed_after_catalog_mutation(
             user_id: crate::session::DEFAULT_LOCAL_USER_ID.into(),
             connection_class: crate::local::KernelConnectionClass::Terminal,
             caller: crate::runtime::command::KernelCaller::for_relay_request(None),
+            heartbeat_interval: std::time::Duration::from_secs(5),
         },
     ));
     let result = tokio::time::timeout(Duration::from_secs(10), async {

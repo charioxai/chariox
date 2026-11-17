@@ -894,7 +894,7 @@ mod tests {
         let request =
             LaunchProviderRequest::new("skill-failure", "claude", "claude", "default", "haiku");
         let native = prepare_claude_native_tui_files(&request).unwrap();
-        let mut child = Command::new("node")
+        let mut child = crate::process_spawn::command("node")
             .arg(
                 native
                     .events_file

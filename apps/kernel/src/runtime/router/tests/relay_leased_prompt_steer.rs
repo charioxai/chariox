@@ -341,7 +341,6 @@ async fn leased_workflow_context_read_uses_the_same_home_route_as_acknowledgemen
             }),
             Some(remote_git_context("home-prompt")),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .unwrap();

@@ -544,33 +544,33 @@ impl KernelRuntimeState {
             }
             // The stored session has no agents and no prompt state: the activity and
             // liveness these tools report are read from the projected room.
-            crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL => {
-                Ok(self.handle_list_session_agents_runtime_tool(
+            crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL => Ok(self
+                .handle_list_session_agents_runtime_tool(
                     &self
                         .owned
                         .session_snapshot_without_projection_update(session_id)?,
                     &agent,
-                ))
-            }
-            crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL => {
-                Ok(self.handle_get_session_agent_runtime_tool(
+                )),
+            crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL => Ok(self
+                .handle_get_session_agent_runtime_tool(
                     &self
                         .owned
                         .session_snapshot_without_projection_update(session_id)?,
                     &agent,
                     arguments,
-                ))
-            }
+                )),
             crate::transport::runtime_tools::PEEK_AGENT_TOOL
             | crate::transport::runtime_tools::READ_AGENT_ENTRY_TOOL => {
-                Box::pin(self.handle_agent_peek_runtime_tool(
-                    &self
-                        .owned
-                        .session_snapshot_without_projection_update(session_id)?,
-                    &agent,
-                    tool_name,
-                    arguments,
-                ))
+                Box::pin(
+                    self.handle_agent_peek_runtime_tool(
+                        &self
+                            .owned
+                            .session_snapshot_without_projection_update(session_id)?,
+                        &agent,
+                        tool_name,
+                        arguments,
+                    ),
+                )
                 .await
             }
             crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL => {

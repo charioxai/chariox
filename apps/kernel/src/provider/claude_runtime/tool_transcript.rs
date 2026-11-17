@@ -327,7 +327,13 @@ impl ClaudeToolTranscript {
                     let mut payload = pending.payload(id);
                     let failed = block.get("is_error").and_then(Value::as_bool) == Some(true);
                     if !failed && pending.name.starts_with("mcp__chariox__") {
-                        if let Some(ack)=crate::provider::skill_ack::completed_skill_tool(&pending.name,&payload["input"],block.get("content").unwrap_or(&Value::Null)) {self.skill_deliveries.push(ack);}
+                        if let Some(ack) = crate::provider::skill_ack::completed_skill_tool(
+                            &pending.name,
+                            &payload["input"],
+                            block.get("content").unwrap_or(&Value::Null),
+                        ) {
+                            self.skill_deliveries.push(ack);
+                        }
                     }
                     payload["status"] = json!(if failed { "error" } else { "completed" });
                     let output = bounded_result(block.get("content"));

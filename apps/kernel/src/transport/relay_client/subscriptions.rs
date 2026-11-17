@@ -583,7 +583,7 @@ pub(super) async fn run_relay_subscription_loop(
         let session_projection_change_sequence =
             router.session_projection_session_change_sequence(&session_id);
         let workflow_design_change_sequence = router.workflow_design_change_sequence();
-        let skill_change_sequence = router.waiting_room_change_sequence();
+        let skill_change_sequence = router.runtime_projection_change_sequence();
         let now = Instant::now();
         let should_check_snapshot = previous_snapshot.is_none()
             || last_snapshot_projection_sequence != Some(session_projection_change_sequence)
@@ -942,7 +942,7 @@ pub(super) async fn run_relay_subscription_loop(
                         workflow_design_change_sequence
                     ) => {}
                     _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => {}
-                    _ = router.wait_for_waiting_room_change_after(skill_change_sequence) => {}
+                    _ = router.wait_for_runtime_projection_change_after(skill_change_sequence) => {}
                     _ = passkey_prompts.changed(&router) => {}
                     _ = home_audit.changed() => {}
                 }
@@ -1107,7 +1107,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
                 break;
             }
         }
-        let waiting_room_change_sequence = router.waiting_room_change_sequence();
+        let runtime_projection_change_sequence = router.runtime_projection_change_sequence();
         let session_projection_change_sequence = router.session_projection_change_sequence();
         if inventory_dirty
             || (!resumed && tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS))
@@ -1255,7 +1255,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
             async {
                 tokio::select! {
                     _ = wait_for_relay_waiting_room_inventory_change(
-                        router.wait_for_waiting_room_change_after(waiting_room_change_sequence),
+                        router.wait_for_runtime_projection_change_after(runtime_projection_change_sequence),
                         router.wait_for_session_projection_change_after(
                             session_projection_change_sequence,
                         ),

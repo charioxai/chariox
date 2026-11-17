@@ -224,15 +224,6 @@ impl KernelRuntimeState {
             .is_some_and(|run| !run.client_interface().is_chariox())
     }
 
-    pub(in crate::runtime::state) fn remote_agent_is_home_managed_slice(
-        &self,
-        agent: &crate::agent::AgentInstance,
-    ) -> bool {
-        agent.remote_execution().is_some_and(|remote_execution| {
-            remote_execution.relay_url.is_some() && remote_execution.relay_token.is_some()
-        })
-    }
-
     pub(in crate::runtime::state) async fn ensure_remote_mcp_availability_for_agent(
         &self,
         agent: &crate::agent::AgentInstance,

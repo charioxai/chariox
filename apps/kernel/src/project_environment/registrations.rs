@@ -1,18 +1,20 @@
-//! Chariox registrations (MCP servers and skills) as entries of the Environment: whether this kernel holds one,
-//! the keys an MCP reads, and the reads and writes an Import makes. A key's value is a Secret and never appears here.
+//! Chariox registrations (MCP servers and the Project's skills) as entries of the Environment: whether this kernel
+//! holds one, the keys an MCP reads, and the reads and writes an Import makes. A key's value is a Secret and never
+//! appears here.
 use super::ExtensionEntry;
 use crate::error::DaemonError;
 use crate::local::EnvironmentEntryKind;
 use crate::mcp::{CharioxMcpRegistry, CharioxMcpServerConfig, CharioxMcpTransportConfig};
-use crate::skill::{materialize_skill_package, CharioxSkillPackage, CharioxSkillRegistry};
+use crate::skill::service::SkillCatalogService;
+use crate::skill::CharioxSkillPackage;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// A skill travels in one peer message, so it stays small: text and a few assets.
 const MAX_SKILL_BYTES: usize = 3 * 1024 * 1024;
 
-/// The registrations the agents of a Project's rooms hold grants for, as Environment entries, and the
-/// variable names the MCPs among them read their keys from.
+/// The MCPs the agents of a Project's rooms hold grants for and the Project's skills, as Environment entries,
+/// and the variable names the MCPs among them read their keys from.
 pub(crate) struct ProjectRegistrations {
     pub mcps: Vec<ExtensionEntry>,
     pub skills: Vec<ExtensionEntry>,
@@ -37,8 +39,14 @@ pub(crate) trait RegistrationHost: Send + Sync {
     fn install_if_absent(&self, registration: Registration) -> Result<bool, String>;
 }
 
-/// The registrations of the user: `~/.chariox/mcps` and `~/.chariox/skills`.
-pub(crate) struct UserRegistrations;
+/// The registrations of the user for one Project: `~/.chariox/mcps` and the Project-scope skills of the home
+/// skill catalog. `skills` is `None` while this kernel's catalog is unavailable.
+pub(crate) struct UserRegistrations {
+    pub skills: Option<SkillCatalogService>,
+    pub project_id: String,
+}
+
+const SKILLS_UNAVAILABLE: &str = "The skills catalog is not available on this kernel";
 
 fn mcp_registry() -> Result<CharioxMcpRegistry, DaemonError> {
     CharioxMcpRegistry::user_root()
@@ -49,24 +57,17 @@ fn mcp_registry() -> Result<CharioxMcpRegistry, DaemonError> {
         })
 }
 
-fn skill_registry() -> Result<CharioxSkillRegistry, DaemonError> {
-    CharioxSkillRegistry::user_root()
-        .map(|root| CharioxSkillRegistry::new(vec![root]))
-        .ok_or(DaemonError::InvalidConfig {
-            field: "skill registry root",
-            message: "HOME must be set to resolve ~/.chariox/skills",
-        })
-}
-
 impl RegistrationHost for UserRegistrations {
     fn has(&self, kind: EnvironmentEntryKind, name: &str) -> bool {
         match kind {
             EnvironmentEntryKind::Mcp => mcp_registry()
                 .and_then(|registry| registry.get(name))
                 .is_ok_and(|found| found.is_some()),
-            EnvironmentEntryKind::Skill => skill_registry()
-                .and_then(|registry| registry.get(name))
-                .is_ok_and(|found| found.is_some()),
+            EnvironmentEntryKind::Skill => self.skills.as_ref().is_some_and(|skills| {
+                skills
+                    .project_skill_names(&self.project_id)
+                    .is_ok_and(|names| names.iter().any(|held| held == name))
+            }),
             EnvironmentEntryKind::Secret | EnvironmentEntryKind::File => false,
         }
     }
@@ -78,8 +79,11 @@ impl RegistrationHost for UserRegistrations {
                 .map(|found| found.map(|config| Registration::Mcp(portable_mcp(config))))
                 .map_err(|error| error.to_string()),
             EnvironmentEntryKind::Skill => {
-                let package = skill_registry()
-                    .and_then(|registry| registry.package(name))
+                let package = self
+                    .skills
+                    .as_ref()
+                    .ok_or(SKILLS_UNAVAILABLE)?
+                    .project_skill_package(&self.project_id, name)
                     .map_err(|error| error.to_string())?;
                 if package.as_ref().is_some_and(|package| {
                     package
@@ -99,15 +103,15 @@ impl RegistrationHost for UserRegistrations {
 
     fn install_if_absent(&self, registration: Registration) -> Result<bool, String> {
         let mcps = mcp_registry().map_err(|error| error.to_string())?;
-        let skills = skill_registry().map_err(|error| error.to_string())?;
-        install_if_absent(&mcps, &skills, registration)
+        install_if_absent(&mcps, self.skills.as_ref(), &self.project_id, registration)
     }
 }
 
-/// The write behind `RegistrationHost::install_if_absent`, over the registries it lands in.
+/// The write behind `RegistrationHost::install_if_absent`, over the MCP registry and the skill catalog it lands in.
 pub(crate) fn install_if_absent(
     mcps: &CharioxMcpRegistry,
-    skills: &CharioxSkillRegistry,
+    skills: Option<&SkillCatalogService>,
+    project_id: &str,
     registration: Registration,
 ) -> Result<bool, String> {
     match registration {
@@ -115,25 +119,10 @@ pub(crate) fn install_if_absent(
             .install_if_absent(&config)
             .map(|installed| installed.is_some())
             .map_err(|error| error.to_string()),
-        Registration::Skill(package) => {
-            let root = skills
-                .primary_root()
-                .map_err(|error| error.to_string())?
-                .clone();
-            std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
-            let incoming = root.join(format!(
-                ".incoming-{}-{}",
-                std::process::id(),
-                crate::session::unix_epoch_ms()
-            ));
-            std::fs::create_dir_all(&incoming).map_err(|error| error.to_string())?;
-            let installed = materialize_skill_package(&incoming, &package)
-                .and_then(|dir| skills.install_if_absent_from_path(&dir));
-            let _ = std::fs::remove_dir_all(&incoming);
-            installed
-                .map(|installed| installed.is_some())
-                .map_err(|error| error.to_string())
-        }
+        Registration::Skill(package) => skills
+            .ok_or(SKILLS_UNAVAILABLE)?
+            .install_project_skill_if_absent(project_id, &package)
+            .map_err(|error| error.to_string()),
     }
 }
 

@@ -224,9 +224,10 @@ mod tests {
         config.relay_url = Some(cloud.relay_url.clone());
         config.relay_token = Some("synthetic-kernel-registration-token".into());
         config.cloud_relay = Some(cloud);
-        let discovery = super::super::relay_metadata_discovery_config_for(&config, "slice:worker-hash")
-            .await
-            .unwrap();
+        let discovery =
+            super::super::relay_metadata_discovery_config_for(&config, "slice:worker-hash")
+                .await
+                .unwrap();
         let body = server.join().unwrap().unwrap();
         assert_eq!(
             body["subject"],

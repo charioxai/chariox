@@ -3,7 +3,7 @@
 //! accepts assistant prose, a tool invocation alone, or a failed response.
 use serde_json::Value;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SkillToolDeliveryAcknowledgement {
     pub prompt_id: String,
     pub skill_id: String,

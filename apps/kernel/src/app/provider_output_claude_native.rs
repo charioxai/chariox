@@ -27,8 +27,8 @@ mod startup_exit;
 #[cfg(test)]
 pub(crate) mod tests;
 mod transcript;
-mod workspace_trust;
 mod typed_prompt;
+mod workspace_trust;
 
 pub(crate) use context_delivery::clear_claude_context_delivery_for_settled_prompt;
 pub(crate) use permission::{claude_permission_title, format_claude_permission_message};

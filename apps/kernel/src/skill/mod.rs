@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub mod catalog;
 #[cfg(test)]
 mod catalog_tests;
+mod environment;
 pub mod frontmatter;
 mod home_journal;
 pub(crate) mod leased_composer;

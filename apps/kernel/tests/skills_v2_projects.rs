@@ -41,9 +41,14 @@ fn skills_v2_folderless_projects_use_the_shared_owner_and_membership_service() {
         .create_project("No folders".into(), "owner")
         .unwrap();
     assert!(project.workspace_ids().is_empty());
-    assert_eq!(service.list_visible_projects("owner", false).len(), 1);
+    assert_eq!(
+        service
+            .list_visible_projects("owner", false, |_| false)
+            .len(),
+        1
+    );
     assert!(service
-        .list_visible_projects("collaborator", true)
+        .list_visible_projects("collaborator", true, |_| false)
         .is_empty());
     let updated = service
         .update_project_workspaces(project.id(), vec![], "owner")

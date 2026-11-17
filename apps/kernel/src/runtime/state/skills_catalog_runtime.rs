@@ -156,7 +156,9 @@ impl KernelRuntimeState {
                 && !self
                     .owned
                     .session_store
-                    .list_visible_projects(user, true)
+                    .list_visible_projects(user, true, |session| {
+                        self.owned.is_room_member(session, user)
+                    })
                     .iter()
                     .any(|project| project.id() == id)
             {

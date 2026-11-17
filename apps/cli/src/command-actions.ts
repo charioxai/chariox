@@ -17,7 +17,6 @@ import {
 import { agentTriggersForAgent, triggerPromptOriginLabel, unconfirmedTriggerDeliveriesForAgent } from "@chariox/kernel-client/agent-trigger-state"
 import { TRIGGER_USAGE, type ParsedSlashCommand } from "./commands.js"
 import { createSkillsCommand, type SkillsCommandDeps } from "./skills-command.js"
-import { providerAccountFamily } from "./waiting-room-provider-accounts.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import {
   ROOT_WORKFLOW_SHORTCUTS,
@@ -397,9 +396,10 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       if (!deps.isAttached()) return { sessionId: null, projectId: null, agentId: null, provider: null }
       const session = deps.sessionState()
       const agentId: string | null = deps.focusedAgentId() ?? null
-      const agent = session.agents.find(candidate => candidate.id === agentId)
+      const provider = session.agents.find(candidate => candidate.id === agentId)?.provider
       // The kernel names native skills by provider family, so launch-mode names (claude-headless, claude-p) map to it here.
-      return { sessionId: session.id, projectId: session.project_id, agentId, provider: agent ? providerAccountFamily(agent.provider) : null }
+      const family = provider === "claude-headless" || provider === "claude-p" ? "claude" : provider
+      return { sessionId: session.id, projectId: session.project_id, agentId, provider: family ?? null }
     },
     appendNotice: deps.appendNotice,
     flashFooter: deps.flashFooter,
