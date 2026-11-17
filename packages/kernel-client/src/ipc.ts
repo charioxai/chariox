@@ -88,6 +88,10 @@ const KERNEL_RELOAD_RECONNECT_WINDOW_MS = 10_000
 const KERNEL_RELOAD_RECONNECT_JITTER_MS = 50
 const KERNEL_CONTROL_REQUEST_RETRY_DEADLINE_MS = 60_000
 const KERNEL_CONTROL_RESPONSE_STALL_MS = 5_000
+// The kernel answers one replay of a finished command per ten seconds and tells the others
+// `duplicate_command_unavailable`. A command that ran past the retry deadline is still owed its
+// result, so its replays continue for three of those windows.
+const KERNEL_DUPLICATE_ANSWER_RETRY_MS = 30_000
 // The kernel runs these again when they are replayed: they carry no request id
 // its ledgers deduplicate, and it keeps them out of its command-result cache
 // (`request_is_cacheable`, whose tests check this list). Worker control stops an App
@@ -726,7 +730,7 @@ export class LocalIpcClient {
     const lifetime = this.requestLifetime.capture()
     let requestId = randomUUID()
     const waitsForAuthorization = waitsForKernelAuthorization(request)
-    const retryUntilMs = lane === "control" && !waitsForAuthorization
+    let retryUntilMs = lane === "control" && !waitsForAuthorization
       ? Date.now() + this.controlRequestRetryDeadlineMs
       : Date.now()
     const replayAfterWrite = !runsAgainOnReplay(request)
@@ -804,22 +808,24 @@ export class LocalIpcClient {
               : "the connection closed before the answer"
           throw new LocalIpcError("handle kernel response", `${lost}; the kernel may have run the request`, "outcome_unknown")
         }
+        const resultWindowClosed = error instanceof LocalIpcError && error.code === "duplicate_command_unavailable"
+        if (resultWindowClosed && lane === "control") retryUntilMs = Math.max(retryUntilMs, Date.now() + KERNEL_DUPLICATE_ANSWER_RETRY_MS)
         if (admittedSocket || !this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
         // A fresh caller binding needs a fresh observation receipt; a responsive
         // carrier keeps the same request and cannot retire a newer lane.
         const current = this.getWebSocket(lane)
-        const responsiveTimeout = error instanceof LocalIpcError && error.code === "request_timeout"
-          && current === socket && socket.readyState === WebSocket.OPEN
-          && this.socketResponsiveness.isResponsive(socket, this.kernelPingIntervalMs * this.kernelMaxMissedPongs)
+        const responsiveTimeout = current === socket && socket.readyState === WebSocket.OPEN
+          && (resultWindowClosed || (error instanceof LocalIpcError && error.code === "request_timeout"
+            && this.socketResponsiveness.isResponsive(socket, this.kernelPingIntervalMs * this.kernelMaxMissedPongs)))
         if (!responsiveTimeout && isBrowserObservation(request)) requestId = randomUUID()
         if (current === socket && !responsiveTimeout) {
           this.destroyWebSocket(lane, "kernel websocket reset", "request_replay", {
             code: error instanceof LocalIpcError ? error.code : null,
           })
         } else if (responsiveTimeout) {
-          this.reportTransportDiagnostic(lane, "request_replay", { code: "request_timeout", operation: "retry responsive socket" })
+          this.reportTransportDiagnostic(lane, "request_replay", { code: resultWindowClosed ? "duplicate_command_unavailable" : "request_timeout", operation: "retry responsive socket" })
         }
         retryDelayMs = await this.waitBeforeWebSocketRequestReplay(retryDelayMs, retryUntilMs, lifetime)
       }
@@ -832,7 +838,7 @@ export class LocalIpcClient {
       && error instanceof LocalIpcError
       && error.retryable
       // target_not_connected: the kernel or relay refused before starting it.
-      && (error.code === "connection_closed" || error.code === "write_failed" || error.code === "request_timeout" || error.code === "target_not_connected")
+      && (error.code === "connection_closed" || error.code === "write_failed" || error.code === "request_timeout" || error.code === "target_not_connected" || error.code === "duplicate_command_unavailable")
   }
 
   private requestAttemptTimeoutMs(lane: KernelSocketLane, retryUntilMs: number): number {
