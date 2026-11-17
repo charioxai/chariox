@@ -227,7 +227,10 @@ fn a_later_turn_lists_and_ends_a_follow_its_earlier_turn_made() {
     peer_turn(&f, "t1", true);
     f.settle("p", true);
     begin_turn(&f, "parent", "p2");
-    let kept = f.store.agent_peer_follows("room", "parent").unwrap();
+    let kept = f
+        .store
+        .agent_registrations_of_other_tasks("room", "parent", "p2")
+        .unwrap();
     assert_eq!(
         kept.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
         ["follow-peer"]
@@ -239,7 +242,7 @@ fn a_later_turn_lists_and_ends_a_follow_its_earlier_turn_made() {
     });
     assert!(f
         .store
-        .agent_peer_follows("room", "parent")
+        .agent_registrations_of_other_tasks("room", "parent", "p2")
         .unwrap()
         .is_empty());
     peer_turn(&f, "t2", true);
@@ -261,7 +264,7 @@ fn another_agents_turn_cannot_end_a_follow_it_did_not_make() {
     assert!(ended.is_err(), "{ended:?}");
     assert!(f
         .store
-        .agent_peer_follows("room", "stranger")
+        .agent_registrations_of_other_tasks("room", "stranger", "s")
         .unwrap()
         .is_empty());
     peer_turn(&f, "t1", true);
@@ -421,5 +424,42 @@ fn a_sender_still_working_in_another_room_does_not_hold_the_recipients_receipt()
     assert_eq!(
         f.store.agent_inbox("peer-room", "peer", 0).unwrap()[0].state,
         "accepted"
+    );
+}
+
+#[test]
+fn a_later_turn_lists_every_live_registration_of_its_agents_other_tasks() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    follow(&f, "follow-peer", true);
+    f.yield_now();
+    f.settle("p", true);
+    begin_turn(&f, "parent", "p2");
+    let held = f
+        .store
+        .agent_registrations_of_other_tasks("room", "parent", "p2")
+        .unwrap();
+    let mut ids = held.iter().map(|r| r.id.as_str()).collect::<Vec<_>>();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        ["follow-peer", "reg"],
+        "the child's completion and the follow outlive the turn that made them"
+    );
+    assert!(
+        f.store
+            .agent_registrations_of_other_tasks("room", "parent", "p")
+            .unwrap()
+            .is_empty(),
+        "the new task's own registrations are listed apart"
+    );
+    assert!(
+        f.store
+            .agent_registrations_of_other_tasks("room", "stranger", "p2")
+            .unwrap()
+            .is_empty(),
+        "another agent's registrations are not listed"
     );
 }
