@@ -1,0 +1,3 @@
+[
+ {"path":"docker/lab/docker-compose.yml","count":2,"why":"docker lab compose: the lab relay is a container on a private compose network, not a hosted endpoint"}
+]
