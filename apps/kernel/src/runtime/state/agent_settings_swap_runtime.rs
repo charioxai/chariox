@@ -130,14 +130,17 @@ impl KernelRuntimeState {
                 |operation_id| settings_continuation_prompt(operation_id, &changes, request_text),
             )
             .await;
-        if let Err(error) = continued {
+        if let Err(failure) = continued {
             let message = format!(
                 "The turn could not go on with the new settings: {}. Change the settings and send the request again.",
-                crate::provider::sanitize_provider_diagnostic(&error.to_string())
+                crate::provider::sanitize_provider_diagnostic(&failure.error.to_string())
             );
-            self.fail_owned_provider_prompt(session_id, old_run.id(), &message, true)
+            // The turn belongs to the process the continuation started, not to the one the swap
+            // ended: settling against the ended one finds the turn bound elsewhere and leaves it.
+            let owning_run_id = failure.started_run_id.as_deref().unwrap_or(old_run.id());
+            self.fail_owned_provider_prompt(session_id, owning_run_id, &message, true)
                 .await?;
-            return Err(error);
+            return Err(failure.error);
         }
         owned.announce_settings_change(session_id, agent_id, &changes, false, true);
         Ok(())
