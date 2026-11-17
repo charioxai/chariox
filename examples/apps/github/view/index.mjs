@@ -5,6 +5,7 @@ import { pullPage } from './detail.mjs';
 import { h, clear } from './dom.mjs';
 import { defaultList, listPage, describeFailure } from './list.mjs';
 import { shell } from './shell.mjs';
+import { subscriptionsPage } from './subscriptions.mjs';
 import { blankslate } from './parts.mjs';
 
 const REFRESH_MS = 60_000;
@@ -64,7 +65,7 @@ function draw() {
     body.append(h('div.p-4', {}, blankslate('mark-github', 'Connect a GitHub account', 'This App has no GitHub account yet.', 'The owner of this kernel binds one in the App\'s permissions; this window picks it up by itself.')));
     return;
   }
-  page = ctx.route.name === 'pr' ? pullPage(ctx, ctx.route) : ctx.route.name === 'new' ? newPullPage(ctx, ctx.route) : listPage(ctx, ctx.route);
+  page = ctx.route.name === 'pr' ? pullPage(ctx, ctx.route) : ctx.route.name === 'new' ? newPullPage(ctx, ctx.route) : ctx.route.name === 'subscriptions' ? subscriptionsPage(ctx) : listPage(ctx, ctx.route);
   body.append(page.element);
 }
 
@@ -90,6 +91,8 @@ async function follow() {
     // A GitHub event arrived for a pull request: reload the page when it shows that pull request or a list.
     const events = feed.changes.filter(change => change.delta?.kind === 'event').map(change => change.delta);
     const about = ctx.route.name === 'pr' ? events.some(event => event.repo === ctx.route.repo && (event.number === null || event.number === ctx.route.number)) : events.length > 0;
+    // A subscription changed or a delivery was recorded (by an agent, another window or an arriving event).
+    const subscriptionsChanged = ctx.route.name === 'subscriptions' && feed.changes.some(change => ['subscriptions', 'deliveries'].includes(change.delta?.kind));
     since = feed.latest;
     // The owner binds an account in the kernel, which writes nothing to the feed: a window waiting for one looks again.
     const waiting = !ctx.account || ctx.account.status === 'unbound';
@@ -97,7 +100,7 @@ async function follow() {
       forget();
       await loadAccounts();
       if (accountsChanged || waiting !== (!ctx.account || ctx.account.status === 'unbound')) draw();
-    } else if (about && !writing()) { forget(); await page?.refresh?.(); }
+    } else if ((about || subscriptionsChanged) && !writing()) { forget(); await page?.refresh?.(); }
   } catch { /* the next tick tries again */ }
 }
 

@@ -80,6 +80,15 @@ struct BatchStep {
     input: Value,
 }
 
+/// Whether a call of an action with this effect that has passed its gates was decided by a person:
+/// the card, the standing permission and the confirmation each are that decision, a plain write is not.
+fn person_decided(effect: &UiActionEffect) -> bool {
+    matches!(
+        effect,
+        UiActionEffect::Approval | UiActionEffect::PersonConfirmed
+    )
+}
+
 fn empty_input() -> Value {
     json!({})
 }
@@ -110,6 +119,9 @@ struct ViewContext {
     binding: AppViewBinding,
     authority: AppViewAuthority,
     declared: Vec<UiActionDeclaration>,
+    /// A person approved the action this context runs: set only once the approval,
+    /// the standing permission or the confirmation has been given.
+    approved: bool,
 }
 
 #[derive(Clone)]
@@ -370,7 +382,12 @@ impl KernelRuntimeState {
             self.confirm_view_action(run_id, agent, context, action, &input)
                 .await?;
         }
-        self.run_in_view(context, name, input).await
+        // Past the card, the standing permission or the confirmation, the person has decided.
+        let approved = ViewContext {
+            approved: person_decided(&action.effect),
+            ..context.clone()
+        };
+        self.run_in_view(&approved, name, input).await
     }
 
     /// A call that names no account runs as the one its App picks (the repository's, the default,
@@ -786,6 +803,7 @@ impl KernelRuntimeState {
                     binding: context_binding,
                     authority,
                     declared,
+                    approved: false,
                 }));
             }
         }
@@ -851,6 +869,7 @@ impl KernelRuntimeState {
             binding,
             authority,
             declared: Vec::new(),
+            approved: false,
         })
     }
 

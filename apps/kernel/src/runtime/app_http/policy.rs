@@ -41,6 +41,8 @@ struct Route {
     method: HttpMethod,
     path: Vec<Segment>,
     safety: RouteSafety,
+    /// Host suffixes (`*.example.com`) the answer of this route may be redirected to.
+    redirect_hosts: Vec<String>,
 }
 enum Segment {
     Literal(String),
@@ -83,6 +85,12 @@ pub(super) struct ApprovedTarget {
     /// the request is written. Its presence also marks the answer for
     /// scrubbing, header filtering and the response cap.
     authorization: Option<Zeroizing<String>>,
+    /// Where a redirect of the answer may go (the matched route's signed host
+    /// suffixes). Empty: a redirect is the answer.
+    redirect_hosts: Vec<String>,
+    /// Whether the account's `Authorization` is written to this host. It is
+    /// not on a redirected host, which still has its answer scrubbed.
+    sends_authorization: bool,
 }
 impl AppHttpPolicy {
     pub(super) fn compile(package: &impl VerifiedApp, catalog: Arc<AppCatalog>) -> Result<Self> {
@@ -137,6 +145,7 @@ impl AppHttpPolicy {
                                 })
                                 .collect(),
                             safety: route.safety,
+                            redirect_hosts: route.redirect_hosts.clone(),
                         })
                         .collect();
                     Some((entry.origin.clone(), Credentialed { label, routes }))
@@ -248,6 +257,8 @@ impl Rules {
                         })
             })
             .ok_or(HttpError::RouteNotDeclared)?;
+        let mut target = target;
+        target.redirect_hosts = route.redirect_hosts.clone();
         Ok(AccountCall {
             credential: destination.label.clone(),
             safety: route.safety,
@@ -353,6 +364,8 @@ impl Rules {
             catalog: None,
             body: None,
             authorization: None,
+            redirect_hosts: Vec::new(),
+            sends_authorization: true,
         })
     }
 }
@@ -363,6 +376,49 @@ impl ApprovedTarget {
     }
     pub(super) fn authorization(&self) -> Option<&str> {
         self.authorization.as_ref().map(|value| value.as_str())
+    }
+    /// The header the request carries: the account's value, except on a redirected host.
+    pub(super) fn sent_authorization(&self) -> Option<&str> {
+        self.authorization().filter(|_| self.sends_authorization)
+    }
+
+    /// Where an answer's redirect goes, when the signed route allows that host:
+    /// a read of an https host under one of the route's suffixes, with no
+    /// credential and no further redirect. Anything else is not followed, and
+    /// the redirect stays the answer.
+    pub(super) fn redirected(&self, location: &str) -> Option<Self> {
+        if self.redirect_hosts.is_empty() || location.len() > MAX_URL_BYTES {
+            return None;
+        }
+        let url = self.url.join(location).ok()?;
+        let Some(url::Host::Domain(host)) = url.host() else {
+            return None;
+        };
+        let allowed = self.redirect_hosts.iter().any(|pattern| {
+            pattern
+                .strip_prefix('*')
+                .is_some_and(|suffix| host.len() > suffix.len() && host.ends_with(suffix))
+        });
+        if !allowed
+            || url.scheme() != "https"
+            || url.port().is_some()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.fragment().is_some()
+            || super::dns::absolute_name(host).is_err()
+        {
+            return None;
+        }
+        Some(Self {
+            url,
+            method: Method::GET,
+            headers: HeaderMap::new(),
+            catalog: self.catalog.clone(),
+            body: None,
+            authorization: self.authorization.clone(),
+            redirect_hosts: Vec::new(),
+            sends_authorization: false,
+        })
     }
 
     pub(super) fn require_catalog(&self, catalog: &Arc<AppCatalog>) -> Result<()> {
@@ -530,6 +586,16 @@ pub(super) fn fixture_get(url: &str) -> ApprovedTarget {
     }
     .target_with(url, "GET", &[], Reach::Anonymous)
     .unwrap()
+}
+
+/// An account's GET of `url` whose route may be redirected to `redirect_hosts`, with the
+/// account's `Authorization` already attached.
+#[cfg(test)]
+pub(super) fn fixture_account_get(url: &str, redirect_hosts: &[&str]) -> ApprovedTarget {
+    let mut target =
+        fixture_get(url).with_authorization(Zeroizing::new("Bearer ghp_secret".into()));
+    target.redirect_hosts = redirect_hosts.iter().map(|host| (*host).into()).collect();
+    target
 }
 
 /// A policy whose only destination is the credentialed `https://api.github.com`.

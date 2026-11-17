@@ -42,10 +42,15 @@ impl Actor {
             return Err(PeerError::Invalid);
         };
         let (id, method) = (id.clone(), method.clone());
-        let actor = context
-            .as_ref()
-            .and_then(|context| context.get("actor"))
-            .cloned();
+        let actor = context.as_ref().and_then(|context| {
+            let mut actor = context.get("actor")?.clone();
+            if let (Some(fields), Some(operation)) =
+                (actor.as_object_mut(), context.get("operation_id"))
+            {
+                fields.insert("operation_id".into(), operation.clone());
+            }
+            Some(actor)
+        });
         if self.pending.contains_key(&id) || self.pending.len() >= self.limits.pending_calls {
             return Err(PeerError::Protocol);
         }

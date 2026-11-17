@@ -5,6 +5,7 @@ pub(crate) mod agent_control_executor;
 pub mod agent_prompt_service;
 mod agent_tree_projection;
 pub(crate) mod agent_utility_executor;
+mod app_approved_operations;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_backend_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
