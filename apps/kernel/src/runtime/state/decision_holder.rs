@@ -87,6 +87,9 @@ pub(crate) fn user_only(
     } else if super::agent_task_owner_interactions::is_blocked_task_decision(interaction.id()) {
         // Resume or Cancel of a blocked task is a decision about an agent, so its parent may hold it.
         None
+    } else if super::machine_acquisition::is_machine_acquisition_decision(interaction.id()) {
+        // Acquiring a machine is the person's OK or an agent's acting for them.
+        None
     } else if interaction.agent_id().is_none()
         || pending.kernel_operation_owner.is_some()
         || pending.kernel_wide_interaction.is_some()

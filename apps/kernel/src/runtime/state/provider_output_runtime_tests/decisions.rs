@@ -1565,6 +1565,7 @@ async fn a_holder_that_yields_without_answering_hands_the_decision_on() {
     );
 }
 
+mod acquisition;
 mod answer_audit;
 mod asked_without_waiting;
 mod blocked_card;
