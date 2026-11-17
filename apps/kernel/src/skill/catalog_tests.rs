@@ -263,6 +263,43 @@ fn skills_v2_dollar_parser_excludes_shell_code_quotes_attachments_and_currency()
         vec!["review"]
     );
 }
+// A Claude plugin skill is typed as `$plugin:skill`; the colon must not cut it to `$plugin`.
+#[test]
+fn skills_v2_dollar_parser_keeps_a_plugin_namespace() {
+    assert_eq!(
+        explicit_skill_names("Use $houseplug:house-lint now; $review: done, $tail:"),
+        vec!["houseplug:house-lint", "review", "tail"]
+    );
+}
+#[test]
+fn skills_v2_namespaced_native_name_does_not_load_its_plugin_namesake() {
+    let f = StorageFixture::new();
+    let (service, _) = service_install(
+        &f,
+        "---\nname: houseplug\ndescription: unrelated\n---\nUNRELATED\n",
+    );
+    let mut entry = native(&"a".repeat(64));
+    if let SkillSelection::Native { name, provider, .. } = &mut entry.selection {
+        *name = "houseplug:house-lint".into();
+        *provider = "claude".into();
+    }
+    let turn = service
+        .pinned_turn(
+            None,
+            "agent1",
+            "session1",
+            "$houseplug:house-lint inspect source",
+            &[],
+            std::slice::from_ref(&entry),
+            Some(128_000),
+            1.0,
+            8192,
+            "g1",
+        )
+        .unwrap();
+    assert!(turn.loaded.is_empty());
+    assert_eq!(turn.native_selections, vec![entry.selection]);
+}
 #[test]
 fn skills_v2_model_load_cannot_admit_manual_or_off() {
     let mut s = skill("s1", "review", SkillScope::Chariox);

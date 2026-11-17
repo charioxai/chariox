@@ -123,10 +123,21 @@ pub fn explicit_skill_tokens_with_names(
                         continue;
                     }
                     let name_start = i;
-                    while i < end
-                        && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'-' | b'_'))
-                    {
+                    let name_byte = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_');
+                    while i < end && name_byte(bytes[i]) {
                         i += 1;
+                    }
+                    // A Claude plugin skill is invoked as `plugin:skill`; the colon is part
+                    // of its name, not trailing punctuation that would leave `$plugin`.
+                    let namespaced = i > name_start
+                        && i + 1 < end
+                        && bytes[i] == b':'
+                        && bytes[i + 1].is_ascii_alphanumeric();
+                    if namespaced {
+                        i += 1;
+                        while i < end && name_byte(bytes[i]) {
+                            i += 1;
+                        }
                     }
                     let name = &prompt[name_start..i];
                     let selected = selected_names
@@ -154,7 +165,10 @@ pub fn explicit_skill_tokens_with_names(
                     if i < end && bytes[i] == b']' && bytes.get(i + 1) == Some(&b'(') {
                         continue;
                     }
-                    if super::catalog::collision_key(name).is_ok() {
+                    if name
+                        .split(':')
+                        .all(|part| super::catalog::collision_key(part).is_ok())
+                    {
                         names.push(ExplicitSkillToken {
                             name: name.to_string(),
                             range: start..i,

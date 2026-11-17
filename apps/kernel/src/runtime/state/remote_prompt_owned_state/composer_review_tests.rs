@@ -313,6 +313,64 @@ async fn leased_composer_native_selection_uses_the_real_adapter_before_receipt()
     );
 }
 
+// The fixture's Manual Chariox skill is `review`; Claude's `review:lint` plugin skill must
+// reach Claude's slash command instead of loading that namesake.
+#[tokio::test]
+async fn leased_composer_keeps_a_plugin_namespace_in_a_typed_native_name() {
+    use crate::provider::skill_inventory::{
+        NativeSkillCandidate, NativeSkillInventory, SkillInventoryBinding,
+    };
+    let (runtime, _service, _skill, context, _session, _agent) = native_home().await;
+    let files = crate::test_support::TestWorktree::new("leased-composer-plugin");
+    let path = files.path().join("lint/SKILL.md");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        "---\nname: lint\ndescription: Lint source\n---\nLint.\n",
+    )
+    .unwrap();
+    let inventory = NativeSkillInventory::from_candidates(
+        &SkillInventoryBinding {
+            provider: "claude".into(),
+            provider_version: "2.1.212".into(),
+            account_profile: "default".into(),
+            execution_id: format!(
+                "{}:{}",
+                context.worker_kernel_id, context.worker_provider_run_id
+            ),
+            cwd: files.path().into(),
+            environment: Default::default(),
+            project_id: Some("worker-project".into()),
+            catalog_revision: 0,
+            source_revision: 1,
+        },
+        vec![NativeSkillCandidate {
+            name: "lint".into(),
+            description: "Lint source".into(),
+            skill_file: path,
+            exposure: NativeSkillExposure::Confirmed,
+            supports_load_ack: false,
+            observed_body_digest: None,
+            discovery_error: None,
+            plugin: Some("review".into()),
+        }],
+    )
+    .unwrap();
+    let prompt = "$review:lint inspect source";
+    let result = prepare(&runtime, &context, prompt, inventory.entries.clone(), true).await;
+    let pinned: SkillTurnContext = serde_json::from_value(result["context"].clone()).unwrap();
+    assert!(pinned.loaded.is_empty());
+    let delivery = crate::provider::skill_delivery::prepare_skill_delivery(
+        "claude",
+        prompt,
+        &pinned,
+        &inventory,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(delivery.visible_prompt, "/review:lint inspect source");
+}
+
 #[tokio::test]
 async fn leased_composer_keeps_a_payload_until_every_id_sharing_its_digest_is_cached() {
     let (runtime, service, skill, context, _session, _agent) = native_home().await;
