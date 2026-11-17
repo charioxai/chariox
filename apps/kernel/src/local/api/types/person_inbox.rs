@@ -72,9 +72,13 @@ pub struct SetInboxCardStateRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum InboxCardChange {
-    Read { read: bool },
+    Read {
+        read: bool,
+    },
     /// `None` brings the cards back now.
-    Snooze { until_ms: Option<u64> },
+    Snooze {
+        until_ms: Option<u64>,
+    },
 }
 
 /// A muted origin's notices arrive read. Needs-you cards cannot be muted: an agent waits on them.

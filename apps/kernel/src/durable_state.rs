@@ -59,8 +59,8 @@ pub(crate) mod browser_import;
 mod created_resources;
 mod decision_holders;
 mod person_inbox;
-pub(crate) use person_inbox::{PersonInboxState, StoredNotice};
 pub(crate) use decision_holders::StoredDecisionHolder;
+pub(crate) use person_inbox::{PersonInboxState, StoredNotice};
 mod event_connection_imports;
 pub(crate) use event_connection_imports::{
     EventConnectionImportChange, EventConnectionImportClaims, IMPORTED_BY_TRANSFER_ID,

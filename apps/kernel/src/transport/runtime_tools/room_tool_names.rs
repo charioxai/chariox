@@ -3,9 +3,10 @@ use super::*;
 
 pub(crate) fn room_name(meta: &str) -> Option<String> {
     let name = match meta {
-        NOTIFICATION_SOURCES | NOTIFICATION_SUBSCRIBE | NOTIFICATION_UNSUBSCRIBE | NOTIFY_PERSON => {
-            meta.into()
-        }
+        NOTIFICATION_SOURCES
+        | NOTIFICATION_SUBSCRIBE
+        | NOTIFICATION_UNSUBSCRIBE
+        | NOTIFY_PERSON => meta.into(),
         META_HISTORY_SEARCH_TOOL => "chariox.history.search".into(),
         META_SESSION_OVERVIEW_TOOL => "chariox.room.overview".into(),
         META_RUN_COMMAND_TOOL => "chariox.room.run_command".into(),

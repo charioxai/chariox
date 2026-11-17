@@ -80,18 +80,22 @@ async fn the_inbox_lists_the_owners_cards_from_every_room_newest_first_and_drops
         "the owner's Rooms only, newest first"
     );
 
-    let request = LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
-        session_id: ids[1].clone(),
-        interaction_id: "newer".into(),
-        choice_id: "allow".into(),
-        custom_reply: None,
-        passkey: None,
-        passkey_remember_minutes: None,
-    });
+    let request =
+        LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
+            session_id: ids[1].clone(),
+            interaction_id: "newer".into(),
+            choice_id: "allow".into(),
+            custom_reply: None,
+            passkey: None,
+            passkey_remember_minutes: None,
+        });
     let mut command = KernelCommand::from_local_request("answer", None, None, &request);
     command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
     router.dispatch(command, request).await.unwrap();
-    assert_eq!(card_ids(&inbox(&router).await), [(ids[0].as_str(), "older")]);
+    assert_eq!(
+        card_ids(&inbox(&router).await),
+        [(ids[0].as_str(), "older")]
+    );
 }
 
 #[tokio::test]
@@ -135,7 +139,9 @@ async fn a_watched_inbox_gets_a_raised_card_and_its_answer_within_two_seconds() 
         params: serde_json::json!({}),
         known_revision: None,
     };
-    let refused = submit_watch_set(&watches, vec![watch], owner).await.unwrap();
+    let refused = submit_watch_set(&watches, vec![watch], owner)
+        .await
+        .unwrap();
     assert!(refused.is_empty(), "{refused:?}");
     let mut next_cards = || {
         let events = &mut events;
@@ -198,7 +204,11 @@ async fn a_watched_inbox_gets_a_raised_card_and_its_answer_within_two_seconds() 
         },
     )
     .unwrap();
-    assert_eq!(next_cards().await, [card_id], "a notice wakes the watched Inbox at once");
+    assert_eq!(
+        next_cards().await,
+        [card_id],
+        "a notice wakes the watched Inbox at once"
+    );
 }
 
 #[tokio::test]

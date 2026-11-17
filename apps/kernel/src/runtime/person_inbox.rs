@@ -115,7 +115,9 @@ pub(crate) fn notify_person(
     }
     let title = notice.title.trim();
     if title.is_empty() || title.contains('\n') {
-        return Err(refused("The title is one line of text. Put details in body."));
+        return Err(refused(
+            "The title is one line of text. Put details in body.",
+        ));
     }
     let created_at_ms = unix_epoch_ms();
     let stored = runtime_state

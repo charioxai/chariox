@@ -22,9 +22,9 @@ use tokio::time::Instant;
 
 use crate::error::DaemonError;
 use crate::local::{
-    GetCredentialVaultStatusRequest, GetPersonInboxRequest, KernelResourceRefusal, KernelResourceWatch,
-    ListAppInstallationsRequest, ListCredentialsRequest, ListProviderAccountProfilesRequest,
-    LocalDaemonRequest,
+    GetCredentialVaultStatusRequest, GetPersonInboxRequest, KernelResourceRefusal,
+    KernelResourceWatch, ListAppInstallationsRequest, ListCredentialsRequest,
+    ListProviderAccountProfilesRequest, LocalDaemonRequest,
 };
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
 use crate::runtime::router::CommandRouter;
@@ -128,7 +128,9 @@ enum FeedResource {
     VaultStatus,
     VaultEntries,
     ProviderAccounts,
-    AppInstallations { session_id: Option<String> },
+    AppInstallations {
+        session_id: Option<String>,
+    },
     /// Changes with the Rooms' pending interactions, which no request signals.
     PersonInbox,
 }

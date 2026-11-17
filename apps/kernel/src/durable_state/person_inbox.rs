@@ -82,7 +82,8 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
 }
 
 pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> rusqlite::Result<()> {
-    let decode = |error: serde_json::Error| rusqlite::Error::ToSqlConversionFailure(Box::new(error));
+    let decode =
+        |error: serde_json::Error| rusqlite::Error::ToSqlConversionFailure(Box::new(error));
     match kind {
         NOTICE => {
             let notice: StoredNotice = serde_json::from_str(payload).map_err(decode)?;
@@ -139,7 +140,11 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
             };
             tx.execute(
                 sql,
-                params![mute.owner_user_id, mute.origin.session_id, mute.origin.agent_id],
+                params![
+                    mute.owner_user_id,
+                    mute.origin.session_id,
+                    mute.origin.agent_id
+                ],
             )?;
             Ok(())
         }
@@ -306,7 +311,7 @@ fn error_for(message: String) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     fn notice(card_id: &str, created_at_ms: u64) -> StoredNotice {
         StoredNotice {
             card_id: card_id.into(),
@@ -331,30 +336,58 @@ mod tests {
             let store = DurableKernelStateStore::open(path.clone()).unwrap();
             store.record_person_notice(notice("n1", now)).unwrap();
             store
-                .set_person_inbox_card_state("owner", vec!["n1".into()], InboxCardChange::Read { read: true }, now)
+                .set_person_inbox_card_state(
+                    "owner",
+                    vec!["n1".into()],
+                    InboxCardChange::Read { read: true },
+                    now,
+                )
                 .unwrap();
             store
                 .set_person_inbox_card_state(
                     "owner",
                     vec!["interaction-1".into()],
-                    InboxCardChange::Snooze { until_ms: Some(now + 3_600_000) },
+                    InboxCardChange::Snooze {
+                        until_ms: Some(now + 3_600_000),
+                    },
                     now,
                 )
                 .unwrap();
-            let origin = PersonInboxOrigin { session_id: "room-1".into(), agent_id: "agent-1".into() };
+            let origin = PersonInboxOrigin {
+                session_id: "room-1".into(),
+                agent_id: "agent-1".into(),
+            };
             store.set_person_inbox_mute("owner", origin, true).unwrap();
-            assert!(store.record_person_notice(notice("n2", now + 1)).unwrap().read);
+            assert!(
+                store
+                    .record_person_notice(notice("n2", now + 1))
+                    .unwrap()
+                    .read
+            );
         }
         let store = DurableKernelStateStore::open(path.clone()).unwrap();
         let state = store.person_inbox_state("owner", now + 2).unwrap();
         assert_eq!(
-            state.notices.iter().map(|n| (n.card_id.as_str(), n.read)).collect::<Vec<_>>(),
+            state
+                .notices
+                .iter()
+                .map(|n| (n.card_id.as_str(), n.read))
+                .collect::<Vec<_>>(),
             [("n2", true), ("n1", true)]
         );
         assert_eq!(state.snoozes.get("interaction-1"), Some(&(now + 3_600_000)));
         assert_eq!(state.mutes.len(), 1);
-        assert!(store.person_inbox_state("owner", now + 3_600_000).unwrap().snoozes.is_empty(), "a snooze ends on time");
-        assert!(store.person_inbox_state("someone-else", now).unwrap() == PersonInboxState::default());
+        assert!(
+            store
+                .person_inbox_state("owner", now + 3_600_000)
+                .unwrap()
+                .snoozes
+                .is_empty(),
+            "a snooze ends on time"
+        );
+        assert!(
+            store.person_inbox_state("someone-else", now).unwrap() == PersonInboxState::default()
+        );
     }
 
     #[test]
@@ -363,16 +396,36 @@ mod tests {
         let store = DurableKernelStateStore::open(dir.path().join("state.sqlite3")).unwrap();
         let start = 10 * RETENTION_MS;
         store.record_person_notice(notice("old", start)).unwrap();
-        store.record_person_notice(notice("unread", start + RETENTION_MS)).unwrap();
-        store.record_person_notice(notice("read", start + RETENTION_MS + 1)).unwrap();
         store
-            .set_person_inbox_card_state("owner", vec!["read".into()], InboxCardChange::Read { read: true }, start + RETENTION_MS + 1)
+            .record_person_notice(notice("unread", start + RETENTION_MS))
+            .unwrap();
+        store
+            .record_person_notice(notice("read", start + RETENTION_MS + 1))
+            .unwrap();
+        store
+            .set_person_inbox_card_state(
+                "owner",
+                vec!["read".into()],
+                InboxCardChange::Read { read: true },
+                start + RETENTION_MS + 1,
+            )
             .unwrap();
         for index in 0..NOTICES_PER_OWNER - 1 {
-            store.record_person_notice(notice(&format!("n{index:04}"), start + RETENTION_MS + 2 + index as u64)).unwrap();
+            store
+                .record_person_notice(notice(
+                    &format!("n{index:04}"),
+                    start + RETENTION_MS + 2 + index as u64,
+                ))
+                .unwrap();
         }
-        let state = store.person_inbox_state("owner", start + RETENTION_MS + 2_000).unwrap();
-        let ids = state.notices.iter().map(|n| n.card_id.as_str()).collect::<Vec<_>>();
+        let state = store
+            .person_inbox_state("owner", start + RETENTION_MS + 2_000)
+            .unwrap();
+        let ids = state
+            .notices
+            .iter()
+            .map(|n| n.card_id.as_str())
+            .collect::<Vec<_>>();
         assert_eq!(ids.len(), NOTICES_PER_OWNER as usize);
         assert!(!ids.contains(&"old"), "past retention");
         assert!(!ids.contains(&"read"), "the oldest read notice goes first");

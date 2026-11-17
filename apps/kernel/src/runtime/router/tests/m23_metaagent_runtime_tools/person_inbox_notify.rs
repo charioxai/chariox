@@ -113,7 +113,9 @@ fn notice(card: &PersonInboxCard) -> &crate::local::PersonInboxNotice {
 async fn an_agent_notifies_the_owner_and_the_card_reaches_the_inbox_unread() {
     let room = room("notify-person");
     let card_id = room
-        .notify(serde_json::json!({"title":"PR review done","body":"Two comments","priority":"high"}))
+        .notify(
+            serde_json::json!({"title":"PR review done","body":"Two comments","priority":"high"}),
+        )
         .await
         .unwrap();
 
@@ -123,8 +125,18 @@ async fn an_agent_notifies_the_owner_and_the_card_reaches_the_inbox_unread() {
     assert_eq!(cards[0].session_id, room.session_id);
     let sent = notice(&cards[0]);
     assert_eq!(
-        (sent.title.as_str(), sent.body.as_deref(), sent.priority, sent.read),
-        ("PR review done", Some("Two comments"), PersonInboxPriority::High, false)
+        (
+            sent.title.as_str(),
+            sent.body.as_deref(),
+            sent.priority,
+            sent.read
+        ),
+        (
+            "PR review done",
+            Some("Two comments"),
+            PersonInboxPriority::High,
+            false
+        )
     );
     assert_eq!(sent.agent_id, room.agent_id);
     assert!(sent.agent_name.is_some(), "the card names the agent");
@@ -142,8 +154,14 @@ async fn an_agent_notifies_the_owner_and_the_card_reaches_the_inbox_unread() {
 #[tokio::test]
 async fn read_snooze_and_mute_are_kept_by_the_kernel_and_a_needs_you_card_is_only_snoozed() {
     let room = room("inbox-card-state");
-    let first = room.notify(serde_json::json!({"title":"First"})).await.unwrap();
-    let second = room.notify(serde_json::json!({"title":"Second"})).await.unwrap();
+    let first = room
+        .notify(serde_json::json!({"title":"First"}))
+        .await
+        .unwrap();
+    let second = room
+        .notify(serde_json::json!({"title":"Second"}))
+        .await
+        .unwrap();
     let _pending = room
         .router
         .runtime_state
@@ -155,7 +173,9 @@ async fn read_snooze_and_mute_are_kept_by_the_kernel_and_a_needs_you_card_is_onl
                 "operation-waiting",
                 "Install App?",
                 "Review this release",
-                vec![RuntimeInteractionChoice::new("allow", "Install", "allow", None)],
+                vec![RuntimeInteractionChoice::new(
+                    "allow", "Install", "allow", None,
+                )],
             ),
         )
         .await
@@ -185,9 +205,14 @@ async fn read_snooze_and_mute_are_kept_by_the_kernel_and_a_needs_you_card_is_onl
         .is_err());
 
     let until = crate::session::unix_epoch_ms() + 3_600_000;
-    room.set(&["waiting", &first], InboxCardChange::Snooze { until_ms: Some(until) })
-        .await
-        .unwrap();
+    room.set(
+        &["waiting", &first],
+        InboxCardChange::Snooze {
+            until_ms: Some(until),
+        },
+    )
+    .await
+    .unwrap();
     let cards = room.inbox().await;
     let snoozed = |cards: &[PersonInboxCard], id: &str| {
         cards
@@ -196,7 +221,11 @@ async fn read_snooze_and_mute_are_kept_by_the_kernel_and_a_needs_you_card_is_onl
             .unwrap()
             .snoozed_until_ms
     };
-    assert_eq!(snoozed(&cards, "waiting"), Some(until), "a snoozed needs-you card stays listed");
+    assert_eq!(
+        snoozed(&cards, "waiting"),
+        Some(until),
+        "a snoozed needs-you card stays listed"
+    );
     assert_eq!(snoozed(&cards, &first), Some(until));
     assert!(room
         .set(&["waiting"], InboxCardChange::Snooze { until_ms: Some(1) })
@@ -208,11 +237,23 @@ async fn read_snooze_and_mute_are_kept_by_the_kernel_and_a_needs_you_card_is_onl
     assert_eq!(snoozed(&room.inbox().await, "waiting"), None);
 
     assert_eq!(room.mute(true).await.len(), 1);
-    let quiet = room.notify(serde_json::json!({"title":"Quiet"})).await.unwrap();
+    let quiet = room
+        .notify(serde_json::json!({"title":"Quiet"}))
+        .await
+        .unwrap();
     let cards = room.inbox().await;
-    assert!(read_of(&cards, &quiet), "a muted agent's notice arrives read");
-    assert!(cards.iter().any(|card| card.card_id == "waiting"), "a mute never hides a needs-you card");
+    assert!(
+        read_of(&cards, &quiet),
+        "a muted agent's notice arrives read"
+    );
+    assert!(
+        cards.iter().any(|card| card.card_id == "waiting"),
+        "a mute never hides a needs-you card"
+    );
     assert!(room.mute(false).await.is_empty());
-    let loud = room.notify(serde_json::json!({"title":"Loud"})).await.unwrap();
+    let loud = room
+        .notify(serde_json::json!({"title":"Loud"}))
+        .await
+        .unwrap();
     assert!(!read_of(&room.inbox().await, &loud));
 }
