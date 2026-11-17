@@ -293,6 +293,9 @@ fn waiting_room_agent_workspace_update_drill_updates_public_projection_inner() {
                 clear_workspace_id: false,
                 worktree_id: Some(worktree_b_feature.path().display().to_string()),
                 clear_worktree_id: false,
+                reason: None,
+                self_settings: None,
+                usage_limit: None,
             },
         ))
         .expect("agent workspace update should succeed");

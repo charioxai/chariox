@@ -1211,6 +1211,14 @@ impl KernelRuntimeState {
         agent_id: &str,
         prompt: &crate::session::PromptQueueItem,
     ) -> Result<String, DaemonError> {
+        if prompt.workflow_run_id().is_none() {
+            if let Some(provider_run_id) = self
+                .relaunch_leased_turn_provider(session_id, agent_id)
+                .await?
+            {
+                return Ok(provider_run_id);
+            }
+        }
         let session_id = session_id.to_string();
         let agent_id = agent_id.to_string();
         let prompt = prompt.clone();
@@ -1235,6 +1243,69 @@ impl KernelRuntimeState {
             }
         })
         .await
+    }
+
+    /// A leased agent's turn goes on in a new process the way the home launched the first: the
+    /// worker never starts it from its own login, and the home's credential is the one the ended
+    /// process was launched with. `None` for an agent that is not a leased agent's backing agent.
+    async fn relaunch_leased_turn_provider(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let backing_session_id = session_id.to_string();
+        let backing_agent_id = agent_id.to_string();
+        let Some(request) = self
+            .with_app_side_effect(move |app| {
+                crate::app::RemoteLeaseRuntime::new(app)
+                    .prepare_leased_turn_relaunch(&backing_session_id, &backing_agent_id)
+            })
+            .await?
+        else {
+            return Ok(None);
+        };
+        let credential = self.owned.leased_launch_credentials.for_profile(
+            agent_id,
+            &request.provider,
+            &request.account_profile,
+        );
+        let run = self
+            .launch_provider_for_remote_lease_detached(request, credential)
+            .await?;
+        self.wait_until_provider_run_is_running(run.id()).await?;
+        Ok(Some(run.id().to_string()))
+    }
+
+    /// The continuation prompt goes to a process that is up, not to one that is still starting.
+    async fn wait_until_provider_run_is_running(
+        &self,
+        provider_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        let deadline = tokio::time::Instant::now()
+            + super::provider_mcp_continuation_runtime::PROVIDER_RELAUNCH_WAIT;
+        loop {
+            match self.owned.provider_store.get_run(provider_run_id) {
+                Ok(run) if run.state() == crate::provider::ProviderRunState::Running => {
+                    return Ok(())
+                }
+                Ok(run) if run.state() != crate::provider::ProviderRunState::Ended => {}
+                _ => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "relaunch leased provider",
+                        message: format!(
+                            "provider run `{provider_run_id}` ended before it was ready; change the settings and send the request again"
+                        ),
+                    })
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(DaemonError::LocalTransport {
+                    operation: "relaunch leased provider",
+                    message: format!("timed out waiting for provider run `{provider_run_id}`"),
+                });
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
     }
 
     async fn redispatch_local_prompt(
@@ -1396,9 +1467,33 @@ impl KernelRuntimeState {
             }
         }
         self.persist_recovered_provider_session(agent, adapter_key, &provider_session_id)?;
+        self.dispatch_prompt_continuation(
+            session_id,
+            agent.id(),
+            &prompt,
+            recovery_material.hidden_system_context,
+            recovery_material.attachments,
+            provider_restart_continuation_prompt,
+        )
+        .await?;
+        Ok(UncertainLocalRecoveryOutcome::ContinuationDispatched)
+    }
+
+    /// Starts one durable recovery operation for the active `prompt` and sends the text
+    /// `continuation` builds from its id to a provider run of the agent's current profile, as the
+    /// same turn: a restart and a settings change both continue a turn this way.
+    pub(super) async fn dispatch_prompt_continuation(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        hidden_system_context: String,
+        attachments: Vec<crate::session::PromptAttachment>,
+        continuation: impl FnOnce(&str) -> String,
+    ) -> Result<(), DaemonError> {
         let recovery_prompt =
             self.owned
-                .begin_active_prompt_recovery(session_id, agent.id(), prompt.id())?;
+                .begin_active_prompt_recovery(session_id, agent_id, prompt.id())?;
         let operation_id = recovery_prompt
             .durable_recovery_operation_id()
             .ok_or_else(|| DaemonError::LocalTransport {
@@ -1408,20 +1503,20 @@ impl KernelRuntimeState {
             .to_string();
         self.owned.mark_active_prompt_recovery_phase(
             session_id,
-            agent.id(),
+            agent_id,
             prompt.id(),
             &operation_id,
             crate::session::DurablePromptDeliveryPhase::Dispatching,
         )?;
         let provider_run_id = match self
-            .recover_local_prompt_provider(session_id, agent.id(), &prompt)
+            .recover_local_prompt_provider(session_id, agent_id, prompt)
             .await
         {
             Ok(provider_run_id) => provider_run_id,
             Err(error) => {
                 let _ = self.owned.mark_active_prompt_recovery_phase(
                     session_id,
-                    agent.id(),
+                    agent_id,
                     prompt.id(),
                     &operation_id,
                     crate::session::DurablePromptDeliveryPhase::Accepted,
@@ -1441,13 +1536,13 @@ impl KernelRuntimeState {
         let dispatch = crate::app::KernelPromptDispatch {
             session_id: session_id.to_string(),
             provider_run_id,
-            agent_id: agent.id().to_string(),
+            agent_id: agent_id.to_string(),
             prompt_id: prompt.id().to_string(),
             target_active_prompt_id: None,
             source_attachment_id: format!("{KERNEL_RECOVERY_ATTACHMENT_PREFIX}{operation_id}"),
-            prompt: provider_restart_continuation_prompt(&operation_id),
-            hidden_system_context: recovery_material.hidden_system_context,
-            attachments: recovery_material.attachments,
+            prompt: continuation(&operation_id),
+            hidden_system_context,
+            attachments,
             prompt_origin: crate::session::PromptOrigin::Chariox,
             external_provider: None,
             external_provider_session_id: None,
@@ -1457,7 +1552,7 @@ impl KernelRuntimeState {
         if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
             let _ = self.owned.mark_active_prompt_recovery_phase(
                 session_id,
-                agent.id(),
+                agent_id,
                 prompt.id(),
                 &operation_id,
                 crate::session::DurablePromptDeliveryPhase::Accepted,
@@ -1471,13 +1566,13 @@ impl KernelRuntimeState {
         if !structured {
             self.owned.mark_active_prompt_recovery_phase(
                 session_id,
-                agent.id(),
+                agent_id,
                 prompt.id(),
                 &operation_id,
                 crate::session::DurablePromptDeliveryPhase::Delivered,
             )?;
         }
-        Ok(UncertainLocalRecoveryOutcome::ContinuationDispatched)
+        Ok(())
     }
 
     /// An operation the transcript does not show is in flight only if this kernel life started
@@ -1490,7 +1585,7 @@ impl KernelRuntimeState {
             .contains(operation_id)
     }
 
-    fn persist_recovered_provider_session(
+    pub(super) fn persist_recovered_provider_session(
         &self,
         agent: &crate::agent::AgentInstance,
         adapter_key: &str,

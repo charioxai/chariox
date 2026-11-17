@@ -227,18 +227,24 @@ pub(crate) fn redact_response_for_user(
                 session: redact_session(session)?,
             }
         }
-        LocalDaemonResponse::AgentConfigUpdated { agent, session } => {
-            LocalDaemonResponse::AgentConfigUpdated {
-                agent,
-                session: redact_session(session)?,
-            }
-        }
-        LocalDaemonResponse::AgentProfileUpdated { agent, session } => {
-            LocalDaemonResponse::AgentProfileUpdated {
-                agent,
-                session: redact_session(session)?,
-            }
-        }
+        LocalDaemonResponse::AgentConfigUpdated {
+            agent,
+            session,
+            applies,
+        } => LocalDaemonResponse::AgentConfigUpdated {
+            agent,
+            session: redact_session(session)?,
+            applies,
+        },
+        LocalDaemonResponse::AgentProfileUpdated {
+            agent,
+            session,
+            applies,
+        } => LocalDaemonResponse::AgentProfileUpdated {
+            agent,
+            session: redact_session(session)?,
+            applies,
+        },
         LocalDaemonResponse::AgentAliased { agent, session } => LocalDaemonResponse::AgentAliased {
             agent,
             session: redact_session(session)?,

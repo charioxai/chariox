@@ -10,8 +10,12 @@ enum SelectedRun {
 
 async fn confirmed_remote_profile(
     selected: SelectedRun,
+    turn_running: bool,
 ) -> (KernelRuntimeState, String, RuntimeProviderRun, String) {
     let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    if turn_running {
+        sync_active_prompt(&app, &session_id, &agent_id).await;
+    }
     let old_id =
         crate::provider::projected_leased_provider_run_id("leased-agent-1", "worker-run-old");
     let mut old = RuntimeProviderRun::from_control_capability_inference(
@@ -114,7 +118,8 @@ async fn confirmed_remote_profile(
 
 #[tokio::test]
 async fn confirmed_remote_profile_retires_the_previous_leased_projection() {
-    let (runtime, session_id, old, _) = confirmed_remote_profile(SelectedRun::PreviousLease).await;
+    let (runtime, session_id, old, _) =
+        confirmed_remote_profile(SelectedRun::PreviousLease, false).await;
     assert_eq!(
         runtime
             .session_snapshot(&session_id)
@@ -154,7 +159,7 @@ async fn confirmed_remote_profile_retires_the_previous_leased_projection() {
 #[tokio::test]
 async fn confirmed_remote_profile_preserves_another_agents_active_run() {
     for selected in [SelectedRun::OtherLease, SelectedRun::Local] {
-        let (runtime, session_id, _, active_id) = confirmed_remote_profile(selected).await;
+        let (runtime, session_id, _, active_id) = confirmed_remote_profile(selected, false).await;
         assert_eq!(
             runtime
                 .session_snapshot(&session_id)
@@ -173,4 +178,29 @@ async fn confirmed_remote_profile_preserves_another_agents_active_run() {
             ProviderRunState::Starting
         );
     }
+}
+
+#[tokio::test]
+async fn confirmed_remote_profile_leaves_a_running_turns_projection_to_the_worker_swap() {
+    let (runtime, session_id, old, active_id) =
+        confirmed_remote_profile(SelectedRun::PreviousLease, true).await;
+
+    assert_eq!(
+        runtime
+            .session_snapshot(&session_id)
+            .await
+            .unwrap()
+            .active_provider_run_id(),
+        Some(active_id.as_str()),
+        "the turn's run stays selected until the worker hands it to its successor"
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .provider_run_projection
+            .get(old.id())
+            .unwrap()
+            .state(),
+        ProviderRunState::Running
+    );
 }

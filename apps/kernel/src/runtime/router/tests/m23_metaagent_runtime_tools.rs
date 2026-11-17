@@ -316,6 +316,7 @@ mod reach_lists;
 mod remote_spawn_deadline;
 mod room_admission;
 mod room_prompt_dispatch;
+mod self_settings;
 mod subtree;
 
 mod cross_room_cards;

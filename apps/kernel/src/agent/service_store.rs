@@ -9,8 +9,8 @@ use crate::provider::{
 use crate::session::{RuntimeSession, SessionService};
 
 use super::{
-    AgentInstance, AgentService, AgentState, AgentSubstituteProfile, CreateAgentRequest,
-    RemoteAgentBinding,
+    AgentInstance, AgentSelfSettings, AgentService, AgentState, AgentSubstituteProfile,
+    CreateAgentRequest, RemoteAgentBinding, UsageLimitStop,
 };
 
 #[derive(Debug, Clone)]
@@ -531,6 +531,32 @@ impl AgentServiceStore {
 
     pub fn clear_agent_substitutes(&self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
         self.write().clear_agent_substitutes(agent_id)
+    }
+
+    pub fn set_agent_usage_limit_stop(
+        &self,
+        agent_id: &str,
+        stop: Option<UsageLimitStop>,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().set_agent_usage_limit_stop(agent_id, stop)
+    }
+
+    pub fn mark_usage_limit_resume_sent(
+        &self,
+        agent_id: &str,
+        since_ms: u64,
+    ) -> Result<Option<AgentInstance>, DaemonError> {
+        self.write()
+            .mark_usage_limit_resume_sent(agent_id, since_ms)
+    }
+
+    pub fn set_agent_self_settings(
+        &self,
+        agent_id: &str,
+        self_settings: AgentSelfSettings,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write()
+            .set_agent_self_settings(agent_id, self_settings)
     }
 
     pub fn set_agent_substitution_timeout(

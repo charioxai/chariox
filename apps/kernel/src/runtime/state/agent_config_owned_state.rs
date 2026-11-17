@@ -75,20 +75,6 @@ impl KernelRuntimeOwnedState {
             || previous_config.permission_level != next_config.permission_level;
         let working_directory_changed = next_agent.workspace_id() != agent.workspace_id()
             || next_agent.worktree_id() != agent.worktree_id();
-        // The person can lower a running agent: every permission lookup reads the new
-        // level and mode at use. Raising it or moving it needs the turn to end.
-        let lowers_only = previous_config.mode.permits(next_config.mode)
-            && previous_config
-                .permission_level
-                .permits(next_config.permission_level);
-        if active_turn && (working_directory_changed || !lowers_only) {
-            return Err(DaemonError::LocalTransport {
-                operation: "update agent config",
-                message: format!(
-                    "agent `{agent_id}` has an active turn; lower its level or mode now, or update the rest of the config after it finishes"
-                ),
-            });
-        }
         let scope_changed = effective_config_changed || working_directory_changed;
         // The agent runs, here or on its worker, with what its parent chain allows.
         let agents = self
@@ -371,19 +357,6 @@ impl KernelRuntimeOwnedState {
             return Err(DaemonError::AgentNotInSession {
                 session_id: session_id.to_string(),
                 agent_id: agent_id.to_string(),
-            });
-        }
-        let session = self.session_store.get_session(session_id)?;
-        if self
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, agent_id)
-            .is_some()
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "commit remote agent config",
-                message: format!(
-                    "agent `{agent_id}` has an active turn; update the config after it finishes"
-                ),
             });
         }
         self.agent_store.update_agent_config(

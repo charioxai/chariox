@@ -104,6 +104,25 @@ fn summarize_meta_command_response(
             "type": "AgentAliased",
             "agent": summarize_meta_agent(agent),
         }),
+        LocalDaemonResponse::AgentProfileUpdated { agent, applies, .. }
+        | LocalDaemonResponse::AgentConfigUpdated { agent, applies, .. } => serde_json::json!({
+            "type": "AgentSettingsChanged",
+            "agent": summarize_meta_agent(agent),
+            "settings": {
+                "provider": agent.provider(),
+                "model": agent.model(),
+                "effort": agent.effort(),
+                "account_profile": agent.provider_account_profile(),
+                "mode": agent.execution_mode_override(),
+                "permission": agent.permission_level_override(),
+                "directory": agent.worktree_id(),
+            },
+            "status": match applies {
+                crate::local::SettingsApplies::Now => "applied",
+                crate::local::SettingsApplies::AtStepBoundary => "applied, continuing",
+                crate::local::SettingsApplies::AtTurnEnd => "applied when this turn ends",
+            },
+        }),
         LocalDaemonResponse::AgentDestroyed { agent } => serde_json::json!({
             "type": "AgentDestroyed",
             "agent": summarize_meta_agent(agent),

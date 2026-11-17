@@ -51,6 +51,10 @@ mod agent_move_transport;
 mod context_handoff;
 mod failed_request_owned_state;
 mod native_prompt_handoff;
+use crate::local::SettingsApplies;
+use agent_self_settings_gate as agent_self_settings;
+pub(crate) use agent_settings_change::SettingsContext;
+use agent_settings_change::SettingsOrigin;
 use context_handoff::PendingAgentContextHandoff;
 pub(crate) use context_handoff::PendingAgentContextHandoffStore;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -429,6 +433,14 @@ struct KernelRuntimeOwnedState {
     workspace_identity_monitor:
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor,
     pending_agent_context_handoffs: PendingAgentContextHandoffStore,
+    pending_settings_notices: agent_settings_change::PendingSettingsNotices,
+    leased_launch_credentials: std::sync::Arc<leased_launch_credentials::LeasedLaunchCredentials>,
+    /// When the kernel last sent a usage-limit resume, to stagger the next one.
+    usage_limit_resumes: Arc<std::sync::Mutex<u64>>,
+    /// The agents whose claimed resume this kernel is still sending.
+    usage_limit_sends: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    /// The agents whose last resume failed, so the pane says why once.
+    usage_limit_resume_failures: Arc<std::sync::Mutex<BTreeSet<String>>>,
     pending_mcp_continuations: PendingMcpContinuationStore,
     background_holds: background_hold::BackgroundHolds,
     private_assessment_results: agent_assessment_result::AssessmentResults,
@@ -555,6 +567,9 @@ mod agent_notification_app;
 mod agent_notification_expiry;
 mod agent_profile_compaction;
 mod agent_profile_owned_state;
+mod agent_self_settings_gate;
+mod agent_settings_change;
+mod agent_settings_swap_runtime;
 mod agent_trigger_gateway;
 mod agent_trigger_http;
 mod agent_trigger_notification;
@@ -569,6 +584,8 @@ mod browser_controller_action_execution_runtime_state;
 mod browser_controller_compatibility_runtime_state;
 mod owner_action_notifications;
 mod run_finished_notifications;
+mod usage_limit_interactions;
+mod usage_limit_runtime;
 mod wake_driver;
 mod workflow_notification_source_probe;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
@@ -645,6 +662,7 @@ mod provider_output_runtime;
 mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
 mod forwarded_peer_authority;
+mod leased_launch_credentials;
 mod leased_profile_transition_runtime;
 mod provider_auth_recovery;
 #[cfg(test)]
@@ -727,6 +745,8 @@ mod leased_agent_deadline_tests;
 mod leased_computer_runtime;
 #[cfg(test)]
 mod leased_computer_runtime_tests;
+#[cfg(test)]
+mod leased_mid_turn_settings_tests;
 #[cfg(test)]
 mod leased_worker_route_tests;
 mod notes_runtime;
@@ -1310,6 +1330,11 @@ impl KernelRuntimeState {
                 workspace_identity_monitor:
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
                 pending_agent_context_handoffs,
+                pending_settings_notices: Default::default(),
+                leased_launch_credentials: Default::default(),
+                usage_limit_resumes: Default::default(),
+                usage_limit_sends: Default::default(),
+                usage_limit_resume_failures: Default::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
                 background_holds: Default::default(),
                 private_assessment_results: Default::default(),

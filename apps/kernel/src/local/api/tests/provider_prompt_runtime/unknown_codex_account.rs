@@ -165,6 +165,7 @@ impl CodexPromptFixture {
                     model: Some("gpt-6-luna".into()),
                     effort: Some("low".into()),
                     clear_effort: false,
+                    reason: None,
                 },
             ))
             .unwrap();

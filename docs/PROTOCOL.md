@@ -828,6 +828,68 @@ Ambiguous post-commit failures retain intent;
 PR1 does not add automatic replay, settlement, yield or recovery scheduling.
 Those lifecycle semantics belong to PR2.
 
+### Settings change while a turn runs, and a usage limit (local 1013)
+
+A person or an agent changes a running agent's settings with the requests that change an idle one,
+`UpdateAgentProfile` (provider, account profile, model, effort) and `UpdateAgentConfig` (mode,
+permission level, directory). A running turn no longer refuses them: the kernel writes the new settings
+to the agent at once, and answers `AgentProfileUpdated` / `AgentConfigUpdated` with `applies`
+(absent is `now`): `now` (the agent was idle, or its provider takes the setting in place: the next tool
+call reads the new mode or permission level; Claude sets both when its process starts, so for it they
+follow `at_step_boundary`), `at_step_boundary` (the turn goes on in a new provider
+process when its current tool call or message has finished, as the same prompt, task and pane turn,
+with one kernel note of what changed; several changes of one step make one swap) or `at_turn_end` (the
+provider cannot go on in a new process, for example another provider family, so the next turn starts
+with the change). A tool call, question or permission wait that is still open is never ended. The
+kernel records each accepted change as the durable event `agent.settings_changed` (old to new, who
+asked, `reason`, when it applies) and writes one pane line, "Model changed to X, continuing.", when the
+process took it. The first request that runs a changed process replaces it; a provider-native TUI is
+read-only as before, and a leased agent still refuses while its turn runs. The cost of the swap is a
+cold prompt cache for the first request of the new process (an account or model switch re-reads the
+conversation at full price); the kernel has no prices and the change card does not count it.
+
+An agent changes its own settings, or those of an agent below it, with the room command
+`agent settings set [<agent>] [--model M] [--effort E | --clear-effort] [--account-profile P]
+[--provider P] [--reason TEXT]` or, in a second command, `[--mode build|plan] [--permission
+required|yolo] [--dir PATH]`; the command is the `UpdateAgentProfile` / `UpdateAgentConfig` request
+with `reason` and the caller as the origin, so there is no other authority. The person's allowed set is
+`AgentInstance.self_settings` `{models, efforts, account_profiles, directories}` (`"*"` allows any),
+changed only by the person with `UpdateAgentConfig.self_settings`. An agent changing itself within
+the set applies at once; a value outside it, a provider change or a higher mode or permission level
+takes one kernel-operation card ("<agent> wants to change its model to X", Allow once / Allow always /
+Deny; Allow always adds the value to the set, a /sudo task needs no card), and a level above what its
+parent chain allows is refused. The agents above an agent choose its settings without the set, as
+when they start it. The result of the command reads "applied, continuing" once the process takes the
+change after the command's own tool call ends.
+
+When a turn ends with the usage-limit outcome, the kernel records `AgentInstance.usage_limit_stop`
+`{prompt_id, provider, account_profile, account_label, stopped_at_ms, resumes_at_ms?, refused?,
+state}` with `state` one of `asking`, `armed {at_ms}`, `resuming {since_ms, sent}` or `declined`. The reset
+time is read from the provider's own words ("resets 4pm (UTC)", "resets Oct 28, 9pm (UTC)"); with
+none the kernel backs off. The user setting `agents.usage_limit_resume` is `ask` (default; the stop is
+`asking` and the kernel raises one decision, `usage-limit-<agent>-<stopped_at>-<refused>`, shown in the
+agent's pane (in the room agent's pane for a sub-agent) with `resume_when_back`, `not_now` and
+`continue_on:<profile>` choices, answered like any kernel decision and withdrawn when the stop moves on) or `automatic` (the stop is `armed` at
+the reset time). The kernel alone resumes: its one-second scheduler fires an armed stop at its time,
+one agent per 20 seconds, so nothing depends on an agent that may sit on the same exhausted account,
+and a restart finds the stop on the agent again. A task that was blocked by the stop goes on as the same
+task; otherwise the agent gets one kernel prompt in the same conversation. The stop follows the turn that
+failed last, so a resumed task that stops again is found again. `sent` is set once the resume turn was
+admitted: a `resuming` stop that was never sent (the kernel went away first) is armed again at once, unless the
+continuation was admitted: a turn of the agent runs, or the agent started a turn at or after the claim (the
+continuation already finished; the agent's own saved turn start is the receipt, not the history), and the stop is then marked sent, so finished work is not sent again; a
+resume the task could not take is kept armed for the next second. When the provider refuses
+again the kernel retries after 1, 5 and 15 minutes (after 15, 30, 60 and 120 minutes when no reset time
+was named) and then asks again. The person's decision is `UpdateAgentConfig.usage_limit`, given alone:
+`{"action":"resume_when_back"}`, `{"action":"not_now"}`, `{"action":"cancel"}` (takes an armed resume
+back) or `{"action":"continue_on","account_profile":"..."}` (moves the turn to another account and goes
+on now). A sub-agent is in no room agent list, so its stop travels as `usage_limit_stop` on its `AgentTreeNode` of
+`ListDescendants` (omitted when none; withheld from a viewer who may not read the node's parameters).
+`child_finished` carries `resumes_at_ms` while a resume is armed. The room commands `agent
+resume <agent>` and `agent resume cancel <agent>` let an agent above take an armed resume back at any
+time and arm one only when the person chose automatic resume; nothing depends on them. The kernel
+reads no usage meters for this and paces nothing: it only reacts to a limit stop.
+
 ### Agent deadlines (MP-08 / MP-09 / MP-10 / MP-11)
 
 Allocated local protocol **585** adds `SetAgentDeadline {session_id, agent_id,
@@ -6041,7 +6103,7 @@ unrecognised error are not). A reader decides to retry or stop from `kind` and
 provider failure, such as `The provider is at capacity.`; it is empty for
 `completed` and `cancelled`. Kernel-authored failures can retain specific recovery
 details, such as a missing workspace path. Native provider diagnostics are retained
-in kernel logs with credentials redacted, rather than copied into public reasons. Chariox adds no retry, backoff or usage-limit policy; the
+in kernel logs with credentials redacted, rather than copied into public reasons. Except for the usage-limit resume of local 1013 (see "Settings change while a turn runs, and a usage limit"), Chariox adds no retry or backoff policy; the
 provider's own behaviour is unchanged and the orchestrating agent decides.
 
 The kernel types a failure once from the harness's native error: Codex
