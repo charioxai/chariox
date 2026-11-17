@@ -1491,7 +1491,7 @@ impl KernelRuntimeState {
         hidden_system_context: String,
         attachments: Vec<crate::session::PromptAttachment>,
         continuation: impl FnOnce(&str) -> String,
-    ) -> Result<(), ContinuationFailure> {
+    ) -> Result<(), Box<ContinuationFailure>> {
         let recovery_prompt =
             self.owned
                 .begin_active_prompt_recovery(session_id, agent_id, prompt.id())?;
@@ -1526,9 +1526,11 @@ impl KernelRuntimeState {
             }
         };
         let started_run_id = provider_run_id.clone();
-        let failed = |error| ContinuationFailure {
-            error,
-            started_run_id: Some(started_run_id.clone()),
+        let failed = |error| {
+            Box::new(ContinuationFailure {
+                error,
+                started_run_id: Some(started_run_id.clone()),
+            })
         };
         let structured = self
             .owned
@@ -1629,19 +1631,20 @@ impl KernelRuntimeState {
 }
 
 /// A continuation that did not go through. `started_run_id` is the run it had started for the
-/// turn: that run owns the turn from then on, so whoever fails the turn settles against it.
+/// turn: that run owns the turn from then on, so whoever fails the turn settles against it. It is
+/// boxed in a `Result` because a `DaemonError` is large.
 #[derive(Debug)]
 pub(super) struct ContinuationFailure {
     pub(super) error: DaemonError,
     pub(super) started_run_id: Option<String>,
 }
 
-impl From<DaemonError> for ContinuationFailure {
+impl From<DaemonError> for Box<ContinuationFailure> {
     fn from(error: DaemonError) -> Self {
-        Self {
+        Box::new(ContinuationFailure {
             error,
             started_run_id: None,
-        }
+        })
     }
 }
 
