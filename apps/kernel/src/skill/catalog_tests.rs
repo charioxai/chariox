@@ -372,7 +372,7 @@ fn skills_v2_leased_worker_metadata_names_worker_roots_not_chariox_tools() {
     assert!(metadata_context(&rows, None, 1.0)
         .unwrap()
         .text
-        .contains("list_skills"));
+        .starts_with("Skills: load a matching skill with chariox.load_skill before you act.\n"));
 }
 #[test]
 fn skills_v2_sixty_skill_budget_and_revision_bound_paging() {

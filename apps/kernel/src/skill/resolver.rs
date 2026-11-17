@@ -277,7 +277,7 @@ pub fn metadata_context_at(
     }
     let mut text = match worker_roots {
         Some(_) => "Skills: read a skill's SKILL.md before using it.\n",
-        None => "Skills: use list_skills/load_skill.\n",
+        None => "Skills: load a matching skill with chariox.load_skill before you act.\n",
     }
     .to_string();
     if text.len() as u64 > budget {
