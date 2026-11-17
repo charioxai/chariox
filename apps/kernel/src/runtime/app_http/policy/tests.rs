@@ -240,6 +240,7 @@ mod wasi;
 
 pub(super) fn github_rules() -> Rules {
     let route = |method, path: &str, safety| Route {
+        redirect_hosts: Vec::new(),
         method,
         path: path[1..]
             .split('/')
@@ -275,6 +276,14 @@ pub(super) fn github_rules() -> Rules {
                         "/repos/{owner}/{repo}/pulls/{number}/merge",
                         RouteSafety::Destructive,
                     ),
+                    Route {
+                        redirect_hosts: vec!["*.blob.core.windows.net".into()],
+                        ..route(
+                            HttpMethod::Get,
+                            "/repos/{owner}/{repo}/actions/jobs/{job_id}/logs",
+                            RouteSafety::Read,
+                        )
+                    },
                 ],
             },
         )]),
@@ -404,4 +413,57 @@ fn a_credentialed_destination_is_never_reached_anonymously_and_accounts_only_rea
             .err(),
         Some(HttpError::AccountUnknown)
     );
+}
+
+#[test]
+fn only_the_redirect_hosts_of_the_matched_route_are_followed() {
+    let rules = github_rules();
+    let logs = rules
+        .account_call(
+            "https://api.github.com/repos/o/r/actions/jobs/9/logs",
+            "GET",
+            &[],
+        )
+        .unwrap()
+        .target
+        .with_authorization(Zeroizing::new("Bearer ghp_secret".into()));
+    let next = logs
+        .redirected("https://pipelines.blob.core.windows.net/logs/9.txt?sig=a%2Fb")
+        .unwrap();
+    assert_eq!(
+        next.url().host_str(),
+        Some("pipelines.blob.core.windows.net")
+    );
+    assert_eq!(next.url().query(), Some("sig=a%2Fb"));
+    assert_eq!(next.method(), hyper::Method::GET);
+    assert!(next.headers().is_empty());
+    assert_eq!(next.sent_authorization(), None);
+    assert!(next.authorization().is_some());
+    assert!(
+        next.redirected("https://other.blob.core.windows.net/x")
+            .is_none(),
+        "one hop"
+    );
+    for refused in [
+        "https://blob.core.windows.net/logs",
+        "https://x.core.windows.net/logs",
+        "https://pipelines.blob.core.windows.net.evil.com/logs",
+        "https://api.github.com/user",
+        "https://203.0.113.9/logs",
+        "http://pipelines.blob.core.windows.net/logs",
+        "https://pipelines.blob.core.windows.net:444/logs",
+        "https://u:p@pipelines.blob.core.windows.net/logs",
+        "https://pipelines.blob.core.windows.net/logs#frag",
+        "/logs",
+    ] {
+        assert!(logs.redirected(refused).is_none(), "{refused}");
+    }
+    // Another route of the same destination declares none, so it follows none.
+    let pull = rules
+        .account_call("https://api.github.com/repos/o/r/pulls/7", "GET", &[])
+        .unwrap()
+        .target;
+    assert!(pull
+        .redirected("https://pipelines.blob.core.windows.net/logs")
+        .is_none());
 }

@@ -170,6 +170,16 @@ pub struct CredentialRoute {
     pub method: HttpMethod,
     pub path: String,
     pub safety: RouteSafety,
+    /// Host suffixes (`*.blob.core.windows.net`) a read of this route may be
+    /// redirected to, for an answer GitHub keeps on other storage (a job log).
+    /// Nothing else is followed, and the account's credential is never sent
+    /// to the redirected host.
+    #[serde(
+        default,
+        rename = "redirectHosts",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub redirect_hosts: Vec<String>,
 }
 
 /// Ordered: a binding that allows `Write` also allows `Read`.
@@ -183,6 +193,8 @@ pub enum RouteSafety {
 
 /// Routes one destination may declare.
 const MAX_CREDENTIAL_ROUTES: usize = 128;
+/// Redirect host suffixes one route may declare.
+const MAX_REDIRECT_HOSTS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -401,6 +413,16 @@ impl NetworkDestination {
                     "credential routes must be unique, exact path templates",
                 ));
             }
+            if !route.redirect_hosts.is_empty()
+                && (route.method != HttpMethod::Get
+                    || route.safety != RouteSafety::Read
+                    || route.redirect_hosts.len() > MAX_REDIRECT_HOSTS
+                    || !route.redirect_hosts.iter().all(|host| redirect_host(host)))
+            {
+                return Err(invalid_manifest(
+                    "redirectHosts belong to a read route and are host suffixes like *.example.com",
+                ));
+            }
         }
         let methods: BTreeSet<_> = self.routes.iter().map(|route| route.method).collect();
         if methods != self.methods.iter().copied().collect() {
@@ -410,6 +432,25 @@ impl NetworkDestination {
         }
         Ok(())
     }
+}
+
+/// `*.example.com`: a wildcard label and a lowercase DNS suffix of at least
+/// two labels, so a redirect can never be allowed to a whole top-level domain.
+fn redirect_host(pattern: &str) -> bool {
+    let Some(suffix) = pattern.strip_prefix("*.") else {
+        return false;
+    };
+    suffix.len() <= 253
+        && suffix.split('.').count() >= 2
+        && suffix.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
 }
 
 /// `/a/{b}/c`: segments are literal or one `{name}`; no query, fragment,
@@ -596,6 +637,7 @@ mod credential_tests {
                     method: *method,
                     path: (*path).into(),
                     safety: *safety,
+                    redirect_hosts: Vec::new(),
                 })
                 .collect(),
         }
@@ -653,6 +695,59 @@ mod credential_tests {
                 "{destination:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_read_route_may_name_the_host_suffixes_its_answer_is_redirected_to_and_no_others_may() {
+        let logs = "/repos/{owner}/{repo}/actions/jobs/{job_id}/logs";
+        let with = |method, safety, hosts: &[&str]| {
+            let mut destination = destination(&[(method, logs, safety)]);
+            destination.routes[0].redirect_hosts = hosts.iter().map(|h| (*h).into()).collect();
+            destination
+        };
+        with(
+            HttpMethod::Get,
+            RouteSafety::Read,
+            &["*.blob.core.windows.net"],
+        )
+        .validate_credential()
+        .unwrap();
+        for hosts in [
+            &["blob.core.windows.net"][..],
+            &["*.com"],
+            &["*"],
+            &["*.Blob.core.windows.net"],
+            &["*.-x.example.com"],
+            &[
+                "*.a.example.com",
+                "*.b.example.com",
+                "*.c.example.com",
+                "*.d.example.com",
+                "*.e.example.com",
+            ],
+        ] {
+            assert!(
+                with(HttpMethod::Get, RouteSafety::Read, hosts)
+                    .validate_credential()
+                    .is_err(),
+                "{hosts:?}"
+            );
+        }
+        // A redirect belongs to a read: a write or a destructive route follows none.
+        assert!(with(
+            HttpMethod::Post,
+            RouteSafety::Write,
+            &["*.blob.core.windows.net"]
+        )
+        .validate_credential()
+        .is_err());
+        assert!(with(
+            HttpMethod::Get,
+            RouteSafety::Write,
+            &["*.blob.core.windows.net"]
+        )
+        .validate_credential()
+        .is_err());
     }
 }
 
