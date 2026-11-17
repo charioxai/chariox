@@ -329,6 +329,7 @@ pub(crate) fn cloud_error_is_retryable(error: &DaemonError) -> bool {
             }
             "account_deleted"
             | "authorization_denied"
+            | "budget_exceeded"
             | "identity_conflict"
             | "identity_revoked"
             | "invalid_request"

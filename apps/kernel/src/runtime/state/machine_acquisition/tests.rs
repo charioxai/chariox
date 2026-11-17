@@ -270,7 +270,7 @@ async fn offload_manual_machine_request_uses_the_same_owner_gate_and_service_min
         .contains("nothing was allocated or charged"));
 }
 
-fn option(class_id: &str, region: &str, available: bool) -> MachineOption {
+pub(super) fn option(class_id: &str, region: &str, available: bool) -> MachineOption {
     MachineOption {
         class_id: class_id.into(),
         region: region.into(),
