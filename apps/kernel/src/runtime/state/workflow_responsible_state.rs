@@ -737,7 +737,7 @@ impl KernelRuntimeState {
                     .read()
                     .resolve_workflow_ref(target_room.id(), workflow_ref);
             };
-            return self
+            let (workflow, session) = self
                 .set_workflow_responsible(
                     SetWorkflowResponsibleRequest {
                         session_id: target_room.id().into(),
@@ -747,8 +747,11 @@ impl KernelRuntimeState {
                     caller.owner_user_id(),
                     Some(caller.id()),
                 )
-                .await
-                .map(|(workflow, _)| workflow);
+                .await?;
+            // The request path saves the Room after its change; this path saves it the same way.
+            self.append_session_durable_event("session.updated", &session, "workflow")
+                .await?;
+            return Ok(workflow);
         };
         let (owner, sender) = self.peer_caller_of_agent(caller, kernel)?;
         match self

@@ -453,3 +453,42 @@ fn a_collaborator_cannot_name_who_is_responsible_either() {
         assert_eq!(t.responsible(&flow).await, WorkflowResponsible::Person);
     });
 }
+
+#[test]
+fn a_responsible_set_by_the_local_placed_command_survives_a_restart() {
+    run_large_stack_async_test("wf-responsible-restart", || async {
+        let t = Responsible::new("wf-responsible-restart").await;
+        let flow = t.person_creates("flow").await;
+        let placed = room_command(
+            &t.router,
+            &t.auth_a,
+            &format!("workflow responsible flow me --room {}", t.room),
+        )
+        .await;
+        assert!(placed.ok, "{placed:?}");
+        let before = t.responsible(&flow).await;
+        assert!(before.agent().is_some(), "{before:?}");
+
+        let Responsible {
+            _env,
+            app,
+            router,
+            room,
+            ..
+        } = t;
+        let config = app.lock().await.config().clone();
+        drop(router);
+        drop(app);
+        let app = crate::test_support::bootstrap_after_test_owner_exit(config).await;
+        let after = app
+            .sessions()
+            .resolve_workflow_ref(&room, &flow)
+            .unwrap()
+            .responsible()
+            .clone();
+        assert_eq!(
+            after, before,
+            "the command reported success; a restart must keep it"
+        );
+    });
+}
