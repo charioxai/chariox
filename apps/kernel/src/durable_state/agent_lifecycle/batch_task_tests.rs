@@ -86,6 +86,48 @@ fn the_delivery_batch_stops_before_a_second_waiting_task() {
     assert!(batch.is_empty(), "a second task needs its own wake");
 }
 
+/// Two tasks wait on the same two sources: each source's end is one row naming both tasks.
+fn two_shared_source_results(f: &Fixture) -> (InboxEvent, InboxEvent) {
+    wait_on(f, "first");
+    wait_on(f, "second");
+    let shared = |id: &str| {
+        let Outcome::Event(event) = f.apply(Operation::Occur(occurrence(
+            "room",
+            "parent",
+            "peer",
+            id,
+            "source_completed",
+            serde_json::json!({ "task_ids": ["first", "second"] }),
+        ))) else {
+            panic!("event")
+        };
+        event
+    };
+    (shared("r1"), shared("r2"))
+}
+
+#[test]
+fn the_planned_batch_is_the_batch_the_attempt_admits() {
+    let f = Fixture::new();
+    let (lead, next) = two_shared_source_results(&f);
+    let planned = f.store.agent_delivery_batch(&lead, false, None).unwrap();
+    attempt(&f, &lead, next.sequence);
+    let admitted = f
+        .store
+        .agent_events_for_prompt("room", "parent", "wake")
+        .unwrap();
+    let sequences = |rows: &[InboxEvent]| rows.iter().map(|e| e.sequence).collect::<Vec<_>>();
+    let mut planned_rows = vec![lead.sequence];
+    planned_rows.extend(sequences(&planned));
+    assert_eq!(planned_rows, sequences(&admitted));
+    let rows = f.store.agent_inbox("room", "parent", 0).unwrap();
+    assert!(
+        rows.iter()
+            .all(|row| row.prompt_id.as_deref() == Some("wake") || row.state == "pending"),
+        "a row is either in the prompt's receipt or waits for its own wake"
+    );
+}
+
 /// What a batch left behind before one prompt resumed one task: the task is Working under a
 /// prompt nothing runs, the sweep blocks it as interrupted, and its wait is already answered.
 fn stranded_blocked_task(f: &Fixture) -> AgentTaskExecution {

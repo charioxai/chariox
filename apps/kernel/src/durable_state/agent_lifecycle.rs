@@ -610,8 +610,9 @@ impl DurableKernelStateStore {
         if lead.reply_requested {
             return Ok(Vec::new());
         }
-        let tasks = self.agent_tasks(Some(&lead.room_id), Some(&lead.agent_id))?;
-        let mut woken = delivery::woken_task(&tasks, lead).map(|t| t.task_id.clone());
+        let mut slot =
+            delivery::WakeSlot::new(self.agent_tasks(Some(&lead.room_id), Some(&lead.agent_id))?);
+        slot.take(lead);
         let mut batch = Vec::new();
         for event in self.agent_work_inbox(&lead.room_id, &lead.agent_id, lead.sequence, None)? {
             if event.reply_requested {
@@ -620,11 +621,8 @@ impl DurableKernelStateStore {
             if !delivery::batch_member(&event, steer, work) {
                 continue;
             }
-            if let Some(task) = delivery::woken_task(&tasks, &event) {
-                if woken.as_ref().is_some_and(|woken| *woken != task.task_id) {
-                    break;
-                }
-                woken = Some(task.task_id.clone());
+            if !slot.take(&event) {
+                break;
             }
             batch.push(event);
         }
