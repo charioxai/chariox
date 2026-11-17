@@ -34,7 +34,7 @@ impl RemoteProviderAccountProvisioning {
         {
             return Err(DaemonError::LocalTransport {
                 operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
-                message: "Claude provider credentials cannot be materialized on a remote worker; use the kernel-managed Chariox-vault setup-token launch path".to_string(),
+                message: "Claude provider credentials cannot be materialized on a remote worker; copy the Claude account to that machine through account transfer (on that machine, run /provider accounts copy and pick the login) and start the agent again".to_string(),
             });
         }
 

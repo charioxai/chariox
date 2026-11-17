@@ -270,7 +270,10 @@ exit 2
         let error = RemoteLeaseRuntime::new(&mut app)
             .ensure_remote_provider_account(context.clone(), claude_with_refresh_credential)
             .expect_err("remote Claude refresh credentials must be rejected");
-        assert!(error.to_string().contains("setup-token launch path"));
+        let refusal = error.to_string();
+        assert!(refusal.contains("account transfer"));
+        assert!(refusal.contains("/provider accounts copy"));
+        assert!(!refusal.contains("setup-token"));
         assert!(!error.to_string().contains("bmV2ZXItbG9nLXRoaXM"));
 
         let mut wrong_owner = materialization;
