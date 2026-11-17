@@ -2,17 +2,20 @@
 //! The kernel starts argv (no shell) in the agent's workspace, owns the
 //! isolated process session, drains bounded sanitized output and reports exit or one
 //! output match. It never attaches to an arbitrary PID.
-use super::agent_process_group::signal_session;
-use super::agent_process_output::{drain, room_protector, Output, Signal};
+use super::agent_process_group::{signal_session, Leader};
+use super::agent_process_output::{drain, room_protector, Output, OutputSnapshot, Signal};
 use super::*;
 use crate::durable_state::agent_lifecycle::{AgentWake, Operation};
 use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::collections::HashMap;
-use std::io::Read;
+use std::os::fd::OwnedFd;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, Command, Stdio};
 
+mod handover;
 mod run;
+use handover::Origin;
+pub(crate) use handover::WatchedHandover;
 pub(super) use run::{KernelCommand, KernelCommandExit, KernelCommandOutput};
 
 const ENV_ALLOW: &[&str] = &[
@@ -35,7 +38,7 @@ const ENV_ALLOW: &[&str] = &[
 ];
 
 struct OwnedChild {
-    child: Child,
+    child: Leader,
     birth: u64,
     wake: String,
     /// Set once the leader is reaped after every session member settled.
@@ -45,21 +48,26 @@ struct OwnedChild {
     lost: bool,
     /// Counted under the agent's share of the memory ceiling and listed in Health.
     resources: Option<crate::runtime::process_resources::ProcessDomain>,
+    /// What the next program needs to supervise it again after a hot reload.
+    origin: Origin,
+    /// Copies of the output pipes' read ends: they cross a hot reload.
+    pipes: Vec<OwnedFd>,
+    /// Set when a hot reload asks supervision to stop without an outcome.
+    handing_over: bool,
+    /// What the output showed when supervision stopped for a hot reload.
+    handed_over: Option<OutputSnapshot>,
 }
 
 impl OwnedChild {
     fn new(mut child: Child, wake: &str) -> std::io::Result<Self> {
         match super::agent_process_group::birth(child.id()) {
-            Ok(birth) => Ok(Self {
-                child,
+            Ok(birth) => Ok(Self::of(
+                Leader::Spawned(child),
                 birth,
-                wake: wake.into(),
-                status: None,
-                leader_status: None,
-                settle_failures: 0,
-                lost: false,
-                resources: None,
-            }),
+                wake,
+                Origin::default(),
+                Vec::new(),
+            )),
             Err(error) => {
                 // The freshly spawned positive child handle is owned even
                 // when group inspection failed. Do not signal a group.
@@ -69,6 +77,26 @@ impl OwnedChild {
                 }
                 Err(error)
             }
+        }
+    }
+    /// The child of the previous program, which a hot reload handed over.
+    fn adopted(pid: u32, birth: u64, wake: &str, origin: Origin, pipes: Vec<OwnedFd>) -> Self {
+        Self::of(Leader::Adopted(pid), birth, wake, origin, pipes)
+    }
+    fn of(child: Leader, birth: u64, wake: &str, origin: Origin, pipes: Vec<OwnedFd>) -> Self {
+        Self {
+            child,
+            birth,
+            wake: wake.into(),
+            status: None,
+            leader_status: None,
+            settle_failures: 0,
+            lost: false,
+            resources: None,
+            origin,
+            pipes,
+            handing_over: false,
+            handed_over: None,
         }
     }
     fn fail_settlement(&mut self) {
@@ -285,6 +313,124 @@ fn spawn_owned_session(mut command: Command) -> std::io::Result<Child> {
     crate::process_spawn::spawn_command(command)
 }
 
+/// Counts the process under its agent's share of the memory ceiling and lists
+/// it in Health. Without monitoring it still runs: the loss is logged.
+fn watch_resources(
+    resources: crate::runtime::process_resources::PreparedDomain,
+    pid: u32,
+    wake: &str,
+    origin: &Origin,
+) -> Option<crate::runtime::process_resources::ProcessDomain> {
+    match resources.start(pid) {
+        Ok(domain) => {
+            domain.bind_key(wake);
+            if let Some(agent) = &origin.agent {
+                domain.list_as(
+                    &origin.session_id,
+                    crate::runtime::process_resources::SessionProcessOwner::Agent(agent.clone()),
+                );
+            }
+            Some(domain)
+        }
+        Err(error) => {
+            crate::logging::error_with_fields(
+                "agent_process_watch.resources",
+                "watched process resource monitoring could not start",
+                serde_json::json!({"error": error.to_string()}),
+            );
+            None
+        }
+    }
+}
+
+/// Supervises one owned session on its own thread until it settles: reaps
+/// the leader, drains the output and sends the outcome. A hot reload stops
+/// it early, without an outcome, for the next program to take over.
+fn supervise(
+    owned: Owned,
+    readers: Vec<std::thread::JoinHandle<()>>,
+    output: Arc<Output>,
+    sender: tokio::sync::mpsc::UnboundedSender<Signal>,
+) {
+    std::thread::spawn(move || {
+        let mut alerted = false;
+        let mut signalled = None;
+        let code = loop {
+            if owned.lock().is_ok_and(|c| c.handing_over) {
+                // The pipes stay open in the copies the next program reads.
+                output.stop();
+                for reader in readers {
+                    let _ = reader.join();
+                }
+                if let Ok(mut child) = owned.lock() {
+                    child.handed_over = Some(output.snapshot());
+                }
+                return;
+            }
+            match owned.lock().map(|mut c| c.poll()) {
+                Ok(Ok(Some(status))) => {
+                    signalled = status.signal();
+                    break Some(
+                        status
+                            .code()
+                            .or_else(|| status.signal().map(|s| 128 + s))
+                            .unwrap_or(-1),
+                    );
+                }
+                Ok(Ok(None)) => std::thread::sleep(Duration::from_millis(200)),
+                // A failed ownership check cannot establish physical
+                // settlement. Keep supervision and the obligation live.
+                _ => {
+                    if owned.lock().map_or(true, |mut c| {
+                        if c.lost {
+                            let _ = c.child.try_wait();
+                            true
+                        } else {
+                            false
+                        }
+                    }) {
+                        break None;
+                    }
+                    if !alerted {
+                        let _ = sender.send(Signal::SupervisionFailed);
+                        alerted = true;
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            }
+        };
+        // A detached grandchild may keep a pipe open; bound the drain.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        for reader in &readers {
+            while !reader.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        output.stop();
+        for reader in readers {
+            let _ = reader.join();
+        }
+        // The stopped command may have been the root itself, which the
+        // controller cannot tell through its own stream.
+        let resources = owned.lock().ok();
+        let domain = resources
+            .as_ref()
+            .and_then(|child| child.resources.as_ref());
+        if let Some(notice) = domain.and_then(|domain| domain.memory_stop_notice()) {
+            output.push(notice.trim_end().to_owned());
+        } else if let Some(kill) = domain.and_then(|domain| domain.oom_kill()) {
+            output.push(kill.notice());
+        } else if let Some(signal) = signalled {
+            output.push(crate::runtime::process_resources::signal_notice(signal));
+        }
+        drop(resources);
+        let _ = sender.send(match code {
+                Some(code) => Signal::Exited(code, output.text()),
+                None => Signal::Lost("process_lost: physical settlement could not be confirmed after bounded retries; survivors may still be running and require operator cleanup".into()),
+            });
+    });
+}
+
 /// argv of a kernel-launched command: no shell, bounded, no control characters.
 pub(super) fn command_argv(value: &serde_json::Value) -> Result<Vec<String>, DaemonError> {
     serde_json::from_value(value.clone())
@@ -431,63 +577,50 @@ impl KernelRuntimeState {
                 ));
             }
         }
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         let output = Arc::new(Output::default());
-        let protection = self.owned.room_secret_observations.clone();
-        let room = wake.room_id.clone();
-        let protect = room_protector(
-            protection,
-            if store.leased_process_receipt(&wake.id)?.is_some() {
+        let origin = Origin {
+            unit: run.agent_instance_id().unwrap_or(run.id()).to_string(),
+            session_id: run.session_id().to_string(),
+            agent: run.agent_instance_id().map(str::to_string),
+            protect_room: if store.leased_process_receipt(&wake.id)?.is_some() {
                 run.session_id().to_string()
             } else {
-                room
+                wake.room_id.clone()
             },
-        );
-        let readers = [
-            child
-                .stdout
-                .take()
-                .map(|s| Box::new(s) as Box<dyn Read + Send>),
-            child
-                .stderr
-                .take()
-                .map(|s| Box::new(s) as Box<dyn Read + Send>),
+        };
+        let streams: Vec<OwnedFd> = [
+            child.stdout.take().map(OwnedFd::from),
+            child.stderr.take().map(OwnedFd::from),
         ]
         .into_iter()
         .flatten()
-        .map(|stream| {
-            let (output, pattern, sender) =
-                (output.clone(), wake.match_text.clone(), sender.clone());
-            let protect = protect.clone();
-            std::thread::spawn(move || drain(stream, output, pattern, sender, protect))
-        })
-        .collect::<Vec<_>>();
+        .collect();
+        // A hot reload hands these over: the readers' own descriptors close
+        // with them.
+        let Ok(kept) = streams
+            .iter()
+            .map(OwnedFd::try_clone)
+            .collect::<std::io::Result<Vec<_>>>()
+        else {
+            if child.id() > 1 {
+                let _ = child.kill();
+                let _ = child.bounded_wait();
+            }
+            self.settle_failed_process_launch(&wake, "output setup failed; launch stopped".into());
+            return Err(crate::durable_state::agent_lifecycle::error(
+                "watched process output setup failed",
+            ));
+        };
+        let readers =
+            self.drain_streams(streams, &origin, wake.match_text.clone(), &output, &sender);
         let pid = child.id();
         let owned: Owned = Arc::new(std::sync::Mutex::new(
             match OwnedChild::new(child, &wake.id) {
                 Ok(mut child) => {
-                    child.resources = match resources.start(pid) {
-                        Ok(domain) => {
-                            domain.bind_key(&wake.id);
-                            if let Some(agent) = run.agent_instance_id() {
-                                domain.list_as(
-                                    run.session_id(),
-                                    crate::runtime::process_resources::SessionProcessOwner::Agent(
-                                        agent.to_string(),
-                                    ),
-                                );
-                            }
-                            Some(domain)
-                        }
-                        Err(error) => {
-                            crate::logging::error_with_fields(
-                                "agent_process_watch.resources",
-                                "watched process resource monitoring could not start",
-                                serde_json::json!({"error": error.to_string()}),
-                            );
-                            None
-                        }
-                    };
+                    child.origin = origin.clone();
+                    child.pipes = kept;
+                    child.resources = watch_resources(resources, pid, &wake.id, &origin);
                     child
                 }
                 Err(_) => {
@@ -514,76 +647,64 @@ impl KernelRuntimeState {
         if started.is_err() {
             self.owned.agent_wakes.processes.terminate(&wake.id);
         }
-        std::thread::spawn(move || {
-            let mut alerted = false;
-            let mut signalled = None;
-            let code = loop {
-                match owned.lock().map(|mut c| c.poll()) {
-                    Ok(Ok(Some(status))) => {
-                        signalled = status.signal();
-                        break Some(
-                            status
-                                .code()
-                                .or_else(|| status.signal().map(|s| 128 + s))
-                                .unwrap_or(-1),
-                        );
-                    }
-                    Ok(Ok(None)) => std::thread::sleep(Duration::from_millis(200)),
-                    // A failed ownership check cannot establish physical
-                    // settlement. Keep supervision and the obligation live.
-                    _ => {
-                        if owned.lock().map_or(true, |mut c| {
-                            if c.lost {
-                                let _ = c.child.try_wait();
-                                true
-                            } else {
-                                false
-                            }
-                        }) {
-                            break None;
-                        }
-                        if !alerted {
-                            let _ = sender.send(Signal::SupervisionFailed);
-                            alerted = true;
-                        }
-                        std::thread::sleep(Duration::from_millis(200));
-                    }
-                }
-            };
-            // A detached grandchild may keep a pipe open; bound the drain.
-            let deadline = Instant::now() + Duration::from_secs(1);
-            for reader in &readers {
-                while !reader.is_finished() && Instant::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-            }
-            output.stop();
-            for reader in readers {
-                let _ = reader.join();
-            }
-            // The stopped command may have been the root itself, which the
-            // controller cannot tell through its own stream.
-            let resources = owned.lock().ok();
-            let domain = resources
-                .as_ref()
-                .and_then(|child| child.resources.as_ref());
-            if let Some(notice) = domain.and_then(|domain| domain.memory_stop_notice()) {
-                output.push(notice.trim_end().to_owned());
-            } else if let Some(kill) = domain.and_then(|domain| domain.oom_kill()) {
-                output.push(kill.notice());
-            } else if let Some(signal) = signalled {
-                output.push(crate::runtime::process_resources::signal_notice(signal));
-            }
-            drop(resources);
-            let _ = sender.send(match code {
-                Some(code) => Signal::Exited(code, output.text()),
-                None => Signal::Lost("process_lost: physical settlement could not be confirmed after bounded retries; survivors may still be running and require operator cleanup".into()),
-            });
-        });
+        supervise(owned.clone(), readers, output, sender);
+        self.deliver_process_signals(
+            wake.id.clone(),
+            wake.room_id.clone(),
+            wake.agent_id.clone(),
+            receiver,
+        );
+        started?;
+        let started = self
+            .owned
+            .durable_state_store
+            .agent_wakes(Some(&wake.room_id), Some(&wake.agent_id))?
+            .into_iter()
+            .find(|w| w.id == wake.id)
+            .unwrap_or(wake);
+        Ok(started)
+    }
+    /// One reader thread per output pipe, scrubbed by the room's secrets.
+    fn drain_streams(
+        &self,
+        streams: Vec<OwnedFd>,
+        origin: &Origin,
+        pattern: Option<String>,
+        output: &Arc<Output>,
+        sender: &tokio::sync::mpsc::UnboundedSender<Signal>,
+    ) -> Vec<std::thread::JoinHandle<()>> {
+        let protect = room_protector(
+            self.owned.room_secret_observations.clone(),
+            origin.protect_room.clone(),
+        );
+        streams
+            .into_iter()
+            .map(|stream| {
+                let (output, pattern, sender) = (output.clone(), pattern.clone(), sender.clone());
+                let protect = protect.clone();
+                std::thread::spawn(move || {
+                    drain(
+                        std::fs::File::from(stream),
+                        output,
+                        pattern,
+                        sender,
+                        protect,
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// Turns one watched process's signals into durable outcomes and wakes,
+    /// until it exits.
+    fn deliver_process_signals(
+        &self,
+        id: String,
+        notice_room: String,
+        notice_agent: String,
+        mut receiver: tokio::sync::mpsc::UnboundedReceiver<Signal>,
+    ) {
         let state = self.clone();
-        let id = wake.id.clone();
-        let notice_room = wake.room_id.clone();
-        let notice_agent = wake.agent_id.clone();
         tokio::spawn(async move {
             while let Some(signal) = receiver.recv().await {
                 if state.owned.agent_wakes.processes.stopping() {
@@ -661,15 +782,6 @@ impl KernelRuntimeState {
                 }
             }
         });
-        started?;
-        let started = self
-            .owned
-            .durable_state_store
-            .agent_wakes(Some(&wake.room_id), Some(&wake.agent_id))?
-            .into_iter()
-            .find(|w| w.id == wake.id)
-            .unwrap_or(wake);
-        Ok(started)
     }
     pub(super) fn settle_failed_process_launch(&self, wake: &AgentWake, tail: String) {
         let state = self.clone();
@@ -1223,16 +1335,16 @@ mod tests {
 
     /// A yielded agent with one watched process per entry of `argvs`.
     #[cfg(target_os = "linux")]
-    struct YieldedWatches {
+    pub(super) struct YieldedWatches {
         _worktree: crate::test_support::TestWorktree,
-        room: String,
-        agent: String,
-        state: KernelRuntimeState,
-        wakes: Vec<AgentWake>,
+        pub(super) room: String,
+        pub(super) agent: String,
+        pub(super) state: KernelRuntimeState,
+        pub(super) wakes: Vec<AgentWake>,
     }
 
     #[cfg(target_os = "linux")]
-    async fn yield_on_watches(argvs: Vec<Vec<String>>) -> YieldedWatches {
+    pub(super) async fn yield_on_watches(argvs: Vec<Vec<String>>) -> YieldedWatches {
         let worktree = crate::test_support::TestWorktree::new("watched-tail");
         let mut app =
             crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
@@ -1315,7 +1427,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     impl YieldedWatches {
         /// The first inbox event of the agent that `pick` returns, within 30 s.
-        async fn inbox_event<T>(
+        pub(super) async fn inbox_event<T>(
             &self,
             pick: impl Fn(&crate::durable_state::agent_lifecycle::InboxEvent) -> Option<T>,
         ) -> T {
@@ -1680,7 +1792,7 @@ mod security_tests {
         let mut owned = OwnedChild::new(child, &wake).unwrap();
         let mut line = String::new();
         std::io::BufRead::read_line(
-            &mut std::io::BufReader::new(owned.child.stdout.take().unwrap()),
+            &mut std::io::BufReader::new(owned.child.stdout().unwrap()),
             &mut line,
         )
         .unwrap();

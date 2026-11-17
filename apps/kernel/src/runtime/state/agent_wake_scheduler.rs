@@ -148,7 +148,8 @@ impl KernelRuntimeState {
                 }
                 if !recovered {
                     recovered = self
-                        .recover_lost_agent_processes(now)
+                        .adopt_watched_processes(crate::hot_reload::take_watched(), now)
+                        .and_then(|()| self.recover_lost_agent_processes(now))
                         .and_then(|()| self.recover_driver_wakes(now))
                         .is_ok();
                 }

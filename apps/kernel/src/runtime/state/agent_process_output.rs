@@ -63,6 +63,13 @@ pub(super) enum Signal {
     SupervisionFailed,
 }
 
+/// An output's tail and whether its one match was already reported.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(super) struct OutputSnapshot {
+    tail: Vec<String>,
+    matched: bool,
+}
+
 #[derive(Default)]
 pub(super) struct Output {
     tail: std::sync::Mutex<std::collections::VecDeque<String>>,
@@ -82,6 +89,24 @@ impl Output {
         tail.push_back(line);
         while tail.iter().map(|l| l.len() + 1).sum::<usize>() > TAIL_BYTES {
             tail.pop_front();
+        }
+    }
+    /// What it showed so far, for the next program of a hot reload to carry on.
+    pub(super) fn snapshot(&self) -> OutputSnapshot {
+        OutputSnapshot {
+            tail: self
+                .tail
+                .lock()
+                .map(|t| t.iter().cloned().collect())
+                .unwrap_or_default(),
+            matched: self.matched.load(std::sync::atomic::Ordering::Acquire),
+        }
+    }
+    pub(super) fn restored(snapshot: OutputSnapshot) -> Self {
+        Self {
+            tail: std::sync::Mutex::new(snapshot.tail.into()),
+            matched: snapshot.matched.into(),
+            stopped: Default::default(),
         }
     }
     pub(super) fn text(&self) -> String {
