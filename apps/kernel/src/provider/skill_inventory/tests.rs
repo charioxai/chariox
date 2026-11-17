@@ -567,7 +567,7 @@ fn claude_directory_selection_uses_native_slash_adapter_and_rechecks_digest() {
         "$review inspect source",
         &context,
         &inventory,
-        &[selection.clone()],
+        std::slice::from_ref(&selection),
     )
     .expect("verified directory selection must reach Claude's native adapter");
     assert_eq!(delivery.visible_prompt, "/review inspect source");

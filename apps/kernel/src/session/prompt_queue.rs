@@ -1286,7 +1286,7 @@ mod tests {
             compaction_revision: None,
         };
         let prompt = prompt.with_skill_turn_authority(authority.clone());
-        assert_eq!(prompt.skill_selections(), &[selection.clone()]);
+        assert_eq!(prompt.skill_selections(), std::slice::from_ref(&selection));
         let mut public = serde_json::to_value(&prompt).unwrap();
         assert!(public.get("skill_selections").is_none());
         assert!(public.get("skill_turn_authority").is_none());

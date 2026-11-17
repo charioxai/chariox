@@ -312,7 +312,7 @@ mod tests {
                 &f.context,
                 "lease1",
                 &SkillTransferManifest::default(),
-                &[f.package.clone()]
+                std::slice::from_ref(&f.package)
             )
             .is_err());
         assert!(!f.home.join("state").exists());
@@ -321,7 +321,12 @@ mod tests {
     fn skills_v2_transfer_is_private_to_the_whole_execution_binding_without_a_catalog_or_grant() {
         let f = Fixture::new();
         let first = f
-            .send(&f.context, "lease1", &f.manifest, &[f.package.clone()])
+            .send(
+                &f.context,
+                "lease1",
+                &f.manifest,
+                std::slice::from_ref(&f.package),
+            )
             .unwrap();
         assert_eq!(first[0].skill_id, "skill-1");
         assert_eq!(first[0].version_hash, f.package.version_hash);
@@ -388,17 +393,32 @@ mod tests {
         let mut manifest = f.manifest.clone();
         manifest.skills[0].state = SkillState::Off;
         assert!(f
-            .send(&f.context, "lease1", &manifest, &[f.package.clone()])
+            .send(
+                &f.context,
+                "lease1",
+                &manifest,
+                std::slice::from_ref(&f.package)
+            )
             .is_err());
         manifest = f.manifest.clone();
         manifest.project_id = Some("p2".into());
         assert!(f
-            .send(&f.context, "lease1", &manifest, &[f.package.clone()])
+            .send(
+                &f.context,
+                "lease1",
+                &manifest,
+                std::slice::from_ref(&f.package)
+            )
             .is_err());
         manifest = f.manifest.clone();
         manifest.skills.push(manifest.skills[0].clone());
         assert!(f
-            .send(&f.context, "lease1", &manifest, &[f.package.clone()])
+            .send(
+                &f.context,
+                "lease1",
+                &manifest,
+                std::slice::from_ref(&f.package)
+            )
             .is_err());
         assert!(!f.home.join("state").exists());
     }
@@ -406,7 +426,12 @@ mod tests {
     fn skills_v2_transfer_never_uses_another_binding_or_modified_same_name_copy() {
         let f = Fixture::new();
         let roots = f
-            .send(&f.context, "lease1", &f.manifest, &[f.package.clone()])
+            .send(
+                &f.context,
+                "lease1",
+                &f.manifest,
+                std::slice::from_ref(&f.package),
+            )
             .unwrap();
         fs::write(
             Path::new(&roots[0].materialized_root).join("helper.sh"),
@@ -420,7 +445,12 @@ mod tests {
     fn skills_v2_transfer_receipts_bind_lease_project_revision_id_and_digest() {
         let f = Fixture::new();
         let roots = f
-            .send(&f.context, "lease1", &f.manifest, &[f.package.clone()])
+            .send(
+                &f.context,
+                "lease1",
+                &f.manifest,
+                std::slice::from_ref(&f.package),
+            )
             .unwrap();
         let receipt =
             |manifest: SkillTransferManifest,

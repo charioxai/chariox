@@ -238,7 +238,7 @@ async fn leased_skill_native_duplicate_retains_manual_receipt_and_next_turn_load
         &agent_id,
         prompt.id(),
         &binding.leased_agent_id,
-        &[native.clone()],
+        std::slice::from_ref(&native),
         &super::super::skills_dispatch::ReportedWorkerRun::Unknown,
     )
     .unwrap()
@@ -281,7 +281,7 @@ async fn leased_skill_native_duplicate_retains_manual_receipt_and_next_turn_load
             &session_id,
             "continue reviewing",
             &[],
-            &[native.clone()],
+            std::slice::from_ref(&native),
             None,
             1.0,
             8192,

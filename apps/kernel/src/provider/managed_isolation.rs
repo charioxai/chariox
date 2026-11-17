@@ -2325,8 +2325,8 @@ mod tests {
         std::fs::create_dir_all(&other).unwrap();
         let previous = std::env::var_os("CHARIOX_HOME");
         std::env::set_var("CHARIOX_HOME", &home);
-        let trusted =
-            managed_trusted_read_only_paths(&[own.clone()]).expect("trusted paths should resolve");
+        let trusted = managed_trusted_read_only_paths(std::slice::from_ref(&own))
+            .expect("trusted paths should resolve");
         restore_env("CHARIOX_HOME", previous);
         let own = own.canonicalize().unwrap();
         let other = other.canonicalize().unwrap();
