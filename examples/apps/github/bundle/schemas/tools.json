@@ -1,79 +1,6 @@
 {
   "tools": [
     {
-      "name": "get_automations",
-      "description": "Read the outgoing event to automation names setting.",
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {}
-      }
-    },
-    {
-      "name": "configure_automations",
-      "description": "Replace the outgoing event to automation names setting. Configure each named automation in the kernel first. An empty list explicitly disables forwarding for that event.",
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "automations": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "pull_request_opened_notification": {
-                "type": "array",
-                "uniqueItems": true,
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 128
-                }
-              },
-              "pull_request_updated_notification": {
-                "type": "array",
-                "uniqueItems": true,
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 128
-                }
-              },
-              "review_requested_notification": {
-                "type": "array",
-                "uniqueItems": true,
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 128
-                }
-              },
-              "issue_opened_notification": {
-                "type": "array",
-                "uniqueItems": true,
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 128
-                }
-              },
-              "workflow_run_completed_notification": {
-                "type": "array",
-                "uniqueItems": true,
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 128
-                }
-              }
-            }
-          }
-        },
-        "required": [
-          "automations"
-        ]
-      }
-    },
-    {
       "name": "list_accounts",
       "description": "The GitHub accounts this App uses: label, login, status and API rate limit. Accounts are bound by the owner in the kernel; this lists the ones the App knows.",
       "inputSchema": {
@@ -499,7 +426,7 @@
     },
     {
       "name": "get_check_output",
-      "description": "What one check run reports: its title, summary, annotations (the failure messages with file and line) and, for a GitHub Actions job, its steps with their result. The text of the job log lives on GitHub storage, which this App does not reach.",
+      "description": "What one check run reports: its title, summary, annotations (the failure messages with file and line) and, for a GitHub Actions job, its steps with their result and, for a job, the end of its log (the last 200 lines; a log over 1 MiB is reported as unavailable).",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -1231,6 +1158,631 @@
       }
     },
     {
+      "name": "list_subscriptions",
+      "description": "The subscriptions of this App: what each watches and where it notifies.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "name": "get_subscription",
+      "description": "One subscription.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "list_deliveries",
+      "description": "The last deliveries (newest first): delivered, filtered with the reason, failed or expired.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "subscription": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        }
+      }
+    },
+    {
+      "name": "get_event_sources",
+      "description": "Whether each watched repository has a live webhook source, and the state of the events connection.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "name": "list_connection_repositories",
+      "description": "Repositories the granted events connection delivers for.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        }
+      }
+    },
+    {
+      "name": "connect_github_events",
+      "description": "Start the GitHub authorization for live events; returns the address where the person approves on GitHub.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "returnUrl": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "create_subscription",
+      "description": "Notify a target when GitHub events match: repositories, an organization or all, event names, filters, and a target (the person, an agent, a Room's agent or a workflow). The kernel delivers the events; nothing polls. An agent subscribes itself with this; for any other target use create_subscription_for_others. A one-shot (once) ends after its first delivery or at its expiry, which also notifies once. \"ci.finished\" fires when every check of the pull request's head commit completed.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "scope": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "repos",
+                  "org",
+                  "all"
+                ]
+              },
+              "repos": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 50,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+                  "description": "owner/name"
+                }
+              },
+              "org": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]{1,100}$"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "events": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 30,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "pull_request.opened",
+                "pull_request.updated",
+                "pull_request.review_requested",
+                "pull_request.review_submitted",
+                "pull_request.merged",
+                "pull_request.closed",
+                "pull_request.ready_for_review",
+                "pull_request.reopened",
+                "pull_request.labeled",
+                "pull_request.comment",
+                "check.completed",
+                "ci.finished",
+                "workflow_run.completed",
+                "issue.opened",
+                "issue.closed",
+                "issue.labeled",
+                "issue.comment",
+                "release.published",
+                "push",
+                "mention"
+              ]
+            }
+          },
+          "filters": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "branches": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "description": "Names or globs; an entry starting with ! excludes."
+              },
+              "authors": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "description": "Names or globs; an entry starting with ! excludes."
+              },
+              "labels": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "description": "Names or globs; an entry starting with ! excludes."
+              },
+              "paths": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "description": "Names or globs; an entry starting with ! excludes."
+              },
+              "conclusion": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "draft": {
+                "enum": [
+                  "any",
+                  "only",
+                  "hide"
+                ]
+              },
+              "excludeSelf": {
+                "type": "boolean"
+              }
+            }
+          },
+          "target": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "person",
+                  "agent",
+                  "room",
+                  "workflow"
+                ]
+              },
+              "agentId": {
+                "type": "string"
+              },
+              "roomId": {
+                "type": "string"
+              },
+              "sessionId": {
+                "type": "string"
+              },
+              "publicationRef": {
+                "type": "string"
+              },
+              "queueRef": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "once": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "pr": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+                    "description": "owner/name"
+                  },
+                  "number": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2147483647
+                  }
+                },
+                "required": [
+                  "repo",
+                  "number"
+                ]
+              },
+              "expiresAt": {
+                "type": "string",
+                "format": "date-time",
+                "description": "At most 7 days ahead; 4 hours when absent."
+              }
+            }
+          }
+        },
+        "required": [
+          "events"
+        ]
+      }
+    },
+    {
+      "name": "update_subscription",
+      "description": "Change a subscription you made (the person may change any).",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "scope": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "repos",
+                  "org",
+                  "all"
+                ]
+              },
+              "repos": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 50,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+                  "description": "owner/name"
+                }
+              },
+              "org": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]{1,100}$"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "events": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 30,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "pull_request.opened",
+                "pull_request.updated",
+                "pull_request.review_requested",
+                "pull_request.review_submitted",
+                "pull_request.merged",
+                "pull_request.closed",
+                "pull_request.ready_for_review",
+                "pull_request.reopened",
+                "pull_request.labeled",
+                "pull_request.comment",
+                "check.completed",
+                "ci.finished",
+                "workflow_run.completed",
+                "issue.opened",
+                "issue.closed",
+                "issue.labeled",
+                "issue.comment",
+                "release.published",
+                "push",
+                "mention"
+              ]
+            }
+          },
+          "filters": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "branches": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "description": "Names or globs; an entry starting with ! excludes."
+              },
+              "authors": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "description": "Names or globs; an entry starting with ! excludes."
+              },
+              "labels": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "description": "Names or globs; an entry starting with ! excludes."
+              },
+              "paths": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "description": "Names or globs; an entry starting with ! excludes."
+              },
+              "conclusion": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "draft": {
+                "enum": [
+                  "any",
+                  "only",
+                  "hide"
+                ]
+              },
+              "excludeSelf": {
+                "type": "boolean"
+              }
+            }
+          },
+          "target": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "person",
+                  "agent",
+                  "room",
+                  "workflow"
+                ]
+              },
+              "agentId": {
+                "type": "string"
+              },
+              "roomId": {
+                "type": "string"
+              },
+              "sessionId": {
+                "type": "string"
+              },
+              "publicationRef": {
+                "type": "string"
+              },
+              "queueRef": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "once": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "pr": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+                    "description": "owner/name"
+                  },
+                  "number": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2147483647
+                  }
+                },
+                "required": [
+                  "repo",
+                  "number"
+                ]
+              },
+              "expiresAt": {
+                "type": "string",
+                "format": "date-time",
+                "description": "At most 7 days ahead; 4 hours when absent."
+              }
+            }
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "pause_subscription",
+      "description": "Stop a subscription without deleting it.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "resume_subscription",
+      "description": "Start a paused subscription again.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "delete_subscription",
+      "description": "Delete a subscription and the routes and targets only it used.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "watch_pull_request",
+      "description": "Tell this agent when checks fail or pass, when someone else comments or reviews, until the pull request is merged or closed. No polling: the agent may end its turn.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+            "description": "owner/name"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "on": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "checks_failed",
+                "checks_passed",
+                "comment",
+                "review"
+              ]
+            }
+          },
+          "until": {
+            "enum": [
+              "merged_or_closed"
+            ]
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "repo",
+          "number"
+        ]
+      }
+    },
+    {
       "name": "approve_pull_request",
       "description": "Approve a pull request, with the comments on lines of the diff collected for the review.",
       "inputSchema": {
@@ -1629,6 +2181,437 @@
         "required": [
           "repo",
           "number"
+        ]
+      }
+    },
+    {
+      "name": "create_subscription_for_others",
+      "description": "Notify a target when GitHub events match: repositories, an organization or all, event names, filters, and a target (the person, an agent, a Room's agent or a workflow). The kernel delivers the events; nothing polls.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "scope": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "repos",
+                  "org",
+                  "all"
+                ]
+              },
+              "repos": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 50,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+                  "description": "owner/name"
+                }
+              },
+              "org": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]{1,100}$"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "events": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 30,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "pull_request.opened",
+                "pull_request.updated",
+                "pull_request.review_requested",
+                "pull_request.review_submitted",
+                "pull_request.merged",
+                "pull_request.closed",
+                "pull_request.ready_for_review",
+                "pull_request.reopened",
+                "pull_request.labeled",
+                "pull_request.comment",
+                "check.completed",
+                "ci.finished",
+                "workflow_run.completed",
+                "issue.opened",
+                "issue.closed",
+                "issue.labeled",
+                "issue.comment",
+                "release.published",
+                "push",
+                "mention"
+              ]
+            }
+          },
+          "filters": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "branches": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "description": "Names or globs; an entry starting with ! excludes."
+              },
+              "authors": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "description": "Names or globs; an entry starting with ! excludes."
+              },
+              "labels": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "description": "Names or globs; an entry starting with ! excludes."
+              },
+              "paths": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "description": "Names or globs; an entry starting with ! excludes."
+              },
+              "conclusion": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "draft": {
+                "enum": [
+                  "any",
+                  "only",
+                  "hide"
+                ]
+              },
+              "excludeSelf": {
+                "type": "boolean"
+              }
+            }
+          },
+          "target": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "person",
+                  "agent",
+                  "room",
+                  "workflow"
+                ]
+              },
+              "agentId": {
+                "type": "string"
+              },
+              "roomId": {
+                "type": "string"
+              },
+              "sessionId": {
+                "type": "string"
+              },
+              "publicationRef": {
+                "type": "string"
+              },
+              "queueRef": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "once": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "pr": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+                    "description": "owner/name"
+                  },
+                  "number": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2147483647
+                  }
+                },
+                "required": [
+                  "repo",
+                  "number"
+                ]
+              },
+              "expiresAt": {
+                "type": "string",
+                "format": "date-time",
+                "description": "At most 7 days ahead; 4 hours when absent."
+              }
+            }
+          }
+        },
+        "required": [
+          "events"
+        ]
+      }
+    },
+    {
+      "name": "update_subscription_for_others",
+      "description": "Change a subscription, including its target.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "account": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The account to use; the default account when absent."
+          },
+          "scope": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "repos",
+                  "org",
+                  "all"
+                ]
+              },
+              "repos": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 50,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+                  "description": "owner/name"
+                }
+              },
+              "org": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]{1,100}$"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "events": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 30,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "pull_request.opened",
+                "pull_request.updated",
+                "pull_request.review_requested",
+                "pull_request.review_submitted",
+                "pull_request.merged",
+                "pull_request.closed",
+                "pull_request.ready_for_review",
+                "pull_request.reopened",
+                "pull_request.labeled",
+                "pull_request.comment",
+                "check.completed",
+                "ci.finished",
+                "workflow_run.completed",
+                "issue.opened",
+                "issue.closed",
+                "issue.labeled",
+                "issue.comment",
+                "release.published",
+                "push",
+                "mention"
+              ]
+            }
+          },
+          "filters": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "branches": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "description": "Names or globs; an entry starting with ! excludes."
+              },
+              "authors": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "description": "Names or globs; an entry starting with ! excludes."
+              },
+              "labels": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "description": "Names or globs; an entry starting with ! excludes."
+              },
+              "paths": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "description": "Names or globs; an entry starting with ! excludes."
+              },
+              "conclusion": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "draft": {
+                "enum": [
+                  "any",
+                  "only",
+                  "hide"
+                ]
+              },
+              "excludeSelf": {
+                "type": "boolean"
+              }
+            }
+          },
+          "target": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "person",
+                  "agent",
+                  "room",
+                  "workflow"
+                ]
+              },
+              "agentId": {
+                "type": "string"
+              },
+              "roomId": {
+                "type": "string"
+              },
+              "sessionId": {
+                "type": "string"
+              },
+              "publicationRef": {
+                "type": "string"
+              },
+              "queueRef": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "once": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "pr": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+                    "description": "owner/name"
+                  },
+                  "number": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2147483647
+                  }
+                },
+                "required": [
+                  "repo",
+                  "number"
+                ]
+              },
+              "expiresAt": {
+                "type": "string",
+                "format": "date-time",
+                "description": "At most 7 days ahead; 4 hours when absent."
+              }
+            }
+          }
+        },
+        "required": [
+          "id"
         ]
       }
     },

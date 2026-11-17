@@ -1,4 +1,5 @@
 import { createEventsApp } from './events.mjs';
+import { createSubscriptions } from './subscriptions/index.mjs';
 import { createAccounts } from './accounts.mjs';
 import { createGitHub } from './github.mjs';
 import { createPulls } from './pulls.mjs';
@@ -7,15 +8,19 @@ import { createView } from './view.mjs';
 import { createWrites } from './writes.mjs';
 import { tools as catalog, uiActionsDocument } from './catalog.mjs';
 
-export function createApp({ state, events, now }) {
+export function createApp({ state, events, routing, host, schedule, now = () => Date.now() }) {
   const view = createView({
     state, actions: uiActionsDocument().uiActions,
     snapshot: async () => ({ accounts: await accounts.settings() }),
     account: input => accounts.resolve(input),
   });
   const accounts = createAccounts({ state, view });
+  const subscriptions = createSubscriptions({
+    state, commit: view.transactWithChange, routing, events, host, schedule, accounts, now,
+    githubFor: ctx => createGitHub({ state, fetch: ctx.fetch, now }),
+  });
   const eventsApp = createEventsApp({
-    state, events,
+    subscriptions,
     changed: delta => view.transactWithChange({ schemaVersion: 0, checks: [], writes: [], occurrences: [], wakes: [] }, delta),
   });
   const notify = delta => view.transactWithChange({ schemaVersion: 0, checks: [], writes: [], occurrences: [], wakes: [] }, delta);
@@ -37,11 +42,12 @@ export function createApp({ state, events, now }) {
     async set_repo_account({ repo, account }, ctx) { await accounts.setRepo(repo, account); return services(ctx).list_accounts(); },
   };
   // Every other tool of the catalog is served by the read and write services; a test fails when one is missing.
-  const served = Object.fromEntries(catalog.filter(({ name }) => !Object.hasOwn(accountTools, name))
+  const served = Object.fromEntries(catalog.filter(({ name }) => !Object.hasOwn(accountTools, name) && !Object.hasOwn(subscriptions.tools, name))
     .map(({ name }) => [name, (input, ctx) => services(ctx)[name](input ?? {}, ctx)]));
 
   return {
-    tools: { ...eventsApp.tools, ...served, ...accountTools, ...view.tools },
+    tools: { ...served, ...accountTools, ...subscriptions.tools, ...view.tools },
     events: eventsApp.events,
+    wake: subscriptions.wake,
   };
 }

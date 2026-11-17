@@ -45,11 +45,6 @@ path = "../../examples/apps/documents/test/component-drill.rs"
 required-features = ["component-drills"]
 
 [[test]]
-name = "github-fanout-drill"
-path = "../../examples/apps/github/test/component-drill.rs"
-required-features = ["component-drills"]
-
-[[test]]
 name = "todo-drill"
 path = "../../examples/apps/todo/test/component-drill.rs"
 required-features = ["component-drills"]

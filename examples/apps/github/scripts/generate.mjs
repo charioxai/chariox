@@ -4,7 +4,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { networkCapability, tools, toolsDocument, uiActionsDocument } from '../src/catalog.mjs';
+import { eventRoutingCapability, eventsDocument, networkCapability, tools, toolsDocument, uiActionsDocument } from '../src/catalog.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pretty = value => JSON.stringify(value, null, 2) + '\n';
@@ -12,9 +12,11 @@ const pretty = value => JSON.stringify(value, null, 2) + '\n';
 export async function outputs() {
   const manifest = JSON.parse(await readFile(join(root, 'app.json'), 'utf8'));
   manifest.capabilities.network = [networkCapability()];
+  manifest.capabilities.eventRouting = eventRoutingCapability();
   manifest.idempotentTools = [...tools.filter(tool => tool.effect === 'read').map(tool => tool.name), 'view_account', 'view_actions', 'view_changes', 'view_state'].sort();
   return {
     'app.json': pretty(manifest),
+    'bundle/schemas/events.json': pretty(eventsDocument()),
     'bundle/schemas/tools.json': pretty(toolsDocument()),
     'bundle/schemas/ui-actions.json': pretty(uiActionsDocument()),
   };
