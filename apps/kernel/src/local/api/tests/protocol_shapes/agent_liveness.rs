@@ -20,13 +20,13 @@ fn populated_agent_liveness_and_silent_agents_protocol_snapshot_and_hash() {
 
 // Miguel 11-16: a waiting agent says what would wake it, and nothing judges how long it made no progress.
 #[test]
-fn waiting_events_wait_without_long_notice_and_question_task_are_bound_to_protocol1016() {
+fn waiting_events_wait_without_long_notice_and_question_task_are_bound_to_protocol1011() {
     use crate::durable_state::agent_lifecycle::{AgentTaskExecution, AgentWait, TaskOwnerAction};
     use crate::runtime::projection::AgentLiveness;
-    let bytes = include_bytes!("agent-waiting-events-1016.json");
+    let bytes = include_bytes!("agent-waiting-events-1011.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "2ef7015343e5b3d61c1df972f845a8184ef49ed2caa3ca19ec9dc261e94be4b0"
+        "428009167752a32c0c618fac03b6ad9d3c688affd43fe39c8ee880748445439c"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(

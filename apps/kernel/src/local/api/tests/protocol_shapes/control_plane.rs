@@ -40,9 +40,9 @@ fn machine_acquisition_offer_fixture_is_the_service_contract() {
     assert_eq!(serde_json::to_value(offer).unwrap(), fixture);
 }
 
-/// Local 1012: the capability lists every machine option and Acquire names the chosen one.
+/// Local 1011: the capability lists every machine option and Acquire names the chosen one.
 #[test]
-fn machine_options_1012_shapes_and_hash() {
+fn machine_options_1011_shapes_and_hash() {
     let snapshot = serde_json::json!({
         "requests": [
             {"ControlPlane": {"action": "acquire", "capability_revision": "revision", "request_id": "one"}},

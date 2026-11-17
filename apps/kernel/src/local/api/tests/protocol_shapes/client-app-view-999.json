@@ -1,6 +1,6 @@
 {
-  "local": 1010,
-  "relayPeer": 447,
+  "local": 1011,
+  "relayPeer": 448,
   "requests": [
     {
       "ClientAppView": {
@@ -47,14 +47,14 @@
             "signature": {
               "algorithm": "ed25519",
               "key_id": "test",
-              "digest": "sha256:fd18fd6b2391192d27fe5ad6ff686db23f463fa43c263a4d83cff6f61d02dbbb",
+              "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
               "value": "signature"
             }
           },
           "trust": {
             "publisherId": "com.example",
             "keyId": "test",
-            "contentDigest": "sha256:fd18fd6b2391192d27fe5ad6ff686db23f463fa43c263a4d83cff6f61d02dbbb",
+            "contentDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
             "publicKey": "key"
           }
         }

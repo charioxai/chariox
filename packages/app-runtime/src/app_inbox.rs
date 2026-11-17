@@ -98,11 +98,11 @@ pub struct InboxRoute {
     /// while a copy claims its event interest, then resumes it when the copy
     /// leaves. This is not a worker or event-connection health indicator.
     pub active: bool,
-    /// The owner's or the App's own pause (protocol 1010), kept apart from the
+    /// The owner's or the App's own pause (protocol 1011), kept apart from the
     /// handover above so a copy leaving never resumes a route someone paused.
     pub paused: bool,
     /// Created by the App itself through its signed `eventRouting` capability
-    /// (protocol 1010), not by the owner: only these routes are the App's to
+    /// (protocol 1011), not by the owner: only these routes are the App's to
     /// pause or remove, and they end with its connection grant.
     pub app_managed: bool,
     /// Set when occurrences come from an event generator connection; absent

@@ -33,7 +33,7 @@ fn app_event_routing_contract_snapshot() {
     }
     let snapshot = json!({"local_protocol":LOCAL_DAEMON_PROTOCOL_VERSION,"requests":requests,"responses":responses});
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("app-event-routing-1010.json")).unwrap();
+        serde_json::from_str(include_str!("app-event-routing-1011.json")).unwrap();
     assert_eq!(snapshot, expected);
     assert_eq!(
         format!(

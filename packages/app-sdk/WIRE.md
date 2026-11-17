@@ -204,7 +204,7 @@ retryable only when the App supplied `idempotencyKey`. Any other
 `CONNECTION_ACTION_FAILED` is retryable unless the generator refused the action
 itself.
 
-`routing.*` (kernel protocol 1010; only an App whose signed manifest declares
+`routing.*` (kernel protocol 1011; only an App whose signed manifest declares
 `capabilities.eventRouting`, in the 1.1.0 world; the WIT `event-routing` interface carries the same
 calls): `routing.ensure_route {routeId, event, repository, sourceEventType, sourceEventVersion}`,
 `routing.remove_route {routeId}`, `routing.set_route_active {routeId, active}` and

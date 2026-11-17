@@ -229,7 +229,7 @@ impl DurableKernelStateStore {
     }
 
     /// The active release's signed `capabilities.connections` (protocol 359)
-    /// and `capabilities.eventRouting` (protocol 1010): what an owner's
+    /// and `capabilities.eventRouting` (protocol 1011): what an owner's
     /// connection grant lets the App do.
     pub(crate) fn active_app_connection_capabilities(
         &self,

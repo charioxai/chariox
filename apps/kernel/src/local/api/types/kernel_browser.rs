@@ -86,7 +86,7 @@ pub enum KernelBrowserCommand {
         /// the viewer retains for this subscription (<= 128, each 24 hex chars).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         known_sheets: Vec<String>,
-        /// Provisional 1055: font digests (<= 128, each the first 24 hex chars of the
+        /// Protocol 1011: font digests (<= 128, each the first 24 hex chars of the
         /// resource id) the viewer keeps across documents; such a font is named, not sent.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         known_fonts: Vec<String>,

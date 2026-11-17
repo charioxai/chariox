@@ -218,7 +218,6 @@
  {"path":"apps/cli/src/transcript-event-controller.ts","count":2,"why":"written before the name was retired; rename when touching the file"},
  {"path":"apps/cli/src/user-app-view-controller.test.ts","count":1,"why":"written before the name was retired; rename when touching the file"},
  {"path":"apps/cli/src/workspace-renderables.ts","count":16,"why":"written before the name was retired; rename when touching the file"},
- {"path":"apps/kernel/src/local/api/types.rs","count":1,"why":"written before the name was retired; rename when touching the file"},
  {"path":"apps/kernel/src/runtime/terminal_command_catalog.rs","count":3,"why":"written before the name was retired; rename when touching the file"},
  {"path":"apps/kernel/src/runtime/terminal_command_catalog/catalog/provider.json","count":2,"why":"written before the name was retired; rename when touching the file"},
  {"path":"docs/MANAGED_PATH1_PARITY_INVENTORY.md","count":22,"why":"written before the name was retired; rename when touching the file"},

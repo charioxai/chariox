@@ -828,7 +828,7 @@ Ambiguous post-commit failures retain intent;
 PR1 does not add automatic replay, settlement, yield or recovery scheduling.
 Those lifecycle semantics belong to PR2.
 
-### Settings change while a turn runs, and a usage limit (local 1013)
+### Settings change while a turn runs, and a usage limit (local 1011)
 
 A person or an agent changes a running agent's settings with the requests that change an idle one,
 `UpdateAgentProfile` (provider, account profile, model, effort) and `UpdateAgentConfig` (mode,
@@ -3378,7 +3378,7 @@ Workflow trigger and deployment direction:
   as the event payload, deduplicated by the source occurrence id.
   `AppInboxRouteSummary` shows the `connection`. The route grants the App no
   use of the connection beyond receiving these occurrences.
-- protocol 1010 / relay peer 449 (provisional, GHA-2): event routing. `SetAppInboxRoutePaused
+- protocol 1011 / relay peer 448: event routing. `SetAppInboxRoutePaused
   {installation_id, route_id, paused}` and `PauseAppAutomation {installation_id, automation_id,
   expected_revision}` give the owner a pause that outlives a deployment handover
   (`AppInboxRouteSummary.paused`; an automation resumes with `ConfigureAppAutomation`). A manifest
@@ -3387,7 +3387,7 @@ Workflow trigger and deployment direction:
   targets inside the one connection the owner granted with `GrantAppConnection`
   (`AppConnectionSummary.event_routing {max_routes, routes, paused}`); revoking the grant removes
   the App's routes. See `APPS_V2_CONTRACTS.md` §11.
-- protocol 1009 / relay peer 448 (provisional, GHA-1): App accounts. `GrantAppAccount {installation_id, account,
+- protocol 1011 / relay peer 448: App accounts. `GrantAppAccount {installation_id, account,
   credential, vault_credential_id, allow: read|write|destructive}`, `RevokeAppAccount
   {installation_id, account}` and `ListAppAccounts {installation_id}` answer `AppAccounts
   {installation_id, credentials: [{credential, origin, routes, safety}], accounts: [{account,
@@ -3395,7 +3395,7 @@ Workflow trigger and deployment direction:
   entry must be made for HTTP use at the destination's origin, and the value is never part of
   any reply. `capabilities.network[].credential` and `routes` plus the required feature
   `credentialed-http` declare the destination (`APPS_V2_CONTRACTS.md` §10).
-- protocol 1011 / relay peer 450 (provisional, GHA-5): standing permissions and a backend preview. `GrantAppStanding
+- protocol 1011 / relay peer 448: standing permissions and a backend preview. `GrantAppStanding
   {installation_id, account, repo, class: merge|close|delete_branch|review, expires_at_ms?}`, `RevokeAppStanding
   {installation_id, standing_id}` and `ListAppStanding {installation_id}` answer `AppStanding {installation_id,
   standing: [{standing_id, account, repo, class, created_at_ms, expires_at_ms?, uses, last_used_ms?}]}`; only the
@@ -5235,7 +5235,7 @@ renderer discards both dictionaries. This extends mirror's own unreleased
 number or client floor is introduced. `browser-mirror2-sheet-cache-550.json` pins
 the request extension and its hash, including legacy omission/round-trip coverage.
 
-MIRROR-P2: provisional local 1055 lets a `mirror_next` credit carry `known_fonts`, at most 128 lowercase
+MIRROR-P2: local 1011 lets a `mirror_next` credit carry `known_fonts`, at most 128 lowercase
 24-digit hexadecimal digests (the first 24 characters of a font resource's `resource_id`) of fonts this viewer keeps
 for its subscription across documents. A reset credit lists them and the kernel keeps the list until a credit lists
 another (a reset credit without one means none). A font whose digest is listed travels as a resource without bytes,
@@ -5243,7 +5243,7 @@ another (a reset credit without one means none). A font whose digest is listed t
 new document and refuses an unknown digest, a non-font MIME type or a retained resource with bytes or slice fields.
 Images and every other resource keep their per-document delivery. The viewer keeps at most 64 fonts and 16 MiB, never
 evicts a listed entry before close and takes new fonts by ordinary delivery once full.
-`browser-mirror2-font-cache-1055.json` pins the request and the resource shape (`browser_mirror2_font_cache_1055_shape_is_pinned`).
+`browser-mirror2-font-cache-1011.json` pins the request and the resource shape (`browser_mirror2_font_cache_1011_shape_is_pinned`).
 
 MP-08 / MP-10 / MP-11 — 539/147 native navigation preview (same unreleased allocation):
 `mirror_subscribe.navigation_preview: true` opts into a `wire:2`, reset,
@@ -5533,7 +5533,7 @@ authority for its own sessions, agents, terminals and files.
   size, modified_ms, revision, mode, sha256, partial_size} }`; `ListKernelDirectory { path, offset }` ->
   `KernelDirectoryListed { path, entries: [{name, kind, target_kind?, size, modified_ms, revision, mode}], truncated }` (2000
   entries a page, sorted by name; `truncated` means more follow at `offset` + the entries returned; local 1005;
-  a link has `kind: "symlink"`, which transfers skip, and local 1009 adds `target_kind`, what it points to, so a window opens it as that; a link to nothing has none); `ReadKernelFile { path, offset, length }` (length <= 64 KiB) ->
+  a link has `kind: "symlink"`, which transfers skip, and local 1011 adds `target_kind`, what it points to, so a window opens it as that; a link to nothing has none); `ReadKernelFile { path, offset, length }` (length <= 64 KiB) ->
   `KernelFileChunk { path, offset, data_base64, size, eof }`; `WriteKernelFile { path, offset, data_base64,
   total_size, sha256?, overwrite }` (chunk <= 64 KiB; chunks may be sent without waiting for each answer, and one that arrives ahead of the staged bytes waits up to 2 s for them) -> `KernelFileWritten { path, received, complete,
   sha256 }`. Paths are absolute or `~/`. An upload lives in `<path>.chariox-partial` and the file appears at `path`
@@ -6103,7 +6103,7 @@ unrecognised error are not). A reader decides to retry or stop from `kind` and
 provider failure, such as `The provider is at capacity.`; it is empty for
 `completed` and `cancelled`. Kernel-authored failures can retain specific recovery
 details, such as a missing workspace path. Native provider diagnostics are retained
-in kernel logs with credentials redacted, rather than copied into public reasons. Except for the usage-limit resume of local 1013 (see "Settings change while a turn runs, and a usage limit"), Chariox adds no retry or backoff policy; the
+in kernel logs with credentials redacted, rather than copied into public reasons. Except for the usage-limit resume of local 1011 (see "Settings change while a turn runs, and a usage limit"), Chariox adds no retry or backoff policy; the
 provider's own behaviour is unchanged and the orchestrating agent decides.
 
 The kernel types a failure once from the harness's native error: Codex
@@ -6863,12 +6863,12 @@ instead of evicting a live anchor. Losing only registry state resolves unavailab
 than claiming an element disappeared. Geometry updates replace the view in place, preserving
 card order even when questions share a request timestamp.
 
-Local 1014 / relay peer 453 add the optional `done_text` (1 to 200 characters) to the request's
+Local 1011 / relay peer 448 add the optional `done_text` (1 to 200 characters) to the request's
 `browser_region` and to the projected region. The card resolves `condition_met` when that text
 shows in the watched element. The host follows a same-document replacement of the element by its
 unique id, as it does for a verification card. If the element is lost before the text shows
 (removed, replaced without that id, document changed), the card resolves `status: "unavailable"`,
-never `condition_met`. `browser-done-text-1014.json` pins the shape.
+never `condition_met`. `browser-done-text-1011.json` pins the shape.
 
 Focused regression checks: `cargo test -p chariox-kernel --lib async_popup_browser_region`
 and `node --test apps/kernel/slice-linux-docker/docker/kernel-browser-card-region.test.mjs`.
@@ -7331,7 +7331,7 @@ Acquire, the kernel verifies that revision and writes every offer fact in the
 existing Accept/Cancel interaction. Cancel acquires nothing; Accept remains
 subject to the same Cloud admission and revision checks.
 
-### Machine options — local 1012 (provisional, cut at the Landing 11 union)
+### Machine options — local 1011
 
 `ControlPlane` capabilities may carry `machine_allocation.offers`: every machine the
 connected service offers the owner, each `{class_id, region, vcpu, ram_gb, disk_gb,
@@ -7343,7 +7343,7 @@ exactly that option is acquired, or the call fails with a plain reason (not offe
 not available right now) and nothing is acquired in its place. The capability revision covers the
 list, so a change of stock or rate needs a fresh decision. Agents use the same list through
 `chariox.machines.options` and `chariox.machines.acquire {class_id, region}`; the owner's approval
-card names the chosen option. The shape is pinned by the `machine-options-1012` protocol test.
+card names the chosen option. The shape is pinned by the `machine_options_1011_shapes_and_hash` protocol test.
 
 Protocol 993 (peer 432) adds optional task `owner_action: "browser_access"` and a kernel decision `related_agent_id`. Browser approval stays attached to the blocked task revision and grants access only after an owner answer. Task owner decisions have no automatic expiry; ordinary interaction deadlines are unchanged. Clients place these decisions with the referenced agent and remove them when the authoritative task leaves Blocked.
 
@@ -7549,7 +7549,7 @@ the session and never stored, so a client names who asks in the card's first pai
 card is shown in its top parent's panel (`shown_in_agent_id`) whoever holds it (above). Focused check: `cargo test -p chariox-kernel --lib --
 a_sub_agent_card_carries a_projected_card_names_its_asker the_user_answers_a_decision protocol_shapes`.
 
-### Idle viewer traffic, ended subscriptions and Browser reply bytes (local 1055, provisional after Landing 10)
+### Idle viewer traffic, ended subscriptions and Browser reply bytes (local 1011)
 
 A viewer's relay subscriptions on one lane (the session lane, or the kernel-wide inventory and resource lane) share one
 `heartbeat` per interval: the kernel sends the next one only when no other subscription of the same client key and lane sent
@@ -7650,7 +7650,7 @@ Peer 444 also renames the 442 answers `leased_agent_file_read` and `leased_agent
 1002 and 1003. Focused checks: `cargo test -p chariox-kernel --lib -- machine_files kernel_files
 agent_file_copy file_copy_tool machine_file_requests protocol_shapes::machine_files`.
 
-### Files: what a link points to — local 1009 / relay peer 448
+### Files: what a link points to — local 1011 / relay peer 448
 
 A listing entry for a link keeps `kind: "symlink"` (the transfer skips links by that kind) and adds `target_kind`
 (`file`, `directory` or `other`), what the name resolves to; a link to nothing has none, and any other entry omits
@@ -7890,7 +7890,7 @@ The implementation uses notify's native inotify/FSEvents backend, non-recursive 
 
 For a remote machine the home kernel sends `WatchMachineFiles{subscription_id,paths}` over the authenticated same-owner encrypted peer link. The worker pushes `MachineFilesChanged{subscription_id}`; the home acknowledges with `MachineFilesWatched{created:false}` and forwards a resource invalidation to its client. Registration returns `created:true` after worker restart, forcing resync.30s lease renewals perform no filesystem reads;90s expiry bounds abandoned workers, and `UnwatchMachineFiles{subscription_id}` releases promptly. Each worker bounds clients per peer to16 and total clients to256, with64 paths each. Lost event acknowledgements retry; reconnect/native overflow resyncs complete interests.
 
-### What a waiting agent waits on, and questions to the owner — local 1016 / relay peer 447 (provisional)
+### What a waiting agent waits on, and questions to the owner — local 1011
 
 `agent_activity[agent].liveness.waiting_events` lists every event the agent's
 waiting task would wake on, oldest first: `{id, kind, label, since_ms, task_id,
@@ -7911,20 +7911,19 @@ own sources and deadline, or by the owner.
 
 A block the agent raises itself with `chariox.events.blocked` sets the task's
 `owner_action` to `question` (see the blocked-task decision above).
-`fixtures/needsui-waits-1016.json` pins these shapes.
+`agent-waiting-events-1011.json` and its SHA-256 test pin these shapes.
 
-### The Room list names — local 1059 (provisional) / relay peer 497 (provisional)
+### The Room list names — local 1011 / relay peer 448
 
 The Room list is the kernel's list of Projects and Rooms that every client shows first. Its wire names no longer
 say "waiting room": `GetRoomListSnapshot` answers `RoomListSnapshot`, `ListRoomListSessions` answers
 `RoomListSessionsListed`, the subscription scope is `room_list` (sentinel id `__room_list__`), and the events are
 `room_list_changed` and `room_list_rows_changed`; the terminal command catalog names the Room list surface `room_list`. The older full-inventory request `GetWaitingRoomInventory` and its
 `WaitingRoomInventory` response are removed: no client used them. The old names are gone, not aliased; a client
-speaking them is refused as an unknown request, and an unknown scope falls back to `session`. The numbers follow the
-highest provisional stamps of the other Landing 11 lanes (local 1058, relay peer 496). `room-list-1059.json` and its
-SHA-256 test pin the shape.
+speaking them is refused as an unknown request, and an unknown scope falls back to `session`.
+`room-list-1011.json` and its SHA-256 test pin the shape.
 
-### Who answers for a workflow — local 1017 / relay peer 448 (provisional)
+### Who answers for a workflow — local 1011 / relay peer 448
 
 Every workflow has a `responsible`: `{kind:"person"}` or `{kind:"agent", kernel_id,
 room_id, agent_id, label}` (`label` is the agent's name when it took the workflow).

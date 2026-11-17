@@ -117,7 +117,7 @@ export function disableAppAutomationRequest(installationId: string, automationId
   return { DisableAppAutomation: { installation_id: installationId, automation_id: automationId, expected_revision: expectedRevision, ...(sessionId ? { session_id: sessionId } : {}) } }
 }
 
-/** Protocol 1010: stops an automation delivering without ending it; `app automation add --revision` resumes it. */
+/** Protocol 1011: stops an automation delivering without ending it; `app automation add --revision` resumes it. */
 export function pauseAppAutomationRequest(installationId: string, automationId: string, expectedRevision: number, sessionId?: string) {
   return { PauseAppAutomation: { installation_id: installationId, automation_id: automationId, expected_revision: expectedRevision, ...(sessionId ? { session_id: sessionId } : {}) } }
 }
@@ -219,7 +219,7 @@ export function removeAppInboxRouteRequest(installationId: string, routeId: stri
   return { RemoveAppInboxRoute: { installation_id: installationId, route_id: routeId } }
 }
 
-/** Protocol 1010: pauses or resumes one inbox route; a paused route takes no occurrence. */
+/** Protocol 1011: pauses or resumes one inbox route; a paused route takes no occurrence. */
 export function setAppInboxRoutePausedRequest(installationId: string, routeId: string, paused: boolean) {
   return { SetAppInboxRoutePaused: { installation_id: installationId, route_id: routeId, paused } }
 }

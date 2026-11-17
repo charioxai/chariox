@@ -1,4 +1,4 @@
-//! Protocol 1010: an App with `eventRouting` configures the path for itself.
+//! Protocol 1011: an App with `eventRouting` configures the path for itself.
 //! The fixture App stands in for the GitHub App (its manifest declares the
 //! generator through `connections`; the seam's own declaration is passed as the
 //! scope the broker builds from the signed manifest). The generator, event

@@ -541,17 +541,30 @@ pub use workspace::*;
 /// (`app_confirmation` on an `app-confirm-*` interaction, with the App's own preview as its protected browser
 /// `view`), and a `state_wait` that ended without a change answers only `revision` and `unchanged: true`;
 /// 1011 adds `queued_agent_messages` to a session: the messages other agents queued for an agent's next turn,
-/// which the person cancels or sends with `CancelQueuedPrompt` / `SteerQueuedPrompt` on their `agent-message-<n>` id; a viewer's subscriptions on one lane
-/// share one `heartbeat` per interval, a subscription whose kernel task ended alone says so (`subscription_ended`),
-/// and a Browser reply carries a mirror packet's deflated body, whole resources and a screenshot's picture as raw
-/// bytes (`CXT1`) instead of base64 text;
-/// a directory entry lists what a link points to (`target_kind` on a `KernelDirectoryEntry`);
-/// a card's browser region carries an optional `done_text`: the text whose appearance in the watched element closes the card;
-/// the owner's App accounts (`GrantAppAccount`, `RevokeAppAccount`, `ListAppAccounts` → `AppAccounts`) for the credentialed network destinations a signed manifest declares; the App-managed event routes (`SetAppInboxRoutePaused`, `PauseAppAutomation`, `AppInboxRouteSummary.paused`, `AppConnectionSummary.event_routing`) and the `eventRouting` manifest capability; the owner's standing permissions (`GrantAppStanding`, `RevokeAppStanding`, `ListAppStanding` → `AppStanding`, `AppInstallationSummary.standing_permissions`, the `standing` declaration of a signed action) and the backend-supplied `AppConfirmationFrame.preview` rows;
-/// the owner's machine capability lists the service's `offers` (`MachineOption`) and an acquire names the chosen `class_id` and `region`;
-/// a waiting agent lists every event it would wake on (`liveness.waiting_events`), `wait.long_wait_notified` goes with the no-progress notice, and an agent's own question to the owner is marked (`owner_action: "question"`, a reply-box decision);
-/// a running agent's profile and config change takes effect mid-turn (`applies` on `AgentProfileUpdated`/`AgentConfigUpdated`, `reason` on both requests, `self_settings` and `usage_limit` on `UpdateAgentConfig`, `AgentInstance.self_settings` and `.usage_limit_stop`) and the user config key `agents.usage_limit_resume` is added (docs/PROTOCOL.md, "Settings change while a turn runs, and a usage limit");
-/// the Room list wire names replace the waiting room ones (`GetRoomListSnapshot` → `RoomListSnapshot`, `ListRoomListSessions` → `RoomListSessionsListed`, scope `room_list`, events `room_list_changed` / `room_list_rows_changed`) and `GetWaitingRoomInventory` is removed.
-/// every workflow has a `responsible` (and a `responsible_notice`), numbers its runs and gives each run an `outcome`
-/// and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them;
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1010;
+/// which the person cancels or sends with `CancelQueuedPrompt` / `SteerQueuedPrompt` on their
+/// `agent-message-<n>` id; a viewer's subscriptions on one lane share one `heartbeat` per interval, a
+/// subscription whose kernel task ended alone says so (`subscription_ended`), and a Browser reply carries a
+/// mirror packet's deflated body, whole resources and a screenshot's picture as raw bytes (`CXT1`) instead of
+/// base64 text; a `mirror_next` credit lists the fonts the viewer already holds (`known_fonts`); a directory
+/// entry lists what a link points to (`target_kind` on a `KernelDirectoryEntry`); a card's browser region
+/// carries an optional `done_text`: the text whose appearance in the watched element closes the card; the
+/// owner's App accounts (`GrantAppAccount`, `RevokeAppAccount`, `ListAppAccounts` → `AppAccounts`) for the
+/// credentialed network destinations a signed manifest declares; the App-managed event routes
+/// (`SetAppInboxRoutePaused`, `PauseAppAutomation`, `AppInboxRouteSummary.paused`,
+/// `AppConnectionSummary.event_routing`) and the `eventRouting` manifest capability; the owner's standing
+/// permissions (`GrantAppStanding`, `RevokeAppStanding`, `ListAppStanding` → `AppStanding`,
+/// `AppInstallationSummary.standing_permissions`, the `standing` declaration of a signed action) and the
+/// backend-supplied `AppConfirmationFrame.preview` rows; the owner's machine capability lists the service's
+/// `offers` (`MachineOption`) and an acquire names the chosen `class_id` and `region`; a waiting agent lists
+/// every event it would wake on (`liveness.waiting_events`), `wait.long_wait_notified` goes with the
+/// no-progress notice, and an agent's own question to the owner is marked (`owner_action: "question"`, a
+/// reply-box decision); a running agent's profile and config change takes effect mid-turn (`applies` on
+/// `AgentProfileUpdated`/`AgentConfigUpdated`, `reason` on both requests, `self_settings` and `usage_limit`
+/// on `UpdateAgentConfig`, `AgentInstance.self_settings` and `.usage_limit_stop`) and the user config key
+/// `agents.usage_limit_resume` is added (docs/PROTOCOL.md, "Settings change while a turn runs, and a usage
+/// limit"); the Room list has its own wire names (`GetRoomListSnapshot` → `RoomListSnapshot`,
+/// `ListRoomListSessions` → `RoomListSessionsListed`, scope `room_list`, events `room_list_changed` /
+/// `room_list_rows_changed`, command catalog surface `room_list`) and the old full-inventory request is removed;
+/// every workflow has a `responsible` (and a `responsible_notice`), numbers its runs and gives each run an
+/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1011;

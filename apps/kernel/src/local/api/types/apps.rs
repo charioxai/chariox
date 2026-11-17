@@ -366,7 +366,7 @@ pub struct DisableAppAutomationRequest {
     pub expected_revision: u64,
 }
 
-/// Protocol 1010: stops an App automation delivering without ending it. The
+/// Protocol 1011: stops an App automation delivering without ending it. The
 /// owner resumes it with `ConfigureAppAutomation`, which checks its target again.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -524,7 +524,7 @@ pub struct AppConnectionSummary {
     pub connection_id: String,
     pub granted_at_ms: u64,
     pub actions: Vec<String>,
-    /// Protocol 1010: set when the App's signed `eventRouting` names this
+    /// Protocol 1011: set when the App's signed `eventRouting` names this
     /// generator, so the grant also lets it manage its own routes here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_routing: Option<AppEventRoutingSummary>,
@@ -558,7 +558,7 @@ pub struct AppInboxRouteRequest {
     pub route_id: String,
 }
 
-/// Protocol 1010: pauses or resumes one inbox route. A paused route accepts no
+/// Protocol 1011: pauses or resumes one inbox route. A paused route accepts no
 /// occurrence and is claimed as inactive; a deployment handover never resumes it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -587,7 +587,7 @@ pub struct AppInboxRouteSummary {
     pub source_event_type: String,
     pub source_event_version: u32,
     pub active: bool,
-    /// Protocol 1010: paused by the owner or by the App; independent of `active`.
+    /// Protocol 1011: paused by the owner or by the App; independent of `active`.
     pub paused: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection: Option<AppInboxConnection>,

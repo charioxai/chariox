@@ -1,4 +1,4 @@
-//! Protocol 1010 SDK calls (`routing.*`): an App whose signed manifest declares
+//! Protocol 1011 SDK calls (`routing.*`): an App whose signed manifest declares
 //! `capabilities.eventRouting` manages its own inbox routes and event targets
 //! inside the one connection its owner granted. This file only parses the
 //! call, names whom it acts for from the kernel's own caller record, and maps

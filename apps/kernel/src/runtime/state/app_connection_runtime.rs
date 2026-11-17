@@ -2,7 +2,7 @@
 //! event generator connections. The router checked the connection with its
 //! generator; here the App's signed manifest must declare that generator.
 //! Which actions it may take there comes only from that manifest.
-//! Protocol 1010: the same grant lets an App whose manifest declares
+//! Protocol 1011: the same grant lets an App whose manifest declares
 //! `eventRouting` for the generator manage its own inbox routes inside it.
 use super::KernelRuntimeState;
 use crate::durable_state::app_active_release::ActiveReleaseError;

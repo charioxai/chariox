@@ -152,7 +152,7 @@ struct Inner {
     /// connections (protocol 359); attached once when the kernel starts.
     event_config: EventConfig,
     /// The kernel handle an App's `eventRouting` calls act through (protocol
-    /// 1010); attached once when the kernel starts.
+    /// 1011); attached once when the kernel starts.
     routing_host: crate::runtime::app_event_routing_broker::RoutingHostSlot,
     store: DurableKernelStateStore,
     publisher: AppWorkerPublisher,

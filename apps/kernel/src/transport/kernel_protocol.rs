@@ -252,7 +252,7 @@ pub(crate) enum KernelEvent {
     Heartbeat {
         session_id: String,
     },
-    /// Protocol 1056: the kernel's task for this subscription ended while the connection stayed up. A viewer
+    /// Protocol 1011: the kernel's task for this subscription ended while the connection stayed up. A viewer
     /// that watches the lane's shared `heartbeat` cannot see one subscription stop, so it subscribes again.
     /// Never replayed: a resumed subscription must not recover itself from an end it already recovered from.
     SubscriptionEnded {

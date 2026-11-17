@@ -1,4 +1,4 @@
-//! Local 1059 / relay peer 497: the Room list has its own names on the wire.
+//! Local 1011 / relay peer 448: the Room list has its own names on the wire.
 use super::*;
 use crate::transport::kernel_protocol::{
     kernel_subscription_scope, KernelEvent, KernelSubscriptionScope,
@@ -7,11 +7,11 @@ use crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
 use sha2::{Digest, Sha256};
 
 #[test]
-fn room_list_1059_snapshot_and_hash() {
-    let bytes = include_bytes!("room-list-1059.json");
+fn room_list_1011_snapshot_and_hash() {
+    let bytes = include_bytes!("room-list-1011.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "2d10125df7d417c96e580ba46b363523251996e2cbe2ce3931a8472b7102787b"
+        "81886c84bf342efd365233434593f2e25a40ad7f489e43f1aca90a2619f08a0b"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);

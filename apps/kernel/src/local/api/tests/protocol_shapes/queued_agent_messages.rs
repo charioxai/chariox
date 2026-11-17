@@ -1,9 +1,9 @@
-//! Local 1009: a Room's session carries the messages other agents queued for an agent's next turn,
+//! Local 1011: a Room's session carries the messages other agents queued for an agent's next turn,
 //! and the person cancels or sends one with the queued-prompt requests, by its `agent-message-<n>` id.
 use super::*;
 
 #[test]
-fn queued_agent_messages_protocol_1009_shape_and_hash() {
+fn queued_agent_messages_protocol_1011_shape_and_hash() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
@@ -47,6 +47,6 @@ fn queued_agent_messages_protocol_1009_shape_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&snapshot).unwrap().as_bytes())
         ),
-        "a336b331fd49054f3594b7fa0226a5dc982ba8c910eb9f3406d6dabaee0df6a7"
+        "0ce07d95c16de9dbdc87790be2fae632df665e95e1de1f3bd5d701cb96e149a5"
     );
 }

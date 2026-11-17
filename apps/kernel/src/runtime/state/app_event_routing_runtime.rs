@@ -1,4 +1,4 @@
-//! Protocol 1010: an App with `capabilities.eventRouting` configures the
+//! Protocol 1011: an App with `capabilities.eventRouting` configures the
 //! existing delivery path for itself. The owner's `GrantAppConnection` names
 //! the one connection it may route through; the App's signed manifest names
 //! the generator, the incoming events and the most routes. Nothing here takes

@@ -111,7 +111,7 @@ pub struct Capabilities {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<ConnectionAccess>,
     /// Inbox routes the App may manage for itself inside one connection its
-    /// owner grants (kernel protocol 1010). Only the App world 1.1.0 has the
+    /// owner grants (kernel protocol 1011). Only the App world 1.1.0 has the
     /// import that uses it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_routing: Option<EventRouting>,

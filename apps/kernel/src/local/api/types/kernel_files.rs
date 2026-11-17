@@ -100,7 +100,7 @@ pub struct KernelDirectoryEntry {
     pub name: String,
     /// What is at the name itself: a link is `symlink`, which transfers skip.
     pub kind: KernelFileKind,
-    /// Protocol 1009: what a link points to, so a window can open it as that; absent for anything that is
+    /// Protocol 1011: what a link points to, so a window can open it as that; absent for anything that is
     /// not a link and for a link that points to nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_kind: Option<KernelFileKind>,
