@@ -3,7 +3,9 @@
 //! is independently mandatory in HttpTransport::perform before exchange_io.
 use super::*;
 use crate::runtime::app_http::{
-    dns::test_server::TestDns, limits::HttpLimits, policy::fixture_get,
+    dns::test_server::TestDns,
+    limits::HttpLimits,
+    policy::{fixture_account_get, fixture_get},
 };
 use hickory_resolver::proto::rr::RecordType;
 use std::sync::Mutex;
@@ -40,6 +42,7 @@ async fn drive(
         Instant::now() + lifetime,
     )
     .await
+    .map(|_| ())
 }
 
 #[tokio::test]
@@ -512,6 +515,7 @@ async fn drive_account(
         Instant::now() + Duration::from_secs(2),
     )
     .await
+    .map(|_| ())
 }
 
 #[tokio::test]
@@ -589,4 +593,113 @@ async fn a_not_modified_answer_and_an_answer_over_the_cap_are_each_handled() {
     })
     .await
     .unwrap();
+}
+
+/// One account GET over a plain socket: the origin's answer, and what the exchange decided.
+async fn account_get(
+    target: &ApprovedTarget,
+    answer: &'static str,
+) -> (String, Result<Option<ApprovedTarget>>, ReceivePort) {
+    let (client, mut server) = sockets().await;
+    let (_upload, receive, mut exchange) = channels(false);
+    let (_stop, mut signal) = watch::channel(false);
+    let progress = progress::Progress::new();
+    let observed = progress::ObservedIo::new(client, progress.clone());
+    let origin = tokio::spawn(async move {
+        let head = request_head(&mut server).await;
+        server.write_all(answer.as_bytes()).await.unwrap();
+        server.shutdown().await.unwrap();
+        head
+    });
+    let result = exchange_io(
+        observed,
+        target,
+        &mut exchange,
+        &mut signal,
+        progress,
+        Instant::now() + Duration::from_secs(2),
+    )
+    .await;
+    drop(exchange);
+    (origin.await.unwrap(), result, receive)
+}
+
+#[tokio::test]
+async fn a_redirect_to_a_host_the_route_declares_is_followed_without_the_account_credential() {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let first = fixture_account_get("http://api.example.com/jobs/7/logs", &["*.blob.core.windows.net"]);
+        let (sent, result, receive) = account_get(
+            &first,
+            "HTTP/1.1 302 Found\r\nLocation: https://logs.blob.core.windows.net/job?sig=abc\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(sent.to_ascii_lowercase().contains("authorization: bearer ghp_secret"), "the route's own host gets the account");
+        let next = result.unwrap().expect("the redirect is followed");
+        assert_eq!(next.url().as_str(), "https://logs.blob.core.windows.net/job?sig=abc");
+        assert_eq!(next.method(), hyper::Method::GET);
+        assert_eq!(next.sent_authorization(), None, "the redirected host never sees the credential");
+        assert!(next.authorization().is_some(), "its answer is still scrubbed as an account's answer");
+        assert!(receive.headers.await.is_err(), "the redirect itself is handed on to no one");
+
+        // The redirected exchange: its own request has no Authorization, and its text is the answer.
+        let (second_sent, answered, receive) = account_get(
+            &next,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 12\r\nConnection: close\r\n\r\nstep 1: ok\r\n",
+        )
+        .await;
+        assert!(answered.unwrap().is_none());
+        assert!(!second_sent.to_ascii_lowercase().contains("authorization"), "{second_sent}");
+        assert!(second_sent.starts_with("GET /job?sig=abc HTTP/1.1"));
+        assert!(second_sent.to_ascii_lowercase().contains("host: logs.blob.core.windows.net"));
+        let mut receive = receive;
+        assert_eq!(receive.headers.await.unwrap().unwrap().status, 200);
+        let mut text = Vec::new();
+        while let Some(chunk) = receive.chunks.recv().await {
+            text.extend_from_slice(&chunk.unwrap());
+        }
+        assert_eq!(String::from_utf8(text).unwrap(), "step 1: ok\r\n");
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_redirect_anywhere_else_is_the_answer_and_is_not_followed() {
+    for location in [
+        "https://evil.example.com/steal",
+        "https://blob.core.windows.net/job",
+        "https://evilblob.core.windows.net/job",
+        "http://logs.blob.core.windows.net/job",
+        "https://logs.blob.core.windows.net:8443/job",
+        "https://user:pw@logs.blob.core.windows.net/job",
+        "/relative/on/the/same/host",
+    ] {
+        let answer: &'static str = Box::leak(
+            format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .into_boxed_str(),
+        );
+        let target = fixture_account_get(
+            "http://api.example.com/jobs/7/logs",
+            &["*.blob.core.windows.net"],
+        );
+        let (_, result, receive) =
+            tokio::time::timeout(Duration::from_secs(3), account_get(&target, answer))
+                .await
+                .unwrap();
+        assert!(result.unwrap().is_none(), "{location}");
+        assert_eq!(
+            receive.headers.await.unwrap().unwrap().status,
+            302,
+            "{location}"
+        );
+    }
+    // A route that declares no redirect host follows none.
+    let target = fixture_account_get("http://api.example.com/jobs/7/logs", &[]);
+    let (_, result, receive) = account_get(
+        &target,
+        "HTTP/1.1 302 Found\r\nLocation: https://logs.blob.core.windows.net/job\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(result.unwrap().is_none());
+    assert_eq!(receive.headers.await.unwrap().unwrap().status, 302);
 }
