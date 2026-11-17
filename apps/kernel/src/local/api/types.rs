@@ -542,4 +542,6 @@ pub use workspace::*;
 /// `view`), and a `state_wait` that ended without a change answers only `revision` and `unchanged: true`. 1016 (provisional)
 /// lists every event a waiting agent would wake on (`liveness.waiting_events`), drops `wait.long_wait_notified` with the
 /// no-progress notice, and marks an agent's own question to the owner (`owner_action: "question"`, a reply-box decision).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1016;
+/// 1017 (provisional) gives every workflow a `responsible` (and a `responsible_notice`), numbers its runs and gives each
+/// run an `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1017;

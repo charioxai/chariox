@@ -7733,3 +7733,45 @@ own sources and deadline, or by the owner.
 A block the agent raises itself with `chariox.events.blocked` sets the task's
 `owner_action` to `question` (see the blocked-task decision above).
 `fixtures/needsui-waits-1016.json` pins these shapes.
+
+
+### Who answers for a workflow — local 1017 / relay peer 448 (provisional)
+
+Every workflow has a `responsible`: `{kind:"person"}` or `{kind:"agent", kernel_id,
+room_id, agent_id, label}` (`label` is the agent's name when it took the workflow).
+An agent-created workflow starts as that agent (a sub-agent's workflow starts as the
+person); `responsible_notice` (`{kind:"agent_gone"|"machine_gone", label}`) is set when
+the responsible agent was deleted or its kernel left the owner's account, the person
+answers again, and the next choice clears it.
+
+A run has a monotonic `number` per workflow (the first run is 1), an `outcome` and an
+`attention` flag. `outcome` is `{kind:"failed", reason, detail}` for a failed run (the
+first failure kind and its message, at most 200 characters, redacted) or
+`{kind:"waiting", on, node_id}` while a node is held on `provider_profile_unavailable`,
+`provider_profile_unverified`, `provider_profile_unauthenticated`,
+`provider_profile_usage_exhausted` or `blocked_on_workspace_claim`. `attention` is true
+while the run needs someone and nobody cleared that need (`ClearWorkflowRunAttention`,
+or a newer run of the workflow starting); a terminal run stays in the Room's snapshot
+while its attention is open. `WorkflowFailureKind::StepNeedsHelp` (`step_needs_help`)
+ends a step whose agent could not go on: its task blocked, or it asked for a
+permission, an answer or the browser. A workflow run never raises a card or a Blocked
+row; the provider is refused at once and the run says why.
+
+`SetWorkflowResponsible{session_id, workflow_ref, responsible}` answers
+`WorkflowResponsibleSet{workflow, session}`; the person may always set, an agent may
+take a workflow for itself and hand one over only as the current responsible or the
+creator, the target is an ordinary top-level agent of the owner in a live Room, and a
+guest cannot set. `ClearWorkflowRunAttention{session_id, run_ref}` answers
+`WorkflowRunAttentionCleared{run, session}`.
+
+The workflow's "run finished" source now also fires when a run enters waiting on a
+named thing (once per run, node and thing), and its output carries `number`,
+`workflow_name` and the typed `outcome`. The responsible agent receives one ordinary
+prompt of its own Room, written by the kernel from those typed fields; no text a run
+produced enters it. The person gets the one `OwnerAction` alert when attention opens.
+
+Relay peer: `SetWorkflowResponsible{sender, room, workflow_ref, responsible?}` (an
+agent's kernel reads or changes a workflow of a Room on another kernel) and
+`ApplyWorkflowResponsible{action:"attach"|"detach", workflow, source, agent}` (the
+workflow's kernel asks the agent's kernel to keep or drop the agent's trigger, which
+subscribes through the existing notification path).

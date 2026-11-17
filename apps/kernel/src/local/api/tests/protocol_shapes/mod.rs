@@ -81,6 +81,7 @@ mod web_bot_auth;
 mod workflow_code;
 mod workflow_gate;
 mod workflow_notifications;
+mod workflow_responsible;
 mod workspace_history_external;
 
 fn history_page_entry(

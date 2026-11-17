@@ -218,8 +218,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// private authenticated job targets and durable job operations, and the machine resource-protection
 /// configuration in kernel responses.
 /// 446 carries native machine-file watch leases and worker invalidations; 447 forwards `app_confirmation`
-/// with its interaction between kernels of one owner.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 447;
+/// with its interaction between kernels of one owner; 448 (provisional) lets an agent's kernel read or set the
+/// responsible of a workflow on another kernel and lets the workflow's kernel ask for the agent's trigger.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 448;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
