@@ -1325,3 +1325,30 @@ async fn a_workflow_step_the_limit_failed_is_not_continued_outside_its_run() {
     );
     assert_eq!(team.stop(0), None, "the stop ends instead of staying armed");
 }
+
+#[tokio::test]
+async fn a_workflow_step_the_limit_failed_needs_no_kept_task_to_stay_in_its_run() {
+    let mut config = config(UsageLimitResume::Automatic);
+    config.room_agent_tools = false;
+    let team = team_of(config, 1, true).await;
+    assert_eq!(
+        team.rt()
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&team.session_id), None)
+            .unwrap(),
+        vec![],
+        "with the tools off no task is retained for the step"
+    );
+
+    team.hit_the_limit(0).await;
+
+    let reset = crate::provider::usage_limit_reset_at_ms(WEEKLY, crate::session::unix_epoch_ms())
+        .expect("the provider names the reset");
+    tick(team.rt(), reset).await;
+    assert!(
+        !team.has_turn(0),
+        "a step has no continuation outside its run"
+    );
+    assert_eq!(team.stop(0), None, "the step arms no stop");
+}

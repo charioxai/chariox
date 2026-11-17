@@ -698,7 +698,7 @@ impl KernelRuntimeState {
                 .as_deref()
                 .zip(active_prompt.as_ref())
                 .and_then(|(agent_id, prompt)| {
-                    self.usage_limit_resume_notice(agent_id, prompt.id(), failure)
+                    self.usage_limit_resume_notice(agent_id, prompt, failure)
                 })
                 .unwrap_or_else(|| failure.notice())
         });

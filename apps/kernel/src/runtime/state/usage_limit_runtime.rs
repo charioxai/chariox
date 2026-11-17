@@ -3,6 +3,7 @@
 //! restart finds it again on the agent. No agent has to be awake, or on another account, for it.
 
 use super::agent_task_owner_resolution::OwnerTaskAction;
+use super::workflow_run_help::is_run_step;
 use super::*;
 use crate::agent::{UsageLimitStop, UsageLimitStopState};
 use crate::config::UsageLimitResume;
@@ -15,9 +16,6 @@ pub(crate) const RESUME_STAGGER_MS: u64 = 20_000;
 const RETRY_AFTER_NAMED_RESET_MS: [u64; 3] = [60_000, 300_000, 900_000];
 /// The provider named no time: wait this long after the stop and after each refusal.
 const RETRY_AFTER_UNNAMED_RESET_MS: [u64; 4] = [900_000, 1_800_000, 3_600_000, 7_200_000];
-/// Said when a stop ends because its task is a step of a workflow run.
-const RUN_STEP_NOTICE: &str =
-    "This step belongs to a workflow run, so the kernel does not resume it outside the run.";
 /// A resume that has not stopped again after this long worked.
 const RESUME_SETTLE_MS: u64 = 30_000;
 
@@ -69,22 +67,23 @@ impl UsageLimitPlan {
 
 impl KernelRuntimeState {
     /// What the kernel does with a turn that ended on the usage limit: when it resumes it, or that
-    /// it asks. `None` for a turn that did not end on the limit, a step of a workflow run, or an
-    /// agent whose worker owns the stop. The failed turn's line and the stop on the agent both read
-    /// it.
+    /// it asks. `None` for a turn that did not end on the limit, a step of a workflow run (the run
+    /// owns the step, so no stop continues it outside the run, whether or not a task was kept for
+    /// it), or an agent whose worker owns the stop. The failed turn's line and the stop on the agent
+    /// both read it.
     pub(super) fn plan_usage_limit_stop(
         &self,
         agent: &crate::agent::AgentInstance,
-        prompt_id: &str,
+        prompt: &crate::session::PromptQueueItem,
         failure: &crate::provider::TurnOutcome,
         now: u64,
-    ) -> Result<Option<UsageLimitPlan>, DaemonError> {
+    ) -> Option<UsageLimitPlan> {
         if failure.kind != crate::provider::TurnOutcomeKind::UsageLimit
             || agent.remote_execution().is_some()
             || agent.archived()
-            || self.task_is_run_step(agent, prompt_id)?
+            || is_run_step(prompt)
         {
-            return Ok(None);
+            return None;
         }
         let previous = agent.usage_limit_stop();
         // A stop while a resume runs is that resume refused.
@@ -113,24 +112,23 @@ impl KernelRuntimeState {
         } else {
             UsageLimitStopState::Asking
         };
-        Ok(Some(UsageLimitPlan {
+        Some(UsageLimitPlan {
             named_reset,
             refusals,
             stopped_at_ms: resumed_before.map_or(now, |stop| stop.stopped_at_ms),
             state,
-        }))
+        })
     }
 
     /// The failed turn's line when the kernel resumes the usage-limit stop by itself.
     pub(super) fn usage_limit_resume_notice(
         &self,
         agent_id: &str,
-        prompt_id: &str,
+        prompt: &crate::session::PromptQueueItem,
         failure: &crate::provider::TurnOutcome,
     ) -> Option<String> {
         let agent = self.owned.agent_store.get_agent(agent_id).ok()?;
-        self.plan_usage_limit_stop(&agent, prompt_id, failure, crate::session::unix_epoch_ms())
-            .ok()??
+        self.plan_usage_limit_stop(&agent, prompt, failure, crate::session::unix_epoch_ms())?
             .resume_line(failure)
     }
 
@@ -140,14 +138,14 @@ impl KernelRuntimeState {
     pub(super) async fn record_usage_limit_stop(
         &self,
         agent_id: &str,
-        prompt_id: &str,
+        prompt: &crate::session::PromptQueueItem,
         failure: &crate::provider::TurnOutcome,
         run: &crate::provider::RuntimeProviderRun,
     ) -> Result<(), DaemonError> {
         let owned = &self.owned;
         let agent = owned.agent_store.get_agent(agent_id)?;
         let now = crate::session::unix_epoch_ms();
-        let Some(plan) = self.plan_usage_limit_stop(&agent, prompt_id, failure, now)? else {
+        let Some(plan) = self.plan_usage_limit_stop(&agent, prompt, failure, now) else {
             return Ok(());
         };
         let UsageLimitPlan {
@@ -158,7 +156,7 @@ impl KernelRuntimeState {
         } = plan;
         let stop = UsageLimitStop {
             // The turn that failed now: a resumed task goes on under a new prompt each time.
-            prompt_id: prompt_id.to_string(),
+            prompt_id: prompt.id().to_string(),
             provider: run.provider().to_string(),
             account_profile: run.account_profile().to_string(),
             account_label: owned.account_label(&agent, run.account_profile()),
@@ -195,12 +193,12 @@ impl KernelRuntimeState {
     pub(super) async fn note_usage_limit_stop(
         &self,
         agent_id: &str,
-        prompt_id: &str,
+        prompt: &crate::session::PromptQueueItem,
         failure: &crate::provider::TurnOutcome,
         run: &crate::provider::RuntimeProviderRun,
     ) {
         if let Err(error) = self
-            .record_usage_limit_stop(agent_id, prompt_id, failure, run)
+            .record_usage_limit_stop(agent_id, prompt, failure, run)
             .await
         {
             tracing::warn!(agent_id, %error, "could not record a usage limit stop");
@@ -255,8 +253,8 @@ impl KernelRuntimeState {
                     serde_json::json!({"agent_id": agent.id(), "error": error.to_string()}),
                 );
             }
-            if let Some(notice) = self.task_ends_stop(&agent, &stop)? {
-                self.store_usage_limit_stop(&agent, None, notice).await?;
+            if self.stopped_task_was_cancelled(&agent, &stop)? {
+                self.store_usage_limit_stop(&agent, None, "").await?;
                 continue;
             }
             match stop.state {
@@ -302,39 +300,19 @@ impl KernelRuntimeState {
         Ok(sends)
     }
 
-    /// Whether the task the stop belongs to ends it, with the line the pane says (empty when the
-    /// person's own cancel needs none). The owner or an agent cancelled it, or it is a step of a
-    /// workflow run: the work is not the kernel's to go on with, so no resume starts it again. A
-    /// task the failure itself cancelled, or one that never existed, still resumes.
-    fn task_ends_stop(
+    /// The owner or an agent cancelled the task the stop belongs to (or its workflow ended it): the
+    /// work is not theirs to go on with, so no resume starts it again. A task the failure itself
+    /// cancelled, or one that never existed, still resumes.
+    fn stopped_task_was_cancelled(
         &self,
         agent: &crate::agent::AgentInstance,
         stop: &UsageLimitStop,
-    ) -> Result<Option<&'static str>, DaemonError> {
-        if self.task_is_run_step(agent, &stop.prompt_id)? {
-            return Ok(Some(RUN_STEP_NOTICE));
-        }
+    ) -> Result<bool, DaemonError> {
         Ok(self
             .owned
             .durable_state_store
             .agent_turn_task(agent.session_id(), agent.id(), &stop.prompt_id)?
-            .is_some_and(|task| task.cancelled_on_purpose())
-            .then_some(""))
-    }
-
-    /// The turn of `prompt_id` is a step of a workflow run. The run owns the step whatever its
-    /// status: a failed run has ended it, and a live one starts its steps itself, so a continuation
-    /// outside the run would work without the run's context.
-    fn task_is_run_step(
-        &self,
-        agent: &crate::agent::AgentInstance,
-        prompt_id: &str,
-    ) -> Result<bool, DaemonError> {
-        let store = &self.owned.durable_state_store;
-        let Some(task) = store.agent_turn_task(agent.session_id(), agent.id(), prompt_id)? else {
-            return Ok(false);
-        };
-        Ok(store.agent_task_workflow(&task.task_id)?.is_some())
+            .is_some_and(|task| task.cancelled_on_purpose()))
     }
 
     fn resume_is_being_sent(&self, agent: &crate::agent::AgentInstance) -> bool {
@@ -373,8 +351,8 @@ impl KernelRuntimeState {
         if self.agent_has_turn(agent) {
             return Ok(false);
         }
-        if let Some(notice) = self.task_ends_stop(agent, stop)? {
-            self.store_usage_limit_stop(agent, None, notice).await?;
+        if self.stopped_task_was_cancelled(agent, stop)? {
+            self.store_usage_limit_stop(agent, None, "").await?;
             return Ok(false);
         }
         {

@@ -148,7 +148,7 @@ impl KernelRuntimeState {
             return Ok(true);
         }
         let safe_message = failure.notice();
-        let resume_notice = self.usage_limit_resume_notice(&agent_id, &guarded_prompt_id, &failure);
+        let resume_notice = self.usage_limit_resume_notice(&agent_id, &active_prompt, &failure);
         let failed_attempt = FailedProviderAttempt {
             provider_run: &provider_run,
             agent_id: &agent_id,
@@ -224,7 +224,7 @@ impl KernelRuntimeState {
             let Some(completion) = completion else {
                 return Ok(false);
             };
-            self.note_usage_limit_stop(&agent_id, active_prompt.id(), &failure, &provider_run)
+            self.note_usage_limit_stop(&agent_id, &active_prompt, &failure, &provider_run)
                 .await;
             expected_active_prompt = Some(active_prompt);
             expected_completion = Some(completion);
@@ -354,7 +354,7 @@ impl KernelRuntimeState {
             return Ok(false);
         }
         if expected_prompt_id.is_none() {
-            self.note_usage_limit_stop(&agent_id, active_prompt.id(), &failure, &provider_run)
+            self.note_usage_limit_stop(&agent_id, &active_prompt, &failure, &provider_run)
                 .await;
         }
         Box::pin(self.finish_failed_agent_task_settlement(
