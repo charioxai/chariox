@@ -245,13 +245,19 @@ use git::{
     verify_git_bundle_isolated, RepositoryMaterializationEstimate,
 };
 pub use import::import_development_context;
+#[cfg(test)]
+pub(crate) use import::retention_faults;
 pub(crate) use import::{
     cleanup_development_context_publication, cleanup_development_context_publication_staging,
-    cleanup_legacy_development_context_publication, import_development_context_with_authority,
+    cleanup_development_context_publications, cleanup_development_context_staging_units,
+    cleanup_legacy_development_context_publication,
+    cleanup_present_development_context_publications, development_unit_publication_id,
+    development_unit_root, import_development_context_with_authority,
     import_development_context_with_publication, recover_development_context_publication,
     recover_pruned_development_context_publication,
     recover_pruned_development_context_publication_for_cleanup,
     recover_pruned_mutable_development_context_publication, register_transfer_workspaces_parent,
+    release_development_context_publication, retain_development_context_publication,
     MAX_PUBLICATION_RECEIPT_BYTES,
 };
 use import_archive::{extract_and_verify_archive, validate_git_oid};

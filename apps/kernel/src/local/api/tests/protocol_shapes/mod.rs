@@ -49,6 +49,7 @@ mod landing8;
 mod managed_activity;
 mod managed_context;
 mod managed_environment;
+mod multi_project_context;
 mod native_spawn_slice;
 mod notes;
 mod panes_history;

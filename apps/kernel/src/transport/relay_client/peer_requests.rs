@@ -4971,8 +4971,12 @@ mod tests {
             target_kernel_id: target_kernel_id.clone(),
             target_key_thumbprint: target_key_thumbprint.clone(),
             development: ManagedContextPackageDevelopment::FromSource {
-                archive_path: archive_path.clone(),
-                archive_sha256: exported.archive_sha256.clone(),
+                archives: vec![
+                    crate::managed_context::package::ManagedContextPackageDevelopmentArchive {
+                        archive_path: archive_path.clone(),
+                        archive_sha256: exported.archive_sha256.clone(),
+                    },
+                ],
             },
             kernel_context: ManagedContextPackageKernel::FromKernel(Box::new(kernel_context)),
             provider_accounts: ManagedContextPackageProviderAccounts::None,
@@ -5171,13 +5175,17 @@ mod tests {
             "managed-peer-secret-canary"
         );
         let crate::transport::relay_peer::RelayManagedDevelopmentContextImportReceipt::FromSource {
-            project_id,
-            repositories,
-            ..
+            projects,
         } = receipt.development
         else {
             panic!("selected development context became Empty")
         };
+        assert_eq!(projects.len(), 1);
+        let crate::transport::relay_peer::RelayManagedContextImportedProject {
+            project_id,
+            repositories,
+            ..
+        } = projects.into_iter().next().unwrap();
         assert_eq!(project_id, "project-managed-peer");
         assert_eq!(repositories.len(), 1);
         assert_eq!(
@@ -5284,8 +5292,12 @@ mod tests {
             target_kernel_id: target_kernel_id.clone(),
             target_key_thumbprint: target_key_thumbprint.clone(),
             development: ManagedContextPackageDevelopment::FromSource {
-                archive_path: terminal_archive_path,
-                archive_sha256: terminal_exported.archive_sha256,
+                archives: vec![
+                    crate::managed_context::package::ManagedContextPackageDevelopmentArchive {
+                        archive_path: terminal_archive_path,
+                        archive_sha256: terminal_exported.archive_sha256,
+                    },
+                ],
             },
             kernel_context: ManagedContextPackageKernel::FromKernel(Box::new(
                 KernelContextSnapshot {
@@ -5577,8 +5589,12 @@ mod tests {
             target_kernel_id: target_kernel_id.clone(),
             target_key_thumbprint: target_key_thumbprint.clone(),
             development: ManagedContextPackageDevelopment::FromSource {
-                archive_path: root.join("development.tar.gz"),
-                archive_sha256: exported.archive_sha256,
+                archives: vec![
+                    crate::managed_context::package::ManagedContextPackageDevelopmentArchive {
+                        archive_path: root.join("development.tar.gz"),
+                        archive_sha256: exported.archive_sha256,
+                    },
+                ],
             },
             kernel_context: ManagedContextPackageKernel::FromKernel(Box::new(
                 KernelContextSnapshot {
@@ -5999,6 +6015,10 @@ mod tests {
 #[cfg(test)]
 #[path = "owner_context_drill.rs"]
 mod owner_context_drill;
+
+#[cfg(test)]
+#[path = "retained_projects_tests.rs"]
+mod retained_projects_tests;
 
 #[cfg(test)]
 mod peer_agent_stamp_tests {

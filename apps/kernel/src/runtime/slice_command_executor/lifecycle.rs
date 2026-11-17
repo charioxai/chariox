@@ -605,12 +605,10 @@ async fn execute_start_slice_request_with_relaunch_manifests(
     let initial_record = runtime_state
         .reconcile_slice_agent_attachments(&initial_record)
         .await?;
-    if let Some(
-        crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
-            project_id,
-            ..
-        },
-    ) = &initial_record.development
+    if let Some((project_id, _)) = initial_record
+        .development
+        .as_ref()
+        .and_then(|development| development.single_source_project())
     {
         let checkouts: Vec<std::path::PathBuf> = runtime_state
             .slice_repository_selections(&initial_record)?

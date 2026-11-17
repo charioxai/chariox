@@ -219,7 +219,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// configuration in kernel responses.
 /// 446 carries native machine-file watch leases and worker invalidations; 447 forwards `app_confirmation`
 /// with its interaction between kernels of one owner.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 447;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 448;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -321,11 +321,16 @@ pub struct RelayManagedContextImportReceipt {
 pub enum RelayManagedDevelopmentContextImportReceipt {
     Empty,
     FromSource {
-        project_id: String,
-        destination_root: String,
-        primary_repository_id: String,
-        repositories: Vec<RelayManagedContextImportedRepository>,
+        projects: Vec<RelayManagedContextImportedProject>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayManagedContextImportedProject {
+    pub project_id: String,
+    pub destination_root: String,
+    pub primary_repository_id: String,
+    pub repositories: Vec<RelayManagedContextImportedRepository>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
