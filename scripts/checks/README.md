@@ -17,6 +17,10 @@ node --test scripts/checks/*.test.mjs   # each check plants a violation in a thr
 | `retired-names` | Names the owner retired are never written | use the current name; rename in files you touch |
 | `slice-image-closure` | A module a slice entrypoint imports must be in the slice image | add the `COPY` line to `apps/kernel/slice-linux-docker/docker/Dockerfile` |
 | `tracked-state` | State, logs and recordings never live in a repository | `git rm` it and keep it under `~/.chariox/dev/<task>/` |
+| `commit-message-rules` | Commits: no Co-Authored-By lines, no agent or model attribution | reword the commit to a plain summary and force-push the branch with `--force-with-lease` |
+| `no-dead-code-allow` | Writing clean code: delete dead code in the same change | delete the unused item or use it; no `#[allow(dead_code)]` or `unused` allowance |
+| `no-legacy-read-paths` | Development stage: no shims or legacy read paths | delete the old name, serde alias or fallback and re-provision old kernels |
+| `no-empty-catch` | Writing clean code: fail clearly, never silently | handle or log the error, or comment why ignoring it is safe |
 
 ## Allow lists
 
@@ -26,7 +30,7 @@ node --test scripts/checks/*.test.mjs   # each check plants a violation in a thr
 - an entry that is not in the list at the merge base is red (CI sets `CHARIOX_BOUNDARY_BASE`; CI without a base fails);
 - a count that fell, or a file with no violation left, is red until `--shrink` lowers or deletes it.
 
-A check with an empty list holds the rule everywhere. `protocol-shape-needs-version` has no list: its ratchet is the diff against the merge base.
+A check with an empty list holds the rule everywhere. `protocol-shape-needs-version` and `commit-message-rules` have no list: their ratchet is the diff against the merge base.
 
 ## Adding a check
 
@@ -38,3 +42,7 @@ Add `<name>.mjs` exporting `{name, why, rule, rootFix, scan(ctx)}` (`scan` retur
 - `slice-image-closure` counts only the last (runtime) stage of the Dockerfile, with `COPY --from` transfers followed through the stage they read from. A relative import is looked up from where its importer is installed in the image, so a module installed elsewhere does not count.
 - `tracked-state` checks file kinds and sizes, not contents: a secret in a tracked source file is not found (test canaries make a token-prefix scan too noisy today).
 - `retired-names` counts lines per file; a retired name in a file name counts once more.
+- `commit-message-rules` reads the commits between the merge base and HEAD (merge commits skipped) for attribution lines only: `Co-Authored-By:`, a "generated with <tool>" line, a robot "generated" footer and an `anthropic.com` or `openai.com` noreply address. A model or provider name in a subject is not matched, since commits about the Claude provider are normal. On a shallow checkout, or a base with no common history, it fails and names the fetch (CI checks out with `fetch-depth: 0`) instead of passing on an empty range. The squash message GitHub writes is not a commit on the branch and is not seen.
+- `no-dead-code-allow` reads `dead_code` and `unused*` allowances (also inside `cfg_attr`) in production Rust under `apps/`, `packages/` and `adapters/`; test code, comments and strings are hidden first. A clippy allowance is not matched.
+- `no-legacy-read-paths` finds every serde alias (each `alias =` in an attribute counts) and Rust or top-level TypeScript declarations whose name starts with `legacy` or `Legacy` (`legacy_` in Rust). A legacy path under another name is not seen. Each list entry says what the alias or declaration still reads.
+- `no-empty-catch` finds `catch {}` with nothing in the braces in non-test `.ts` and `.tsx` under `apps/` and `packages/`; a catch holding only a comment passes, and `.mjs` scripts and `.catch(() => {})` are not scanned. TypeScript comments and the text of string and template literals are skipped (`scripts/lib/ts-code.mjs`); a `String.raw` template is a program for another runtime and is scanned.
