@@ -176,6 +176,31 @@ mod tests {
     }
 
     #[test]
+    fn the_reconnecting_window_is_ten_minutes_and_forgetting_is_thirty_days() {
+        let minute = 60 * 1000;
+        let mut registry = vec![
+            entry("nine", NOW - 9 * minute),
+            entry("eleven", NOW - 11 * minute),
+            entry("twenty-nine-days", NOW - 29 * 24 * 60 * minute),
+            entry("thirty-one-days", NOW - 31 * 24 * 60 * minute),
+        ];
+        let inventory = reconcile(&mut registry, Vec::new(), HOST, NOW);
+        assert_eq!(
+            ids(&inventory.machines),
+            vec![("nine", RemoteMachinePresence::Reconnecting)]
+        );
+        assert_eq!(
+            inventory
+                .offline_machines
+                .iter()
+                .map(|machine| machine.machine_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["eleven", "twenty-nine-days"]
+        );
+        assert_eq!(registry.len(), 3);
+    }
+
+    #[test]
     fn a_machine_gone_for_ten_minutes_is_offline_and_not_listed() {
         let mut registry = vec![entry("b", NOW - RECONNECTING_WINDOW_MS)];
         let inventory = reconcile(&mut registry, Vec::new(), HOST, NOW);
