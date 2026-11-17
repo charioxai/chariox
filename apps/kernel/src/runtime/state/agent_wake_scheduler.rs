@@ -126,7 +126,10 @@ impl KernelRuntimeState {
             self.publish_changed_agent_trees();
             if !worker_recovered {
                 worker_recovered = self
-                    .recover_worker_leased_processes(crate::session::unix_epoch_ms())
+                    .recover_worker_processes(
+                        crate::hot_reload::take_watched(),
+                        crate::session::unix_epoch_ms(),
+                    )
                     .is_ok();
             }
             self.deliver_process_waits();
@@ -148,8 +151,7 @@ impl KernelRuntimeState {
                 }
                 if !recovered {
                     recovered = self
-                        .adopt_watched_processes(crate::hot_reload::take_watched(), now)
-                        .and_then(|()| self.recover_lost_agent_processes(now))
+                        .recover_lost_agent_processes(now)
                         .and_then(|()| self.recover_driver_wakes(now))
                         .is_ok();
                 }

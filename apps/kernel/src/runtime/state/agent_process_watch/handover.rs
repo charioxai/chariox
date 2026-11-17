@@ -1,7 +1,10 @@
 //! A hot reload keeps the processes agents watch: the next program supervises
 //! the same process under the same wake, so its exit or match still wakes the
 //! owner. One it cannot supervise again ends its wake with a typed reason.
+//! A worker's leased process keeps its wake in its receipt, not in the wake
+//! ledger, and is handed over the same way.
 use super::*;
+use crate::durable_state::agent_lifecycle::Outcome;
 use serde::{Deserialize, Serialize};
 use std::os::fd::{AsRawFd, FromRawFd as _};
 
@@ -110,7 +113,6 @@ impl KernelRuntimeState {
         if handed_over.is_empty() {
             return Ok(());
         }
-        let wakes = self.owned.durable_state_store.agent_wakes(None, None)?;
         for handover in handed_over {
             // SAFETY: the previous program left these descriptors open for this
             // one alone, and nothing else owns them.
@@ -119,14 +121,10 @@ impl KernelRuntimeState {
                 .iter()
                 .map(|fd| unsafe { OwnedFd::from_raw_fd(*fd) })
                 .collect();
-            let Some(wake) = wakes.iter().find(|wake| {
-                wake.id == handover.wake
-                    && wake.kind == "process"
-                    && matches!(wake.state.as_str(), "starting" | "running")
-            }) else {
+            let Some(wake) = self.supervised_wake(&handover.wake)? else {
                 crate::logging::warn_with_fields(
                     "agent_process_watch.handover",
-                    "a handed-over process has no running wake; it is not supervised",
+                    "a handed-over process has no armed wake; it is not supervised",
                     serde_json::json!({"wake": handover.wake, "pid": handover.pid}),
                 );
                 continue;
@@ -138,25 +136,46 @@ impl KernelRuntimeState {
                 .map(OwnedFd::try_clone)
                 .collect::<std::io::Result<Vec<_>>>();
             match (same_process, kept) {
-                (true, Ok(kept)) => self.supervise_again(wake, handover, streams, kept),
+                (true, Ok(kept)) => self.supervise_again(&wake, handover, streams, kept),
                 _ => {
-                    self.owned
-                        .durable_state_store
-                        .agent_lifecycle(Operation::ProcessExited {
-                            id: wake.id.clone(),
-                            exit_code: None,
-                            tail: format!(
-                                "watch_lost_on_reload: process {} gone, exit unknown",
-                                handover.pid
-                            ),
-                            now,
-                        })?;
-                    self.wake_notice(wake, format!("Wake alert: watched process '{}' could not be watched again after a kernel hot reload; its exit is unknown", wake.label));
-                    self.schedule_wake_delivery(wake);
+                    let outcome = self.apply_agent_process_receipt(Operation::ProcessExited {
+                        id: wake.id.clone(),
+                        exit_code: None,
+                        tail: format!(
+                            "watch_lost_on_reload: process {} gone, exit unknown",
+                            handover.pid
+                        ),
+                        now,
+                    })?;
+                    // A leased process's receipt tells only its home.
+                    if let Outcome::Wakes(wakes) = outcome {
+                        for wake in wakes {
+                            self.wake_notice(&wake, format!("Wake alert: watched process '{}' could not be watched again after a kernel hot reload; its exit is unknown", wake.label));
+                            self.schedule_wake_delivery(&wake);
+                        }
+                    }
                 }
             }
         }
         Ok(())
+    }
+
+    /// The wake a handed-over process still answers to: one that is armed,
+    /// including one being cancelled, in the wake ledger or, for a worker's
+    /// leased process, in its receipt.
+    fn supervised_wake(&self, id: &str) -> Result<Option<AgentWake>, DaemonError> {
+        let store = &self.owned.durable_state_store;
+        let wake = match store.leased_process_receipt(id)? {
+            Some(receipt) => Some(receipt.wake),
+            None => store
+                .agent_wakes(None, None)?
+                .into_iter()
+                .find(|wake| wake.id == id),
+        };
+        Ok(wake.filter(|wake| {
+            wake.kind == "process"
+                && matches!(wake.state.as_str(), "starting" | "running" | "cancelling")
+        }))
     }
 
     fn supervise_again(
@@ -175,6 +194,11 @@ impl KernelRuntimeState {
             ..
         } = handover;
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        // A match the previous program saw as it stopped may not have been
+        // heard; the ledger counts a match once, so saying it again is safe.
+        if let Some(line) = output.matched_line() {
+            let _ = sender.send(Signal::Matched(line));
+        }
         let output = Arc::new(Output::restored(output));
         let readers =
             self.drain_streams(streams, &origin, wake.match_text.clone(), &output, &sender);
@@ -206,29 +230,116 @@ impl KernelRuntimeState {
             wake.agent_id.clone(),
             receiver,
         );
+        // The previous program's termination did not outlive it: ask again,
+        // and force it after the grace period, until the process is gone.
+        if wake.state == "cancelling" {
+            self.owned.agent_wakes.processes.terminate(&wake.id);
+        }
     }
 }
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::super::tests::{yield_on_watches, YieldedWatches};
+    use super::super::tests::{yield_on_watches_with, WatchRig, YieldedWatches};
     use super::*;
 
     /// A process watched when the kernel hot-reloads, as the next program
     /// finds it: handed over with its pipes, which the exec keeps open, and
     /// none of the previous program's supervision.
     async fn after_reload(argv: &[&str]) -> (YieldedWatches, Vec<WatchedHandover>) {
-        let rig = yield_on_watches(vec![argv.iter().map(|a| a.to_string()).collect()]).await;
+        restarted(watching(argv, WatchRig::default()).await).await
+    }
+
+    async fn restarted(rig: YieldedWatches) -> (YieldedWatches, Vec<WatchedHandover>) {
+        let (rig, handed_over) = reload(rig);
+        next_program(&rig).await;
+        (rig, handed_over)
+    }
+
+    async fn watching(argv: &[&str], rig: WatchRig) -> YieldedWatches {
+        let rig =
+            yield_on_watches_with(vec![argv.iter().map(|a| a.to_string()).collect()], rig).await;
+        // The process starts, prints and sets its signal handlers.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        rig
+    }
+
+    fn reload(rig: YieldedWatches) -> (YieldedWatches, Vec<WatchedHandover>) {
         let processes = &rig.state.owned.agent_wakes.processes;
         let (handed_over, pipes): (Vec<_>, Vec<_>) = processes.hand_over().into_iter().unzip();
         for pipe in pipes.into_iter().flatten() {
             std::mem::forget(pipe);
         }
-        // The exec ends the previous program without dropping its state, which
-        // would end the process with its resource domain.
-        std::mem::forget(std::mem::take(&mut *processes.live.lock().unwrap()));
-        processes.stopping.store(false, Ordering::Release);
+        // The exec ends the previous program's threads and never drops its
+        // state, which would end the process with its resource domain.
+        let live = std::mem::take(&mut *processes.live.lock().unwrap());
+        for child in live.values() {
+            child.lock().unwrap().lost = true;
+            std::mem::forget(child.clone());
+        }
+        std::mem::forget(live);
         (rig, handed_over)
+    }
+
+    /// The previous program's delivery has stopped hearing signals.
+    async fn next_program(rig: &YieldedWatches) {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        rig.state
+            .owned
+            .agent_wakes
+            .processes
+            .stopping
+            .store(false, Ordering::Release);
+    }
+
+    /// Ends a handed-over process still running when a test fails.
+    struct KillOnDrop(u32, u64);
+
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            if super::super::super::agent_process_group::birth(self.0).is_ok_and(|b| b == self.1) {
+                unsafe { libc::kill(-(self.0 as i32), libc::SIGKILL) };
+            }
+        }
+    }
+
+    fn gone(pid: u32) -> bool {
+        unsafe { libc::kill(pid as i32, 0) == -1 }
+    }
+
+    fn wake_state(rig: &YieldedWatches) -> String {
+        rig.state
+            .owned
+            .durable_state_store
+            .agent_wakes(Some(&rig.room), Some(&rig.agent))
+            .unwrap()
+            .into_iter()
+            .find(|wake| wake.id == rig.wakes[0].id)
+            .unwrap()
+            .state
+    }
+
+    async fn wake_ends(rig: &YieldedWatches, state: &str) -> AgentWake {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let wake = rig
+                .state
+                .owned
+                .durable_state_store
+                .agent_wakes(Some(&rig.room), Some(&rig.agent))
+                .unwrap()
+                .into_iter()
+                .find(|wake| wake.id == rig.wakes[0].id)
+                .unwrap();
+            if wake.state == state {
+                return wake;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the wake never reached {state}: {wake:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     #[tokio::test]
@@ -280,5 +391,138 @@ mod tests {
             tail,
             format!("watch_lost_on_reload: process {pid} gone, exit unknown")
         );
+    }
+
+    #[tokio::test]
+    async fn a_leased_process_is_supervised_again_after_a_worker_reload_and_can_be_cancelled() {
+        crate::test_support::isolated_env_test!();
+        let leased = WatchRig {
+            leased: true,
+            ..Default::default()
+        };
+        let (rig, handed_over) = restarted(watching(&["sleep", "60"], leased).await).await;
+        let (pid, birth) = (handed_over[0].pid(), handed_over[0].birth);
+        let _kill = KillOnDrop(pid, birth);
+        let id = rig.wakes[0].id.clone();
+        rig.state
+            .recover_worker_processes(handed_over, crate::session::unix_epoch_ms())
+            .unwrap();
+        let store = &rig.state.owned.durable_state_store;
+        let mut receipt = store.leased_process_receipt(&id).unwrap().unwrap();
+        assert_eq!(
+            receipt.wake.state, "running",
+            "worker restart recovery must not call a handed-over process lost"
+        );
+        assert!(rig.state.owned.agent_wakes.processes.contains(&id));
+        // What the worker does when its home cancels the wake.
+        let revision = receipt.revision;
+        receipt.wake.state = "cancelling".into();
+        store
+            .agent_lifecycle(Operation::LeasedProcess(
+                crate::durable_state::agent_lifecycle::LeasedProcessMutation::Update {
+                    id: id.clone(),
+                    expected_revision: revision,
+                    receipt,
+                },
+            ))
+            .unwrap();
+        rig.state.owned.agent_wakes.processes.terminate(&id);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while store
+            .leased_process_receipt(&id)
+            .unwrap()
+            .unwrap()
+            .wake
+            .state
+            != "cancelled"
+        {
+            assert!(Instant::now() < deadline, "the leased process never ended");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(gone(pid), "the cancelled process is still running");
+    }
+
+    #[tokio::test]
+    async fn a_wake_being_cancelled_when_the_kernel_reloads_still_ends_its_process() {
+        crate::test_support::isolated_env_test!();
+        // Ignores SIGTERM, so only the escalation to SIGKILL ends it.
+        let rig = watching(&["sh", "-c", "trap '' TERM; sleep 60"], WatchRig::default()).await;
+        // The owner cancels the agent's task, as a person does.
+        let store = &rig.state.owned.durable_state_store;
+        let task = store
+            .agent_tasks(Some(&rig.room), Some(&rig.agent))
+            .unwrap()
+            .remove(0);
+        let owner = task.owner_user_id.clone();
+        let Outcome::Task(cancelled) = store
+            .agent_lifecycle(Operation::CancelTask {
+                task: task.task_id,
+                owner,
+                revision: task.revision,
+            })
+            .unwrap()
+        else {
+            panic!("the task was not cancelled")
+        };
+        rig.state
+            .cancel_agent_task_resources(&cancelled)
+            .await
+            .unwrap();
+        assert_eq!(
+            wake_state(&rig),
+            "cancelling",
+            "the process is still being stopped when the kernel reloads"
+        );
+        let (rig, handed_over) = restarted(rig).await;
+        let (pid, birth) = (handed_over[0].pid(), handed_over[0].birth);
+        let _kill = KillOnDrop(pid, birth);
+        rig.state
+            .adopt_watched_processes(handed_over, crate::session::unix_epoch_ms())
+            .unwrap();
+        wake_ends(&rig, "cancelled").await;
+        assert!(gone(pid), "the cancelled process is still running");
+    }
+
+    #[tokio::test]
+    async fn a_match_seen_as_the_kernel_reloads_is_delivered_once() {
+        crate::test_support::isolated_env_test!();
+        let rig = WatchRig {
+            match_text: Some("ready"),
+            ..Default::default()
+        };
+        // No newline: the line is flushed as supervision stops.
+        let (rig, handed_over) =
+            restarted(watching(&["sh", "-c", "printf ready; sleep 60"], rig).await).await;
+        let (pid, birth) = (handed_over[0].pid(), handed_over[0].birth);
+        let _kill = KillOnDrop(pid, birth);
+        rig.state
+            .adopt_watched_processes(handed_over, crate::session::unix_epoch_ms())
+            .unwrap();
+        let wake = wake_matched(&rig).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(wake.fire_count, 1, "{wake:?}");
+    }
+
+    async fn wake_matched(rig: &YieldedWatches) -> AgentWake {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let wake = rig
+                .state
+                .owned
+                .durable_state_store
+                .agent_wakes(Some(&rig.room), Some(&rig.agent))
+                .unwrap()
+                .into_iter()
+                .find(|wake| wake.id == rig.wakes[0].id)
+                .unwrap();
+            if wake.matched_at_ms.is_some() {
+                return wake;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the match was never delivered: {wake:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 }

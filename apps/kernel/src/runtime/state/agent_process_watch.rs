@@ -1345,6 +1345,24 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     pub(super) async fn yield_on_watches(argvs: Vec<Vec<String>>) -> YieldedWatches {
+        yield_on_watches_with(argvs, WatchRig::default()).await
+    }
+
+    /// How the watches of a rig are armed.
+    #[cfg(target_os = "linux")]
+    #[derive(Default)]
+    pub(super) struct WatchRig {
+        pub(super) match_text: Option<&'static str>,
+        /// A worker's leased process: its wake lives in a receipt, not in the
+        /// wake ledger, and no agent yields on it here.
+        pub(super) leased: bool,
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) async fn yield_on_watches_with(
+        argvs: Vec<Vec<String>>,
+        rig: WatchRig,
+    ) -> YieldedWatches {
         let worktree = crate::test_support::TestWorktree::new("watched-tail");
         let mut app =
             crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
@@ -1377,8 +1395,36 @@ mod tests {
         let mut wakes = Vec::new();
         for (n, argv) in argvs.into_iter().enumerate() {
             let wake: AgentWake = serde_json::from_value(serde_json::json!({
-                "id":format!("{}-{n}", w()), "task_id":"tail-turn", "room_id":room.id(), "agent_id":agent.id(), "registration_id":format!("completion-{}-{n}", w()), "kind":"process", "label":format!("watched-{n}"), "state":"starting", "created_at_ms":now, "verified_at_ms":null, "next_due_ms":null, "interval_ms":null, "command":argv, "match_text":null, "matched_at_ms":null, "pid":null, "exit_code":null, "fire_count":0, "missed_fires":0, "last_fired_at_ms":null, "last_sequence":null, "last_delivery":null, "last_delivered_at_ms":null, "last_acknowledged_at_ms":null, "alerted_sequence":null
+                "id":format!("{}-{n}", w()), "task_id":"tail-turn", "room_id":room.id(), "agent_id":agent.id(), "registration_id":format!("completion-{}-{n}", w()), "kind":"process", "label":format!("watched-{n}"), "state":"starting", "created_at_ms":now, "verified_at_ms":null, "next_due_ms":null, "interval_ms":null, "command":argv, "match_text":rig.match_text, "matched_at_ms":null, "pid":null, "exit_code":null, "fire_count":0, "missed_fires":0, "last_fired_at_ms":null, "last_sequence":null, "last_delivery":null, "last_delivered_at_ms":null, "last_acknowledged_at_ms":null, "alerted_sequence":null
             })).unwrap();
+            if rig.leased {
+                let receipt = crate::durable_state::agent_lifecycle::LeasedProcessReceipt {
+                    binding: crate::durable_state::agent_lifecycle::LeasedProcessBinding {
+                        worker_kernel_id: "worker".into(),
+                        worker_machine_id: "machine".into(),
+                        execution_lease_id: "lease".into(),
+                        leased_agent_id: "leased".into(),
+                        home_prompt_id: "tail-turn".into(),
+                        worker_provider_run_id: "run".into(),
+                    },
+                    command_digest: String::new(),
+                    worker_boot_id: "boot".into(),
+                    process_start_ticks: None,
+                    matched_line: None,
+                    output_tail: String::new(),
+                    revision: 1,
+                    backing_room: room.id().into(),
+                    backing_agent: agent.id().into(),
+                    wake: wake.clone(),
+                };
+                store
+                    .agent_lifecycle(Operation::LeasedProcess(
+                        crate::durable_state::agent_lifecycle::LeasedProcessMutation::Intent(
+                            receipt,
+                        ),
+                    ))
+                    .unwrap();
+            }
             state
                 .start_agent_process(
                     wake.clone(),
@@ -1393,6 +1439,15 @@ mod tests {
             wakes.push(wake);
         }
         let store = &state.owned.durable_state_store;
+        if rig.leased {
+            return YieldedWatches {
+                room: room.id().into(),
+                agent: agent.id().into(),
+                _worktree: worktree,
+                state,
+                wakes,
+            };
+        }
         store
             .agent_lifecycle(Operation::Yield {
                 task: "tail-turn".into(),

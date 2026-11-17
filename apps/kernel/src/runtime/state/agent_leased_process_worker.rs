@@ -20,8 +20,20 @@ pub(super) fn process_digest(
 }
 
 impl KernelRuntimeState {
+    /// The first pass after a start: processes the previous program handed
+    /// over are supervised again before restart cleanup, which would call a
+    /// live one lost and leave it running with nothing to stop it.
+    pub(super) fn recover_worker_processes(
+        &self,
+        handed_over: Vec<crate::runtime::state::WatchedHandover>,
+        now: u64,
+    ) -> Result<(), DaemonError> {
+        self.adopt_watched_processes(handed_over, now)?;
+        self.recover_worker_leased_processes(now)
+    }
+
     // MP-08/MP-10/MP-11: restart cleanup does not depend on a surviving lease.
-    pub(super) fn recover_worker_leased_processes(&self, now: u64) -> Result<(), DaemonError> {
+    fn recover_worker_leased_processes(&self, now: u64) -> Result<(), DaemonError> {
         let receipts: Vec<_> = self
             .owned
             .durable_state_store

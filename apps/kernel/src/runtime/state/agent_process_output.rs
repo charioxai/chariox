@@ -63,17 +63,25 @@ pub(super) enum Signal {
     SupervisionFailed,
 }
 
-/// An output's tail and whether its one match was already reported.
+/// An output's tail and the line of its one match. The match is carried, not
+/// just flagged: its signal may have gone unheard while supervision stopped.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct OutputSnapshot {
     tail: Vec<String>,
-    matched: bool,
+    matched: Option<String>,
+}
+
+impl OutputSnapshot {
+    /// The line that matched before the snapshot, if one did.
+    pub(super) fn matched_line(&self) -> Option<String> {
+        self.matched.clone()
+    }
 }
 
 #[derive(Default)]
 pub(super) struct Output {
     tail: std::sync::Mutex<std::collections::VecDeque<String>>,
-    matched: std::sync::atomic::AtomicBool,
+    matched: std::sync::Mutex<Option<String>>,
     stopped: std::sync::atomic::AtomicBool,
 }
 
@@ -99,15 +107,26 @@ impl Output {
                 .lock()
                 .map(|t| t.iter().cloned().collect())
                 .unwrap_or_default(),
-            matched: self.matched.load(std::sync::atomic::Ordering::Acquire),
+            matched: self.matched.lock().ok().and_then(|m| m.clone()),
         }
     }
     pub(super) fn restored(snapshot: OutputSnapshot) -> Self {
         Self {
             tail: std::sync::Mutex::new(snapshot.tail.into()),
-            matched: snapshot.matched.into(),
+            matched: std::sync::Mutex::new(snapshot.matched),
             stopped: Default::default(),
         }
+    }
+    /// Records `text` as the match and says whether it is the first one.
+    fn first_match(&self, text: &str) -> bool {
+        let Ok(mut matched) = self.matched.lock() else {
+            return false;
+        };
+        if matched.is_some() {
+            return false;
+        }
+        *matched = Some(text.to_owned());
+        true
     }
     pub(super) fn text(&self) -> String {
         self.tail
@@ -149,11 +168,7 @@ pub(super) fn drain(
             return;
         };
         if let Some(pattern) = &pattern {
-            if text.contains(pattern.as_str())
-                && !output
-                    .matched
-                    .swap(true, std::sync::atomic::Ordering::AcqRel)
-            {
+            if text.contains(pattern.as_str()) && output.first_match(&text) {
                 let _ = sender.send(Signal::Matched(text.clone()));
             }
         }
