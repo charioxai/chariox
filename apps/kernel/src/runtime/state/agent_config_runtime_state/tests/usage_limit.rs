@@ -1323,6 +1323,64 @@ async fn a_plain_task_the_limit_cancelled_still_resumes_when_usage_is_back() {
     assert!(team.has_turn(0), "the failure is not a decision to stop");
 }
 
+/// The task the limit cancelled on a plain turn: nothing was owed on it, so its failure ended it.
+fn failure_cancelled_task(team: &Team, lane: usize) -> String {
+    admit_plain_task(team, lane);
+    let task_id = team
+        .rt()
+        .owned
+        .durable_state_store
+        .agent_turn_task(
+            &team.session_id,
+            &team.lanes[lane].agent_id,
+            &team.lanes[lane].prompt_id,
+        )
+        .unwrap()
+        .unwrap()
+        .task_id;
+    task_id
+}
+
+#[tokio::test]
+async fn an_owner_cancel_of_a_task_the_limit_already_cancelled_ends_the_armed_resume() {
+    let mut config = config(UsageLimitResume::Automatic);
+    config.room_agent_tools = true;
+    let team = team(config, 1).await;
+    let task_id = failure_cancelled_task(&team, 0);
+    team.hit_the_limit(0).await;
+    assert_eq!(task_of(&team, &task_id).state, ExecutionState::Cancelled);
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+
+    owner_cancels(&team, &task_id).await;
+
+    tick(team.rt(), reset).await;
+    assert!(!team.has_turn(0), "the owner cancelled this work");
+    assert_eq!(team.stop(0), None, "the cancel ends the stop");
+}
+
+#[tokio::test]
+async fn an_owner_cancel_of_a_task_the_limit_already_cancelled_beats_a_claimed_resume() {
+    let mut config = config(UsageLimitResume::Automatic);
+    config.room_agent_tools = true;
+    let team = team(config, 1).await;
+    let task_id = failure_cancelled_task(&team, 0);
+    team.hit_the_limit(0).await;
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+
+    let sends = team.rt().tick_usage_limit_stops(reset).await.unwrap();
+    assert!(matches!(
+        team.stop(0).unwrap().state,
+        UsageLimitStopState::Resuming { .. }
+    ));
+    owner_cancels(&team, &task_id).await;
+    for send in sends {
+        send.await.unwrap();
+    }
+
+    assert!(!team.has_turn(0), "the owner cancelled this work");
+    assert_eq!(team.stop(0), None, "the cancel ends the stop");
+}
+
 #[tokio::test]
 async fn a_workflow_step_the_limit_failed_is_not_continued_outside_its_run() {
     let mut config = config(UsageLimitResume::Automatic);
