@@ -62,7 +62,7 @@ for (const [method, args, mutation, preparation] of cases) {
             case "Runtime.evaluate": return { result: { value: true } };
             case "Target.setDiscoverTargets": case "Target.setAutoAttach": case "Target.detachFromTarget":
             case "Page.enable": case "Page.setLifecycleEventsEnabled": case "Runtime.enable":
-            case "Network.enable": case "Inspector.enable": case "Emulation.setDeviceMetricsOverride": return {};
+            case "Network.enable": case "Inspector.enable": case "Emulation.setScrollbarsHidden": case "Emulation.setDeviceMetricsOverride": return {};
             default: throw new Error(`unexpected command ${command}`);
           }
         },
