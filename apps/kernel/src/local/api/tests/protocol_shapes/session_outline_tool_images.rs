@@ -8,7 +8,7 @@ const FIXTURE: &[u8] = include_bytes!("session-outline-tool-image-count-1000.jso
 fn mp10_session_outline_tool_image_count_1000_snapshot_and_hash() {
     assert_eq!(
         format!("{:x}", Sha256::digest(FIXTURE)),
-        "164fb3621f34e6e4e995f5a3c309b6f94fa25f692d9d3360baa5d689d421cffc"
+        "8740aaefce22b0b70a5e8fa668323c7a3176b0490555727b4e2f356f91934be4"
     );
     let fixture: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
