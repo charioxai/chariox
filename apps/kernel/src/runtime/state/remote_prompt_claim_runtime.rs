@@ -623,7 +623,6 @@ impl KernelRuntimeState {
             )? {
                 return Ok(());
             }
-            let _agent = self.owned.agent_store.get_agent(agent_id)?;
             let prompt = dispatch.prompt.clone();
             let attachments = dispatch.attachments.clone();
             let attachments = match tokio::task::spawn_blocking(move || {

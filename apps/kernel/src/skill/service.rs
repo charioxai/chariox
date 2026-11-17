@@ -87,7 +87,11 @@ impl SkillCatalogService {
     ) -> Result<BTreeMap<usize, (SkillRecord, CharioxSkillPackage)>, DaemonError> {
         let current = self.storage.snapshot()?;
         if current.revision != mutation.expected_revision {
-            return Err(failure("catalog changed; refresh before reviewing sources"));
+            return Err(failure(format!(
+                "catalog is at revision {current}, not {expected}; preview again with expected_revision {current}",
+                current = current.revision,
+                expected = mutation.expected_revision
+            )));
         }
         let mut prepared = BTreeMap::new();
         let mut checkouts = RepositoryCheckouts::default();
@@ -327,15 +331,7 @@ impl SkillCatalogService {
                     name,
                     catalog_revision,
                 } => {
-                    if *catalog_revision != revision {
-                        return Err(failure(
-                            "selected skill catalog changed; refresh and reselect",
-                        ));
-                    }
-                    let row = resolve_name(&rows, name)?;
-                    if &row.skill.id != skill_id {
-                        return Err(failure("selected skill was replaced; reselect"));
-                    }
+                    admit_chariox_selection(&rows, revision, skill_id, name, *catalog_revision)?;
                     selected.insert(skill_id.clone());
                 }
                 SkillSelection::Native { .. } => {

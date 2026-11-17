@@ -71,6 +71,42 @@ impl KernelRuntimeState {
         self.skills_catalog_service().map(|_| ())
     }
 
+    /// Refuses a `$name` chip naming an Off, replaced or stale skill before the prompt is
+    /// admitted, so the user sees why; the turn applies the same rule when it pins its catalog.
+    pub(crate) fn admit_skill_selections(
+        &self,
+        session_id: &str,
+        selections: &[crate::skill::v2::SkillSelection],
+    ) -> Result<(), DaemonError> {
+        let chariox: Vec<_> = selections
+            .iter()
+            .filter_map(|selection| match selection {
+                crate::skill::v2::SkillSelection::Chariox {
+                    skill_id,
+                    name,
+                    catalog_revision,
+                } => Some((skill_id, name, *catalog_revision)),
+                crate::skill::v2::SkillSelection::Native { .. } => None,
+            })
+            .collect();
+        if chariox.is_empty() {
+            return Ok(());
+        }
+        let catalog = self.skills_catalog_service()?.storage.snapshot()?;
+        let session = self.owned.session_store.get_session(session_id)?;
+        let rows = crate::skill::resolver::projections(&catalog, Some(session.project_id()), &[]);
+        for (skill_id, name, catalog_revision) in chariox {
+            crate::skill::resolver::admit_chariox_selection(
+                &rows,
+                catalog.revision,
+                skill_id,
+                name,
+                catalog_revision,
+            )?;
+        }
+        Ok(())
+    }
+
     pub(super) fn skills_catalog_service(&self) -> Result<SkillCatalogService, DaemonError> {
         if !catalog_available(&self.owned.durable_state_store) {
             return Err(unavailable());

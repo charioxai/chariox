@@ -23,6 +23,8 @@ impl CommandRouter {
         } = request
         {
             self.runtime_state.ensure_skills_v2_catalog_ready()?;
+            self.runtime_state
+                .admit_skill_selections(&session_id, &selections)?;
             let response = self
                 .agent_runtime
                 .dispatch_prompt_submit_with_skills(

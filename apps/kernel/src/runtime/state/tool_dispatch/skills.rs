@@ -26,7 +26,7 @@ impl KernelRuntimeState {
         let request = match tool {
             crate::transport::runtime_tools::LIST_SKILLS_TOOL => {
                 let args: ListSkillsArgs = serde_json::from_value(arguments)
-                    .map_err(|_| failure("invalid list_skills arguments"))?;
+                    .map_err(|_| failure("invalid list_skills arguments: origin_prompt_id (the current prompt_id) is required; cursor (a next_cursor) and limit (1 to 100) are optional, and nothing else is accepted"))?;
                 self.current_skill_tool_prompt(session.id(), agent.id(), &args.origin_prompt_id)?;
                 origin_prompt_id = args.origin_prompt_id;
                 discovery_cursor = args.cursor.clone();

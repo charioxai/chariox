@@ -502,6 +502,30 @@ fn service_install(
     let published = service.publish_authorized(&mutation, &prepared).unwrap();
     (service, published)
 }
+// SV-14: an agent that guessed expected_revision must learn the current one from the refusal.
+#[test]
+fn skills_v2_stale_preview_names_the_current_revision() {
+    let f = StorageFixture::new();
+    let (service, published) =
+        service_install(&f, "---\nname: one\ndescription: first skill\n---\nBODY\n");
+    let stale = SkillCatalogMutation {
+        scope: SkillScope::Chariox,
+        expected_revision: 0,
+        actions: vec![SkillCatalogAction::Install {
+            source: SkillInstallSource::Content {
+                skill_md: "---\nname: two\ndescription: second skill\n---\nBODY\n".into(),
+            },
+            collision: SkillCollisionAction::Reject,
+            package_id: None,
+        }],
+    };
+    let error = service.prepare(&stale).unwrap_err().to_string();
+    assert!(
+        error.contains("preview again with expected_revision 1"),
+        "{error}"
+    );
+    assert_eq!(f.storage.snapshot().unwrap(), published);
+}
 #[test]
 fn skills_v2_cold_start_explicit_body_fits_the_supported_context_floor() {
     let f = StorageFixture::new();

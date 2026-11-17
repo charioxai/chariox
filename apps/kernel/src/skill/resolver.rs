@@ -141,6 +141,27 @@ pub fn picker_native_entries(
         .collect()
 }
 
+/// A typed `$name` chip still names the same skill at the revision it was picked from,
+/// and that skill is not Off.
+pub fn admit_chariox_selection<'a>(
+    rows: &'a [SkillProjection],
+    revision: u64,
+    skill_id: &str,
+    name: &str,
+    catalog_revision: u64,
+) -> Result<&'a SkillProjection, DaemonError> {
+    if catalog_revision != revision {
+        return Err(failure(
+            "selected skill catalog changed; refresh and reselect",
+        ));
+    }
+    let row = resolve_name(rows, name)?;
+    if row.skill.id != skill_id {
+        return Err(failure("selected skill was replaced; reselect"));
+    }
+    Ok(row)
+}
+
 pub fn resolve_name<'a>(
     rows: &'a [SkillProjection],
     name: &str,
