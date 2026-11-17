@@ -193,6 +193,7 @@ fn restart_failure_retirement_keeps_pending_deliveries() {
         provider_run_id: None,
         attempted_at_ms: None,
         submit_epoch: None,
+        resumed_at_ms: None,
     }));
     f.apply(Operation::Block {
         task: "p".into(),

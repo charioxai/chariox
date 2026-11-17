@@ -2,17 +2,21 @@
 use super::*;
 use crate::durable_state::agent_lifecycle::{ExecutionState, InboxEvent, Operation, Outcome};
 
-struct Fixture {
-    runtime: KernelRuntimeState,
-    room: String,
-    parent: String,
-    child: String,
-    owner: String,
-    _worktree: crate::test_support::TestWorktree,
+pub(super) struct Fixture {
+    pub(super) runtime: KernelRuntimeState,
+    pub(super) room: String,
+    pub(super) parent: String,
+    pub(super) child: String,
+    pub(super) owner: String,
+    pub(super) _worktree: crate::test_support::TestWorktree,
 }
 
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
+        Self::with_child_provider("codex")
+    }
+
+    pub(super) fn with_child_provider(provider: &str) -> Self {
         let worktree = crate::test_support::TestWorktree::new("delegate-reply");
         let mut config = crate::config::DaemonConfig::for_tests();
         config.room_agent_tools = true;
@@ -21,7 +25,7 @@ impl Fixture {
             .create_session(worktree.session_request())
             .unwrap();
         let child = crate::app::KernelSessionService::new(&mut app)
-            .spawn_agent(crate::agent::CreateAgentRequest::new(room.id(), "codex"))
+            .spawn_agent(crate::agent::CreateAgentRequest::new(room.id(), provider))
             .unwrap();
         let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::for_user(
@@ -70,7 +74,11 @@ impl Fixture {
         }
     }
 
-    fn request(&self, key: &str) -> InboxEvent {
+    pub(super) fn request(&self, key: &str) -> InboxEvent {
+        self.message(key, false, true)
+    }
+
+    pub(super) fn message(&self, key: &str, urgent: bool, reply_requested: bool) -> InboxEvent {
         let Outcome::Event(event) = self
             .runtime
             .owned
@@ -86,14 +94,15 @@ impl Fixture {
                     occurrence_id: key.into(),
                     kind: "message".into(),
                     payload: serde_json::json!({"message":"return findings"}),
-                    urgent: false,
-                    reply_requested: true,
+                    urgent,
+                    reply_requested,
                     state: "pending".into(),
                     prompt_id: None,
                     target_prompt_id: None,
                     provider_run_id: None,
                     attempted_at_ms: None,
                     submit_epoch: None,
+                    resumed_at_ms: None,
                 },
             })
             .unwrap()

@@ -306,13 +306,18 @@ impl KernelRuntimeState {
                     .saturating_add(WAKE_DELIVERY_TOLERANCE_MS)
                     < now
                 && !receipt.alerted
-                && !matches!(receipt.delivery.as_str(), "expired" | "failed")
+                && receipt.delivery != "expired"
             {
                 store.agent_lifecycle(Operation::WakeAlerted {
                     id: wake.id.clone(),
                     sequence: receipt.sequence,
                 })?;
-                self.wake_notice(wake, format!("Wake alert: '{}' fire {} at {} is not delivered after {} s (delivery {}); retrying", wake.label, receipt.sequence, iso(receipt.fired_at_ms), (now - receipt.fired_at_ms) / 1000, receipt.delivery));
+                let outcome = if receipt.delivery == "failed" {
+                    "the agent did not start and the wake will not be retried"
+                } else {
+                    "retrying"
+                };
+                self.wake_notice(wake, format!("Wake alert: '{}' fire {} at {} is not delivered after {} s (delivery {}); {outcome}", wake.label, receipt.sequence, iso(receipt.fired_at_ms), (now - receipt.fired_at_ms) / 1000, receipt.delivery));
             }
         }
         Ok(())

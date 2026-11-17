@@ -219,6 +219,13 @@ fn install_claude_mcp_config_argument(
     Ok(())
 }
 
+const RESTART_FOR_SELECTION_CHANGE: &str = "claude_restart_for_selection_change";
+
+/// A restart that cannot start the Claude process fails before the prompt is written.
+pub(crate) fn failed_to_start_before_prompt(error: &DaemonError) -> bool {
+    matches!(error, DaemonError::LocalTransport { operation, .. } if *operation == RESTART_FOR_SELECTION_CHANGE)
+}
+
 pub(crate) fn submit_claude_prompt(
     run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
@@ -239,7 +246,7 @@ pub(crate) fn submit_claude_prompt(
         return Ok(());
     }
     if claude_runtime_selection_changed(run, state) || claude_runtime_child_exited(state) {
-        restart_claude_runtime(run, state, "claude_restart_for_selection_change")?;
+        restart_claude_runtime(run, state, RESTART_FOR_SELECTION_CHANGE)?;
     }
     write_claude_hidden_context(run.id(), state, envelope)?;
     let turn_id = format!("turn-{}", state.next_turn_number);

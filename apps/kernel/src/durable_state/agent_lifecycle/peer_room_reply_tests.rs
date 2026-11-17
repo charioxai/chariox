@@ -23,6 +23,7 @@ fn send_to_peer_room(f: &Fixture, key: &str, sender_room: &str) -> Result<Outcom
             provider_run_id: None,
             attempted_at_ms: None,
             submit_epoch: None,
+            resumed_at_ms: None,
         },
     })
 }
