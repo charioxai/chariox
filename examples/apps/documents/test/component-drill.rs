@@ -525,6 +525,85 @@ async fn a_document_lives_through_edits_history_restore_and_delete() -> wasmtime
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn an_unsaved_edit_is_kept_for_the_next_window_with_the_revision_it_started_from(
+) -> wasmtime::Result<()> {
+    let (root, mut store, app) = runtime("draft").await?;
+    let (store, app) = (&mut store, &app);
+    let id = ok(
+        store,
+        app,
+        "create_document",
+        json!({"title": "Plan", "content": "v1"}),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        ok(store, app, "read_draft", json!({})).await["draft"],
+        Value::Null
+    );
+
+    ok(
+        store,
+        app,
+        "save_draft",
+        json!({"id": id, "base_revision": 1, "title": "Plan 2", "folder": "work", "content": "unsaved"}),
+    )
+    .await;
+    // Someone else saves revision 2; the draft still names the revision it started from.
+    ok(
+        store,
+        app,
+        "update_document",
+        json!({"id": id, "expected_revision": 1, "content": "v2"}),
+    )
+    .await;
+    let kept = ok(store, app, "read_draft", json!({})).await["draft"].clone();
+    assert_eq!(kept["id"], id.as_str());
+    assert_eq!(kept["base_revision"], 1);
+    assert_eq!(kept["title"], "Plan 2");
+    assert_eq!(kept["folder"], "work");
+    assert_eq!(kept["content"], "unsaved");
+    assert_eq!(
+        ok(store, app, "read_document", json!({"id": id})).await["content"],
+        "v2",
+        "a draft is not a revision"
+    );
+
+    let missing = call(
+        store,
+        app,
+        "save_draft",
+        json!({"id": "nope", "base_revision": 1, "content": "x"}),
+    )
+    .await;
+    assert_eq!(missing.unwrap_err().code, "NOT_FOUND");
+
+    ok(store, app, "discard_draft", json!({})).await;
+    assert_eq!(
+        ok(store, app, "read_draft", json!({})).await["draft"],
+        Value::Null
+    );
+    assert!(!root.0.join("draft.json").exists());
+
+    // A draft of a document that was deleted has nothing to come back to.
+    ok(
+        store,
+        app,
+        "save_draft",
+        json!({"id": id, "base_revision": 2, "content": "late"}),
+    )
+    .await;
+    ok(store, app, "delete_document", json!({"id": id})).await;
+    assert_eq!(
+        ok(store, app, "read_draft", json!({})).await["draft"],
+        Value::Null
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_lost_race_retries_and_leaves_no_stray_file() -> wasmtime::Result<()> {
     let (root, mut store, app) = runtime("race").await?;
     store.data_mut().conflicts.push_back(());

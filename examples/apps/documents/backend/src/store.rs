@@ -76,6 +76,23 @@ pub fn read(doc: &Doc, revision: u64) -> Result<String, AppError> {
     })
 }
 
+/// A file that is not a document revision: `None` while nothing was written.
+pub fn read_private(path: &str) -> Result<Option<String>, AppError> {
+    match fs::read_to_string(on_disk(path)) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(io("read", path, &e)),
+    }
+}
+
+pub fn remove_private(path: &str) -> Result<(), AppError> {
+    match fs::remove_file(on_disk(path)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(io("remove", path, &e)),
+    }
+}
+
 /// Best effort: a file the index no longer names is never read, so a leftover is harmless.
 pub fn prune(prune: &Prune) {
     match prune {

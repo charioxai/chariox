@@ -1,5 +1,6 @@
 // Documents view. It talks to the App only through window.chariox.call, which
 // runs the App's own tools as the signed-in person; agents use the same tools.
+import { drafts } from "./draft.js"
 import { follower } from "./feed.js"
 import { markdownToHtml, sanitizeHtmlInto } from "./preview.js"
 import { skeleton } from "./skeleton.js"
@@ -17,6 +18,7 @@ let pendingDelete = false
 let saving = false
 let saveAgain = false
 let deleteTimer = null
+let restored = false
 
 function say(message, error = false) {
   $("status").textContent = message
@@ -30,6 +32,19 @@ async function call(tool, input = {}) {
     say(error.message || "The App could not complete that.", true)
     throw error
   }
+}
+
+const keeper = drafts(call)
+
+// Unsaved edits end here, saved or given up, and the App forgets the draft with them.
+function settle() {
+  if (dirty) keeper.drop()
+  dirty = false
+}
+
+function edited() {
+  dirty = true
+  keeper.keep(() => current && dirty ? { id: current.id, base_revision: current.revision, ...fields() } : null)
 }
 
 function renderList() {
@@ -83,7 +98,7 @@ async function open(id, { poll = false } = {}) {
   const doc = await call("read_document", { id })
   if (poll && dirty && current?.id === id) return
   current = { id: doc.id, revision: doc.revision, kind: doc.kind, content: doc.content }
-  dirty = false
+  settle()
   $("empty").hidden = true
   $("editor").hidden = false
   $("title").value = doc.title
@@ -105,7 +120,7 @@ function showRevision({ revision, versions }) {
 function close() {
   resetDelete()
   current = null
-  dirty = false
+  settle()
   $("editor").hidden = true
   $("empty").hidden = false
   renderList()
@@ -138,7 +153,7 @@ async function save() {
     Object.assign(current, { revision: saved.revision, content: sent.content })
     showRevision(saved)
     if (JSON.stringify(fields()) === JSON.stringify(sent)) {
-      dirty = false
+      settle()
       $("title").value = saved.title
       $("folder").value = saved.folder
     }
@@ -190,13 +205,13 @@ $("new-doc").addEventListener("click", async () => {
   }
   pendingOpen = null
   const doc = await call("create_document", { title: "Untitled", kind: $("new-kind").value })
-  dirty = false
+  settle()
   await refreshList()
   await open(doc.id)
 })
 $("save").addEventListener("click", save)
-$("content").addEventListener("input", () => { dirty = true; renderPreview() })
-for (const id of ["title", "folder"]) $(id).addEventListener("input", () => { dirty = true })
+$("content").addEventListener("input", () => { edited(); renderPreview() })
+for (const id of ["title", "folder"]) $(id).addEventListener("input", edited)
 $("toggle-preview").addEventListener("click", () => {
   const article = $("preview")
   article.hidden = !article.hidden
@@ -248,7 +263,32 @@ document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key === "s") { event.preventDefault(); save() }
 })
 
+// The App kept the edit a replaced window had not saved; it comes back on the revision it started from,
+// so a save after someone else's change is refused as a conflict, never merged.
+async function restoreDraft() {
+  if (restored) return
+  const draft = await keeper.recall()
+  restored = true
+  if (!draft || dirty) return
+  const doc = documents.find((item) => item.id === draft.id)
+  if (!doc) return keeper.drop()
+  await open(doc.id)
+  const same = draft.base_revision === doc.revision && draft.title === doc.title && draft.folder === doc.folder
+    && draft.content === $("content").value
+  if (same) return keeper.drop()
+  $("title").value = draft.title
+  $("folder").value = draft.folder
+  $("content").value = draft.content
+  current.revision = draft.base_revision
+  dirty = true
+  renderPreview()
+  say(draft.base_revision === doc.revision
+    ? "Restored your unsaved changes after the App reloaded."
+    : `Restored your unsaved changes, but a newer revision (${doc.revision}) exists. Save will be refused until you reload.`, draft.base_revision !== doc.revision)
+}
+addEventListener("pagehide", () => keeper.flush())
+
 const feed = follower(call, refreshList)
-const follow = () => { if (!document.hidden) feed.poll().catch(() => {}) }
+const follow = () => { if (!document.hidden) feed.poll().then(restoreDraft).catch(() => {}) }
 follow()
 setInterval(follow, 1000)

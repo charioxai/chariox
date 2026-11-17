@@ -229,6 +229,61 @@
         "additionalProperties": false
       },
       "effect": "write"
+    },
+    {
+      "name": "save_draft",
+      "description": "Keep the person's unsaved edit of an open document, started from base_revision, so a replaced window finds it again. Replaces the earlier draft; saving the document is update_document.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "base_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 524288
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "folder": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "id",
+          "base_revision"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "write"
+    },
+    {
+      "name": "read_draft",
+      "description": "Read the person's unsaved edit, kept by save_draft, or null when there is none or its document was deleted.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effect": "read"
+    },
+    {
+      "name": "discard_draft",
+      "description": "Drop the person's unsaved edit once it is saved or given up.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "effect": "write"
     }
   ]
 }

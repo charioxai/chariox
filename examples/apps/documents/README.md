@@ -12,6 +12,9 @@ Markdown and HTML documents the person and their agents write together, on the w
 - Import: `import_documents` asks the owner for files in the kernel's prompt and waits up to 20 s per call;
   while the owner has not chosen it returns `{pending, importId}` and the caller asks again with that id
   (the kernel holds the request ten minutes), so no call outlasts the kernel's 30 s limit.
+- The window hands an unsaved edit to the App (`save_draft`, one draft: the open document's, with the
+  revision it started from) because the view's sandbox keeps nothing across a replacement; the next window
+  asks `read_draft` and restores it, so a save after someone else's change is still refused.
 - An agent's `delete_document` is an `approval` action: the person confirms it in the Room. The person's own
   delete in the window is one click with the usual confirm.
 

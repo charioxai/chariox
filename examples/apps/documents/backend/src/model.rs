@@ -190,7 +190,7 @@ fn limit(message: &str) -> AppError {
     error("LIMIT_EXCEEDED", message)
 }
 
-fn check_name(what: &str, value: &str, allow_empty: bool) -> Result<(), AppError> {
+pub fn check_name(what: &str, value: &str, allow_empty: bool) -> Result<(), AppError> {
     if value.chars().count() > MAX_NAME_CHARS || (!allow_empty && value.trim().is_empty()) {
         return Err(error(
             "INVALID_ARGUMENT",
@@ -200,7 +200,7 @@ fn check_name(what: &str, value: &str, allow_empty: bool) -> Result<(), AppError
     Ok(())
 }
 
-fn check_content(content: &str) -> Result<(), AppError> {
+pub fn check_content(content: &str) -> Result<(), AppError> {
     if content.len() > MAX_CONTENT {
         return Err(limit("Document is larger than 512 KiB"));
     }

@@ -10,6 +10,7 @@ use chariox_app_sdk::{
 };
 use serde_json::{json, Value};
 
+mod draft;
 mod index;
 mod model;
 mod store;
@@ -25,7 +26,7 @@ fn view() -> Result<View, AppError> {
 }
 
 /// Every tool is also a declared action of the view.
-const TOOLS: [&str; 9] = [
+const TOOLS: [&str; 12] = [
     "list_documents",
     "read_document",
     "create_document",
@@ -35,6 +36,9 @@ const TOOLS: [&str; 9] = [
     "import_documents",
     "export_document",
     "snapshot_documents",
+    "save_draft",
+    "read_draft",
+    "discard_draft",
 ];
 
 fn text<'a>(input: &'a Value, key: &str) -> Result<&'a str, AppError> {
@@ -130,6 +134,13 @@ async fn call(name: &str, input: &Value) -> Result<Value, AppError> {
         "snapshot_documents" => {
             transfer::snapshot(input["name"].as_str().unwrap_or("documents")).await
         }
+        "save_draft" => {
+            let (docs, _) = index::load().await?;
+            let (id, base) = (text(input, "id")?, revision(input, "base_revision")?);
+            draft::save(&docs, id, base, input).await
+        }
+        "read_draft" => draft::read(&index::load().await?.0),
+        "discard_draft" => draft::discard(),
         _ => Err(error("TOOL_NOT_FOUND", name)),
     }
 }
