@@ -66,7 +66,7 @@ test("one table maps every kernel error code to its exit code", () => {
   const expected: Record<number, string[]> = {
     2: ["usage", "file_path_invalid"],
     3: ["kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict", "file_permission_denied"],
-    4: ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_not_available"],
+    4: ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_update_needed", "kernel_not_available"],
     5: ["kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown", "kernel_access_unconfirmed"],
   }
   for (const [exit, codes] of Object.entries(expected)) for (const code of codes) assert.equal(exitCodeFor(code), Number(exit), code)

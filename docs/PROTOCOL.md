@@ -5404,7 +5404,7 @@ authority for its own sessions, agents, terminals and files.
   interrupted reservation returns `kernel_outcome_unknown` and never runs again; a different request under the same
   id is `duplicate_command_conflict`; a full or unreadable ledger is `ledger_unavailable` and nothing ran.
 - Errors (code, one sentence, next step): `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`,
-  `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_request_timeout` (30 s),
+  `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_update_needed` (the target runs protocol N and needs M), `kernel_request_timeout` (30 s),
   `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_not_available`. Nothing falls back to local or to
   another kernel. Grant revoke, expiry and holder exit stop forwarding at once; work already started on the
   target keeps running.
