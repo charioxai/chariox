@@ -44,6 +44,15 @@ pub struct AgentTaskExecution {
     pub pending_prompt_id: Option<String>,
 }
 impl AgentTaskExecution {
+    /// A goal or an obligation still needing resolution: work a later turn must not abandon. A
+    /// settled obligation and a retained wait or wake prompt are only its record.
+    pub(crate) fn owns_unfinished_work(&self) -> bool {
+        self.goal.is_some()
+            || self
+                .obligations
+                .iter()
+                .any(AgentObligation::requires_resolution)
+    }
     /// Who began stopping this turn, as recorded when the cancellation began. A path that only
     /// settles a cancellation consumes this; it never makes a new owner Stop.
     pub(crate) fn recorded_cancel_initiator(&self) -> CancelInitiator {

@@ -606,15 +606,16 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             ).map_err(sql)?;
             if t.state != ExecutionState::Blocked
                 || t.blocked_revision != revision
-                || t.goal.is_some()
-                || !t.obligations.is_empty()
-                || t.wait.is_some()
-                || t.pending_prompt_id.is_some()
+                || t.owns_unfinished_work()
                 || unresolved
                 || registrations(tx, &t.task_id)?.iter().any(|r| r.live)
             {
                 return Ok(Outcome::Task(t));
             }
+            // An interrupted wake turn keeps the wait and wake prompt it was dispatched with;
+            // with its source settled and handled nothing can consume them.
+            t.wait = None;
+            t.pending_prompt_id = None;
             t.state = ExecutionState::Cancelled;
             t.reason = "Interrupted attempt superseded by a later turn".into();
             t.last_progress_at_ms = now;
