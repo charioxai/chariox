@@ -168,19 +168,20 @@ impl AppValidationBroker {
 /// The callers the approval names: the worker peer's `actor` values of the
 /// calls in progress (`{kind, id}`), bounded, as a JSON array.
 fn recorded_callers(callers: Vec<Value>) -> String {
-    let named: Vec<Value> = callers
-        .into_iter()
-        .filter(|actor| {
-            matches!(
-                actor["kind"].as_str(),
-                Some("human" | "agent" | "background")
-            ) && actor["id"]
-                .as_str()
-                .is_some_and(|id| !id.is_empty() && id.len() <= 128)
-        })
-        .map(|actor| json!({"kind": actor["kind"], "id": actor["id"]}))
-        .take(MAX_CALLERS)
-        .collect();
+    let mut named: Vec<Value> = Vec::new();
+    for actor in callers {
+        let valid = matches!(
+            actor["kind"].as_str(),
+            Some("human" | "agent" | "background")
+        ) && actor["id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty() && id.len() <= 128);
+        // One entry per caller: the same caller's concurrent calls differ only in operation.
+        let actor = json!({"kind": actor["kind"], "id": actor["id"]});
+        if valid && !named.contains(&actor) && named.len() < MAX_CALLERS {
+            named.push(actor);
+        }
+    }
     Value::Array(named).to_string()
 }
 
@@ -306,7 +307,8 @@ mod tests {
         // The operation names the callers the worker was handling, as the
         // kernel gave them; anything else the peer passed is dropped.
         let callers = vec![
-            json!({"kind":"agent","id":"agent-1"}),
+            json!({"kind":"agent","id":"agent-1","operation_id":"op-1"}),
+            json!({"kind":"agent","id":"agent-1","operation_id":"op-2"}),
             json!({"kind":"human","id":"alice"}),
             json!({"kind":"other","id":"x"}),
             json!({"kind":"agent","id":""}),
