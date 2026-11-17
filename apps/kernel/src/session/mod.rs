@@ -10,6 +10,8 @@ mod metaagent_task;
 mod owner;
 mod prompt_queue;
 mod prompt_runtime;
+mod queued_agent_message;
+pub use queued_agent_message::QueuedAgentMessage;
 mod queued_metaagent_task;
 mod room_environment;
 mod room_setup;

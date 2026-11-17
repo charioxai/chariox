@@ -257,6 +257,8 @@ pub(crate) struct KernelRuntimeState {
     /// When Cloud's kernel directory was last read, and the kernels it listed as unlinked.
     unlinked_kernels: Arc<std::sync::Mutex<Option<UnlinkedKernels>>>,
     lifecycle_sweeps: lifecycle_sweep_flight::SweepFlight,
+    /// Parents holding a finished child's wake for the siblings still working.
+    sibling_windows: child_finish_window::SiblingWindows,
     /// One peer outcome delivery pass at a time, apart from the lifecycle sweep.
     peer_outcome_deliveries: lifecycle_sweep_flight::SweepFlight,
     /// The relay link is back: the next delivery pass sends every owed outcome, due or not.
@@ -1155,6 +1157,7 @@ impl KernelRuntimeState {
             created_peer_release: Default::default(),
             unlinked_kernels: Default::default(),
             lifecycle_sweeps: Default::default(),
+            sibling_windows: Default::default(),
             peer_outcome_deliveries: Default::default(),
             peer_outcomes_owed_now: Default::default(),
             unpaired_peer_follow_settlements: Default::default(),
@@ -1688,10 +1691,12 @@ mod agent_lifecycle_runtime;
 #[cfg(test)]
 mod agent_membership_read_tests;
 mod agent_parent_runtime;
+mod agent_queued_messages;
 mod agent_subtree_cascade;
 mod agent_task_completion;
 mod agent_tree_runtime;
 mod background_hold;
+mod child_finish_window;
 mod child_finished_event;
 
 #[cfg(test)]

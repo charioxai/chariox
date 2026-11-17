@@ -186,6 +186,14 @@ impl KernelRuntimeState {
         if active.is_some() && (!event.urgent || event.attempted_at_ms.is_some()) {
             return Ok(());
         }
+        if let child_finish_window::Window::Open { left, first } =
+            self.sibling_window(room, agent, &event)
+        {
+            if first {
+                self.deliver_when_window_ends(room, agent, left);
+            }
+            return Ok(());
+        }
         let batch = self.delivery_batch(
             room,
             agent,

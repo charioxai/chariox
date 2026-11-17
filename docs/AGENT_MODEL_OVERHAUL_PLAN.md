@@ -121,11 +121,20 @@ is finished. Several messages in one turn retain distinct correlation IDs;
 delivery ACK and turn completion are separate. A completion notification is
 not a new request/message and cannot create a feedback loop.
 
-Non-urgent messages stay in the event inbox for the receiver's next turn; an
-idle or yielded receiver wakes on ordinary admission, while an explicitly
-user-stopped receiver keeps a visible pending item. Urgent messages steer the
-exact running turn directly through the existing provider seam. Idle/yielded
-receivers wake normally for urgent messages too. Starting providers retain
+Senders do not know the receiver's state, so the one `urgent` field decides.
+A message that is not urgent is queued, whether its receiver runs or is idle:
+it never starts or steers a turn, it is delivered in the receiver's next turn,
+whatever starts that turn (a timer, a child's end, the person's prompt or an
+urgent message), and `reply_requested` does not change that. It stays in the
+event inbox, never stands in front of the timer and child wakes behind it, and
+a wake carries it with its own events. The person sees it in the receiver's
+queue beside their own queued prompts, named by its sender, and cancels it or
+sends it now. The sender's tool result says it queued and names its message id;
+`chariox.promote_agent_message` (or `agent promote`), or sending the same
+`idempotency_key` again with `urgent`, makes that same message urgent. An urgent message steers the
+exact running turn directly through the existing provider seam, and starts a
+turn when its receiver is idle. An explicitly user-stopped receiver keeps a
+visible pending item for an urgent message. Starting providers retain
 the event until a real turn is available. Remote urgency uses the same leased
 steer/receipt route, with no alternate prompt authority; partition, unsupported
 steer and uncertain outcomes follow the wake delivery rules below. Neither

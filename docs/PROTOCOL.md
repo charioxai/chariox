@@ -733,8 +733,10 @@ permission level or mode. Only the user changes the edge, with
 `SetAgentParent {session_id, agent_id, parent_agent_id}` (answered by
 `AgentParentChanged {agent}`); every agent caller, a sudo window included, is
 refused. A Room agent controls its subtree with `agent cancel`, `agent deadline
-set|get`, `agent children`, `agent steer`, `agent message` and `agent spawn`, and reads `agent usage` and
-`agent profiles`. `agent spawn` takes `--account-profile`, `--permission
+set|get`, `agent children`, `agent steer`, `agent message`, `agent promote` and `agent spawn`, and reads `agent usage` and
+`agent profiles`. A message that is not urgent waits in its receiver's queue and never starts or steers a turn: a session lists it in
+`queued_agent_messages` (`id` `agent-message-<n>`, `agent_id`, `sender`, `prompt`), and the person cancels it or sends it now with
+`CancelQueuedPrompt` / `SteerQueuedPrompt` on that id; its sender promotes it with `agent promote <message-id>`. `agent spawn` takes `--account-profile`, `--permission
 required|yolo`, `--deadline 90s|30m|2h|1d` and `--command-id`; a child never
 has a higher permission level or mode than its parent, and a retry with the
 same command id returns the same child. A child's directory may be inside the
@@ -948,6 +950,15 @@ Start response is reconciled by query, never by another execution. Worker restar
 or lost supervision produces source loss; a persisted PID is not a live handle.
 Older workers fail admission before creating a launch. Kernel-managed cwd,
 permission approval, output protection and pinned process signals apply on worker.
+
+A watched command that the provider's own sandbox does not cover asks one kernel
+interaction ("Run watched command outside the provider sandbox?") with the choices
+Allow once, Allow for this agent and Deny. Allow for this agent is the only grant: it covers every
+later watched command and job of that agent on this kernel until the agent's
+permissions change, its room ends or a parent revokes it. There is no per-command
+or per-watch grant, so an agent that polls with many watches raises one card, not
+one per watch. A command a leased worker runs for its home has no grant (Allow once
+and Deny only), because a grant would sit on the worker, out of the parent's reach.
 
 
 Local protocol 452 projects independent
