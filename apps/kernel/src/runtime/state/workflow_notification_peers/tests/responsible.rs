@@ -2,10 +2,12 @@
 //! reaches it through the existing notification path, a hand-over detaches it, and its
 //! deletion (or its kernel's removal from the account) gives the workflow back to the person.
 use super::availability::{on_a_big_stack, Drill};
-use crate::local::WorkflowResponsibleTarget;
+use crate::local::{
+    WorkflowNotificationSubscription, WorkflowNotificationTargetKind, WorkflowResponsibleTarget,
+};
 use crate::session::{
-    ResponsibleNoticeKind, WorkflowFailureEvent, WorkflowFailureKind, WorkflowResponsible,
-    WorkflowRunStatus,
+    AgentTriggerNotificationSource, ResponsibleNoticeKind, WorkflowFailureEvent,
+    WorkflowFailureKind, WorkflowResponsible, WorkflowRunStatus,
 };
 
 const AGENT: &str = "agent";
@@ -373,6 +375,116 @@ fn a_kernel_removed_from_the_account_gives_its_workflows_back_but_an_offline_one
         assert_eq!(
             workflow.responsible_notice().map(|notice| notice.kind),
             Some(ResponsibleNoticeKind::MachineGone)
+        );
+        drill.finish().await;
+    });
+}
+
+/// The agent follows the workflow's "run finished" source on its own, as `workflow follow`
+/// leaves it. Answers the source's id.
+async fn follow_run_finished(drill: &Drill) -> String {
+    let (room, workflow) = workflow_of(drill);
+    let source = drill
+        .source_runtime
+        .owned
+        .ensure_run_finished_source(&room, &workflow)
+        .unwrap();
+    let trigger = drill
+        .target_runtime
+        .owned
+        .session_store
+        .write()
+        .create_agent_notification_trigger(
+            &drill.target.session,
+            AGENT,
+            "local",
+            AgentTriggerNotificationSource::Workflow {
+                source_id: source.source_id.clone(),
+            },
+            "wf_subscription_own".into(),
+            source.display_name.clone(),
+            Some("Look at the failed run.".into()),
+        )
+        .unwrap();
+    let home = drill.target_runtime.owned.home_kernel_id();
+    drill
+        .target_runtime
+        .subscribe_agent_notification(
+            &home,
+            WorkflowNotificationSubscription {
+                subscription_id: "wf_subscription_own".into(),
+                source_id: source.source_id.clone(),
+                owner_user_id: "local".into(),
+                created_by_user_id: "local".into(),
+                target_kernel_id: home.clone(),
+                target_kind: WorkflowNotificationTargetKind::Agent,
+                session_id: drill.target.session.clone(),
+                workflow_id: String::new(),
+                publication_id: trigger.id().into(),
+                endpoint_id: AGENT.into(),
+                queue_id: "agent".into(),
+                source_available: true,
+                source_kernel_id: source.kernel_id.clone(),
+                agent_id: Some(AGENT.into()),
+                trigger_id: Some(trigger.id().into()),
+            },
+        )
+        .await
+        .unwrap();
+    source.source_id
+}
+
+/// The agent's listeners on `source_id`, as the durable state holds them: the responsible's
+/// subscription where the source kernel saved it, the agent's own where its kernel saved it.
+fn listeners(drill: &Drill, source_id: &str) -> Vec<WorkflowNotificationSubscription> {
+    let mut held: Vec<_> = [&drill.source.store, &drill.target.store]
+        .into_iter()
+        .flat_map(|store| store.notification_inventory("local").unwrap().1)
+        .filter(|s| s.endpoint_id == AGENT && s.source_id == source_id)
+        .collect();
+    held.sort_by(|a, b| a.subscription_id.cmp(&b.subscription_id));
+    held.dedup_by(|a, b| a.subscription_id == b.subscription_id);
+    held
+}
+
+#[test]
+fn an_agent_with_its_own_listener_hears_every_run_once_and_gets_the_listener_back() {
+    on_a_big_stack(async {
+        let drill = Drill::connect().await;
+        register_agent(&drill);
+        let source_id = follow_run_finished(&drill).await;
+        assert_eq!(
+            listeners(&drill, &source_id).len(),
+            1,
+            "the agent follows the source"
+        );
+
+        set(&drill, target_of(&drill)).await;
+        let held = listeners(&drill, &source_id);
+        assert_eq!(held.len(), 1, "one listener per agent and source: {held:?}");
+        assert!(held[0].subscription_id.starts_with("wf_responsible_"));
+
+        // More runs than one pass of the pump takes: nothing may stay behind that routing skips.
+        for n in 1..=10 {
+            fail_run(&drill, &format!("run-{n}"), "resend the diff");
+        }
+        pump(&drill, |drill| prompts_of_agent(drill).len() >= 10).await;
+        let prompts = prompts_of_agent(&drill);
+        assert_eq!(prompts.len(), 10, "{prompts:?} {}", trigger_report(&drill));
+
+        // Handing the workflow back gives the agent the listener it had.
+        set(&drill, WorkflowResponsibleTarget::Person).await;
+        let held = listeners(&drill, &source_id);
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert!(held[0].subscription_id.starts_with("wf_subscription_"));
+        assert_eq!(responsible_triggers(&drill), 0);
+        fail_run(&drill, "run-11", "resend the diff");
+        pump(&drill, |drill| prompts_of_agent(drill).len() >= 11).await;
+        assert_eq!(
+            prompts_of_agent(&drill).len(),
+            11,
+            "{}",
+            trigger_report(&drill)
         );
         drill.finish().await;
     });

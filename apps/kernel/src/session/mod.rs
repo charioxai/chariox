@@ -159,7 +159,7 @@ pub use agent_trigger_http_options::{
 pub use agent_triggers::{
     AgentSchedule, AgentTrigger, AgentTriggerBusyPolicy, AgentTriggerDispatch,
     AgentTriggerNotificationSource, AgentTriggerOutcome, AgentTriggerRepeat, AgentTriggerSource,
-    TriggerDelivery, TriggerDeliveryState, TriggerInputKind,
+    ReplacedListener, TriggerDelivery, TriggerDeliveryState, TriggerInputKind,
 };
 
 pub(crate) use service::{PreparedWorkflowQueueRun, WorkflowQueueRun};

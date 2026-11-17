@@ -2,6 +2,7 @@
 //! run's needs to a responsible agent as an ordinary prompt of its own Room. The trigger lives
 //! on the agent's kernel and follows the workflow's "run finished" source like any other
 //! notification trigger, whichever kernel holds the workflow.
+use super::agent_trigger_notification::notification_subscription_id;
 use super::workflow_request_runtime_state::WorkflowRequestOutcome;
 use super::*;
 use crate::agent::AgentInstance;
@@ -12,7 +13,8 @@ use crate::local::{
 };
 use crate::runtime::room_tool_admission::denied;
 use crate::session::{
-    AgentTrigger, ResponsibleForWorkflow, ResponsibleNotice, ResponsibleNoticeKind, RuntimeSession,
+    AgentTrigger, AgentTriggerNotificationSource, AgentTriggerSource, ReplacedListener,
+    ResponsibleForWorkflow, ResponsibleNotice, ResponsibleNoticeKind, RuntimeSession,
     WorkflowDefinition, WorkflowResponsible,
 };
 use crate::transport::relay_peer::{
@@ -482,7 +484,22 @@ impl KernelRuntimeState {
         }) {
             return Ok(label);
         }
-        let home = self.owned.home_kernel_id();
+        let own: Vec<AgentTrigger> = agent_room
+            .agent_triggers()
+            .iter()
+            .filter(|trigger| {
+                trigger.agent_id() == agent.id()
+                    && trigger.responsible_for().is_none()
+                    && matches!(
+                        trigger.source(),
+                        AgentTriggerSource::Notification {
+                            source: AgentTriggerNotificationSource::Workflow { source_id },
+                            ..
+                        } if *source_id == source.source_id
+                    )
+            })
+            .cloned()
+            .collect();
         let subscription_id = format!(
             "{RESPONSIBLE_SUBSCRIPTION_PREFIX}{:032x}",
             rand::random::<u128>()
@@ -500,34 +517,34 @@ impl KernelRuntimeState {
                 source.display_name.clone(),
                 workflow,
                 RESPONSIBLE_PROMPT_TRAILER.into(),
+                own.first().map(AgentTrigger::listener),
             )?;
-        let subscription = WorkflowNotificationSubscription {
+        let subscription = self.agent_listener_subscription(
             subscription_id,
-            source_id: source.source_id.clone(),
-            owner_user_id: owner.into(),
-            created_by_user_id: owner.into(),
-            target_kernel_id: home.clone(),
-            target_kind: WorkflowNotificationTargetKind::Agent,
-            session_id: agent_room.id().into(),
-            workflow_id: String::new(),
-            publication_id: trigger.id().into(),
-            endpoint_id: agent.id().into(),
-            queue_id: "agent".into(),
-            source_available: true,
-            source_kernel_id: source.kernel_id.clone(),
-            agent_id: Some(agent.id().into()),
-            trigger_id: Some(trigger.id().into()),
-        };
+            &source.source_id,
+            &source.kernel_id,
+            owner,
+            agent_room.id(),
+            &trigger,
+        );
         let attached = self
-            .subscribe_agent_notification(&home, subscription)
-            .await
-            .and_then(|()| {
+            .subscribe_agent_notification(&self.owned.home_kernel_id(), subscription)
+            .await;
+        // The agent hears each run once: the listener it had on this source gives way, so no
+        // delivery is left for routing to skip for ever.
+        let attached = match attached {
+            Ok(()) => {
+                for own in &own {
+                    self.remove_listener_trigger(agent_room.id(), own).await;
+                }
                 self.owned
                     .persist_agent_trigger_session(agent_room.id(), "agent_trigger_created")
                     .map(|_| ())
-            });
+            }
+            error => error,
+        };
         if let Err(error) = attached {
-            self.remove_responsible_trigger(agent_room.id(), &trigger)
+            self.remove_listener_trigger(agent_room.id(), &trigger)
                 .await;
             return Err(error);
         }
@@ -555,16 +572,118 @@ impl KernelRuntimeState {
         if triggers.is_empty() {
             return Ok(());
         }
+        // The agent is still there: it gets back the listener it had, so it keeps hearing the
+        // workflow's runs by its own choice.
+        let agent_is_live = self
+            .owned
+            .agent_store
+            .get_agent(agent_id)
+            .is_ok_and(|agent| !agent.archived());
         for trigger in triggers {
-            self.remove_responsible_trigger(agent_room_id, &trigger)
-                .await;
+            let subscription = notification_subscription_id(&trigger).and_then(|id| {
+                self.agent_notification_subscriptions()
+                    .into_iter()
+                    .find(|s| s.subscription_id == id)
+            });
+            self.remove_listener_trigger(agent_room_id, &trigger).await;
+            if let (true, Some(listener), Some(subscription)) =
+                (agent_is_live, trigger.replaced_listener(), subscription)
+            {
+                self.restore_own_listener(agent_room_id, &trigger, listener, &subscription)
+                    .await?;
+            }
         }
         self.owned
             .persist_agent_trigger_session(agent_room_id, "agent_trigger_deleted")?;
         Ok(())
     }
 
-    async fn remove_responsible_trigger(&self, agent_room_id: &str, trigger: &AgentTrigger) {
+    /// The agent's own listener on the source its responsible trigger followed, as it was set.
+    async fn restore_own_listener(
+        &self,
+        agent_room_id: &str,
+        responsible: &AgentTrigger,
+        listener: &ReplacedListener,
+        responsible_subscription: &WorkflowNotificationSubscription,
+    ) -> Result<(), DaemonError> {
+        let AgentTriggerSource::Notification {
+            source: source @ AgentTriggerNotificationSource::Workflow { source_id },
+            display_name,
+            ..
+        } = responsible.source()
+        else {
+            return Ok(());
+        };
+        let owner = &responsible_subscription.owner_user_id;
+        let subscription_id = format!("wf_subscription_{:032x}", rand::random::<u128>());
+        let trigger = {
+            let mut store = self.owned.session_store.write();
+            let trigger = store.create_agent_notification_trigger(
+                agent_room_id,
+                responsible.agent_id(),
+                owner,
+                source.clone(),
+                subscription_id.clone(),
+                display_name.clone(),
+                Some(listener.prompt().to_owned()),
+            )?;
+            store.update_agent_trigger(
+                agent_room_id,
+                trigger.id(),
+                None,
+                None,
+                Some(listener.enabled()),
+            )?
+        };
+        let subscription = self.agent_listener_subscription(
+            subscription_id,
+            source_id,
+            &responsible_subscription.source_kernel_id,
+            owner,
+            agent_room_id,
+            &trigger,
+        );
+        if let Err(error) = self
+            .subscribe_agent_notification(&self.owned.home_kernel_id(), subscription)
+            .await
+        {
+            self.remove_listener_trigger(agent_room_id, &trigger).await;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// The subscription that carries `source`'s occurrences to the agent of `trigger`.
+    fn agent_listener_subscription(
+        &self,
+        subscription_id: String,
+        source_id: &str,
+        source_kernel_id: &str,
+        owner: &str,
+        agent_room_id: &str,
+        trigger: &AgentTrigger,
+    ) -> WorkflowNotificationSubscription {
+        WorkflowNotificationSubscription {
+            subscription_id,
+            source_id: source_id.into(),
+            owner_user_id: owner.into(),
+            created_by_user_id: owner.into(),
+            target_kernel_id: self.owned.home_kernel_id(),
+            target_kind: WorkflowNotificationTargetKind::Agent,
+            session_id: agent_room_id.into(),
+            workflow_id: String::new(),
+            publication_id: trigger.id().into(),
+            endpoint_id: trigger.agent_id().into(),
+            queue_id: "agent".into(),
+            source_available: true,
+            source_kernel_id: source_kernel_id.into(),
+            agent_id: Some(trigger.agent_id().into()),
+            trigger_id: Some(trigger.id().into()),
+        }
+    }
+
+    /// Deletes a notification trigger the kernel manages and ends its subscription.
+    async fn remove_listener_trigger(&self, agent_room_id: &str, trigger: &AgentTrigger) {
         let _ = self
             .owned
             .session_store

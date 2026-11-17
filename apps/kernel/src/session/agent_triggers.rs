@@ -180,6 +180,23 @@ impl TriggerDelivery {
     }
 }
 
+/// How an agent's own notification listener was set: what a responsible trigger replaced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplacedListener {
+    prompt: String,
+    enabled: bool,
+}
+
+impl ReplacedListener {
+    pub fn prompt(&self) -> &str {
+        &self.prompt
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTrigger {
     id: String,
@@ -206,6 +223,10 @@ pub struct AgentTrigger {
     /// creates, lists or edits it; setting the responsible does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     responsible_for: Option<super::workflow_responsible::ResponsibleForWorkflow>,
+    /// The agent's own listener on the same source, which this responsible trigger replaced: the
+    /// agent hears each run once, and the listener comes back when the responsible changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replaced_listener: Option<ReplacedListener>,
     #[serde(skip)]
     dispatch_in_flight: bool,
     #[serde(skip)]
@@ -246,6 +267,7 @@ impl AgentTrigger {
             dispatch_in_flight: false,
             dispatch_generation: 0,
             responsible_for: None,
+            replaced_listener: None,
         })
     }
 
@@ -285,6 +307,7 @@ impl AgentTrigger {
             dispatch_in_flight: false,
             dispatch_generation: 0,
             responsible_for: None,
+            replaced_listener: None,
         }
     }
 
@@ -325,6 +348,7 @@ impl AgentTrigger {
             dispatch_in_flight: false,
             dispatch_generation: 0,
             responsible_for: None,
+            replaced_listener: None,
         }
     }
 
@@ -359,8 +383,22 @@ impl AgentTrigger {
     pub(crate) fn set_responsible_for(
         &mut self,
         workflow: super::workflow_responsible::ResponsibleForWorkflow,
+        replaced: Option<ReplacedListener>,
     ) {
         self.responsible_for = Some(workflow);
+        self.replaced_listener = replaced;
+    }
+
+    pub fn replaced_listener(&self) -> Option<&ReplacedListener> {
+        self.replaced_listener.as_ref()
+    }
+
+    /// What the agent's own listener on this trigger's source was.
+    pub(crate) fn listener(&self) -> ReplacedListener {
+        ReplacedListener {
+            prompt: self.prompt.clone(),
+            enabled: self.enabled,
+        }
     }
 
     pub(crate) fn enroll_local_owner(&mut self, owner: &str) {

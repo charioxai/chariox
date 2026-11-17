@@ -175,6 +175,7 @@ impl SessionService {
         display_name: String,
         workflow: crate::session::ResponsibleForWorkflow,
         prompt: String,
+        replaced: Option<crate::session::ReplacedListener>,
     ) -> Result<AgentTrigger, DaemonError> {
         let trigger = self.create_agent_notification_trigger(
             session_id,
@@ -191,7 +192,7 @@ impl SessionService {
             .iter_mut()
             .find(|stored| stored.id() == trigger.id())
             .ok_or_else(|| agent_trigger_not_found(session_id, trigger.id()))?;
-        stored.set_responsible_for(workflow);
+        stored.set_responsible_for(workflow, replaced);
         Ok(stored.clone())
     }
 
