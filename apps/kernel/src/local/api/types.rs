@@ -540,4 +540,7 @@ pub use workspace::*;
 /// resource feed, including home-relayed worker invalidations; 1008 adds the person-confirmed App action card
 /// (`app_confirmation` on an `app-confirm-*` interaction, with the App's own preview as its protected browser
 /// `view`), and a `state_wait` that ended without a change answers only `revision` and `unchanged: true`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1010;
+/// 1012 (provisional, above Landing 11's 1011) carries Skills v2: Chariox and Project skill catalogs, the
+/// Auto / Manual / Off states, packages and delivery to every execution place; the per-agent skill grants
+/// and the `skill` extension kind are gone.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
