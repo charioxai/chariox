@@ -44,3 +44,34 @@ test('a test file that is not shipped may import anything', () => {
   assert.equal(r.run(check.name).status, 0)
   r.dispose()
 })
+
+// The real layout: a build stage copies the whole kernel directory, the runtime stage (the last FROM) copies the modules one by one.
+const multiStage = runtimeCopies => `FROM rust:1 AS rust-builder
+WORKDIR /opt/chariox-source
+COPY apps/kernel apps/kernel
+FROM node:22
+WORKDIR /opt/chariox-toolchain
+${runtimeCopies.join('\n')}
+`
+const copyLine = f => `COPY --chown=slice:slice ${DOCKER}/${f} /opt/chariox-slice/${f}`
+
+test('a build stage that copies the whole directory does not ship a module the runtime stage forgot', () => {
+  const r = makeRepo({ ...files([]), [`${DOCKER}/Dockerfile`]: multiStage(['host.mjs', 'a.mjs', 'b.mjs'].map(copyLine)) })
+  assert.equal(r.run(check.name).status, 0)
+  r.write(`${DOCKER}/Dockerfile`, multiStage(['host.mjs', 'a.mjs'].map(copyLine)))
+  const result = r.run(check.name)
+  assert.equal(result.status, 1)
+  assert.match(result.text, new RegExp(`a\\.mjs:1: imports ${DOCKER}/b\\.mjs, which the slice image does not copy`))
+  r.dispose()
+})
+
+test('a module reaches the runtime stage through COPY --from only when the build stage holds it', () => {
+  const viaBuilder = path => multiStage([copyLine('host.mjs'), copyLine('a.mjs'), `COPY --from=rust-builder ${path} /opt/chariox-slice/b.mjs`])
+  const r = makeRepo({ ...files([]), [`${DOCKER}/Dockerfile`]: viaBuilder(`/opt/chariox-source/${DOCKER}/b.mjs`) })
+  assert.equal(r.run(check.name).status, 0)
+  r.write(`${DOCKER}/Dockerfile`, viaBuilder('/opt/chariox-source/apps/relay/b.mjs'))
+  assert.equal(r.run(check.name).status, 1)
+  r.write(`${DOCKER}/Dockerfile`, multiStage([copyLine('host.mjs'), copyLine('a.mjs'), `COPY --from=rust-builder /opt/chariox-source/apps/kernel/ /opt/kernel/`]))
+  assert.equal(r.run(check.name).status, 0, 'a copied parent directory holds the module')
+  r.dispose()
+})
