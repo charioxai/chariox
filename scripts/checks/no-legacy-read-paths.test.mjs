@@ -30,7 +30,7 @@ test('a new serde alias in a file outside the list is red', () => {
 test('a multi-line serde attribute with an alias is red', () => {
   const r = makeRepo({ [KIND]: plain })
   r.write(KIND, 'pub struct S {\n    #[serde(\n        default,\n        alias = "workflow_watchdogs",\n    )]\n    schedules: Vec<u8>,\n}\n')
-  planted(r, /session\/kind\.rs:2: keeps a serde alias/)
+  planted(r, /session\/kind\.rs:4: keeps a serde alias/)
 })
 
 test('a listed alias passes, a second alias in the same file is red', () => {
@@ -66,4 +66,36 @@ test('a local variable called legacy, a test file and a comment pass', () => {
   r.write(KIND, '// #[serde(alias = "old")] was removed\n#[cfg(test)]\nmod tests {\n    #[serde(alias = "x")]\n    fn legacy_case() {}\n}\n')
   assert.equal(r.run(check.name).status, 0)
   r.dispose()
+})
+
+test('several aliases in one attribute count one each, so adding one to a listed attribute is red', () => {
+  const r = makeRepo({ [KIND]: aliased, 'scripts/checks/no-legacy-read-paths.allow.json': listed(KIND, 1) })
+  assert.equal(r.run(check.name).status, 0)
+  r.write(KIND, 'pub enum Origin {\n    #[serde(alias = "arroba", alias = "at")]\n    Chariox,\n}\n')
+  planted(r, /session\/kind\.rs:2: keeps a serde alias/)
+})
+
+test('an alias written in a multi-line attribute with other options still counts once', () => {
+  const r = makeRepo({ [KIND]: aliased, 'scripts/checks/no-legacy-read-paths.allow.json': listed(KIND, 1) })
+  r.write(KIND, 'pub enum Origin {\n    #[serde(\n        rename = "chariox",\n        alias = "arroba",\n    )]\n    Chariox,\n}\n')
+  assert.equal(r.run(check.name).status, 0)
+  r.dispose()
+})
+
+test('a legacy declaration inside a template literal or a comment is data, not a declaration', () => {
+  const r = makeRepo({ 'packages/x/src/a.ts': 'export const current = 1\n' })
+  r.write('packages/x/src/a.ts', [
+    'export const example = `',
+    'function legacyExample() {}',
+    'export const legacyOther = 1',
+    '`',
+    '/*',
+    'export function legacyInComment() {}',
+    '*/',
+    "export const text = 'a'",
+    '',
+  ].join('\n'))
+  assert.equal(r.run(check.name).status, 0)
+  r.write('packages/x/src/a.ts', 'export const example = `${1}`\nexport function legacyReal() {}\n')
+  planted(r, /a\.ts:2: declares legacyReal, a legacy path/)
 })

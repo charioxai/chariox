@@ -13,6 +13,17 @@ const ATTRIBUTION = [
 const RECORD = '\u0001'
 const FIELD = '\u0000'
 
+// The range base..HEAD is only the branch's commits when history connects them. A shallow clone cuts that link (a pull-request
+// run checks out a synthetic merge commit at depth 1), and git then lists no branch commit at all: refuse instead of passing.
+function requireHistoryBack(root, base) {
+  try { gitOut(root, 'merge-base', base, 'HEAD') } catch {
+    const shallow = gitOut(root, 'rev-parse', '--is-shallow-repository') === 'true'
+    throw new Error(shallow
+      ? `this checkout is shallow, so the commits between ${base.slice(0, 12)} and HEAD cannot be read and no message was checked. Fetch the history: actions/checkout with fetch-depth: 0, or git fetch --unshallow`
+      : `${base.slice(0, 12)} and HEAD have no common history, so the branch's commits cannot be read and no message was checked. Fetch the branch it was cut from or pass a base that HEAD descends from`)
+  }
+}
+
 export default {
   name: 'commit-message-rules',
   ratchet: 'diff',
@@ -20,6 +31,7 @@ export default {
   rootFix: 'reword the commit so its message is the subject (and a few short lines if needed) with no attribution line: git rebase the branch and amend, then force-push the branch with --force-with-lease',
   scan(ctx) {
     if (!ctx.base) return []
+    requireHistoryBack(ctx.root, ctx.base)
     const log = gitOut(ctx.root, 'log', '--no-merges', '--format=%H%x00%s%x00%b%x01', `${ctx.base}..HEAD`)
     const findings = []
     for (const record of log.split(RECORD).map(r => r.trim()).filter(Boolean)) {

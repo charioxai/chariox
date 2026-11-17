@@ -50,3 +50,39 @@ test('test files and scripts outside apps and packages are not scanned', () => {
   assert.equal(r.run(check.name).status, 0)
   r.dispose()
 })
+
+test('catch {} in a comment or in string data is not an empty catch', () => {
+  const r = makeRepo({ 'apps/web/a.ts': 'export const x = 1\n' })
+  r.write('apps/web/a.ts', [
+    '// Avoid catch {} because it hides errors',
+    '/* try { f() } catch {} */',
+    'export const example = "catch {}"',
+    "export const other = 'try { f() } catch (e) {}'",
+    'export const block = `',
+    'try { f() } catch {}',
+    '`',
+    'export const expression = `${1}` + /catch {}/.source',
+    '',
+  ].join('\n'))
+  assert.equal(r.run(check.name).status, 0)
+  r.dispose()
+})
+
+test('a real empty catch after a comment and a string is still red, on its own line', () => {
+  const r = makeRepo({ 'apps/web/a.ts': 'export const x = 1\n' })
+  r.write('apps/web/a.ts', '// catch {}\nexport const s = "catch {}"\nexport function f() {\n  try { g() } catch {}\n}\n')
+  const result = r.run(check.name)
+  assert.equal(result.status, 1)
+  assert.match(result.text, /a\.ts:4: has an empty catch block: catch \{\}/)
+  r.dispose()
+})
+
+test('an empty catch inside a String.raw program is still red: that text is code for another runtime', () => {
+  const r = makeRepo({ 'apps/web/a.ts': 'export const x = 1\n' })
+  r.write('apps/web/a.ts', 'export const script = String.raw`\ntry { run() } catch {}\n`\nexport const note = `\ntry { run() } catch {}\n`\n')
+  const result = r.run(check.name)
+  assert.equal(result.status, 1)
+  assert.match(result.text, /a\.ts:2: has an empty catch block/)
+  assert.doesNotMatch(result.text, /a\.ts:5/)
+  r.dispose()
+})

@@ -21,12 +21,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+          # The commit-message check reads the branch's commits between the base and the pull-request merge commit; a depth-1
+          # checkout has no parents to walk. The fetches below take no --depth, which would turn this clone shallow again.
+          fetch-depth: 0
 
       - name: Verify source revision
         run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
       - name: Fetch MP-11 frozen inventory source
-        run: git fetch --no-tags --depth=1 origin 9334141d420f8a32393f206102c5b8b4a1b0b609
+        run: git fetch --no-tags origin 9334141d420f8a32393f206102c5b8b4a1b0b609
 
       - name: Fetch the commit the change branches from
         # The OSS boundary guard compares its shrink-only lists with this commit and fails in CI
@@ -40,7 +43,7 @@ jobs:
             *) BASE_SHA="$(git ls-remote origin refs/heads/main | cut -f1)" ;;
           esac
           test -n "$BASE_SHA"
-          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git fetch --no-tags origin "$BASE_SHA"
           echo "CHARIOX_BOUNDARY_BASE=$BASE_SHA" >> "$GITHUB_ENV"
 
       - name: Set up pnpm
