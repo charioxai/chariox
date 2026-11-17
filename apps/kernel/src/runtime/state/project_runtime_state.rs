@@ -6,24 +6,24 @@ impl KernelRuntimeState {
         target: &crate::local::ManagedContextLaunchTarget,
         caller_user_id: &str,
     ) -> Result<(), DaemonError> {
-        for project in managed_context_projects(target, caller_user_id)? {
-            let existing = self
-                .owned
-                .session_store
-                .durable_projects()
-                .into_iter()
-                .find(|existing| existing.id() == project.id());
-            install_managed_context_project(
-                existing.as_ref(),
-                project,
-                |project| self.append_project_durable_event("project.created", project),
-                |project| {
-                    self.owned.session_store.restore_projects(vec![project]);
-                    self.owned.runtime_projection_changes.record_change();
-                },
-            )?;
-        }
-        Ok(())
+        let durable = self.owned.session_store.durable_projects();
+        register_managed_context_projects(
+            managed_context_projects(target, caller_user_id)?,
+            &durable,
+            |project| self.append_project_durable_event("project.created", project),
+            |project| {
+                self.owned.session_store.restore_projects(vec![project]);
+                self.owned.runtime_projection_changes.record_change();
+            },
+            |project| {
+                self.append_project_durable_event("project.deleted", project)?;
+                self.owned
+                    .session_store
+                    .delete_project_record(project.id(), caller_user_id)?;
+                self.owned.runtime_projection_changes.record_change();
+                Ok(())
+            },
+        )
     }
 
     pub(crate) fn remove_managed_context_project(
@@ -417,6 +417,52 @@ fn managed_context_project_error(message: impl Into<String>) -> DaemonError {
     }
 }
 
+/// A copy registers every Project or none: a later failure must not leave the
+/// earlier Projects registered while the package rollback deletes their files.
+/// The whole selection is checked first; only a failed write rolls back, and
+/// only the records this call installed.
+fn register_managed_context_projects(
+    projects: Vec<crate::session::RuntimeProject>,
+    durable: &[crate::session::RuntimeProject],
+    mut persist: impl FnMut(&crate::session::RuntimeProject) -> Result<(), DaemonError>,
+    mut publish: impl FnMut(crate::session::RuntimeProject),
+    mut retract: impl FnMut(&crate::session::RuntimeProject) -> Result<(), DaemonError>,
+) -> Result<(), DaemonError> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut fresh = Vec::new();
+    for project in projects {
+        if !seen.insert(project.id().to_string()) {
+            return Err(managed_context_project_error(format!(
+                "managed context names Project `{}` twice",
+                project.id()
+            )));
+        }
+        let existing = durable
+            .iter()
+            .find(|existing| existing.id() == project.id());
+        if install_managed_context_project(existing, project.clone(), |_| Ok(()), |_| {})? {
+            fresh.push(project);
+        }
+    }
+    let mut installed: Vec<crate::session::RuntimeProject> = Vec::new();
+    for project in fresh {
+        if let Err(error) = persist(&project) {
+            for done in installed.iter().rev() {
+                retract(done).map_err(|rollback| {
+                    managed_context_project_error(format!(
+                        "{error}; rolling back Project `{}` also failed: {rollback}",
+                        done.id()
+                    ))
+                })?;
+            }
+            return Err(error);
+        }
+        publish(project.clone());
+        installed.push(project);
+    }
+    Ok(())
+}
+
 fn install_managed_context_project(
     existing: Option<&crate::session::RuntimeProject>,
     project: crate::session::RuntimeProject,
@@ -445,7 +491,7 @@ fn install_managed_context_project(
 mod tests {
     use super::{
         install_managed_context_project, managed_context_project_error, managed_context_projects,
-        project_session_is_idle,
+        project_session_is_idle, register_managed_context_projects,
     };
     use crate::session::{
         PromptQueueItem, PromptStatus, RuntimeInteraction, RuntimeInteractionKind,
@@ -520,6 +566,46 @@ mod tests {
                 "/managed/context-1/supporting"
             ]
         );
+    }
+
+    #[test]
+    fn a_failed_second_registration_rolls_back_only_the_projects_it_installed() {
+        let mut target = managed_context_target();
+        let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { projects } =
+            &mut target.development
+        else {
+            unreachable!("the fixture imports Projects")
+        };
+        let mut second = projects[0].clone();
+        second.project_id = "project-2".to_string();
+        projects.push(second);
+        let projects = managed_context_projects(&target, "user-1").expect("build managed Projects");
+        let mut durable = Vec::new();
+        let mut published = Vec::new();
+        let mut retracted = Vec::new();
+        let error = register_managed_context_projects(
+            projects,
+            &[],
+            |project| {
+                if project.id() == "project-2" {
+                    return Err(managed_context_project_error(
+                        "injected durable write failure",
+                    ));
+                }
+                durable.push(project.id().to_string());
+                Ok(())
+            },
+            |project| published.push(project.id().to_string()),
+            |project| {
+                retracted.push(project.id().to_string());
+                Ok(())
+            },
+        )
+        .expect_err("the second write fails");
+        assert!(error.to_string().contains("injected durable write failure"));
+        assert_eq!(durable, ["project-1"]);
+        assert_eq!(published, ["project-1"]);
+        assert_eq!(retracted, ["project-1"]);
     }
 
     #[test]

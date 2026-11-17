@@ -2565,6 +2565,59 @@ fn a_copy_of_two_projects_registers_and_removes_both_target_projects() {
 }
 
 #[test]
+fn a_copy_of_two_projects_registers_none_when_the_second_conflicts() {
+    let harness = crate::local::test_support::LocalRouterTestHarness::new();
+    let runtime = harness.runtime_state();
+    let project =
+        |project_id: &str, folder: &str| crate::local::ManagedContextProjectLaunchTarget {
+            project_id: project_id.to_string(),
+            destination_root: format!("/managed/{folder}"),
+            primary_repository_id: format!("repository-{folder}"),
+            repositories: vec![crate::local::ManagedContextRepositoryLaunchTarget {
+                workspace_kind: crate::managed_context::development::DevelopmentWorkspaceKind::Git,
+                repository_id: format!("repository-{folder}"),
+                role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                target_directory: "primary".to_string(),
+                workspace_path: format!("/managed/{folder}/primary"),
+                head_sha: "c".repeat(40),
+            }],
+        };
+    let target = |projects: Vec<crate::local::ManagedContextProjectLaunchTarget>| {
+        crate::local::ManagedContextLaunchTarget {
+            destination: None,
+            environment_id: String::new(),
+            kernel_id: "kernel-target".to_string(),
+            context_id: "context-two".to_string(),
+            plan_digest: format!("sha256:{}", "2".repeat(64)),
+            development: crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
+                projects,
+            },
+        }
+    };
+    runtime
+        .ensure_managed_context_project(
+            &target(vec![project("copy-context-two-1", "elsewhere")]),
+            "user-1",
+        )
+        .expect("the second Project's id is already taken by another folder");
+    runtime
+        .ensure_managed_context_project(
+            &target(vec![
+                project("copy-context-two-0", "one"),
+                project("copy-context-two-1", "two"),
+            ]),
+            "user-1",
+        )
+        .expect_err("a conflicting second Project refuses the whole selection");
+    let registered = runtime
+        .list_waiting_room_projects("user-1")
+        .into_iter()
+        .map(|project| project.id().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(registered, ["copy-context-two-1"]);
+}
+
+#[test]
 fn r4_owner_kernel_accepts_more_copies_than_the_disposable_record_limit() {
     // MP-07 / MP-08: a reusable owner machine has no lifetime import ceiling;
     // aged-out receipts preserve launch authority and replay protection.
