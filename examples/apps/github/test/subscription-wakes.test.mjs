@@ -130,3 +130,33 @@ test('a no-checks firing captured before an update does nothing after the update
   assert.equal(h.emitted.length, 0, 'a firing for an event the subscription no longer asks for does nothing');
   assert.equal((await h.call('list_subscriptions')).subscriptions.length, 1);
 });
+
+test('a no-checks firing of the same pull request armed before an update does nothing, and the re-armed wake speaks', async () => {
+  const h = harness({ override: checksOverride([]) });
+  const { subscription } = await h.call('create_subscription', { events: ['ci.finished'], once: { pr } }, AGENT);
+  const old = { id: `none:${subscription.id}`, ...h.wakes.get(`none:${subscription.id}`) };
+  h.clock.now += 10 * 60_000;
+  await h.call('update_subscription', { id: subscription.id, once: { expiresAt: NOW + 5 * HOUR } }, AGENT);
+  const current = { id: old.id, ...h.wakes.get(old.id) };
+  assert.notEqual(current.revision, old.revision, 'the update armed a new wait');
+  await h.fire(old);
+  assert.equal(h.emitted.length, 0, 'the firing of the superseded wait does not speak');
+  assert.equal((await h.call('list_subscriptions')).subscriptions.length, 1, 'and does not spend the one-shot');
+  await h.fire(current);
+  assert.equal(h.emitted.length, 1, 'the current wait speaks');
+});
+
+test('a repository name too long for a wake or a route is refused for its length, and the longest routable one keeps a short revision of its own', async () => {
+  const h = harness({ override: checksOverride([]) });
+  const longest = { repo: `${'o'.repeat(100)}/${'r'.repeat(100)}`, number: 123456 };
+  await assert.rejects(h.call('create_subscription', { events: ['ci.finished'], once: { pr: longest } }, AGENT), { message: /too long to route/ });
+  assert.deepEqual(wakesOf(h), [], 'nothing stays armed for the refused one');
+  const first = { repo: `${'o'.repeat(40)}/${'r'.repeat(49)}a`, number: 123456 };
+  const { subscription } = await h.call('create_subscription', { events: ['ci.finished'], once: { pr: first, expiresAt: NOW + HOUR } }, AGENT);
+  const armed = { id: `none:${subscription.id}`, ...h.wakes.get(`none:${subscription.id}`) };
+  assert.ok(new TextEncoder().encode(armed.revision).length <= 128, `${armed.revision.length} characters`);
+  await h.call('update_subscription', { id: subscription.id, once: { pr: { ...first, repo: `${first.repo.slice(0, -1)}b` } } }, AGENT);
+  assert.notEqual(h.wakes.get(armed.id).revision, armed.revision, 'two names that differ only at the end do not share a revision');
+  await h.fire(armed);
+  assert.equal(h.emitted.length, 0);
+});

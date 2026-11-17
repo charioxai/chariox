@@ -13,6 +13,12 @@ const fail = (code, message) => { throw { code, message, retryable: false }; };
 const DAY = 24 * 3600_000;
 const COMMENT_WAKES = 10;
 const COMMENT_KINDS = new Set(['pull_request.comment', 'pull_request.review_submitted']);
+/** 64-bit FNV-1a as 16 hex digits. */
+function fnv1a(text) {
+  let hash = 0xcbf29ce484222325n;
+  for (let index = 0; index < text.length; index += 1) hash = BigInt.asUintN(64, (hash ^ BigInt(text.charCodeAt(index))) * 0x100000001b3n);
+  return hash.toString(16).padStart(16, '0');
+}
 const wakeIds = { end: id => `end:${id}`, none: id => `none:${id}`, daily: 'reconcile' };
 
 export function createSubscriptions({ state, commit, routing, events, host, schedule, accounts, githubFor, now = () => Date.now() }) {
@@ -35,9 +41,10 @@ export function createSubscriptions({ state, commit, routing, events, host, sche
 
   // The kernel keeps a wake's revision as text and refuses a missing one; the due time is the revision.
   const arm = (id, dueAtMs, revision = String(dueAtMs)) => schedule.set({ id, dueAtMs: BigInt(dueAtMs), revision });
-  // The "no checks" wake is bound to the pull request it waits on, so an update that moves the one-shot makes the old firing stale.
-  const noChecksFor = once => `${once.pr?.repo}#${once.pr?.number}`;
-  const armNoChecks = (subscription, since) => arm(wakeIds.none(subscription.id), since + NO_CHECKS_MS, `${noChecksFor(subscription.once)}@${since + NO_CHECKS_MS}`);
+  // The "no checks" wake carries the revision it was armed for: the due time and a fixed-length digest of the pull request,
+  // so a long repository name never outgrows the kernel's revision limit and a re-arm for the same pull request is still a new wait.
+  const noChecksRevision = (once, dueAtMs) => `${dueAtMs}:${fnv1a(`${once.pr?.repo}#${once.pr?.number}`)}`;
+  const armNoChecks = (subscription, since) => arm(wakeIds.none(subscription.id), since + NO_CHECKS_MS, noChecksRevision(subscription.once, since + NO_CHECKS_MS));
   async function sync(subscriptions) {
     await arm(wakeIds.daily, now() + DAY);
     return reconcile({ routing, subscriptions });
@@ -259,7 +266,7 @@ export function createSubscriptions({ state, commit, routing, events, host, sche
     const subscription = (await store.subscriptions()).find(item => item.id === subscriptionId);
     // A firing of a wake the subscription has since moved is not its own: an expiry it changed, a pull request it left, a CI event it dropped.
     if (!subscription || (kind === 'end' && revision !== String(subscription.once?.expiresAt))) return;
-    if (kind === 'none' && !(subscription.once && subscription.events.includes('ci.finished') && revision?.startsWith(`${noChecksFor(subscription.once)}@`))) return;
+    if (kind === 'none' && !(subscription.once && subscription.events.includes('ci.finished') && (await schedule.list()).some(armed => armed.id === id && armed.revision === revision))) return;
     const subject = { repo: subscription.once?.pr?.repo ?? '', number: subscription.once?.pr?.number ?? null };
     if (!subscription.enabled) {
       // Paused: nobody is told. An expiry still ends it; the "no checks" wait starts again when it resumes.

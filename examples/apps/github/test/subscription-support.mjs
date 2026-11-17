@@ -91,9 +91,9 @@ export function kernelImports({ routing = kernelRouting() } = {}) {
     },
     host: { notify: async (title, body) => { notified.push({ title, body }); return 'n1'; } },
     schedule: {
-      // The kernel's wake keeps its revision as text and refuses a missing one.
+      // The kernel's wake keeps its revision as text of at most 128 bytes and refuses a missing one.
       set: async wake => {
-        if (typeof wake.revision !== 'string') throw { code: 'INVALID_ARGUMENT', message: 'Invalid App storage request', retryable: false };
+        if (typeof wake.revision !== 'string' || new TextEncoder().encode(wake.revision).length > 128) throw { code: 'INVALID_ARGUMENT', message: 'Invalid App storage request', retryable: false };
         wakes.set(wake.id, wake); return [...wakes.values()];
       },
       cancel: async id => { wakes.delete(id); return [...wakes.values()]; },
