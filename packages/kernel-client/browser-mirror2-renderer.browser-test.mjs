@@ -1283,6 +1283,36 @@ test('MP-10 a same-site navigation reuses retained CSS without carrying its text
  }finally{await page.close();}
 });
 
+test('MIRROR-P2 the renderer of the next page works on the caches the view kept: its reset lists the first page\'s font and sheet, and names them', async () => {
+ const page=await viewer();
+ try {
+  const font=Buffer.alloc(64);font.write('wOF2');const id=createHash('sha256').update(font).digest('hex'),sheet='a'.repeat(24);
+  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'},{id:'n4',parent:'n3',kind:'element',tag:'style',css_ref:sheet},{id:'n5',parent:'n2',kind:'element',tag:'body'},{id:'n6',parent:'n5',kind:'element',tag:'p'},{id:'n7',parent:'n6',kind:'text',text:'First'}];
+  await page.evaluate(()=>{window.retention=new Mirror2.Mirror2Retention();window.r.close();window.r=new Mirror2.BrowserMirror2Renderer(document.getElementById('c'),async()=>{},undefined,window.retention)});
+  await page.evaluate(()=>window.r.ready());
+  await apply(page,{...snapshot(nodes),sheets:{[sheet]:'p{color:rgb(12,34,56)}'},resources:[{key:'r1',resource_id:id,mime_type:'font/woff2',data_base64:font.toString('base64')}]});
+  await page.evaluate(()=>{window.r.close();window.r=new Mirror2.BrowserMirror2Renderer(document.getElementById('c'),async()=>{},undefined,window.retention)});
+  await page.evaluate(()=>window.r.ready());
+  assert.deepEqual(await page.evaluate(()=>[window.r.knownFonts(),window.r.knownSheets()]),[[id.slice(0,24)],[sheet]],'the next renderer lists what the view kept');
+  await apply(page,{...snapshot(nodes),css_ref:undefined,document_id:'second',resources:[{key:'r1',resource_id:id,mime_type:'font/woff2',data_base64:'',retained:true}],sheets:undefined});
+  assert.equal(await page.evaluate(()=>window.r.resources.get('r1')?.startsWith('blob:')),true,'the second page uses the first page\'s font');
+ }finally{await page.close();}
+});
+
+test('MIRROR-P2 a font the viewer holds is named by its digest in a later document, and an unknown one is refused', async () => {
+ const page=await viewer();
+ try {
+  const font=Buffer.alloc(64);font.write('wOF2');const id=createHash('sha256').update(font).digest('hex');
+  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'},{id:'n4',parent:'n3',kind:'element',tag:'style',css:'@font-face{font-family:MirrorFont;src:url("mr:r1")}'},{id:'n5',parent:'n2',kind:'element',tag:'body'},{id:'n6',parent:'n5',kind:'element',tag:'p'},{id:'n7',parent:'n6',kind:'text',text:'First'}];
+  await apply(page,{...snapshot(nodes),resources:[{key:'r1',resource_id:id,mime_type:'font/woff2',data_base64:font.toString('base64')}]});
+  assert.deepEqual(await page.evaluate(()=>window.r.knownFonts()),[id.slice(0,24)]);
+  await apply(page,{...snapshot(nodes),document_id:'second',sequence:2,resources:[{key:'r1',resource_id:id,mime_type:'font/woff2',data_base64:'',retained:true}]});
+  assert.equal(await page.evaluate(()=>window.r.resources.get('r1')?.startsWith('blob:')),true,'the second document uses the retained font under its own key');
+  const other='b'.repeat(64);
+  await assert.rejects(apply(page,{...snapshot(nodes),document_id:'third',sequence:3,resources:[{key:'r1',resource_id:other,mime_type:'font/woff2',data_base64:'',retained:true}]}),/retained font unknown/);
+ }finally{await page.close();}
+});
+
 test('MP-10 image hydration keeps the existing font-face rule alive', async () => {
  const page=await viewer();
  try {
@@ -1522,3 +1552,4 @@ test('MP-08/MP-10/MP-11: a font the native machine lacks does not style the view
     assert.equal(await width(), viewerOnly, 'a name no longer reported absent styles the copy again');
   } finally { await page.close(); }
 });
+

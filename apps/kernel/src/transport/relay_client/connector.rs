@@ -1028,6 +1028,7 @@ async fn run_daemon_relay_connector_inner(
                 let mut token_refresh_task = None;
                 let mut leased_projection_pump_task = None;
                 let mut heartbeat_tick: u64 = 0;
+                let mut clients_were_attached = false;
                 let mut last_relay_read_at = Instant::now();
 
                 let mut last_read_at = tokio::time::Instant::now();
@@ -1335,23 +1336,36 @@ async fn run_daemon_relay_connector_inner(
                             if heartbeat_registration.is_some() {
                                 published_accounts = accounts;
                             }
-                            if refresh_remote_inventory
-                                && remote_inventory_refresh_due(
+                            if refresh_remote_inventory {
+                                let attached = !subscription_tasks.lock().await.is_empty();
+                                let due = remote_inventory_refresh_due(
                                     heartbeat_tick,
                                     &mut inventory_refresh_task,
-                                )
-                            {
-                                inventory_refresh_task = Some(
-                                    spawn_remote_inventory_projection_refresh(
-                                        Arc::clone(&router),
-                                    )
                                 );
+                                if inventory_refresh_wanted(
+                                    attached,
+                                    clients_were_attached,
+                                    due,
+                                    inventory_refresh_task.is_none(),
+                                ) {
+                                    inventory_refresh_task = Some(
+                                        spawn_remote_inventory_projection_refresh(
+                                            Arc::clone(&router),
+                                        )
+                                    );
+                                }
+                                clients_were_attached = attached;
                             }
-                            let heartbeat_frame = RelayEnvelope::DaemonHeartbeat {
+                            // The first tick follows the connect at once, then every sixth.
+                            let heartbeat_frame = (heartbeat_registration.is_some()
+                                || heartbeat_tick % RELAY_BARE_HEARTBEAT_TICKS == 1)
+                            .then(|| RelayEnvelope::DaemonHeartbeat {
                                 daemon_id: daemon_id.clone(),
                                 registration: heartbeat_registration,
-                            };
-                            if send_outgoing_envelope(&outgoing_tx, heartbeat_frame).is_err() {
+                            });
+                            if heartbeat_frame.is_some_and(|frame| {
+                                send_outgoing_envelope(&outgoing_tx, frame).is_err()
+                            }) {
                                 abort_leased_projection_pump_task(&mut leased_projection_pump_task);
                                 abort_inventory_refresh_task(&mut inventory_refresh_task);
                                 abort_subscription_tasks(&router, &subscription_tasks).await;

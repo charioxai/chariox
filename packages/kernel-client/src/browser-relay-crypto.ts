@@ -141,7 +141,7 @@ export async function decryptRelayEvent(
   expectedSenderPublicKey?: string,
 ): Promise<unknown> {
   const bytes = await decryptRelayBytes(privateKey, payload, expectedSenderPublicKey)
-  return decodeDisplayEvent(bytes) ?? decodeTerminalOutput(bytes) ?? JSON.parse(new TextDecoder().decode(bytes))
+  return decodeDisplayEvent(bytes) ?? decodeTerminalOutput(bytes, true) ?? JSON.parse(new TextDecoder().decode(bytes))
 }
 
 // Returns null for non-display plaintext. Each `data:[offset,length]` becomes a

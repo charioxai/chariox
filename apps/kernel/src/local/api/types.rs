@@ -541,5 +541,8 @@ pub use workspace::*;
 /// (`app_confirmation` on an `app-confirm-*` interaction, with the App's own preview as its protected browser
 /// `view`), and a `state_wait` that ended without a change answers only `revision` and `unchanged: true`;
 /// 1011 adds `queued_agent_messages` to a session: the messages other agents queued for an agent's next turn,
-/// which the person cancels or sends with `CancelQueuedPrompt` / `SteerQueuedPrompt` on their `agent-message-<n>` id.
+/// which the person cancels or sends with `CancelQueuedPrompt` / `SteerQueuedPrompt` on their `agent-message-<n>` id; a viewer's subscriptions on one lane
+/// share one `heartbeat` per interval, a subscription whose kernel task ended alone says so (`subscription_ended`),
+/// and a Browser reply carries a mirror packet's deflated body, whole resources and a screenshot's picture as raw
+/// bytes (`CXT1`) instead of base64 text.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1010;

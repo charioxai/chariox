@@ -14,5 +14,13 @@ export class Mirror2SheetCache {
     }
   }
   digests(): string[] { return [...this.texts.keys()] }
+  // A view keeps the cache across the subscriptions of its navigations: before a new one lists it, the oldest entries make
+  // room for what that page teaches (nothing a subscription advertised leaves while it runs).
+  makeRoom(): void {
+    for (const [digest, text] of this.texts) {
+      if (this.texts.size <= MAX_SHEETS / 2 && this.bytes <= MAX_BYTES / 2) break
+      this.texts.delete(digest); this.bytes -= new TextEncoder().encode(text).length
+    }
+  }
   clear(): void { this.texts.clear(); this.bytes = 0 }
 }

@@ -5136,6 +5136,16 @@ renderer discards both dictionaries. This extends mirror's own unreleased
 number or client floor is introduced. `browser-mirror2-sheet-cache-550.json` pins
 the request extension and its hash, including legacy omission/round-trip coverage.
 
+MIRROR-P2: provisional local 1055 lets a `mirror_next` credit carry `known_fonts`, at most 128 lowercase
+24-digit hexadecimal digests (the first 24 characters of a font resource's `resource_id`) of fonts this viewer keeps
+for its subscription across documents. A reset credit lists them and the kernel keeps the list until a credit lists
+another (a reset credit without one means none). A font whose digest is listed travels as a resource without bytes,
+`{key, resource_id, mime_type, data_base64: "", retained: true}`; the viewer binds its retained bytes to that key for the
+new document and refuses an unknown digest, a non-font MIME type or a retained resource with bytes or slice fields.
+Images and every other resource keep their per-document delivery. The viewer keeps at most 64 fonts and 16 MiB, never
+evicts a listed entry before close and takes new fonts by ordinary delivery once full.
+`browser-mirror2-font-cache-1055.json` pins the request and the resource shape (`browser_mirror2_font_cache_1055_shape_is_pinned`).
+
 MP-08 / MP-10 / MP-11 — 539/147 native navigation preview (same unreleased allocation):
 `mirror_subscribe.navigation_preview: true` opts into a `wire:2`, reset,
 `fallback:"navigation_preview"`, `snapshot_complete:false` notification before
@@ -7415,6 +7425,26 @@ An active interaction carries `asker_name`, the asking agent's alias (else its r
 the session and never stored, so a client names who asks in the card's first paint. A sub-agent's
 card is shown in its top parent's panel (`shown_in_agent_id`) whoever holds it (above). Focused check: `cargo test -p chariox-kernel --lib --
 a_sub_agent_card_carries a_projected_card_names_its_asker the_user_answers_a_decision protocol_shapes`.
+
+### Idle viewer traffic, ended subscriptions and Browser reply bytes (local 1055, provisional after Landing 10)
+
+A viewer's relay subscriptions on one lane (the session lane, or the kernel-wide inventory and resource lane) share one
+`heartbeat` per interval: the kernel sends the next one only when no other subscription of the same client key and lane sent
+one in the last half interval. A client treats any event of its lane as proof the lane is alive and watches the lane, not each
+subscription. Relay subscribers and their `heartbeat_interval_ms` are unchanged.
+
+A subscription that dies alone is no longer noticed by a missing heartbeat, so when the kernel's task for a relay
+subscription (a session, the waiting-room inventory or `kernel_resources`) ends while the connection stays up, the kernel
+sends that subscription one `subscription_ended` event (`session_id` as `heartbeat` names it). It is never replayed on a
+resume. A client resumes the lane the subscription travels on from its cursors; an unsubscribe ends no task this way, and
+the event follows `session_unavailable` when that is why the task ended.
+
+A `KernelBrowser` reply whose `result` holds a mirror packet (`packet_base64`, `resources[].data_base64`) or a screenshot's
+picture (`data_base64`) travels as `CXT1` like a Room terminal reply: the header keeps the JSON with each such base64 string
+replaced by `[offset, length]` into the raw bytes that follow, in the order body, resources, picture. A client restores the
+base64 text before it reads the reply, except that a web viewer hands the deflated body to its mirror as bytes. A resource
+slice that is not canonical base64 on its own stays text in the header. This removes the 33 % base64 expansion of every mirror
+packet (a GitHub first paint's reset: 123 KB to about 93 KB) and of the page picture the viewer's view cache takes.
 
 ### APP-CONFIRM-01: person-confirmed App actions — local 1008 / relay peer 447
 
