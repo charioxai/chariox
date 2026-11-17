@@ -708,7 +708,7 @@ fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned()
         machine_alias: Some("workstation".to_string()),
         display_name: "builder".to_string(),
         trust_status: RemoteMachineTrustStatus::Approved,
-        online: true,
+        presence: crate::local::RemoteMachinePresence::Online,
         pending: false,
         kernel_count: 1,
         available_providers: vec!["codex".to_string()],
@@ -731,6 +731,7 @@ fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned()
     let snapshot = serde_json::json!([
         LocalDaemonResponse::RemoteMachinesListed {
             machines: vec![machine],
+            offline_machines: Vec::new(),
         },
         LocalDaemonResponse::RemoteMachineKernelsListed {
             machine_ref: "builder".to_string(),

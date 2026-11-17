@@ -25,8 +25,14 @@ pub(crate) async fn projected_remote_machines_response(
         remote_relay_inventory_projection.clone(),
     )
     .await;
-    let (machines, _) = remote_relay_inventory_projection.snapshot();
-    Ok(LocalDaemonResponse::RemoteMachinesListed { machines })
+    let crate::local::RemoteMachineInventory {
+        machines,
+        offline_machines,
+    } = remote_relay_inventory_projection.inventory();
+    Ok(LocalDaemonResponse::RemoteMachinesListed {
+        machines,
+        offline_machines,
+    })
 }
 
 pub(crate) async fn execute_list_remote_machines_request(

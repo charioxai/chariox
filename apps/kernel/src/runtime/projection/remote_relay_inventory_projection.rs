@@ -3,7 +3,7 @@ use std::sync::Mutex as StdMutex;
 
 use chariox_relay::protocol::RelayKernelPresence;
 
-use crate::local::RemoteMachineRecord;
+use crate::local::{RemoteMachineInventory, RemoteMachineRecord};
 use crate::session::unix_epoch_ms;
 
 #[derive(Clone, Default)]
@@ -14,6 +14,7 @@ pub(crate) struct RemoteRelayInventoryProjectionStore {
 #[derive(Debug, Clone, Default)]
 struct RemoteRelayInventoryProjectionState {
     remote_machines: Vec<RemoteMachineRecord>,
+    offline_machines: Vec<crate::local::OfflineMachineRecord>,
     remote_kernels: Vec<RelayKernelPresence>,
     refreshed_at_ms: u64,
     refresh_requested_at_ms: u64,
@@ -28,6 +29,17 @@ impl RemoteRelayInventoryProjectionStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         (state.remote_machines.clone(), state.remote_kernels.clone())
+    }
+
+    pub(crate) fn inventory(&self) -> RemoteMachineInventory {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        RemoteMachineInventory {
+            machines: state.remote_machines.clone(),
+            offline_machines: state.offline_machines.clone(),
+        }
     }
 
     /// The kernels that (re)appeared in the inventory since the last call.
@@ -81,14 +93,16 @@ impl RemoteRelayInventoryProjectionStore {
 
     pub(crate) fn update(
         &self,
-        remote_machines: Vec<RemoteMachineRecord>,
+        inventory: RemoteMachineInventory,
         remote_kernels: Vec<RelayKernelPresence>,
     ) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.remote_machines = remote_machines
+        state.offline_machines = inventory.offline_machines;
+        state.remote_machines = inventory
+            .machines
             .into_iter()
             .map(filter_remote_machine_product_providers)
             .collect();
@@ -128,7 +142,7 @@ impl RemoteRelayInventoryProjectionStore {
                 .remote_machines
                 .push(filter_remote_machine_product_providers(machine));
         }
-        sort_remote_machines(&mut state.remote_machines);
+        crate::local::provider_requests::sort_remote_machines(&mut state.remote_machines);
     }
 
     pub(crate) fn remove_machine(&self, machine_id: &str) {
@@ -138,6 +152,9 @@ impl RemoteRelayInventoryProjectionStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .remote_machines
+            .retain(|machine| machine.machine_id != machine_id);
+        state
+            .offline_machines
             .retain(|machine| machine.machine_id != machine_id);
         state
             .remote_kernels
@@ -150,6 +167,7 @@ impl RemoteRelayInventoryProjectionStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.remote_machines.clear();
+        state.offline_machines.clear();
         state.remote_kernels.clear();
         state.refreshed_at_ms = 0;
         state.refresh_requested_at_ms = 0;
@@ -166,17 +184,6 @@ fn filter_remote_machine_product_providers(
 fn filter_remote_kernel_product_providers(mut kernel: RelayKernelPresence) -> RelayKernelPresence {
     crate::provider::retain_public_inventory_providers(&mut kernel.available_providers);
     kernel
-}
-
-fn sort_remote_machines(remote_machines: &mut [RemoteMachineRecord]) {
-    remote_machines.sort_by_key(|record| {
-        (
-            !record.online,
-            record.pending,
-            record.display_name.to_ascii_lowercase(),
-            record.machine_id.clone(),
-        )
-    });
 }
 
 #[cfg(test)]
@@ -201,7 +208,7 @@ mod tests {
     #[test]
     fn remote_relay_inventory_projection_tracks_full_refresh_freshness() {
         let projection = RemoteRelayInventoryProjectionStore::default();
-        projection.update(Vec::new(), Vec::new());
+        projection.update(Default::default(), Vec::new());
         let now_ms = crate::session::unix_epoch_ms();
 
         assert!(projection.is_fresh(now_ms, 5_000));
@@ -214,17 +221,20 @@ mod tests {
 
         let projection = RemoteRelayInventoryProjectionStore::default();
         projection.update(
-            vec![RemoteMachineRecord {
-                machine_id: "machine-1".to_string(),
-                machine_alias: Some("builder".to_string()),
-                display_name: "builder".to_string(),
-                trust_status: RemoteMachineTrustStatus::Pending,
-                online: true,
-                pending: true,
-                kernel_count: 1,
-                available_providers: vec!["dev-stub".to_string()],
-                provider_accounts: Vec::new(),
-            }],
+            crate::local::RemoteMachineInventory {
+                machines: vec![RemoteMachineRecord {
+                    machine_id: "machine-1".to_string(),
+                    machine_alias: Some("builder".to_string()),
+                    display_name: "builder".to_string(),
+                    trust_status: RemoteMachineTrustStatus::Pending,
+                    presence: crate::local::RemoteMachinePresence::Online,
+                    pending: true,
+                    kernel_count: 1,
+                    available_providers: vec!["dev-stub".to_string()],
+                    provider_accounts: Vec::new(),
+                }],
+                ..Default::default()
+            },
             vec![chariox_relay::protocol::RelayKernelPresence {
                 kernel_id: "kernel-1".to_string(),
                 machine_id: "machine-1".to_string(),
@@ -247,7 +257,7 @@ mod tests {
             machine_alias: Some("builder".to_string()),
             display_name: "build box".to_string(),
             trust_status: RemoteMachineTrustStatus::Approved,
-            online: true,
+            presence: crate::local::RemoteMachinePresence::Online,
             pending: false,
             kernel_count: 1,
             available_providers: vec!["dev-stub".to_string()],
@@ -271,17 +281,20 @@ mod tests {
 
         let projection = RemoteRelayInventoryProjectionStore::default();
         projection.update(
-            vec![RemoteMachineRecord {
-                machine_id: "machine-1".to_string(),
-                machine_alias: Some("builder".to_string()),
-                display_name: "builder".to_string(),
-                trust_status: RemoteMachineTrustStatus::Approved,
-                online: true,
-                pending: false,
-                kernel_count: 1,
-                available_providers: Vec::new(),
-                provider_accounts: Vec::new(),
-            }],
+            crate::local::RemoteMachineInventory {
+                machines: vec![RemoteMachineRecord {
+                    machine_id: "machine-1".to_string(),
+                    machine_alias: Some("builder".to_string()),
+                    display_name: "builder".to_string(),
+                    trust_status: RemoteMachineTrustStatus::Approved,
+                    presence: crate::local::RemoteMachinePresence::Online,
+                    pending: false,
+                    kernel_count: 1,
+                    available_providers: Vec::new(),
+                    provider_accounts: Vec::new(),
+                }],
+                ..Default::default()
+            },
             vec![chariox_relay::protocol::RelayKernelPresence {
                 kernel_id: "kernel-1".to_string(),
                 machine_id: "machine-1".to_string(),

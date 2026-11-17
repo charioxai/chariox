@@ -2,8 +2,9 @@ use crate::config::{DaemonConfig, PersistedMachineRegistration};
 use crate::error::DaemonError;
 use chariox_relay::protocol::RelayMachinePresence;
 
-use super::super::api::{RemoteMachineRecord, RemoteMachineTrustStatus};
+use super::super::api::{RemoteMachinePresence, RemoteMachineRecord, RemoteMachineTrustStatus};
 
+/// The machines the relay lists now, all online.
 pub(crate) fn remote_machine_records(
     live_machines: Vec<RelayMachinePresence>,
     local_machine_id: &str,
@@ -11,68 +12,36 @@ pub(crate) fn remote_machine_records(
     let registry = DaemonConfig::machine_registry_entries();
     let mut records: Vec<RemoteMachineRecord> = live_machines
         .into_iter()
-        .filter_map(|machine| {
+        .map(|machine| {
             let entry = registry
                 .iter()
                 .find(|entry| entry.machine_id == machine.machine_id);
-            if entry.map(|entry| entry.forgotten).unwrap_or(false) {
-                return None;
-            }
-            Some(remote_machine_record(
-                machine,
-                entry,
-                local_machine_id,
-                true,
-            ))
+            remote_machine_record(machine, entry, local_machine_id)
         })
         .collect();
+    sort_remote_machines(&mut records);
+    records
+}
 
-    let offline_entries = registry
-        .iter()
-        .filter(|entry| entry.approved && !entry.forgotten)
-        .filter(|entry| {
-            !records
-                .iter()
-                .any(|record| record.machine_id == entry.machine_id)
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-
-    for entry in offline_entries {
-        records.push(RemoteMachineRecord {
-            machine_id: entry.machine_id.clone(),
-            machine_alias: None,
-            display_name: entry.machine_id.clone(),
-            trust_status: RemoteMachineTrustStatus::Approved,
-            online: false,
-            pending: false,
-            kernel_count: 0,
-            available_providers: Vec::new(),
-            provider_accounts: Vec::new(),
-        });
-    }
-
+/// Listed machines first by how reachable they are, then approved before pending, then by name.
+pub(crate) fn sort_remote_machines(records: &mut [RemoteMachineRecord]) {
     records.sort_by_key(|record| {
         (
-            !record.online,
+            record.presence != RemoteMachinePresence::Online,
             record.pending,
             record.display_name.to_ascii_lowercase(),
             record.machine_id.clone(),
         )
     });
-    records
 }
 
 fn remote_machine_record(
     machine: RelayMachinePresence,
     entry: Option<&PersistedMachineRegistration>,
     local_machine_id: &str,
-    online: bool,
 ) -> RemoteMachineRecord {
     let approved = machine.machine_id == local_machine_id
-        || entry
-            .map(|entry| entry.approved && !entry.forgotten)
-            .unwrap_or(false);
+        || entry.map(|entry| entry.approved).unwrap_or(false);
     let display_name = machine
         .machine_alias
         .clone()
@@ -86,7 +55,7 @@ fn remote_machine_record(
         } else {
             RemoteMachineTrustStatus::Pending
         },
-        online,
+        presence: RemoteMachinePresence::Online,
         pending: !approved,
         kernel_count: machine.kernel_count,
         available_providers: machine.available_providers,
@@ -141,37 +110,20 @@ pub(crate) fn record_for_machine_id(
         })
 }
 
-pub(crate) fn forgotten_machine_record(
-    machine_id: String,
-    live_machines: Vec<RelayMachinePresence>,
-    local_machine_id: &str,
-) -> RemoteMachineRecord {
-    let live = live_machines
-        .into_iter()
-        .find(|machine| machine.machine_id == machine_id && machine.machine_id != local_machine_id);
-    let display_name = live
-        .as_ref()
-        .and_then(|machine| machine.machine_alias.clone())
-        .unwrap_or_else(|| machine_id.clone());
-    RemoteMachineRecord {
-        machine_id,
-        machine_alias: live
-            .as_ref()
-            .and_then(|machine| machine.machine_alias.clone()),
-        display_name,
-        trust_status: RemoteMachineTrustStatus::Forgotten,
-        online: live.is_some(),
-        pending: false,
-        kernel_count: live
-            .as_ref()
-            .map(|machine| machine.kernel_count)
-            .unwrap_or(0),
-        available_providers: live
-            .as_ref()
-            .map(|machine| machine.available_providers.clone())
-            .unwrap_or_default(),
-        provider_accounts: live
-            .map(|machine| machine.provider_accounts)
-            .unwrap_or_default(),
-    }
+/// The name to answer a removed machine with: the one it had when last seen, else the live
+/// alias, else its id.
+pub(crate) fn forgotten_machine_name(
+    machine_id: &str,
+    removed: Option<PersistedMachineRegistration>,
+    live_machines: &[RelayMachinePresence],
+) -> String {
+    removed
+        .and_then(|entry| entry.display_name)
+        .or_else(|| {
+            live_machines
+                .iter()
+                .find(|machine| machine.machine_id == machine_id)
+                .and_then(|machine| machine.machine_alias.clone())
+        })
+        .unwrap_or_else(|| machine_id.to_string())
 }

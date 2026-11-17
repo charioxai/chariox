@@ -675,7 +675,7 @@ mod tests {
         runtime
             .owned
             .notification_inventory_projection
-            .update(vec![], vec![presence]);
+            .update(Default::default(), vec![presence]);
     }
 
     fn peer(

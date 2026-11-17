@@ -7,7 +7,7 @@ export type RemoteMachineSummary = {
   machine_id: string
   machine_alias?: string | null
   display_name?: string
-  trust_status?: "approved" | "pending" | "forgotten"
+  trust_status?: "approved" | "pending"
   online?: boolean
   pending?: boolean
   kernel_count: number
@@ -17,7 +17,7 @@ export type RemoteMachineSummary = {
 type RemoteMachineRegistration = {
   machine_id: string
   display_name?: string
-  trust_status?: "approved" | "pending" | "forgotten"
+  trust_status?: "approved" | "pending"
   online?: boolean
 }
 

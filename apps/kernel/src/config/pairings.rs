@@ -25,8 +25,10 @@ impl DaemonConfig {
         let mut persisted = load_persisted_daemon_config();
         let entry = upsert_machine_registration(&mut persisted.machines, &machine_id);
         entry.approved = true;
-        entry.forgotten = false;
         let saved = entry.clone();
+        persisted
+            .revoked_worker_machines
+            .retain(|revoked| revoked != &machine_id);
         persist_daemon_config(&persisted, "persist machine approval")?;
         Ok(saved)
     }
@@ -44,8 +46,10 @@ impl DaemonConfig {
         let entry = upsert_machine_registration(&mut persisted.machines, &machine_id);
         entry.public_key_thumbprint = Some(public_key_thumbprint);
         entry.paired_at_ms = Some(paired_at_ms);
-        entry.forgotten = false;
         let saved = entry.clone();
+        persisted
+            .revoked_worker_machines
+            .retain(|revoked| revoked != &machine_id);
         persist_daemon_config(&persisted, "persist machine pairing")?;
         Ok(saved)
     }
@@ -96,25 +100,45 @@ impl DaemonConfig {
         Ok(saved)
     }
 
+    /// Removes the machine from the registry: its trust is gone and it is listed again, as
+    /// pending, if it ever connects again. The name it had is returned for the answer.
     pub fn forget_remote_machine(
         machine_id: impl Into<String>,
-    ) -> Result<PersistedMachineRegistration, DaemonError> {
+    ) -> Result<Option<PersistedMachineRegistration>, DaemonError> {
         let machine_id = machine_id.into();
         validate_non_empty("machine_id", &machine_id)?;
         let mut persisted = load_persisted_daemon_config();
-        let entry = upsert_machine_registration(&mut persisted.machines, &machine_id);
-        entry.approved = false;
-        entry.forgotten = true;
-        let saved = entry.clone();
+        let removed = persisted
+            .machines
+            .iter()
+            .position(|entry| entry.machine_id == machine_id)
+            .map(|index| persisted.machines.remove(index));
+        if !persisted.revoked_worker_machines.contains(&machine_id) {
+            persisted.revoked_worker_machines.push(machine_id);
+        }
         persist_daemon_config(&persisted, "persist forgotten machine")?;
-        Ok(saved)
+        Ok(removed)
     }
 
-    /// The owner removed this machine from the registry; its trust is revoked.
-    pub fn machine_forgotten(machine_id: &str) -> bool {
-        Self::machine_registry_entries()
+    /// The owner removed this machine and has not approved it again: its worker leases are revoked.
+    pub fn worker_machine_revoked(machine_id: &str) -> bool {
+        load_persisted_daemon_config()
+            .revoked_worker_machines
             .iter()
-            .any(|entry| entry.forgotten && entry.machine_id == machine_id)
+            .any(|revoked| revoked == machine_id)
+    }
+
+    /// Lets `update` change the machine registry and saves it only when it changed.
+    pub fn update_machine_registry<T>(
+        update: impl FnOnce(&mut Vec<PersistedMachineRegistration>) -> T,
+    ) -> Result<T, DaemonError> {
+        let mut persisted = load_persisted_daemon_config();
+        let before = persisted.machines.clone();
+        let result = update(&mut persisted.machines);
+        if persisted.machines != before {
+            persist_daemon_config(&persisted, "persist machine presence")?;
+        }
+        Ok(result)
     }
 
     pub fn resolve_registered_machine_ref(machine_ref: &str) -> Option<String> {
@@ -124,7 +148,6 @@ impl DaemonConfig {
         }
         Self::machine_registry_entries()
             .into_iter()
-            .filter(|entry| !entry.forgotten)
             .find(|entry| entry.machine_id == machine_ref)
             .map(|entry| entry.machine_id)
     }

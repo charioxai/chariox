@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use super::CommandRouter;
 use crate::error::DaemonError;
-use crate::local::{RelayStatus, RemoteMachineRecord};
+use crate::local::{RelayStatus, RemoteMachineInventory};
 use crate::provider::OpenCodeProviderCatalog;
 use crate::runtime::projection::{SessionSnapshotProjection, TransportHealthStore};
 use crate::slice::SliceRecord;
@@ -271,17 +271,16 @@ impl CommandRouter {
     pub(crate) fn relay_remote_machines_snapshot(
         &self,
         caller: &crate::runtime::command::KernelCaller,
-    ) -> Vec<RemoteMachineRecord> {
+    ) -> RemoteMachineInventory {
         if self.relay_owner_directory_allowed(caller) {
             self.transport_remote_machines_snapshot()
         } else {
-            Vec::new()
+            RemoteMachineInventory::default()
         }
     }
 
-    pub(crate) fn transport_remote_machines_snapshot(&self) -> Vec<RemoteMachineRecord> {
-        let (machines, _) = self.remote_relay_inventory_projection.snapshot();
-        machines
+    pub(crate) fn transport_remote_machines_snapshot(&self) -> RemoteMachineInventory {
+        self.remote_relay_inventory_projection.inventory()
     }
 
     pub(crate) fn kernel_resource_changes(

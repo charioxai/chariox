@@ -115,12 +115,20 @@ export type RemoteMachineRecord = {
   machine_id: string
   machine_alias?: string | null
   display_name: string
-  trust_status: "approved" | "pending" | "forgotten"
-  online: boolean
+  trust_status: "approved" | "pending"
+  /** `reconnecting`: dropped less than 10 minutes ago. A machine gone longer is an `OfflineMachineRecord`. */
+  presence: "online" | "reconnecting"
   pending: boolean
   kernel_count: number
   available_providers?: string[]
   provider_accounts?: ProviderAccountSummary[]
+}
+
+/** A machine gone past the reconnecting window: shown only in the Machines window's offline table. */
+export type OfflineMachineRecord = {
+  machine_id: string
+  display_name: string
+  last_seen_ms: number
 }
 
 /** A kernel this kernel forwards requests to; `via` tells whether Cloud or a self-hosted relay carries it. */

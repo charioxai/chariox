@@ -47,8 +47,16 @@ impl Directory {
         self.merge();
         let via = self.source.via();
         let seen = self.seen.lock().expect("directory poisoned");
+        let now_ms = crate::session::unix_epoch_ms();
         Ok(names::grouped(
             seen.values()
+                .filter(|seen| {
+                    seen.online
+                        || crate::runtime::machine_presence::still_reconnecting(
+                            seen.last_seen_ms,
+                            now_ms,
+                        )
+                })
                 .map(|seen| GatewayKernel {
                     name: names::display_name(&seen.kernel),
                     label: names::label(&seen.kernel),
@@ -492,5 +500,17 @@ mod tests {
                 .any(|m| m.name == "twin" && m.kernel_id == "k-y"),
             "a kernel without a relay name is shown by its computer's name"
         );
+        // Gone for longer than the reconnecting window it is offline, and no list shows it.
+        let gone_ms = crate::runtime::machine_presence::RECONNECTING_WINDOW_MS + 1;
+        directory
+            .seen
+            .lock()
+            .unwrap()
+            .get_mut("k-b3")
+            .unwrap()
+            .last_seen_ms = crate::session::unix_epoch_ms() - gone_ms;
+        let listed = directory.kernels().await.unwrap();
+        assert!(listed.iter().all(|m| m.name != "b3"), "{listed:?}");
+        assert!(listed.iter().any(|m| m.name == "shared-host"));
     }
 }

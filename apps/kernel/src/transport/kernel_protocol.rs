@@ -6,8 +6,9 @@ use serde_json::Value;
 use crate::config::WorkspaceLiveSyncMode;
 use crate::error::DaemonError;
 use crate::local::{
-    LocalDaemonRequest, PasskeyPrompt, RelayStatus, RemoteMachineRecord, WaitingRoomLaunchTarget,
-    WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot, WorkflowDesignOpForwarded,
+    LocalDaemonRequest, OfflineMachineRecord, PasskeyPrompt, RelayStatus, RemoteMachineRecord,
+    WaitingRoomLaunchTarget, WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot,
+    WorkflowDesignOpForwarded,
 };
 use crate::provider::{OpenCodeProviderCatalog, PublicProviderRun};
 use crate::runtime::projection::{AgentRuntimeActivity, SessionSnapshotProjection};
@@ -204,6 +205,7 @@ pub(crate) enum KernelEvent {
     },
     RemoteMachinesChanged {
         machines: Vec<RemoteMachineRecord>,
+        offline_machines: Vec<OfflineMachineRecord>,
     },
     WaitingRoomInventoryChanged {
         inventory_version: String,

@@ -288,7 +288,7 @@ pub enum LocalDaemonResponse {
     SliceStateReset { slice: SliceRecord, removed_state: Option<crate::slice::SliceSavedStateRecord>, },
     SliceBackupCreated { slice: SliceRecord, backup: crate::slice::SliceBackupRecord, instructions: String, },
     SliceBackupRestored { slice: SliceRecord, backup: crate::slice::SliceBackupRecord, },
-    RemoteMachinesListed { machines: Vec<RemoteMachineRecord>, },
+    RemoteMachinesListed { machines: Vec<RemoteMachineRecord>, offline_machines: Vec<OfflineMachineRecord>, },
     RemoteMachineKernelsListed { machine_ref: String, kernels: Vec<RelayKernelPresence>, },
     /// A direct current relay registration observation. This does not prove
     /// historical heartbeat-ID absence or full MP-10 acceptance.
@@ -335,7 +335,7 @@ pub enum LocalDaemonResponse {
     WorkspaceCommitMessageGenerated { message: String, },
     WorkspaceGitActionCompleted { result: WorkspaceGitActionResult, },
     RemoteMachineApproved { machine: RemoteMachineRecord, },
-    RemoteMachineForgotten { machine: RemoteMachineRecord, },
+    RemoteMachineForgotten { machine_id: String, display_name: String, },
     PairingInviteCreated { invite: PairingInviteRecord, },
     PairingInviteJoined { pairing: PairingJoinRecord, },
     TerminalPairingLinkCreated { pairing: TerminalPairingLinkRecord, },

@@ -2932,7 +2932,7 @@ mod tests {
             public_key: "worker-public-key".to_string(),
         };
         app.remote_relay_inventory_projection_store()
-            .update(Vec::new(), vec![worker.clone()]);
+            .update(Default::default(), vec![worker.clone()]);
         let mut discovery_config = app.config().clone();
         discovery_config.relay_token = Some("scoped-discovery-token".to_string());
 

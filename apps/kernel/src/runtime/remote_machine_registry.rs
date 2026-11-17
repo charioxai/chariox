@@ -5,7 +5,7 @@ use tokio::sync::Mutex;
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::provider_requests::{
-    forgotten_machine_record, record_for_machine_id, resolve_machine_for_registry,
+    forgotten_machine_name, record_for_machine_id, resolve_machine_for_registry,
     resolve_machine_id_for_registry,
 };
 use crate::local::{
@@ -86,14 +86,17 @@ pub(crate) async fn execute_forget_remote_machine_request(
                 .resolve_leased_worker_machine_ref(&request.machine_ref)
                 .ok_or(error)
         })?;
-    crate::config::DaemonConfig::forget_remote_machine(machine.clone())?;
+    let removed = crate::config::DaemonConfig::forget_remote_machine(machine.clone())?;
     invalidate_provider_catalog_caches(app, provider_catalog_projection).await;
     runtime_state
         .end_worker_leases_of_forgotten_machine(&machine)
         .await;
-    let machine = forgotten_machine_record(machine, live, &config.host_machine_id);
-    remote_relay_inventory_projection.remove_machine(&machine.machine_id);
-    Ok(LocalDaemonResponse::RemoteMachineForgotten { machine })
+    let display_name = forgotten_machine_name(&machine, removed, &live);
+    remote_relay_inventory_projection.remove_machine(&machine);
+    Ok(LocalDaemonResponse::RemoteMachineForgotten {
+        machine_id: machine,
+        display_name,
+    })
 }
 
 // MP-08 / MP-10 / MP-11: hosted metadata reads need a client-scoped token;

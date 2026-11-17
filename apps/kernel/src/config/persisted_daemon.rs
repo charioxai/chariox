@@ -22,6 +22,10 @@ pub(super) struct PersistedDaemonConfig {
     pub(super) cloud_relay: Option<PersistedCloudRelayProfile>,
     #[serde(default)]
     pub(super) machines: Vec<PersistedMachineRegistration>,
+    /// Machines whose worker leases the owner ended by removing them. A private-slice worker has
+    /// no registry entry, so this is kept apart from `machines`; approving the machine again clears it.
+    #[serde(default)]
+    pub(super) revoked_worker_machines: Vec<String>,
     #[serde(default)]
     pub(super) clients: Vec<PersistedClientPairing>,
     #[serde(default)]
@@ -76,8 +80,12 @@ pub struct PersistedMachineRegistration {
     pub paired_at_ms: Option<u64>,
     #[serde(default)]
     pub approved: bool,
+    /// When a relay last listed this machine; 0 until this kernel first notices it is gone.
     #[serde(default)]
-    pub forgotten: bool,
+    pub last_seen_ms: u64,
+    /// The name the machine had when last seen, for the list of offline machines.
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,7 +203,8 @@ pub(super) fn upsert_machine_registration<'a>(
         public_key_thumbprint: None,
         paired_at_ms: None,
         approved: false,
-        forgotten: false,
+        last_seen_ms: 0,
+        display_name: None,
     });
     entries
         .last_mut()

@@ -9,6 +9,7 @@ use chariox_relay::protocol::ClientTarget;
 use super::api::{
     ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
     LaunchProviderRunRequest, ListRemoteMachineKernelsRequest, LocalDaemonResponse, RelayStatus,
+    RemoteMachineInventory,
 };
 
 mod blocking;
@@ -24,9 +25,9 @@ pub(crate) use catalog::{
     start_provider_login_response, PROVIDER_CATALOG_CACHE_TTL,
 };
 pub(crate) use remote_machines::{
-    forgotten_machine_record, record_for_machine_id, remote_machine_records,
+    forgotten_machine_name, record_for_machine_id, remote_machine_records,
     resolve_machine_for_registry, resolve_machine_id_for_registry,
-    resolve_registered_or_raw_machine_ref,
+    resolve_registered_or_raw_machine_ref, sort_remote_machines,
 };
 
 #[allow(dead_code)]
@@ -140,8 +141,14 @@ impl DaemonApp {
     pub(super) fn list_remote_machines_response(
         &mut self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let (machines, _) = self.remote_relay_inventory_projection_store().snapshot();
-        Ok(LocalDaemonResponse::RemoteMachinesListed { machines })
+        let RemoteMachineInventory {
+            machines,
+            offline_machines,
+        } = self.remote_relay_inventory_projection_store().inventory();
+        Ok(LocalDaemonResponse::RemoteMachinesListed {
+            machines,
+            offline_machines,
+        })
     }
 
     pub(super) fn list_remote_machine_kernels_response(
@@ -192,10 +199,13 @@ impl DaemonApp {
         ))
         .unwrap_or_default();
         let machine = resolve_machine_id_for_registry(&request.machine_ref, &live)?;
-        DaemonConfig::forget_remote_machine(machine.clone())?;
+        let removed = DaemonConfig::forget_remote_machine(machine.clone())?;
         self.provider_catalog_cache.clear();
-        let machine = forgotten_machine_record(machine, live, &config.host_machine_id);
-        Ok(LocalDaemonResponse::RemoteMachineForgotten { machine })
+        let display_name = forgotten_machine_name(&machine, removed, &live);
+        Ok(LocalDaemonResponse::RemoteMachineForgotten {
+            machine_id: machine,
+            display_name,
+        })
     }
 }
 

@@ -100,9 +100,17 @@ impl KernelGateway {
                 .map(|target| self.probe(target)),
         )
         .await;
+        let now_ms = crate::session::unix_epoch_ms();
         Ok(names::grouped(
             probed
                 .iter()
+                .filter(|probed| {
+                    probed.status != GatewayKernelStatus::Offline
+                        || crate::runtime::machine_presence::still_reconnecting(
+                            probed.last_seen_ms,
+                            now_ms,
+                        )
+                })
                 .map(|probed| GatewayKernel {
                     name: names::display_name(&probed.presence),
                     label: names::label(&probed.presence),

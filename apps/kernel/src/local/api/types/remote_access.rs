@@ -182,7 +182,15 @@ pub struct TerminalPairingLinkRecord {
 pub enum RemoteMachineTrustStatus {
     Approved,
     Pending,
-    Forgotten,
+}
+
+/// A listed machine is reachable now or was a moment ago; one that has been gone longer is an
+/// [`OfflineMachineRecord`] and is never part of a list a person picks from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteMachinePresence {
+    Online,
+    Reconnecting,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,11 +200,26 @@ pub struct RemoteMachineRecord {
     pub machine_alias: Option<String>,
     pub display_name: String,
     pub trust_status: RemoteMachineTrustStatus,
-    pub online: bool,
+    pub presence: RemoteMachinePresence,
     pub pending: bool,
     pub kernel_count: usize,
     #[serde(default)]
     pub available_providers: Vec<String>,
     #[serde(default)]
     pub provider_accounts: Vec<chariox_relay::protocol::RelayProviderAccountSummary>,
+}
+
+/// A machine this kernel saw before and that has been gone past the reconnecting window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfflineMachineRecord {
+    pub machine_id: String,
+    pub display_name: String,
+    pub last_seen_ms: u64,
+}
+
+/// The machines this kernel projects: listed ones, and the offline ones kept apart.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteMachineInventory {
+    pub machines: Vec<RemoteMachineRecord>,
+    pub offline_machines: Vec<OfflineMachineRecord>,
 }

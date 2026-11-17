@@ -4,9 +4,12 @@ use std::future::Future;
 
 use futures_util::FutureExt;
 
+use crate::config::DaemonConfig;
+use crate::runtime::machine_presence;
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
 };
+use crate::session::unix_epoch_ms;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
 use super::*;
@@ -144,7 +147,7 @@ pub(crate) async fn refresh_remote_inventory_projection(
     let mut remote_kernels = Vec::new();
     for machine in remote_machines
         .iter()
-        .filter(|machine| machine.online && machine.kernel_count > 0)
+        .filter(|machine| machine.kernel_count > 0)
     {
         let kernels = relay_discovery::list_live_kernels_for_machine_over(
             &runtime_config,
@@ -169,12 +172,20 @@ pub(crate) async fn refresh_remote_inventory_projection(
             .filter(|kernel| kernel.machine_id == machine.machine_id)
             .count();
     }
-    let remote_machines = listed_remote_machines(
+    let listed = listed_remote_machines(
         remote_machines,
         &runtime_config.host_machine_id,
         visible_kernel_ids.is_some(),
     );
-    projection.update(remote_machines, remote_kernels);
+    let inventory = DaemonConfig::update_machine_registry(|registry| {
+        machine_presence::reconcile(
+            registry,
+            listed,
+            &runtime_config.host_machine_id,
+            unix_epoch_ms(),
+        )
+    })?;
+    projection.update(inventory, remote_kernels);
     Ok(())
 }
 
@@ -252,7 +263,7 @@ mod tests {
             machine_alias: None,
             display_name: machine_id.into(),
             trust_status: crate::local::RemoteMachineTrustStatus::Approved,
-            online: true,
+            presence: crate::local::RemoteMachinePresence::Online,
             pending: false,
             kernel_count,
             available_providers: Vec::new(),
