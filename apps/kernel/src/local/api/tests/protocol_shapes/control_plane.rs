@@ -67,7 +67,10 @@ fn machine_options_1012_shapes_and_hash() {
         assert_eq!(serde_json::to_value(response).unwrap(), *shape);
     }
     assert_eq!(
-        format!("{:x}", Sha256::digest(serde_json::to_vec(&snapshot).unwrap())),
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
         "d999f9d6271b3bb85cd3daa20c866b240873d5ceaa471e5a5c75779cfc183f27"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(

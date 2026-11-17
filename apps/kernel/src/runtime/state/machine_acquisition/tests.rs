@@ -315,7 +315,10 @@ fn the_machine_tools_list_options_and_acquire_takes_the_chosen_class() {
         .find(|spec| spec.name == "chariox.machines.acquire")
         .unwrap();
     for field in ["request_id", "class_id", "region"] {
-        assert!(acquire.input_schema["properties"][field].is_object(), "{field}");
+        assert!(
+            acquire.input_schema["properties"][field].is_object(),
+            "{field}"
+        );
     }
     assert_eq!(
         acquire.input_schema["additionalProperties"],

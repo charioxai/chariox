@@ -309,7 +309,10 @@ impl KernelRuntimeState {
                     Some(class_id) => {
                         let option = capability.offers.iter().find(|option| {
                             option.class_id == class_id
-                                && args.region.as_ref().is_none_or(|region| &option.region == region)
+                                && args
+                                    .region
+                                    .as_ref()
+                                    .is_none_or(|region| &option.region == region)
                         });
                         serde_json::json!({"allocation":result,"option":option,"estimate":{"kind":"unknown","reason":"No duration was specified; the total depends on when the machine is deleted"}})
                     }

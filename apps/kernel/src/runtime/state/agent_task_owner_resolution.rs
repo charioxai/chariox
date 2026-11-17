@@ -137,7 +137,7 @@ impl KernelRuntimeState {
             && task.owner_action
                 != Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::Question)
         {
-            return;
+            return Ok(());
         }
         let browser_grant = if action == OwnerTaskAction::AllowBrowser {
             match self.owned.agent_store.get_agent(&task.agent_id) {

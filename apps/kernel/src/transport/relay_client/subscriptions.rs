@@ -434,7 +434,7 @@ pub(super) async fn handle_relay_subscribe(
         }
     }
     let event_stream_id = if is_inventory_subscription {
-        WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE.to_string()
+        ROOM_LIST_SUBSCRIPTION_SCOPE.to_string()
     } else {
         subscription_event_stream_id(&session_id, &attachment_id)
     };

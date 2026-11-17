@@ -1579,7 +1579,8 @@ mod tests {
     /// it must raise the committed number with its reason.
     #[test]
     fn hidden_runtime_note_matches_the_committed_context_budget() {
-        let root = temp_prompt_root("note-budget");
+        let _dir = temp_prompt_root("note-budget");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry.materialize_bundled_defaults().unwrap();
         let envelope = PromptAssemblyService::new(registry)
@@ -1598,14 +1599,14 @@ mod tests {
             envelope.hidden_base.len(),
             "set apps/kernel/agent_context_budget.json to the measured value"
         );
-        fs::remove_dir_all(root).unwrap();
     }
 
     /// A short command in the shell costs one call; routing it through a job adds a
     /// wake, an unread completion and often a correction turn.
     #[test]
     fn jobs_run_is_offered_only_for_commands_that_take_minutes() {
-        let root = temp_prompt_root("jobs-run-guidance");
+        let _dir = temp_prompt_root("jobs-run-guidance");
+        let root = _dir.to_path_buf();
         let registry = PromptTemplateRegistry::new(root.clone());
         registry.materialize_bundled_defaults().unwrap();
         let service = PromptAssemblyService::new(registry);
@@ -1635,7 +1636,6 @@ mod tests {
                 "sub_agent={sub_agent}: every heavy command still goes through a job"
             );
         }
-        fs::remove_dir_all(root).unwrap();
     }
 
     // MP-08: an agent knows the pane draws pictures, so a chart is written to a file and referenced, not drawn as text.

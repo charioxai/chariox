@@ -103,6 +103,8 @@ pub(super) fn meta_agent_settings_request(
                 clear_execution_mode: false,
                 permission_level: permission,
                 clear_permission_level: false,
+                max_context_tokens: None,
+                clear_max_context_tokens: false,
                 workspace_id: None,
                 clear_workspace_id: false,
                 worktree_id: directory,
