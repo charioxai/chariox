@@ -153,7 +153,7 @@ async fn offload_job_cleanup_does_not_retry_authorization_denial() {
 
 #[tokio::test]
 async fn offload_job_completed_result_survives_unconfirmed_cleanup() {
-    let (state, run, task, _workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, _workspace) = super::tests::fixture().await;
     let value = state
         .dispatch_job_tool(
             Some(&run),

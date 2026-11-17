@@ -17,9 +17,9 @@ mod execute;
 mod never_fit;
 #[cfg(test)]
 mod never_fit_tests;
-#[cfg(test)]
-mod off_tests;
 mod pending_return;
+#[cfg(test)]
+mod placement_tests;
 mod projection;
 mod record;
 mod remote;

@@ -324,25 +324,16 @@ impl KernelRuntimeState {
             admission.capacity(),
             std::thread::available_parallelism().map_or(u32::MAX, |cpus| cpus.get() as u32),
         );
-        let remote = self.remote_jobs_enabled()
-            && (force_remote
-                || requested
-                || shortfall.is_some()
-                || match policy {
-                    OffloadPolicy::Off => false,
-                    OffloadPolicy::WhenBusy => busy,
-                    OffloadPolicy::AlwaysHeavy => heavy,
-                });
+        let remote = force_remote
+            || requested
+            || shortfall.is_some()
+            || match policy {
+                OffloadPolicy::Off => false,
+                OffloadPolicy::WhenBusy => busy,
+                OffloadPolicy::AlwaysHeavy => heavy,
+            };
         if *cancelled.borrow() {
             return Ok(cancelled_result(record));
-        }
-        if let (Some(shortfall), false) = (&shortfall, remote) {
-            return self.refuse_never_fit(
-                record,
-                output,
-                shortfall,
-                "remote jobs are switched off on this kernel (CHARIOX_REMOTE_JOBS)",
-            );
         }
         if remote {
             let requested_origin = self.job_wake_driver.as_ref().and_then(|driver| {

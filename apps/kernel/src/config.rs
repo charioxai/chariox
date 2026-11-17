@@ -172,8 +172,6 @@ pub struct DaemonConfig {
     pub relay_request_timeout_ms: u64,
     /// Transitional all-agent room surface; /meta continues to drain.
     pub room_agent_tools: bool,
-    /// Lets a job run on a remote machine; off, every job runs on this kernel's local queue.
-    pub remote_jobs: bool,
     pub accept_remote_leases: bool,
     pub kernel_runtime_role: KernelRuntimeRole,
     /// Optional operator limit on leased turns running at once; further turns
@@ -302,7 +300,6 @@ impl DaemonConfig {
             relay_heartbeat_ms: DEFAULT_RELAY_HEARTBEAT_MS,
             relay_request_timeout_ms: 60_000,
             room_agent_tools: std::env::var("CHARIOX_ROOM_AGENT_TOOLS").as_deref() == Ok("1"),
-            remote_jobs: false,
             accept_remote_leases: true,
             kernel_runtime_role: KernelRuntimeRole::General,
             remote_lease_capacity: None,
