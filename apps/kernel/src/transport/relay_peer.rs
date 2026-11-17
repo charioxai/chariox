@@ -540,9 +540,15 @@ impl std::fmt::Debug for RemoteRoomComputerObservationResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RemoteCredentialSecretInjection {
-    Browser { target_url: String },
+    Browser {
+        target_url: String,
+    },
     Computer,
     Pty,
+    /// A value for a file or a command in the leased worker's workspace.
+    Workspace {
+        target: crate::config::VaultUseTarget,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]

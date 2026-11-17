@@ -707,6 +707,13 @@ impl KernelRuntimeState {
         credential_id: String,
         injection: crate::transport::relay_peer::RemoteCredentialSecretInjection,
     ) -> Result<(String, String), DaemonError> {
+        if let crate::transport::relay_peer::RemoteCredentialSecretInjection::Workspace { target } =
+            &injection
+        {
+            return self
+                .resolve_forwarded_home_workspace_secret(&context, credential_id, target)
+                .await;
+        }
         let agent = self.authorize_home_credential_context(&context)?;
         let service = self.home_runtime_secret_service()?;
         match &injection {
@@ -723,6 +730,9 @@ impl KernelRuntimeState {
                     operation: "home_credential_secret_resolve",
                     message: "Computer credentials require home-owned Room input; use paste_secret_to_computer".into(),
                 });
+            }
+            crate::transport::relay_peer::RemoteCredentialSecretInjection::Workspace { .. } => {
+                unreachable!("workspace resolution returned before the bound injections")
             }
         };
 
@@ -745,7 +755,10 @@ impl KernelRuntimeState {
                     crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty => {
                         service.validate_terminal_secret_input(&credential_id)?
                     }
-                    crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer => {
+                    crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer
+                    | crate::transport::relay_peer::RemoteCredentialSecretInjection::Workspace {
+                        ..
+                    } => {
                         unreachable!("unbound Computer resolution was rejected before unlock")
                     }
                 };
@@ -757,7 +770,10 @@ impl KernelRuntimeState {
                     crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty => {
                         service.terminal_secret_input(&credential_id)
                     }
-                    crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer => {
+                    crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer
+                    | crate::transport::relay_peer::RemoteCredentialSecretInjection::Workspace {
+                        ..
+                    } => {
                         unreachable!(
                             "unbound Computer secret resolution was rejected before Vault access"
                         )
@@ -767,6 +783,35 @@ impl KernelRuntimeState {
             })
             .await?;
         Ok((credential_id, secret_input))
+    }
+
+    /// The home owner's Vault value for a file or command in the leased worker's workspace,
+    /// asked for as the home agent the worker's run stands for.
+    async fn resolve_forwarded_home_workspace_secret(
+        &self,
+        context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        credential_id: String,
+        target: &crate::config::VaultUseTarget,
+    ) -> Result<(String, String), DaemonError> {
+        let agent = self.authorize_home_credential_context(context)?;
+        self.preflight_workspace_vault_use(agent.id(), &credential_id, target)?;
+        let _vault_unlock = self
+            .ensure_vault_unlocked_for_agent(
+                &context.home_session_id,
+                agent.id(),
+                "home_credential_workspace_secret_resolve",
+            )
+            .await?;
+        let mut value = self
+            .read_agent_workspace_vault_value(
+                agent.id(),
+                &context.home_session_id,
+                &credential_id,
+                target,
+                || self.authorize_home_credential_context(context).map(|_| ()),
+            )
+            .await?;
+        Ok((credential_id, std::mem::take(&mut *value)))
     }
 
     async fn dispatch_forwarded_home_request_credential_secret(
