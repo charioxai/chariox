@@ -196,6 +196,20 @@ test('Open and Save a copy report an automatic save that failed, every time', { 
   await app.shot('open-conflict');
 }));
 
+test('a person who takes longer than one call to choose a diagram still opens it, the window asking again with the same request', { timeout: 60_000 }, () => withApp({
+  scene: sceneOf([rect('existing', 100, 500)]),
+}, async app => {
+  const { backend } = app;
+  file(backend, 'plan.excalidraw', sceneOf([rect('chosen', 100, 100)]));
+  backend.pick('plan.excalidraw');
+  // The first two calls end with the request still open, as when the kernel's 30 s limit cuts the wait.
+  backend.pickWaits = 2;
+  await app.menu('Open');
+  await app.until(elements => elements.length === 1 && elements[0].id === 'chosen', { what: 'the chosen diagram on the canvas' });
+  assert.deepEqual(backend.resumed, ['pick-1', 'pick-1'], 'each later ask names the open request');
+  assert.equal(backend.count('pick_file'), 3);
+}));
+
 test('a PNG that does not fit the broker is reported again on a second try', { timeout: 60_000 }, () => withApp({
   scene: sceneOf([text('noise', Array.from({ length: 55 }, (_, i) => Array.from({ length: 85 }, (_, j) => String.fromCharCode(33 + (i * 37 + j * 19) % 90)).join('')).join('\n'), 50, 50, { width: 935, height: 1375 })]),
 }, async app => {

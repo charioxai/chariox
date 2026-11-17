@@ -72,7 +72,7 @@ state version check. The window asks the change feed once a second; when an agen
 (or another window) saved meanwhile it merges the saved scene into its canvas with
 Excalidraw's reconciliation and saves what is still its own, so neither side's edit is
 lost. An agent's selection is shown once. Explicit private files use `files.atomic_replace`; imports
-use `host.pick_file` and `files.import`, and exports use `files.export`. Inputs
+use `host.request_file`, `host.await_file` and `files.import` (one call waits 20 s for the person's choice and returns `{pending, pickId}` while they have not chosen; the window asks again with that `pickId`, and the request ends when the window closes), and exports use `files.export`. Inputs
 are filenames, never host paths. Only WASI's installation-private `data` preopen
 is read directly. Named private saves survive worker/view restarts independently
 of the current scene. Save a copy (also Ctrl+S and Ctrl+Shift+S) offers a new,

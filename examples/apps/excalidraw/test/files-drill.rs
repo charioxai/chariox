@@ -44,6 +44,9 @@ struct Host {
     revision: u64,
     /// A scene that another window commits right after the next transaction, before any later read.
     rival: Option<String>,
+    /// The person's choice of a diagram: how many asks still find it unanswered, and how many requests were made.
+    unanswered: u32,
+    requests: u32,
 }
 impl Host {
     fn commit(&mut self, tx: state::Transaction) -> Result<state::Committed, AppError> {
@@ -136,17 +139,39 @@ impl<T: Send> host::HostWithStore<T> for HasSelf<Host> {
         panic!("unexpected clipboard")
     }
     async fn pick_file(_: &Accessor<T, Self>, _: host::Pick) -> Result<Vec<String>, AppError> {
-        panic!("unexpected picker")
+        panic!("a call that waits for the person cannot outlast the kernel's 30 s")
     }
-    async fn request_file(_: &Accessor<T, Self>, _: host::Pick) -> Result<host::Picked, AppError> {
-        panic!("unexpected picker")
+    async fn request_file(
+        accessor: &Accessor<T, Self>,
+        request: host::Pick,
+    ) -> Result<host::Picked, AppError> {
+        assert!(!request.multiple && request.accept.contains(&".excalidraw".to_owned()));
+        Ok(accessor.with(|mut access| {
+            access.get().requests += 1;
+            access.get().choice()
+        }))
     }
     async fn await_file(
-        _: &Accessor<T, Self>,
-        _: String,
-        _: u32,
+        accessor: &Accessor<T, Self>,
+        operation_id: String,
+        wait_ms: u32,
     ) -> Result<host::Picked, AppError> {
-        panic!("unexpected picker")
+        assert_eq!(operation_id, "pick-1");
+        assert!(
+            wait_ms <= 25_000,
+            "a call waits less than the kernel's limit"
+        );
+        Ok(accessor.with(|mut access| access.get().choice()))
+    }
+}
+impl Host {
+    /// Where the person's choice stands after one more ask.
+    fn choice(&mut self) -> host::Picked {
+        if self.unanswered == 0 {
+            return host::Picked::Granted(vec!["grant-1".into()]);
+        }
+        self.unanswered -= 1;
+        host::Picked::Pending("pick-1".into())
     }
 }
 struct Contents(
@@ -352,6 +377,8 @@ async fn runtime(root: &std::path::Path) -> wasmtime::Result<(Store<Host>, Drill
             records: BTreeMap::new(),
             revision: 0,
             rival: None,
+            unanswered: 0,
+            requests: 0,
         },
     );
     let app = Drill::instantiate_async(&mut store, &component, &linker).await?;
@@ -584,6 +611,45 @@ async fn a_save_returns_its_own_revision_when_another_window_commits_right_after
     assert_ne!(
         saved["version"], loaded["version"],
         "the window's next save checks against the version it holds, so the rival's commit is not overwritten"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_person_who_takes_longer_than_one_call_still_picks_with_the_same_request(
+) -> wasmtime::Result<()> {
+    let root = scratch("slow-pick")?;
+    let (mut store, app) = runtime(&root.0).await?;
+    // The call that asks finds the choice unmade twice (the request, then its wait), and so does the next one's wait.
+    store.data_mut().unanswered = 3;
+    let first = invoke(&mut store, &app, "pick_file", serde_json::json!({})).await?;
+    assert_eq!(
+        first,
+        serde_json::json!({"pending": true, "pickId": "pick-1"})
+    );
+    let second = invoke(
+        &mut store,
+        &app,
+        "pick_file",
+        serde_json::json!({"pickId": "pick-1"}),
+    )
+    .await?;
+    assert_eq!(
+        second,
+        serde_json::json!({"pending": true, "pickId": "pick-1"})
+    );
+    let third = invoke(
+        &mut store,
+        &app,
+        "pick_file",
+        serde_json::json!({"pickId": "pick-1"}),
+    )
+    .await?;
+    assert_eq!(third, serde_json::json!({"grants": ["grant-1"]}));
+    assert_eq!(
+        store.data().requests,
+        1,
+        "asking again never opens a second request"
     );
     Ok(())
 }

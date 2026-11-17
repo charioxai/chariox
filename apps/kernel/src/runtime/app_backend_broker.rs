@@ -187,9 +187,10 @@ impl Broker for BackendBroker {
                 "connections.list" | "connections.action" => {
                     delegate.connections.dispatch(request).await
                 }
-                "host.pick_file" | "host.pick_file_status" | "files.export" => {
-                    delegate.file_grants.dispatch(request).await
-                }
+                "host.pick_file"
+                | "host.pick_file_status"
+                | "host.pick_file_cancel"
+                | "files.export" => delegate.file_grants.dispatch(request).await,
                 "host.clipboard_write" | "host.open_link" => delegate.host.dispatch(request).await,
                 "log.write" => delegate.logs.dispatch(request).await,
                 "validation.request" | "validation.status" => {

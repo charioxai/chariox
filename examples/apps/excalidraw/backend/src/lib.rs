@@ -92,7 +92,7 @@ async fn call(name: &str, input: &str) -> Result<Value, AppError> {
         }
         "write_file" => file_io::write(&input).await,
         "read_file" => file_io::read(&input).await,
-        "pick_file" => file_io::pick().await,
+        "pick_file" => file_io::pick(input["pickId"].as_str()).await,
         "save_file" => diagram::save_file(&input).await,
         "open_file" => diagram::open_file(&input).await,
         "export_file" => diagram::export_file(&input).await,

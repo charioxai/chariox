@@ -83,6 +83,8 @@ export function fakeBackend() {
   const backend = {
     scene: null, version: null, counter: 0, feed: 0,
     calls: [], saves: [], writes: [], files: new Map(), picked: null,
+    /** How many pick_file calls answer pending before the person's choice, and the ids the window asked again with. */
+    pickWaits: 0, resumed: [],
     /** Message of the error every save_scene throws, with the saved version unchanged. */
     failSaves: null,
     /** Run once at the start of the next save_scene; the save is then refused when the version moved. */
@@ -153,7 +155,12 @@ export function fakeBackend() {
         if (!file) throw Error('no such file: ' + (input.name ?? input.grantId));
         return { name: input.name ?? input.grantId, scene: JSON.parse(file.toString()) };
       }
-      if (name === 'pick_file') return { grants: backend.picked ? [backend.picked] : [] };
+      if (name === 'pick_file') {
+        // A person who has not chosen yet leaves the request open: the call comes back pending and is asked again with its id.
+        if (input.pickId) backend.resumed.push(input.pickId);
+        if (backend.pickWaits > 0) { backend.pickWaits--; return { pending: true, pickId: 'pick-1' }; }
+        return { grants: backend.picked ? [backend.picked] : [] };
+      }
       throw Error('unknown backend tool: ' + name);
     },
   };
