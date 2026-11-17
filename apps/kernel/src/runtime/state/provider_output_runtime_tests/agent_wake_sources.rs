@@ -1579,6 +1579,66 @@ async fn event_tools_arm_wait_and_cancel_through_the_runtime_mcp_entry() {
     scheduler.abort();
 }
 
+/// An agent may always end its turn: a yield that leaves a timer out is accepted, lists the
+/// open timer in its result, and cancels the timers named in `cancel` in the same call.
+#[tokio::test]
+async fn a_yield_leaving_a_timer_out_is_accepted_lists_it_and_cancels_the_named_one() {
+    let f = fixture("yield-uncovered-timer", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = {
+        let app = f.app.lock().await;
+        app.providers
+            .get_run(&f.run)
+            .unwrap()
+            .runtime_mcp_auth_token()
+            .expect("runtime MCP auth")
+            .to_string()
+    };
+    let mut timers = vec![];
+    for label in ["waited on", "no longer needed", "left open"] {
+        let timer = call(
+            &f,
+            &token,
+            "chariox.events.timer",
+            &task,
+            serde_json::json!({"label": label, "delay_ms": 3_600_000}),
+        )
+        .await
+        .unwrap()
+        .payload;
+        timers.push((
+            timer["wake_id"].as_str().unwrap().to_string(),
+            timer["registration_id"].as_str().unwrap().to_string(),
+        ));
+    }
+    let now = crate::session::unix_epoch_ms();
+    let yielded = call(
+        &f,
+        &token,
+        "chariox.events.yield",
+        &task,
+        serde_json::json!({"registration_ids":[timers[0].1],"cancel":[timers[1].0],"inbox_cursor":0,"deadline_ms":now + 60_000,"reason":"waiting for the first timer"}),
+    )
+    .await
+    .expect("a yield that leaves open work out is not refused")
+    .payload;
+    let open = yielded["open_work_not_waited_on"].as_str().unwrap();
+    assert!(open.contains(&timers[2].0), "{open}");
+    assert!(
+        !open.contains(&timers[0].0) && !open.contains(&timers[1].0),
+        "{open}"
+    );
+    let store = f.store();
+    assert_eq!(
+        store.agent_wake(&timers[1].0).unwrap().unwrap().state,
+        "cancelled"
+    );
+    assert_eq!(
+        store.agent_wake(&timers[2].0).unwrap().unwrap().state,
+        "scheduled"
+    );
+}
+
 /// A10-S02: a message turn that reuses the ids of the waiting task it
 /// interrupted is told that the wait continues and given its own ids, not a
 /// bare refusal it escalates to the owner.

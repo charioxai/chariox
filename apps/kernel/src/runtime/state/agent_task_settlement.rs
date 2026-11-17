@@ -108,7 +108,7 @@ impl KernelRuntimeOwnedState {
                     .as_ref()
                     .map_or(String::new(), |_| " and a future deadline_ms".into());
                 steps.push(format!(
-                    "To wait, call chariox.events.yield with registration_ids {}, inbox_cursor {} and reason \"Wait for unresolved work\"{deadline}; include any newly subscribed registrations so every open obligation is covered. End the turn immediately after yield",
+                    "To wait, call chariox.events.yield with registration_ids {}, inbox_cursor {} and reason \"Wait for unresolved work\"{deadline}; add any newly subscribed registrations, and pass cancel with the wake ids of timers you no longer need. End the turn immediately after yield",
                     serde_json::to_string(&ids).expect("registration ids serialize"),
                     task.wait.as_ref().map_or(0, |wait| wait.inbox_cursor)
                 ));

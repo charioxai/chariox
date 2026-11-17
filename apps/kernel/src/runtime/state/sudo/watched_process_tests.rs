@@ -86,6 +86,14 @@ async fn watched_process_rechecks_modes_after_owner_approval() {
     ] {
         let f = super::tests::fixture_with_run_profile(None, true, "claude", "claude");
         let turn = running(&f);
+        // A native TUI can change its mode after launch: it asks even at Full access.
+        let mut native = serde_json::to_value(&f.run).unwrap();
+        native["client_interface"] = serde_json::json!("native_tui");
+        f.app
+            .lock()
+            .await
+            .providers_mut()
+            .insert_run_for_test(serde_json::from_value(native).unwrap());
         f.state.owned.sudo_turns.lock().unwrap().clear();
         f.state
             .owned
@@ -142,6 +150,7 @@ async fn watched_process_rechecks_modes_after_owner_approval() {
                 .expect("native watched command must ask for owner approval");
                 let mut snapshot = serde_json::to_value(&f.run).unwrap();
                 snapshot["write_access_mode"] = serde_json::to_value(write_access).unwrap();
+                snapshot["client_interface"] = serde_json::json!("native_tui");
                 f.app
                     .lock()
                     .await

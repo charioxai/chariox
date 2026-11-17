@@ -278,20 +278,46 @@ impl KernelRuntimeState {
                 if let Some(deadline) = deadline.filter(|deadline| *deadline <= now) {
                     return Err(ledger::error(format!("deadline_ms {deadline} is not in the future: it is an absolute Unix time in milliseconds, not a duration; now_ms is {now}, so a wait of N seconds is now_ms + N*1000")));
                 }
-                self.owned
+                let cancel: Vec<String> = match args.get("cancel") {
+                    None | Some(serde_json::Value::Null) => vec![],
+                    Some(value) => serde_json::from_value(value.clone())
+                        .map_err(|_| ledger::error("cancel must be a list of wake ids"))?,
+                };
+                for wake_id in &cancel {
+                    self.dispatch_agent_wake_tool(
+                        run,
+                        "chariox.events.cancel_wake",
+                        &serde_json::json!({ "wake_id": wake_id }),
+                        task,
+                    )
+                    .await?;
+                }
+                let Outcome::Task(yielded) =
+                    self.owned
+                        .durable_state_store
+                        .agent_lifecycle(Operation::Yield {
+                            task: task_id.into(),
+                            prompt: prompt.id().into(),
+                            registrations: ids,
+                            cursor: args["inbox_cursor"]
+                                .as_u64()
+                                .ok_or_else(|| ledger::error("inbox_cursor required"))?,
+                            deadline,
+                            reason: args["reason"].as_str().unwrap_or_default().into(),
+                            now,
+                        })?
+                else {
+                    unreachable!()
+                };
+                let mut result = serde_json::json!({"yield_requested":true,"waiting_commits_at_native_settlement":true,"next_action":"End this provider turn immediately without further tools. Do not check inbox, wakes or subscriptions: the kernel delivers a new turn for the source or deadline."});
+                let registrations = self
+                    .owned
                     .durable_state_store
-                    .agent_lifecycle(Operation::Yield {
-                        task: task_id.into(),
-                        prompt: prompt.id().into(),
-                        registrations: ids,
-                        cursor: args["inbox_cursor"]
-                            .as_u64()
-                            .ok_or_else(|| ledger::error("inbox_cursor required"))?,
-                        deadline,
-                        reason: args["reason"].as_str().unwrap_or_default().into(),
-                        now,
-                    })?;
-                serde_json::json!({"yield_requested":true,"waiting_commits_at_native_settlement":true,"next_action":"End this provider turn immediately without further tools. Do not check inbox, wakes or subscriptions: the kernel delivers a new turn for the source or deadline."})
+                    .agent_registrations(task_id)?;
+                if let Some(open) = open_work_line(&yielded, &registrations) {
+                    result["open_work_not_waited_on"] = open.into();
+                }
+                result
             }
             "chariox.events.blocked" => {
                 let task = task_id.into();
@@ -338,6 +364,27 @@ impl KernelRuntimeState {
         };
         Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
     }
+}
+
+/// One plain line for the work a yield does not wait on. It stays open: its outcome reaches the
+/// agent in a later turn, or the agent cancels it with `cancel_wake`.
+fn open_work_line(
+    task: &ledger::AgentTaskExecution,
+    registrations: &[Registration],
+) -> Option<String> {
+    let waited: &[String] = task.wait.as_ref().map_or(&[], |w| &w.registration_ids);
+    let open: Vec<String> = task
+        .obligations
+        .iter()
+        .filter(|o| o.needs_live_source())
+        .filter(|o| {
+            !registrations
+                .iter()
+                .any(|r| r.obligation_id.as_deref() == Some(&o.id) && waited.contains(&r.id))
+        })
+        .map(|o| format!("{} {}", o.kind, o.resource_id.as_deref().unwrap_or(&o.id)))
+        .collect();
+    (!open.is_empty()).then(|| format!("Still open and not waited on: {}.", open.join(", ")))
 }
 
 /// The kernel named by a subscribe that follows an agent on another kernel of the owner.

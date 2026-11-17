@@ -463,7 +463,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             let regs = registrations(tx, &task)?;
             if ids.iter().any(|id| !regs.iter().any(|r| &r.id == id)) {
-                return Err(error(yield_refusal(tx, &t, &ids, &regs)?));
+                return Err(error(unknown_registrations(tx, &t, &ids, &regs)?));
             }
             // A source that already ended is not something to wait on: its outcome is in the
             // inbox and the kernel delivers it. Naming it is harmless, so it is dropped.
@@ -473,19 +473,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 if r.live || pending > 0 {
                     selected.push(r);
                 }
-            }
-            // Only work still running needs a source; the settlement of the turn applies the
-            // same rule.
-            if t.obligations
-                .iter()
-                .filter(|o| o.needs_live_source())
-                .any(|o| {
-                    !selected
-                        .iter()
-                        .any(|r| r.obligation_id.as_deref() == Some(&o.id))
-                })
-            {
-                return Err(error(yield_refusal(tx, &t, &ids, &regs)?));
             }
             if selected.is_empty() {
                 return Err(error(
@@ -647,15 +634,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     && w.registration_ids
                         .iter()
                         .all(|id| regs.iter().any(|r| &r.id == id && (r.live || pending > 0)))
-                    && t.obligations
-                        .iter()
-                        .filter(|o| o.needs_live_source())
-                        .all(|o| {
-                            regs.iter().any(|r| {
-                                w.registration_ids.contains(&r.id)
-                                    && r.obligation_id.as_deref() == Some(&o.id)
-                            })
-                        })
             } else {
                 false
             };
@@ -683,6 +661,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 let by_agent = t.reason == super::supervision::AGENT_CANCELLED_REASON;
                 super::supervision::cancel_intent(tx, &mut t, by_agent)?;
             } else if t.state != ExecutionState::Blocked {
+                if !valid_wait && super::wakes::drop_unwaited_timers(tx, &t, now)? {
+                    t = load(tx, &t.task_id)?;
+                }
                 let open = t
                     .obligations
                     .iter()
@@ -889,7 +870,7 @@ pub(super) fn recover_source(
 /// A02-S02: a message wakes a yielded agent in a new turn. Waiting again on
 /// the registrations of its earlier task is not this turn's wait: that task
 /// still waits, so the turn only has to end.
-fn yield_refusal(
+fn unknown_registrations(
     tx: &Transaction<'_>,
     t: &AgentTaskExecution,
     ids: &[String],
@@ -919,43 +900,7 @@ fn yield_refusal(
             }
         }
     }
-    let mut uncovered = Vec::new();
-    for obligation in t.obligations.iter().filter(|o| o.needs_live_source()) {
-        let bindings: Vec<_> = own
-            .iter()
-            .filter(|r| r.obligation_id.as_deref() == Some(&obligation.id) && r.live)
-            .collect();
-        if bindings.iter().any(|r| ids.contains(&r.id)) {
-            continue;
-        }
-        let wake: Option<String> = tx
-            .query_row(
-                "SELECT payload FROM agent_wakes WHERE id=?1 AND task_id=?2",
-                params![obligation.resource_id, t.task_id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(sql)?;
-        let mut item = serde_json::json!({"obligation_id":obligation.id,"kind":obligation.kind,
-            "resource_id":obligation.resource_id,"registration_ids":bindings.iter().map(|r| &r.id).collect::<Vec<_>>()});
-        if let Some(wake) = wake {
-            let wake: types::AgentWake = decode(&wake)?;
-            item["label"] = wake.label.into();
-            item["cancel_call"] = serde_json::json!({"tool":"chariox.events.cancel_wake","arguments":{
-                "task_id":t.task_id,"origin_prompt_id":t.prompt_id,"wake_id":wake.id}});
-        } else {
-            item["subscribe_call"] = serde_json::json!({"tool":"chariox.events.subscribe","arguments":{
-                "task_id":t.task_id,"origin_prompt_id":t.prompt_id,"source_id":obligation.completion_source(),"obligation_id":obligation.id}});
-        }
-        if obligation.kind == "delegate" {
-            if let Some(agent) = obligation.resource_id.as_deref() {
-                item["cancel_call"] = serde_json::json!({"tool":"chariox.room.run_command","arguments":{
-                    "command":format!("agent cancel {agent}")}});
-            }
-        }
-        uncovered.push(item);
-    }
-    Ok(format!("yield sources must cover every unresolved obligation. Uncovered: {}. Add the listed registration_ids to chariox.events.yield; if a binding is missing, use subscribe_call first. To stop a source instead, use its cancel_call, then handle its completion receipt with chariox.events.inbox and chariox.events.ack (handled:true). Unknown registration_ids: {}. chariox.events.subscriptions lists admitted registrations.", encode(&uncovered)?, encode(&foreign)?))
+    Ok(format!("unknown registration_ids: {}. chariox.events.subscriptions lists the registrations of this task; use subscribe first to follow a source.", encode(&foreign)?))
 }
 
 /// Questions are the only source allowed to outlive a normal turn without an
