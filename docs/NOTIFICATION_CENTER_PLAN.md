@@ -1,6 +1,6 @@
 # Notification center plan
 
-Status: design for acceptance. No product code exists for this plan yet. The clickable mock, its screenshots and its source are kept outside the repository under `/root/.codex/evidence/notifcenter/`.
+Status: accepted for building. The owner answered the six open questions on 2026-11-17 (section 15). No product code exists for this plan yet. The clickable mock, its screenshots and its source are kept outside the repository under `/root/.codex/evidence/notifcenter/`.
 
 Scope decided by the owner on 2026-11-17: one service with a sidebar entry "Notification center" and three tabs, Inbox, Subscriptions and Sources; one model and one delivery path; cards stay kernel-owned; Cloud never stores content. This document says how that is built on what the kernel already has, what is new, how it is validated and in which order.
 
@@ -14,7 +14,7 @@ Every decision this plan proposes names the principle behind it:
 
 **Inbox.** Every card addressed to the person, from every Room on every machine they own, in one list. "Needs you" holds what blocks an agent: permissions, questions, sign-in pages and codes, App confirmations, payments. "For your information" holds what agents and sources wanted the person to know. The person answers a card right there. Answering it anywhere removes it everywhere.
 
-**Subscriptions.** One table of everything that listens to something: which agent, workflow or person, in which Room on which machine, to which source, under which condition, who created it and why, when it last fired, how often, and whether it is healthy. Each row can be paused, tested, pointed at another subscriber or removed, and shows what every past event caused.
+**Subscriptions.** One table of everything that listens to something: which agent, workflow or person, in which Room on which machine, to which source, with which of the source's options picked, who created it and why, when it last fired, how often, and whether it is healthy. Each row can be paused, tested, pointed at another subscriber or removed, and shows what every past event caused.
 
 **Sources.** Everything that can fire: the person's own watchers, public sources such as GitHub, workflow exits and App events. A new source starts from one sentence ("Tell me when the X100VI drops below €1,500 at fotokoch.de"). An agent writes the watcher and shows what it reads now and what it would have fired in the last 24 hours. The person names it, picks who hears about it and turns it on. No JSON, no cron, no script is ever shown.
 
@@ -32,7 +32,7 @@ source ──fires──▶ occurrence ──route (subscription)──▶ subsc
 | Word | Meaning | In the kernel today |
 | --- | --- | --- |
 | Source | Something that fires occurrences. It has an owner, a home kernel and a stable id. | `NotificationSourceKind`: `workflow_exit`, `workflow_run`, `owner_action`, `app_event` |
-| Occurrence | One firing: `{source_id, display_name, occurrence_id, output, ancestry, deadline_ms}`; `output` is the message, the artifacts and, new, the structured `data` (section 6.2) | The notification envelope, 64 KiB at most, kept 7 days (`NOTIFICATION_RETENTION_MS`). Its `output` (`WorkflowOutputPayload`) holds `message` and `artifacts` only. |
+| Occurrence | One firing: `{source_id, display_name, occurrence_id, output, ancestry, deadline_ms}`; `output` is the message, the artifacts and, new, the structured `data`: the values of the fields the source's options name, and nothing else (section 6.2) | The notification envelope, 64 KiB at most, kept 7 days (`NOTIFICATION_RETENTION_MS`). Its `output` (`WorkflowOutputPayload`) holds `message` and `artifacts` only. |
 | Route | A subscription row: one source, one subscriber. | `app_automations` rows, receipts in `app_outbox` |
 | Subscriber | An agent, a workflow entry point or the person. | Agent (agent trigger), workflow entry point, outside agent |
 | Card | Something shown to the person. | `RuntimeInteraction`, scoped to one session |
@@ -45,15 +45,15 @@ The kernel gives events no meaning. A source emits opaque events; the script tha
 
 | Part | Exists (local protocol 1010) | New |
 | --- | --- | --- |
-| Sources | Workflow exits and runs, owner actions, App events (`ListNotificationSources`) | Kind `watcher`: a supervised script on a kernel |
+| Sources | Workflow exits and runs, owner actions, App events (`ListNotificationSources`) | Kind `watcher`: a supervised script on a kernel. Every source can declare options (section 6.2). |
 | Subscribers | Agent, workflow entry point, outside agent | The person |
-| Occurrence data | None. An App event is published as its `payload["text"]` alone (`app_event.rs`); the rest of the payload stays with the App | `data`: the event's structured payload travels in the occurrence, so a filter has fields to read (section 6.2) |
-| Subscription fields | Source and target only: "a subscription has no options" | `filter`, `once`, `paused`; the trigger prompt becomes required for agent-created subscriptions and is shown as "Why it exists" |
+| Occurrence data | None. An App event is published as its `payload["text"]` alone (`app_event.rs`); the rest of the payload stays with the App | `data`: the values of the declared fields the source's options name travel in the occurrence, so the kernel has something to match (section 6.2) |
+| Subscription fields | Source and target only: "a subscription has no options" | The values picked from the options the source declares (section 6.2), `once`, `paused`; the trigger prompt becomes required for agent-created subscriptions and is shown as "Why it exists" |
 | Coalescing | None: every occurrence is delivered | On the source, not the subscription: every event, latest per key, debounce; one rate limit |
 | Delivery | Once per subscription, cross-kernel, loop drop, 7 days | Unchanged |
 | Cards | `RuntimeInteraction` per session, answered with `RespondToInteraction`, shown to every client of the session | A kernel-wide list of the cards addressed to the owner; for-your-information cards; read, snooze, mute |
 | Counts | `pending_interaction_count` per session in the per-Room summary, for the Room's dot | The sidebar badge, counted from the Inbox |
-| Agent tools | `chariox.notification.{sources,subscribe,unsubscribe}`, `chariox.request_popup` | `chariox.notify_person`; `filter` and `once` on subscribe; `chariox.watcher.*` |
+| Agent tools | `chariox.notification.{sources,subscribe,unsubscribe}`, `chariox.request_popup` | `chariox.notify_person`; `options` and `once` on subscribe, and the source's declared options in `sources`; `chariox.watcher.*` |
 | Lists | `ListWorkflowNotifications {session_id}` per Room | One kernel-wide list with last fired, count, health and flags |
 | Trace | `ReadAgentTriggerTranscript`, delivery receipts | One trace per subscription: occurrence, result, the turn or run it started |
 | Test | `TestAppInboxRoute`, `InvokeAgentTrigger` | `TestNotificationSubscription`: a dry run that sends nothing |
@@ -117,7 +117,7 @@ Machines follow the standing rule: no offline machine appears. When a machine's 
 
 ### 4.6 Guests
 
-v1 shows the kernels the person owns. A card in someone else's Room stays in that Room. *(P1; open question 6.)*
+v1 shows the kernels the person owns. A card in someone else's Room stays in that Room and never appears in the person's center, from v1 on, until the owner decides otherwise (decision 4, section 15). *(P1.)*
 
 ## 5. Agents notify the person
 
@@ -139,11 +139,11 @@ chariox.notify_person { title, body?, link?, priority? }   ->  { card_id }
 "Let me know when you receive the notification to review PR #976" must still work after the agent's context is compacted, the provider restarts or the kernel restarts. The kernel keeps the request, not the agent:
 
 ```
-chariox.notification.subscribe { source, prompt, filter?, once? }
+chariox.notification.subscribe { source, prompt, options?, once? }
 ```
 
 - `prompt` exists today: it is the text the kernel queues together with the quoted occurrence. It becomes required for subscriptions an agent creates, and the agent writes into it what it was asked and what to do: "Miguel asked: let me know when you receive the notification to review PR #976. Notify him with a link to the PR." That is the stored intent. The Subscriptions tab shows it as "Why it exists".
-- `filter` is new (section 6.2): here, `pull_request.number = 976`.
+- `options` is new (section 6.2): the values the agent picks from the options the source declares; here the GitHub source's `pull_request = 976`.
 - `once` is new: the subscription removes itself after its first delivery.
 
 When GitHub reports the review request, the kernel wakes the agent with that prompt and the occurrence. The agent, even with an empty memory, reads what it promised and calls `chariox.notify_person`. The trace of the subscription (section 6.4) shows the three steps: the event, the turn it woke, "notified you".
@@ -162,31 +162,37 @@ One row per subscription, from every kernel the person owns:
 | --- | --- |
 | Subscriber | The agent, workflow or "You", with Room and machine. A workflow's responsible (#1377) is a row of its own, marked "Responsible for release-pipeline". |
 | Source | Name and kind, with the machine it runs on |
-| Only when | The filter as a sentence, or "Every event" |
+| Only when | The picked options as a sentence ("Only PR #976"), or "Every event" |
 | Created by | The person or the agent that created it |
 | Last fired, Fired | Time of the last delivery and the count |
 | Health | OK, Paused, or a flag |
 
-Row actions: **Pause / Resume**, **Test**, **Change subscriber**, **Remove**. Selecting a row opens its detail: why it exists, the filter and the recent events.
+Row actions: **Pause / Resume**, **Test**, **Change subscriber**, **Remove**. Selecting a row opens its detail: why it exists, the picked options and the recent events.
 
-Each kernel answers `ListNotificationSubscriptions` for the subscriptions whose subscriber lives on it; the client merges, as for the Inbox. The row data is the existing subscription (`source_available`, `source_kernel_id`, `created_by_user_id`, `target_kernel_id`) plus the trigger prompt, the filter, the pause state and the counters. The Room's own list of workflow notifications becomes this table filtered to the Room, so there is one list and one implementation.
+Each kernel answers `ListNotificationSubscriptions` for the subscriptions whose subscriber lives on it; the client merges, as for the Inbox. The row data is the existing subscription (`source_available`, `source_kernel_id`, `created_by_user_id`, `target_kernel_id`) plus the trigger prompt, the picked options, the pause state and the counters. The Room's own list of workflow notifications becomes this table filtered to the Room, so there is one list and one implementation.
 
-### 6.2 Filter
+### 6.2 Source-declared options
 
-The protocol says today that a subscription has no options. This plan adds exactly one that changes delivery, the filter, because without it "only PR #976" wakes an agent, and costs a turn, for every review request in the repository.
+The protocol says today that a subscription has no options. This plan adds exactly one kind that changes delivery, and it belongs to the source, not to the subscription: each source declares the few options a subscriber may pick, because without them "only PR #976" wakes an agent, and costs a turn, for every review request in the repository. There is no filter language: no operators, no expressions, no paths, nothing free-form that an agent or a person must write. *(P1: pick, never write. P2: an agent picks from a list and cannot get the syntax wrong. P3: a source offers choices the way any service's notification settings do.)*
 
-- A filter is a short list of conditions that must all hold on the occurrence's `output`: a field path, one of `=`, `!=`, `starts with`, `contains`, `<`, `>`, and a value. No expressions, no scripts.
-- **What a filter reads.** A path starts at `output`: `message` is the occurrence's text, and `data.<path>` is a field of its structured data, with object keys and array positions separated by dots (`data.pull_request.number`, `data.labels.0.name`). A value is a number, text or true/false; `<` and `>` compare numbers, `starts with` and `contains` compare text, `=` and `!=` compare the same type. A condition on a path the occurrence does not have, or on a value of another type, does not hold, `!=` included: a filter selects only what it can read.
-- **Where `data` comes from.** Today an occurrence carries no structured data: `WorkflowOutputPayload` holds `message` and `artifacts`, and the App-event adapter publishes `payload["text"]` and drops every other field, so the GitHub payload that holds the PR number never reaches a subscription. `WorkflowOutputPayload` gains an optional `data` (any JSON). (1) The App-event adapter publishes the event's whole payload as `data`, and `text` stays the `message`. (2) A watcher's `payload` (section 7.3) is its `data`. (3) A workflow exit carries no `data` in this plan; its filter reads `message`. (4) `data` is part of the occurrence the kernel already stores in `app_outbox` and the occurrence tables, and of the envelope `DeliverWorkflowNotification` carries across kernels, so the peer channel needs no second message. (5) `data` counts toward the 64 KiB output limit; an occurrence over it is dropped with the existing output-limit diagnostic and shown in the trace as "Too large". (6) The subscribed agent receives `data` quoted with the message, as untrusted input (section 11).
-- **Where it is applied.** The subscriber's kernel evaluates the filter when it accepts the occurrence, before anything is queued. The source's kernel is answered `Accepted` as today; the receipt records "Filtered out", and a filtered occurrence does not use up a `once` subscription. A text-only occurrence is filtered on `message` alone.
-- Agents write filters. The person reads them as a sentence ("Only PR #976", "Tags that start with v") and never edits one by hand; "Change" is a sentence to an agent. *(P1, P2.)*
-- A filtered occurrence is recorded in the trace as "Filtered out: not PR #976" and delivered to nobody.
+- **What a source declares.** A list of at most 4 options, each `{name, label, type, field}`: `name` is a short identifier ("pull_request"), `label` is what the picker shows ("Pull request"), `type` is number, text or true/false, and `field` is one declared field of the source's events that the option compares. A source that declares none has none, and every subscriber gets every event. Where the declarations come from:
+  - An **App or GitHub/AEGS generator** declares them with its event types. Its event type already declares a `payload_schema` (`docs/AEGS_SDK.md`, `docs/EVENT_TRIGGER_PROTOCOL.md`); an option is one field of that schema, such as `repository` and `pull_request` for a review request.
+  - A **watcher** declares them in its manifest, each tied to one field of the `payload` its `event` lines carry (section 7.3).
+  - A **workflow exit** declares none in this plan: its occurrence carries a message and artifacts, and a subscriber that wants less asks for a narrower workflow.
+- **What the picker offers.** The subscribe picker, for a person ("Subscribe me" on a source) and the agent tool alike, offers exactly the declared options and nothing else; a subscription picks a value for none, some or all of them. `chariox.notification.sources` lists each source's options with their types, so an agent never guesses.
+- **Exact match.** For each option the subscription picked, the event's declared field must equal the picked value, of the same type: the number 976 matches 976 and not 9760, and not the text "976". Every picked option must match. An event that lacks a declared field does not match an option on it. There is no `!=`, no `<`, no `contains`.
+- **Refused at subscribe time.** The subscriber's kernel checks a subscription against the source's declaration (local, or in the peer source list for a source on another kernel) when it is created. An option the source does not declare, a value of another type than the declared one, or a repeated option is refused with the list of options the source does declare, and no row exists. An agent that gets the refusal corrects itself from that list. *(Fail clearly: nothing is stored half-understood.)*
+- **A narrow source needs no option.** A watcher created from a prompt is made narrow through its own parameters: "tell me when PR #976 is reviewed" becomes a watcher for that PR. An option exists for the case where several subscribers of one source want different slices of it, not to compensate for a source that is too wide.
+- **Where `data` comes from.** Today an occurrence carries no structured data: `WorkflowOutputPayload` (`session/workflow_outputs.rs`) holds `message` and `artifacts`, and the App-event adapter (`workflow_notifications/app_event.rs`) publishes `payload["text"]` and drops every other field, so the GitHub payload that holds the PR number never reaches a subscription. `WorkflowOutputPayload` gains an optional `data`: a flat object holding the values of the declared option fields of that event, and nothing else. (1) The App-event adapter copies those fields from the event's payload, by the source's declaration; `text` stays the `message`. (2) A watcher's declared fields are copied from the `payload` of its `event` line. (3) A workflow exit carries no `data`. (4) `data` is part of the occurrence the kernel already stores in `app_outbox` and the occurrence tables, and of the envelope `DeliverWorkflowNotification` carries across kernels, so the peer channel needs no second message. (5) `data` holds only the declared fields, so it stays small inside the 64 KiB output limit. (6) The subscribed agent receives `data` quoted with the message, as untrusted input (section 11). The rest of the event's payload never leaves the source.
+- **Where it is applied.** The subscriber's kernel matches the picked values against the occurrence's `data` when it accepts the occurrence, before anything is queued. The source's kernel is answered `Accepted` as today; the receipt records "Filtered out", and a filtered occurrence does not use up a `once` subscription. A subscription with no picked option matches every occurrence.
+- **A source that changes.** If a source later stops declaring an option, or declares it with another type, a subscription that picked it is paused, flagged "Options changed" (section 6.5) and never widened to every event. *(P1: a narrow subscription never silently becomes a flood.)*
+- A filtered occurrence is recorded in the trace as "Filtered out", worded for the picked options: "Not PR #976". It is delivered to nobody.
 
 Coalescing is not a subscription option. It belongs to the source (section 7.6), so every subscriber of a source sees the same events. *(P1: one place decides how often something fires.)*
 
 ### 6.3 Test
 
-**Test** is a dry run and only a dry run: the kernel takes the source's latest occurrence (or a sample the source declares), applies the filter and reports what would happen ("Would wake Reviewer. Nothing was sent."). Nothing is queued and no counter moves. *(P1: testing can never wake an agent or start a run by accident.)*
+**Test** is a dry run and only a dry run: the kernel takes the source's latest occurrence (or a sample the source declares), applies the picked options and reports what would happen ("Would wake Reviewer. Nothing was sent."). Nothing is queued and no counter moves. *(P1: testing can never wake an agent or start a run by accident.)*
 
 ### 6.4 Trace
 
@@ -197,7 +203,7 @@ Every occurrence leaves one line per subscription, kept as long as occurrences a
 | Woke an agent | "Woke Reviewer, who notified you", with **Open turn** |
 | Started a workflow run | "Started run 41 of release-pipeline: completed", with **Open run** |
 | Became a card | "Shown in your Inbox" |
-| Filtered out | "Filtered out: not PR #976" |
+| Filtered out | "Filtered out: Not PR #976" |
 | Not delivered | "Paused", "Expired after 7 days", "Loop stopped" |
 
 For an agent, the delivery receipt records the turn the queued prompt started (`turn_ref`), and when the turn ends, one line of what it did: its person-facing effects first ("notified you", "asked you"), otherwise the first line of its answer. **Open turn** opens the Room at that turn through the existing history read. `ReadNotificationTrace {subscription_id}` returns these lines.
@@ -210,6 +216,7 @@ For an agent, the delivery receipt records the turn the queued prompt started (`
 | Loop stopped | A delivery was answered `LoopDropped` | Open the trace; Remove |
 | Noisy | The source or origin hit the rate limit | Fix (an agent adjusts the watcher), Pause |
 | Source stopped | The watcher failed or its machine is stopped | Fix, or Start the machine |
+| Options changed | The source no longer declares an option the subscription picked, or declares it with another type. Delivery pauses. | Change subscriber, Remove, then subscribe again from the source's current options |
 
 On one kernel, the kernel refuses a cycle when the subscription is created (`workflow notification cycle`): a workflow subscribed to its own exit, and the second subscription of A to B to A, are both refused, so there is no row and no flag. Only a cycle across kernels can form, because each kernel sees only its own subscriptions; there the occurrence's ancestry stops it at delivery, answers `LoopDropped` and raises Loop stopped.
 
@@ -219,15 +226,15 @@ A flag also raises one for-your-information card to whoever is responsible for t
 
 ### 7.1 The table
 
-One row per source: name with its sentence ("Watching the visa appointment page"), kind, the machine it runs on ("Chariox" for a public source), how it is checked ("Every 15 min · 2m ago", or "Live"), last fired, subscribers, health. Row actions for a watcher: **Check now**, **Pause**, **Move to <machine>**, **Change**, **Remove**. For a public source, a workflow or an App event: **Subscribe me**, **Open**.
+One row per source: name with its sentence ("Watching the visa appointment page"), kind, the machine it runs on ("Chariox" for a public source), how it is checked ("Every 15 min · 2m ago", or "Live"), last fired, subscribers, health. Row actions for a watcher: **Check now**, **Pause**, **Move to <machine>**, **Change**, **Remove**. For a public source, a workflow or an App event: **Subscribe me** (with the source's declared options, when it has any), **Open**.
 
 ### 7.2 Creation
 
 1. **Prompt and examples.** "What do you want to watch?", one large prompt and a grid of examples (a price, a folder, a feed, a log, an inbox, a calendar, a deploy, a machine's disk). Choosing an example fills the prompt.
-2. **The agent builds it.** A utility agent that belongs to the center runs on the machine where the watcher will live, in a Room of its own, so its trial runs don't clutter the person's working agents. The left side shows the conversation in plain steps ("Opening fotokoch.de…", "Found the price: €1,649.00, in stock"). The agent asks only what it cannot find out. Secrets go through the Vault as everywhere else. *(P2.)*
+2. **The agent builds it.** A utility agent that belongs to the center runs on the machine where the watcher will live, in a Room of its own, so its trial runs don't clutter the person's working agents. The left side shows the conversation in plain steps ("Opening fotokoch.de…", "Found the price: €1,649.00, in stock"). The agent asks only what it cannot find out. Secrets go through the Vault as everywhere else. What the person asks for makes the watcher narrow through its own parameters ("only PR #976" is a watcher for PR #976); the agent declares an option (section 6.2) only where several subscribers would want different slices of the same source. *(P2.)*
 3. **Preview.** The right side shows one sentence ("Watching the X100VI page at fotokoch.de · every 30 min · on MacBook"), the current reading and the dry run (section 7.4).
 4. **Placement**, only when it matters (section 7.7).
-5. **Name and subscribers.** A suggested name, and "Who should hear about it?": the person, and the agents and workflows of their Rooms, as a checklist.
+5. **Name and subscribers.** A suggested name, and "Who should hear about it?": the person, and the agents and workflows of their Rooms, as a checklist. When the source declares options, the same screen offers them for each subscriber (section 6.2).
 6. **Turn on.** Until then nothing runs on a schedule and nothing is delivered. Discard removes everything.
 
 "Change" on a source reopens the same conversation: "only on weekdays", "check less often". Every change shows a new dry run before it applies.
@@ -246,6 +253,7 @@ Manifest:
 | `mode` | `poll` (run every `every_s`, then exit), `stream` (stay running: tail, file watch, socket) or `push` (run once per request to an address the kernel serves on its machine, as the agent HTTP trigger does) |
 | `command` | The argv to run |
 | `events` | The event names it can emit, each with whether it carries a key |
+| `options` | Optional, at most 4: the options a subscriber may pick, each `{name, label, type, field}` tied to one field of the `payload` its events carry (section 6.2) |
 | `coalesce`, `debounce_s` | Section 7.6 |
 | `credentials` | Vault handles and the environment names they fill |
 | `sees` | What it needs from its machine: folders, local commands, hosts. Decides where it can move (section 7.8). |
@@ -264,7 +272,7 @@ out   {"reading": "€1,649.00 · In stock"}
 ```
 
 - `reading` is what the source currently sees, in words. It is shown in the table and the preview.
-- `event` becomes an occurrence: `text` is its message, `payload` its `data`.
+- `event` becomes an occurrence: `text` is its message, and the fields its `options` name are copied from `payload` into the occurrence's `data`. The rest of `payload` stays with the script. An `event` that lacks a declared field is still delivered; it matches no subscription that picked an option on that field.
 - `cursor` is the script's memory (last seen id, last value, a hash). The kernel keeps it, 64 KiB at most. The script keeps no state of its own, which is what makes the watcher portable.
 - The kernel commits a run's events and its cursor in one transaction, so a crash or a restart neither repeats nor loses an event. A `poll` run commits when it exits with 0; a `stream` commits at each `cursor` line.
 - Credentials reach the script as environment values filled from the Vault by handle, the way `chariox.vault.use_env` fills them. They are never written to the package, the cursor, a reading or a log.
@@ -320,7 +328,7 @@ Move, between the two kernels over the encrypted peer channel:
 1. The old kernel records the move, pauses the watcher and fixes its cursor. It keeps its copy paused until the move ends.
 2. It sends the `move_id`, the package, the cursor and the undelivered occurrences. Vault entries the watcher uses travel through the Vault's own transfer, as when an agent moves (`docs/MOVE_AGENT_TO_KERNEL.md`). Occurrences are identified by source id and occurrence id, which the kernel already ignores when it sees them twice, so a resend delivers nothing twice.
 3. The new kernel records the move as prepared, installs the package and runs one check without delivering and without scheduling anything.
-4. **Commit.** In one transaction the new kernel marks the move committed, registers the source under the same source id with `source_generation` raised by one and starts its schedule. Subscriptions on any kernel follow, as they follow a workflow source today.
+4. **Commit.** In one transaction the new kernel marks the move committed, registers the source under the same source id with `source_generation` raised by one and starts its schedule. Subscriptions on any kernel follow, as they follow a workflow source today. A watcher's declared options travel with it, unchanged.
 5. The old kernel, told that the move committed, removes its copy.
 
 What happens on a failure depends on which side of step 4 it falls:
@@ -371,13 +379,13 @@ Design level: names follow the existing requests, and the exact shapes are set i
 | Request | State | Purpose |
 | --- | --- | --- |
 | `RespondToInteraction` | Exists | Answer a needs-you card |
-| `ListNotificationSources` | Exists, extended | Adds watchers with sentence, reading, check time, health, home kernel |
-| `CreateAgentTrigger`, `AttachWorkflowNotification` | Exist, extended | `filter`, `once`; the prompt required for agent-created subscriptions |
+| `ListNotificationSources` | Exists, extended | Adds watchers with sentence, reading, check time, health, home kernel; every source lists its declared options |
+| `CreateAgentTrigger`, `AttachWorkflowNotification` | Exist, extended | `options` (values picked from the source's declared options, refused at creation when undeclared or mistyped), `once`; the prompt required for agent-created subscriptions |
 | `GetPersonInbox`, event `PersonInboxChanged` | New | The owner's cards on this kernel, and their changes |
 | `SetInboxCardState {card_ids, read?, snoozed_until_ms?}` | New | Read and snooze |
 | `SetInboxMute {origin, muted}` | New | Mute one agent, workflow or source |
-| `SubscribePerson {source, filter?, once?}` | New | The person as subscriber |
-| `ListNotificationSubscriptions` | New | Kernel-wide rows with prompt, filter, counters, health, flags. `ListWorkflowNotifications {session_id}` is deleted in the same change. |
+| `SubscribePerson {source, options?, once?}` | New | The person as subscriber |
+| `ListNotificationSubscriptions` | New | Kernel-wide rows with prompt, picked options, counters, health, flags. `ListWorkflowNotifications {session_id}` is deleted in the same change. |
 | `UpdateNotificationSubscription {paused?, subscriber?}` | New | Pause, resume, change subscriber. The row and its history stay. |
 | `RemoveNotificationSubscription` | New | One removal for every subscriber kind |
 | `TestNotificationSubscription` | New | Dry run, sends nothing |
@@ -386,15 +394,15 @@ Design level: names follow the existing requests, and the exact shapes are set i
 
 ### 8.2 Peer protocol
 
-Unchanged in kind: `SubscribeWorkflowNotifications` and `DeliverWorkflowNotification` carry watcher occurrences as they carry workflow ones. New: watcher sources in the peer source list (#1367 already lets the owner's agents follow the owner's sources on other kernels), and the move in section 7.8: the move record (`move_id`), the commit, the idempotent status and abort question, and `source_generation` in the peer source list, where the highest generation names the kernel that runs the source. `RELAY_PEER_PROTOCOL_VERSION` is raised with it. The occurrence's new `data` (section 6.2) is a field of the envelope `DeliverWorkflowNotification` already carries, and changes a serialized shape clients and peers read: the implementing change raises `LOCAL_DAEMON_PROTOCOL_VERSION` and `RELAY_PEER_PROTOCOL_VERSION`, updates the snapshot and adds the drill, as AGENTS.md requires.
+Unchanged in kind: `SubscribeWorkflowNotifications` and `DeliverWorkflowNotification` carry watcher occurrences as they carry workflow ones. New: watcher sources in the peer source list (#1367 already lets the owner's agents follow the owner's sources on other kernels), and the move in section 7.8: the move record (`move_id`), the commit, the idempotent status and abort question, and `source_generation` in the peer source list, where the highest generation names the kernel that runs the source. The peer source list also carries each source's declared options, so the subscriber's kernel can check a subscription against them when it is created. `RELAY_PEER_PROTOCOL_VERSION` is raised with it. The occurrence's new `data` (section 6.2: the declared option fields only) is a field of the envelope `DeliverWorkflowNotification` already carries, and with the declared options changes serialized shapes clients and peers read: the implementing change raises `LOCAL_DAEMON_PROTOCOL_VERSION` and `RELAY_PEER_PROTOCOL_VERSION`, updates the snapshot and adds the drill, as AGENTS.md requires.
 
 ### 8.3 Agent tools
 
 | Tool | State |
 | --- | --- |
 | `chariox.notify_person {title, body?, link?, priority?}` | New |
-| `chariox.notification.sources` | Exists; lists watchers too |
-| `chariox.notification.subscribe {source, prompt, filter?, once?, subscriber?}` | Exists; `prompt` required, the rest new. `subscriber` is the calling agent or `"person"`. |
+| `chariox.notification.sources` | Exists; lists watchers too, and each source's declared options with their types |
+| `chariox.notification.subscribe {source, prompt, options?, once?, subscriber?}` | Exists; `prompt` required, the rest new; an undeclared option or a value of the wrong type is refused with the source's options. `subscriber` is the calling agent or `"person"`. |
 | `chariox.notification.unsubscribe {trigger_id}` | Exists |
 | `chariox.watcher.create`, `.dry_run`, `.activate`, `.status`, `.remove` | New |
 | `chariox.request_popup` | Exists; its cards now also appear in the Inbox |
@@ -411,7 +419,7 @@ Watcher packages, cursors and health live in the kernel's state beside the exist
 
 ## 10. Traceability
 
-The chain is always: what fired (the source and its reading), what was routed (the subscription and its filter), what it caused (the turn, the run or the card), and what the person did (answered, read). The Subscriptions trace walks it forward from an event. A card walks it backward: its origin names the agent, the Room and, for a source's card, the subscription. "Why did I get this?" and "why did this agent wake up?" are each answered in one click from where the question arises.
+The chain is always: what fired (the source and its reading), what was routed (the subscription and its picked options), what it caused (the turn, the run or the card), and what the person did (answered, read). The Subscriptions trace walks it forward from an event. A card walks it backward: its origin names the agent, the Room and, for a source's card, the subscription. "Why did I get this?" and "why did this agent wake up?" are each answered in one click from where the question arises.
 
 ## 11. Privacy and security
 
@@ -426,6 +434,7 @@ The chain is always: what fired (the source and its reading), what was routed (t
 - **Phone.** A needs-you card or a `high` card makes the kernel ask Cloud for a ping to the person's devices. The ping carries the kernel's id and nothing else. The app wakes, reads the card from the kernel through the relay and shows the notification on the device. Cloud learns that something happened on a kernel, never what.
 - **Publishing a source.** A private watcher becomes an App with an "event source" part, the same packaging as AEGS generators and Apps; installers run their own copy with their own Vault. A published source runs other people's code, so it needs the App runtime's containment before this is built.
 - **Top-bar bell.** Not yet, as decided.
+- **Public sources and billing.** Decision 5 records that a private source is free and a public source anyone can subscribe to needs a paid subscription. Nothing in this plan meters, prices or gates a source on payment; that is designed with the business model.
 
 ## 13. Validation
 
@@ -438,7 +447,7 @@ Acceptance runs on the real path: real kernels on two machines, the relay, the W
 | NC-03 | Cross-machine answer: a card from the second machine is answered while the person works in a Room on the first | The agent on the second machine continues; no client reload |
 | NC-04 | Live page card from the center: a sign-in code page | The person types the code in the center; the agent continues; the Vault-filled field is masked in every frame the model sees |
 | NC-05 | Notify when done: "send me a notification when you are done", then a long task with a context compaction in between | One card when the work ends, with a link; the pane shows "notified you: …"; ordinary turn ends raise no card |
-| NC-06 | Notify on PR review: "let me know when you receive the notification to review PR #976", then a kernel restart and a compaction, then real review requests on another PR and on #976, the subscribed agent's kernel being a different kernel from the GitHub source's | The subscription shows its reason and "Only PR #976"; the occurrence reaches the subscriber's kernel with the PR's number in its `data`; the other PR is filtered out without a wake, and does not use up `once`; a text-only occurrence is filtered out by the same condition; #976 wakes the agent, which notifies; the trace shows event, turn, "notified you"; the subscription then removes itself |
+| NC-06 | Notify on PR review: "let me know when you receive the notification to review PR #976", then a kernel restart and a compaction, then real review requests on another PR and on #976, the subscribed agent's kernel being a different kernel from the GitHub source's | The subscription shows its reason and "Only PR #976", picked from the GitHub source's declared options; the occurrence reaches the subscriber's kernel with the PR's number in its `data` and nothing else of the payload; the other PR is filtered out ("Not PR #976") without a wake, and does not use up `once`; #976 wakes the agent, which notifies; the trace shows event, turn, "notified you"; the subscription then removes itself |
 | NC-07 | Read, snooze, mute on two clients | State follows to the second client; a snoozed card returns on time; a muted source's cards arrive read; a needs-you card cannot be muted |
 | NC-08 | Machines: one machine's connection is cut, then a managed machine is stopped | Cards show under Reconnecting with actions disabled and leave after 10 minutes; no offline machine is listed anywhere; the stopped machine shows Stopped with Start |
 | NC-09 | Subscriptions table with agent, workflow, person and workflow-responsible subscribers on two machines | Every subscription is listed once with the right Room, machine, creator, last fired and count; Pause stops delivery and the trace says Paused; Resume delivers the next event |
@@ -455,6 +464,7 @@ Acceptance runs on the real path: real kernels on two machines, the relay, the W
 | NC-20 | Privacy, inspected during NC-03 and NC-13 | Cloud's database and logs contain no title, body, reading or count; the relay carried only encrypted frames |
 | NC-21 | An agent creates a watcher by itself with the tools and subscribes itself | No person step; the source and the subscription appear in the center with the agent as creator |
 | NC-22 | Workflow as subscriber, with a person as responsible (after #1377) | The source starts a run; a failed run raises a card to the responsible; the responsible is a row in Subscriptions |
+| NC-23 | Source-declared options: against a GitHub source and a watcher that declare options; subscribe by the picker and by the agent tool | The picker and `chariox.notification.sources` list exactly the declared options and their types. Picking 976 matches PR 976 and not PR 9760, and the text "976" is refused for a number option. An undeclared option, a wrong type and a repeated option are each refused when the subscription is created, with the source's options listed, and leave no row. An event that lacks the declared field is not delivered to a subscription that picked it. A watcher change that drops a picked option pauses its subscription with "Options changed" and delivers nothing until it is fixed. A subscription with no option picked receives every event. |
 
 ## 14. Milestones
 
@@ -464,35 +474,40 @@ Estimates are days of one lane, including review rounds and validation on the re
 | --- | --- | --- | --- |
 | M1 Inbox | Kernel-wide list of pending interactions for the owner, its change event, the center's Inbox tab, answer from the center, grouping, open in Room, badge, Reconnecting and Stopped | 4 | NC-01 to NC-04, NC-08 |
 | M2 Agents notify | `chariox.notify_person`, for-your-information cards, the pane line, read, snooze, mute, the person as subscriber | 3 | NC-05, NC-07 |
-| M3 Subscriptions | Kernel-wide list with counters, health and flags; the occurrence's structured `data` through the App-event adapter, the stored occurrence and the peer envelope (with the protocol bumps); filter and once; required prompt; pause, change subscriber, remove; test; trace with `turn_ref`; the Subscriptions tab; the Room list replaced by it | 6 | NC-06, NC-09 to NC-12, NC-22 |
-| M4 Watcher runtime | Package, supervision, cursor, the three modes, coalescing and rate limit, health as events, dry run, `chariox.watcher.*` | 6 | NC-14, NC-15, NC-21 |
+| M3 Subscriptions | Kernel-wide list with counters, health and flags; source-declared options (declaration, the picker, exact match, refusal at subscribe time) and the occurrence's `data` of declared fields through the App-event adapter, the stored occurrence and the peer envelope (with the protocol bumps); once; required prompt; pause, change subscriber, remove; test; trace with `turn_ref`; the Subscriptions tab; the Room list replaced by it | 6 | NC-06, NC-09 to NC-12, NC-22, NC-23 |
+| M4 Watcher runtime | Package, supervision, cursor, the three modes, declared options, coalescing and rate limit, health as events, dry run, `chariox.watcher.*` | 6 | NC-14, NC-15, NC-21 |
 | M5 Sources and creation | The Sources tab, the creation screen with the utility agent, the preview, placement, name and subscribers, Fix and Change | 5 | NC-13, NC-16, NC-18 |
 | M6 Move and judge | Move between kernels with the move record, `source_generation` and the commit and status exchange, "changed meaningfully", the push mode | 5 | NC-17, NC-19, NC-20 |
 | Later | Phone ping, publishing a source | not estimated | |
 
 Each milestone ships a usable part: after M1 the person already answers everything from one place.
 
-## 15. Open questions
+## 15. Decisions and defaults
 
-Each has a recommended default that the plan above already assumes.
+### Decided by the owner (2026-11-17)
 
-1. **Where in the sidebar?** Default: rename today's "Notifications" entry to "Notification center" where it is, after Vault and Extensions. *(P3.)*
-2. **A filter on subscriptions**, although the protocol says they have no options? Default: yes, the one small filter of section 6.2, written by agents. Without it an agent is woken and spends a turn to discard every event it did not want. *(P1, P2.)*
-3. **Where does coalescing live?** Default: on the source. A subscriber that wants less asks an agent to change the source or adds a filter. *(P1.)*
-4. **Who is the creation agent?** Default: a utility agent in a Room owned by the center, on the watcher's machine, using the person's default provider account there. Its conversation is kept with the source, so Change and Fix continue it. *(P1, P2.)*
-5. **Where does a network watcher run when the person has several machines?** Default: an always-on machine they already have, else the machine in use, with the one suggestion of section 7.7. *(P1; money stays a person step, P2.)*
-6. **Guests.** Default: v1 shows the person's own kernels only; cards in someone else's Room stay there. *(P1.)*
-7. **Does the end of every turn raise a card?** Default: no. Agents notify when asked or when it matters. *(P1.)*
-8. **How long do for-your-information cards stay?** Default: 7 days, the existing constant, no setting. *(P1.)*
-9. **Can Test really fire?** Default: no, a dry run only. A real firing is "Check now" on the source. *(P1.)*
-10. **Does a web page watcher use the kernel browser?** Default: a plain request first; the kernel browser only when the page needs scripts or a sign-in, because it costs memory on the machine. The agent decides. *(P2.)*
-11. **Which model judges "changed meaningfully"?** Default: the smallest model of the person's default provider account on that kernel, through the utility-call path, at most once per check. *(P1: nothing to choose.)*
-12. **How does a third party's webhook reach a kernel?** Default: the push mode serves a local address, as the agent HTTP trigger does, so it covers senders on the machine or its network. A sender on the internet goes through a public source (a hosted generator), as GitHub does. This plan opens no new way into a kernel. *(Runtime rule 4: Cloud and the relay carry no runtime traffic in the clear.)*
-13. **What contains a private watcher?** Default: the kernel's process limits and the person's own machine authority, as for any command their agents run. Sandboxing is required only for published sources. *(P2.)*
+| # | Question | Decision |
+| --- | --- | --- |
+| 1 | Where in the sidebar? | Rename today's "Notifications" entry in place, after Vault and Extensions. *(P3.)* |
+| 2 | A filter on subscriptions? | No filter language. Each source declares the few options a subscriber may pick, each tied to one declared field of its events; the kernel matches the picked values exactly; an undeclared option or a value of another type is refused at subscribe time (section 6.2). *(P1, P2.)* |
+| 3 | Does the end of every turn raise a card? | No. Agents notify when asked or when it matters. *(P1.)* |
+| 4 | Guests: do cards from someone else's Room appear in your center? | No, in v1 and onward, until the owner decides again. A card in someone else's Room stays in that Room. *(P1.)* |
+| 5 | How does a third party's webhook reach a kernel? | Only through a public source, as GitHub does. The push mode serves a local address, as the agent HTTP trigger does, so it covers senders on the machine or its network; this plan opens no new way into a kernel. *(Runtime rule 4: Cloud and the relay carry no runtime traffic in the clear.)* **Business note, recorded only:** a private source is free; a public source that anyone can subscribe to needs a paid subscription. The business model comes later; this plan designs and builds nothing for billing. |
+| 6 | Can Test really fire? | No, a dry run only. A real firing is "Check now" on the source. *(P1.)* |
+
+### Technical defaults the plan assumes
+
+7. **Where does coalescing live?** On the source. A subscriber that wants less asks an agent to change the source, or picks an option the source declares. *(P1.)*
+8. **Who is the creation agent?** A utility agent in a Room owned by the center, on the watcher's machine, using the person's default provider account there. Its conversation is kept with the source, so Change and Fix continue it. *(P1, P2.)*
+9. **Where does a network watcher run when the person has several machines?** An always-on machine they already have, else the machine in use, with the one suggestion of section 7.7. *(P1; money stays a person step, P2.)*
+10. **How long do for-your-information cards stay?** 7 days, the existing constant, no setting. *(P1.)*
+11. **Does a web page watcher use the kernel browser?** A plain request first; the kernel browser only when the page needs scripts or a sign-in, because it costs memory on the machine. The agent decides. *(P2.)*
+12. **Which model judges "changed meaningfully"?** The smallest model of the person's default provider account on that kernel, through the utility-call path, at most once per check. *(P1: nothing to choose.)*
+13. **What contains a private watcher?** The kernel's process limits and the person's own machine authority, as for any command their agents run. Sandboxing is required only for published sources. *(P2.)*
 
 ## 16. What this replaces
 
 - The sidebar's "Notifications" entry becomes the Notification center.
 - `ListWorkflowNotifications {session_id}` and the per-Room list give way to the kernel-wide list filtered to a Room.
-- The sentence "a subscription has no options" in `docs/EVENT_TRIGGER_PROTOCOL.md` changes with M3 to name the filter and `once`.
+- The sentence "a subscription has no options" in `docs/EVENT_TRIGGER_PROTOCOL.md` is true today and is rewritten by the M3 change, not before. After M3 a subscription carries `once`, `paused` and the values picked from the options its source declares (section 6.2), and still has no filter language, event lists, output fields, queue names, delivery modes or retention fields on any request; the document then names those options and `once` as the only things a subscription can carry beyond its source and target.
 - Nothing else is removed: workflow notifications, agent triggers, App events and outside agents keep their path and gain the center as their view.
