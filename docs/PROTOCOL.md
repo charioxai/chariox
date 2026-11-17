@@ -3395,6 +3395,9 @@ Workflow trigger and deployment direction:
   entry must be made for HTTP use at the destination's origin, and the value is never part of
   any reply. `capabilities.network[].credential` and `routes` plus the required feature
   `credentialed-http` declare the destination (`APPS_V2_CONTRACTS.md` §10).
+- protocol 1012 / relay peer 449 (provisional, APP-CONFIRM-03): `AppConfirmationFrame.input`, the exact input
+  the kernel runs when the person confirms (sorted pretty JSON, secrets masked, cut with a "N more bytes" note
+  past 4096 bytes), written by the kernel and required in every `app_confirmation`.
 - protocol 1011 / relay peer 448: standing permissions and a backend preview. `GrantAppStanding
   {installation_id, account, repo, class: merge|close|delete_branch|review, expires_at_ms?}`, `RevokeAppStanding
   {installation_id, standing_id}` and `ListAppStanding {installation_id}` answer `AppStanding {installation_id,
