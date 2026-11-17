@@ -65,7 +65,6 @@ mod owner;
 mod retired_sessions;
 pub(crate) mod room_environment;
 pub(crate) mod skill_reset;
-pub(crate) mod skill_reset_fence;
 mod skill_reset_startup;
 pub(crate) mod storage_full;
 mod sync_timing;
@@ -396,12 +395,6 @@ impl DurableKernelStateStore {
                 operation: "skills.v2.reset",
                 message: "cannot open the owned startup connection".into(),
             })?;
-        skill_reset_fence::register_writer(&connection).map_err(|_| {
-            DaemonError::LocalTransport {
-                operation: "skills.v2.reset",
-                message: "cannot configure the owned startup writer".into(),
-            }
-        })?;
         store.skill_catalog_owner = skill_reset_startup::run(&mut connection, &store, config)?;
         Ok(store)
     }
@@ -438,12 +431,6 @@ impl DurableKernelStateStore {
                 operation: "durable_state.open",
                 message: error.to_string(),
             })?;
-        skill_reset_fence::register_writer(&connection).map_err(|_| {
-            DaemonError::LocalTransport {
-                operation: "durable_state.skill_writer",
-                message: "cannot configure the Skills v2 durable writer".into(),
-            }
-        })?;
         if initialize_incremental_vacuum {
             connection
                 .pragma_update(None, "auto_vacuum", "INCREMENTAL")
@@ -1525,12 +1512,6 @@ impl DurableStateWriter {
                 operation: "durable_state.writer_wal",
                 message: error.to_string(),
             })?;
-        skill_reset_fence::register_writer(&connection).map_err(|_| {
-            DaemonError::LocalTransport {
-                operation: "durable_state.skill_writer",
-                message: "cannot configure the Skills v2 durable writer".into(),
-            }
-        })?;
         configure_durable_write_sync(&connection)?;
         let (sender, receiver) = mpsc::sync_channel(DURABLE_WRITE_QUEUE_CAPACITY);
         let health = Arc::new(DurableWriterHealth::default());

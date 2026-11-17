@@ -214,9 +214,9 @@ pub(super) fn completed_foreign_reset(
         ));
     }
     let complete:i64=connection.query_row(
-        "SELECT count(*) FROM durable_state_metadata WHERE owner_id='skills-v2' AND ((metadata_key='writer_epoch' AND metadata_value='2') OR (metadata_key='executable_reference_reset' AND metadata_value='complete') OR metadata_key='retired_names')",
+        "SELECT count(*) FROM durable_state_metadata WHERE owner_id='skills-v2' AND ((metadata_key='executable_reference_reset' AND metadata_value='complete') OR metadata_key='retired_names')",
         [],|row|row.get(0)).map_err(|_|failure("cannot verify the Skills home reset"))?;
-    if complete != 3 {
+    if complete != 2 {
         return Err(failure(
             "the owning kernel must finish Skills cleanup before this kernel can start",
         ));

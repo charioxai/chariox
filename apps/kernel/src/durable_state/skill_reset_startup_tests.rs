@@ -1,4 +1,4 @@
-//! MP-08 / MP-10 / MP-11: actual owned-store startup, files, journal and old writer.
+//! MP-08 / MP-10 / MP-11: actual owned-store startup, files and journal.
 use super::*;
 use crate::durable_state::DurableKernelStateStore;
 use serde_json::{json, Value};
@@ -74,13 +74,12 @@ impl Drop for Fixture {
 }
 
 #[test]
-fn skills_v2_owned_startup_retires_packages_artifacts_and_arms_the_live_writer() {
+fn skills_v2_owned_startup_retires_packages_and_artifacts() {
     let f = Fixture::new();
     let config = f.config("owner");
     f.old_package();
     f.seed_old(&config);
     let artifact = f.artifact("review-workflow", "Use $review then explain $total");
-    let old = Connection::open(config.durable_state_path()).unwrap();
     let store = DurableKernelStateStore::open_kernel_owned(&config).unwrap();
     assert!(store.owns_skill_catalog());
     assert!(store.skills_v2_reset_complete().unwrap());
@@ -108,7 +107,6 @@ fn skills_v2_owned_startup_retires_packages_artifacts_and_arms_the_live_writer()
         stored["definition"]["nodes"][0]["extensions"],
         json!([{"kind":"mcp","name":"safe"}])
     );
-    assert!(old.execute("DELETE FROM durable_state_events", []).is_err());
     store
         .append_event("skills.v2.test", None, json!({"upgraded":true}))
         .unwrap();

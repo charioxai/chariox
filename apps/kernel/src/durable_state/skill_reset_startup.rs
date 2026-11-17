@@ -1,8 +1,5 @@
 //! MP-08 / MP-10 / MP-11: owning startup admission, before session restoration or runtime admission.
-use super::{
-    skill_reset::{self, LegacySkillRoot, LegacySkillRootKind},
-    skill_reset_fence,
-};
+use super::skill_reset::{self, LegacySkillRoot, LegacySkillRootKind};
 use crate::{config::DaemonConfig, error::DaemonError};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use std::{
@@ -115,14 +112,8 @@ pub(super) fn run(
         if completed != "complete" {
             return Err(failure());
         }
-        // A crash after the completion checkpoint but before arming the fence
-        // only needs the fence. Never reinterpret newly installed v2 sources.
-        skill_reset_fence::arm(connection).map_err(|_| failure())?;
+        // Never reinterpret newly installed v2 sources.
         return Ok(global_owner);
-    }
-    let epoch:Option<String>=connection.query_row("SELECT metadata_value FROM durable_state_metadata WHERE owner_id='skills-v2' AND metadata_key='writer_epoch'",[],|row|row.get(0)).optional().map_err(|_|failure())?;
-    if epoch.is_some() {
-        return Err(failure());
     }
     let (legacy, artifacts) = roots(config, &home, global_owner)?;
     let mut names = crate::workflow_code::owned_workflow_skill_names(&artifacts)?;
@@ -150,8 +141,18 @@ pub(super) fn run(
     }
     tx.execute("INSERT INTO durable_state_metadata(owner_id,metadata_key,metadata_value,updated_at_ms) VALUES('skills-v2','executable_reference_reset','complete',0) ON CONFLICT(owner_id,metadata_key) DO UPDATE SET metadata_value='complete'",[]).map_err(|_|failure())?;
     tx.commit().map_err(|_| failure())?;
-    skill_reset_fence::arm(connection).map_err(|_| failure())?;
     Ok(global_owner)
+}
+
+/// Runtime readiness is a durable startup certificate, not protocol support.
+impl super::DurableKernelStateStore {
+    pub(crate) fn skills_v2_reset_complete(&self) -> Result<bool, DaemonError> {
+        let connection = self.lock_connection("skills.v2.reset_status")?;
+        let count:i64=connection.query_row(
+            "SELECT count(*) FROM durable_state_metadata WHERE owner_id='skills-v2' AND metadata_key IN ('authority_reset','filesystem_reset','publication_reference_reset','executable_reference_reset') AND metadata_value='complete'",
+            [],|row|row.get(0)).map_err(|_|DaemonError::LocalTransport {operation:"skills.v2.reset_status",message:"cannot verify the Skills reset checkpoints".into()})?;
+        Ok(count == 4)
+    }
 }
 
 #[cfg(test)]
