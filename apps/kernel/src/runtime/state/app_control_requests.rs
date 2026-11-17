@@ -598,7 +598,9 @@ impl KernelRuntimeState {
     /// deletes from it instead (`AppControlService::fixture_app_storage`).
     async fn delete_app_storage(
         &self,
-        owner: &str,
+        // The data directory follows the installation alone; only the test
+        // fixture records the owner.
+        #[cfg_attr(not(test), allow(unused_variables))] owner: &str,
         installation: &str,
     ) -> Result<(), AppRequestErrorCode> {
         #[cfg(test)]
@@ -607,14 +609,12 @@ impl KernelRuntimeState {
             return Ok(());
         }
         let database = self.owned.durable_state_store.path().to_owned();
-        let (erase_owner, erase_installation) = (owner.to_owned(), installation.to_owned());
+        let erase_installation = installation.to_owned();
         tokio::task::spawn_blocking(move || {
             use chariox_app_runtime::worker_process::{wasm::storage, WorkerError};
-            storage::delete(&database, &erase_owner, &erase_installation).map_err(|error| {
-                match error {
-                    WorkerError::Storage("app_storage_busy") => AppRequestErrorCode::Busy,
-                    _ => AppRequestErrorCode::StorageUnavailable,
-                }
+            storage::delete(&database, &erase_installation).map_err(|error| match error {
+                WorkerError::Storage("app_storage_busy") => AppRequestErrorCode::Busy,
+                _ => AppRequestErrorCode::StorageUnavailable,
             })
         })
         .await

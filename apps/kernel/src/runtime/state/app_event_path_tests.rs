@@ -24,6 +24,7 @@ use chariox_event_protocol::EventDeliveryEnvelope;
 use serde_json::{json, Value};
 use std::{path::PathBuf, time::Duration};
 use tokio::sync::{watch, Mutex};
+mod enrollment;
 mod routing;
 mod services;
 mod workflow_and_agent;
@@ -291,11 +292,14 @@ fn workflow(app: &mut DaemonApp, root: &std::path::Path, label: &str) -> (String
     (session.id().into(), publication.id().into())
 }
 fn counts(state: &KernelRuntimeState) -> (u64, u64, u64) {
+    counts_for(state, "local")
+}
+fn counts_for(state: &KernelRuntimeState, owner: &str) -> (u64, u64, u64) {
     let AppInboxOutcome::Routes(routes) = state
         .owned
         .durable_state_store
         .app_inbox(AppInboxOperation::Routes {
-            owner: "local".into(),
+            owner: owner.into(),
             installation: "installed".into(),
         })
         .unwrap()

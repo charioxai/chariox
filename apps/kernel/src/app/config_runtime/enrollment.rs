@@ -67,6 +67,12 @@ impl DaemonApp {
         for session in updated {
             self.update_session_projection(session);
         }
+        // The Apps follow their Rooms: their automations must resolve the
+        // workflows of the enrolled owner.
+        self.durable_state
+            .enroll_app_owner(DEFAULT_LOCAL_USER_ID, owner)?;
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        self.app_control.enroll_owner(DEFAULT_LOCAL_USER_ID, owner);
         Ok(())
     }
 }
@@ -331,6 +337,38 @@ mod tests {
         assert_eq!(entries(&app, "enrolled-person"), 4);
     }
 
+    #[test]
+    fn app_owner_enrollment_moves_only_local_records_and_a_second_pass_changes_nothing() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("enrollment-app-records");
+        let path = root.path().join("kernel/state.db");
+        let store = crate::durable_state::DurableKernelStateStore::open(path.clone()).unwrap();
+        crate::durable_state::app_state::fixture_inbox_installation(&store, DEFAULT_LOCAL_USER_ID);
+        let owners = || {
+            let db = rusqlite::Connection::open(&path).unwrap();
+            let mut q = db
+                .prepare("SELECT DISTINCT owner_id FROM app_installations ORDER BY 1")
+                .unwrap();
+            q.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(owners(), [DEFAULT_LOCAL_USER_ID]);
+        store
+            .enroll_app_owner(DEFAULT_LOCAL_USER_ID, "enrolled-person")
+            .unwrap();
+        assert_eq!(owners(), ["enrolled-person"]);
+        store
+            .enroll_app_owner(DEFAULT_LOCAL_USER_ID, "enrolled-person")
+            .unwrap();
+        assert_eq!(owners(), ["enrolled-person"]);
+        store
+            .enroll_app_owner("other-person", "third-person")
+            .unwrap();
+        assert_eq!(owners(), ["enrolled-person"]);
+    }
+
     /// Every owner-keyed table is either adopted by enrollment or named here
     /// with the reason it is not. A new owner-keyed table fails until classified.
     #[test]
@@ -379,42 +417,16 @@ mod tests {
             "workflow_notification_source_cache",
             "workflow_notification_source_fence",
         ];
-        // User-keyed and NOT adopted by enrollment today: App installations,
-        // consents, grants and publisher trust stay with the consenting owner,
-        // and created resources follow them. Known gap, reported for an owner
-        // decision; not silently exempt.
-        const NOT_ADOPTED: &[&str] = &[
-            "app_automations",
-            "app_connection_grants",
-            "app_deployment_consents",
-            "app_dev_identities",
-            "app_file_exports",
-            "app_file_grants",
-            "app_file_picks",
-            "app_host_actions",
-            "app_inbox",
-            "app_inbox_routes",
-            "app_installation_deployments",
-            "app_installation_operations",
-            "app_installation_stage_trust",
-            "app_installations",
-            "app_logs",
-            "app_outbox",
-            "app_outbox_replay_floors",
-            "app_publisher_decisions",
-            "app_publisher_keys",
-            "app_publisher_operations",
-            "app_release_versions",
-            "app_restore_receipts",
-            "app_validations",
-            "app_wakes",
-            "app_worker_lifecycle",
-            "created_resources",
-        ];
+        // Adopted by `enroll_app_owner`: an App stays with its Rooms.
+        const APP_ADOPTED: &[&str] = crate::durable_state::app_owner_enrollment::APP_OWNER_TABLES;
+        // Keyed by the project's creator, not an App record. Known gap, reported
+        // for an owner decision; not silently exempt.
+        const NOT_ADOPTED: &[&str] = &["created_resources"];
         let classified = ADOPTED
             .iter()
             .chain(KERNEL_KEYED)
             .chain(KEPT_FOR_ROOM)
+            .chain(APP_ADOPTED)
             .chain(NOT_ADOPTED)
             .map(|t| t.to_string())
             .collect::<std::collections::BTreeSet<_>>();
