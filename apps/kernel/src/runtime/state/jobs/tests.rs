@@ -8,20 +8,9 @@ type Fixture = (
     crate::test_support::TestWorktree,
 );
 
-/// A kernel as started by default: every job runs locally.
 pub(super) async fn fixture() -> Fixture {
-    fixture_with(false).await
-}
-
-/// A kernel started with remote jobs on, for the tests that drive the remote path.
-pub(super) async fn remote_fixture() -> Fixture {
-    fixture_with(true).await
-}
-
-async fn fixture_with(remote_jobs: bool) -> Fixture {
     let worktree = crate::test_support::TestWorktree::new("offload-job-entry");
-    let mut config = crate::config::DaemonConfig::for_tests();
-    config.remote_jobs = remote_jobs;
+    let config = crate::config::DaemonConfig::for_tests();
     let mut app = crate::DaemonApp::bootstrap(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -412,7 +401,7 @@ async fn offload_job_acquisition_receipt_survives_yield_and_ended_native_turn_bu
 
 #[tokio::test]
 async fn offload_job_runtime_budget_starts_after_queue_admission() {
-    let (state, run, task, _worktree) = remote_fixture().await;
+    let (state, run, task, _worktree) = fixture().await;
     state
         .set_remote_job_policy(
             &task.room_id,

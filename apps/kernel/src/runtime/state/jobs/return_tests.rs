@@ -356,7 +356,7 @@ pub(super) fn test_machine(grant: Arc<Outage>) -> super::super::job_compute::Job
 }
 
 pub(super) async fn prepared(script: &str, outputs: &[&str]) -> Prepared {
-    let (state, run, task, workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, workspace) = super::tests::fixture().await;
     let home = crate::test_support::TestWorktree::new("offload-outage-home");
     let outage = Arc::new(Outage {
         worker: worker_kernel(home.path()),

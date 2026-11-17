@@ -7,11 +7,6 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCaller,
         process_id: &str,
     ) -> Result<String, DaemonError> {
-        if !self.remote_jobs_enabled() {
-            return Err(ledger::error(
-                "Remote jobs are switched off on this kernel; the queued job keeps waiting locally",
-            ));
-        }
         let session = self.owned.session_store.get_session(session_id)?;
         let driver = self
             .job_wake_driver
