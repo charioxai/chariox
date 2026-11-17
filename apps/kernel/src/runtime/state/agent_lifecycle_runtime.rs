@@ -855,13 +855,40 @@ impl KernelRuntimeState {
         self.finish_agent_task_settlement(settlement, &source).await
     }
     /// The provider's turn about an ended background call is the last part of the work of a child
-    /// held for it: the parent hears of the finish now.
+    /// held for it: the parent hears of the finish now. A leased child's worker reports the turn's
+    /// end to its home, which holds the task.
     pub(super) async fn release_tasks_held_for_notification(
         &self,
         session_id: &str,
         agent_id: &str,
         provider_run_id: &str,
     ) -> Result<(), DaemonError> {
+        // A worker holds no task: its home does, and hears of this turn's end as a completion.
+        if self
+            .owned
+            .provider_run_projection
+            .is_leased_provider_run(provider_run_id)
+        {
+            let now = crate::session::unix_epoch_ms();
+            crate::logging::debug_with_fields(
+                "daemon.agent_lifecycle",
+                "a worker reports the end of the provider's own turn to its home",
+                serde_json::json!({"session_id": session_id, "provider_run_id": provider_run_id}),
+            );
+            self.owned.record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                self.owned
+                    .attachment_store
+                    .list_session_attachment_ids(session_id),
+                &format!(
+                    "{}{provider_run_id}:{now}",
+                    crate::transport::relay_peer::LEASED_NOTIFICATION_COMPLETION_PREFIX
+                ),
+                now,
+            );
+            return Ok(());
+        }
         for task in
             self.owned
                 .held_tasks_after_notification(session_id, agent_id, provider_run_id)?
@@ -1352,6 +1379,11 @@ impl KernelRuntimeState {
                 );
             }
             if task.state != ExecutionState::Working {
+                // Stop's own cleanup may not have read the held run yet: the stop the worker
+                // is owed is stored before the record that names the run goes.
+                if task.state == ExecutionState::Cancelled {
+                    self.owe_held_run_a_stop(&task)?;
+                }
                 self.owned.background_holds.release(&task.task_id);
             } else if self.owned.is_held_for_background_calls(&task.task_id) {
                 if self.owned.held_task_due(&task, now)? {

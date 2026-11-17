@@ -1730,6 +1730,7 @@ mod agent_workflow_tasks;
 mod agent_workspace_loss;
 mod card_action_state;
 mod interaction_wake;
+mod leased_background_hold;
 mod leased_task_connectivity;
 mod leased_worker_stop_obligation;
 mod lifecycle_sweep_flight;

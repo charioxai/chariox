@@ -251,6 +251,7 @@ impl KernelRuntimeState {
                 continue;
             }
             self.owned.record_wait_cancelled(&task);
+            self.owe_held_run_a_stop(&task)?;
             let session = self.owned.session_store.get_session(&task.room_id)?;
             let active = self
                 .owned

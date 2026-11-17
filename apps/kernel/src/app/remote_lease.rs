@@ -16,6 +16,7 @@ mod agent_move_capabilities;
 mod caller_binding;
 mod file_copy;
 mod git_observation;
+mod held_run_stop;
 mod leased_process;
 mod mcp_availability;
 mod native_provider;

@@ -1389,6 +1389,9 @@ impl KernelRuntimeState {
         });
         let session_id = home_session_id.clone();
         let agent_id = home_agent_id.clone();
+        let worked = output_chunks
+            .iter()
+            .any(|chunk| crate::app::is_work_of_a_turn(&chunk.kind, &chunk.bytes));
         let outcome = self
             .with_app_side_effect(move |app| {
                 RemoteLeaseRuntime::new(app).project_remote_runtime_projection(authority, event)
@@ -1396,6 +1399,28 @@ impl KernelRuntimeState {
             .await?;
         if !outcome.accepted {
             return Ok(());
+        }
+        if let Some(leased_agent_id) = self
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .ok()
+            .and_then(|agent| agent.remote_execution().map(|r| r.leased_agent_id.clone()))
+        {
+            self.settle_held_tasks_after_projection(
+                &session_id,
+                &agent_id,
+                &crate::provider::projected_leased_provider_run_id(
+                    &leased_agent_id,
+                    &worker_provider_run_id,
+                ),
+                super::leased_background_hold::HeldProjection {
+                    worked,
+                    notification_ended: outcome.notification_ended,
+                    run_ended: outcome.held_run_ended,
+                },
+            )
+            .await?;
         }
         if let Some(harvest) = outcome.completion_harvest {
             self.harvest_remote_completion_observations(harvest).await;

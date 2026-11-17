@@ -17,10 +17,12 @@ pub(crate) struct UnstoppedWorkerRun {
 }
 
 impl UnstoppedWorkerRun {
-    fn key(&self) -> (&str, &str) {
+    /// A run is reused by later prompts: each prompt that left it working owes its own stop.
+    fn key(&self) -> (&str, &str, &str) {
         (
             &self.binding.execution_lease_id,
             &self.worker_provider_run_id,
+            &self.home_prompt_id,
         )
     }
 }
@@ -38,7 +40,7 @@ pub(crate) enum WorkerStopMutation {
 
 pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
     db.execute_batch(
-        "CREATE TABLE IF NOT EXISTS agent_unstopped_worker_runs(lease_id TEXT NOT NULL,run_id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(lease_id,run_id));",
+        "CREATE TABLE IF NOT EXISTS agent_worker_stop_obligations(lease_id TEXT NOT NULL,run_id TEXT NOT NULL,prompt_id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(lease_id,run_id,prompt_id));",
     )
     .map_err(sql)
 }
@@ -50,8 +52,8 @@ pub(super) fn apply(
     match mutation {
         WorkerStopMutation::Open(run) => {
             tx.execute(
-                "INSERT INTO agent_unstopped_worker_runs VALUES(?1,?2,?3) ON CONFLICT DO NOTHING",
-                params![run.key().0, run.key().1, encode(&run)?],
+                "INSERT INTO agent_worker_stop_obligations VALUES(?1,?2,?3,?4) ON CONFLICT DO NOTHING",
+                params![run.key().0, run.key().1, run.key().2, encode(&run)?],
             )
             .map_err(sql)?;
         }
@@ -62,15 +64,15 @@ pub(super) fn apply(
             run.attempts += 1;
             run.next_attempt_ms = next_attempt_ms;
             tx.execute(
-                "UPDATE agent_unstopped_worker_runs SET payload=?3 WHERE lease_id=?1 AND run_id=?2",
-                params![run.key().0, run.key().1, encode(&run)?],
+                "UPDATE agent_worker_stop_obligations SET payload=?4 WHERE lease_id=?1 AND run_id=?2 AND prompt_id=?3",
+                params![run.key().0, run.key().1, run.key().2, encode(&run)?],
             )
             .map_err(sql)?;
         }
         WorkerStopMutation::Discharge(run) => {
             tx.execute(
-                "DELETE FROM agent_unstopped_worker_runs WHERE lease_id=?1 AND run_id=?2",
-                params![run.key().0, run.key().1],
+                "DELETE FROM agent_worker_stop_obligations WHERE lease_id=?1 AND run_id=?2 AND prompt_id=?3",
+                params![run.key().0, run.key().1, run.key().2],
             )
             .map_err(sql)?;
         }
@@ -82,7 +84,7 @@ impl DurableKernelStateStore {
     pub(crate) fn unstopped_worker_runs(&self) -> Result<Vec<UnstoppedWorkerRun>, DaemonError> {
         let db = self.lock_connection("agent.unstopped_worker_runs")?;
         let mut q = db
-            .prepare("SELECT payload FROM agent_unstopped_worker_runs")
+            .prepare("SELECT payload FROM agent_worker_stop_obligations")
             .map_err(sql)?;
         let rows = q.query_map([], |r| r.get::<_, String>(0)).map_err(sql)?;
         rows.map(|r| decode(&r.map_err(sql)?)).collect()
@@ -141,5 +143,24 @@ mod tests {
         );
         apply(WorkerStopMutation::Discharge(run()));
         assert!(f.store.unstopped_worker_runs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn two_prompts_that_left_one_run_working_each_owe_their_own_stop() {
+        let f = Fixture::new();
+        let apply = |mutation| {
+            f.store
+                .agent_lifecycle(Operation::WorkerStop(mutation))
+                .unwrap()
+        };
+        let later = UnstoppedWorkerRun {
+            home_prompt_id: "later-prompt".into(),
+            ..run()
+        };
+        apply(WorkerStopMutation::Open(run()));
+        apply(WorkerStopMutation::Open(later.clone()));
+        assert_eq!(f.store.unstopped_worker_runs().unwrap().len(), 2);
+        apply(WorkerStopMutation::Discharge(run()));
+        assert_eq!(f.store.unstopped_worker_runs().unwrap(), [later]);
     }
 }
