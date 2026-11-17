@@ -17,6 +17,7 @@ node --test scripts/checks/*.test.mjs   # each check plants a violation in a thr
 | `retired-names` | Names the owner retired are never written | use the current name; rename in files you touch |
 | `slice-image-closure` | A module a slice entrypoint imports must be in the slice image | add the `COPY` line to `apps/kernel/slice-linux-docker/docker/Dockerfile` |
 | `tracked-state` | State, logs and recordings never live in a repository | `git rm` it and keep it under `~/.chariox/dev/<task>/` |
+| `project-id-required` | Rooms always live under a Project: a Room is built with a non-empty `ProjectId`, required in storage and protocol | build the Room with `ProjectId::new` where the id enters the kernel; keep `project_id` required (no `Option`, no default, no empty-then-assign) |
 
 ## Allow lists
 
@@ -38,3 +39,4 @@ Add `<name>.mjs` exporting `{name, why, rule, rootFix, scan(ctx)}` (`scan` retur
 - `slice-image-closure` counts only the last (runtime) stage of the Dockerfile, with `COPY --from` transfers followed through the stage they read from. A relative import is looked up from where its importer is installed in the image, so a module installed elsewhere does not count.
 - `tracked-state` checks file kinds and sizes, not contents: a secret in a tracked source file is not found (test canaries make a token-prefix scan too noisy today).
 - `retired-names` counts lines per file; a retired name in a file name counts once more.
+- `project-id-required` reads production code under `apps/kernel/src` (comments, literals and test items hidden). `Option<ProjectId>`, `project_id: String::new()` and `assign_project_id` are red anywhere; an optional, `serde(default)` or `skip_serializing_if` `project_id` is red only in `session/` and `local/api/types/session*`, so list filters that take an optional project elsewhere pass. Review after 2026-12-15.

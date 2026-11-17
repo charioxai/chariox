@@ -367,6 +367,7 @@ mod encoding_tests {
             },
             session: Box::new(crate::session::RuntimeSession::new(
                 "room",
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",

@@ -497,7 +497,7 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
         _ => panic!("unexpected local response"),
     };
     assert!(materialized.is_hidden());
-    assert_eq!(materialized.project_id(), "");
+    assert!(materialized.project().is_hidden_scope());
     assert_eq!(materialized.owner_user_id(), runtime_owner_user_id);
     assert!(materialized.has_member(runtime_owner_user_id));
     assert_ne!(materialized.id(), source_session.id());

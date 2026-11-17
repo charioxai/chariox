@@ -293,6 +293,7 @@ mod tests {
         let room = |id: &str, owner: &str, prompt_at_ms: u64| {
             let mut room = crate::session::RuntimeSession::new(
                 id,
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",
@@ -326,6 +327,7 @@ mod tests {
         let state = fixture();
         let mut room = crate::session::RuntimeSession::new(
             "unrelated-room",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

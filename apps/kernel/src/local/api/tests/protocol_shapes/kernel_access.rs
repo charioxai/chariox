@@ -34,6 +34,7 @@ fn sudo_protocol_487_window_extension_and_session_status_shapes() {
     });
     let mut session = crate::session::RuntimeSession::new(
         "s",
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "worktree",

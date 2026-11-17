@@ -677,6 +677,7 @@ mod tests {
     fn workflow_run_redaction_fixture() -> (RuntimeSession, WorkflowRun, WorkflowRun) {
         let mut session = RuntimeSession::new(
             "session-redaction",
+            crate::session::ProjectId::test(),
             None,
             "workspace-redaction",
             "worktree-redaction",
@@ -749,6 +750,7 @@ mod tests {
     fn full_collaborator_session_projection_omits_unreadable_active_provider_run() {
         let mut session = RuntimeSession::new(
             "session-provider-visibility",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -879,6 +881,7 @@ mod tests {
         };
         let mut session = RuntimeSession::new(
             "session-private-trigger",
+            crate::session::ProjectId::test(),
             None,
             "workspace-private-trigger",
             "worktree-private-trigger",

@@ -539,8 +539,10 @@ impl AgentMoveStore {
             error("Move target receipt is missing; finish or repair the move before launching")
         })?;
         let path = receipt.primary_path()?;
+        let project_id = crate::session::ProjectId::new(&receipt.target_project_id)
+            .map_err(|source| error(source.to_string()))?;
         Ok(session.for_execution_project(
-            &receipt.target_project_id,
+            project_id,
             &path.display().to_string(),
             &path.display().to_string(),
         ))

@@ -984,7 +984,7 @@ mod tests {
                     .with_hidden(true),
             )
             .expect("hidden remote lease session should create");
-        assert!(session.project_id().is_empty());
+        assert!(session.project().is_hidden_scope());
 
         let _env = crate::env_lock::lock();
         let previous_isolation = std::env::var_os(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);

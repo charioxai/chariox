@@ -4,6 +4,7 @@ use super::*;
 fn terminal_metaagent_task_restart_clears_stale_plan() {
     let mut session = RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "workspace-1",
         "worktree-1",
@@ -30,7 +31,15 @@ fn terminal_metaagent_task_restart_clears_stale_plan() {
 fn lifecycle_projection_obeys_private_and_transparent_collaboration() {
     use crate::agent::GridPosition;
     use serde_json::json;
-    let mut session = RuntimeSession::new("room", None, "workspace", "tree", "machine", "kernel");
+    let mut session = RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "tree",
+        "machine",
+        "kernel",
+    );
     for (id, owner) in [("own", "member"), ("peer", "other")] {
         let mut agent = AgentInstance::new(
             id,
@@ -98,8 +107,15 @@ fn lifecycle_projection_obeys_private_and_transparent_collaboration() {
 #[test]
 fn user_projection_hides_goal_completion_check_instruction() {
     use crate::agent::{AgentInstance, GridPosition};
-    let mut session =
-        RuntimeSession::new("room", None, "workspace", "worktree", "machine", "daemon");
+    let mut session = RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "daemon",
+    );
     session.set_agents(vec![AgentInstance::new(
         "agent",
         "agent",
@@ -161,8 +177,15 @@ fn agent_tasks_and_wakes_follow_agent_trace_visibility() {
         }))
         .unwrap()
     };
-    let mut session =
-        RuntimeSession::new("room", None, "workspace", "worktree", "machine", "daemon");
+    let mut session = RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "daemon",
+    );
     session.set_agents(vec![AgentInstance::new(
         "agent",
         "agent",
@@ -197,8 +220,15 @@ fn user_projection_keeps_internal_active_prompt_identity_without_instruction_tex
 
 fn assert_internal_active_prompt_is_stoppable_without_text(prompt_id: &str) {
     use crate::agent::{AgentInstance, GridPosition};
-    let mut session =
-        RuntimeSession::new("room", None, "workspace", "worktree", "machine", "daemon");
+    let mut session = RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "daemon",
+    );
     session.set_agents(vec![AgentInstance::new(
         "agent",
         "agent",
@@ -250,8 +280,15 @@ fn user_projection_hides_sub_agents_from_the_list_and_the_counts() {
         }
         agent
     };
-    let mut session =
-        RuntimeSession::new("room", None, "workspace", "worktree", "machine", "daemon");
+    let mut session = RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "daemon",
+    );
     session.set_agents(vec![
         agent("root", None, false),
         agent("worker-1", Some("root"), false),

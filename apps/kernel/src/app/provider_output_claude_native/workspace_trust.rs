@@ -63,7 +63,7 @@ pub(super) fn selected_startup_workspace(
     let Ok(agent) = app.agents.get_agent(agent_id) else {
         return false;
     };
-    if agent.session_id() != session_id || session.project_id().is_empty() {
+    if agent.session_id() != session_id || session.project().is_hidden_scope() {
         return false;
     }
     if app

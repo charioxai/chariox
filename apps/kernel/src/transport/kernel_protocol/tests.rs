@@ -678,6 +678,7 @@ fn runtime_interactions_only_changes_can_skip_session_snapshot() {
 fn session_snapshot_with_agent() -> SessionSnapshotProjection {
     let mut session = RuntimeSession::new(
         "session-a",
+        crate::session::ProjectId::test(),
         Some("Test".to_string()),
         "workspace-a",
         "worktree-a",
@@ -731,6 +732,7 @@ fn session_snapshot_with_agent() -> SessionSnapshotProjection {
 fn session_snapshot_with_workflow_status(status: WorkflowRunStatus) -> SessionSnapshotProjection {
     let mut session = RuntimeSession::new(
         "session-a",
+        crate::session::ProjectId::test(),
         Some("Test".to_string()),
         "workspace-a",
         "worktree-a",

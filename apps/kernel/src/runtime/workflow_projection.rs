@@ -93,8 +93,15 @@ mod tests {
     use super::*;
 
     fn session_with_workflows() -> RuntimeSession {
-        let mut session =
-            RuntimeSession::new("session-1", None, "/repo", "/repo", "machine-1", "daemon-1");
+        let mut session = RuntimeSession::new(
+            "session-1",
+            crate::session::ProjectId::test(),
+            None,
+            "/repo",
+            "/repo",
+            "machine-1",
+            "daemon-1",
+        );
         session.create_workflow(WorkflowDefinition::new(
             "workflow-alpha",
             Some("deploy".to_string()),

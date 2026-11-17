@@ -805,10 +805,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 session.workspace_id() == workspace_id
                     && session.worktree_id() == worktree
                     && session.owner_user_id() == lease.owner_user_id
-                    && session.project_id()
-                        == source_project
-                            .map(|project| project.id())
-                            .unwrap_or_default()
+                    && match source_project {
+                        Some(project) => session.project_id() == project.id(),
+                        None => session.project().is_hidden_scope(),
+                    }
             });
         let session = match existing_session {
             Some(session) => {

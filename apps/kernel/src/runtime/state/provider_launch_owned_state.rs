@@ -1722,7 +1722,7 @@ mod tests {
                 .with_hidden(true),
             )
             .expect("hidden remote lease session should create");
-        assert!(session.project_id().is_empty());
+        assert!(session.project().is_hidden_scope());
 
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
