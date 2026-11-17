@@ -406,6 +406,10 @@ impl KernelRuntimeState {
                 continue;
             };
             let answer = owned.answer_with_running_background_note(&ended, None)?;
+            // The held run keeps working on its worker: the stop it is owed is stored before
+            // the hold that names the run goes. The wakes' retirement may have ended the task
+            // already, so this reads the hold, not the task's state.
+            self.owe_held_run_a_stop(&ended)?;
             owned.background_holds.release(&ended.task_id);
             if let Err(error) = self
                 .announce_child_finished(&ended, None, answer.as_ref())

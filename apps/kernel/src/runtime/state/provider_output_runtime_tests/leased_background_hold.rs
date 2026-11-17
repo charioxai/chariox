@@ -3,7 +3,7 @@
 //! turn ends on the worker, and tells the parent once, with that turn's answer.
 use super::background_tool_settlement::{lifecycle, tool_chunk};
 use super::child_finished::{child_finished, team_with, Team};
-use crate::durable_state::agent_lifecycle::ExecutionState;
+use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
 use crate::runtime::relay_peer_authority::{test_projection_authority, RemoteProjectionAuthority};
 use crate::terminal::TerminalOutputKind;
 use crate::transport::relay_peer::{
@@ -357,6 +357,38 @@ async fn stop_of_a_held_remote_child_owes_its_worker_a_stop() {
     assert_eq!(owed.len(), 1, "{owed:?}");
     assert_eq!(owed[0].worker_provider_run_id, leased.worker_run);
     assert_eq!(owed[0].binding.execution_lease_id, "lease-1");
+    assert_eq!(owed[0].home_prompt_id, leased.team.child_prompt.id());
+}
+
+/// The deadline ends the held child's task and drops its hold: the worker keeps running the
+/// held run unless the home stored the stop it owes first.
+#[tokio::test]
+async fn a_deadline_over_a_held_remote_child_owes_its_worker_a_stop() {
+    let leased = child_with_a_call_running("leased-hold-deadline").await;
+    let runtime = &leased.team.runtime;
+    runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::SetDeadline {
+            room: leased.team.room.clone(),
+            agent: leased.team.child.clone(),
+            deadline: Some(crate::session::unix_epoch_ms() + 400),
+            inherited: Vec::new(),
+        })
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    runtime
+        .tick_agent_deadlines(crate::session::unix_epoch_ms())
+        .await
+        .unwrap();
+    assert!(!working(&leased));
+    let owed = runtime
+        .owned
+        .durable_state_store
+        .unstopped_worker_runs()
+        .unwrap();
+    assert_eq!(owed.len(), 1, "{owed:?}");
+    assert_eq!(owed[0].worker_provider_run_id, leased.worker_run);
     assert_eq!(owed[0].home_prompt_id, leased.team.child_prompt.id());
 }
 
