@@ -6017,6 +6017,10 @@ mod tests {
 mod owner_context_drill;
 
 #[cfg(test)]
+#[path = "retained_projects_tests.rs"]
+mod retained_projects_tests;
+
+#[cfg(test)]
 mod peer_agent_stamp_tests {
     use super::*;
     use crate::transport::relay_peer::{

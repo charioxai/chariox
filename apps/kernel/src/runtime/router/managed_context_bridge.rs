@@ -10,18 +10,19 @@ use crate::managed_context::cloud_completion::{
 };
 use crate::managed_context::event_connections::ManagedContextEventConnectionImportTarget;
 use crate::managed_context::package::{
-    apply_managed_context_package, rollback_managed_context_package_application,
-    rollback_persisted_managed_context_publication, ManagedContextGitCredentialImportTarget,
-    ManagedContextImportedKernelContext, ManagedContextPackageApplicationRequest,
-    ManagedContextPackageBinding, ManagedContextPackageImportReceipt,
-    ManagedContextPackageImportRequest, ManagedContextProviderAccountImportTarget,
+    apply_managed_context_package, retain_registered_managed_context_projects,
+    rollback_managed_context_package_application, rollback_persisted_managed_context_publication,
+    ManagedContextGitCredentialImportTarget, ManagedContextImportedKernelContext,
+    ManagedContextPackageApplicationRequest, ManagedContextPackageBinding,
+    ManagedContextPackageImportReceipt, ManagedContextPackageImportRequest,
+    ManagedContextProviderAccountImportTarget,
 };
 use crate::managed_context::transfer::{
     ArmManagedContextTransfer, ManagedContextImportClaim, ManagedContextTransferCaller,
     ManagedContextTransferChunk, ManagedContextTransferPhase, ManagedContextTransferStatus,
     ManagedContextTransferStore, MAX_TRANSFER_CHUNK_BYTES,
 };
-use crate::runtime::state::ManagedContextRegistrationFailure;
+use crate::runtime::state::{ManagedContextRegistrationFailure, RetainedProjects};
 use crate::runtime::terminal_pairings::public_key_thumbprint;
 use crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE;
 use crate::transport::relay_peer::{
@@ -613,14 +614,30 @@ impl CommandRouter {
             });
         let launch_target = match launch_target {
             Ok(target) => target,
-            Err(ManagedContextRegistrationFailure::ProjectsRetained(retained_error)) => {
-                // A registered Project still points at the copied files: they stay.
-                // A retry applies the package again, recovers the publication and
-                // finds those Projects already registered.
+            Err(ManagedContextRegistrationFailure::ProjectsRetained(retained)) => {
+                let RetainedProjects {
+                    error: retained_error,
+                    projects,
+                } = *retained;
+                // A registered Project still points at the copied files: they stay,
+                // whatever later removes the rest of this transfer. A retry applies
+                // the package again, recovers the publication with the work done in
+                // it and finds those Projects already registered.
+                let retain_receipt = receipt.clone();
+                let retained = self
+                    .import_io(move || {
+                        retain_registered_managed_context_projects(&retain_receipt, &projects)
+                    })
+                    .await;
                 let release_store = store.clone();
                 let release_transfer_id = transfer_id.clone();
                 self.transfer_io(move || release_store.release_import(&release_transfer_id))
                     .await?;
+                if let Err(retain_error) = retained {
+                    return Err(managed_context_unavailable(format!(
+                        "{retained_error}; keep registered Projects' files: {retain_error}"
+                    )));
+                }
                 return Err(retained_error);
             }
             Err(ManagedContextRegistrationFailure::RolledBack(publication_error)) => {

@@ -17,21 +17,21 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-struct Cleanup(PathBuf);
+pub(super) struct Cleanup(pub(super) PathBuf);
 impl Drop for Cleanup {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
-struct EncryptedPeer<'a> {
-    harness: ManagedPeerRequestHarness<'a>,
-    source: &'a DaemonConfig,
-    identity: RelayCallerIdentity,
-    target_public_key: String,
-    disconnect_after_chunk: AtomicBool,
-    publication_interrupted: AtomicBool,
-    interrupt_import: Option<(
+pub(super) struct EncryptedPeer<'a> {
+    pub(super) harness: ManagedPeerRequestHarness<'a>,
+    pub(super) source: &'a DaemonConfig,
+    pub(super) identity: RelayCallerIdentity,
+    pub(super) target_public_key: String,
+    pub(super) disconnect_after_chunk: AtomicBool,
+    pub(super) publication_interrupted: AtomicBool,
+    pub(super) interrupt_import: Option<(
         &'a DaemonConfig,
         &'a crate::managed_context::transfer::ManagedContextTransferStore,
     )>,
@@ -173,7 +173,7 @@ fn interrupt_after_kernel_publication(
     Ok(())
 }
 
-fn enrolled_profile(config: &DaemonConfig, api_url: &str) -> PersistedCloudRelayProfile {
+pub(super) fn enrolled_profile(config: &DaemonConfig, api_url: &str) -> PersistedCloudRelayProfile {
     PersistedCloudRelayProfile {
         kernel_id: Some(config.daemon_id.clone()),
         kernel_credential: Some("synthetic-owner-kernel-credential".into()),
@@ -187,7 +187,7 @@ fn enrolled_profile(config: &DaemonConfig, api_url: &str) -> PersistedCloudRelay
     }
 }
 
-async fn target_router(
+pub(super) async fn target_router(
     config: DaemonConfig,
 ) -> (
     Arc<CommandRouter>,

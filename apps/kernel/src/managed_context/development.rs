@@ -255,7 +255,7 @@ pub(crate) use import::{
     recover_pruned_development_context_publication,
     recover_pruned_development_context_publication_for_cleanup,
     recover_pruned_mutable_development_context_publication, register_transfer_workspaces_parent,
-    MAX_PUBLICATION_RECEIPT_BYTES,
+    retain_development_context_publication, MAX_PUBLICATION_RECEIPT_BYTES,
 };
 use import_archive::{extract_and_verify_archive, validate_git_oid};
 use import_materialize::{materialize_prepared_repository, prepare_repository};

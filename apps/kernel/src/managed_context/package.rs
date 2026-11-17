@@ -1479,6 +1479,28 @@ pub(crate) fn rollback_managed_context_package_application(
     Ok(())
 }
 
+/// Keeps the files of the Projects (by position in the selection) that stay registered after a failed import: no
+/// rollback or retirement of the transfer removes them, and a retry recovers them as they have evolved.
+pub(crate) fn retain_registered_managed_context_projects(
+    receipt: &ManagedContextPackageImportReceipt,
+    projects: &[usize],
+) -> Result<(), DaemonError> {
+    let ManagedContextImportedDevelopment::FromSource { projects: imported } = &receipt.development
+    else {
+        return Ok(());
+    };
+    for index in projects {
+        let project = imported.get(*index).ok_or_else(|| {
+            package_error("a retained managed context Project is not part of the import")
+        })?;
+        super::development::retain_development_context_publication(
+            &project.receipt.destination_root,
+            &project.receipt.publication_id,
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) fn rollback_persisted_managed_context_publication(
     request: ManagedContextPackageImportRequest,
     development_destination_root: &Path,

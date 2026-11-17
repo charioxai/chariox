@@ -424,14 +424,23 @@ fn managed_context_project_error(message: impl Into<String>) -> DaemonError {
 pub(crate) enum ManagedContextRegistrationFailure {
     /// Every Project this call installed has been taken back.
     RolledBack(DaemonError),
-    /// A Project could not be taken back and stays registered with its files.
-    ProjectsRetained(DaemonError),
+    /// Projects stay registered with their files, because an earlier attempt left them or they could not be taken
+    /// back. Boxed to keep the `Result` this travels in small.
+    ProjectsRetained(Box<RetainedProjects>),
+}
+
+#[derive(Debug)]
+pub(crate) struct RetainedProjects {
+    pub(crate) error: DaemonError,
+    /// Positions in the selection of the Projects that stay registered.
+    pub(crate) projects: Vec<usize>,
 }
 
 impl ManagedContextRegistrationFailure {
     pub(crate) fn into_error(self) -> DaemonError {
         match self {
-            Self::RolledBack(error) | Self::ProjectsRetained(error) => error,
+            Self::RolledBack(error) => error,
+            Self::ProjectsRetained(retained) => retained.error,
         }
     }
 }
@@ -454,7 +463,7 @@ fn register_managed_context_projects(
     let mut seen = std::collections::BTreeSet::new();
     let mut fresh = Vec::new();
     let mut registered_earlier = Vec::new();
-    for project in projects {
+    for (index, project) in projects.into_iter().enumerate() {
         if !seen.insert(project.id().to_string()) {
             return Err(ManagedContextRegistrationFailure::RolledBack(
                 managed_context_project_error(format!(
@@ -469,40 +478,50 @@ fn register_managed_context_projects(
         if install_managed_context_project(existing, project.clone(), |_| Ok(()), |_| {})
             .map_err(ManagedContextRegistrationFailure::RolledBack)?
         {
-            fresh.push(project);
+            fresh.push((index, project));
         } else {
-            registered_earlier.push(format!(
-                "`{}` (registered by an earlier attempt)",
-                project.id()
-            ));
+            registered_earlier.push((index, project));
         }
     }
-    let mut installed: Vec<crate::session::RuntimeProject> = Vec::new();
-    for project in fresh {
+    let mut installed: Vec<(usize, crate::session::RuntimeProject)> = Vec::new();
+    for (index, project) in fresh {
         if let Err(error) = persist(&project) {
-            let mut retained = registered_earlier;
-            retained.extend(installed.iter().rev().filter_map(|done| {
+            let mut retained = registered_earlier
+                .iter()
+                .map(|(index, project)| {
+                    (
+                        *index,
+                        format!("`{}` (registered by an earlier attempt)", project.id()),
+                    )
+                })
+                .collect::<Vec<_>>();
+            retained.extend(installed.iter().rev().filter_map(|(done_index, done)| {
                 retract(done)
                     .err()
-                    .map(|rollback| format!("`{}` ({rollback})", done.id()))
+                    .map(|rollback| (*done_index, format!("`{}` ({rollback})", done.id())))
             }));
             if retained.is_empty() {
                 return Err(ManagedContextRegistrationFailure::RolledBack(error));
             }
-            return Err(ManagedContextRegistrationFailure::ProjectsRetained(
-                DaemonError::ManagedContext {
+            let descriptions = retained
+                .iter()
+                .map(|(_, description)| description.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(ManagedContextRegistrationFailure::ProjectsRetained(Box::new(RetainedProjects {
+                error: DaemonError::ManagedContext {
                     code: "managed_context_import_unavailable",
                     operation: "managed context relay import",
                     message: format!(
-                        "{error}; Projects stay registered with their files until the import is retried: {}",
-                        retained.join(", ")
+                        "{error}; Projects stay registered with their files until the import is retried: {descriptions}"
                     ),
                     retryable: true,
                 },
-            ));
+                projects: retained.into_iter().map(|(index, _)| index).collect(),
+            })));
         }
         publish(project.clone());
-        installed.push(project);
+        installed.push((index, project));
     }
     Ok(())
 }
@@ -536,7 +555,7 @@ mod tests {
     use super::{
         install_managed_context_project, managed_context_project_error, managed_context_projects,
         project_session_is_idle, register_managed_context_projects,
-        ManagedContextRegistrationFailure,
+        ManagedContextRegistrationFailure, RetainedProjects,
     };
     use crate::error::DaemonError;
     use crate::session::{
@@ -691,9 +710,11 @@ mod tests {
         .expect_err("the third write fails and project-2 cannot be taken back");
         // One stuck Project does not stop the others from being taken back.
         assert_eq!(retracted, ["project-2", "project-1"]);
-        let ManagedContextRegistrationFailure::ProjectsRetained(error) = failure else {
+        let ManagedContextRegistrationFailure::ProjectsRetained(retained) = failure else {
             panic!("project-2 is still registered, so the copied files must stay")
         };
+        let RetainedProjects { error, projects } = *retained;
+        assert_eq!(projects, [1], "project-2 is the second of the selection");
         let message = error.to_string();
         assert!(
             message.contains("injected durable write failure"),
@@ -779,9 +800,11 @@ mod tests {
             retracted.is_empty(),
             "project-1 is not this call's to retract"
         );
-        let ManagedContextRegistrationFailure::ProjectsRetained(error) = retry else {
+        let ManagedContextRegistrationFailure::ProjectsRetained(retained) = retry else {
             panic!("project-1 is still registered, so the copied files must stay")
         };
+        let RetainedProjects { error, projects } = *retained;
+        assert_eq!(projects, [0], "project-1 is the first of the selection");
         let message = error.to_string();
         assert!(
             message.contains("injected durable write failure"),

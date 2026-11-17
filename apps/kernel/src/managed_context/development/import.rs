@@ -3,6 +3,7 @@ use super::*;
 const PUBLICATION_RECEIPT_SCHEMA_VERSION: u32 = 2;
 const DIRECTORY_RECEIPT_SCHEMA_VERSION: u32 = 3;
 const PUBLICATION_RECEIPT_FILE: &str = ".chariox-managed-import-receipt.json";
+const RETAINED_PUBLICATION_FILE: &str = ".chariox-retained-by-project";
 const MATERIALIZATION_TRANSACTION_FILE: &str = ".chariox-materialization-transaction.json";
 const MATERIALIZATION_OWNERSHIP_FILE_PREFIX: &str = ".chariox-materialization-ownership-";
 pub(crate) const MAX_PUBLICATION_RECEIPT_BYTES: usize = 64 * 1024;
@@ -123,15 +124,55 @@ pub(crate) fn recover_development_context_publication(
         .ok_or_else(|| {
             context_error("occupied development context destination has no publication receipt")
         })?;
+    // A registered Project owns the repositories, so work done in them since the import is not a mismatch.
+    let require_original_head = !publication_is_retained(&canonical_destination)?;
     validate_publication_receipt(
         &receipt,
         request,
         publication_id,
         &canonical_destination,
-        true,
+        require_original_head,
         true,
     )?;
     Ok(Some(receipt))
+}
+
+/// Records that a registered Project points at this publication: no cleanup removes it and recovery accepts the
+/// commits made in it since. The record lives with the files, so it holds across restarts for as long as they do.
+pub(crate) fn retain_development_context_publication(
+    destination_root: &Path,
+    publication_id: &str,
+) -> Result<(), DaemonError> {
+    validate_publication_id(publication_id)?;
+    let canonical_destination = fs::canonicalize(destination_root).map_err(|error| {
+        context_io_error("resolve retained development context publication", error)
+    })?;
+    let receipt = read_publication_receipt(&canonical_destination.join(PUBLICATION_RECEIPT_FILE))?
+        .ok_or_else(|| context_error("retained development context publication has no receipt"))?;
+    if receipt.publication_id != publication_id {
+        return Err(context_error(
+            "refusing to retain a different development context publication",
+        ));
+    }
+    if publication_is_retained(&canonical_destination)? {
+        return Ok(());
+    }
+    write_private_file(
+        &canonical_destination.join(RETAINED_PUBLICATION_FILE),
+        publication_id.as_bytes(),
+    )?;
+    sync_directory(&canonical_destination)
+}
+
+fn publication_is_retained(canonical_destination: &Path) -> Result<bool, DaemonError> {
+    match fs::symlink_metadata(canonical_destination.join(RETAINED_PUBLICATION_FILE)) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(context_io_error(
+            "inspect retained development context publication",
+            error,
+        )),
+    }
 }
 
 pub(crate) fn recover_pruned_development_context_publication(
@@ -397,6 +438,9 @@ pub(crate) fn cleanup_development_context_publication(
         return Err(context_error(
             "refusing to remove a different development context publication",
         ));
+    }
+    if publication_is_retained(&canonical_destination)? {
+        return Ok(());
     }
     let request = DevelopmentContextImportRequest {
         archive_path: PathBuf::new(),
