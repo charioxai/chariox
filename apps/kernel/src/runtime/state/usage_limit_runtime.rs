@@ -253,8 +253,7 @@ impl KernelRuntimeState {
                     serde_json::json!({"agent_id": agent.id(), "error": error.to_string()}),
                 );
             }
-            if self.stopped_task_was_cancelled(&agent, &stop)? {
-                self.store_usage_limit_stop(&agent, None, "").await?;
+            if self.drop_stop_of_cancelled_task(&agent, &stop).await? {
                 continue;
             }
             match stop.state {
@@ -315,6 +314,20 @@ impl KernelRuntimeState {
             .is_some_and(|task| task.cancelled_on_purpose()))
     }
 
+    /// Ends the stop when its task was cancelled on purpose, so nothing resumes it. Returns whether
+    /// it did.
+    async fn drop_stop_of_cancelled_task(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        stop: &UsageLimitStop,
+    ) -> Result<bool, DaemonError> {
+        if !self.stopped_task_was_cancelled(agent, stop)? {
+            return Ok(false);
+        }
+        self.store_usage_limit_stop(agent, None, "").await?;
+        Ok(true)
+    }
+
     fn resume_is_being_sent(&self, agent: &crate::agent::AgentInstance) -> bool {
         self.owned
             .usage_limit_sends
@@ -351,8 +364,7 @@ impl KernelRuntimeState {
         if self.agent_has_turn(agent) {
             return Ok(false);
         }
-        if self.stopped_task_was_cancelled(agent, stop)? {
-            self.store_usage_limit_stop(agent, None, "").await?;
+        if self.drop_stop_of_cancelled_task(agent, stop).await? {
             return Ok(false);
         }
         {
@@ -496,13 +508,18 @@ impl KernelRuntimeState {
     }
 
     /// The same task goes on when it has one that is waiting on the stop; otherwise the agent gets a
-    /// kernel prompt in the same conversation.
+    /// kernel prompt in the same conversation. A cancel by the owner or an agent can land after the
+    /// resume was claimed, so it is checked again here and once more right before the prompt is
+    /// admitted; the claim stays held until this returns.
     async fn send_resume(
         &self,
         agent: &crate::agent::AgentInstance,
         stop: &UsageLimitStop,
     ) -> Result<(), DaemonError> {
         let owned = &self.owned;
+        if self.drop_stop_of_cancelled_task(agent, stop).await? {
+            return Ok(());
+        }
         let task = owned.durable_state_store.agent_turn_task(
             agent.session_id(),
             agent.id(),
@@ -521,6 +538,9 @@ impl KernelRuntimeState {
             "[Chariox usage resume] The provider usage limit has reset. Continue the work you were doing when it stopped. Do not repeat completed work.",
             crate::session::PromptStatus::Queued,
         );
+        if self.drop_stop_of_cancelled_task(agent, stop).await? {
+            return Ok(());
+        }
         let mut submission = self
             .submit_prepared_prompt_with_queue_policy(
                 crate::app::KernelPreparedPromptSubmission {

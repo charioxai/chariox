@@ -1225,19 +1225,8 @@ async fn a_decision_board_that_is_full_does_not_hold_back_another_agents_resume(
     );
 }
 
-#[tokio::test]
-async fn an_owner_cancel_of_the_stopped_task_ends_the_armed_resume_and_starts_no_prompt() {
-    let mut config = config(UsageLimitResume::Automatic);
-    config.room_agent_tools = true;
-    let team = team(config, 1).await;
-    let task_id = owe_work(&team, 0);
-    team.hit_the_limit(0).await;
-    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
-    assert!(matches!(
-        team.stop(0).unwrap().state,
-        UsageLimitStopState::Armed { .. }
-    ));
-
+/// The Room's owner cancels the task on purpose.
+async fn owner_cancels(team: &Team, task_id: &str) {
     let attachment_id = team
         .rt()
         .owned
@@ -1247,8 +1236,8 @@ async fn an_owner_cancel_of_the_stopped_task_ends_the_armed_resume_and_starts_no
     let request = crate::local::CancelAgentTaskRequest {
         session_id: team.session_id.clone(),
         attachment_id,
-        task_id: task_id.clone(),
-        revision: task_of(&team, &task_id).revision,
+        task_id: task_id.to_string(),
+        revision: task_of(team, task_id).revision,
     };
     let mut command = crate::runtime::command::KernelCommand::from_local_request(
         "usage-limit-owner-cancel",
@@ -1262,9 +1251,49 @@ async fn an_owner_cancel_of_the_stopped_task_ends_the_armed_resume_and_starts_no
         .cancel_owner_agent_task(&command, request)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn an_owner_cancel_of_the_stopped_task_ends_the_armed_resume_and_starts_no_prompt() {
+    let mut config = config(UsageLimitResume::Automatic);
+    config.room_agent_tools = true;
+    let team = team(config, 1).await;
+    let task_id = owe_work(&team, 0);
+    team.hit_the_limit(0).await;
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    assert!(matches!(
+        team.stop(0).unwrap().state,
+        UsageLimitStopState::Armed { .. }
+    ));
+
+    owner_cancels(&team, &task_id).await;
     assert_eq!(task_of(&team, &task_id).state, ExecutionState::Cancelled);
 
     tick(team.rt(), reset).await;
+    assert!(!team.has_turn(0), "cancelled work is not started again");
+    assert_eq!(team.stop(0), None, "the cancel ends the stop");
+}
+
+#[tokio::test]
+async fn an_owner_cancel_after_the_resume_is_claimed_and_before_it_is_sent_starts_no_prompt() {
+    let mut config = config(UsageLimitResume::Automatic);
+    config.room_agent_tools = true;
+    let team = team(config, 1).await;
+    let task_id = owe_work(&team, 0);
+    team.hit_the_limit(0).await;
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+
+    // The tick has claimed the resume; its sender has not run yet.
+    let sends = team.rt().tick_usage_limit_stops(reset).await.unwrap();
+    assert!(matches!(
+        team.stop(0).unwrap().state,
+        UsageLimitStopState::Resuming { .. }
+    ));
+    owner_cancels(&team, &task_id).await;
+    for send in sends {
+        send.await.unwrap();
+    }
+
     assert!(!team.has_turn(0), "cancelled work is not started again");
     assert_eq!(team.stop(0), None, "the cancel ends the stop");
 }
