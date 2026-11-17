@@ -259,23 +259,12 @@ impl KernelRuntimeState {
                 } if !self.resume_is_being_sent(&agent) => {
                     // A kernel that went away took the resume. When it admitted the continuation
                     // first, that turn runs now or already ended, and sending again would repeat
-                    // finished work; otherwise the resume is due now.
+                    // finished work; otherwise the resume is due now. The agent's own record of
+                    // when its last turn started is the receipt: it is saved with the turn.
                     let admitted = self.agent_has_turn(&agent)
-                        || match self.owned.operational_history_store.prompt_settled_since(
-                            agent.session_id(),
-                            agent.id(),
-                            since_ms,
-                        ) {
-                            Ok(settled) => settled,
-                            Err(error) => {
-                                crate::logging::warn_with_fields(
-                                    "daemon.usage_limit",
-                                    "could not tell whether the resume was admitted",
-                                    serde_json::json!({"agent_id": agent.id(), "error": error.to_string()}),
-                                );
-                                continue;
-                            }
-                        };
+                        || agent
+                            .last_prompt_sent_at_ms()
+                            .is_some_and(|started_ms| started_ms >= since_ms);
                     if admitted {
                         self.mark_resume_sent(&agent).await;
                     } else {

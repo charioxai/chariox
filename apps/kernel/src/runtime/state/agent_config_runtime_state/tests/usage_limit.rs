@@ -1001,7 +1001,17 @@ async fn a_resume_that_cannot_dispatch_stays_armed_for_the_next_tick() {
 async fn restarted_after_an_unrecorded_admission(team: &mut Team) -> (KernelRuntimeState, u64) {
     team.hit_the_limit(0).await;
     let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
-    tick(team.rt(), reset).await;
+    // The kernel resumes at the clock it saves a turn start with, so the claim is at that clock.
+    let claimed_at = crate::session::unix_epoch_ms();
+    let due = crate::agent::UsageLimitStop {
+        state: UsageLimitStopState::Armed { at_ms: claimed_at },
+        ..team.stop(0).unwrap()
+    };
+    team.rt()
+        .store_usage_limit_stop(&team.agent(0), Some(due), "")
+        .await
+        .unwrap();
+    tick(team.rt(), claimed_at).await;
     let admitted = team.stop(0).unwrap();
     let UsageLimitStopState::Resuming { since_ms, .. } = admitted.state else {
         panic!("the resume was claimed: {admitted:?}");
@@ -1096,7 +1106,19 @@ async fn a_resume_admitted_before_the_kernel_recorded_it_is_not_sent_again_after
 
 #[tokio::test]
 async fn a_continuation_that_finished_before_the_first_tick_after_a_restart_is_not_sent_again() {
-    let mut team = team(config(UsageLimitResume::Automatic), 1).await;
+    finished_before_the_first_tick_is_not_sent_again(config(UsageLimitResume::Automatic)).await;
+}
+
+/// Settlements are not saved without operational history; the receipt is the kernel's own.
+#[tokio::test]
+async fn a_continuation_that_finished_is_not_sent_again_when_history_is_not_captured() {
+    let mut config = config(UsageLimitResume::Automatic);
+    config.user_config.history.operational.enabled = false;
+    finished_before_the_first_tick_is_not_sent_again(config).await;
+}
+
+async fn finished_before_the_first_tick_is_not_sent_again(config: crate::config::DaemonConfig) {
+    let mut team = team(config, 1).await;
     let (after, reset) = restarted_after_an_unrecorded_admission(&mut team).await;
     finish_the_turn(&team, &after, reset + 30_000);
     tick(&after, reset + 60_000).await;

@@ -423,39 +423,6 @@ impl OperationalHistoryStore {
             .next())
     }
 
-    /// Whether the agent settled a prompt at or after `since_ms`: the settlement is the record a
-    /// finished turn leaves, so it shows a turn ended that no present state does.
-    pub(crate) fn prompt_settled_since(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        since_ms: u64,
-    ) -> Result<bool, DaemonError> {
-        self.delay_read_if_configured();
-        let connection = self.lock_read_connection(Some(session_id))?;
-        connection
-            .query_row(
-                "SELECT EXISTS(
-                     SELECT 1 FROM history_events
-                     WHERE session_id = ?1
-                       AND agent_id = ?2
-                       AND kind = 'provider_status'
-                       AND json_extract(event_json, ?3) >= ?4)",
-                params![
-                    session_id,
-                    agent_id,
-                    format!("$.metadata.{}", super::PROMPT_SETTLED_AT_MS_METADATA_KEY),
-                    since_ms as i64,
-                ],
-                |row| row.get(0),
-            )
-            .map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: Some(session_id.to_string()),
-                operation: "load prompt settlements since",
-                message: error.to_string(),
-            })
-    }
-
     pub fn load_session_events(
         &self,
         session_id: &str,
