@@ -207,6 +207,42 @@ async fn output(
     }
 }
 
+/// A command that ended by a signal, or failed after the memory controller
+/// killed one of its processes, says so in its own output: the reader of its
+/// outcome otherwise sees only an exit code. An OOM kill is the typed
+/// memory-limit outcome, since the exit code of a tool that lost a child says
+/// nothing of why.
+fn name_the_kill(
+    record: &Record,
+    outcome: ExecOutcome,
+    oom: Option<crate::runtime::process_resources::OomKill>,
+) -> ExecOutcome {
+    let failed = match &outcome {
+        ExecOutcome::Signaled { .. } => true,
+        ExecOutcome::Exited { code } => *code != 0,
+        ExecOutcome::MemoryLimit { .. } | ExecOutcome::Failed { .. } => return outcome,
+    };
+    let (line, outcome) = match (oom, &outcome) {
+        (Some(kill), _) if failed => (
+            kill.notice(),
+            ExecOutcome::MemoryLimit {
+                limit_bytes: kill.bytes,
+            },
+        ),
+        (None, ExecOutcome::Signaled { signal }) => (
+            crate::runtime::process_resources::signal_notice(*signal),
+            outcome,
+        ),
+        _ => return outcome,
+    };
+    record
+        .output
+        .lock()
+        .expect("exec output poisoned")
+        .push(ExecStream::Stderr, format!("\n{line}\n").as_bytes());
+    outcome
+}
+
 pub(super) fn run(
     mut process: Process,
     record: Arc<Record>,
@@ -267,12 +303,10 @@ pub(super) fn run(
                 }
             }
         };
-        let outcome = process
-            ._domain
-            .memory_limit_bytes()
-            .map_or(outcome, |limit_bytes| ExecOutcome::MemoryLimit {
-                limit_bytes,
-            });
+        let outcome = match process._domain.memory_limit_bytes() {
+            Some(limit_bytes) => ExecOutcome::MemoryLimit { limit_bytes },
+            None => name_the_kill(&record, outcome, process._domain.oom_kill()),
+        };
         // Only the reaped process and settled pipes publish the final outcome.
         // Stop the resource watch outside the async executor: its Drop joins a thread.
         let _ = tokio::task::spawn_blocking(move || {

@@ -516,9 +516,11 @@ impl KernelRuntimeState {
         }
         std::thread::spawn(move || {
             let mut alerted = false;
+            let mut signalled = None;
             let code = loop {
                 match owned.lock().map(|mut c| c.poll()) {
                     Ok(Ok(Some(status))) => {
+                        signalled = status.signal();
                         break Some(
                             status
                                 .code()
@@ -561,13 +563,18 @@ impl KernelRuntimeState {
             }
             // The stopped command may have been the root itself, which the
             // controller cannot tell through its own stream.
-            if let Some(notice) = owned
-                .lock()
-                .ok()
-                .and_then(|child| child.resources.as_ref()?.memory_stop_notice())
-            {
+            let resources = owned.lock().ok();
+            let domain = resources
+                .as_ref()
+                .and_then(|child| child.resources.as_ref());
+            if let Some(notice) = domain.and_then(|domain| domain.memory_stop_notice()) {
                 output.push(notice.trim_end().to_owned());
+            } else if let Some(kill) = domain.and_then(|domain| domain.oom_kill()) {
+                output.push(kill.notice());
+            } else if let Some(signal) = signalled {
+                output.push(crate::runtime::process_resources::signal_notice(signal));
             }
+            drop(resources);
             let _ = sender.send(match code {
                 Some(code) => Signal::Exited(code, output.text()),
                 None => Signal::Lost("process_lost: physical settlement could not be confirmed after bounded retries; survivors may still be running and require operator cleanup".into()),
@@ -1214,14 +1221,19 @@ mod tests {
         );
     }
 
-    /// A watched command the memory controller stops reaches the agent with
-    /// the reason, not as a bare exit 137.
+    /// A yielded agent with one watched process per entry of `argvs`.
     #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn a_watched_command_stopped_for_memory_delivers_the_reason() {
-        crate::test_support::isolated_env_test!();
-        std::env::set_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB", "64");
-        let worktree = crate::test_support::TestWorktree::new("memory-reason");
+    struct YieldedWatches {
+        _worktree: crate::test_support::TestWorktree,
+        room: String,
+        agent: String,
+        state: KernelRuntimeState,
+        wakes: Vec<AgentWake>,
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn yield_on_watches(argvs: Vec<Vec<String>>) -> YieldedWatches {
+        let worktree = crate::test_support::TestWorktree::new("watched-tail");
         let mut app =
             crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
         let (room, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1234,17 +1246,11 @@ mod tests {
                 owner: room.owner_user_id().into(),
                 room: room.id().into(),
                 agent: agent.id().into(),
-                prompt: "memory-turn".into(),
+                prompt: "tail-turn".into(),
                 run: Some("run".into()),
                 now,
             })
             .unwrap();
-        let grow =
-            "import time\nb=[]\nwhile True:\n b.append(bytearray(8*1048576)); time.sleep(0.1)";
-        let argv = vec!["python3".to_string(), "-c".into(), grow.into()];
-        let wake: AgentWake = serde_json::from_value(serde_json::json!({
-            "id":w(), "task_id":"memory-turn", "room_id":room.id(), "agent_id":agent.id(), "registration_id":format!("completion-{}", w()), "kind":"process", "label":"allocator", "state":"starting", "created_at_ms":now, "verified_at_ms":null, "next_due_ms":null, "interval_ms":null, "command":argv, "match_text":null, "matched_at_ms":null, "pid":null, "exit_code":null, "fire_count":0, "missed_fires":0, "last_fired_at_ms":null, "last_sequence":null, "last_delivery":null, "last_delivered_at_ms":null, "last_acknowledged_at_ms":null, "alerted_sequence":null
-        })).unwrap();
         let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
             Arc::new(tokio::sync::Mutex::new(app)),
             1,
@@ -1256,23 +1262,30 @@ mod tests {
             Some(agent.id().to_string()),
             "codex".into(),
         );
-        state
-            .start_agent_process(
-                wake.clone(),
-                wake.command.clone(),
-                worktree.path().to_path_buf(),
-                "memory-turn",
-                "memory-turn",
-                &run,
-            )
-            .await
-            .unwrap();
+        let mut wakes = Vec::new();
+        for (n, argv) in argvs.into_iter().enumerate() {
+            let wake: AgentWake = serde_json::from_value(serde_json::json!({
+                "id":format!("{}-{n}", w()), "task_id":"tail-turn", "room_id":room.id(), "agent_id":agent.id(), "registration_id":format!("completion-{}-{n}", w()), "kind":"process", "label":format!("watched-{n}"), "state":"starting", "created_at_ms":now, "verified_at_ms":null, "next_due_ms":null, "interval_ms":null, "command":argv, "match_text":null, "matched_at_ms":null, "pid":null, "exit_code":null, "fire_count":0, "missed_fires":0, "last_fired_at_ms":null, "last_sequence":null, "last_delivery":null, "last_delivered_at_ms":null, "last_acknowledged_at_ms":null, "alerted_sequence":null
+            })).unwrap();
+            state
+                .start_agent_process(
+                    wake.clone(),
+                    wake.command.clone(),
+                    worktree.path().to_path_buf(),
+                    "tail-turn",
+                    "tail-turn",
+                    &run,
+                )
+                .await
+                .unwrap();
+            wakes.push(wake);
+        }
         let store = &state.owned.durable_state_store;
         store
             .agent_lifecycle(Operation::Yield {
-                task: "memory-turn".into(),
-                prompt: "memory-turn".into(),
-                registrations: vec![wake.registration_id.clone()],
+                task: "tail-turn".into(),
+                prompt: "tail-turn".into(),
+                registrations: wakes.iter().map(|w| w.registration_id.clone()).collect(),
                 cursor: 0,
                 deadline: Some(now + 60_000),
                 reason: "watch".into(),
@@ -1283,47 +1296,150 @@ mod tests {
             .agent_lifecycle(Operation::Settle {
                 room: room.id().into(),
                 agent: agent.id().into(),
-                prompt: "memory-turn".into(),
+                prompt: "tail-turn".into(),
                 run: "run".into(),
                 has_answer: true,
                 cancelled: false,
                 now,
             })
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let tail = loop {
-            let exited = store
-                .agent_inbox(room.id(), agent.id(), 0)
-                .unwrap()
-                .into_iter()
-                .find(|event| event.payload["public_answer"].get("output_tail").is_some());
-            if let Some(event) = exited {
-                break event.payload["public_answer"]["output_tail"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned();
+        YieldedWatches {
+            room: room.id().into(),
+            agent: agent.id().into(),
+            _worktree: worktree,
+            state,
+            wakes,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl YieldedWatches {
+        /// The first inbox event of the agent that `pick` returns, within 30 s.
+        async fn inbox_event<T>(
+            &self,
+            pick: impl Fn(&crate::durable_state::agent_lifecycle::InboxEvent) -> Option<T>,
+        ) -> T {
+            let store = &self.state.owned.durable_state_store;
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                // The scheduler loop is not running in this rig.
+                self.state.deliver_process_waits();
+                let events = store.agent_inbox(&self.room, &self.agent, 0).unwrap();
+                if let Some(found) = events.iter().find_map(&pick) {
+                    return found;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the agent was never told: {:?} {:?}",
+                    store
+                        .agent_wakes(Some(&self.room), Some(&self.agent))
+                        .unwrap()
+                        .into_iter()
+                        .map(|w| (w.state, w.exit_code))
+                        .collect::<Vec<_>>(),
+                    events.into_iter().map(|e| e.kind).collect::<Vec<_>>()
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            assert!(
-                Instant::now() < deadline,
-                "the allocator was never stopped: {:?} {:?}",
-                store
-                    .agent_wakes(Some(room.id()), Some(agent.id()))
-                    .unwrap()
-                    .into_iter()
-                    .map(|w| (w.state, w.exit_code))
-                    .collect::<Vec<_>>(),
-                store
-                    .agent_inbox(room.id(), agent.id(), 0)
-                    .unwrap()
-                    .into_iter()
-                    .map(|e| e.kind)
-                    .collect::<Vec<_>>()
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        };
+        }
+    }
+
+    /// Runs `argv` as a watched process of a yielded agent and returns the
+    /// output tail its end delivers to the inbox.
+    #[cfg(target_os = "linux")]
+    async fn tail_of_watched_end(argv: Vec<String>) -> String {
+        yield_on_watches(vec![argv])
+            .await
+            .inbox_event(|event| {
+                event.payload["public_answer"]["output_tail"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .await
+    }
+
+    /// A watched command the memory controller stops reaches the agent with
+    /// the reason, not as a bare exit 137.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_watched_command_stopped_for_memory_delivers_the_reason() {
+        crate::test_support::isolated_env_test!();
+        std::env::set_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB", "64");
+        let grow =
+            "import time\nb=[]\nwhile True:\n b.append(bytearray(8*1048576)); time.sleep(0.1)";
+        let tail = tail_of_watched_end(vec!["python3".to_string(), "-c".into(), grow.into()]).await;
         std::env::remove_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB");
         assert!(
             tail.contains("stopped this command at its owner-set memory cap of 64 MiB"),
+            "the agent was not told why: {tail:?}"
+        );
+    }
+
+    /// A cgroup OOM kill (no kernel policy involved) reads as the memory
+    /// controller's work, not as `kill -9`.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "sets memory.max on a cgroup unit: run with --ignored inside a throwaway delegated cgroup"]
+    async fn a_watched_process_killed_by_the_memory_controller_delivers_the_reason() {
+        crate::test_support::isolated_env_test!();
+        let script = "unit=$(dirname /sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)); \
+            echo 0 > $unit/memory.swap.max; echo 134217728 > $unit/memory.max; \
+            exec python3 -c 'import time; b=bytearray(512*1024*1024); time.sleep(30)'";
+        let tail = tail_of_watched_end(vec!["bash".into(), "-c".into(), script.into()]).await;
+        assert!(
+            tail.contains("killed: out of memory"),
+            "the agent was not told why: {tail:?}"
+        );
+    }
+
+    /// The av7 stall: the agent waits for a file that a process of its own
+    /// would have written, and the memory controller killed that process.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "sets memory.max on a cgroup unit: run with --ignored inside a throwaway delegated cgroup"]
+    async fn an_agent_waiting_on_a_file_is_woken_when_its_own_process_is_oom_killed() {
+        crate::test_support::isolated_env_test!();
+        let waiting = vec![
+            "bash".into(),
+            "-c".into(),
+            "until [ -f never-written ]; do sleep 0.2; done".into(),
+        ];
+        let script = "unit=$(dirname /sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)); \
+            echo 0 > $unit/memory.swap.max; echo 134217728 > $unit/memory.max; \
+            exec python3 -c 'import time; b=bytearray(512*1024*1024); time.sleep(30)'";
+        let producer = vec!["bash".into(), "-c".into(), script.into()];
+        let rig = yield_on_watches(vec![waiting.clone(), producer]).await;
+        let told = rig
+            .inbox_event(|event| {
+                (event.kind == "scope_process_killed")
+                    .then(|| event.payload.to_string())
+                    .filter(|payload| payload.contains(&rig.wakes[0].id))
+            })
+            .await;
+        assert!(told.contains("killed: out of memory"), "{told}");
+        let waiting_wake = rig
+            .state
+            .owned
+            .durable_state_store
+            .agent_wakes(Some(&rig.room), Some(&rig.agent))
+            .unwrap()
+            .into_iter()
+            .find(|wake| wake.id == rig.wakes[0].id)
+            .unwrap();
+        assert_eq!(
+            waiting_wake.state, "running",
+            "the wait itself is not ended"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_signalled_watched_process_names_the_signal() {
+        crate::test_support::isolated_env_test!();
+        let tail =
+            tail_of_watched_end(vec!["bash".into(), "-c".into(), "kill -TERM $$".into()]).await;
+        assert!(
+            tail.contains("killed by signal 15 (SIGTERM)"),
             "the agent was not told why: {tail:?}"
         );
     }
