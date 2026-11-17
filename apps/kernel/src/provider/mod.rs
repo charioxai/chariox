@@ -10,6 +10,7 @@ mod account_endpoints;
 mod claude;
 mod claude_runtime;
 pub(crate) use claude_runtime::claude_rate_limit_snapshot;
+pub(crate) use claude_runtime::failed_to_start_before_prompt;
 pub(crate) use claude_runtime::usage::{
     claude_status_line_context_usage, claude_status_line_usage_snapshot,
 };

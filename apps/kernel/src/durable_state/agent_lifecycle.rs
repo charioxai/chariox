@@ -1516,6 +1516,7 @@ pub(crate) fn delivery_receipt_state(
         // A non-structured adapter write is its only acceptance receipt.
         Some(Ok(true)) => "accepted",
         Some(Ok(false) | Err(DaemonError::ProviderPromptSteerRejected { .. })) | None => "rejected",
+        Some(Err(error)) if crate::provider::failed_to_start_before_prompt(error) => "rejected",
         Some(Err(_)) => "uncertain",
     }
 }
@@ -1526,7 +1527,10 @@ pub(crate) fn delivery_attempt_receipt_state(
     result: &Result<bool, DaemonError>,
     structured: bool,
 ) -> &'static str {
-    if !bound_to_provider_io && result.is_err() {
+    let refused_before_sending = result.as_ref().err().is_some_and(|error| {
+        !bound_to_provider_io || crate::provider::failed_to_start_before_prompt(error)
+    });
+    if refused_before_sending {
         "rejected"
     } else {
         delivery_receipt_state(Some(result), structured)
@@ -1657,6 +1661,7 @@ pub(crate) fn finish_provider_event_submit(
     let state = match &finished.result {
         Ok(_) => "accepted",
         Err(DaemonError::ProviderPromptSteerRejected { .. }) => "rejected",
+        Err(error) if crate::provider::failed_to_start_before_prompt(error) => "rejected",
         Err(_) => "uncertain",
     };
     match store.agent_lifecycle(Operation::Receipt {

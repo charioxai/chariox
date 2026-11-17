@@ -3167,6 +3167,69 @@ fn a02_g02_pre_io_failure_does_not_fabricate_uncertain_delivery() {
     );
 }
 
+// A provider that could not be started wrote nothing: the submit job's failure
+// returns the bound delivery to pending, not to uncertain and then blocked.
+#[test]
+fn a02_g02_provider_start_failure_after_the_fence_is_a_refusal() {
+    for (operation, state) in [
+        ("claude_restart_for_selection_change", "pending"),
+        ("claude_write_prompt", "uncertain"),
+    ] {
+        let f = Fixture::new();
+        let mut e = occurrence(
+            "room",
+            "child",
+            "parent",
+            "start",
+            "message",
+            serde_json::json!({}),
+        );
+        e.urgent = true;
+        let Outcome::Event(e) = f.apply(Operation::Occur(e)) else {
+            panic!()
+        };
+        let now = crate::session::unix_epoch_ms();
+        f.apply(Operation::Attempt {
+            room: "room".into(),
+            agent: "child".into(),
+            sequence: e.sequence,
+            prompt: "p".into(),
+            target: None,
+            run: Some("run".into()),
+            now,
+            work: None,
+            through: 0,
+        });
+        f.apply(Operation::BindSubmission {
+            room: "room".into(),
+            agent: "child".into(),
+            sequence: e.sequence,
+            prompt: "p".into(),
+            target: None,
+            run: "run".into(),
+            submit_epoch: 7,
+            now,
+        });
+        let finished = crate::provider::FinishedProviderPromptSubmitJob {
+            session_id: "room".into(),
+            agent_id: "child".into(),
+            prompt_id: "p".into(),
+            provider_run_id: "run".into(),
+            result: Err(crate::error::DaemonError::LocalTransport {
+                operation,
+                message: "failed to start Claude Code: No such file or directory".into(),
+            }),
+            settlement_retry_attempt: 0,
+        };
+        finish_provider_event_submit(&f.store, 7, &finished).unwrap();
+        assert_eq!(
+            f.store.agent_inbox("room", "child", 0).unwrap()[0].state,
+            state,
+            "{operation}"
+        );
+    }
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: retiring an automatic wake must not discard its resource outcome.
 #[test]
 fn a12_expired_completion_receipt_can_settle_matching_goal_after_pause() {
