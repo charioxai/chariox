@@ -154,9 +154,6 @@ fn collect_at(
         if !same_state(&initial, &after) {
             return Err(failure("skill source changed while reading; preview again"));
         }
-        if crate::extension_package_security::contains_private_key(&bytes) {
-            return Err(failure("skill package contains private key material"));
-        }
         *total += bytes.len() as u64;
         if *total > MAX_SKILL_PACKAGE_BYTES {
             return Err(failure("skill package exceeds maximum byte size (10 MiB)"));

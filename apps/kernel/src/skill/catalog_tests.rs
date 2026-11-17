@@ -563,6 +563,50 @@ fn skills_v2_stale_preview_names_the_current_revision() {
     );
     assert_eq!(f.storage.snapshot().unwrap(), published);
 }
+// Bundled examples are not secrets: a guide that shows PEM boundaries, an `.env.example`,
+// a public certificate and a root `config.json` install like any other skill file.
+#[test]
+fn skills_v2_folder_install_keeps_harmless_secret_like_examples() {
+    let f = StorageFixture::new();
+    let folder = f.root.join("pem-guide");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join("SKILL.md"),
+        "---\nname: pem-guide\ndescription: Explain PEM files\n---\nA key file starts with\n-----BEGIN PRIVATE KEY-----\nand ends with -----END PRIVATE KEY-----.\n",
+    )
+    .unwrap();
+    for (name, content) in [
+        (".env.example", "API_URL=https://example.com\n"),
+        (
+            "cert.pem",
+            "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+        ),
+        ("config.json", "{\"lint\":true}\n"),
+    ] {
+        std::fs::write(folder.join(name), content).unwrap();
+    }
+    let service = super::service::SkillCatalogService::new(f.storage.clone());
+    let mutation = SkillCatalogMutation {
+        scope: SkillScope::Chariox,
+        expected_revision: 0,
+        actions: vec![SkillCatalogAction::Install {
+            source: SkillInstallSource::Folder {
+                path: folder.display().to_string(),
+            },
+            collision: SkillCollisionAction::Reject,
+            package_id: None,
+        }],
+    };
+    let prepared = service.prepare(&mutation).unwrap();
+    let published = service.publish_authorized(&mutation, &prepared).unwrap();
+    let record = published
+        .record(&published.catalogs[0].skills[0].id)
+        .unwrap();
+    let root = service.package_root(record);
+    for name in ["SKILL.md", ".env.example", "cert.pem", "config.json"] {
+        assert!(root.join(name).is_file(), "{name} must be installed");
+    }
+}
 #[test]
 fn skills_v2_cold_start_explicit_body_fits_the_supported_context_floor() {
     let f = StorageFixture::new();

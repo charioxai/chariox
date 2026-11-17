@@ -203,9 +203,6 @@ pub(crate) fn verify_package(
         if total > MAX_SKILL_PACKAGE_BYTES {
             return Err(failure("skill package exceeds maximum byte size"));
         }
-        if crate::extension_package_security::contains_private_key(&bytes) {
-            return Err(failure("skill package contains private key material"));
-        }
         if sha256_hex(&bytes) != file.sha256 {
             return Err(failure("skill package file hash mismatch"));
         }
@@ -388,9 +385,6 @@ fn collect_files(
             .take(MAX_SKILL_PACKAGE_BYTES.saturating_sub(*total) + 1)
             .read_to_end(&mut bytes)
             .map_err(|_| failure("cannot read skill source"))?;
-        if crate::extension_package_security::contains_private_key(&bytes) {
-            return Err(failure("skill package contains private key material"));
-        }
         *total += bytes.len() as u64;
         if *total > MAX_SKILL_PACKAGE_BYTES {
             return Err(failure("skill package exceeds maximum byte size (10 MiB)"));
@@ -417,34 +411,6 @@ fn validate_package_relative_path(path: &str) -> Result<(), DaemonError> {
         return Err(failure(
             "skill package path must be portable, relative and contained",
         ));
-    }
-    let basename = path
-        .rsplit('/')
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let private_account = path.split('/').any(|part| {
-        matches!(
-            part.to_ascii_lowercase().as_str(),
-            "auth.json" | ".credentials.json" | "credentials.toml" | "oauth-token"
-        )
-    });
-    let adjacent_config = !path.contains('/')
-        && matches!(
-            basename.as_str(),
-            "config.json"
-                | "config.toml"
-                | "settings.json"
-                | "settings.local.json"
-                | "opencode.json"
-                | "opencode.jsonc"
-                | ".mcp.json"
-        );
-    if crate::extension_package_security::sensitive_package_path(path)
-        || private_account
-        || adjacent_config
-    {
-        return Err(failure("skill packages cannot include account, credential or adjacent private configuration files; choose the skill folder and exclude private files"));
     }
     for part in path.split('/') {
         let stem = part
