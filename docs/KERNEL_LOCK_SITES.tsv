@@ -2267,7 +2267,6 @@ runtime/state/agent_config_runtime_state/app_bindings.rs	552	rwlock?	revoke_app_
 runtime/state/agent_auth/storage.rs	6	decl	?				pub(in crate::runtime::state) struct RegistrationClaims(Arc<std::sync::Mutex<BTreeSet<String>>>);
 runtime/state/agent_auth/storage.rs	16	lock	claim	temp	22		.lock()
 runtime/state/agent_auth/storage.rs	32	lock	drop	temp	33		if let Ok(mut claims) = self.claims.0.lock() {
-runtime/state/runtime_interaction_owned_state/kernel_wide.rs	21	rwlock?	ensure_kernel_decision_capacity				let pending = self.pending_interactions.write();
 runtime/state/runtime_interaction_owned_state/kernel_wide.rs	85	rwlock?	register_kernel_wide_secret_interaction				let mut pending = self.pending_interactions.write();
 runtime/state/runtime_interaction_owned_state/kernel_wide.rs	107	decl	register_kernel_wide_secret_interaction				responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
 runtime/state/runtime_interaction_owned_state/kernel_wide.rs	153	rwlock?	register_kernel_wide_access_interaction				let mut pending = self.pending_interactions.write();
