@@ -21,6 +21,7 @@ use crate::managed_context::transfer::{
     ManagedContextTransferChunk, ManagedContextTransferPhase, ManagedContextTransferStatus,
     ManagedContextTransferStore, MAX_TRANSFER_CHUNK_BYTES,
 };
+use crate::runtime::state::ManagedContextRegistrationFailure;
 use crate::runtime::terminal_pairings::public_key_thumbprint;
 use crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE;
 use crate::transport::relay_peer::{
@@ -604,6 +605,7 @@ impl CommandRouter {
         };
         let launch_target = store
             .launch_target_for_import_receipt(&transfer_id, &receipt)
+            .map_err(ManagedContextRegistrationFailure::RolledBack)
             .and_then(|target| {
                 self.runtime_state
                     .ensure_managed_context_project(&target, &caller.owner_user_id)?;
@@ -611,7 +613,17 @@ impl CommandRouter {
             });
         let launch_target = match launch_target {
             Ok(target) => target,
-            Err(publication_error) => {
+            Err(ManagedContextRegistrationFailure::ProjectsRetained(retained_error)) => {
+                // A registered Project still points at the copied files: they stay.
+                // A retry applies the package again, recovers the publication and
+                // finds those Projects already registered.
+                let release_store = store.clone();
+                let release_transfer_id = transfer_id.clone();
+                self.transfer_io(move || release_store.release_import(&release_transfer_id))
+                    .await?;
+                return Err(retained_error);
+            }
+            Err(ManagedContextRegistrationFailure::RolledBack(publication_error)) => {
                 let rollback_receipt = receipt.clone();
                 let rollback_provider_account_target = provider_account_target.clone();
                 let rollback_git_credential_target = git_credential_target.clone();

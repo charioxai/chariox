@@ -592,6 +592,7 @@ mod active_prompt_steering;
 mod external_command_authority;
 mod gateway_requester;
 mod project_runtime_state;
+pub(crate) use project_runtime_state::ManagedContextRegistrationFailure;
 mod prompt;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;
