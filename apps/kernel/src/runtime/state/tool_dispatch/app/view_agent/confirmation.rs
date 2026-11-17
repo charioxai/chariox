@@ -16,6 +16,8 @@ const CONFIRMATION_TIMEOUT_SEC: u64 = 300;
 const PREVIEW_MAX_ROWS: usize = 12;
 const PREVIEW_MAX_LABEL_CHARS: usize = 48;
 const PREVIEW_MAX_VALUE_CHARS: usize = 400;
+/// How much of the exact input a card carries; the rest is counted, not cut silently.
+const INPUT_MAX_BYTES: usize = 4096;
 const CONFIRM: &str = "confirm";
 const CANCEL: &str = "cancel";
 
@@ -62,6 +64,24 @@ impl Drop for PreviewCleanup {
             }
         });
     }
+}
+
+/// The input the kernel will run, as the card states it for every client: sorted keys,
+/// pretty-printed, secret-shaped values and secret-named fields masked as everywhere the
+/// kernel shows text it did not write, and cut at a character boundary with the byte count
+/// of what is left out.
+pub(super) fn shown_input(input: &Value) -> String {
+    let mut masked = input.clone();
+    crate::secret_redaction::redact_json_secrets(&mut masked);
+    let text = serde_json::to_string_pretty(&masked).unwrap_or_default();
+    if text.len() <= INPUT_MAX_BYTES {
+        return text;
+    }
+    let mut end = INPUT_MAX_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n… {} more bytes", &text[..end], text.len() - end)
 }
 
 /// The rows a backend answered, within what a card shows: an object with only `rows`, at most
@@ -199,12 +219,13 @@ impl KernelRuntimeState {
             Some(view)
         };
         let action_name = frame.action_name.clone();
-        // A client that cannot show the App's preview still reads the exact input, in the kernel's words.
-        let shown: String = serde_json::to_string(input)
-            .unwrap_or_default()
-            .chars()
-            .take(2000)
-            .collect();
+        // The exact input is formatted here once: the card's frame carries it to every client,
+        // and the message below repeats it for one that reads no frame.
+        let frame = AppConfirmationFrame {
+            input: shown_input(input),
+            ..frame
+        };
+        let shown = frame.input.clone();
         let interaction = RuntimeInteraction::new(
             id.clone(),
             agent.id(),
@@ -212,7 +233,7 @@ impl KernelRuntimeState {
             RuntimeInteractionLevel::Warning,
             Some(format!("Confirm {action_name}")),
             format!(
-                "{} by {} asks you to confirm {action_name}.\nInput: {shown}",
+                "{} by {} asks you to confirm {action_name}.\nInput:\n{shown}",
                 frame.app_name, frame.publisher_name
             ),
             vec![

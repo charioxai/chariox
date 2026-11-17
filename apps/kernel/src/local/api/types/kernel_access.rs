@@ -76,6 +76,10 @@ pub struct AppConfirmationFrame {
     pub publisher_id: String,
     pub publisher_name: String,
     pub action_name: String,
+    /// The exact input the kernel runs when the person confirms, formatted by the kernel:
+    /// stable pretty JSON, secret values masked, cut with a "N more bytes" note when large.
+    /// Shown next to the App's preview; a client never rebuilds it.
+    pub input: String,
     /// The App's own rows for this exact input, shown under the frame as the App's words.
     /// Present when no App Tab shows the preview; the kernel bounds them.
     #[serde(default, skip_serializing_if = "Option::is_none")]

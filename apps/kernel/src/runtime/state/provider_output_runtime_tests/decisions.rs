@@ -960,6 +960,7 @@ fn every_user_only_kind_is_the_users() {
                 publisher_id: "com.chariox".into(),
                 publisher_name: "Chariox".into(),
                 action_name: "pay".into(),
+                input: "{\n  \"amount\": 1200\n}".into(),
                 preview: None,
             }),
             Some(UserOnly::AppConfirmation),

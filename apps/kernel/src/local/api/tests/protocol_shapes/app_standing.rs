@@ -28,7 +28,7 @@ fn app_standing_contract_snapshot() {
         let response: LocalDaemonResponse = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(response).unwrap(), *value);
     }
-    let frame = json!({"installation_id":"github","app_id":"com.chariox.github","app_name":"GitHub","publisher_id":"com.chariox","publisher_name":"Chariox","action_name":"merge_pull_request",
+    let frame = json!({"installation_id":"github","app_id":"com.chariox.github","app_name":"GitHub","publisher_id":"com.chariox","publisher_name":"Chariox","action_name":"merge_pull_request","input":"{\n  \"number\": 7\n}",
         "preview":[{"label":"Repository","value":"charioxai/drill"},{"label":"Method","value":"squash"}]});
     let parsed: AppConfirmationFrame = serde_json::from_value(frame.clone()).unwrap();
     assert_eq!(serde_json::to_value(parsed).unwrap(), frame);
@@ -41,7 +41,7 @@ fn app_standing_contract_snapshot() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "e0c0d20e83fc10bcb6f16848c9a09dc46d997815784a12fa54833834c67f16e7"
+        "1799cac9455933cd4839d9d921d05d5b219095d9e1bcac4e974cfca2fc21102f"
     );
     // The closed classes: nothing for a force push, a default branch or a grant; and no field that names a value.
     for forged in [
