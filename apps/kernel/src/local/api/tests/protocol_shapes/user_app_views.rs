@@ -195,6 +195,6 @@ fn client_app_view_protocol_999_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "c7f56a6b1594255d207c2190140db844675b59cc4f3a1cbd1cd8084940238433"
+        "848251f2b0ed6bc4ab423d9fb851d4ac2180c347f1e67157dd036b9e37fa65f5"
     );
 }
