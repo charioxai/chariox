@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -141,7 +142,29 @@ pub(super) fn load_persisted_daemon_config() -> PersistedDaemonConfig {
     load_persisted_relay_config().unwrap_or_default()
 }
 
-pub(super) fn persist_daemon_config(
+/// Every change to the daemon config is one load, change and save under this lock, so two
+/// writers (a client revocation, a machine Remove, the presence refresh) never overwrite each other.
+static DAEMON_CONFIG_WRITE: Mutex<()> = Mutex::new(());
+
+/// Applies `update` to the freshly loaded config and saves it. An unchanged config is not written
+/// again, except to create the file the first time.
+pub(super) fn update_persisted_daemon_config<T>(
+    operation: &'static str,
+    update: impl FnOnce(&mut PersistedDaemonConfig) -> Result<T, DaemonError>,
+) -> Result<T, DaemonError> {
+    let _writing = DAEMON_CONFIG_WRITE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut persisted = load_persisted_daemon_config();
+    let before = persisted.clone();
+    let result = update(&mut persisted)?;
+    if persisted != before || !default_daemon_config_path().exists() {
+        save_persisted_daemon_config(&persisted, operation)?;
+    }
+    Ok(result)
+}
+
+fn save_persisted_daemon_config(
     persisted: &PersistedDaemonConfig,
     operation: &'static str,
 ) -> Result<(), DaemonError> {
@@ -166,11 +189,12 @@ pub(super) fn persist_daemon_config(
 pub(crate) fn persist_managed_cloud_relay_profile(
     profile: PersistedCloudRelayProfile,
 ) -> Result<(), DaemonError> {
-    let mut persisted = load_persisted_daemon_config();
-    persisted.relay_url = None;
-    persisted.relay_token = None;
-    persisted.cloud_relay = Some(profile.canonicalized());
-    persist_daemon_config(&persisted, "persist managed cloud relay profile")
+    update_persisted_daemon_config("persist managed cloud relay profile", |persisted| {
+        persisted.relay_url = None;
+        persisted.relay_token = None;
+        persisted.cloud_relay = Some(profile.canonicalized());
+        Ok(())
+    })
 }
 
 pub(crate) fn load_managed_cloud_relay_profile() -> Option<PersistedCloudRelayProfile> {

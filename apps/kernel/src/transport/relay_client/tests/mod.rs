@@ -10,6 +10,7 @@ mod peer_events;
 mod peer_machine;
 mod peer_transport;
 mod registration;
+mod remembered_machines;
 mod remote_agents;
 mod remote_queue;
 mod room_terminal_stream;

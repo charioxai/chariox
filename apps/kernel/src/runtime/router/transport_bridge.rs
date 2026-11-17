@@ -307,8 +307,11 @@ impl CommandRouter {
         self.runtime_state.list_slices()
     }
 
-    pub(crate) fn clear_remote_relay_inventory_projection(&self) {
-        self.remote_relay_inventory_projection.clear();
+    pub(crate) fn retain_remembered_remote_machines(&self) -> Result<(), DaemonError> {
+        crate::transport::relay_client::retain_remembered_machines(
+            &self.config_projection.snapshot().host_machine_id,
+            &self.remote_relay_inventory_projection,
+        )
     }
 
     pub(crate) async fn refresh_remote_relay_inventory_projection(

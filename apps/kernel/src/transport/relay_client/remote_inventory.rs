@@ -45,8 +45,27 @@ pub(super) fn abort_inventory_refresh_task(task: &mut Option<JoinHandle<bool>>) 
     }
 }
 
-pub(super) fn clear_remote_inventory_projection(router: &CommandRouter) {
-    router.clear_remote_relay_inventory_projection();
+/// The relay is unreachable: the projection falls back to the machines the kernel remembers, which
+/// keep aging into Reconnecting and Offline without a relay query.
+pub(super) fn retain_remembered_remote_machines(router: &CommandRouter) {
+    if let Err(error) = router.retain_remembered_remote_machines() {
+        crate::logging::warn_with_fields(
+            "daemon.relay_client",
+            "remembered machines could not be projected",
+            serde_json::json!({ "error": error.to_string() }),
+        );
+    }
+}
+
+pub(crate) fn retain_remembered_machines(
+    host_machine_id: &str,
+    projection: &RemoteRelayInventoryProjectionStore,
+) -> Result<(), DaemonError> {
+    let remembered = DaemonConfig::update_machine_registry(|registry| {
+        machine_presence::reconcile(registry, Vec::new(), host_machine_id, unix_epoch_ms())
+    })?;
+    projection.retain_remembered(remembered);
+    Ok(())
 }
 
 pub(super) fn spawn_remote_inventory_projection_refresh(
@@ -120,8 +139,7 @@ pub(crate) async fn refresh_remote_inventory_projection(
     let main = main.as_ref();
     let mut runtime_config = config_projection.snapshot();
     if runtime_config.relay_url.is_none() || runtime_config.relay_token.is_none() {
-        projection.clear();
-        return Ok(());
+        return retain_remembered_machines(&runtime_config.host_machine_id, &projection);
     }
     runtime_config.relay_request_timeout_ms = runtime_config
         .relay_request_timeout_ms

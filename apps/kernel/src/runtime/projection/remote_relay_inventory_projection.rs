@@ -161,13 +161,15 @@ impl RemoteRelayInventoryProjectionStore {
             .retain(|kernel| kernel.machine_id != machine_id);
     }
 
-    pub(crate) fn clear(&self) {
+    /// The relay is unreachable: no kernel is live and the projection holds only what the kernel
+    /// remembers (reconnecting and offline machines). It stays stale, so the next refresh asks the relay.
+    pub(crate) fn retain_remembered(&self, remembered: RemoteMachineInventory) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.remote_machines.clear();
-        state.offline_machines.clear();
+        state.remote_machines = remembered.machines;
+        state.offline_machines = remembered.offline_machines;
         state.remote_kernels.clear();
         state.refreshed_at_ms = 0;
         state.refresh_requested_at_ms = 0;
