@@ -5,6 +5,7 @@ import { outputs } from '../scripts/generate.mjs';
 import { createApp } from '../src/app.mjs';
 import { tools as catalog } from '../src/catalog.mjs';
 import { FAILING_CHECK, fakeGitHub, heads, memoryState, REPO } from './support.mjs';
+import { kernelRouting } from './subscription-support.mjs';
 
 const read = path => JSON.parse(readFileSync(new URL(`../${path}`, import.meta.url), 'utf8'));
 
@@ -28,7 +29,7 @@ test('every GitHub call the read tools make is a declared read route, and nothin
   assert.deepEqual([network.origin, network.credential], ['https://api.github.com', 'github']);
   assert.deepEqual(network.methods, [...new Set(network.routes.map(route => route.method))].sort(), 'the methods are the methods of the routes');
   const double = fakeGitHub();
-  const definition = createApp({ state: memoryState(), events: {} });
+  const definition = createApp({ state: memoryState(), events: {}, routing: kernelRouting({ resources: [REPO] }) });
   const ctx = { fetch: double.fetch };
   const pull = { repo: REPO, number: 2 };
   const inputs = {
@@ -36,10 +37,11 @@ test('every GitHub call the read tools make is a declared read route, and nothin
     get_pull_request_files: pull, get_pull_request_diff: pull, list_commits: pull, get_checks: pull, get_check_output: { repo: REPO, check_run_id: FAILING_CHECK }, list_reviews: pull,
     list_comments: pull, get_mergeability: pull, list_branches: { repo: REPO }, get_compare: { repo: REPO, base: 'main', head: heads[2] },
     list_accounts: {}, get_status: {}, list_labels: { repo: REPO }, list_assignees: { repo: REPO },
+    list_subscriptions: {}, get_subscription: { id: 'none' }, list_deliveries: {}, get_event_sources: {}, list_connection_repositories: {},
   };
   const readTools = catalog.filter(t => t.effect === 'read' && !t.name.startsWith('preview_')).map(t => t.name);
   assert.deepEqual(Object.keys(inputs).sort(), readTools.sort(), 'every read tool is exercised');
-  for (const [name, input] of Object.entries(inputs)) await definition.tools[name](input, ctx);
+  for (const [name, input] of Object.entries(inputs)) await definition.tools[name](input, ctx).catch(error => assert.equal(name, 'get_subscription', `${name}: ${error.message}`));
   await definition.tools.list_repositories({ org: 'charioxai' }, ctx);
   assert.ok(double.calls.every(call => call.method === 'GET'), 'a read tool changes nothing');
   const reads = network.routes.filter(route => route.safety === 'read');
@@ -68,8 +70,8 @@ test('every tool has a handler, and the gating of each action is declared: a car
   const byName = Object.fromEntries(actions.map(action => [action.name, action]));
   const tier = effect => actions.filter(action => action.effect === effect).map(action => action.name).sort();
   assert.deepEqual(tier('person_confirmed'), ['close_pull_request', 'delete_branch', 'merge_pull_request']);
-  assert.deepEqual(tier('approval'), ['approve_pull_request', 'convert_to_draft', 'disable_auto_merge', 'enable_auto_merge', 'mark_ready_for_review', 'open_pull_request', 'reopen_pull_request', 'request_changes', 'update_branch']);
-  assert.deepEqual(tier('write').filter(name => !/account/.test(name)), ['add_labels', 'comment', 'remove_labels', 'remove_reviewers', 'reply_to_review_comment', 'request_reviewers', 'rerun_failed_checks', 'submit_review']);
+  assert.deepEqual(tier('approval'), ['approve_pull_request', 'convert_to_draft', 'create_subscription_for_others', 'disable_auto_merge', 'enable_auto_merge', 'mark_ready_for_review', 'open_pull_request', 'reopen_pull_request', 'request_changes', 'update_branch', 'update_subscription_for_others']);
+  assert.deepEqual(tier('write').filter(name => !/account/.test(name)), ['add_labels', 'comment', 'connect_github_events', 'create_subscription', 'delete_subscription', 'pause_subscription', 'remove_labels', 'remove_reviewers', 'reply_to_review_comment', 'request_reviewers', 'rerun_failed_checks', 'resume_subscription', 'submit_review', 'update_subscription', 'watch_pull_request']);
   for (const action of actions.filter(a => a.effect === 'person_confirmed')) {
     const preview = byName[action.confirmationView];
     assert.equal(preview?.effect, 'read', `${action.name} shows ${action.confirmationView}, a read`);
@@ -92,7 +94,7 @@ test('every tool has a handler, and the gating of each action is declared: a car
 
 test('the manifest needs the features the App uses', () => {
   const manifest = read('app.json');
-  assert.deepEqual(manifest.requiredFeatures, ['wasm-component', 'ui-actions', 'directed-events', 'credentialed-http'], 'the features the App uses, in the kernel\'s order');
+  assert.deepEqual(manifest.requiredFeatures, ['wasm-component', 'ui-actions', 'directed-events', 'credentialed-http', 'event-routing'], 'the features the App uses, in the kernel\'s order');
   assert.equal(manifest.appId, 'com.chariox.github');
   assert.equal(manifest.displayName, 'GitHub');
 });
@@ -100,7 +102,7 @@ test('the manifest needs the features the App uses', () => {
 test('the backend sources use only what the App\'s QuickJS runtime has: no structuredClone, URL, Intl, timers beyond setTimeout, Node or browser globals', () => {
   // The runtime provides the language and the SDK's TextEncoder/TextDecoder, AbortController, Headers, setTimeout, console, crypto.getRandomValues.
   const forbidden = /\b(structuredClone|URL|URLSearchParams|Intl|setInterval|setImmediate|process|Buffer|btoa|atob|window|document|localStorage|require)\b/;
-  for (const file of readdirSync(new URL('../src/', import.meta.url))) {
+  for (const file of readdirSync(new URL('../src/', import.meta.url), { recursive: true }).filter(name => name.endsWith('.mjs'))) {
     const source = readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '').replace(/'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g, "''");
     assert.doesNotMatch(source, forbidden, `${file} uses a global the App runtime lacks`);
   }

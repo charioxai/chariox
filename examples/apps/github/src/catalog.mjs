@@ -1,7 +1,8 @@
 // The one list of what this App offers. The signed tool and UI action declarations
 // and the REST routes the manifest allows are generated from it (scripts/generate.mjs),
 // so the three cannot drift: a test fails when a committed file differs from its output.
-import { eventTypes } from './events.mjs';
+import { OUTGOING, incoming, kinds } from './event-types.mjs';
+import { TARGET_KINDS } from './subscriptions/model.mjs';
 
 const string = (extra = {}) => ({ type: 'string', ...extra });
 const integer = (minimum, maximum) => ({ type: 'integer', minimum, ...(maximum ? { maximum } : {}) });
@@ -33,6 +34,16 @@ export const PULL_STATES = ['open', 'closed', 'merged', 'all'];
 const branch = string({ minLength: 1, maxLength: 255 });
 const mergeInput = object({ ...pull, method: { enum: MERGE_METHODS }, sha, commit_title: string({ maxLength: 256 }), commit_message: body() }, ['repo', 'number', 'method', 'sha']);
 
+const kindName = { enum: Object.keys(kinds) };
+const globs = { type: 'array', maxItems: 20, uniqueItems: true, items: string({ minLength: 1, maxLength: 200 }), description: 'Names or globs; an entry starting with ! excludes.' };
+const scope = object({ kind: { enum: ['repos', 'org', 'all'] }, repos: { type: 'array', minItems: 1, maxItems: 50, uniqueItems: true, items: repo }, org: string({ pattern: '^[A-Za-z0-9_.-]{1,100}$' }) }, ['kind']);
+const filters = object({ branches: globs, authors: globs, labels: globs, paths: globs, conclusion: { type: 'array', maxItems: 8, items: string() }, draft: { enum: ['any', 'only', 'hide'] }, excludeSelf: { type: 'boolean' } });
+const target = object({ kind: { enum: TARGET_KINDS }, agentId: string(), roomId: string(), sessionId: string(), publicationRef: string(), queueRef: string() }, ['kind']);
+const once = object({ pr: object({ repo, number }, ['repo', 'number']), expiresAt: string({ format: 'date-time', description: 'At most 7 days ahead; 4 hours when absent.' }) });
+const subscriptionBody = { name: string({ maxLength: 100 }), account, scope, events: { type: 'array', minItems: 1, maxItems: 30, uniqueItems: true, items: kindName }, filters, target, once };
+const subscriptionId = object({ id: string({ minLength: 1, maxLength: 64 }) }, ['id']);
+const creating = 'Notify a target when GitHub events match: repositories, an organization or all, event names, filters, and a target (the person, an agent, a Room\'s agent or a workflow). The kernel delivers the events; nothing polls.';
+
 /** Every tool is also the action of the same name that the window and agents run through the view. */
 export const tools = [
   { name: 'list_accounts', effect: 'read', description: 'The GitHub accounts this App uses: label, login, status and API rate limit. Accounts are bound by the owner in the kernel; this lists the ones the App knows.', input: object() },
@@ -61,7 +72,7 @@ export const tools = [
   { name: 'get_pull_request_diff', effect: 'read', description: 'The unified diff of a pull request, or of one file, at most maxBytes (default 262144).', input: object({ ...pull, path: string({ maxLength: 1024 }), maxBytes: integer(1024, 1048576) }, ['repo', 'number']) },
   { name: 'list_commits', effect: 'read', description: 'The commits of a pull request, oldest first.', input: object({ ...pull, page, perPage }, ['repo', 'number']) },
   { name: 'get_checks', effect: 'read', description: 'Check runs and commit statuses of the pull request head, with the overall state.', input: object(pull, ['repo', 'number']) },
-  { name: 'get_check_output', effect: 'read', description: 'What one check run reports: its title, summary, annotations (the failure messages with file and line) and, for a GitHub Actions job, its steps with their result. The text of the job log lives on GitHub storage, which this App does not reach.', input: object({ account, repo, check_run_id: integer(1) }, ['repo', 'check_run_id']) },
+  { name: 'get_check_output', effect: 'read', description: 'What one check run reports: its title, summary, annotations (the failure messages with file and line) and, for a GitHub Actions job, its steps with their result and, for a job, the end of its log (the last 200 lines; a log over 1 MiB is reported as unavailable).', input: object({ account, repo, check_run_id: integer(1) }, ['repo', 'check_run_id']) },
   { name: 'list_reviews', effect: 'read', description: 'Reviews of a pull request, who was asked to review, and the review decision.', input: object(pull, ['repo', 'number']) },
   { name: 'list_comments', effect: 'read', description: 'Comments of a pull request: conversation comments and comments on lines of the diff.', input: object({ ...pull, page, perPage }, ['repo', 'number']) },
   { name: 'get_mergeability', effect: 'read', description: 'Whether a pull request can be merged: conflicts, how far behind the base branch it is, protection of the base branch, auto-merge.', input: object(pull, ['repo', 'number']) },
@@ -84,6 +95,19 @@ export const tools = [
   { name: 'remove_reviewers', effect: 'write', description: 'Withdraw a request for review.', input: object({ ...pull, reviewers: logins, team_reviewers: { type: 'array', maxItems: 15, uniqueItems: true, items: string({ minLength: 1, maxLength: 100 }) } }, ['repo', 'number']) },
   { name: 'rerun_failed_checks', effect: 'write', description: 'Run the failed jobs of the checks of a pull request again.', input: object(pull, ['repo', 'number']) },
 
+  { name: 'list_subscriptions', effect: 'read', description: 'The subscriptions of this App: what each watches and where it notifies.', input: object() },
+  { name: 'get_subscription', effect: 'read', description: 'One subscription.', input: subscriptionId },
+  { name: 'list_deliveries', effect: 'read', description: 'The last deliveries (newest first): delivered, filtered with the reason, failed or expired.', input: object({ subscription: string(), limit: integer(1, 200) }) },
+  { name: 'get_event_sources', effect: 'read', description: 'Whether each watched repository has a live webhook source, and the state of the events connection.', input: object() },
+  { name: 'list_connection_repositories', effect: 'read', description: 'Repositories the granted events connection delivers for.', input: object({ query: string({ maxLength: 100 }), cursor: string(), limit: integer(1, 100) }) },
+  { name: 'connect_github_events', effect: 'write', description: 'Start the GitHub authorization for live events; returns the address where the person approves on GitHub.', input: object({ returnUrl: string() }) },
+  { name: 'create_subscription', effect: 'write', description: `${creating} An agent subscribes itself with this; for any other target use create_subscription_for_others. A one-shot (once) ends after its first delivery or at its expiry, which also notifies once. "ci.finished" fires when every check of the pull request's head commit completed.`, input: object(subscriptionBody, ['events']) },
+  { name: 'update_subscription', effect: 'write', description: 'Change a subscription you made (the person may change any).', input: object({ id: subscriptionId.properties.id, ...subscriptionBody }, ['id']) },
+  { name: 'pause_subscription', effect: 'write', description: 'Stop a subscription without deleting it.', input: subscriptionId },
+  { name: 'resume_subscription', effect: 'write', description: 'Start a paused subscription again.', input: subscriptionId },
+  { name: 'delete_subscription', effect: 'write', description: 'Delete a subscription and the routes and targets only it used.', input: subscriptionId },
+  { name: 'watch_pull_request', effect: 'write', description: 'Tell this agent when checks fail or pass, when someone else comments or reviews, until the pull request is merged or closed. No polling: the agent may end its turn.', input: object({ repo, number, account, on: { type: 'array', minItems: 1, uniqueItems: true, items: { enum: ['checks_failed', 'checks_passed', 'comment', 'review'] } }, until: { enum: ['merged_or_closed'] }, expiresAt: string({ format: 'date-time' }) }, ['repo', 'number']) },
+
   // Visible to others, one approval by the person (once, for the session, or denied).
   { name: 'approve_pull_request', effect: 'approval', approvalReason: 'Approves the pull request in the name of the GitHub account', standing: { class: 'review', repo: 'repo', account: 'account' }, description: 'Approve a pull request, with the comments on lines of the diff collected for the review.', input: object({ ...pull, body: body(), comments: lineComments, sha }, ['repo', 'number']) },
   { name: 'request_changes', effect: 'approval', approvalReason: 'Asks for changes on the pull request in the name of the GitHub account', standing: { class: 'review', repo: 'repo', account: 'account' }, description: 'Review a pull request asking for changes, with comments on lines of the diff.', input: object({ ...pull, body: body({ minLength: 1 }), comments: lineComments, sha }, ['repo', 'number', 'body']) },
@@ -94,6 +118,8 @@ export const tools = [
   { name: 'reopen_pull_request', effect: 'approval', approvalReason: 'Reopens the pull request', description: 'Reopen a closed pull request.', input: object(pull, ['repo', 'number']) },
   { name: 'enable_auto_merge', effect: 'approval', approvalReason: 'Lets GitHub merge the pull request by itself once its requirements are met', description: 'Merge a pull request automatically when its requirements are met.', input: object({ ...pull, method: { enum: MERGE_METHODS } }, ['repo', 'number', 'method']) },
   { name: 'disable_auto_merge', effect: 'approval', approvalReason: 'Stops GitHub from merging the pull request by itself', description: 'Turn automatic merging of a pull request off.', input: object(pull, ['repo', 'number']) },
+  { name: 'create_subscription_for_others', effect: 'approval', approvalReason: 'Sends GitHub notifications to the person, another agent, a Room or a workflow', description: creating, input: object(subscriptionBody, ['events']) },
+  { name: 'update_subscription_for_others', effect: 'approval', approvalReason: 'Changes where GitHub notifications go', description: 'Change a subscription, including its target.', input: object({ id: subscriptionId.properties.id, ...subscriptionBody }, ['id']) },
 
   // Hard to undo: the person confirms exactly this input on a card.
   { name: 'merge_pull_request', effect: 'person_confirmed', confirmationView: 'preview_merge_pull_request', standing: { class: 'merge', repo: 'repo', account: 'account' }, description: 'Merge a pull request with a method, only if its head is still the commit given.', input: mergeInput },
@@ -124,6 +150,8 @@ export const routes = [
   ['GET', '/repos/{owner}/{repo}/check-runs/{check_run_id}/annotations'],
   ['GET', '/repos/{owner}/{repo}/actions/runs'],
   ['GET', '/repos/{owner}/{repo}/actions/jobs/{job_id}'],
+  // GitHub answers a job log with a redirect to its storage; the kernel follows it only to these hosts.
+  ['GET', '/repos/{owner}/{repo}/actions/jobs/{job_id}/logs', 'read', ['*.blob.core.windows.net']],
   ['GET', '/repos/{owner}/{repo}/branches'],
   ['GET', '/repos/{owner}/{repo}/branches/{branch}'],
   ['GET', '/repos/{owner}/{repo}/branches/{branch}/protection'],
@@ -142,7 +170,7 @@ export const routes = [
   ['PUT', '/repos/{owner}/{repo}/pulls/{number}/merge', 'destructive'],
   ['PATCH', '/repos/{owner}/{repo}/pulls/{number}', 'destructive'],
   ['DELETE', '/repos/{owner}/{repo}/git/refs/heads/{branch}', 'destructive'],
-].map(([method, path, safety = 'read']) => ({ method, path, safety }));
+].map(([method, path, safety = 'read', redirectHosts]) => ({ method, path, safety, ...(redirectHosts ? { redirectHosts } : {}) }));
 
 const viewTools = [
   { name: 'view_actions', description: 'The actions this backend registers for its view', input: object() },
@@ -151,23 +179,8 @@ const viewTools = [
   { name: 'view_changes', description: 'The changes this backend\'s view recorded after `since`', input: object({ since: integer(0) }) },
 ];
 
-const own = [
-  { name: 'get_automations', description: 'Read the outgoing event to automation names setting.', input: object() },
-  { name: 'configure_automations', description: 'Replace the outgoing event to automation names setting. Configure each named automation in the kernel first. An empty list explicitly disables forwarding for that event.', input: 'automations' },
-];
-
-const automationNames = {
-  type: 'object', additionalProperties: false,
-  properties: Object.fromEntries(Object.keys(eventTypes).map(name => [`${name}_notification`, {
-    type: 'array', uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: 128 },
-  }])),
-};
-
 export const toolsDocument = () => ({
   tools: [
-    ...own.map(({ name, description, input }) => ({
-      name, description, inputSchema: input === 'automations' ? object({ automations: automationNames }, ['automations']) : input,
-    })),
     ...tools.map(({ name, description, input }) => ({ name, description, inputSchema: input })),
     ...viewTools.map(({ name, description, input }) => ({ name, description, inputSchema: input })),
   ],
@@ -186,3 +199,24 @@ export const networkCapability = () => ({
   credential: 'github',
   routes,
 });
+
+const eventPayload = type => object({
+  source: object({ generator_id: { type: 'string', enum: ['dev.chariox.github'] }, connection_id: string(), event_type: { type: 'string', enum: [type] }, event_type_version: { type: 'integer', enum: [1] } },
+    ['generator_id', 'connection_id', 'event_type', 'event_type_version']),
+  occurred_at: string({ maxLength: 64 }), text: string({ maxLength: 65536 }), metadata: {}, artifacts: { type: 'array', maxItems: 32 }, reply_context: {},
+}, ['source', 'occurred_at', 'text']);
+
+/** One incoming event per generator type the routes deliver, and the one outgoing event every target is bound on. */
+export const eventsDocument = () => ({
+  events: [
+    ...Object.entries(incoming).map(([name, type]) => ({ name, schemaVersion: 1, direction: 'incoming', payloadSchema: eventPayload(type) })),
+    { name: OUTGOING, schemaVersion: 1, direction: 'outgoing', payloadSchema: object({
+      subscription: object({ id: string(), name: string() }, ['id']), event: string(), repo: string(),
+      number: { type: ['integer', 'null'] }, title: { type: ['string', 'null'] }, url: { type: ['string', 'null'] },
+      conclusion: { type: ['string', 'null'] }, headSha: { type: ['string', 'null'] },
+      outcome: { enum: ['expired', 'no_checks'] }, checks: object({ total: integer(0), failed: { type: 'array', items: string() } }),
+    }, ['subscription', 'event', 'repo']) },
+  ],
+});
+
+export const eventRoutingCapability = () => ({ generator: 'dev.chariox.github', incoming: Object.keys(incoming).sort(), maxRoutes: 200 });

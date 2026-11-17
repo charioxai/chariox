@@ -41,9 +41,9 @@ export async function launch() {
 }
 
 /** `override(url, init)` answers a request first, as in `fakeGitHub`; `calls` lists every request the App made. */
-export async function open(browser, built, { dpr = 1, width = 1180, height = 900, override, unbound } = {}) {
+export async function open(browser, built, { dpr = 1, width = 1180, height = 900, override, unbound, imports = {}, now = Date.parse('2026-11-15T12:00:00Z') } = {}) {
   const double = fakeGitHub({ override, unbound });
-  const app = createApp({ state: memoryState(), events: {}, now: () => Date.parse('2026-11-15T12:00:00Z') });
+  const app = createApp({ state: memoryState(), events: {}, ...imports, now: () => now });
   const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: dpr, colorScheme: 'light' });
   const page = await context.newPage();
   const errors = [];
@@ -62,5 +62,5 @@ export async function open(browser, built, { dpr = 1, width = 1180, height = 900
   });
   const shim = 'window.chariox = { call: async (name, input) => { const r = JSON.parse(await window.__call(name, input)); if (r.ok) return r.value; throw Object.assign(new Error(r.error.message), r.error) } }';
   await page.setContent(`<!doctype html><html><head><meta charset="utf-8"><script>${shim}</script><style>${built.style}</style></head><body><div id="github"></div><script type="module">${built.script.replace(/<\/script/gi, '<\\/script')}</script></body></html>`);
-  return { page, errors, double, context, tools, changes: () => double.calls.filter(call => call.method !== 'GET') };
+  return { page, errors, app, double, context, tools, changes: () => double.calls.filter(call => call.method !== 'GET') };
 }

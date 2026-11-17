@@ -7,9 +7,23 @@ also a tool any agent granted the App can call; the window and the tools are the
 
 It also writes: comment, review with comments on lines, approve or ask for changes, merge, close and reopen, update or
 delete a branch, ready for review and back to draft, auto-merge, reviewers, labels, re-run failed checks and open a pull
-request. Subscriptions and the live event settings follow. The events-only App this one replaces lives on as
-`src/events.mjs`: the event fan-out, unchanged, which still sets which automations a delivered event reaches
-(`get_automations`, `configure_automations`).
+request.
+
+## Subscriptions
+
+A subscription says which GitHub events reach whom: a scope (repositories, an organization or every repository the
+account's installation can reach), the events (`pull_request.opened`, `check.completed`, `ci.finished`, `mention`, ...),
+filters (branches, authors, labels, paths, draft, check conclusion; globs, `!` negates) and a target: the person
+(a notification), an agent, a workflow or a Room's agent. A one-shot ends after its first delivery or on its expiry
+(at most 7 days, 4 hours by default); `watch_pull_request` is the agent's shortcut for one pull request until it merges.
+`ci.finished` fires when a commit has checks and none is pending, or after 15 minutes with none. An agent subscribes
+itself without a card; any other target is asked for. Five failed deliveries in a row disable a subscription.
+
+The App keeps the subscriptions and the last 200 deliveries (delivered, filtered with the reason, failed) in its state
+and asks the kernel for one inbox route per (event type, repository) they need: `src/subscriptions/routes.mjs`
+reconciles them after every change and daily. `src/subscriptions/matcher.mjs` is pure, so the polling sources of a later
+step feed the same function. The window's Subscriptions tab and the tools (`create_subscription`, `update_subscription`,
+`pause_subscription`, `delete_subscription`, `list_deliveries`, ...) are the same backend.
 
 ## Accounts
 
@@ -55,8 +69,9 @@ default branch; deleting the default branch or a protected branch; approving or 
 account opened. A force push is not a tool at all. The account must be bound at the level of the most that a route does
 (`write` for the writing tools, `destructive` for merge, close and delete; the install card binds the highest the App
 declares). `merge_pull_request` always carries the head `sha` the person saw. The text of a job log lives on GitHub's
-storage behind a redirect to a host the kernel does not let the App reach, so the check details show the output,
-the annotations and the steps of the job.
+storage behind a redirect. The signed route for it names the one host suffix the kernel may follow it to
+(`*.blob.core.windows.net`), so the check details show the output, the annotations, the steps and the last 200 lines of the job's log;
+a log over 1 MiB is reported as unavailable.
 
 ## The window
 
@@ -75,13 +90,6 @@ node examples/apps/github/scripts/build-package.mjs "$OUT"     # $OUT outside th
 
 The tests run the real App code against recordings of the sandbox repository
 (`charioxai/chariox-github-app-drill`, `test/fixtures`, URLs trimmed) behind a fake that refuses an `Authorization`
-header from the App and checks every call against the declared routes. The events fan-out component has its own
-Wasmtime drill (`test/component-drill.rs`, entry `test/events-entry.ts`):
-
-```sh
-node packages/app-sdk-tools/build-js.mjs examples/apps/github/test/events-entry.ts "$TMPDIR/github-fanout.wasm"
-CHARIOX_GITHUB_FANOUT_COMPONENT="$TMPDIR/github-fanout.wasm" \
-  cargo test -p chariox-app-sdk-tools --features component-drills --test github-fanout-drill
-```
+header from the App and checks every call against the declared routes.
 
 Third-party notices: `THIRD-PARTY-NOTICES.md` (Primer CSS, Primer Primitives and Octicons, MIT).
