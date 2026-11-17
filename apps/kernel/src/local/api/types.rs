@@ -548,5 +548,6 @@ pub use workspace::*;
 /// a directory entry lists what a link points to (`target_kind` on a `KernelDirectoryEntry`);
 /// a card's browser region carries an optional `done_text`: the text whose appearance in the watched element closes the card;
 /// the owner's App accounts (`GrantAppAccount`, `RevokeAppAccount`, `ListAppAccounts` → `AppAccounts`) for the credentialed network destinations a signed manifest declares; the App-managed event routes (`SetAppInboxRoutePaused`, `PauseAppAutomation`, `AppInboxRouteSummary.paused`, `AppConnectionSummary.event_routing`) and the `eventRouting` manifest capability; the owner's standing permissions (`GrantAppStanding`, `RevokeAppStanding`, `ListAppStanding` → `AppStanding`, `AppInstallationSummary.standing_permissions`, the `standing` declaration of a signed action) and the backend-supplied `AppConfirmationFrame.preview` rows;
-/// the owner's machine capability lists the service's `offers` (`MachineOption`) and an acquire names the chosen `class_id` and `region`.
+/// the owner's machine capability lists the service's `offers` (`MachineOption`) and an acquire names the chosen `class_id` and `region`;
+/// a waiting agent lists every event it would wake on (`liveness.waiting_events`), `wait.long_wait_notified` goes with the no-progress notice, and an agent's own question to the owner is marked (`owner_action: "question"`, a reply-box decision).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1010;

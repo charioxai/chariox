@@ -158,6 +158,7 @@ impl KernelRuntimeState {
                 &self.owned.durable_state_store,
                 session.id(),
             ),
+            &crate::runtime::projection::SourceLabels::of_session(session),
         );
         activity
     }

@@ -300,8 +300,10 @@ fn a02_yield_commits_at_native_settlement_and_recovers_racing_result() {
     assert_ne!(task.state, ExecutionState::Done);
     assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().len(), 1);
 }
+/// A sweep a quarter of an hour into a wait: long enough that no earlier wake is owed.
+const LATER_SWEEP_MS: u64 = 900_000;
 #[test]
-fn a02_deadline_occurrence_and_long_notice_coalesce() {
+fn a02_deadline_occurrence_coalesces_across_sweeps() {
     let f = Fixture::new();
     f.begin("p");
     f.register();
@@ -310,19 +312,44 @@ fn a02_deadline_occurrence_and_long_notice_coalesce() {
     f.settle("p", true);
     assert_eq!(f.task().state, ExecutionState::Waiting);
     f.apply(Operation::Sweep {
-        now: LONG_WAIT_MS + 1,
+        now: LATER_SWEEP_MS + 1,
         vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     });
     f.apply(Operation::Sweep {
-        now: LONG_WAIT_MS + 2,
+        now: LATER_SWEEP_MS + 2,
         vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     });
-    assert!(f.task().wait.unwrap().long_wait_notified);
     assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().len(), 1);
+}
+/// Miguel 11-16: a wait is judged by nothing but its own sources and deadline; a quarter of an hour
+/// without progress is no event, so no sweep reports the task as changed for it.
+#[test]
+fn a_wait_with_no_progress_for_a_quarter_hour_is_not_a_change() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    f.settle("p", true);
+    assert_eq!(f.task().state, ExecutionState::Waiting);
+    let revision = f.task().revision;
+    let Outcome::Swept(changed) = f.apply(Operation::Sweep {
+        now: LATER_SWEEP_MS + 1,
+        vault_wait_recipients: Vec::new(),
+        busy_recipients: Vec::new(),
+        held_work: Vec::new(),
+    }) else {
+        panic!("a sweep answers with what it changed")
+    };
+    assert!(
+        changed.is_empty(),
+        "nothing changed in a plain wait: {changed:?}"
+    );
+    assert_eq!(f.task().revision, revision);
 }
 #[test]
 fn a02_empty_or_tool_only_end_with_open_obligations_never_silently_done() {
@@ -2654,7 +2681,7 @@ fn a02_security_f1_full_recipient_cannot_abort_deadline_sweep() {
     f.settle("p", true);
     security_fill_inbox(&f, "parent", "pending");
     f.apply(Operation::Sweep {
-        now: LONG_WAIT_MS + 1,
+        now: LATER_SWEEP_MS + 1,
         vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),

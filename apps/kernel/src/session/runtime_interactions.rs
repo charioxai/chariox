@@ -437,6 +437,14 @@ impl RuntimeInteraction {
     pub fn related_agent_id(&self) -> Option<&str> {
         self.related_agent_id.as_deref()
     }
+    /// An agent's question to the owner: a choice with a reply box instead of a permission.
+    pub(crate) fn with_question_reply(mut self, reply: RuntimeInteractionCustomChoice) -> Self {
+        self.kind = RuntimeInteractionKind::Choice;
+        self.level = RuntimeInteractionLevel::Info;
+        self.custom_choice = Some(reply);
+        self
+    }
+
     pub(crate) fn with_related_agent_id(mut self, agent: String) -> Self {
         self.related_agent_id = Some(agent);
         self

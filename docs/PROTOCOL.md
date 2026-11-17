@@ -1076,7 +1076,13 @@ A helper's decision goes first to its nearest eligible parent as an urgent
 `child_decision` inbox event. The holder answers with `agent answer <interaction>
 resume|cancel`, or hands the same decision up with `agent pass <interaction>`.
 A root task, or a decision no eligible ancestor can hold, keeps the person's
-card. Browser-access consent stays with the person. The correction and Resume
+card. Browser-access consent stays with the person. A block the agent raises
+itself with `chariox.events.blocked` is its question to the owner: the task gets
+`owner_action: "question"` and the decision is titled **Question**, a `choice`
+whose message is the agent's own words, with `custom_choice {id: "reply"}` and
+one `cancel` choice labelled **Dismiss**, never Resume. A reply resumes the task and
+reaches the agent as "The owner answered your question"; Dismiss cancels it. The
+correction and Resume
 instruction name every unresolved obligation, its source label when available,
 and the calls that settle it, using the actual registrations and receipt sequences.
 For a person-held card in the TUI, open it with F8, Ctrl+G or `/approvals`, select
@@ -7123,12 +7129,14 @@ that task's retained resources and returns `AgentTaskUpdated`. Stale revisions
 and foreign room or attachment ownership are refused. A completed task cannot
 be cancelled.
 
-`CancelAgentWake { session_id, attachment_id, wake_id }` independently cancels a
-retained timer and returns `AgentTaskUpdated` for its owning task. It preserves
-the task and uses the normal source cancellation receipt to inform the agent.
-Other wake sources stop with their owning task. The shared shell exposes these
-controls as `stop task <task-id> <revision>` and `stop timer <wake-id>`; bare
-`stop` keeps its active-turn or focused-task behavior.
+`CancelAgentWake { session_id, attachment_id, wake_id }` independently ends one
+event a waiting task holds and returns `AgentTaskUpdated` for its owning task:
+a wake (a timer, a watched process, any driver source) or the follow of another
+agent, named by the id `liveness.waiting_events[].cancel_wake_id` carries. It
+preserves the task and uses the normal source cancellation receipt to inform the
+agent; a watched process settles on its physical exit. The shared shell exposes
+these controls as `stop task <task-id> <revision>` and `stop timer <wake-id>`;
+bare `stop` keeps its active-turn or focused-task behavior.
 
 An unconditional, targetless `CancelActivePrompt` still stops an active turn;
 when no turn is active it resolves the focused agent's parked task. A request
@@ -7819,3 +7827,26 @@ numbers advance. `resource-protection-1006.json` and its SHA-256 test pin the sh
 The implementation uses notify's native inotify/FSEvents backend, non-recursive directories and their parents, with a bounded one-slot queue and20ms coalescing. Parent watches cover atomic replacement and removal/recreation; overflow invalidates the whole interest set. A native backend failure never selects a polling backend.
 
 For a remote machine the home kernel sends `WatchMachineFiles{subscription_id,paths}` over the authenticated same-owner encrypted peer link. The worker pushes `MachineFilesChanged{subscription_id}`; the home acknowledges with `MachineFilesWatched{created:false}` and forwards a resource invalidation to its client. Registration returns `created:true` after worker restart, forcing resync.30s lease renewals perform no filesystem reads;90s expiry bounds abandoned workers, and `UnwatchMachineFiles{subscription_id}` releases promptly. Each worker bounds clients per peer to16 and total clients to256, with64 paths each. Lost event acknowledgements retry; reconnect/native overflow resyncs complete interests.
+
+### What a waiting agent waits on, and questions to the owner — local 1016 / relay peer 447 (provisional)
+
+`agent_activity[agent].liveness.waiting_events` lists every event the agent's
+waiting task would wake on, oldest first: `{id, kind, label, since_ms, task_id,
+wait_started_at_ms, cancel_wake_id?}`. A live wake (timer, process, terminal) and
+each other live registration (a sub-agent's end, a workflow run, another task)
+is one entry; `label` is the kernel's plain words ("sub-agent sub-agent-1",
+"timer check the build"). `liveness.waiting_on` keeps naming only the oldest.
+The owner ends the whole wait with `CancelAgentWait{task_id, started_at_ms}`,
+taken from any entry; `cancel_wake_id` is present for a wake and for the follow
+of another agent, the events with an owner cancel of their own
+(`CancelAgentWake`). A sub-agent's end and a workflow run end on their own or
+with the whole wait.
+
+The kernel no longer judges a wait by how long it made no progress:
+`agent_tasks[].wait.long_wait_notified` is gone and no
+"Waiting for 15 minutes without progress." notice is written. A wait ends by its
+own sources and deadline, or by the owner.
+
+A block the agent raises itself with `chariox.events.blocked` sets the task's
+`owner_action` to `question` (see the blocked-task decision above).
+`fixtures/needsui-waits-1016.json` pins these shapes.

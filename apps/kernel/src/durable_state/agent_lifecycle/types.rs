@@ -15,6 +15,8 @@ pub enum ExecutionState {
 #[serde(rename_all = "snake_case")]
 pub enum TaskOwnerAction {
     BrowserAccess,
+    /// The agent itself asked the owner something and waits for the answer.
+    Question,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,7 +134,6 @@ pub struct AgentWait {
     pub deadline_ms: Option<u64>,
     pub started_at_ms: u64,
     pub inbox_cursor: u64,
-    pub long_wait_notified: bool,
     #[serde(default)]
     pub last_checked_at_ms: u64,
 }
@@ -422,6 +423,12 @@ pub(crate) enum Operation {
         prompt: String,
         reason: String,
     },
+    /// An agent's own question to the owner: the card carries a reply box, not Resume.
+    BlockForQuestion {
+        task: String,
+        prompt: String,
+        reason: String,
+    },
     /// A provider turn failed or vanished: a plain task is cancelled, a task with
     /// ledger work is blocked for the owner.
     EndFailedTurn {
@@ -699,9 +706,17 @@ pub(crate) enum Operation {
         tail: String,
         now: u64,
     },
-    /// The owner can cancel a retained timer without a running provider turn.
-    CancelOwnerTimer {
+    /// The owner ends one wake of a waiting task (a timer, a watched process, any driver source)
+    /// without a running provider turn. A process comes back `cancelling`: it settles on its exit.
+    CancelOwnerWake {
         id: String,
+        room: String,
+        owner: String,
+    },
+    /// The owner ends one follow of a peer agent that a task registered. The task is woken, as by
+    /// the agent's own unsubscribe, to learn the follow is gone.
+    EndOwnerFollow {
+        registration: String,
         room: String,
         owner: String,
     },

@@ -41,7 +41,6 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
             deadline_ms: Some(60_000),
             started_at_ms: 1,
             inbox_cursor: 3,
-            long_wait_notified: false,
             last_checked_at_ms: 1,
         }),
         last_progress_at_ms: 1,
@@ -62,13 +61,13 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
         "obligations": [{"id": "obligation", "kind": "delegate", "resource_id": "child",
             "completion_task_id": "child-task", "status": "open", "dispatch_state": "accepted"}],
         "wait": {"registration_ids": ["reg"], "deadline_ms": 60000, "started_at_ms": 1,
-            "inbox_cursor": 3, "long_wait_notified": false, "last_checked_at_ms": 1},
+            "inbox_cursor": 3, "last_checked_at_ms": 1},
         "last_progress_at_ms": 1, "correction_used": false, "pending_prompt_id": null,
     });
     assert_eq!(value, expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
-        "4ffa08d93b9e27134e13df1e08cefa349e44d8918028a1cac241d2e97f16cb01"
+        "e6f8d1eccae4c46390a0c86ef2272494f68d10f2016b458fb3e19916211a8ac6"
     );
 }
 
@@ -84,18 +83,17 @@ fn agent_wait_without_a_deadline_reports_a_null_deadline() {
         deadline_ms: None,
         started_at_ms: 1,
         inbox_cursor: 3,
-        long_wait_notified: false,
         last_checked_at_ms: 1,
     };
     let value = serde_json::to_value(wait).unwrap();
     assert_eq!(
         value,
         serde_json::json!({"registration_ids": ["reg"], "deadline_ms": null, "started_at_ms": 1,
-            "inbox_cursor": 3, "long_wait_notified": false, "last_checked_at_ms": 1})
+            "inbox_cursor": 3, "last_checked_at_ms": 1})
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
-        "40729d74583fd594c73484f308a96a58c80aa1c991016f7728a3bb41a11c59ae"
+        "f8abdcd92861f4306d96055bcc034470df1d10ecc1969ff7f3cb00b085227077"
     );
 }
 

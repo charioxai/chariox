@@ -40,6 +40,14 @@ impl KernelRuntimeOwnedState {
             .and_then(|fingerprint| fingerprint.strip_prefix("task:"))
             .and_then(|value| value.rsplit_once(':'))
             .map(|(task, _)| task.to_string());
+        // An answer or wake that arrives while the task's own turn still runs queues behind that turn.
+        // Admitting it now would move the task off the running turn, whose end then finds no task to
+        // settle; the dispatch that promotes the continuation admits it (`bind_agent_task_run`).
+        if let Some(task) = &continuation_task {
+            if self.task_turn_is_running(&prepared.session_id, task, prompt)? {
+                return Ok(false);
+            }
+        }
         let operation = if let Some(task) = continuation_task {
             Operation::BeginContinuation {
                 task,
@@ -111,6 +119,25 @@ impl KernelRuntimeOwnedState {
             self.bind_agent_workflow_task(&task, prompt)?;
         }
         Ok(())
+    }
+    /// Whether `task` still has its own turn running while it holds `continuation` as its next prompt.
+    fn task_turn_is_running(
+        &self,
+        room: &str,
+        task: &str,
+        continuation: &str,
+    ) -> Result<bool, DaemonError> {
+        let Some(task) = self.durable_state_store.agent_task(task)? else {
+            return Ok(false);
+        };
+        if task.pending_prompt_id.as_deref() != Some(continuation) {
+            return Ok(false);
+        }
+        let session = self.session_store.get_session(room)?;
+        Ok(self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &task.agent_id)
+            .is_some_and(|active| active.id() == task.prompt_id))
     }
     /// Binds the provider run that carries a dispatched prompt to its task. A prompt that waited in
     /// the queue is admitted without a run, so every dispatch path (including queue promotion)
@@ -1041,9 +1068,27 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
-    /// Every transition is a notice so attached clients refresh the projection.
+    /// A task that needs its owner or stopped is said in a notice; any other change only refreshes the projection,
+    /// so a client redraws the task's state without a status line about it.
     fn record_task_transition_notices(&self, tasks: impl IntoIterator<Item = AgentTaskExecution>) {
         for task in tasks {
+            let notice = match task.state {
+                ExecutionState::Blocked => format!(
+                    "{}: Needs your help. {}",
+                    self.agent_notice_name(&task.agent_id),
+                    task.reason
+                ),
+                ExecutionState::Cancelled => format!(
+                    "{}: Stopped. Its provider turn ended without an answer.",
+                    self.agent_notice_name(&task.agent_id)
+                ),
+                _ => {
+                    self.owned
+                        .terminal_stream
+                        .notify_terminal_projection_change(&task.room_id);
+                    continue;
+                }
+            };
             self.owned.record_notice_for_agent(
                 &task.room_id,
                 None,
@@ -1051,23 +1096,7 @@ impl KernelRuntimeState {
                 self.owned
                     .attachment_store
                     .list_session_attachment_ids(&task.room_id),
-                if task.state == ExecutionState::Blocked {
-                    format!(
-                        "{}: Needs your help. {}",
-                        self.agent_notice_name(&task.agent_id),
-                        task.reason
-                    )
-                } else if task.state == ExecutionState::Cancelled {
-                    format!(
-                        "{}: Stopped. Its provider turn ended without an answer.",
-                        self.agent_notice_name(&task.agent_id)
-                    )
-                } else {
-                    format!(
-                        "{}: Waiting for 15 minutes without progress.",
-                        self.agent_notice_name(&task.agent_id)
-                    )
-                },
+                notice,
             );
         }
     }

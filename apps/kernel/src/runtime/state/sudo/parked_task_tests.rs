@@ -552,6 +552,211 @@ async fn owner_timer_cancellation_preserves_waiting_task_and_delivers_source_rec
     );
 }
 
+/// Parks a begun task on a watched process that runs, as a task waiting on a build does.
+fn park_task_on_process(f: &Fixture, prompt: &str) -> AgentTaskExecution {
+    let store = &f.state.owned.durable_state_store;
+    let now = crate::session::unix_epoch_ms();
+    let room = &f.request.session_id;
+    let agent = f.request.target_agent_id.as_deref().unwrap();
+    let wake: AgentWake = serde_json::from_value(serde_json::json!({
+        "id": format!("process-{prompt}"), "task_id": prompt, "room_id": room, "agent_id": agent,
+        "registration_id": format!("completion-process-{prompt}"), "kind": "process", "label": "cargo build",
+        "state": "scheduled", "created_at_ms": now, "verified_at_ms": null,
+        "next_due_ms": null, "interval_ms": null, "command": ["cargo", "build"],
+        "match_text": null, "matched_at_ms": null, "pid": null, "exit_code": null,
+        "fire_count": 0, "missed_fires": 0, "last_fired_at_ms": null,
+        "last_sequence": null, "last_delivery": null, "last_delivered_at_ms": null,
+        "last_acknowledged_at_ms": null, "alerted_sequence": null
+    }))
+    .unwrap();
+    store
+        .agent_lifecycle(Operation::CreateWake {
+            task: prompt.into(),
+            prompt: prompt.into(),
+            wake,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::ProcessStarted {
+            id: format!("process-{prompt}"),
+            pid: 4_000_000,
+            now,
+        })
+        .unwrap();
+    settle_on(f, prompt, vec![format!("completion-process-{prompt}")])
+}
+
+/// Parks a begun task on the follow of another agent: a registration no obligation covers.
+fn park_task_on_follow(f: &Fixture, prompt: &str, peer: bool) -> AgentTaskExecution {
+    f.state
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Subscribe {
+            task: prompt.into(),
+            prompt: prompt.into(),
+            registration: crate::durable_state::agent_lifecycle::Registration {
+                id: format!("follow-{prompt}"),
+                task_id: prompt.into(),
+                source_id: "another-agent".into(),
+                obligation_id: None,
+                source_cursor: 0,
+                live: true,
+                peer,
+            },
+        })
+        .unwrap();
+    settle_on(f, prompt, vec![format!("follow-{prompt}")])
+}
+
+fn settle_on(f: &Fixture, prompt: &str, registrations: Vec<String>) -> AgentTaskExecution {
+    let store = &f.state.owned.durable_state_store;
+    let now = crate::session::unix_epoch_ms();
+    store
+        .agent_lifecycle(Operation::Yield {
+            task: prompt.into(),
+            prompt: prompt.into(),
+            registrations,
+            cursor: 0,
+            deadline: Some(now + 3_600_000),
+            reason: "Waiting".into(),
+            now,
+        })
+        .unwrap();
+    let Outcome::Settled { task, .. } = store
+        .agent_lifecycle(Operation::Settle {
+            room: f.request.session_id.clone(),
+            agent: f.request.target_agent_id.clone().unwrap(),
+            prompt: prompt.into(),
+            run: f.run.id().into(),
+            has_answer: true,
+            cancelled: false,
+            now,
+        })
+        .unwrap()
+    else {
+        panic!("settled task")
+    };
+    assert_eq!(task.state, ExecutionState::Waiting);
+    task
+}
+
+fn begin_task(f: &Fixture, prompt: &str) {
+    f.state
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: f.request.session_id.clone(),
+            agent: f.request.target_agent_id.clone().unwrap(),
+            prompt: prompt.into(),
+            run: Some(f.run.id().into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+}
+
+// needsui fix: the owner removes one event of a wait wherever the kernel can end it alone.
+#[tokio::test]
+async fn the_owner_stops_one_watched_process_of_a_wait_and_the_task_keeps_waiting() {
+    let f = fixture_with_options(None, true);
+    begin_task(&f, "build-wait");
+    let original = park_task_on_process(&f, "build-wait");
+    let response = cancel_request(
+        &f,
+        serde_json::json!({"CancelAgentWake":{
+            "session_id": f.request.session_id, "attachment_id": f.request.attachment_id,
+            "wake_id": "process-build-wait",
+        }}),
+    )
+    .await
+    .unwrap();
+    let LocalDaemonResponse::AgentTaskUpdated { task, .. } = response else {
+        panic!("expected a task update")
+    };
+    assert_eq!(task.task_id, original.task_id);
+    assert_ne!(
+        task.state,
+        ExecutionState::Cancelled,
+        "the task is not cancelled"
+    );
+    let wake = f
+        .state
+        .owned
+        .durable_state_store
+        .agent_wake("process-build-wait")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        wake.state, "cancelling",
+        "the process settles on its physical exit, as when its agent stops it"
+    );
+}
+
+#[tokio::test]
+async fn the_owner_ends_one_follow_of_a_wait_and_the_agent_hears_it_is_gone() {
+    let f = fixture_with_options(None, true);
+    begin_task(&f, "follow-wait");
+    let original = park_task_on_follow(&f, "follow-wait", true);
+    let store = &f.state.owned.durable_state_store;
+    let response = cancel_request(
+        &f,
+        serde_json::json!({"CancelAgentWake":{
+            "session_id": f.request.session_id, "attachment_id": f.request.attachment_id,
+            "wake_id": "follow-follow-wait",
+        }}),
+    )
+    .await
+    .unwrap();
+    let LocalDaemonResponse::AgentTaskUpdated { task, .. } = response else {
+        panic!("expected a task update")
+    };
+    assert_eq!(task.task_id, original.task_id);
+    assert!(
+        !store
+            .agent_registration("follow-follow-wait")
+            .unwrap()
+            .unwrap()
+            .live
+    );
+    assert!(
+        store
+            .agent_inbox(&original.room_id, &original.agent_id, 0)
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "source_lost"),
+        "the wait wakes on the follow that ended"
+    );
+}
+
+#[tokio::test]
+async fn a_source_no_owner_control_ends_alone_is_refused_and_stays_registered() {
+    let f = fixture_with_options(None, true);
+    begin_task(&f, "sub-agent-wait");
+    park_task_on_follow(&f, "sub-agent-wait", false);
+    let error = cancel_request(
+        &f,
+        serde_json::json!({"CancelAgentWake":{
+            "session_id": f.request.session_id, "attachment_id": f.request.attachment_id,
+            "wake_id": "follow-sub-agent-wait",
+        }}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("only a follow of another agent"),
+        "{error}"
+    );
+    assert!(
+        f.state
+            .owned
+            .durable_state_store
+            .agent_registration("follow-sub-agent-wait")
+            .unwrap()
+            .unwrap()
+            .live
+    );
+}
+
 #[tokio::test]
 async fn exact_owner_task_cancellation_rejects_stale_revision_and_foreign_owner() {
     let f = fixture_with_options(None, true);
