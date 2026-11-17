@@ -552,4 +552,6 @@ pub use workspace::*;
 /// a waiting agent lists every event it would wake on (`liveness.waiting_events`), `wait.long_wait_notified` goes with the no-progress notice, and an agent's own question to the owner is marked (`owner_action: "question"`, a reply-box decision);
 /// a running agent's profile and config change takes effect mid-turn (`applies` on `AgentProfileUpdated`/`AgentConfigUpdated`, `reason` on both requests, `self_settings` and `usage_limit` on `UpdateAgentConfig`, `AgentInstance.self_settings` and `.usage_limit_stop`) and the user config key `agents.usage_limit_resume` is added (docs/PROTOCOL.md, "Settings change while a turn runs, and a usage limit");
 /// the Room list wire names replace the waiting room ones (`GetRoomListSnapshot` → `RoomListSnapshot`, `ListRoomListSessions` → `RoomListSessionsListed`, scope `room_list`, events `room_list_changed` / `room_list_rows_changed`) and `GetWaitingRoomInventory` is removed.
+/// every workflow has a `responsible` (and a `responsible_notice`), numbers its runs and gives each run an `outcome`
+/// and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them;
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1010;

@@ -221,7 +221,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// with its interaction between kernels of one owner; 448 carries `target_kind` in a remote folder listing,
 /// forwards the browser region's `done_text` with its interaction, and forwards the App account, event-routing and
 /// pause, and standing permission requests and the confirmation preview, and names the Room list subscription scope
-/// and events `room_list` / `room_list_changed` / `room_list_rows_changed`.
+/// and events `room_list` / `room_list_changed` / `room_list_rows_changed`; it lets an agent's kernel read or set the responsible
+/// of a workflow on another kernel and lets the workflow's kernel ask for the agent's trigger.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 448;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
@@ -893,6 +894,26 @@ pub enum RelayPeerRequest {
         target: PeerAgentAddress,
         caller_authority: PeerCallerAuthority,
     },
+    /// An agent on the sending kernel reads, or changes, who answers for a workflow of a room
+    /// here: it takes the workflow, or hands over one it is responsible for. No `responsible`
+    /// reads.
+    SetWorkflowResponsible {
+        protocol_version: u32,
+        sender: PeerAgentStamp,
+        room: String,
+        workflow_ref: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        responsible: Option<crate::local::WorkflowResponsibleTarget>,
+    },
+    /// The kernel that holds a workflow asks the kernel of its responsible agent to keep, or
+    /// drop, the trigger that carries the workflow's runs to that agent.
+    ApplyWorkflowResponsible {
+        protocol_version: u32,
+        action: ResponsibleTriggerAction,
+        workflow: crate::session::ResponsibleForWorkflow,
+        source: crate::local::WorkflowNotificationSource,
+        agent: PeerAgentAddress,
+    },
     SubscribePeerAgent {
         protocol_version: u32,
         request_id: String,
@@ -1421,9 +1442,26 @@ impl RelayPeerRequest {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponsibleTriggerAction {
+    Attach,
+    Detach,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {
+    /// The workflow as it stands after its responsible changed.
+    WorkflowResponsibleChanged {
+        protocol_version: u32,
+        workflow: crate::session::WorkflowDefinition,
+    },
+    /// The agent's trigger is kept or dropped; `label` is the agent's name for an attach.
+    WorkflowResponsibleApplied {
+        protocol_version: u32,
+        label: String,
+    },
     ProjectEnvironmentRead {
         source_label: String,
         record: Option<crate::project_environment::ProjectEnvironmentRecord>,

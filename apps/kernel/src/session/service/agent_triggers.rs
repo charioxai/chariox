@@ -159,6 +159,43 @@ impl SessionService {
             .add_agent_trigger(trigger))
     }
 
+    /// The trigger of `agent_id` that carries `workflow`'s runs to it. The kernel keeps it: it
+    /// is created, replaced and deleted with the workflow's responsible.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "A responsible trigger is created from the subscription it rides and the workflow it serves."
+    )]
+    pub(crate) fn create_responsible_trigger(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        owner: &str,
+        source_id: String,
+        subscription_id: String,
+        display_name: String,
+        workflow: crate::session::ResponsibleForWorkflow,
+        prompt: String,
+        replaced: Option<crate::session::ReplacedListener>,
+    ) -> Result<AgentTrigger, DaemonError> {
+        let trigger = self.create_agent_notification_trigger(
+            session_id,
+            agent_id,
+            owner,
+            crate::session::AgentTriggerNotificationSource::Workflow { source_id },
+            subscription_id,
+            display_name,
+            Some(prompt),
+        )?;
+        let stored = self
+            .agent_trigger_session_mut(session_id)?
+            .agent_triggers_mut()
+            .iter_mut()
+            .find(|stored| stored.id() == trigger.id())
+            .ok_or_else(|| agent_trigger_not_found(session_id, trigger.id()))?;
+        stored.set_responsible_for(workflow, replaced);
+        Ok(stored.clone())
+    }
+
     /// Claims the trigger for one firing of an outside input; `None` while it is off or mid-firing.
     pub(crate) fn claim_input_agent_trigger(
         &mut self,
@@ -185,6 +222,7 @@ impl SessionService {
             agent_id: trigger.agent_id().into(),
             prompt: trigger.prompt().into(),
             busy_policy: trigger.busy_policy(),
+            responsible: trigger.responsible_for().is_some(),
         }))
     }
 
@@ -280,6 +318,7 @@ impl SessionService {
                         agent_id: trigger.agent_id().to_string(),
                         prompt: trigger.prompt().to_string(),
                         busy_policy: trigger.busy_policy(),
+                        responsible: false,
                     });
                 }
             }

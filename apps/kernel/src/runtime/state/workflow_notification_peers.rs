@@ -389,7 +389,26 @@ impl KernelRuntimeState {
         ) {
             self.owned.ensure_owner_action_notification_sources(owner)?;
         }
-        self.owned
+        // Another kernel dropping the subscription of its responsible agent is that agent
+        // going away: the workflow's person answers again once the drop is applied.
+        let dropped_responsible = match &request {
+            RelayPeerRequest::UnsubscribeWorkflowNotifications {
+                subscription_id, ..
+            } if subscription_id.starts_with(
+                super::workflow_responsible_state::RESPONSIBLE_SUBSCRIPTION_PREFIX,
+            ) =>
+            {
+                self.owned
+                    .durable_state_store
+                    .notification_inventory(owner)?
+                    .1
+                    .into_iter()
+                    .find(|s| &s.subscription_id == subscription_id && s.target_kernel_id == kernel)
+            }
+            _ => None,
+        };
+        let response = self
+            .owned
             .durable_state_store
             .with_workflow_runtime_transition_lock(|| {
                 let sessions = self.owned.session_store.read();
@@ -529,7 +548,18 @@ impl KernelRuntimeState {
                         "workflow notification requires peer protocol {VERSION}"
                     ))),
                 }
-            })
+            })?;
+        if let (Some(subscription), RelayPeerResponse::WorkflowNotificationUnsubscribed) =
+            (dropped_responsible, &response)
+        {
+            let runtime = self.clone();
+            tokio::spawn(async move {
+                runtime
+                    .fall_back_for_dropped_responsible_subscription(&subscription)
+                    .await;
+            });
+        }
+        Ok(response)
     }
 
     /// Runs within the existing App pump reservation, never a second timer.
@@ -545,6 +575,7 @@ impl KernelRuntimeState {
         }
         let now = crate::session::unix_epoch_ms();
         self.reconcile_remote_notification_installs(now).await;
+        self.fall_back_for_gone_kernels().await;
         self.schedule_notification_source_probes(now);
         let home = self.owned.config_projection.snapshot().daemon_id;
         let Ok(candidates) = self
@@ -647,6 +678,7 @@ mod tests {
     mod generation;
     mod local_access;
     mod reconnect;
+    mod responsible;
 
     use super::*;
     use crate::durable_state::workflow_notifications::tests::{cleanup, Fixture};

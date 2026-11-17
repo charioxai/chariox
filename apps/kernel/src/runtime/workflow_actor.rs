@@ -415,6 +415,8 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::RunWorkflowRegistryEntry(request) => request.session_id.clone(),
         LocalDaemonRequest::ApplyWorkflowDesignOp(request) => request.session_id.clone(),
         LocalDaemonRequest::AliasWorkflow(request) => request.session_id.clone(),
+        LocalDaemonRequest::SetWorkflowResponsible(request) => request.session_id.clone(),
+        LocalDaemonRequest::ClearWorkflowRunAttention(request) => request.session_id.clone(),
         LocalDaemonRequest::ListWorkflows(request) => request.session_id.clone(),
         LocalDaemonRequest::ResolveWorkflow(request) => request.session_id.clone(),
         LocalDaemonRequest::CreateWorkflowPublication(request) => request.session_id.clone(),

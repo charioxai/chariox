@@ -14,6 +14,27 @@ pub enum WorkflowFailureKind {
     ProviderFailure,
     TransportFailure,
     TurnStalled,
+    /// A step's agent could not go on without someone: it asked for a permission, an answer or
+    /// the browser, or its task blocked. The message is the agent's own reason.
+    StepNeedsHelp,
+}
+
+impl WorkflowFailureKind {
+    /// The name a client and a mailbox entry show: the serialized one.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::MissingAck => "missing_ack",
+            Self::MissingStructuredOutput => "missing_structured_output",
+            Self::OutputValidationFailed => "output_validation_failed",
+            Self::WorkflowRunOutputValidationFailed => "workflow_run_output_validation_failed",
+            Self::NodeTurnBudgetExhausted => "node_turn_budget_exhausted",
+            Self::RunStopped => "run_stopped",
+            Self::ProviderFailure => "provider_failure",
+            Self::TransportFailure => "transport_failure",
+            Self::TurnStalled => "turn_stalled",
+            Self::StepNeedsHelp => "step_needs_help",
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]

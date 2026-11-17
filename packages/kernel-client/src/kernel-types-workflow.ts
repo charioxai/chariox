@@ -2,9 +2,33 @@ import type { ExtensionGrant } from "./kernel-types-extensions.js"
 import type { RuntimeSession } from "./kernel-types-session.js"
 import type { AgentInstance } from "./kernel-types-runtime.js"
 
+/** Who answers for a workflow: the person, or an agent that gets each run's needs as a prompt. */
+export type WorkflowResponsible =
+  | { kind: "person" }
+  | { kind: "agent"; kernel_id: string; room_id: string; agent_id: string; label: string }
+
+/** Set when the responsible agent was deleted or its kernel left the account; the person answers again. */
+export type WorkflowResponsibleNotice = { kind: "agent_gone" | "machine_gone"; label: string }
+
+/** How a run that needs someone stands: failed with its first failure, or a node held on a named thing. */
+export type WorkflowRunOutcome =
+  | { kind: "failed"; reason: string; detail: string }
+  | {
+      kind: "waiting"
+      on:
+        | "provider_profile_unavailable"
+        | "provider_profile_unverified"
+        | "provider_profile_unauthenticated"
+        | "provider_profile_usage_exhausted"
+        | "blocked_on_workspace_claim"
+      node_id: string
+    }
+
 export type WorkflowDefinition = {
   gate?: WorkflowGateDefinition | null
   created_by_agent_id?: string | null
+  responsible?: WorkflowResponsible
+  responsible_notice?: WorkflowResponsibleNotice
   id: string
   alias: string | null
   prompt?: string | null
@@ -1045,6 +1069,11 @@ export type WorkflowRun = {
   created_before_ownership_tracking?: boolean
   created_by_agent_id?: string | null
   id: string
+  /** Monotonic per workflow; the first run is 1. */
+  number?: number
+  /** True while the run needs someone and nobody cleared that need. */
+  attention?: boolean
+  outcome?: WorkflowRunOutcome
   workflow_id: string
   workflow_revision?: number
   endpoint_id: string

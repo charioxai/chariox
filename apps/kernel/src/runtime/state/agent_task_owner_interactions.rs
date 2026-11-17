@@ -121,6 +121,10 @@ impl KernelRuntimeState {
         if self.owned.goal_has_native_approval(&task) {
             return Ok(());
         }
+        // A workflow step never raises a card: its run ends and says why.
+        if self.end_run_step_of_blocked_task(&task).await? {
+            return Ok(());
+        }
         if self.defer_task_for_human_control(&task).await {
             return Ok(());
         }

@@ -254,10 +254,18 @@ impl DurableKernelStateStore {
         let connection = self.lock_connection("durable_state.load_active_workflow_runs")?;
         let mut statement = connection
             .prepare(
-                "SELECT session_id, payload_json
-                 FROM durable_workflow_runs INDEXED BY idx_durable_workflow_runs_active
-                 WHERE owner_id = ?1
-                   AND status NOT IN ('Completed', 'Failed', 'Stopped')
+                "SELECT session_id, payload_json FROM (
+                     SELECT session_id, payload_json, created_at_ms, run_id
+                     FROM durable_workflow_runs INDEXED BY idx_durable_workflow_runs_active
+                     WHERE owner_id = ?1
+                       AND status NOT IN ('Completed', 'Failed', 'Stopped')
+                     UNION ALL
+                     SELECT session_id, payload_json, created_at_ms, run_id
+                     FROM durable_workflow_runs
+                     WHERE owner_id = ?1
+                       AND status = 'Failed'
+                       AND json_extract(payload_json, '$.attention') = 1
+                 )
                  ORDER BY session_id ASC, created_at_ms ASC, run_id ASC",
             )
             .map_err(|error| storage_error("prepare active workflow runs", error))?;

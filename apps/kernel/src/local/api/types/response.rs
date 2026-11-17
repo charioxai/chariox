@@ -563,6 +563,8 @@ pub enum LocalDaemonResponse {
     WorkflowCodePackageImported { artifact: crate::workflow_code::WorkflowCodeArtifact, },
     WorkflowCodeSourceExported { export: crate::workflow_code::WorkflowCodeSourceExport, },
     WorkflowAliased { workflow: WorkflowDefinition, session: RuntimeSession, },
+    WorkflowResponsibleSet { workflow: WorkflowDefinition, session: RuntimeSession, },
+    WorkflowRunAttentionCleared { run: WorkflowRun, session: RuntimeSession, },
     WorkflowsListed { workflows: Vec<WorkflowDefinition>, },
     WorkflowResolved { workflow: WorkflowDefinition, },
     WorkflowPublicationCreated { publication: WorkflowPublicationDefinition, session: RuntimeSession, },

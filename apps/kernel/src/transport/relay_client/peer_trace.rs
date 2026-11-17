@@ -102,6 +102,8 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
         RelayPeerRequest::DeliverWorkflowNotification { .. } => "deliver_workflow_notification",
         RelayPeerRequest::PeerAgentMessage { .. } => "peer_agent_message",
         RelayPeerRequest::PeerAgentCancel { .. } => "peer_agent_cancel",
+        RelayPeerRequest::SetWorkflowResponsible { .. } => "set_workflow_responsible",
+        RelayPeerRequest::ApplyWorkflowResponsible { .. } => "apply_workflow_responsible",
         RelayPeerRequest::SubscribePeerAgent { .. } => "subscribe_peer_agent",
         RelayPeerRequest::UnsubscribePeerAgent { .. } => "unsubscribe_peer_agent",
         RelayPeerRequest::SpawnRoomPeer { .. } => "spawn_room_peer",
