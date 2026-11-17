@@ -395,4 +395,145 @@ for line in sys.stdin:
             "PUBLISHED https://github.com/me/x"
         );
     }
+
+    /// A Room in a fresh app with a Claude run whose provider program is `program`.
+    async fn claude_setup_run(
+        label: &str,
+        program: &std::path::Path,
+        args: Vec<String>,
+    ) -> (KernelRuntimeState, crate::provider::RuntimeProviderRun) {
+        use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                format!("workspace-{label}"),
+                format!("worktree-{label}"),
+            ))
+            .unwrap();
+        let runtime = owned_runtime_state(&Arc::new(Mutex::new(app))).await;
+        let request = LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude-headless",
+            "default",
+            "claude-headless/sonnet",
+        );
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            label,
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "claude:headless".into(),
+                pty_target: None,
+                pty_program: Some(program.display().to_string()),
+                pty_args: args,
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        (runtime, run)
+    }
+
+    async fn setup_turn(
+        runtime: &KernelRuntimeState,
+        run: crate::provider::RuntimeProviderRun,
+    ) -> Result<String, crate::error::DaemonError> {
+        crate::runtime::agent_utility_executor::run_provider_utility_prompt(
+            runtime,
+            run,
+            crate::runtime::agent_utility_executor::AgentUtilityPromptParts {
+                visible_user_prompt: "Publish".into(),
+                hidden_system_context: "You are setting up a Room.".into(),
+            },
+            "test setup turn",
+            crate::provider::ProviderUtilityExecutionPolicy::RoomCommands,
+            std::time::Duration::from_secs(10),
+        )
+        .await
+    }
+
+    fn write_executable(path: &std::path::Path, text: &str) {
+        std::fs::write(path, text).unwrap();
+        std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_managed_setup_turn_runs_in_the_runs_own_folder() {
+        let root = std::env::temp_dir().join(format!("managed-setup-{}", std::process::id()));
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        // Stands in for bubblewrap: enters the `--chdir` folder and starts the program after `--`.
+        let sandbox = root.join("sandbox");
+        write_executable(
+            &sandbox,
+            "#!/bin/sh\ndir=/\nwhile [ \"$1\" != \"--\" ]; do\n  [ \"$1\" = --chdir ] && dir=$2\n  shift\ndone\nshift\ncd \"$dir\" && exec \"$@\"\n",
+        );
+        let claude = root.join("claude");
+        write_executable(
+            &claude,
+            &format!(
+                r#"#!/usr/bin/python3
+import sys, json, os
+if os.getcwd() != {project:?}:
+    sys.stderr.write("started in " + os.getcwd() + "\n")
+    sys.exit(9)
+for line in sys.stdin:
+    print(json.dumps({{"type": "assistant", "message": {{"id": "m", "content": [{{"type": "text", "text": "PUBLISHED https://github.com/me/x"}}]}}}}), flush=True)
+    print(json.dumps({{"type": "result", "subtype": "success", "user_message_uuids": [json.loads(line)["uuid"]]}}), flush=True)
+"#,
+                project = project.display().to_string()
+            ),
+        );
+        let marker = "CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE";
+        let (runtime, run) = claude_setup_run(
+            "managed-setup",
+            &sandbox,
+            [
+                "--setenv",
+                marker,
+                "1",
+                "--chdir",
+                &project.display().to_string(),
+                "--",
+                &claude.display().to_string(),
+            ]
+            .map(String::from)
+            .into(),
+        )
+        .await;
+        let result = setup_turn(&runtime, run).await;
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            result.expect("the setup turn answers from the run's folder"),
+            "PUBLISHED https://github.com/me/x"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_provider_limit_reaches_the_failed_publish_step() {
+        let root = std::env::temp_dir().join(format!("limited-setup-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let claude = root.join("claude");
+        write_executable(
+            &claude,
+            r#"#!/usr/bin/python3
+import sys, json
+for line in sys.stdin:
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": True, "result": "You've hit your weekly limit · resets Nov 18, 9pm (UTC)", "user_message_uuids": [json.loads(line)["uuid"]]}), flush=True)
+"#,
+        );
+        let (runtime, run) = claude_setup_run("limited-setup", &claude, Vec::new()).await;
+        let error = setup_turn(&runtime, run)
+            .await
+            .expect_err("a run at its weekly limit does not answer");
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            super::super::room_setup_publish::publish_failure_reason("claude", &error),
+            "The agent could not publish: You've hit your weekly limit · resets Nov 18, 9pm (UTC)"
+        );
+    }
 }

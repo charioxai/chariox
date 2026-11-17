@@ -620,7 +620,11 @@ impl RuntimeProviderRun {
                 hidden_system_context.to_string(),
             ]);
         }
-        clone.pty_args = super::managed_isolation::fresh_provider_child_args(&self.pty_args, args);
+        clone.pty_args = super::managed_isolation::fresh_provider_child_args(
+            &self.pty_args,
+            args,
+            super::managed_isolation::FreshChildFolder::RunFolder,
+        );
         clone
     }
 
@@ -659,7 +663,11 @@ impl RuntimeProviderRun {
                 path.display().to_string(),
             ]);
         }
-        super::managed_isolation::fresh_provider_child_args(&self.pty_args, args)
+        super::managed_isolation::fresh_provider_child_args(
+            &self.pty_args,
+            args,
+            super::managed_isolation::FreshChildFolder::Empty,
+        )
     }
 
     /// Only the isolated Claude assessment clone receives this private input file.
