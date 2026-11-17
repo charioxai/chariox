@@ -403,11 +403,16 @@ async fn enrolled_lease_worker_materializes_selected_project_via_public_context_
     let Some(Ok(target)) = launch_result else {
         panic!("worker should retain the completed launch target: {launch_result:?}");
     };
-    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { repositories, .. } =
+    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { projects } =
         target.development
     else {
         panic!("selected Project should produce source repositories");
     };
+    let repositories = projects
+        .into_iter()
+        .next()
+        .expect("one Project")
+        .repositories;
     assert_eq!(repositories.len(), 2);
     for repository in repositories {
         let path = std::path::PathBuf::from(repository.workspace_path);

@@ -283,6 +283,78 @@ fn recover_pruned_development_context_publication_with_head_policy(
     Ok(matching)
 }
 
+/// Where the `index`-th Project of one transfer lands: the first at the destination itself, the others beside it.
+pub(crate) fn development_unit_root(destination_root: &Path, index: usize) -> PathBuf {
+    if index == 0 {
+        return destination_root.to_path_buf();
+    }
+    let mut name = destination_root
+        .file_name()
+        .unwrap_or_default()
+        .to_os_string();
+    name.push(format!("-{index}"));
+    destination_root.with_file_name(name)
+}
+
+/// Each Project of one transfer is its own publication, so staging and ownership proofs never collide.
+pub(crate) fn development_unit_publication_id(transfer_id: &str, index: usize) -> String {
+    if index == 0 {
+        transfer_id.to_string()
+    } else {
+        format!("{transfer_id}-{index}")
+    }
+}
+
+/// Removes every Project of one transfer found at its destination, for a failure that does not know how many landed.
+pub(crate) fn cleanup_present_development_context_publications(
+    destination_root: &Path,
+    transfer_id: &str,
+) -> Result<(), DaemonError> {
+    let present = (0..crate::managed_context::package::MAX_MANAGED_CONTEXT_PROJECTS)
+        .take_while(|index| {
+            fs::symlink_metadata(development_unit_root(destination_root, *index)).is_ok()
+        })
+        .count();
+    cleanup_development_context_publications(destination_root, transfer_id, present)
+}
+
+/// Removes the import staging of every Project a transfer may have started.
+pub(crate) fn cleanup_development_context_staging_units(
+    destination_root: &Path,
+    transfer_id: &str,
+) -> Result<(), DaemonError> {
+    for index in 0..crate::managed_context::package::MAX_MANAGED_CONTEXT_PROJECTS {
+        cleanup_development_context_publication_staging(
+            &development_unit_root(destination_root, index),
+            &development_unit_publication_id(transfer_id, index),
+        )?;
+    }
+    Ok(())
+}
+
+/// Removes the first `count` Projects of one transfer, last first, so a copy lands whole or not at all.
+pub(crate) fn cleanup_development_context_publications(
+    destination_root: &Path,
+    transfer_id: &str,
+    count: usize,
+) -> Result<(), DaemonError> {
+    let mut failures = Vec::new();
+    for index in (0..count).rev() {
+        let root = development_unit_root(destination_root, index);
+        let publication_id = development_unit_publication_id(transfer_id, index);
+        if let Err(error) = cleanup_development_context_publication(&root, &publication_id) {
+            failures.push(error.to_string());
+        }
+    }
+    match failures.first() {
+        None => Ok(()),
+        Some(first) => Err(context_error(format!(
+            "{} development context publication(s) could not be removed; first failure: {first}",
+            failures.len()
+        ))),
+    }
+}
+
 pub(crate) fn cleanup_development_context_publication(
     destination_root: &Path,
     publication_id: &str,

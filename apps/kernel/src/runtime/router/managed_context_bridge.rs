@@ -25,9 +25,10 @@ use crate::runtime::terminal_pairings::public_key_thumbprint;
 use crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE;
 use crate::transport::relay_peer::{
     RelayManagedContextCapability, RelayManagedContextImportReceipt,
-    RelayManagedContextImportedRepository, RelayManagedContextTransferPhase,
-    RelayManagedContextTransferStatus, RelayManagedDevelopmentContextImportReceipt,
-    RelayManagedKernelContextImportReceipt, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
+    RelayManagedContextImportedProject, RelayManagedContextImportedRepository,
+    RelayManagedContextTransferPhase, RelayManagedContextTransferStatus,
+    RelayManagedDevelopmentContextImportReceipt, RelayManagedKernelContextImportReceipt,
+    RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
 };
 
 use super::CommandRouter;
@@ -1088,31 +1089,36 @@ fn relay_receipt(
             RelayManagedDevelopmentContextImportReceipt::Empty
         }
         crate::managed_context::package::ManagedContextImportedDevelopment::FromSource {
-            project_id,
-            receipt,
-        } => {
-            let destination_root = utf8_path(&receipt.destination_root)?;
-            let repositories = receipt
-                .repositories
+            projects,
+        } => RelayManagedDevelopmentContextImportReceipt::FromSource {
+            projects: projects
                 .into_iter()
-                .map(|repository| {
-                    Ok(RelayManagedContextImportedRepository {
-                        workspace_kind: repository.workspace_kind,
-                        repository_id: repository.repository_id,
-                        role: repository.role,
-                        target_directory: repository.target_directory,
-                        destination_path: utf8_path(&repository.destination_path)?,
-                        head_sha: repository.head_sha,
+                .map(|project| {
+                    let receipt = project.receipt;
+                    let destination_root = utf8_path(&receipt.destination_root)?;
+                    let repositories = receipt
+                        .repositories
+                        .into_iter()
+                        .map(|repository| {
+                            Ok(RelayManagedContextImportedRepository {
+                                workspace_kind: repository.workspace_kind,
+                                repository_id: repository.repository_id,
+                                role: repository.role,
+                                target_directory: repository.target_directory,
+                                destination_path: utf8_path(&repository.destination_path)?,
+                                head_sha: repository.head_sha,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, DaemonError>>()?;
+                    Ok(RelayManagedContextImportedProject {
+                        project_id: project.project_id,
+                        destination_root,
+                        primary_repository_id: receipt.primary_repository_id,
+                        repositories,
                     })
                 })
-                .collect::<Result<Vec<_>, DaemonError>>()?;
-            RelayManagedDevelopmentContextImportReceipt::FromSource {
-                project_id,
-                destination_root,
-                primary_repository_id: receipt.primary_repository_id,
-                repositories,
-            }
-        }
+                .collect::<Result<Vec<_>, DaemonError>>()?,
+        },
     };
     Ok(RelayManagedContextImportReceipt {
         destination: receipt.destination.clone(),

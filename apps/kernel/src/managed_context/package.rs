@@ -34,7 +34,7 @@ use crate::provider_vault_login::{
 };
 use crate::secret::TransferredVaultSourceBinding;
 
-const PACKAGE_SCHEMA_VERSION: u32 = 4;
+const PACKAGE_SCHEMA_VERSION: u32 = 5;
 const LEGACY_PACKAGE_SCHEMA_VERSIONS: [u32; 2] = [2, 3];
 const PACKAGE_MAGIC: &[u8; 16] = b"CHARIOXCTXPKG1\r\n";
 const PACKAGE_TRAILER: &[u8; 16] = b"CHARIOXCTXEND1\r\n";
@@ -42,6 +42,8 @@ const MAX_PLAN_BINDING_BYTES: usize = 72 * 1024;
 const MAX_MANIFEST_BYTES: usize = MAX_PLAN_BINDING_BYTES + 24 * 1024;
 pub(crate) const MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES: u64 = 24 * 1024 * 1024;
 pub(crate) const MAX_GIT_CREDENTIAL_COMPONENT_BYTES: u64 = 1024 * 1024;
+/// One copy carries at most this many Projects; each has its own archive and publication.
+pub(crate) const MAX_MANAGED_CONTEXT_PROJECTS: usize = 16;
 /// Development and kernel components have no product size ceiling: the manifest declares each size
 /// and digest, the receiver verifies both, and the volume's free space admits the copy.
 const UNBOUNDED_COMPONENT_BYTES: u64 = u64::MAX;
@@ -55,10 +57,16 @@ pub enum ManagedContextPackageKernel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManagedContextPackageDevelopment {
     Empty,
+    /// One archive per selected Project, in the order of the plan.
     FromSource {
-        archive_path: PathBuf,
-        archive_sha256: String,
+        archives: Vec<ManagedContextPackageDevelopmentArchive>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedContextPackageDevelopmentArchive {
+    pub archive_path: PathBuf,
+    pub archive_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -128,10 +136,49 @@ pub enum ManagedContextKernelSelection {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ManagedContextDevelopmentSelection {
     Empty,
-    SourceProject {
+    SourceProjects {
+        projects: Vec<ManagedContextSourceProject>,
+    },
+}
+
+impl ManagedContextDevelopmentSelection {
+    pub(crate) fn source_project_count(&self) -> usize {
+        match self {
+            Self::Empty => 0,
+            Self::SourceProjects { projects } => projects.len(),
+        }
+    }
+
+    pub(crate) fn source_project(
         project_id: String,
         repositories: Vec<DevelopmentSourceRepositoryBinding>,
-    },
+    ) -> Self {
+        Self::SourceProjects {
+            projects: vec![ManagedContextSourceProject {
+                project_id,
+                repositories,
+            }],
+        }
+    }
+
+    /// Slices and agent moves work on exactly one Project; a transfer may carry several.
+    pub(crate) fn single_source_project(
+        &self,
+    ) -> Option<(&str, &[DevelopmentSourceRepositoryBinding])> {
+        match self {
+            Self::SourceProjects { projects } if projects.len() == 1 => {
+                Some((&projects[0].project_id, &projects[0].repositories))
+            }
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedContextSourceProject {
+    pub project_id: String,
+    pub repositories: Vec<DevelopmentSourceRepositoryBinding>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,7 +264,7 @@ pub struct ManagedContextPackageExportResult {
     pub package_path: PathBuf,
     pub package_sha256: String,
     pub package_size_bytes: u64,
-    pub development_archive_sha256: Option<String>,
+    pub development_archive_sha256s: Vec<String>,
     pub kernel_context_snapshot_sha256: Option<String>,
     pub provider_accounts_sha256: Option<String>,
     pub git_credentials_sha256: Option<String>,
@@ -358,9 +405,15 @@ pub(crate) enum ManagedContextImportedKernelContext {
 pub(crate) enum ManagedContextImportedDevelopment {
     Empty,
     FromSource {
-        project_id: String,
-        receipt: DevelopmentContextPublicationReceipt,
+        projects: Vec<ManagedContextImportedProject>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManagedContextImportedProject {
+    pub project_id: String,
+    pub receipt: DevelopmentContextPublicationReceipt,
 }
 
 #[derive(Debug)]
@@ -377,9 +430,14 @@ pub(crate) struct ExtractedManagedContextPackage {
 pub(crate) enum ExtractedManagedContextDevelopment {
     Empty,
     FromSource {
-        archive_path: PathBuf,
-        archive_sha256: String,
+        archives: Vec<ExtractedManagedContextDevelopmentArchive>,
     },
+}
+
+#[derive(Debug)]
+pub(crate) struct ExtractedManagedContextDevelopmentArchive {
+    pub archive_path: PathBuf,
+    pub archive_sha256: String,
 }
 
 #[cfg(test)]
@@ -413,7 +471,16 @@ struct ManagedContextPackageManifest {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum DevelopmentContextComponentManifest {
     Empty,
-    FromSource { size_bytes: u64, sha256: String },
+    FromSource {
+        components: Vec<DevelopmentArchiveComponentManifest>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DevelopmentArchiveComponentManifest {
+    size_bytes: u64,
+    sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -478,7 +545,7 @@ pub fn export_managed_context_package(
     validate_supported_package_plan(&binding.plan)?;
     validate_output_path(&request.package_path)?;
 
-    let (mut development, development_manifest, development_sha256) = match request.development {
+    let (mut development, development_manifest, development_sha256s) = match request.development {
         ManagedContextPackageDevelopment::Empty => {
             if !matches!(
                 binding.plan.development,
@@ -488,45 +555,62 @@ pub fn export_managed_context_package(
                     "managed context package omits the selected development context",
                 ));
             }
-            (None, DevelopmentContextComponentManifest::Empty, None)
+            (
+                Vec::new(),
+                DevelopmentContextComponentManifest::Empty,
+                Vec::new(),
+            )
         }
-        ManagedContextPackageDevelopment::FromSource {
-            archive_path,
-            archive_sha256,
-        } => {
-            if !matches!(
-                binding.plan.development,
-                ManagedContextDevelopmentSelection::SourceProject { .. }
-            ) {
+        ManagedContextPackageDevelopment::FromSource { archives } => {
+            let ManagedContextDevelopmentSelection::SourceProjects { projects } =
+                &binding.plan.development
+            else {
                 return Err(package_error(
                     "managed context package includes unselected development context",
                 ));
-            }
-            validate_sha256(&archive_sha256, "development archive digest")?;
-            let mut archive = open_regular_file_no_follow(&archive_path)?;
-            let size = archive
-                .metadata()
-                .map_err(|error| package_io_error("inspect development archive", error))?
-                .len();
-            if size == 0 {
-                return Err(package_error("development archive size is invalid"));
-            }
-            let actual_sha256 = hash_reader(&mut archive, size)?;
-            if actual_sha256 != archive_sha256.to_ascii_lowercase() {
+            };
+            if archives.len() != projects.len() {
                 return Err(package_error(
-                    "development archive digest does not match the requested digest",
+                    "managed context package must carry one development archive per selected Project",
                 ));
             }
-            archive
-                .seek(SeekFrom::Start(0))
-                .map_err(|error| package_io_error("rewind development archive", error))?;
-            (
-                Some((archive, size)),
-                DevelopmentContextComponentManifest::FromSource {
+            let mut opened = Vec::with_capacity(archives.len());
+            let mut components = Vec::with_capacity(archives.len());
+            let mut sha256s = Vec::with_capacity(archives.len());
+            for ManagedContextPackageDevelopmentArchive {
+                archive_path,
+                archive_sha256,
+            } in archives
+            {
+                validate_sha256(&archive_sha256, "development archive digest")?;
+                let mut archive = open_regular_file_no_follow(&archive_path)?;
+                let size = archive
+                    .metadata()
+                    .map_err(|error| package_io_error("inspect development archive", error))?
+                    .len();
+                if size == 0 {
+                    return Err(package_error("development archive size is invalid"));
+                }
+                let actual_sha256 = hash_reader(&mut archive, size)?;
+                if actual_sha256 != archive_sha256.to_ascii_lowercase() {
+                    return Err(package_error(
+                        "development archive digest does not match the requested digest",
+                    ));
+                }
+                archive
+                    .seek(SeekFrom::Start(0))
+                    .map_err(|error| package_io_error("rewind development archive", error))?;
+                opened.push((archive, size));
+                components.push(DevelopmentArchiveComponentManifest {
                     size_bytes: size,
                     sha256: actual_sha256.clone(),
-                },
-                Some(actual_sha256),
+                });
+                sha256s.push(actual_sha256);
+            }
+            (
+                opened,
+                DevelopmentContextComponentManifest::FromSource { components },
+                sha256s,
             )
         }
     };
@@ -717,10 +801,10 @@ pub fn export_managed_context_package(
     writer
         .write_all(&manifest_bytes)
         .map_err(package_write_error)?;
-    if let Some((archive, size)) = development.as_mut() {
+    for ((archive, size), expected_sha256) in development.iter_mut().zip(&development_sha256s) {
         let copied_development =
             copy_component(archive, &mut writer, *size, UNBOUNDED_COMPONENT_BYTES)?;
-        if Some(copied_development) != development_sha256 {
+        if &copied_development != expected_sha256 {
             return Err(package_error(
                 "development archive changed while composing the managed context package",
             ));
@@ -755,7 +839,7 @@ pub fn export_managed_context_package(
         package_path: destination,
         package_sha256,
         package_size_bytes,
-        development_archive_sha256: development_sha256,
+        development_archive_sha256s: development_sha256s,
         kernel_context_snapshot_sha256: kernel_snapshot_sha256,
         provider_accounts_sha256,
         git_credentials_sha256,
@@ -867,20 +951,19 @@ pub(crate) fn apply_managed_context_package(
     })?;
     if request.expected_binding.plan.destination.is_some() {
         if let (
-            ExtractedManagedContextDevelopment::FromSource { archive_path, .. },
-            ManagedContextDevelopmentSelection::SourceProject {
-                project_id,
-                repositories,
-            },
+            ExtractedManagedContextDevelopment::FromSource { archives },
+            ManagedContextDevelopmentSelection::SourceProjects { projects },
         ) = (
             &extracted.development,
             &request.expected_binding.plan.development,
         ) {
-            super::credential_free::validate_development_archive(
-                archive_path,
-                project_id,
-                Some(repositories),
-            )?;
+            for (archive, project) in archives.iter().zip(projects) {
+                super::credential_free::validate_development_archive(
+                    &archive.archive_path,
+                    &project.project_id,
+                    Some(&project.repositories),
+                )?;
+            }
         }
     }
     preflight_import_receipt_capacity(&request, &extracted)?;
@@ -961,22 +1044,9 @@ pub(crate) fn apply_managed_context_package(
                 ManagedContextDevelopmentSelection::Empty,
             ) => ManagedContextImportedDevelopment::Empty,
             (
-                ExtractedManagedContextDevelopment::FromSource {
-                    archive_path,
-                    archive_sha256,
-                },
-                ManagedContextDevelopmentSelection::SourceProject {
-                    project_id,
-                    repositories,
-                },
-            ) => {
-                let development_request = DevelopmentContextImportRequest {
-                    archive_path: archive_path.clone(),
-                    expected_archive_sha256: archive_sha256.clone(),
-                    expected_project_id: project_id.clone(),
-                    expected_source_repositories: Some(repositories.clone()),
-                    destination_root: request.development_destination_root.clone(),
-                };
+                ExtractedManagedContextDevelopment::FromSource { archives },
+                ManagedContextDevelopmentSelection::SourceProjects { projects },
+            ) if archives.len() == projects.len() => {
                 let import_authority = request
                     .context_import_target
                     .as_ref()
@@ -1006,21 +1076,55 @@ pub(crate) fn apply_managed_context_package(
                         })
                     })
                     .transpose()?;
-                let receipt = match recover_development_context_publication(
-                    &development_request,
-                    &request.transfer_id,
-                )? {
-                    Some(receipt) => receipt,
-                    None => import_development_context_with_authority(
-                        development_request,
-                        request.transfer_id.clone(),
-                        import_authority.as_ref(),
-                    )?,
-                };
-                ManagedContextImportedDevelopment::FromSource {
-                    project_id: project_id.clone(),
-                    receipt,
+                let mut imported = Vec::with_capacity(projects.len());
+                for (index, (archive, project)) in archives.iter().zip(projects).enumerate() {
+                    let publication_id = super::development::development_unit_publication_id(
+                        &request.transfer_id,
+                        index,
+                    );
+                    let development_request = DevelopmentContextImportRequest {
+                        archive_path: archive.archive_path.clone(),
+                        expected_archive_sha256: archive.archive_sha256.clone(),
+                        expected_project_id: project.project_id.clone(),
+                        expected_source_repositories: Some(project.repositories.clone()),
+                        destination_root: super::development::development_unit_root(
+                            &request.development_destination_root,
+                            index,
+                        ),
+                    };
+                    let receipt = match recover_development_context_publication(
+                        &development_request,
+                        &publication_id,
+                    )
+                    .and_then(|recovered| match recovered {
+                        Some(receipt) => Ok(receipt),
+                        None => import_development_context_with_authority(
+                            development_request,
+                            publication_id.clone(),
+                            import_authority.as_ref(),
+                        ),
+                    }) {
+                        Ok(receipt) => receipt,
+                        Err(error) => {
+                            // The Projects already published go with the failed one: a copy lands whole or not at all.
+                            return match super::development::cleanup_development_context_publications(
+                                &request.development_destination_root,
+                                &request.transfer_id,
+                                index,
+                            ) {
+                                Ok(()) => Err(error),
+                                Err(rollback_error) => Err(package_unavailable(format!(
+                                    "{error}; roll back earlier Projects: {rollback_error}"
+                                ))),
+                            };
+                        }
+                    };
+                    imported.push(ManagedContextImportedProject {
+                        project_id: project.project_id.clone(),
+                        receipt,
+                    });
                 }
+                ManagedContextImportedDevelopment::FromSource { projects: imported }
             }
             _ => {
                 return Err(package_error(
@@ -1349,18 +1453,20 @@ pub(crate) fn rollback_managed_context_package_application(
             Err(error) => failures.push(error),
         }
     }
-    if let ManagedContextImportedDevelopment::FromSource { receipt, .. } = &receipt.development {
-        if let Err(error) = super::development::cleanup_development_context_publication_staging(
-            &receipt.destination_root,
-            &receipt.publication_id,
-        ) {
-            failures.push(error);
-        }
-        if let Err(error) = super::development::cleanup_development_context_publication(
-            &receipt.destination_root,
-            &receipt.publication_id,
-        ) {
-            failures.push(error);
+    if let ManagedContextImportedDevelopment::FromSource { projects } = &receipt.development {
+        for project in projects.iter().rev() {
+            if let Err(error) = super::development::cleanup_development_context_publication_staging(
+                &project.receipt.destination_root,
+                &project.receipt.publication_id,
+            ) {
+                failures.push(error);
+            }
+            if let Err(error) = super::development::cleanup_development_context_publication(
+                &project.receipt.destination_root,
+                &project.receipt.publication_id,
+            ) {
+                failures.push(error);
+            }
         }
     }
     if let Some(first) = failures.first() {
@@ -1463,26 +1569,38 @@ fn preflight_import_receipt_capacity(
             (ManagedContextImportedDevelopment::Empty, 0)
         }
         (
-            ExtractedManagedContextDevelopment::FromSource { .. },
-            ManagedContextDevelopmentSelection::SourceProject { project_id, .. },
-        ) => {
-            let placeholder = DevelopmentContextPublicationReceipt {
-                schema_version: 2,
-                publication_id: request.transfer_id.clone(),
-                archive_sha256: "0".repeat(64),
-                project_id: project_id.clone(),
-                destination_root: PathBuf::new(),
-                primary_repository_id: "repository".to_string(),
-                source_repository_binding_sha256s: Vec::new(),
-                repositories: Vec::new(),
-            };
-            let placeholder_receipt_bytes = serde_json::to_vec(&placeholder)
-                .map_err(|error| package_error(format!("serialize receipt preflight: {error}")))?
-                .len();
+            ExtractedManagedContextDevelopment::FromSource { archives },
+            ManagedContextDevelopmentSelection::SourceProjects { projects },
+        ) if archives.len() == projects.len() => {
+            let mut placeholders = Vec::with_capacity(projects.len());
+            let mut placeholder_receipt_bytes = 0;
+            for (index, project) in projects.iter().enumerate() {
+                let placeholder = DevelopmentContextPublicationReceipt {
+                    schema_version: 2,
+                    publication_id: super::development::development_unit_publication_id(
+                        &request.transfer_id,
+                        index,
+                    ),
+                    archive_sha256: "0".repeat(64),
+                    project_id: project.project_id.clone(),
+                    destination_root: PathBuf::new(),
+                    primary_repository_id: "repository".to_string(),
+                    source_repository_binding_sha256s: Vec::new(),
+                    repositories: Vec::new(),
+                };
+                placeholder_receipt_bytes += serde_json::to_vec(&placeholder)
+                    .map_err(|error| {
+                        package_error(format!("serialize receipt preflight: {error}"))
+                    })?
+                    .len();
+                placeholders.push(ManagedContextImportedProject {
+                    project_id: project.project_id.clone(),
+                    receipt: placeholder,
+                });
+            }
             (
                 ManagedContextImportedDevelopment::FromSource {
-                    project_id: project_id.clone(),
-                    receipt: placeholder,
+                    projects: placeholders,
                 },
                 placeholder_receipt_bytes,
             )
@@ -1555,6 +1673,10 @@ fn preflight_import_receipt_capacity(
             }
         }
     };
+    let imported_projects = match &development {
+        ManagedContextImportedDevelopment::Empty => 0,
+        ManagedContextImportedDevelopment::FromSource { projects } => projects.len(),
+    };
     let receipt = ManagedContextPackageImportReceipt {
         destination: request.expected_binding.plan.destination.clone(),
         schema_version: PACKAGE_SCHEMA_VERSION,
@@ -1572,12 +1694,8 @@ fn preflight_import_receipt_capacity(
         .len();
     let maximum_receipt_bytes = placeholder_outer_bytes
         .saturating_sub(placeholder_receipt_bytes)
-        .saturating_add(if placeholder_receipt_bytes == 0 {
-            0
-        } else {
-            MAX_PUBLICATION_RECEIPT_BYTES
-        });
-    if maximum_receipt_bytes > super::transfer::MAX_IMPORT_RECEIPT_BYTES {
+        .saturating_add(imported_projects * MAX_PUBLICATION_RECEIPT_BYTES);
+    if maximum_receipt_bytes > super::transfer::max_import_receipt_bytes(imported_projects) {
         return Err(package_error(
             "managed context import receipt would exceed its durable size limit",
         ));
@@ -1646,20 +1764,28 @@ pub(crate) fn extract_managed_context_package(
 
     let development = match &manifest.development {
         DevelopmentContextComponentManifest::Empty => ExtractedManagedContextDevelopment::Empty,
-        DevelopmentContextComponentManifest::FromSource { size_bytes, sha256 } => {
-            let archive_path = component_root.join("development.tar.gz");
-            let file = create_private_file(&archive_path)?;
-            let actual_sha256 =
-                copy_component_to_file(&mut reader, file, *size_bytes, UNBOUNDED_COMPONENT_BYTES)?;
-            if &actual_sha256 != sha256 {
-                return Err(package_error(
-                    "managed context development component digest does not match",
-                ));
+        DevelopmentContextComponentManifest::FromSource { components } => {
+            let mut archives = Vec::with_capacity(components.len());
+            for (index, component) in components.iter().enumerate() {
+                let archive_path = component_root.join(format!("development-{index}.tar.gz"));
+                let file = create_private_file(&archive_path)?;
+                let actual_sha256 = copy_component_to_file(
+                    &mut reader,
+                    file,
+                    component.size_bytes,
+                    UNBOUNDED_COMPONENT_BYTES,
+                )?;
+                if actual_sha256 != component.sha256 {
+                    return Err(package_error(
+                        "managed context development component digest does not match",
+                    ));
+                }
+                archives.push(ExtractedManagedContextDevelopmentArchive {
+                    archive_path,
+                    archive_sha256: actual_sha256,
+                });
             }
-            ExtractedManagedContextDevelopment::FromSource {
-                archive_path,
-                archive_sha256: actual_sha256,
-            }
+            ExtractedManagedContextDevelopment::FromSource { archives }
         }
     };
 
@@ -1904,15 +2030,22 @@ fn validate_manifest(
         (DevelopmentContextComponentManifest::Empty, ManagedContextDevelopmentSelection::Empty) => {
         }
         (
-            DevelopmentContextComponentManifest::FromSource { size_bytes, sha256 },
-            ManagedContextDevelopmentSelection::SourceProject { .. },
+            DevelopmentContextComponentManifest::FromSource { components },
+            ManagedContextDevelopmentSelection::SourceProjects { projects },
         ) => {
-            if *size_bytes == 0 {
+            if components.len() != projects.len() {
                 return Err(package_error(
-                    "managed context development component size is invalid",
+                    "managed context development components do not match the selected Projects",
                 ));
             }
-            validate_sha256(sha256, "development component digest")?;
+            for component in components {
+                if component.size_bytes == 0 {
+                    return Err(package_error(
+                        "managed context development component size is invalid",
+                    ));
+                }
+                validate_sha256(&component.sha256, "development component digest")?;
+            }
         }
         _ => {
             return Err(package_error(
@@ -2149,39 +2282,56 @@ pub(crate) fn validate_development_selection(
 ) -> Result<(), DaemonError> {
     match development {
         ManagedContextDevelopmentSelection::Empty => {}
-        ManagedContextDevelopmentSelection::SourceProject {
-            project_id,
-            repositories,
-        } => {
-            validate_identifier(project_id, "project id")?;
-            if repositories.is_empty() {
+        ManagedContextDevelopmentSelection::SourceProjects { projects } => {
+            if projects.is_empty() || projects.len() > MAX_MANAGED_CONTEXT_PROJECTS {
                 return Err(package_error(
-                    "managed context repository selection is invalid",
+                    "managed context Project selection is invalid",
                 ));
             }
-            let mut primary = 0;
-            let mut seen = std::collections::HashSet::new();
-            for repository in repositories {
-                primary += usize::from(repository.role == DevelopmentRepositoryRole::Primary);
-                validate_reference(&repository.workspace_id, "Workspace id")?;
-                if let Some(worktree_id) = repository.worktree_id.as_deref() {
-                    validate_reference(worktree_id, "worktree id")?;
-                }
-                if !seen.insert((
-                    repository.workspace_id.as_str(),
-                    repository.worktree_id.as_deref(),
-                )) {
+            let mut project_ids = std::collections::HashSet::new();
+            for project in projects {
+                validate_identifier(&project.project_id, "project id")?;
+                if !project_ids.insert(project.project_id.as_str()) {
                     return Err(package_error(
-                        "managed context repository selection contains duplicates",
+                        "managed context Project selection contains duplicates",
                     ));
                 }
-            }
-            if primary != 1 {
-                return Err(package_error(
-                    "managed context repository selection must have one primary",
-                ));
+                validate_repository_selection(&project.repositories)?;
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_repository_selection(
+    repositories: &[DevelopmentSourceRepositoryBinding],
+) -> Result<(), DaemonError> {
+    if repositories.is_empty() {
+        return Err(package_error(
+            "managed context repository selection is invalid",
+        ));
+    }
+    let mut primary = 0;
+    let mut seen = std::collections::HashSet::new();
+    for repository in repositories {
+        primary += usize::from(repository.role == DevelopmentRepositoryRole::Primary);
+        validate_reference(&repository.workspace_id, "Workspace id")?;
+        if let Some(worktree_id) = repository.worktree_id.as_deref() {
+            validate_reference(worktree_id, "worktree id")?;
+        }
+        if !seen.insert((
+            repository.workspace_id.as_str(),
+            repository.worktree_id.as_deref(),
+        )) {
+            return Err(package_error(
+                "managed context repository selection contains duplicates",
+            ));
+        }
+    }
+    if primary != 1 {
+        return Err(package_error(
+            "managed context repository selection must have one primary",
+        ));
     }
     Ok(())
 }

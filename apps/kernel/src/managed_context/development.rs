@@ -247,7 +247,10 @@ use git::{
 pub use import::import_development_context;
 pub(crate) use import::{
     cleanup_development_context_publication, cleanup_development_context_publication_staging,
-    cleanup_legacy_development_context_publication, import_development_context_with_authority,
+    cleanup_development_context_publications, cleanup_development_context_staging_units,
+    cleanup_legacy_development_context_publication,
+    cleanup_present_development_context_publications, development_unit_publication_id,
+    development_unit_root, import_development_context_with_authority,
     import_development_context_with_publication, recover_development_context_publication,
     recover_pruned_development_context_publication,
     recover_pruned_development_context_publication_for_cleanup,

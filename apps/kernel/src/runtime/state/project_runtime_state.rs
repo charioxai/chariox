@@ -6,24 +6,23 @@ impl KernelRuntimeState {
         target: &crate::local::ManagedContextLaunchTarget,
         caller_user_id: &str,
     ) -> Result<(), DaemonError> {
-        let Some(project) = managed_context_project(target, caller_user_id)? else {
-            return Ok(());
-        };
-        let existing = self
-            .owned
-            .session_store
-            .durable_projects()
-            .into_iter()
-            .find(|existing| existing.id() == project.id());
-        install_managed_context_project(
-            existing.as_ref(),
-            project,
-            |project| self.append_project_durable_event("project.created", project),
-            |project| {
-                self.owned.session_store.restore_projects(vec![project]);
-                self.owned.runtime_projection_changes.record_change();
-            },
-        )?;
+        for project in managed_context_projects(target, caller_user_id)? {
+            let existing = self
+                .owned
+                .session_store
+                .durable_projects()
+                .into_iter()
+                .find(|existing| existing.id() == project.id());
+            install_managed_context_project(
+                existing.as_ref(),
+                project,
+                |project| self.append_project_durable_event("project.created", project),
+                |project| {
+                    self.owned.session_store.restore_projects(vec![project]);
+                    self.owned.runtime_projection_changes.record_change();
+                },
+            )?;
+        }
         Ok(())
     }
 
@@ -32,36 +31,40 @@ impl KernelRuntimeState {
         target: &crate::local::ManagedContextLaunchTarget,
         caller_user_id: &str,
     ) -> Result<bool, DaemonError> {
-        let Some(expected) = managed_context_project(target, caller_user_id)? else {
-            return Ok(false);
-        };
-        let Some(existing) = self
-            .owned
-            .session_store
-            .durable_projects()
+        let mut removed = false;
+        for expected in managed_context_projects(target, caller_user_id)?
             .into_iter()
-            .find(|project| project.id() == expected.id())
-        else {
-            return Ok(false);
-        };
-        install_managed_context_project(Some(&existing), expected, |_| Ok(()), |_| {})?;
-        if !self
-            .owned
-            .session_store
-            .sessions_in_project(existing.id())?
-            .is_empty()
+            .rev()
         {
-            return Err(managed_context_project_error(format!(
-                "managed context Project `{}` has sessions and cannot be rolled back",
-                existing.id()
-            )));
+            let Some(existing) = self
+                .owned
+                .session_store
+                .durable_projects()
+                .into_iter()
+                .find(|project| project.id() == expected.id())
+            else {
+                continue;
+            };
+            install_managed_context_project(Some(&existing), expected, |_| Ok(()), |_| {})?;
+            if !self
+                .owned
+                .session_store
+                .sessions_in_project(existing.id())?
+                .is_empty()
+            {
+                return Err(managed_context_project_error(format!(
+                    "managed context Project `{}` has sessions and cannot be rolled back",
+                    existing.id()
+                )));
+            }
+            self.append_project_durable_event("project.deleted", &existing)?;
+            self.owned
+                .session_store
+                .delete_project_record(existing.id(), caller_user_id)?;
+            self.owned.runtime_projection_changes.record_change();
+            removed = true;
         }
-        self.append_project_durable_event("project.deleted", &existing)?;
-        self.owned
-            .session_store
-            .delete_project_record(existing.id(), caller_user_id)?;
-        self.owned.runtime_projection_changes.record_change();
-        Ok(true)
+        Ok(removed)
     }
 
     pub(crate) async fn list_projects(
@@ -340,18 +343,30 @@ fn project_session_is_idle(session: &crate::session::RuntimeSession) -> bool {
         && session.active_interactions().is_empty()
 }
 
-fn managed_context_project(
+fn managed_context_projects(
     target: &crate::local::ManagedContextLaunchTarget,
     caller_user_id: &str,
-) -> Result<Option<crate::session::RuntimeProject>, DaemonError> {
-    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
+) -> Result<Vec<crate::session::RuntimeProject>, DaemonError> {
+    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { projects } =
+        &target.development
+    else {
+        return Ok(Vec::new());
+    };
+    projects
+        .iter()
+        .map(|project| managed_context_project(project, caller_user_id))
+        .collect()
+}
+
+fn managed_context_project(
+    target: &crate::local::ManagedContextProjectLaunchTarget,
+    caller_user_id: &str,
+) -> Result<crate::session::RuntimeProject, DaemonError> {
+    let crate::local::ManagedContextProjectLaunchTarget {
         project_id,
         repositories,
         ..
-    } = &target.development
-    else {
-        return Ok(None);
-    };
+    } = target;
     let primary = repositories
         .iter()
         .find(|repository| {
@@ -392,7 +407,7 @@ fn managed_context_project(
         crate::session::RuntimeProjectKind::Named,
     );
     project.replace_workspace_ids(workspace_ids);
-    Ok(Some(project))
+    Ok(project)
 }
 
 fn managed_context_project_error(message: impl Into<String>) -> DaemonError {
@@ -429,7 +444,7 @@ fn install_managed_context_project(
 #[cfg(test)]
 mod tests {
     use super::{
-        install_managed_context_project, managed_context_project, managed_context_project_error,
+        install_managed_context_project, managed_context_project_error, managed_context_projects,
         project_session_is_idle,
     };
     use crate::session::{
@@ -491,9 +506,9 @@ mod tests {
     fn managed_context_project_uses_materialized_target_workspace_paths() {
         let target = managed_context_target();
 
-        let project = managed_context_project(&target, "user-1")
+        let project = managed_context_projects(&target, "user-1")
             .expect("build managed Project")
-            .expect("source Project");
+            .remove(0);
 
         assert_eq!(project.id(), "project-1");
         assert_eq!(project.owner_user_id(), "user-1");
@@ -509,9 +524,9 @@ mod tests {
 
     #[test]
     fn managed_context_project_retries_persistence_before_publish_and_restart() {
-        let project = managed_context_project(&managed_context_target(), "user-1")
+        let project = managed_context_projects(&managed_context_target(), "user-1")
             .expect("build managed Project")
-            .expect("source Project");
+            .remove(0);
         let mut durable_project = None;
         let mut published_project = None;
 
@@ -561,6 +576,7 @@ mod tests {
             context_id: "context-1".to_string(),
             plan_digest: "sha256:plan".to_string(),
             development: crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
+                projects: vec![crate::local::ManagedContextProjectLaunchTarget {
                 project_id: "project-1".to_string(),
                 destination_root: "/managed/context-1".to_string(),
                 primary_repository_id: "repository-primary".to_string(),
@@ -584,6 +600,7 @@ mod tests {
                         head_sha: "a".repeat(40),
                     },
                 ],
+                }],
             },
         }
     }
