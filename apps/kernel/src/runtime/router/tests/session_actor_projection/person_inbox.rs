@@ -1,6 +1,7 @@
 use super::*;
 use crate::local::{GetPersonInboxRequest, PersonInboxCard};
 use crate::session::{RuntimeSession, DEFAULT_LOCAL_USER_ID};
+use crate::transport::kernel_protocol::KernelEvent;
 
 fn room(owner: &str) -> RuntimeSession {
     let mut session = RuntimeSession::new(
