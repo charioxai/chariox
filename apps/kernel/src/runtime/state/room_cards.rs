@@ -44,6 +44,7 @@ impl KernelRuntimeOwnedState {
         interaction: &RuntimeInteraction,
     ) -> Result<(), DaemonError> {
         self.authorize_owner_room(source, caller, target)?;
+        self.refuse_self_approval(interaction, caller)?;
         use super::decision_holder::UserOnly;
         match super::decision_holder::user_only(pending, interaction) {
             None | Some(UserOnly::AccessGrant | UserOnly::KernelOperation)

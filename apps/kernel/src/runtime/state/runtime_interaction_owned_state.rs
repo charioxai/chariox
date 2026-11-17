@@ -11,7 +11,6 @@ mod user_domain;
 /// Refusals that clear once the pending decision is answered.
 pub(crate) const INTERACTION_ALREADY_PENDING: &str =
     "Interaction subject or identity is already pending";
-pub(crate) const KERNEL_DECISION_LIMIT: &str = "Kernel decision limit reached";
 
 /// Whether registering an interaction was refused only until a pending one is
 /// answered.
@@ -19,7 +18,7 @@ pub(crate) fn interaction_waits(error: &DaemonError) -> bool {
     matches!(
         error,
         DaemonError::LocalTransport { operation: "runtime interaction", message }
-            if message == INTERACTION_ALREADY_PENDING || message == KERNEL_DECISION_LIMIT
+            if message == INTERACTION_ALREADY_PENDING
     )
 }
 
@@ -401,10 +400,11 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error(super::decision_holder::HOLDER_CHANGED));
         }
-        // The parent that holds a blocked task's card answers it for the owner; the holder was
-        // checked above and its authority is checked again below.
+        // The parent that holds a blocked task's card or a machine acquisition decision answers it for the owner;
+        // the holder was checked above and its authority is checked again below.
         let task_owner_answer = (as_holder.is_some()
-            && super::agent_task_owner_interactions::is_blocked_task_decision(interaction_id))
+            && (super::agent_task_owner_interactions::is_blocked_task_decision(interaction_id)
+                || super::machine_acquisition::is_machine_acquisition_decision(interaction_id)))
             || self.may_answer_blocked_task_decision(session_id, interaction_id, caller_user_id);
         if pending
             .kernel_operation_owner
