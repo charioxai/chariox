@@ -63,8 +63,20 @@ impl KernelRuntimeState {
                 kind_label(&event.kind),
                 sender.relation.guidance(&sender.name)
             );
+            if event.kind == "message" {
+                if let Some(route) = sender.reply_route(room, event) {
+                    block.push_str(&format!(
+                        " To answer it, call chariox.send_agent_message with {route}."
+                    ));
+                }
+            }
             if ledger::needs_answer(event) {
                 block.push_str(" It stays open until you answer or pass the decision.");
+            } else if event.is_loss() {
+                block.push_str(&format!(
+                    " It stays open until you settle it: chariox.events.ack with sequence {}, handled true once you dealt with it.",
+                    event.sequence
+                ));
             }
             block.push('\n');
             block.push_str(&quoted(&text));

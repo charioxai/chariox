@@ -37,6 +37,29 @@ pub(in crate::runtime::state) struct EventSender {
     pub(in crate::runtime::state) relation: SenderRelation,
 }
 
+impl EventSender {
+    /// What `chariox.send_agent_message` needs to answer this sender, when its name is not enough:
+    /// the sender is in another room or on another kernel.
+    pub(in crate::runtime::state) fn reply_route(
+        &self,
+        room: &str,
+        event: &InboxEvent,
+    ) -> Option<String> {
+        match (&self.agent, &self.remote) {
+            (Some(agent), _) if agent.session_id() != room => Some(format!(
+                "agent {:?}, room {:?}",
+                event.source_id,
+                agent.session_id()
+            )),
+            (None, Some(stamp)) => Some(format!(
+                "agent {:?}, room {:?}, kernel {:?}",
+                stamp.agent_id, stamp.room_id, stamp.kernel_id
+            )),
+            _ => None,
+        }
+    }
+}
+
 impl KernelRuntimeState {
     pub(crate) fn read_agent_inbox(
         &self,

@@ -174,11 +174,54 @@ async fn a_lost_source_is_quoted_and_stays_open_for_the_agent_to_decide() {
     f.state.deliver_agent_inbox(&room, &agent).await.unwrap();
     let text = active_prompt(&f).expect("the wake").prompt().to_owned();
     assert!(text.contains("the worker is gone"), "{text}");
+    assert!(
+        text.contains("chariox.events.ack") && text.contains("handled"),
+        "an open loss says how to settle it: {text}"
+    );
     assert_eq!(
         rows(&f)[0].state,
         "accepted",
         "a loss is the agent's to decide"
     );
+}
+
+#[tokio::test]
+async fn a_message_from_another_kernel_names_where_to_answer_it() {
+    let f = fixture_with_options(None, true);
+    let (room, agent) = ids(&f);
+    let event = ledger::occurrence(
+        &room,
+        &agent,
+        "peer:kern-b:agent-z",
+        "kern-b:req-1",
+        "message",
+        serde_json::json!({"message": "can you review this?", "sender_agent_id": "agent-z", "sender_room_id": "room-b", "sender_kernel_id": "kern-b", "no_reply": false, "attachments": []}),
+    );
+    occur_event(&f, event, false);
+    f.state.deliver_agent_inbox(&room, &agent).await.unwrap();
+    let text = active_prompt(&f).expect("the wake").prompt().to_owned();
+    let header = text
+        .lines()
+        .find(|line| line.starts_with("Event "))
+        .unwrap_or_else(|| panic!("no event header: {text}"));
+    for expected in ["chariox.send_agent_message", "agent-z", "room-b", "kern-b"] {
+        assert!(header.contains(expected), "missing {expected}: {text}");
+    }
+}
+
+#[tokio::test]
+async fn a_message_from_a_source_needs_no_route() {
+    let f = fixture_with_options(None, true);
+    let (room, agent) = ids(&f);
+    occur(
+        &f,
+        "same-room",
+        "message",
+        serde_json::json!({"message": "hello"}),
+    );
+    f.state.deliver_agent_inbox(&room, &agent).await.unwrap();
+    let text = active_prompt(&f).expect("the wake").prompt().to_owned();
+    assert!(!text.contains("send_agent_message"), "{text}");
 }
 
 #[tokio::test]
