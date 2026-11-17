@@ -426,6 +426,7 @@ struct KernelRuntimeOwnedState {
     pty_output_signal: crate::pty::PtyOutputSignal,
     terminal_stream: crate::terminal::TerminalStreamStore,
     runtime_projection_changes: Arc<RuntimeChangeSignal>,
+    person_inbox_changes: Arc<RuntimeChangeSignal>,
     workflow_design_events: WorkflowDesignEventStore,
     workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     workspace_live_sync_coordinator: Arc<Mutex<crate::io::ArtifactEditCoordinator>>,
@@ -1323,6 +1324,7 @@ impl KernelRuntimeState {
                 pty_output_signal,
                 terminal_stream,
                 runtime_projection_changes: Arc::new(RuntimeChangeSignal::default()),
+                person_inbox_changes: Arc::new(RuntimeChangeSignal::default()),
                 workflow_design_events,
                 workspace_coordinator,
                 workspace_live_sync_coordinator: Arc::new(Mutex::new(

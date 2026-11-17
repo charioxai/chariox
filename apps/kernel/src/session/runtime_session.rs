@@ -1094,17 +1094,22 @@ impl RuntimeSession {
         self.active_interactions = self.named_active_interactions();
     }
 
+    /// The agent's name as the session's agents name it now.
+    pub(crate) fn agent_display_name(&self, agent_id: &str) -> Option<String> {
+        self.agents
+            .iter()
+            .find(|agent| agent.id() == agent_id)
+            .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned())
+    }
+
     /// The active interactions, each named by its asker as the session's agents name it now.
     pub(crate) fn named_active_interactions(&self) -> Vec<RuntimeInteraction> {
         self.active_interactions
             .iter()
             .map(|interaction| {
-                let name = interaction.agent_id().and_then(|asker| {
-                    self.agents
-                        .iter()
-                        .find(|agent| agent.id() == asker)
-                        .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned())
-                });
+                let name = interaction
+                    .agent_id()
+                    .and_then(|asker| self.agent_display_name(asker));
                 let mut interaction = interaction.clone();
                 interaction.set_asker_name(name);
                 interaction

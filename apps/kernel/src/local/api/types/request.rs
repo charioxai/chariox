@@ -291,6 +291,8 @@ pub enum LocalDaemonRequest {
     ListRoomListSessions(ListRoomListSessionsRequest),
     GetRoomListSnapshot(GetRoomListSnapshotRequest),
     GetPersonInbox(GetPersonInboxRequest),
+    SetInboxCardState(SetInboxCardStateRequest),
+    SetInboxMute(SetInboxMuteRequest),
     ListExternalProviderSessions(ListExternalProviderSessionsRequest),
     RefreshExternalProviderSessions(RefreshExternalProviderSessionsRequest),
     ImportExternalProviderSession(ImportExternalProviderSessionRequest),

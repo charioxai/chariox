@@ -302,7 +302,10 @@ pub enum LocalDaemonResponse {
     },
     RoomListSessionsListed { page: RoomListSessionPage, },
     RoomListSnapshot { snapshot: RoomListSnapshot, },
-    PersonInbox { cards: Vec<PersonInboxCard>, },
+    PersonInbox {
+        cards: Vec<PersonInboxCard>,
+        mutes: Vec<PersonInboxOrigin>,
+    },
     ExternalProviderSessionsListed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionsRefreshed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionImported {

@@ -58,6 +58,8 @@ mod apps_tests;
 pub(crate) mod browser_import;
 mod created_resources;
 mod decision_holders;
+mod person_inbox;
+pub(crate) use person_inbox::{PersonInboxState, StoredNotice};
 pub(crate) use decision_holders::StoredDecisionHolder;
 mod event_connection_imports;
 pub(crate) use event_connection_imports::{
@@ -452,6 +454,10 @@ impl DurableKernelStateStore {
         })?;
         decision_holders::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.decision_holders",
+            message: error.to_string(),
+        })?;
+        person_inbox::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.person_inbox",
             message: error.to_string(),
         })?;
         event_connection_imports::initialize(&connection).map_err(|error| {
@@ -1967,6 +1973,7 @@ fn commit_durable_write_batch(
                     created_resources::apply_event(&transaction, kind, payload_json)?;
                     event_connection_imports::apply_event(&transaction, kind, payload_json)?;
                     decision_holders::apply_event(&transaction, kind, payload_json)?;
+                    person_inbox::apply_event(&transaction, kind, payload_json)?;
                     if kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND {
                         let prompt_state =
                             crate::durable_prompt_state::DurablePromptStateEventPayload::decode(

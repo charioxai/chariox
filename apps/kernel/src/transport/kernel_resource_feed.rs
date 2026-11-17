@@ -461,6 +461,7 @@ pub(crate) async fn run_kernel_resource_feed<E, F>(
     changes.borrow_and_update();
     let sessions = Arc::clone(&router);
     let mut sessions_seen = sessions.session_projection_change_sequence();
+    let mut inbox_seen = sessions.person_inbox_change_sequence();
     let mut feed = Feed {
         router,
         source,
@@ -498,6 +499,10 @@ pub(crate) async fn run_kernel_resource_feed<E, F>(
             () = sessions.wait_for_session_projection_change_after(sessions_seen), if feed.watches_person_inbox() => {
                 tokio::time::sleep(PERSON_INBOX_SETTLE).await;
                 sessions_seen = sessions.session_projection_change_sequence();
+                feed.refresh_resources(vec![FeedResource::PersonInbox]).await
+            }
+            () = sessions.wait_for_person_inbox_change_after(inbox_seen), if feed.watches_person_inbox() => {
+                inbox_seen = sessions.person_inbox_change_sequence();
                 feed.refresh_resources(vec![FeedResource::PersonInbox]).await
             }
             changed = changes.changed() => {

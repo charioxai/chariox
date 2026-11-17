@@ -3,6 +3,7 @@ use super::*;
 use crate::session::AgentTriggerNotificationSource;
 use crate::transport::runtime_tools::{
     RuntimeToolResult, NOTIFICATION_SOURCES, NOTIFICATION_SUBSCRIBE, NOTIFICATION_UNSUBSCRIBE,
+    NOTIFY_PERSON,
 };
 
 #[derive(serde::Deserialize)]
@@ -19,6 +20,15 @@ struct Unsubscribe {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Empty {}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NotifyPerson {
+    title: String,
+    body: Option<String>,
+    link: Option<String>,
+    #[serde(default)]
+    priority: crate::local::PersonInboxPriority,
+}
 fn invalid(error: impl std::fmt::Display) -> DaemonError {
     crate::durable_state::workflow_notifications::error(error.to_string())
 }
@@ -47,6 +57,26 @@ impl KernelRuntimeState {
                 .map(|(_, run)| run.as_str()),
         )?;
         let response = match name {
+            NOTIFY_PERSON => {
+                let args: NotifyPerson = serde_json::from_value(arguments).map_err(invalid)?;
+                let card_id = crate::runtime::person_inbox::notify_person(
+                    self,
+                    session,
+                    agent.id(),
+                    agent.owner_user_id(),
+                    crate::runtime::person_inbox::PersonNotice {
+                        title: args.title,
+                        body: args.body,
+                        link: args.link,
+                        priority: args.priority,
+                    },
+                )?;
+                self.authorize_current_external_response()?;
+                return Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({ "card_id": card_id }),
+                });
+            }
             NOTIFICATION_SOURCES => {
                 let _: Empty = serde_json::from_value(arguments).map_err(invalid)?;
                 self.owned

@@ -294,6 +294,22 @@ impl KernelRuntimeState {
             .session_change_sequence(session_id)
     }
 
+    pub(crate) fn person_inbox_change_sequence(&self) -> u64 {
+        self.owned.person_inbox_changes.sequence()
+    }
+
+    pub(crate) async fn wait_for_person_inbox_change_after(&self, sequence: u64) {
+        self.owned
+            .person_inbox_changes
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
+    /// A notice arrived, or a read, snooze or mute changed what an Inbox shows.
+    pub(crate) fn record_person_inbox_change(&self) {
+        self.owned.person_inbox_changes.record_change();
+    }
+
     pub(crate) async fn wait_for_session_projection_change_after(&self, sequence: u64) {
         self.owned
             .session_projection

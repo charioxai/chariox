@@ -32,7 +32,7 @@ async fn inbox(router: &CommandRouter) -> Vec<PersonInboxCard> {
     let request = LocalDaemonRequest::GetPersonInbox(GetPersonInboxRequest);
     let command = KernelCommand::from_local_request("inbox", None, None, &request);
     match router.dispatch(command, request).await.unwrap() {
-        LocalDaemonResponse::PersonInbox { cards } => cards,
+        LocalDaemonResponse::PersonInbox { cards, .. } => cards,
         other => panic!("expected the Inbox, got {other:?}"),
     }
 }
@@ -40,7 +40,7 @@ async fn inbox(router: &CommandRouter) -> Vec<PersonInboxCard> {
 fn card_ids(cards: &[PersonInboxCard]) -> Vec<(&str, &str)> {
     cards
         .iter()
-        .map(|card| (card.session_id.as_str(), card.interaction.id()))
+        .map(|card| (card.session_id.as_str(), card.card_id.as_str()))
         .collect()
 }
 
@@ -151,7 +151,7 @@ async fn a_watched_inbox_gets_a_raised_card_and_its_answer_within_two_seconds() 
                         .as_array()
                         .expect("an Inbox snapshot")
                         .iter()
-                        .map(|card| card["interaction"]["id"].as_str().unwrap().to_owned())
+                        .map(|card| card["card_id"].as_str().unwrap().to_owned())
                         .collect::<Vec<_>>();
                 }
             }
@@ -178,6 +178,27 @@ async fn a_watched_inbox_gets_a_raised_card_and_its_answer_within_two_seconds() 
         .await
         .unwrap();
     assert!(next_cards().await.is_empty());
+
+    let session = router
+        .runtime_state
+        .list_session_health_snapshots()
+        .into_iter()
+        .find(|session| session.id() == session_id)
+        .unwrap();
+    let card_id = crate::runtime::person_inbox::notify_person(
+        &router.runtime_state,
+        &session,
+        "agent",
+        DEFAULT_LOCAL_USER_ID,
+        crate::runtime::person_inbox::PersonNotice {
+            title: "Review done".into(),
+            body: None,
+            link: None,
+            priority: crate::local::PersonInboxPriority::Normal,
+        },
+    )
+    .unwrap();
+    assert_eq!(next_cards().await, [card_id], "a notice wakes the watched Inbox at once");
 }
 
 #[tokio::test]

@@ -504,11 +504,23 @@ impl CommandRouter {
                 })
             }
             LocalDaemonRequest::GetPersonInbox(_) => boxed_handler(|| async move {
-                Ok(
-                    crate::runtime::person_inbox::execute_person_inbox_request(
-                        &self.runtime_state,
-                        &command_caller_user_id(&command),
-                    ),
+                crate::runtime::person_inbox::execute_person_inbox_request(
+                    &self.runtime_state,
+                    &command_caller_user_id(&command),
+                )
+            }),
+            LocalDaemonRequest::SetInboxCardState(request) => boxed_handler(|| async move {
+                crate::runtime::person_inbox::execute_set_inbox_card_state(
+                    &self.runtime_state,
+                    request,
+                    &command_caller_user_id(&command),
+                )
+            }),
+            LocalDaemonRequest::SetInboxMute(request) => boxed_handler(|| async move {
+                crate::runtime::person_inbox::execute_set_inbox_mute(
+                    &self.runtime_state,
+                    request,
+                    &command_caller_user_id(&command),
                 )
             }),
             request @ (LocalDaemonRequest::GetRoomListSnapshot(_)
