@@ -305,6 +305,7 @@ mod trace_projection;
 mod workflow_code_crud;
 mod workflow_code_patterns;
 
+mod agents_run;
 mod authority_limit;
 mod decisions;
 mod hidden_subagents;

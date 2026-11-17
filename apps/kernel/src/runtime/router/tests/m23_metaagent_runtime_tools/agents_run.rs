@@ -1,0 +1,265 @@
+// `chariox.agents.run`: the workers' answers come back in the one call, and the caller is
+// left with nothing to settle: no inbox event, no obligation, no wake turn.
+use super::subtree::{world, World};
+use super::*;
+
+const AGENTS_RUN: &str = crate::transport::runtime_tools::AGENTS_RUN_TOOL;
+
+async fn running_turn_of(world: &World, agent: &str) -> String {
+    world
+        .app
+        .lock()
+        .await
+        .sessions()
+        .get_session(&world.room)
+        .unwrap()
+        .active_prompt_for_agent(agent)
+        .expect("the caller's turn is running")
+        .id()
+        .to_string()
+}
+
+/// The workers the call started, once every one of them has its brief as a running turn.
+async fn started_workers(world: &World, names: &[&str]) -> Vec<(String, String)> {
+    let mut waited = 0;
+    loop {
+        let session = world
+            .router
+            .runtime_state
+            .session_snapshot(&world.room)
+            .await
+            .unwrap();
+        let agents = world.router.runtime_state.session_agents(&world.room);
+        let started = names
+            .iter()
+            .filter_map(|name| {
+                let agent = agents.iter().find(|a| a.alias() == Some(*name))?;
+                session.active_prompt_for_agent(agent.id())?;
+                Some((name.to_string(), agent.id().to_string()))
+            })
+            .collect::<Vec<_>>();
+        if started.len() == names.len() {
+            return started;
+        }
+        waited += 1;
+        assert!(
+            waited < 500,
+            "workers never started: {:?}",
+            agents
+                .iter()
+                .map(|a| (
+                    a.alias().map(str::to_owned),
+                    session
+                        .active_prompt_for_agent(a.id())
+                        .map(|p| p.id().to_string()),
+                    session.queued_prompts_for_agent(a.id()).map(|q| q.len()),
+                ))
+                .collect::<Vec<_>>()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[test]
+fn an_agents_run_call_answers_in_place_and_leaves_the_caller_nothing_to_settle() {
+    run_large_stack_async_test("agents-run-answers", answers_in_place);
+}
+
+async fn answers_in_place() {
+    let world = world("agents-run-answers").await;
+    let caller = world.ids["a"].clone();
+    let prompt = running_turn_of(&world, &caller).await;
+    let call = world.router.dispatch_authenticated_runtime_tool_call(
+        &world.tokens["a"],
+        AGENTS_RUN,
+        serde_json::json!({
+            "workers": [
+                {"name": "w1", "brief": "summarise module one"},
+                {"name": "w2", "brief": "summarise module two"},
+            ],
+            "origin_prompt_id": prompt,
+        }),
+    );
+    let drive = async {
+        let workers = started_workers(&world, &["w1", "w2"]).await;
+        for (name, agent) in &workers {
+            world
+                .router
+                .runtime_state
+                .end_agent_turn_for_test(&world.room, agent, &format!("answer of {name}"))
+                .await
+                .unwrap();
+        }
+        workers
+            .into_iter()
+            .map(|(_, agent)| agent)
+            .collect::<Vec<_>>()
+    };
+    let (result, worker_agents) = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        tokio::join!(call, drive)
+    })
+    .await
+    .expect("the call returns once both workers ended");
+    let result = result.unwrap();
+    assert!(result.ok, "{:?}", result.payload);
+    let workers = result.payload["workers"].as_array().unwrap();
+    assert_eq!(workers.len(), 2, "{:?}", result.payload);
+    for (worker, name) in workers.iter().zip(["w1", "w2"]) {
+        assert_eq!(worker["name"], name, "{worker}");
+        assert_eq!(worker["status"], "done", "{worker}");
+        assert_eq!(worker["answer"], format!("answer of {name}"), "{worker}");
+    }
+    assert!(result.payload.get("next_action").is_none());
+
+    // The caller has nothing left to settle: no event for the answers the call returned, no open
+    // obligation for the workers it answered and no new turn.
+    let app = world.app.lock().await;
+    let store = app.durable_state_store();
+    let inbox = store.agent_inbox(&world.room, &caller, 0).unwrap();
+    assert!(
+        inbox.iter().all(|event| event.kind != "child_finished"),
+        "{inbox:?}"
+    );
+    let task = store
+        .agent_tasks(Some(&world.room), Some(&caller))
+        .unwrap()
+        .into_iter()
+        .find(|task| task.prompt_id == prompt)
+        .expect("the caller's turn has a task");
+    let open = task
+        .obligations
+        .iter()
+        .filter(|obligation| {
+            obligation.requires_resolution()
+                && obligation
+                    .resource_id
+                    .as_ref()
+                    .is_some_and(|resource| worker_agents.contains(resource))
+        })
+        .collect::<Vec<_>>();
+    assert!(open.is_empty(), "{open:?}");
+    let session = app.sessions().get_session(&world.room).unwrap();
+    assert_eq!(
+        session
+            .active_prompt_for_agent(&caller)
+            .map(|prompt| prompt.id().to_string()),
+        Some(prompt),
+        "no turn replaced the caller's"
+    );
+    assert_eq!(
+        session
+            .queued_prompts_for_agent(&caller)
+            .map(|queue| queue.len())
+            .unwrap_or(0),
+        0,
+        "no wake prompt was queued for the caller"
+    );
+}
+
+#[test]
+fn a_worker_that_outlives_the_wait_is_handed_to_the_event_path() {
+    run_large_stack_async_test("agents-run-timeout", outlives_the_wait);
+}
+
+async fn outlives_the_wait() {
+    let world = world("agents-run-timeout").await;
+    let caller = world.ids["a"].clone();
+    let prompt = running_turn_of(&world, &caller).await;
+    let call = world.router.dispatch_agents_run_within(
+        &world.tokens["a"],
+        serde_json::json!({
+            "workers": [
+                {"name": "fast", "brief": "answer now"},
+                {"name": "slow", "brief": "take your time"},
+            ],
+            "origin_prompt_id": prompt,
+        }),
+        std::time::Duration::from_millis(1500),
+    );
+    let drive = async {
+        let workers = started_workers(&world, &["fast", "slow"]).await;
+        world
+            .router
+            .runtime_state
+            .end_agent_turn_for_test(&world.room, &workers[0].1, "fast answer")
+            .await
+            .unwrap();
+    };
+    let (result, ()) = tokio::join!(call, drive);
+    let result = result.unwrap();
+    let workers = result.payload["workers"].as_array().unwrap();
+    assert_eq!(workers[0]["status"], "done", "{:?}", result.payload);
+    assert_eq!(workers[0]["answer"], "fast answer");
+    assert_eq!(workers[1]["status"], "running", "{:?}", result.payload);
+    let registration = workers[1]["registration_id"].as_str().expect("a follow");
+    assert!(
+        result.payload["next_action"]
+            .as_str()
+            .is_some_and(|text| text.contains(registration)),
+        "{:?}",
+        result.payload
+    );
+
+    // The slow worker ends after the call stopped waiting: its answer reaches the caller once,
+    // as an event; the answered worker produced none.
+    let slow = workers[1]["agent"].as_str().unwrap().to_string();
+    world
+        .router
+        .runtime_state
+        .end_agent_turn_for_test(&world.room, &slow, "slow answer")
+        .await
+        .unwrap();
+    let app = world.app.lock().await;
+    let inbox = app
+        .durable_state_store()
+        .agent_inbox(&world.room, &caller, 0)
+        .unwrap();
+    let finished = inbox
+        .iter()
+        .filter(|event| event.kind == "child_finished")
+        .collect::<Vec<_>>();
+    assert_eq!(finished.len(), 1, "{inbox:?}");
+    assert!(
+        format!("{:?}", finished[0]).contains("slow answer"),
+        "{finished:?}"
+    );
+}
+
+#[test]
+fn a_worker_that_cannot_start_fails_alone() {
+    run_large_stack_async_test("agents-run-refusal", refused_worker_fails_alone);
+}
+
+async fn refused_worker_fails_alone() {
+    let world = world("agents-run-refusal").await;
+    let caller = world.ids["a"].clone();
+    let prompt = running_turn_of(&world, &caller).await;
+    // "peer" is an alias this room already uses, so spawning it is refused.
+    let call = world.router.dispatch_authenticated_runtime_tool_call(
+        &world.tokens["a"],
+        AGENTS_RUN,
+        serde_json::json!({
+            "workers": [
+                {"name": "peer", "brief": "taken name"},
+                {"name": "w1", "brief": "fine"},
+            ],
+            "origin_prompt_id": prompt,
+        }),
+    );
+    let drive = async {
+        let workers = started_workers(&world, &["w1"]).await;
+        world
+            .router
+            .runtime_state
+            .end_agent_turn_for_test(&world.room, &workers[0].1, "w1 answer")
+            .await
+            .unwrap();
+    };
+    let (result, ()) = tokio::join!(call, drive);
+    let result = result.unwrap();
+    let workers = result.payload["workers"].as_array().unwrap();
+    assert_eq!(workers[0]["status"], "failed", "{:?}", result.payload);
+    assert!(workers[0]["reason"].as_str().is_some_and(|r| !r.is_empty()));
+    assert_eq!(workers[1]["status"], "done", "{:?}", result.payload);
+    assert_eq!(workers[1]["answer"], "w1 answer");
+}

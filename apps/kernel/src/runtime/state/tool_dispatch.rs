@@ -286,6 +286,7 @@ impl KernelRuntimeState {
             if self.room_agent_tools_enabled() {
                 specs.extend(crate::transport::runtime_tools::room_runtime_tool_specs());
                 specs.extend(crate::transport::runtime_tools::agent_event_tool_specs());
+                specs.extend(crate::transport::runtime_tools::agent_run_tool_specs());
             }
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::agent_peek_runtime_tool_specs());
