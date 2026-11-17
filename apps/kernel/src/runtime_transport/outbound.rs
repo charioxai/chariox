@@ -185,105 +185,20 @@ fn withheld_error() -> KernelTransportError {
     }
 }
 
-// MP-11: machine-readable kernel codes and retry flags are public protocol.
-// Provider/parser text is private unless it is an exact lifecycle constant.
+/// A refusal reaches the grant holder with the code, retry flag and words the kernel
+/// gave it, so the agent and the owner reading its report can act on the reason. Only
+/// secret-shaped text is cut out of the message.
 fn project_error(value: &Value) -> KernelTransportError {
-    let code = value["code"].as_str().unwrap_or_default();
-    let mut projected = withheld_error();
-    if matches!(
-        code,
-        "session_not_found"
-            | "attachment_not_found"
-            | "attachment_not_in_session"
-            | "no_active_provider_run"
-            | "provider_run_not_found"
-            | "workspace_claim_conflict"
-            | "provider_adapter_not_found"
-            | "provider_protocol_error"
-            | "credential_vault_locked"
-            | "local_transport_error"
-            | "pty_spawn_failed"
-            | "pty_cleanup_failed"
-            | "pty_write_failed"
-            | "pty_resize_failed"
-            | "kernel_request_failed"
-            | "session_alias_conflict"
-            | "invalid_session_alias"
-            | "kernel_access_denied"
-            | "kernel_access_human_only"
-            | "kernel_access_not_covered"
-            | "kernel_access_ended"
-            | "kernel_access_unconfirmed"
-            | "kernel_access_already_granted"
-            | "kernel_access_cover_gone"
-            | "kernel_access_cover_identity_changed"
-            | "kernel_access_cover_kernel_process"
-            | "kernel_access_cover_outside"
-            | "kernel_access_cover_limit"
-            | "interaction_closed"
-            | "leased_backing_session_refused"
-            | "invalid_request"
-            | "invalid_frame"
-            | "kernel_request_overloaded"
-            | "duplicate_command_unavailable"
-            | "duplicate_command_conflict"
-    ) {
-        projected.code = code.into();
-        projected.retryable = value["retryable"].as_bool().unwrap_or(false);
-        projected.message = match code {
-            "kernel_request_overloaded" => "kernel request admission queue overloaded",
-            "duplicate_command_unavailable" => "original duplicate command result was unavailable",
-            "duplicate_command_conflict" => "command_id was already used for a different request",
-            _ => crate::error::external_request_failure_message(code),
-        }
-        .into();
-    }
-    if let Some(message) = crate::error::actionable_refusal_message(code) {
-        projected.code = code.into();
-        projected.message = message.into();
-        projected.retryable = value["retryable"].as_bool().unwrap_or(false);
-    }
+    let code = value["code"]
+        .as_str()
+        .filter(|code| !code.is_empty())
+        .unwrap_or("kernel_request_failed");
     let message = value["message"].as_str().unwrap_or_default();
-    if crate::runtime::external_response::public_error_message(message) {
-        projected.message = message.into();
+    KernelTransportError {
+        code: crate::secret_redaction::redact_secrets(code).into_owned(),
+        message: crate::secret_redaction::redact_secrets(message).into_owned(),
+        retryable: value["retryable"].as_bool().unwrap_or(false),
     }
-    // A request that does not parse says which variant or field it expected: serde's
-    // text about the agent's own request, and how an agent learns the vocabulary.
-    // Only the decoder's exact prefix qualifies; any other `invalid_request` text stays private.
-    if code == "invalid_request"
-        && message.starts_with(&format!(
-            "{}: ",
-            crate::transport::request_decode_error::DECODE_PREFIX
-        ))
-    {
-        projected.code = code.into();
-        projected.message = message.into();
-    }
-    // The kernel writes these sentences itself, from the alias and session the caller
-    // named; they say which session holds the alias so the caller can pick another.
-    if crate::error::is_session_alias_refusal(code, message) {
-        projected.message = message.into();
-    }
-    // The kernel writes this sentence itself around the steer id it generated.
-    if crate::error::is_steer_unrecorded_refusal(code, message) {
-        projected.code = code.into();
-        projected.retryable = false;
-        projected.message = message.into();
-    }
-    // The gateway writes these messages itself, from the kernel name the agent
-    // chose; they carry no provider or parser text.
-    if crate::durable_state::agent_lifecycle::outside::is_public_code(code)
-        || crate::runtime::kernel_gateway::is_public_code(code)
-        || crate::runtime::kernel_access::SudoRequestFailure::is_public_code(code)
-        || crate::runtime::waiting_room_sessions::is_public_code(code)
-        || crate::runtime::kernel_files::is_public_code(code)
-        || crate::room_terminal::is_public_code(code)
-    {
-        projected.code = code.into();
-        projected.retryable = value["retryable"].as_bool().unwrap_or(false);
-        projected.message = message.into();
-    }
-    projected
 }
 
 // Both representations come from one declaration. New stream events require

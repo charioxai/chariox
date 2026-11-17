@@ -12,16 +12,6 @@ const MAX_JSON_BYTES: usize = 2 * 1024 * 1024;
 const RECENT_SESSIONS: u32 = 100;
 const PAGE_SESSIONS: u32 = 500;
 
-pub(crate) fn is_public_code(code: &str) -> bool {
-    matches!(
-        code,
-        "waiting_room_inventory_invalid"
-            | "waiting_room_inventory_too_large"
-            | "waiting_room_cursor_invalid"
-            | "waiting_room_session_too_large"
-    )
-}
-
 fn fail(code: &str, message: impl Into<String>) -> DaemonError {
     DaemonError::MachineRequest {
         code: code.into(),

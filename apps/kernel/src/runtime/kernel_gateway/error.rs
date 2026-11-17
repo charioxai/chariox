@@ -170,29 +170,6 @@ impl GatewayError {
     }
 }
 
-/// Codes whose text the gateway or a target's gateway ledger writes itself, so
-/// the grant holder may read them in full.
-pub(crate) fn is_public_code(code: &str) -> bool {
-    matches!(
-        code,
-        "kernel_unknown"
-            | "kernel_ambiguous"
-            | "kernel_offline"
-            | "kernel_unreachable"
-            | "kernel_unpaired"
-            | "kernel_incompatible"
-            | "kernel_request_timeout"
-            | "kernel_connection_lost"
-            | "kernel_access_ended"
-            | "kernel_outcome_unknown"
-            | "kernel_response_too_large"
-            | "kernel_not_available"
-            | "kernel_join_refused"
-            | "command_id_required"
-            | "ledger_unavailable"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

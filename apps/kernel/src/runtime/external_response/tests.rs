@@ -4,7 +4,8 @@ use crate::config::{
 };
 use crate::local::{KernelConnectionClass, LocalDaemonRequest};
 
-const CANARY: &str = "MP-11-generated-test-only-secret";
+// Shaped like a vendor key, so the redactor cuts it out of any message it rides on.
+const CANARY: &str = "sk-ant-api03-generated-test-only-secret";
 
 #[test]
 fn lane_refusals_have_safe_actionable_codes_through_external_projection() {
@@ -514,7 +515,7 @@ fn external_response_tells_a_grant_holder_what_is_wrong_with_its_terminal() {
         (relayed.code.as_str(), relayed.message.as_str()),
         (crate::room_terminal::REFUSED_CODE, said)
     );
-    // Any other failure keeps its details in the host terminal.
+    // Any other failure keeps its words; only secret-shaped text is cut out.
     for other in [
         DaemonError::LocalTransport {
             operation: "list sessions",
@@ -527,27 +528,35 @@ fn external_response_tells_a_grant_holder_what_is_wrong_with_its_terminal() {
             retryable: false,
         },
     ] {
-        let hidden = finish_response(&caller, Err(other)).unwrap_err();
-        assert!(!hidden.to_string().contains(CANARY));
+        let told = finish_response(&caller, Err(other))
+            .unwrap_err()
+            .to_string();
+        assert!(told.contains(said), "{told}");
+        assert!(!told.contains(CANARY), "{told}");
     }
 }
 
-// A real external caller still gets the masked generic text for a refusal that is not one of
-// the kernel's typed sentences; only the sub-agent refusal is spelled out.
+// A real external caller reads the reason the kernel gave, so it and its owner can act on it;
+// only secret-shaped text is cut out, and the code and retry flag are the shared mapper's.
 #[test]
-fn an_unlisted_refusal_stays_masked_for_an_external_caller() {
+fn a_refusal_reaches_an_external_caller_with_its_reason_and_without_secrets() {
     let caller = command(KernelConnectionClass::ExternalAgent);
     let told = finish_response(
         &caller,
-        Err(crate::runtime::kernel_access::error(format!(
-            "an internal reason {CANARY}"
-        ))),
+        Err(DaemonError::LocalTransport {
+            operation: "session.create",
+            message: format!(
+                "default project `p1` is archived; restore it before creating a session ({CANARY})"
+            ),
+        }),
     )
     .unwrap_err();
-    assert_eq!(
-        told.to_string(),
-        "external request failed; details are available only in the host terminal"
+    let told = told.to_string();
+    assert!(
+        told.contains("default project `p1` is archived; restore it before creating a session"),
+        "{told}"
     );
+    assert!(!told.contains(CANARY), "{told}");
 }
 
 #[test]
@@ -656,9 +665,9 @@ fn own_machine_enrollment_reaches_agents_unchanged() {
     assert_eq!(cached, expected);
 }
 
-// MP-08 / MP-11: a renamed/missing session has an actionable, value-free error.
+// MP-08 / MP-11: a missing session says so, and a secret-shaped reference is cut out of the words.
 #[test]
-fn mp11_missing_session_reason_is_public_without_echoing_private_reference() {
+fn mp11_missing_session_reason_is_public_without_secret_shaped_reference() {
     for class in [
         KernelConnectionClass::ExternalAgent,
         KernelConnectionClass::KernelAgent,
@@ -674,7 +683,7 @@ fn mp11_missing_session_reason_is_public_without_echoing_private_reference() {
         let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
         assert_eq!(mapped.code, "session_not_found");
         assert!(
-            mapped.message.contains("session not found"),
+            mapped.message.contains("was not found"),
             "{}",
             mapped.message
         );

@@ -1954,6 +1954,29 @@ async fn an_unknown_terminal_is_explained_to_the_grant_holder() {
     assert_eq!(refused["error"]["code"], "terminal_refused", "{refused}");
 }
 
+// A request the kernel runs and refuses reaches the grant holder in the kernel's own words,
+// so the agent (and the owner reading its report) learns what to do next, not that the
+// reason is kept in a terminal.
+#[tokio::test]
+async fn a_refused_request_tells_the_grant_holder_why() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let refused = holder.request(serde_json::json!({"CreateSession": {
+        "workspace_id": "/tmp",
+        "worktree_id": "/tmp",
+        "metaagent": true
+    }}));
+    let error = &refused["error"];
+    let message = error["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("create a regular session and send `/meta <task>`"),
+        "{refused}"
+    );
+    assert!(!message.contains("host terminal"), "{refused}");
+    assert_eq!(error["code"], "local_transport_error", "{refused}");
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: revocation may deliver only its final control record.
 #[tokio::test]
 async fn outside_unix_wait_delivers_subscription_ended_after_revoke() {

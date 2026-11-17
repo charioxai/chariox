@@ -39,7 +39,7 @@ use crate::runtime::projection::{
 use crate::runtime::state::KernelRuntimeState;
 
 use directory::{is_gateway_ready, Directory};
-pub(crate) use error::{is_public_code, GatewayError};
+pub(crate) use error::GatewayError;
 #[cfg(test)]
 pub(crate) use events::Added;
 pub(crate) use forward::{forward_audited, forward_with_retry};

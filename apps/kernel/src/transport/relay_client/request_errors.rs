@@ -23,6 +23,11 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
             &error.to_string(),
             code == "exec_input_busy" || code == crate::runtime::room_tool_admission::RETRY_CODE,
         ),
+        DaemonError::ExternalRequestFailed {
+            code,
+            message,
+            retryable,
+        } => relay_error(code, message, *retryable),
         DaemonError::SteerDeliveredEventUnrecorded { .. } => {
             relay_error("prompt_steer_event_unrecorded", &error.to_string(), false)
         }
@@ -30,7 +35,6 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         | DaemonError::ProviderLoginCodeIncomplete
         | DaemonError::ProviderLoginCodeInvalid
         | DaemonError::ProviderProfileRefused { .. }
-        | DaemonError::ExternalRequestFailed { .. }
         | DaemonError::AgentNotInSession { .. }
         | DaemonError::AgentNotFound { .. }
         | DaemonError::NoActivePrompt { .. }
