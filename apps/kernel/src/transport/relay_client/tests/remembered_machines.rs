@@ -43,8 +43,9 @@ async fn remembered_inventory(app: &Arc<Mutex<DaemonApp>>) -> (Vec<String>, Vec<
     )
 }
 
-async fn wait_for_remembered(app: &Arc<Mutex<DaemonApp>>) {
-    for _ in 0..200 {
+async fn wait_for_remembered_within(app: &Arc<Mutex<DaemonApp>>, window: Duration) {
+    let deadline = tokio::time::Instant::now() + window;
+    while tokio::time::Instant::now() < deadline {
         let (reconnecting, offline) = remembered_inventory(app).await;
         if reconnecting == ["machine-recent"] && offline == ["machine-old"] {
             return;
@@ -53,6 +54,29 @@ async fn wait_for_remembered(app: &Arc<Mutex<DaemonApp>>) {
     }
     let (reconnecting, offline) = remembered_inventory(app).await;
     panic!("remembered machines were not projected: reconnecting {reconnecting:?}, offline {offline:?}");
+}
+
+async fn wait_for_remembered(app: &Arc<Mutex<DaemonApp>>) {
+    wait_for_remembered_within(app, Duration::from_secs(10)).await;
+}
+
+/// Starts the connector for `config`, expects the remembered machines within `window`, stops it.
+async fn remembered_machines_listed_within(config: DaemonConfig, window: Duration) {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config).expect("daemon should bootstrap"),
+    ));
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let connector_task = tokio::spawn(run_daemon_relay_connector(
+        Arc::clone(&app),
+        Arc::clone(&state),
+        shutdown_rx,
+    ));
+
+    wait_for_remembered_within(&app, window).await;
+
+    let _ = shutdown_tx.send(true);
+    connector_task.await.expect("connector task should join");
 }
 
 // A kernel that restarts while the relay is down still lists what it remembers.
@@ -163,4 +187,70 @@ async fn losing_the_relay_keeps_remembered_machines_listed() {
 
     let _ = shutdown_tx.send(true);
     connector_task.await.expect("connector task should join");
+}
+
+// A relay whose handshake never answers keeps the remembered machines listed from the start,
+// not only after the connect timeout.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stalled_relay_handshake_lists_remembered_machines() {
+    let _relay_test_guard = relay_client_test_guard().await;
+    let _home = RelayTestHome::new();
+    remember_two_machines();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("port should bind");
+    let port = listener.local_addr().expect("listener addr").port();
+    let stalled = tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            held.push(socket);
+        }
+    });
+
+    let mut config = DaemonConfig::for_tests();
+    config.relay_url = Some(format!("ws://127.0.0.1:{port}"));
+    config.relay_token = Some("secret".to_string());
+    config.relay_heartbeat_ms = 50;
+    remembered_machines_listed_within(config, RELAY_CONNECT_TIMEOUT / 2).await;
+
+    stalled.abort();
+}
+
+// A Cloud token that has expired and cannot be renewed keeps the remembered machines listed.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unrenewable_cloud_token_lists_remembered_machines() {
+    let _relay_test_guard = relay_client_test_guard().await;
+    let _home = RelayTestHome::new();
+    remember_two_machines();
+    let closed_port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("port should bind");
+        listener.local_addr().expect("listener addr").port()
+    };
+
+    let mut config = DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        api_url: format!("http://127.0.0.1:{closed_port}"),
+        email: "user@example.test".to_string(),
+        account_id: "account-1".to_string(),
+        user_id: "user-1".to_string(),
+        account_slug: "account".to_string(),
+        realm_id: "realm-1".to_string(),
+        relay_url: format!("ws://127.0.0.1:{closed_port}"),
+        issuer_id: "issuer-1".to_string(),
+        machine_credential: Some("machine-credential".to_string()),
+        token_expires_at_ms: Some(1),
+        ..crate::config::PersistedCloudRelayProfile::default()
+    });
+    config.relay_heartbeat_ms = 50;
+    remembered_machines_listed_within(config, Duration::from_secs(4)).await;
+}
+
+// A kernel with no relay configured lists what it remembers.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kernel_without_a_relay_lists_remembered_machines() {
+    let _relay_test_guard = relay_client_test_guard().await;
+    let _home = RelayTestHome::new();
+    remember_two_machines();
+
+    remembered_machines_listed_within(DaemonConfig::for_tests(), Duration::from_secs(4)).await;
 }

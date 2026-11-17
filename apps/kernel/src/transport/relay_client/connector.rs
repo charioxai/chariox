@@ -653,6 +653,10 @@ async fn run_daemon_relay_connector_inner(
             disconnect_relay(&state, "shutdown before relay connect", presence).await;
             break 'connector;
         }
+        // Every pass starts disconnected: before a first connect, after a failed one, and while
+        // waiting for a token or a relay configuration. The list shows what the kernel remembers
+        // and ages it, whatever stalls the connect.
+        retain_remembered_remote_machines(&router);
 
         if static_relay.is_none() {
             let config = router.relay_config_snapshot();
@@ -937,7 +941,6 @@ async fn run_daemon_relay_connector_inner(
                 let register = RelayEnvelope::DaemonRegister { registration };
                 if send_outgoing_envelope(&outgoing_tx, register).is_err() {
                     writer_task.abort();
-                    retain_remembered_remote_machines(&router);
                     disconnect_relay(&state, "failed to send relay registration", presence).await;
                     let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
                     record_relay_reconnect(
@@ -967,7 +970,6 @@ async fn run_daemon_relay_connector_inner(
                         Ok(count) => count,
                         Err(error) => {
                             writer_task.abort();
-                            retain_remembered_remote_machines(&router);
                             disconnect_relay(&state, &error, presence).await;
                             let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
                             record_relay_reconnect(&router, &relay_url, &error, delay);
@@ -1051,7 +1053,6 @@ async fn run_daemon_relay_connector_inner(
                                 abort_inventory_refresh_task(&mut inventory_refresh_task);
                                 abort_subscription_tasks(&router, &subscription_tasks).await;
                                 writer_task.abort();
-                                retain_remembered_remote_machines(&router);
                                 disconnect_relay(&state, "daemon shutting down", presence).await;
                                 break 'connector;
                             }
@@ -1062,7 +1063,6 @@ async fn run_daemon_relay_connector_inner(
                             abort_inventory_refresh_task(&mut inventory_refresh_task);
                             writer_task.abort();
                             abort_subscription_tasks(&router, &subscription_tasks).await;
-                            retain_remembered_remote_machines(&router);
                             disconnect_relay(&state, "relay read deadline exceeded", presence).await;
                             break "relay read deadline exceeded";
                         }
@@ -1090,7 +1090,6 @@ async fn run_daemon_relay_connector_inner(
                                             abort_inventory_refresh_task(&mut inventory_refresh_task);
                                             abort_subscription_tasks(&router, &subscription_tasks).await;
                                             writer_task.abort();
-                                            retain_remembered_remote_machines(&router);
                                             disconnect_relay(&state, "relay receipt writer stalled", presence).await;
                                             break "relay receipt writer stalled";
                                         }
@@ -1135,7 +1134,6 @@ async fn run_daemon_relay_connector_inner(
                                         abort_inventory_refresh_task(&mut inventory_refresh_task);
                                         abort_subscription_tasks(&router, &subscription_tasks).await;
                                         writer_task.abort();
-                                        retain_remembered_remote_machines(&router);
                                         disconnect_relay(
                                             &state,
                                             &disconnect_reason,
@@ -1158,7 +1156,6 @@ async fn run_daemon_relay_connector_inner(
                                     abort_inventory_refresh_task(&mut inventory_refresh_task);
                                     abort_subscription_tasks(&router, &subscription_tasks).await;
                                     writer_task.abort();
-                                    retain_remembered_remote_machines(&router);
                                     disconnect_relay(&state, "relay close frame received", presence).await;
                                     break "relay close frame received";
                                 }
@@ -1174,7 +1171,6 @@ async fn run_daemon_relay_connector_inner(
                                     abort_inventory_refresh_task(&mut inventory_refresh_task);
                                     abort_subscription_tasks(&router, &subscription_tasks).await;
                                     writer_task.abort();
-                                    retain_remembered_remote_machines(&router);
                                     disconnect_relay(&state, "relay read failed or ended", presence).await;
                                     break "relay read failed or ended";
                                 }
@@ -1186,7 +1182,6 @@ async fn run_daemon_relay_connector_inner(
                             abort_inventory_refresh_task(&mut inventory_refresh_task);
                             abort_subscription_tasks(&router, &subscription_tasks).await;
                             writer_task.abort();
-                            retain_remembered_remote_machines(&router);
                             disconnect_relay(&state, "relay writer ended", presence).await;
                             break "relay writer ended";
                         }
@@ -1195,7 +1190,6 @@ async fn run_daemon_relay_connector_inner(
                             abort_inventory_refresh_task(&mut inventory_refresh_task);
                             abort_subscription_tasks(&router, &subscription_tasks).await;
                             writer_task.abort();
-                            retain_remembered_remote_machines(&router);
                             disconnect_relay(&state, "relay stopped sending frames", presence).await;
                             break "relay stopped sending frames";
                         }
@@ -1356,7 +1350,6 @@ async fn run_daemon_relay_connector_inner(
                                 abort_inventory_refresh_task(&mut inventory_refresh_task);
                                 abort_subscription_tasks(&router, &subscription_tasks).await;
                                 writer_task.abort();
-                                retain_remembered_remote_machines(&router);
                                 disconnect_relay(&state, "relay heartbeat send failed", presence).await;
                                 break "relay heartbeat send failed";
                             }
@@ -1391,6 +1384,9 @@ async fn run_daemon_relay_connector_inner(
                         }
                     }
                 };
+                // The connection ended: the live list gives way to the remembered one at once,
+                // not after the reconnect delay.
+                retain_remembered_remote_machines(&router);
                 drop_backoff.after_connection(connected_at.elapsed());
                 let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt)
                     .max(drop_backoff.delay(&daemon_id));
@@ -1410,7 +1406,6 @@ async fn run_daemon_relay_connector_inner(
                         "error": error.to_string(),
                     }),
                 );
-                retain_remembered_remote_machines(&router);
                 disconnect_relay(&state, "relay socket connect failed", presence).await;
                 let daemon_id = router.relay_daemon_id();
                 let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
