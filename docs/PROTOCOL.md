@@ -3404,6 +3404,16 @@ Workflow trigger and deployment direction:
   them (absent when none). `app_confirmation.preview` (`[{label, value}]`, 1 to 12 rows of plain text) carries the
   rows a backend-served App answered when no App Tab shows the preview; the card then has no `view`. A direct tool
   call of an action that needs approval or confirmation is refused with `USE_APP_VIEW_INVOKE`.
+- protocol 1019: sign in to a provider from a Vault entry. `SendProviderLoginVaultEntry {login_id, credential_id}`
+  answers `ProviderLoginVaultEntrySent {login_id}`. The login must be a running terminal API-key login
+  (`opencode_go_api_key`, `opencode_zen_api_key`); the kernel waits for the provider's "Enter your API key" prompt,
+  types the entry's value into the login PTY itself and the provider finishes the login. The answer and the login
+  status never carry the value, and the login record masks it if the provider echoes it. The entry must be a
+  secret bound to the provider's own site (`provider_enrollment_vault_origin`, today `https://opencode.ai`), allowed
+  for browser or HTTP use; an entry made by `chariox.vault.copy_for_use` for that site counts. Any other entry is
+  refused with `credential_policy` and the site to bind it to. A locked Vault answers `credential_vault_locked` for a
+  client without a session and shows the usual unlock card to an agent. One entry per login: a second is refused.
+  Person and owner-agent callers only. Web requires 1019 for "Use a Vault entry".
 - protocol 359: App connection grants. `GrantAppConnection {installation_id,
   generator_id, connection_id}`, `RevokeAppConnection {installation_id,
   connection_id}` and `ListAppConnections {installation_id}` answer
